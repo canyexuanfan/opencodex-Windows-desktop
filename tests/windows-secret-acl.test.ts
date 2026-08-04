@@ -10,7 +10,7 @@
  *  - hardenSecretDir mirrors the same contract for directories.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -685,6 +685,108 @@ describe("ephemeral ACL memo release (#840 refinement)", () => {
       // (no new runner call) and is NOT cleared by the temp cleanup.
       expect(runnerCalls).toBe(callsAfterFirst);
       expect(timedOutSecretPathCountForTests()).toBe(1);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+    }
+  });
+});
+
+describe("stable-path harden memo is bound to file identity, not pathname", () => {
+  /**
+   * The memo is a Set<string> of PATHNAMES. Ephemeral temps escape the
+   * consequence because atomic writers call forgetEphemeralSecretPath after the
+   * temp is gone (src/config.ts:214,241,309,336,480,501-510). A STABLE
+   * destination never does — and hardenStableLockFile
+   * (src/codex/native-main-lock-file.ts:127) hardens exactly such a path.
+   *
+   * So: harden a stable path, then replace the FILE at that same name. The
+   * replacement is a different inode that has never been through icacls, but
+   * the memo answers for the name and reports it hardened.
+   *
+   * This is the release -> replace -> REACQUIRE shape. Substituting the file
+   * while a single acquisition still holds it never consults the memo again and
+   * would pass with the fix removed.
+   */
+  test("a file replaced at an already-hardened stable path is hardened again", () => {
+    resetHardenedStateForTests();
+    const stable = join(testDir, "coordinator.sqlite");
+    writeFileSync(stable, "first", "utf8");
+    const firstIdentity = statSync(stable).ino;
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    let grants = 0;
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) grants += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(1);
+
+      // Release, then replace the file at the SAME pathname.
+      unlinkSync(stable);
+      writeFileSync(stable, "second", "utf8");
+      const secondIdentity = statSync(stable).ino;
+      // Guard the guard: if the filesystem reused the inode this proves nothing.
+      expect(secondIdentity).not.toBe(firstIdentity);
+
+      // Reacquire. The replacement has never been hardened.
+      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(2);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+    }
+  });
+
+  /**
+   * The other half of the memo, which my first attempt at this fix missed.
+   *
+   * When identity cannot be established the memo stores `null`. Windows NTFS is
+   * exactly where that arises — the non-bigint `ino` is 0 there, which is why the
+   * read uses `bigint: true` and still has to tolerate failure.
+   *
+   * A `null` entry must NOT satisfy a later lookup. Treating "we could not tell"
+   * as "it did not change" is the same absence-as-guarantee move that produced the
+   * pathname memo in the first place, and it would reintroduce the defect on the
+   * one platform this code exists for.
+   *
+   * Driven red: mutating `remembered === null` to return true makes this fail
+   * while the replacement test above still passes — which is why both exist.
+   */
+  test("an unverifiable identity is re-hardened rather than assumed unchanged", () => {
+    resetHardenedStateForTests();
+    const stable = join(testDir, "unverifiable.sqlite");
+    writeFileSync(stable, "first", "utf8");
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    let grants = 0;
+    // The file is removed DURING the harden, so the post-icacls identity read
+    // fails and the memo records `null`. That is a real race — a replacement
+    // landing between the ACL call and the memo write — not a contrived seam.
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) grants += 1;
+      if (grants === 1 && existsSync(stable)) unlinkSync(stable);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(1);
+
+      // Recreate at the same name. The memo holds `null` for this path, so the
+      // harden must run again rather than credit the vanished file's ACLs.
+      writeFileSync(stable, "second", "utf8");
+      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(2);
     } finally {
       if (previousUsername === undefined) delete process.env.USERNAME;
       else process.env.USERNAME = previousUsername;

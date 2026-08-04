@@ -29,13 +29,60 @@
  *   hardenSecretDir  — same contract for directories.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { env, platform } from "node:process";
 
-const hardenedDirectories = new Set<string>();
-const hardenedPaths = new Set<string>();
+const hardenedDirectories = new Map<string, HardenedIdentity>();
+const hardenedPaths = new Map<string, HardenedIdentity>();
 /** Paths whose harden TIMED OUT this process: do not re-stall every loadConfig on them. */
 const timedOutPaths = new Set<string>();
+
+/**
+ * Identity of the file a successful harden actually applied to.
+ *
+ * `null` means the identity could not be established, which is NOT the same as
+ * "unchanged" — it is recorded as unverifiable so the next harden re-runs
+ * instead of inheriting a previous file's credit.
+ */
+type HardenedIdentity = string | null;
+
+/**
+ * Portable file identity for the ACL success memo.
+ *
+ * `bigint: true` is what makes this work on Windows: the default `ino` is 0 on
+ * NTFS, while the bigint variant carries the file index. A zero or failed read
+ * yields `null`, and a null memo entry never satisfies a later lookup.
+ */
+function fileIdentity(targetPath: string): HardenedIdentity {
+  try {
+    const stats = statSync(targetPath, { bigint: true });
+    if (stats.ino === 0n) return null;
+    return `${stats.dev}:${stats.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True only when this exact FILE was hardened, not merely this pathname.
+ *
+ * The memo used to be a `Set<string>` of paths. A stable destination — such as
+ * the coordinator database `hardenStableLockFile` hardens — can be unlinked and
+ * recreated at the same name, and the replacement inherited the previous file's
+ * hardening while never having been through icacls. Ephemeral temps escaped this
+ * only because atomic writers call `forgetEphemeralSecretPath` once the temp is
+ * gone; nothing does that for a stable path.
+ */
+function memoSatisfied(cache: Map<string, HardenedIdentity>, targetPath: string): boolean {
+  if (!cache.has(targetPath)) return false;
+  const remembered = cache.get(targetPath);
+  // Unverifiable at harden time stays unverifiable now: re-harden rather than
+  // treat an unknown identity as proof of an unchanged file.
+  if (remembered === null) return false;
+  const current = fileIdentity(targetPath);
+  if (current === null) return false;
+  return current === remembered;
+}
 
 export interface HardenResult {
   ok: boolean;
@@ -411,11 +458,11 @@ function hardenEntry(
   targetPath: string,
   directory: boolean,
   opts: HardenOptions,
-  cache: Set<string>,
+  cache: Map<string, HardenedIdentity>,
 ): HardenResult {
   if (!existsSync(targetPath)) return { ok: true };
   if (effectivePlatform() !== "win32") return { ok: true };
-  if (cache.has(targetPath)) return { ok: true };
+  if (memoSatisfied(cache, targetPath)) return { ok: true };
   const memoKey = timeoutMemoKey(targetPath, opts);
   if (timedOutPaths.has(memoKey)) {
     const diagnostics = "ACL hardening skipped — previous attempt timed out";
@@ -429,7 +476,7 @@ function hardenEntry(
     if (attempt > 0 && deadline - nowFn() <= 0) break; // retry only while budget remains
     try {
       runIcacls(targetPath, directory, deadline);
-      cache.add(targetPath);
+      cache.set(targetPath, fileIdentity(targetPath));
       return { ok: true };
     } catch (err) {
       lastErr = err;
@@ -455,11 +502,11 @@ async function hardenEntryAsync(
   targetPath: string,
   directory: boolean,
   opts: HardenOptions,
-  cache: Set<string>,
+  cache: Map<string, HardenedIdentity>,
 ): Promise<HardenResult> {
   if (!existsSync(targetPath)) return { ok: true };
   if (effectivePlatform() !== "win32") return { ok: true };
-  if (cache.has(targetPath)) return { ok: true };
+  if (memoSatisfied(cache, targetPath)) return { ok: true };
   const memoKey = timeoutMemoKey(targetPath, opts);
   if (timedOutPaths.has(memoKey)) {
     const diagnostics = "ACL hardening skipped — previous attempt timed out";
@@ -473,7 +520,7 @@ async function hardenEntryAsync(
     if (attempt > 0 && deadline - nowFn() <= 0) break;
     try {
       await runIcaclsAsync(targetPath, directory, deadline);
-      cache.add(targetPath);
+      cache.set(targetPath, fileIdentity(targetPath));
       return { ok: true };
     } catch (err) {
       lastErr = err;
