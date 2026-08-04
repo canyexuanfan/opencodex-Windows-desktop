@@ -28,6 +28,17 @@ export type ClassifyResult = { type: AccountType } | { error: string };
 
 export type AccountStdin = NodeJS.ReadableStream & { isTTY?: boolean };
 
+export interface NativeMainLoginChild {
+  exited: Promise<number>;
+  kill(signal?: number | NodeJS.Signals): void;
+}
+
+export interface StageLeaseClock {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
 export interface AccountDeps {
   /** Test injection: skip findLiveProxy and call the API at this base URL. */
   baseUrl?: string;
@@ -35,6 +46,14 @@ export interface AccountDeps {
   loadConfigImpl?: () => OcxConfig;
   stdinImpl?: AccountStdin;
   stdinTimeoutMs?: number;
+  /** Test/platform injection for the official Codex login in a restricted staging home. */
+  spawnCodexLoginImpl?: (codexHome: string) => NativeMainLoginChild;
+  /** Legacy test seam. Production always uses the spawned child handle above. */
+  runCodexLoginImpl?: (codexHome: string) => Promise<number>;
+  /** Test-only heartbeat cadence floor. Production keeps the five-second floor. */
+  stageHeartbeatIntervalMinMs?: number;
+  /** Test-only clock for deterministic native-profile lease deadline coverage. */
+  stageLeaseClock?: StageLeaseClock;
 }
 
 export function classifyAccount(config: OcxConfig, name: string): ClassifyResult {
@@ -68,6 +87,7 @@ export async function apiJson(
   method: "GET" | "PUT" | "POST" | "DELETE",
   path: string,
   body?: unknown,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ApiResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   try {
@@ -75,6 +95,7 @@ export async function apiJson(
       method,
       headers: runningProxyUpdateHeaders(),
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: options.signal,
     });
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     return { status: res.status, json };
@@ -98,6 +119,9 @@ export function proxyUnreachable(): number {
 export function apiError(json: Record<string, unknown>, fallback: string): number {
   const message = typeof json.error === "string" ? json.error : fallback;
   console.error(`Error: ${message}`);
+  if (json.cleanupRequired === true) {
+    console.error("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
+  }
   return 1;
 }
 

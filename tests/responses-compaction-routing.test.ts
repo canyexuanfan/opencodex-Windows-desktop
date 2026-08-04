@@ -5,7 +5,7 @@
  * fatals on a compaction turn that came back as an ordinary message.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleResponses, handleResponsesCompact } from "../src/server/responses";
@@ -18,11 +18,13 @@ import {
   resolveCodexAccountForThread,
 } from "../src/codex/routing";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import {
   releaseCodexAuthContextProbeLease,
   resolveCodexAuthContext,
 } from "../src/codex/auth-context";
 import { supportsNativeResponsesCompactEndpoint } from "../src/providers/openai-tiers";
+import { acquireNativeMainProfileDrain, tryAdmitTurn } from "../src/server/lifecycle";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
@@ -656,6 +658,55 @@ describe("compact alternate-account attempt (#913)", () => {
       });
     });
   }
+
+  test("a native-main drain starting between attempts preserves the first rejection", async () => {
+    await withPoolEnv("ocx-compact-alt-main-drain-", async config => {
+      // Keep native main as A's only alternate. This makes the fixture fail closed
+      // only when the second auth selection receives the same admitted-turn lease.
+      config.codexAccounts = [config.codexAccounts![0]!];
+      config.activeCodexAccountId = "pool-a";
+      writeFileSync(join(process.env.CODEX_HOME!, "auth.json"), JSON.stringify({
+        tokens: {
+          access_token: "main-access-token",
+          account_id: "main-account",
+        },
+      }));
+      updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 0);
+
+      const turn = tryAdmitTurn();
+      expect(turn).not.toBeNull();
+      let profileDrain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+      const accounts: Array<string | null> = [];
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        accounts.push(new Headers(init?.headers).get("chatgpt-account-id"));
+        if (accounts.length === 1) {
+          profileDrain = acquireNativeMainProfileDrain("compact-between-attempts");
+          expect(profileDrain).not.toBeNull();
+          return Response.json({ error: { message: "pool exhausted" } }, {
+            status: 429,
+            headers: { "retry-after": "47" },
+          });
+        }
+        return jsonResponse(completedPayload("unexpected native-main alternate"));
+      }) as typeof fetch;
+
+      try {
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+          turn!,
+        );
+
+        expect(accounts).toEqual(["pool_acc_a"]);
+        expect(res.status).toBe(429);
+        expect(res.headers.get("retry-after")).toBe("47");
+      } finally {
+        profileDrain?.release();
+        turn?.release();
+      }
+    });
+  });
 
   test("a bound thread at 100% local quota still sends once, with no alternate attempt", async () => {
     // The scope guard. The alternate path must trigger on an actual upstream 429/402,

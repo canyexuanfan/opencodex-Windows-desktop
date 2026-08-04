@@ -32,6 +32,7 @@ import {
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
+import { tryClaimNativeMainProfileForTurn } from "../codex/native-main-admission";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -158,15 +159,22 @@ async function handleChatCompletionsWithBudget(
     if (value) headers.set(name, value);
   }
   // Prefer main ChatGPT auth so OpenAI-backed sidecars remain reachable on routed turns.
-  if (!directRoute) try {
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
+  if (!directRoute) {
+    // This enrichment is optional for routed/non-main providers. If native main
+    // is fenced, omit it and let auth-context reject only a final physical-main
+    // selection while healthy pool/provider routes continue.
+    if (tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
+      try {
+        const { getMainAccountToken } = await import("../codex/main-account");
+        const token = getMainAccountToken();
+        if (token) {
+          headers.set("authorization", `Bearer ${token.accessToken}`);
+          headers.set("chatgpt-account-id", token.chatgptAccountId);
+        }
+      } catch {
+        /* optional */
+      }
     }
-  } catch {
-    /* optional */
   }
 
   const internalBodyJson = JSON.stringify(internalBody);

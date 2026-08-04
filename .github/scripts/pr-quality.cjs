@@ -15,6 +15,22 @@ const MIN_RICH_SECTIONS = 2;
 const UNSTRUCTURED_MIN_LEN = 120;
 const UNSTRUCTURED_MIN_BLOCKS = 2;
 
+/** HTML markers bounding the bot-managed review-readiness checklist in the PR body. */
+const REVIEW_READINESS_START = "<!-- pr-quality-readiness-checklist:start -->";
+const REVIEW_READINESS_END = "<!-- pr-quality-readiness-checklist:end -->";
+
+/**
+ * The four self-attestation boxes a non-maintainer author must tick before the
+ * gate lifts the draft. The final box is intentionally set off by a blank line
+ * so the "ready" claim reads as the closing confirmation, not a fourth task.
+ */
+const REVIEW_READINESS_ITEMS = [
+  "All CI tests are green on my local testing.",
+  "I pushed my PR to the latest dev commit.",
+  "I fixed all correct Codex and CodeRabbit findings.",
+  "My PR is ready for review.",
+];
+
 /**
  * Exact instruction / checklist lines from `.github/PULL_REQUEST_TEMPLATE.md`.
  * Untouched templates must not count as substance.
@@ -22,10 +38,26 @@ const UNSTRUCTURED_MIN_BLOCKS = 2;
 const PR_TEMPLATE_BOILERPLATE_LINES = new Set([
   "explain the user-visible or maintainer-facing change.",
   "list the commands or checks you ran.",
+  "if this pr changes the gui, include a screenshot of the ui change in the description.",
   "scope stays focused and avoids unrelated cleanup.",
   "docs or release notes were updated when needed.",
   "security-sensitive changes were reviewed for secrets, auth, and unsafe defaults.",
 ]);
+
+/** Case-insensitive whole-word match for the GUI surface (repo convention: `gui/`). */
+const GUI_CUE_RE = /\bgui\b/i;
+/** HTML comments, which GitHub never renders. */
+const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+/** Fenced code blocks (``` or ~~~) whose content GitHub does not render. */
+const FENCED_CODE_RE = /(?:^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*(?=\n|$)/gm;
+/** Embedded markdown image (`![alt](url)`), as GitHub renders for dropped images. */
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\([^)]+\)/;
+/** Reference-style markdown image (`![alt][id]`, collapsed `![alt][]`). */
+const MARKDOWN_REFERENCE_IMAGE_RE = /!\[([^\]]*)\]\[([^\]]*)\]/g;
+/** Link definitions (`[id]: url`) that reference-style images depend on. */
+const MARKDOWN_REFERENCE_DEF_RE = /^\s*\[([^\]]+)\]:\s*\S+/gm;
+/** Embedded HTML image with a renderable `src` (`<img ... src="...">`). */
+const HTML_IMAGE_RE = /<img\b[^>]*\bsrc\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>"']+)[^>]*>/i;
 
 function isWrongAncestry({
   behindMain,
@@ -93,13 +125,14 @@ function stripPrTemplateBoilerplate(text) {
 }
 
 function assessPrDescription(body) {
-  if (typeof body !== "string" || !body.trim()) {
+  const withoutReadiness = stripReviewReadinessSection(body);
+  if (typeof withoutReadiness !== "string" || !withoutReadiness.trim()) {
     return { ok: false, reason: "empty" };
   }
-  if (hasEscapedNewlines(body)) {
+  if (hasEscapedNewlines(withoutReadiness)) {
     return { ok: false, reason: "escaped_newlines" };
   }
-  const withoutTemplate = stripPrTemplateBoilerplate(body);
+  const withoutTemplate = stripPrTemplateBoilerplate(withoutReadiness);
   const cleaned = clean(withoutTemplate);
   if (!cleaned) {
     const strippedComments = withoutTemplate.replace(/<!--[\s\S]*?-->/g, "").trim();
@@ -124,9 +157,173 @@ function assessPrDescription(body) {
   return { ok: false, reason: "thin" };
 }
 
+/**
+ * True when the PR title or description names the GUI surface as a whole word.
+ * The description is template-stripped first so the template's own screenshot
+ * instruction cannot arm the gate on its own.
+ */
+function hasGuiCue(title, body) {
+  return (
+    (typeof title === "string" && GUI_CUE_RE.test(title)) ||
+    (typeof body === "string" && GUI_CUE_RE.test(body))
+  );
+}
+
+/**
+ * Drop the regions GitHub does not render as Markdown: HTML comments and
+ * fenced code blocks. Image syntax there is literal text, not evidence.
+ */
+function stripNonRenderedRegions(body) {
+  return body.replace(HTML_COMMENT_RE, "").replace(FENCED_CODE_RE, "");
+}
+
+/**
+ * True when the description contains a reference-style image (`![alt][id]` or
+ * collapsed `![alt][]`) backed by a matching `[id]: url` definition — GitHub
+ * renders only those reference images, so a bare token is not evidence.
+ */
+function hasRenderableReferenceImage(visible) {
+  const definitions = new Set();
+  for (const match of visible.matchAll(MARKDOWN_REFERENCE_DEF_RE)) {
+    definitions.add(match[1].trim().toLowerCase());
+  }
+  if (definitions.size === 0) return false;
+  for (const match of visible.matchAll(MARKDOWN_REFERENCE_IMAGE_RE)) {
+    const id = (match[2] || match[1]).trim().toLowerCase();
+    if (id && definitions.has(id)) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the rendered description embeds a screenshot image: an inline
+ * markdown image, a reference-style image with a definition, or an `<img>` tag
+ * with a non-empty `src`. A plain link to an image is not visual evidence.
+ */
+function hasScreenshotEvidence(body) {
+  if (typeof body !== "string") return false;
+  const visible = stripNonRenderedRegions(body);
+  if (MARKDOWN_IMAGE_RE.test(visible)) return true;
+  if (HTML_IMAGE_RE.test(visible)) return true;
+  return hasRenderableReferenceImage(visible);
+}
+
+/**
+ * The tickable checklist section injected into the PR description. It lives in
+ * the body (the author can tick it) and is bounded by HTML markers so the gate
+ * can find exactly this section and ignore any other task list in the body.
+ */
+function buildReviewReadinessSection() {
+  const items = REVIEW_READINESS_ITEMS.flatMap((item, index) =>
+    index === REVIEW_READINESS_ITEMS.length - 1
+      ? ["", `- [ ] ${item}`]
+      : [`- [ ] ${item}`],
+  );
+  return [
+    REVIEW_READINESS_START,
+    "## Review readiness checklist",
+    "",
+    "This PR stays in draft until every box below is ticked. Tick all four boxes once the requirements are met:",
+    "",
+    ...items,
+    REVIEW_READINESS_END,
+  ].join("\n");
+}
+
+/**
+ * Read the checklist section the bot manages. `present` means the marker pair
+ * exists; `complete` means the section contains exactly the four boxes and all
+ * of them are checked. Anything else (missing markers, fewer or extra boxes,
+ * unchecked boxes) keeps the gate closed. The author can reword an item, but
+ * the box count and the checked state are the contract.
+ */
+function extractReviewReadiness(body) {
+  if (typeof body !== "string") {
+    return {
+      present: false,
+      complete: false,
+      checked: 0,
+      total: 0,
+      items: [],
+    };
+  }
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  const startCount = body.split(REVIEW_READINESS_START).length - 1;
+  const endCount = body.split(REVIEW_READINESS_END).length - 1;
+  // Any marker presence counts as present: an author-edited section that is
+  // inverted or partial must never trigger another append, or every `edited`
+  // event would stack a second checklist (and a second body write). Exactly
+  // one marker pair is required: duplicates are malformed, not complete.
+  if (
+    start === -1 ||
+    end === -1 ||
+    end <= start ||
+    startCount !== 1 ||
+    endCount !== 1
+  ) {
+    return {
+      present: start !== -1 || end !== -1,
+      complete: false,
+      checked: 0,
+      total: 0,
+      items: [],
+    };
+  }
+  const section = body.slice(start + REVIEW_READINESS_START.length, end);
+  const boxes = [...section.matchAll(/^\s*[-*]\s+\[([ xX])\]\s+/gm)];
+  const total = boxes.length;
+  const items = boxes.map((match) => ({ checked: match[1] !== " " }));
+  const checked = items.filter((item) => item.checked).length;
+  return {
+    present: true,
+    complete:
+      total === REVIEW_READINESS_ITEMS.length && checked === total,
+    checked,
+    total,
+    items,
+  };
+}
+
+/**
+ * Append the checklist section to a PR body. Idempotent: a body that already
+ * carries the marker pair is returned unchanged, so a re-run can never stack a
+ * second checklist (or feed the `edited` event endless body churn).
+ */
+function appendReviewReadinessSection(body) {
+  if (extractReviewReadiness(body).present) return body;
+  const section = buildReviewReadinessSection();
+  if (typeof body !== "string" || !body.trim()) return `${section}\n`;
+  return `${body.trimEnd()}\n\n${section}\n`;
+}
+
+/**
+ * Remove the bot-managed readiness section from a body. Used so the bot's own
+ * checklist never counts as author-written description substance, and so a
+ * confirmed maintainer's body can retire the injected section.
+ */
+function stripReviewReadinessSection(body) {
+  if (typeof body !== "string") return body;
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) return body;
+  // Malformed marker sets (duplicates, extra pairs) stay untouched: removing
+  // only one section would leave the body half-cleaned and still marked.
+  if (
+    body.split(REVIEW_READINESS_START).length - 1 !== 1 ||
+    body.split(REVIEW_READINESS_END).length - 1 !== 1
+  ) {
+    return body;
+  }
+  const stripped =
+    body.slice(0, start) + body.slice(end + REVIEW_READINESS_END.length);
+  return stripped.replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 function collectPrQualityFailures({
   baseRef,
   allowedBases,
+  title = "",
   body,
   behindMain,
   behindBase,
@@ -162,15 +359,36 @@ function collectPrQualityFailures({
   if (!desc.ok) {
     failures.push({ code: "bad_description", reason: desc.reason });
   }
+
+  // GUI-cued PRs must prove the UI change visually. The template's own
+  // screenshot instruction is boilerplate, so it cannot trigger this gate.
+  if (
+    hasGuiCue(
+      title,
+      typeof body === "string" ? stripPrTemplateBoilerplate(body) : "",
+    ) &&
+    !hasScreenshotEvidence(body)
+  ) {
+    failures.push({ code: "missing_ui_screenshot" });
+  }
   return failures;
 }
 
 module.exports = {
   ANCESTRY_BEHIND_THRESHOLD,
   ANCESTRY_AHEAD_MAIN_MAX,
+  REVIEW_READINESS_ITEMS,
+  REVIEW_READINESS_START,
+  REVIEW_READINESS_END,
   isWrongAncestry,
   authorHasPushPermission,
   assessPrDescription,
+  hasGuiCue,
+  hasScreenshotEvidence,
+  buildReviewReadinessSection,
+  extractReviewReadiness,
+  appendReviewReadinessSection,
+  stripReviewReadinessSection,
   collectPrQualityFailures,
   hasEscapedNewlines,
   stripPrTemplateBoilerplate,

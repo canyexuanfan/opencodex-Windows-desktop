@@ -130,11 +130,27 @@ describe("startup star prompt", () => {
   });
 
   test("the consent rule is written down where agents and users read it", async () => {
+    // The normative rule lives in AGENTS_INSTALL.md, read by an agent that
+    // INSTALLS or RUNS opencodex. It was moved out of AGENTS.md because that
+    // file is loaded for every code change, and the consent boundary applies to
+    // none of them — a development-facing file is the wrong trigger surface.
+    const install = await readText("AGENTS_INSTALL.md");
     const agents = await readText("AGENTS.md");
     const readme = await readText("README.md");
 
-    expect(agents).toContain("User-consent actions");
-    expect(agents).toContain("agent_consent_required");
+    // The full contract: the refusal code, the exact question, and both halves
+    // of the settle rule. Relocating it must not be allowed to thin it out.
+    expect(install).toContain("User-consent actions");
+    expect(install).toContain("agent_consent_required");
+    expect(install).toContain("Star lidge-jun/opencodex? Yes / No");
+    expect(install).toContain("POST /api/github/star");
+    expect(install.toLowerCase()).toContain("silence is");
+    expect(install.toLowerCase()).toContain("explicit yes");
+
+    // Both entry points must still route an agent to it — a rule nobody is
+    // pointed at is a rule nobody reads.
+    expect(agents).toContain("AGENTS_INSTALL.md");
+    expect(readme).toContain("AGENTS_INSTALL.md");
     expect(readme).toContain("agent_consent_required");
     expect(readme.toLowerCase()).toContain("never an agent");
   });

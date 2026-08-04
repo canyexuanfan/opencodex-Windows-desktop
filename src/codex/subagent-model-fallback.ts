@@ -19,7 +19,10 @@ import {
   getPoolAccountPlan,
   isCodexAccountInCooldown,
 } from "./routing";
-import { isCodexAccountUsable } from "./account-usability";
+import {
+  isCodexAccountUsable,
+  type CodexAccountUsabilityOptions,
+} from "./account-usability";
 import { isCodexAccountPaused } from "./account-pause";
 import { slugEquals } from "../providers/slug-codec";
 import { isThreadSpawnRequest } from "../server/effort-policy";
@@ -177,6 +180,7 @@ export function isSubagentModelUnavailable(
   config: OcxConfig,
   accountId?: string | null,
   now = Date.now(),
+  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): boolean {
   if (isDisabledFallbackModel(model, config)) return true;
   if (!isRoutableFallbackModel(model, config)) return true;
@@ -190,7 +194,7 @@ export function isSubagentModelUnavailable(
   const resolvedAccountId = resolvePoolFallbackAccountId(config, accountId);
   if (!resolvedAccountId) return true;
   if (isCodexAccountPaused(config, resolvedAccountId)) return true;
-  if (!isCodexAccountUsable(config, resolvedAccountId)) return true;
+  if (!isCodexAccountUsable(config, resolvedAccountId, accountUsabilityOptions)) return true;
   if (
     isCodexAccountInCooldown(resolvedAccountId, now)
     && !canAcquireCodexQuotaProbeLease(resolvedAccountId, now)
@@ -207,6 +211,7 @@ export function selectAvailableSubagentModel(
   accountId?: string | null,
   now = Date.now(),
   nativeFallbackOnly = false,
+  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): { model: string; rewritten: boolean; skipped: string[] } {
   const chain = normalizedChain(primary, config, extraFallback);
   const skipped: string[] = [];
@@ -218,7 +223,7 @@ export function selectAvailableSubagentModel(
         continue;
       }
     }
-    if (isSubagentModelUnavailable(candidate, config, accountId, now)) {
+    if (isSubagentModelUnavailable(candidate, config, accountId, now, accountUsabilityOptions)) {
       skipped.push(candidate);
       continue;
     }
@@ -349,7 +354,12 @@ export function resolveAgentModelFallbackForPrimary(
  * after a successful refresh so failures remain retryable. Errors are swallowed so
  * spawn routing can continue.
  */
-export function maybePrimeSubagentQuota(config: OcxConfig, now = Date.now()): Promise<void> {
+export function maybePrimeSubagentQuota(
+  config: OcxConfig,
+  now = Date.now(),
+  options: { nativeMainReadsForbidden?: boolean } = {},
+): Promise<void> {
+  if (options.nativeMainReadsForbidden) return Promise.resolve();
   if (quotaPrimeInFlight) return quotaPrimeInFlight;
   if (!shouldPrimeSubagentQuota(config, now)) return Promise.resolve();
 
@@ -391,6 +401,7 @@ export function applySubagentModelFallback(
   accountId?: string | null,
   now = Date.now(),
   nativeFallbackOnly = false,
+  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): { from?: string; to?: string; skipped?: string[] } | null {
   if (!isThreadSpawnRequest(headers)) return null;
   const roleFallback = resolveAgentModelFallbackForPrimary(parsed.modelId, getCodexHome());
@@ -403,6 +414,7 @@ export function applySubagentModelFallback(
     accountId,
     now,
     nativeFallbackOnly,
+    accountUsabilityOptions,
   );
   if (!selection.rewritten) return selection.skipped.length > 0
     ? { from: parsed.modelId, to: parsed.modelId, skipped: selection.skipped }

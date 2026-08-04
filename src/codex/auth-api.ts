@@ -56,8 +56,12 @@ import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from ".
 import { captureConfigGeneration } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
+  captureMainAccountIdentityGeneration,
   clearMainAccountInfoCache,
+  getMainAccountCredentialPresence,
   getMainAccountInfoCache,
+  isMainAccountIdentityGenerationLive,
+  setMainAccountCredentialPresence,
   setMainAccountInfoCache,
   type MainAccountInfo,
 } from "./main-account-cache";
@@ -82,13 +86,32 @@ import {
   isValidCodexAccountId,
 } from "./account-id";
 import { codexAccountIdNamespaceCollisionError } from "./account-namespace-match";
-import { ResourceAdmissionError } from "../lib/admission";
+import { ResourceAdmissionError, type AdmissionLease } from "../lib/admission";
+import { tryAcquireNativeMainProfileClaim } from "./native-main-admission";
+import { withNativeMainSharedClaim } from "./native-main-claim";
+import { resolveNativeProfileContext } from "./native-profile-store";
+import { NativeProfileError } from "./native-profile-types";
+
+function isNativeMainClaimUnavailable(error: unknown): error is NativeProfileError {
+  return error instanceof NativeProfileError
+    && (error.code === "NATIVE_MAIN_CLAIM_BUSY" || error.code === "NATIVE_MAIN_CLAIM_UNAVAILABLE");
+}
+
+function withNativeMainCredentialClaim<T>(operation: () => Promise<T>): Promise<T> {
+  return withNativeMainSharedClaim(resolveNativeProfileContext(), operation);
+}
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function nativeMainProfileBusyResponse(): Response {
+  const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);
+  response.headers.set("Retry-After", "1");
+  return response;
 }
 
 const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
@@ -185,20 +208,52 @@ function poolAccountDto(
   };
 }
 
-async function resolveResetCreditAuth(
+interface ResetCreditAuth {
+  isMain: boolean;
+  accessToken: string;
+  chatgptAccountId: string;
+  nativeMainLease?: AdmissionLease;
+  nativeMainSharedClaimHeld?: true;
+}
+
+async function withResetCreditAuth<T>(
   runtimeConfig: OcxConfig,
   accountId: string,
-): Promise<
-  | { ok: true; isMain: boolean; accessToken: string; chatgptAccountId: string }
-  | { ok: false; response: Response }
-> {
+  operation: (auth: ResetCreditAuth) => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; response: Response }> {
   if (accountId === MAIN_CODEX_ACCOUNT_ID) {
     if (hasLegacyMainCodexPoolAccount(runtimeConfig.codexAccounts)) {
       return { ok: false, response: jsonResponse({ error: "Remove the legacy __main__ pool row before using the Desktop account" }, 409) };
     }
-    const tokens = readCodexTokens();
-    if (!tokens) return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
-    return { ok: true, isMain: true, accessToken: tokens.access_token, chatgptAccountId: tokens.account_id };
+    const nativeMainLease = tryAcquireNativeMainProfileClaim();
+    if (!nativeMainLease) return { ok: false, response: nativeMainProfileBusyResponse() };
+    try {
+      try {
+        return await withNativeMainCredentialClaim(async () => {
+          const tokens = readCodexTokens();
+          if (!tokens) {
+            return { ok: false, response: jsonResponse({ error: "Main Codex account not logged in" }, 401) };
+          }
+          return {
+            ok: true,
+            value: await operation({
+              isMain: true,
+              accessToken: tokens.access_token,
+              chatgptAccountId: tokens.account_id,
+              nativeMainLease,
+              nativeMainSharedClaimHeld: true,
+            }),
+          };
+        });
+      } catch (error) {
+        if (isNativeMainClaimUnavailable(error)) {
+          return { ok: false, response: nativeMainProfileBusyResponse() };
+        }
+        throw error;
+      }
+    } finally {
+      nativeMainLease.release();
+    }
   }
   if (!isValidCodexAccountId(accountId)) {
     return { ok: false, response: jsonResponse({ error: "Invalid account id format" }, 400) };
@@ -207,7 +262,14 @@ async function resolveResetCreditAuth(
     return { ok: false, response: jsonResponse({ error: "Unknown Codex account" }, 404) };
   }
   const cred = await getValidCodexToken(accountId);
-  return { ok: true, isMain: false, accessToken: cred.accessToken, chatgptAccountId: cred.chatgptAccountId };
+  return {
+    ok: true,
+    value: await operation({
+      isMain: false,
+      accessToken: cred.accessToken,
+      chatgptAccountId: cred.chatgptAccountId,
+    }),
+  };
 }
 
 function safeResetCreditsDto(input: unknown): { credits: { granted_at: string; expires_at: string }[]; available_count?: number } {
@@ -357,15 +419,33 @@ async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
 
 interface MainAccountInfoFetchResult {
   info: MainAccountInfo;
+  /** Whether this attempt safely inspected the physical native-main credential. */
+  credentialChecked: boolean;
+  /** Meaningful only when credentialChecked is true. */
+  hasCredential: boolean;
+  /** Main identity generation captured while the native-main claim was held. */
+  identityGeneration?: number;
   /** Present only when this call freshly parsed a WHAM usage response. */
   freshQuota?: Omit<StoredAccountQuota, "updatedAt">;
   /** Present only when this call's WHAM response included `rate_limit_reset_credits.available_count`. */
   freshResetCredits?: number;
 }
 
+export interface MainAccountInfoSnapshot {
+  info: MainAccountInfo;
+  mainIdentityGeneration: number;
+}
+
+export async function fetchMainAccountInfoSnapshot(forceRefresh = false): Promise<MainAccountInfoSnapshot> {
+  const result = await fetchMainAccountInfoAttempt(forceRefresh, 1);
+  return {
+    info: result.info,
+    mainIdentityGeneration: result.identityGeneration ?? captureMainAccountIdentityGeneration(),
+  };
+}
+
 export async function fetchMainAccountInfo(forceRefresh = false): Promise<MainAccountInfo> {
-  const { info } = await fetchMainAccountInfoAttempt(forceRefresh, 1);
-  return info;
+  return (await fetchMainAccountInfoSnapshot(forceRefresh)).info;
 }
 
 const EMPTY_MAIN_ACCOUNT_INFO: MainAccountInfo = { email: null, plan: null, quota: null };
@@ -373,19 +453,64 @@ const EMPTY_MAIN_ACCOUNT_INFO: MainAccountInfo = { email: null, plan: null, quot
 async function retryMainAccountInfoIfIdentityChanged(
   requestAccountId: string | null,
   retriesRemaining: number,
+  nativeMainLease: AdmissionLease,
 ): Promise<MainAccountInfoFetchResult | null> {
   const currentAccountId = getMainChatgptAccountId();
   if (currentAccountId === null || currentAccountId === requestAccountId) return null;
   reconcileMainCodexAccountRuntimeState();
   return retriesRemaining > 0
-    ? fetchMainAccountInfoAttempt(true, retriesRemaining - 1)
-    : { info: EMPTY_MAIN_ACCOUNT_INFO };
+    ? fetchMainAccountInfoWhileOwned(true, retriesRemaining - 1, nativeMainLease)
+    : { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
 }
 
-async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaining: number): Promise<MainAccountInfoFetchResult> {
+async function fetchMainAccountInfoAttempt(
+  forceRefresh: boolean,
+  retriesRemaining: number,
+  existingNativeMainLease?: AdmissionLease,
+  nativeMainSharedClaimHeld = false,
+): Promise<MainAccountInfoFetchResult> {
+  const nativeMainLease = existingNativeMainLease ?? tryAcquireNativeMainProfileClaim();
+  if (!nativeMainLease) {
+    return {
+      info: EMPTY_MAIN_ACCOUNT_INFO,
+      credentialChecked: false,
+      hasCredential: false,
+      identityGeneration: captureMainAccountIdentityGeneration(),
+    };
+  }
+  try {
+    const operation = async () => ({
+      ...await fetchMainAccountInfoWhileOwned(forceRefresh, retriesRemaining, nativeMainLease),
+      identityGeneration: captureMainAccountIdentityGeneration(),
+    });
+    if (nativeMainSharedClaimHeld) return await operation();
+    try {
+      return await withNativeMainCredentialClaim(operation);
+    } catch (error) {
+      if (isNativeMainClaimUnavailable(error)) {
+        return {
+          info: EMPTY_MAIN_ACCOUNT_INFO,
+          credentialChecked: false,
+          hasCredential: false,
+          identityGeneration: captureMainAccountIdentityGeneration(),
+        };
+      }
+      throw error;
+    }
+  } finally {
+    if (!existingNativeMainLease) nativeMainLease.release();
+  }
+}
+
+async function fetchMainAccountInfoWhileOwned(
+  forceRefresh: boolean,
+  retriesRemaining: number,
+  nativeMainLease: AdmissionLease,
+): Promise<MainAccountInfoFetchResult> {
   const writerGeneration = captureConfigGeneration();
   reconcileMainCodexAccountRuntimeState();
   const tokenRead = readCodexTokensResult();
+  setMainAccountCredentialPresence(tokenRead.status === "ok");
   if (tokenRead.status !== "ok") {
     // A local read failure is NOT proof of sign-out: a missing file can be a non-atomic rewrite
     // gap, and malformed JSON can be a half-written file. Clearing the cache and marking the
@@ -394,13 +519,13 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     // routing stays fail-closed because getMainAccountToken() re-reads the file itself, and the
     // account DTO still reports hasCredential=false while the file is unreadable.
     const preserved = getMainAccountInfoCache();
-    return { info: preserved ?? EMPTY_MAIN_ACCOUNT_INFO };
+    return { info: preserved ?? EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: false };
   }
   const tokens = tokenRead.tokens;
   const requestAccountId = extractAccountId(tokens.id_token, tokens.access_token) ?? (tokens.account_id || null);
   const cached = getMainAccountInfoCache();
   if (!forceRefresh && cached && Date.now() - cached.ts < MAIN_CACHE_TTL) {
-    return { info: cached };
+    return { info: cached, credentialChecked: true, hasCredential: true };
   }
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -409,16 +534,16 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     });
     if (!resp.ok) {
       const terminalAuthFailure = await isTerminalMainAuthResponse(resp);
-      const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining);
+      const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
       if (retried) return retried;
       if (terminalAuthFailure) {
         clearMainAccountInfoCache();
         markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID, writerGeneration);
       }
-      return { info: EMPTY_MAIN_ACCOUNT_INFO };
+      return { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
     }
     const data = (await resp.json()) as WhamUsageResponse;
-    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining);
+    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
     if (retried) return retried;
     const plan = nonEmptyPlan(data.plan_type) ?? nonEmptyPlan(cached?.plan) ?? nonEmptyPlan(getMainAccountPlan());
     const quota = parseUsageQuota({ ...data, ...(plan ? { plan_type: plan } : {}) });
@@ -439,12 +564,14 @@ async function fetchMainAccountInfoAttempt(forceRefresh: boolean, retriesRemaini
     }
     return {
       info: result,
+      credentialChecked: true,
+      hasCredential: true,
       ...(quota ? { freshQuota: quota } : {}),
       ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
     };
   } catch {
-    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining);
-    return retried ?? { info: EMPTY_MAIN_ACCOUNT_INFO };
+    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
+    return retried ?? { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
   }
 }
 
@@ -690,6 +817,17 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
 
 let primeInFlight: Promise<void> | null = null;
 
+export interface PrimeCodexPoolQuotasOptions {
+  /** Test seams for proving fenced/recovery priming performs no native-main work. */
+  reconcileMainAccount?: typeof reconcileMainCodexAccountRuntimeState;
+  readMainTokens?: typeof readCodexTokens;
+  fetchMainInfo?: typeof fetchMainAccountInfo;
+}
+
+function tryAcquireNativeMainPrimeLease(): AdmissionLease | null {
+  return tryAcquireNativeMainProfileClaim();
+}
+
 /**
  * Best-effort prime of pool-account (and main) quota so the rotation engine has
  * real usage scores instead of leaving every account at the unknown sentinel.
@@ -705,7 +843,11 @@ let primeInFlight: Promise<void> | null = null;
  * cost, so the worst case is one WHAM call per account per TTL window. Failures
  * are swallowed: a blocked WSL network must never crash startup or a request.
  */
-export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): Promise<void> {
+export async function primeCodexPoolQuotas(
+  config: OcxConfig,
+  reason: string,
+  options: PrimeCodexPoolQuotasOptions = {},
+): Promise<void> {
   const openai = config.providers[OPENAI_CODEX_PROVIDER_ID];
   if (
     !openai
@@ -714,10 +856,6 @@ export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): P
     || providerCodexAccountMode(OPENAI_CODEX_PROVIDER_ID, openai) !== "pool"
   ) return;
   if (primeInFlight) return primeInFlight;
-  // Seed the observed physical main identity before startup/lazy priming can populate quota or
-  // plan state. Otherwise the first post-startup account switch sees no previous identity and
-  // skips the purge that protects the stable __main__ alias.
-  reconcileMainCodexAccountRuntimeState();
   primeInFlight = (async () => {
     const runtimeConfig = getRuntimeConfig(config);
     const pool = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
@@ -725,10 +863,30 @@ export async function primeCodexPoolQuotas(config: OcxConfig, reason: string): P
       const q = getAccountQuota(a.id);
       return !q || Date.now() - q.updatedAt >= POOL_CACHE_TTL;
     });
-    const primeMain = !!readCodexTokens() && !getAccountQuota(MAIN_CODEX_ACCOUNT_ID);
+    const primeMain = async () => {
+      const mainLease = tryAcquireNativeMainPrimeLease();
+      if (!mainLease) return;
+      try {
+        try {
+          await withNativeMainCredentialClaim(async () => {
+            // Keep one local owner and one cross-process reader from physical
+            // identity reconciliation through WHAM and all quota publication.
+            (options.reconcileMainAccount ?? reconcileMainCodexAccountRuntimeState)();
+            if (getAccountQuota(MAIN_CODEX_ACCOUNT_ID)) return;
+            if (!(options.readMainTokens ?? readCodexTokens)()) return;
+            if (options.fetchMainInfo) await options.fetchMainInfo(false);
+            else await fetchMainAccountInfoAttempt(false, 1, mainLease, true);
+          });
+        } catch (error) {
+          if (!isNativeMainClaimUnavailable(error)) throw error;
+        }
+      } finally {
+        mainLease.release();
+      }
+    };
     try {
       await Promise.allSettled([
-        primeMain ? fetchMainAccountInfo(false) : Promise.resolve(),
+        primeMain(),
         mapWithConcurrency(stale, POOL_QUOTA_REFRESH_CONCURRENCY, async a => {
           if (!getCodexAccountCredential(a.id)) return;
           await fetchPoolAccountQuota(a.id, false, a.plan);
@@ -750,10 +908,22 @@ export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
 }
 
-export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
+export function effectiveCodexAuthAccountId(config: OcxConfig): string {
+  return getEffectiveActiveCodexAccountId(config) ?? MAIN_CODEX_ACCOUNT_ID;
+}
+
+export interface CodexAuthAccountsSnapshot {
+  accounts: CodexAuthAccountDto[];
+  mainIdentityGeneration: number;
+}
+
+export async function listCodexAuthAccountsSnapshot(
+  config: OcxConfig,
+  forceRefresh = false,
+): Promise<CodexAuthAccountsSnapshot> {
   const runtimeConfig = getRuntimeConfig(config);
   const poolAccounts = (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount);
-  const mainInfo = await fetchMainAccountInfo(forceRefresh);
+  const mainResult = await fetchMainAccountInfoAttempt(forceRefresh, 1);
   const refreshedPool = await mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async account => {
     const cred = getCodexAccountCredential(account.id);
     let quotaResult: PoolQuotaResult;
@@ -816,8 +986,14 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
       isCodexAccountPaused(runtimeConfig, accountId),
     )];
   });
-  const hasMainCredential = readCodexTokens() !== null;
-  const mainNeedsReauth = !hasMainCredential || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+  const fetchedMainGeneration = mainResult.identityGeneration ?? captureMainAccountIdentityGeneration();
+  const mainSnapshotLive = isMainAccountIdentityGenerationLive(fetchedMainGeneration);
+  const mainInfo = mainSnapshotLive ? mainResult.info : EMPTY_MAIN_ACCOUNT_INFO;
+  const hasMainCredential = mainSnapshotLive && mainResult.credentialChecked
+    ? mainResult.hasCredential
+    : getMainAccountCredentialPresence() ?? false;
+  const mainNeedsReauth = (mainSnapshotLive && mainResult.credentialChecked && !hasMainCredential)
+    || isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   const mainHealth = projectCodexAccountHealth({
     accountId: MAIN_CODEX_ACCOUNT_ID,
     needsReauth: mainNeedsReauth,
@@ -830,10 +1006,24 @@ export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = fa
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     hasCredential: hasMainCredential,
     needsReauth: mainNeedsReauth,
-    quota: mainInfo.quota ? { ...quotaForPlan({ ...mainInfo.quota, updatedAt: Date.now() }, mainInfo.plan) } : null,
+    quota: mainInfo.quota ? {
+      ...quotaForPlan({
+        ...mainInfo.quota,
+        updatedAt: getAccountQuota(MAIN_CODEX_ACCOUNT_ID)?.updatedAt ?? Date.now(),
+      }, mainInfo.plan),
+    } : null,
     ...oauthAccountHealthFields("codex", MAIN_CODEX_ACCOUNT_ID, mainHealth),
   };
-  return [main, ...withQuota];
+  return {
+    accounts: [main, ...withQuota],
+    mainIdentityGeneration: mainSnapshotLive
+      ? fetchedMainGeneration
+      : captureMainAccountIdentityGeneration(),
+  };
+}
+
+export async function listCodexAuthAccounts(config: OcxConfig, forceRefresh = false): Promise<CodexAuthAccountDto[]> {
+  return (await listCodexAuthAccountsSnapshot(config, forceRefresh)).accounts;
 }
 
 interface PauseExhaustedResult {
@@ -846,57 +1036,95 @@ function selectFallbackAfterPause(config: OcxConfig, pausedActiveId: string): vo
   reconcileCodexActiveAfterExclusion(config, pausedActiveId);
 }
 
-async function pauseExhaustedCodexAccounts(config: OcxConfig): Promise<PauseExhaustedResult> {
+async function pauseExhaustedCodexAccounts(
+  config: OcxConfig,
+  persistPausedAccounts: () => void,
+): Promise<PauseExhaustedResult> {
   const poolAccounts = (config.codexAccounts ?? []).filter(account => !account.isMain);
-  const mainAttempted = readCodexTokens() !== null;
-  const [mainResult, poolResults] = await Promise.all([
-    fetchMainAccountInfoAttempt(true, 1),
-    mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async account => {
-      if (!getCodexAccountCredential(account.id)) return { account, quotaResult: null };
-      return {
-        account,
-        quotaResult: await fetchPoolAccountQuota(account.id, true, account.plan),
+  const nativeMainLease = tryAcquireNativeMainProfileClaim();
+  try {
+    const performPause = async (mainLease?: AdmissionLease): Promise<PauseExhaustedResult> => {
+      const mainWork = async (): Promise<{
+        shouldPause: boolean;
+        checkedAccountCount: number;
+        failedAccountCount: number;
+      }> => {
+        if (!mainLease) return { shouldPause: false, checkedAccountCount: 0, failedAccountCount: 1 };
+        const mainResult = await fetchMainAccountInfoAttempt(true, 1, mainLease, true);
+        if (!mainResult.credentialChecked || !mainResult.hasCredential) {
+          return { shouldPause: false, checkedAccountCount: 0, failedAccountCount: 0 };
+        }
+        if (!mainResult.freshQuota || !mainResult.info.plan) {
+          return { shouldPause: false, checkedAccountCount: 0, failedAccountCount: 1 };
+        }
+        return {
+          shouldPause: !isCodexAccountPaused(config, MAIN_CODEX_ACCOUNT_ID)
+            && isCodexQuotaExhausted(mainResult.freshQuota, mainResult.info.plan),
+          checkedAccountCount: 1,
+          failedAccountCount: 0,
+        };
       };
-    }),
-  ]);
+      const [mainResult, poolResults] = await Promise.all([
+        mainWork(),
+        mapWithConcurrency(poolAccounts, POOL_QUOTA_REFRESH_CONCURRENCY, async account => {
+          if (!getCodexAccountCredential(account.id)) return { account, quotaResult: null };
+          try {
+            return {
+              account,
+              quotaResult: await fetchPoolAccountQuota(account.id, true, account.plan),
+            };
+          } catch {
+            // Settle each pool probe independently so a busy/failing account cannot
+            // abandon an already-confirmed main decision before atomic publication.
+            return { account, quotaResult: null };
+          }
+        }),
+      ]);
 
-  let checkedAccountCount = 0;
-  let failedAccountCount = 0;
-  const exhaustedIds: string[] = [];
-  if (mainAttempted) {
-    if (mainResult.freshQuota && mainResult.info.plan) {
-      checkedAccountCount += 1;
-      if (
-        !isCodexAccountPaused(config, MAIN_CODEX_ACCOUNT_ID)
-        && isCodexQuotaExhausted(mainResult.freshQuota, mainResult.info.plan)
-      ) {
-        exhaustedIds.push(MAIN_CODEX_ACCOUNT_ID);
+      let checkedAccountCount = mainResult.checkedAccountCount;
+      let failedAccountCount = mainResult.failedAccountCount;
+      const exhaustedIds: string[] = mainResult.shouldPause ? [MAIN_CODEX_ACCOUNT_ID] : [];
+      for (const { account, quotaResult } of poolResults) {
+        const currentAccount = (config.codexAccounts ?? []).find(candidate => candidate.id === account.id && !candidate.isMain);
+        if (!currentAccount) continue;
+        const generation = quotaResult?.freshCredentialGeneration;
+        const plan = quotaResult?.freshPlan ?? currentAccount.plan;
+        if (!quotaResult?.freshQuota || generation === undefined || !isCodexAccountGenerationLive(account.id, generation) || !plan) {
+          failedAccountCount += 1;
+          continue;
+        }
+        checkedAccountCount += 1;
+        if (!isCodexAccountPaused(config, account.id) && isCodexQuotaExhausted(quotaResult.freshQuota, plan)) {
+          exhaustedIds.push(account.id);
+        }
       }
-    } else {
-      failedAccountCount += 1;
-    }
-  }
-  for (const { account, quotaResult } of poolResults) {
-    const currentAccount = (config.codexAccounts ?? []).find(candidate => candidate.id === account.id && !candidate.isMain);
-    if (!currentAccount) continue;
-    const generation = quotaResult?.freshCredentialGeneration;
-    const plan = quotaResult?.freshPlan ?? currentAccount.plan;
-    if (!quotaResult?.freshQuota || generation === undefined || !isCodexAccountGenerationLive(account.id, generation) || !plan) {
-      failedAccountCount += 1;
-      continue;
-    }
-    checkedAccountCount += 1;
-    if (!isCodexAccountPaused(config, account.id) && isCodexQuotaExhausted(quotaResult.freshQuota, plan)) {
-      exhaustedIds.push(account.id);
-    }
-  }
 
-  for (const id of exhaustedIds) {
-    setCodexAccountPaused(config, id, true);
-    clearThreadAccountMapForAccount(id);
+      for (const id of exhaustedIds) {
+        setCodexAccountPaused(config, id, true);
+        clearThreadAccountMapForAccount(id);
+      }
+      for (const id of exhaustedIds) selectFallbackAfterPause(config, id);
+      const result = {
+        pausedAccountIds: exhaustedIds,
+        checkedAccountCount,
+        failedAccountCount,
+      };
+      // Persist while both the in-process admission and cross-process shared
+      // claim still own the physical-main identity used for the decision.
+      if (result.pausedAccountIds.length > 0) persistPausedAccounts();
+      return result;
+    };
+
+    if (!nativeMainLease) return await performPause();
+    try {
+      return await withNativeMainCredentialClaim(() => performPause(nativeMainLease));
+    } catch (error) {
+      if (isNativeMainClaimUnavailable(error)) return await performPause();
+      throw error;
+    }
+  } finally {
+    nativeMainLease?.release();
   }
-  for (const id of exhaustedIds) selectFallbackAfterPause(config, id);
-  return { pausedAccountIds: exhaustedIds, checkedAccountCount, failedAccountCount };
 }
 
 export async function handleCodexAuthAPI(
@@ -1020,7 +1248,10 @@ export async function handleCodexAuthAPI(
 
   if (url.pathname === "/api/codex-auth/accounts/pause-exhausted" && req.method === "PUT") {
     const runtimeConfig = getRuntimeConfig(config);
-    const result = await pauseExhaustedCodexAccounts(runtimeConfig);
+    const result = await pauseExhaustedCodexAccounts(
+      runtimeConfig,
+      () => saveRuntimeConfig(config, runtimeConfig),
+    );
     const { pausedAccountIds, checkedAccountCount, failedAccountCount } = result;
     if (checkedAccountCount === 0 && failedAccountCount > 0) {
       return jsonResponse({
@@ -1030,7 +1261,6 @@ export async function handleCodexAuthAPI(
         failedAccountCount,
       }, 502);
     }
-    if (pausedAccountIds.length > 0) saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({
       ok: true,
       pausedAccountIds,
@@ -1169,24 +1399,24 @@ export async function handleCodexAuthAPI(
     if (!accountId) return jsonResponse({ error: "accountId required" }, 400);
 
     try {
-      const auth = await resolveResetCreditAuth(getRuntimeConfig(config), accountId);
-      if (!auth.ok) return auth.response;
-
-      const resp = await fetch(
-        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
-        {
-          headers: {
-            Authorization: `Bearer ${auth.accessToken}`,
-            "ChatGPT-Account-Id": auth.chatgptAccountId,
+      const result = await withResetCreditAuth(getRuntimeConfig(config), accountId, async auth => {
+        const resp = await fetch(
+          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+          {
+            headers: {
+              Authorization: `Bearer ${auth.accessToken}`,
+              "ChatGPT-Account-Id": auth.chatgptAccountId,
+            },
+            signal: AbortSignal.timeout(8000),
           },
-          signal: AbortSignal.timeout(8000),
-        },
-      );
-      if (!resp.ok) {
-        await resp.body?.cancel().catch(() => {});
-        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
-      }
-      return jsonResponse(safeResetCreditsDto(await resp.json()));
+        );
+        if (!resp.ok) {
+          await resp.body?.cancel().catch(() => {});
+          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+        }
+        return jsonResponse(safeResetCreditsDto(await resp.json()));
+      });
+      return result.ok ? result.value : result.response;
     } catch (e) {
       return jsonResponse({ error: e instanceof Error ? e.message : "Reset credit lookup failed" }, 500);
     }
@@ -1195,49 +1425,55 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/reset-credits/consume" && req.method === "POST") {
     const body = (await req.json().catch(() => ({}))) as { accountId?: string };
     if (!body.accountId) return jsonResponse({ error: "accountId required" }, 400);
+    const accountId = body.accountId;
 
     try {
-      const auth = await resolveResetCreditAuth(getRuntimeConfig(config), body.accountId);
-      if (!auth.ok) return auth.response;
-
-      const idempotencyKey = crypto.randomUUID();
-      const resp = await fetch(
-        "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${auth.accessToken}`,
-            "ChatGPT-Account-Id": auth.chatgptAccountId,
-            "Content-Type": "application/json",
+      const operation = await withResetCreditAuth(getRuntimeConfig(config), accountId, async auth => {
+        const idempotencyKey = crypto.randomUUID();
+        const resp = await fetch(
+          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${auth.accessToken}`,
+              "ChatGPT-Account-Id": auth.chatgptAccountId,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ redeem_request_id: idempotencyKey }),
+            signal: AbortSignal.timeout(10_000),
           },
-          body: JSON.stringify({ redeem_request_id: idempotencyKey }),
-          signal: AbortSignal.timeout(10_000),
-        },
-      );
-      if (!resp.ok) {
-        await resp.body?.cancel().catch(() => {});
-        return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
-      }
-      const result = safeResetCreditConsumeDto(await resp.json());
-      // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
-      // and return remaining only when that refresh freshly parsed available_count.
-      // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
-      if (result.code === "reset" || result.code === "already_redeemed") {
-        let freshResetCredits: number | undefined;
-        if (auth.isMain) {
-          ({ freshResetCredits } = await fetchMainAccountInfoAttempt(true, 1));
-        } else {
-          const account = configuredPoolAccount(getRuntimeConfig(config), body.accountId);
-          ({ freshResetCredits } = await fetchPoolAccountQuota(body.accountId, true, account?.plan));
+        );
+        if (!resp.ok) {
+          await resp.body?.cancel().catch(() => {});
+          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
         }
-        return jsonResponse({
-          code: result.code,
-          ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
-            ? { remaining: freshResetCredits }
-            : {}),
-        });
-      }
-      return jsonResponse(result);
+        const result = safeResetCreditConsumeDto(await resp.json());
+        // After a successful redeem (or an idempotent already_redeemed), refresh WHAM usage
+        // and return remaining only when that refresh freshly parsed available_count.
+        // Do not fall back to a preserved cached resetCredits (failed/omitted refresh).
+        if (result.code === "reset" || result.code === "already_redeemed") {
+          let freshResetCredits: number | undefined;
+          if (auth.isMain) {
+            ({ freshResetCredits } = await fetchMainAccountInfoAttempt(
+              true,
+              1,
+              auth.nativeMainLease,
+              auth.nativeMainSharedClaimHeld === true,
+            ));
+          } else {
+            const account = configuredPoolAccount(getRuntimeConfig(config), accountId);
+            ({ freshResetCredits } = await fetchPoolAccountQuota(accountId, true, account?.plan));
+          }
+          return jsonResponse({
+            code: result.code,
+            ...(typeof freshResetCredits === "number" && Number.isFinite(freshResetCredits)
+              ? { remaining: freshResetCredits }
+              : {}),
+          });
+        }
+        return jsonResponse(result);
+      });
+      return operation.ok ? operation.value : operation.response;
     } catch (e) {
       if (e instanceof PoolQuotaProbeBusyError) {
         const response = jsonResponse({ error: "server_busy", code: "server_busy" }, 503);

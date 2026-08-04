@@ -198,6 +198,32 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 查看某个账号的 Codex 重置额度。消耗额度会造成破坏性影响，因此同时需要 `--consume`
 和 `--yes`。
 
+### `ocx account main <subcommand>`
+
+管理命名的原生 Codex 主登录配置文件，而不更改 OpenCodex 账号池路由。
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+每个变更命令都会显示运行中代理返回的规范化有效 `CODEX_HOME`。该路径可能与调用进程的
+`CODEX_HOME` 不同；支持 JSON 的命令会在 `effectiveCodexHome` 中返回相同的值。
+
+版本 1 支持基于文件的 Codex 身份验证，使用 AES-256-GCM 加密保存的配置文件，并将加密密钥保存在操作系统凭据存储中。`add` 会先在受限暂存环境中启动官方 Codex 登录，再导入生成的凭据。切换配置文件前请关闭 Codex。切换成功后会保留本地任务和历史记录，但继续使用前必须重启 Codex。使用 `doctor` 检查配置文件状态，使用 `recover` 完成或回滚中断的切换。`switch` 可接受配置文件 ID 或标签。
+
+v1 恢复矩阵覆盖的是事务文件通过重命名发布后 OpenCodex 进程退出的情况。它不声明能够在操作系统或内核崩溃、突然断电后持久保存：`atomicWriteFileAsync()` 不会对文件或父目录执行 `fsync`。
+
+加密保管库、切换日志、恢复标记和日志隔离文件位于规范的 `<real CODEX_HOME>/.opencodex-native-main-profiles` 目录中。因此，共用该 Codex 主目录的所有 OpenCodex 实例都会看到同一个所有者和同一份恢复状态。明文登录暂存数据仍分别隔离在各自的 `<OPENCODEX_HOME>/native-main-profile-staging` 目录下。
+
+在允许 native-main 流量或日志恢复之前，生命周期所有者会取得凭据的独占占用权，并且只删除名称与 `auth.json.ocx.<pid>.<sequence>.tmp` 完全匹配的崩溃残留文件。每个候选文件在整个过程中都必须位于未发生变化的规范 `CODEX_HOME` 下，并保持为硬链接计数为 1 的普通文件；系统会先将其截断，再刷新其内容，最后取消链接（unlink）。若发生链接或重解析点替换、文件标识发生变化或存在其他歧义，native-main 流量将继续保持关闭；名称仅近似匹配的文件绝不会被自动删除。这项防护针对正常协作的 OpenCodex 发生崩溃的情况，并不能抵御已经以同一操作系统用户身份运行的恶意进程。该用户以及承载 `CODEX_HOME` 的文件系统仍属于信任范围；截断文件也不保证从写时复制存储、快照或 SSD 残留数据中实现物理擦除。
+
+预览版使用 `<OPENCODEX_HOME>/native-main-profiles`。该布局绝不会被静默导入。如果 `doctor` 报告旧版配置文件状态，请停止所有共用同一 `CODEX_HOME` 的 OpenCodex 代理。然后，请先备份，并在保留仅所有者可访问权限的情况下，将相应的 `*.vault.json`、`*.journal.json`、恢复标记以及任何被引用的日志隔离文件一起移动到规范目录中；或者删除旧的预览版文件集，再次运行 `ocx account main register`。只要仍有任何共用该 `CODEX_HOME` 的代理正在运行，就不要在多个旧根目录之间选择其一，也不要同时使用两种布局。在 Windows 上，按以前不区分大小写的主目录标识索引的预览状态必须重置，而不能直接移动，因为其加密 AAD 和操作系统密钥环标识被有意设计为不再复用。
+
 ## 模型
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`
