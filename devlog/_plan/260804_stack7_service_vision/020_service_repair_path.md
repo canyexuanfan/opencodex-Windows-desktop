@@ -115,11 +115,33 @@ distinguishable from any other failure, so message-matching is unimplementable
 and a blanket "install after any repair failure" would reintroduce the UAC path
 and could re-register a service the user had just deliberately uninstalled.
 
-Instead: after a failed repair, re-run a **structured diagnostic**
-(`diagnoseService()`) and install only when it reports the service genuinely
-absent while the managed-service marker still expresses intent. State beats
-error-message parsing. A straight cherry-pick of #970 would import the
-regression; a naive fix for it would import a worse one.
+Instead: after a failed repair, consult **structured state** and install only
+when it reports the service genuinely absent while the managed-service marker
+still expresses intent. State beats error-message parsing.
+
+The mechanism differs by caller, and `bin/ocx.mjs` is the constraint.
+**It is plain Node ESM** (`#!/usr/bin/env node`) and imports only `.mjs`
+siblings — `bun-binary-validator.mjs`, `npm-invocation.mjs`,
+`tray-update-plan.mjs` (`bin/ocx.mjs:11-19`). It cannot import
+`diagnoseService()` from `src/service.ts`, so naming that function here would
+have been as unimplementable as the message-parsing it replaced.
+
+It does not need to. `bin/ocx.mjs` **already** spawns `ocx status --json` and
+parses it in exactly this code path (`bin/ocx.mjs:258`), and that payload
+carries `startup.serviceInstalled` and `startup.serviceStale`
+(`src/codex/autostart-health.ts:123-127`, surfaced through `src/cli/status.ts:180`).
+The existing probe reads only `proxy.running`/`startup.serviceViable`; reading
+`serviceInstalled` from the same response is a field access, not a new
+mechanism.
+
+So: repair fails → the status probe that already runs reports
+`serviceInstalled === false` → install once → otherwise fall through to the
+direct start without re-registering. Callers inside the TypeScript runtime
+(`src/update/index.ts`, `src/update/job.ts`) can call `diagnoseService()`
+directly.
+
+A straight cherry-pick of #970 would import the stale-marker regression; a naive
+fix for it would import a worse one.
 
 ## Planned diff
 
@@ -127,8 +149,9 @@ regression; a naive fix for it would import a worse one.
    keep the export name for out-of-module callers. `serviceRepairCommand()`
    (`:500-511`) returns the backend-neutral `ocx service repair` instead of
    synthesizing `install --native`.
-2. `bin/ocx.mjs` — refresh via repair; on failure consult `diagnoseService()` and
-   install only for a genuinely absent service, before the direct-start fallback.
+2. `bin/ocx.mjs` — refresh via repair; on failure read `startup.serviceInstalled`
+   from the `status --json` probe it already performs (`:258`) and install only
+   for a genuinely absent service, before the direct-start fallback.
 3. `src/update/index.ts` — consume the repair argv; existing non-viable/failed
    fallbacks unchanged.
 4. `src/update/job.ts` — consume the repair argv **and** narrow the

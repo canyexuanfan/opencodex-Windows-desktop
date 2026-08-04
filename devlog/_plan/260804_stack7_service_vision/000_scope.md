@@ -40,13 +40,21 @@ The overnight unit carried six contributor fixes verbatim with `git cherry-pick 
 because the code was right and only the base was wrong. These two are different:
 each has a design defect that a straight cherry-pick would import.
 
-**#964** classifies NVIDIA NIM models with a hand-written 60-entry allowlist of
-text-only model ids. That is the same shape that failed three separate times in
-the #955 line of work — a hand-maintained allowlist over an open string domain,
-where every id the author did not think of silently takes the wrong branch. Here
-the failure is asymmetric and user-visible: a text-only NIM model missing from
-the list keeps exactly the bug #956 reports. NIM ships ~101 discoverable model
-rows and adds more continuously, so the list is stale the day it merges.
+**#964** classifies NVIDIA NIM models with a hand-written 60-entry allowlist, and
+five entries are backwards: `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
+`moonshotai/kimi-k2.6`, `stepfun-ai/step-3.7-flash`, and
+`mistralai/mistral-medium-3.5-128b` are natively image-capable per NVIDIA's own
+documentation. Listing them makes the proxy substitute another model's text
+description for an image the model could have read — silent quality loss, no
+error. Issue #956's own body carries two of the same errors, so reporter and
+author shared the premise.
+
+Two attempts to replace the list *shape* were then falsified at the audit gate
+(`001`, `002`), and the root cause is recorded in `002`: NIM is the first
+provider here asked to classify over an unbounded model set, and it publishes no
+modality metadata, so an unknown id carries no signal at all. The landed design
+fixes the known ids and states the open-world gap as a limitation rather than
+claiming a mechanism that does not work.
 
 **#970** switches the post-update service refresh from `install` to `repair`.
 `repairService()` and `ocx service repair` **already exist** in this tree

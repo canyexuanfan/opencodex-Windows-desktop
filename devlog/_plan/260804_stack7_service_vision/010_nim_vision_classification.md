@@ -66,13 +66,14 @@ Three candidate mechanisms, all rejected on evidence:
    while per-page verification finds 15 image-capable chat models. The labels are
    incomplete.
 
-## The design: change the predicate, not the list
+## The design: enumerate what is known, bound what is not
 
-**A first version of this document proposed maintaining the 15 vision-capable ids
-and deriving text-only as their complement. The A-gate audit falsified it and I
-reproduced the failure** (`001_audit_response.md`, B1). A complement taken over a
-static `NVIDIA_NIM_CHAT_MODELS` still leaves an unclassified id in *neither*
-list:
+**Two earlier designs in this document were falsified at the audit gate.** The
+history matters because it is the argument for the current one
+(`001_audit_response.md`, `002_audit_response_r2.md`).
+
+**Draft 1 — complement over a static chat list.** Falsified: an id in neither
+list is not in `noVisionModels` either, so nothing changes for it.
 
 ```console
 $ bun run .tmp/probe_complement.ts     # the proposed shape, modelled exactly
@@ -81,51 +82,63 @@ moonshotai/kimi-k2.6                     sidecarWouldRun=false
 brandnew/model-nobody-classified         sidecarWouldRun=false   <-- #956 persists
 ```
 
-I had inverted which list is maintained while keeping the closed world. Any
-design expressed purely as *list contents* inherits closed-world semantics,
-because the classification is membership-in-a-list. Escaping it requires changing
-the **predicate**.
+**Draft 2 — provider-level default-on with the vision list as its exception.**
+Falsified on a boundary this document had explicitly flagged as needing
+confirmation, and which I then did not confirm:
 
-### Two fields, one default
+```console
+$ bun run .tmp/probe_nonchat.ts
+nvidia/nv-embedqa-e5-v5                        filteredOut=false
+nvidia/llama-3.1-nemotron-safety-guard-8b-v3   filteredOut=false
+nvidia/nemotron-ocr-v2                         filteredOut=false
+nvidia/llama-nemotron-rerank-1b-v2             filteredOut=false
+```
 
-1. **`NVIDIA_NIM_VISION_MODELS`** — the 15 verified natively-image-capable ids.
-   These are the exception, and they carry per-model NVIDIA documentation.
-2. **A provider-level default** — for the `nvidia` entry, a model that is *not*
-   in the vision list is treated as needing the sidecar, without enumerating it.
+NVIDIA has no discovery filter and `shouldExposeRoutedModel` rejects only
+media-generation *names* (`src/codex/catalog/parsing.ts:160-164`). Embeddings,
+rerankers, guards and OCR endpoints all reach `planVisionSidecar`, so default-on
+would advertise image input for every one of them.
 
-Concretely this means the `nvidia` entry declares its text-only membership as
-"everything except the vision list" rather than as a snapshot of ids. The
-registry already carries per-provider capability flags
-(`ProviderRegistryEntry`, `src/providers/registry.ts:190-230`); this adds one
-more whose semantics are *default-on with an exception list*, and `router.ts`
-merges it beside `noVisionModels` (`src/router.ts:243`) so a user's explicit
-config still wins.
+### The constraint, stated honestly
 
-Now the open-domain case lands correctly:
+NVIDIA is the first provider in this registry asked to classify over an
+**unbounded** model set. Twelve of the thirteen entries that declare
+`noVisionModels` pair it with a static `models` list; NIM has none, uses live
+discovery, and publishes neither modality nor model-kind metadata.
 
-| Design | Unclassified new NIM model | Failure when wrong |
+So an unknown NIM id carries no signal distinguishing a text-only chat model from
+an embedding endpoint. **No predicate over an id string can recover information
+the provider does not publish.** Draft 2 failed not because the rule was written
+badly but because it claimed knowledge that does not exist.
+
+### What this design does instead
+
+1. **Enumerate text-only ids**, as #964 did — for a *known* id the
+   classification is real, checkable, and fixes the reported bug. Correct the
+   five false positives.
+2. **Pin the 15 verified vision-capable ids** with explicit
+   `modelInputModalities: ["text","image"]`, so they become usable instead of
+   merely unlisted.
+3. **Leave unknown ids alone.** They keep today's behavior in both directions.
+4. **Surface staleness** with a dated snapshot test, so the list's age is visible
+   rather than silently rotting.
+
+| Case | Behavior | Honest? |
 |---|---|---|
-| #964: enumerate text-only | no sidecar | **#956 persists** — images blocked or 400 |
-| complement over a static set | no sidecar | **#956 persists** (falsified above) |
-| default-on with an exception list | sidecar runs | one extra description hop; image still works |
+| known text-only id | sidecar runs, image advertised | fixed |
+| known vision id | native path, image advertised | fixed (new) |
+| unknown id | unchanged from today | **stated limitation** |
 
-Only the third actually closes the issue for models NVIDIA has not shipped yet.
+This is a smaller claim than either falsified draft, and it is the one the
+evidence supports. #956 stays partially open for models NVIDIA ships after the
+snapshot — recorded as a known limitation rather than hidden behind a mechanism
+that does not work.
 
-### Why the exception list is safe to hand-maintain
+### Point 4 is a maintenance signal, not a correctness guarantee
 
-The objection that killed the previous design does not apply here. A stale
-*exception* list degrades gracefully: a newly-released vision model missing from
-it gets an unnecessary description hop, which is slower and costs a call but
-still answers. A stale *enumeration* silently reproduces the reported bug. The
-asymmetry is the entire argument, and it only holds when the default is on.
-
-### Scope boundary
-
-Default-on applies to **chat** ids only. Embeddings, rerankers, guard/safety
-classifiers, OCR and document extraction, image/video generation, speech, and
-simulation endpoints never reach `planVisionSidecar` in the first place — they
-are not routed as chat models — but the implementation must confirm that rather
-than assume it, since a default-on rule has a wider blast radius than a list.
+The snapshot test tells a maintainer the classification is N days old. It cannot
+tell them it is *wrong*. It must not be described in the PR as if it closed the
+open-world gap.
 
 ### Verified vision models also need explicit modalities (audit B2)
 
@@ -182,40 +195,43 @@ Flagged, not yet committed to code:
 
 ## Planned diff
 
-1. `src/providers/registry.ts`
-   - add `NVIDIA_NIM_VISION_MODELS` (the verified set above) with a comment
-     recording the verification date, the per-model source, and the standing
-     instruction to append to THIS list, never to a text-only one;
-   - add `modelInputModalities` entries pinning `["text","image"]` for each of
-     those ids (audit B2);
-   - declare the provider-level default-on rule on the `nvidia` entry, with the
-     vision list as its exception set, and extend the entry comment to explain
-     why NIM specifically gets a default rather than an enumeration.
-2. The predicate change touches the classification path, so the surfaces that
-   read `noVisionModels` must each be checked rather than assumed:
-   `planVisionSidecar` (`src/vision/index.ts:235`), the fail-closed strip in
-   `src/server/responses/core.ts:1581`, the catalog hint
-   (`src/codex/catalog/provider-fetch.ts:176`), the registry→config merge
-   (`src/router.ts:243`), the seed fill (`src/providers/derive.ts:257`), and
-   `src/cli/models.ts:44`. A user's explicit config `noVisionModels` must keep
-   winning over the default.
-3. No behavioral change is intended for any other provider. The default is
-   scoped to the `nvidia` entry; every other entry keeps enumerating.
+Confined to `src/providers/registry.ts`. **No predicate change**, so no consumer
+edits — the reason this draft is implementable where draft 2 was not.
+
+1. `NVIDIA_NIM_VISION_MODELS` — the 15 verified ids, with a comment recording the
+   verification date, per-model source, and the standing instruction that a new
+   NIM model must be classified deliberately, never assumed.
+2. `NVIDIA_NIM_NO_VISION_MODELS` — the text-only enumeration, seeded from #964's
+   list with the five false positives removed and the existing
+   `NVIDIA_NIM_KIMI_MODELS` reconciled (kimi-k2.6 moves to the vision list).
+3. `modelInputModalities` pinning `["text","image"]` for each vision id (B2),
+   following `ZHIPU_BIGMODEL_INPUT_MODALITIES` (`src/providers/registry.ts:327-331`).
+4. Set `noVisionModels` on the `nvidia` entry and extend the entry comment with
+   the open-world limitation.
+
+Existing consumers already behave correctly once the field is populated — which
+is why #956 has a working config-only workaround. Two are worth noting even
+though they need no change: `src/web-search/index.ts:165` and
+`src/cli/models.ts:44`, the latter using raw `.includes()` rather than
+`modelInList`. Both were missed in earlier drafts and would have needed edits
+under a predicate change.
 
 ## Tests and the red-green plan
 
 Extend `tests/nvidia-nim-hardening.test.ts` (the file #964 also chose):
 
-1. **An unclassified id gets the sidecar.** The regression guard for audit B1:
-   a NIM model id that appears in no list at all must still produce a vision
-   plan when the request carries an image. Ablate by reverting to an enumerated
-   `noVisionModels` and watch it go red. This is the test the first design could
-   not have passed.
-2. **Vision-capable ids do NOT get the sidecar.** Seed with the five ids #964 got
+1. **Vision-capable ids do NOT get the sidecar.** Seed with the five ids #964 got
    wrong — `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
    `moonshotai/kimi-k2.6`, `stepfun-ai/step-3.7-flash`,
    `mistralai/mistral-medium-3.5-128b` — plus the two llama-3.2 vision ids.
    `planVisionSidecar` returns `undefined` for each even with an image attached.
+   This is the direct regression guard for #964's defect. Ablate by adding one
+   back to `noVisionModels` and watch it go red.
+2. **An unknown id is unchanged.** The honest boundary: an id in neither list
+   produces no vision plan, exactly as today. Asserted so the limitation is
+   pinned in the test suite rather than only in prose — if a later change makes
+   unknown ids default in either direction, this test forces that decision to be
+   deliberate.
 3. **The catalog advertises image input for both classes, for different
    reasons** (audit B2): a text-only id gets `image` via the `noVisionModels`
    hint, and a verified vision id gets it via `modelInputModalities`. Assert the
@@ -229,8 +245,11 @@ Extend `tests/nvidia-nim-hardening.test.ts` (the file #964 also chose):
    its own `noVisionModels` is not overridden by the provider default.
 6. **A bare persisted nvidia config gets the fix** through `routeModel` — the
    #956 reporter's exact config shape, which today needs a manual workaround.
-7. **No other provider changes classification.** A structural assertion over
-   `PROVIDER_REGISTRY` that the default-on rule is scoped to `nvidia` only.
+7. **The two lists cannot overlap.** A structural assertion that
+   `NVIDIA_NIM_VISION_MODELS ∩ NVIDIA_NIM_NO_VISION_MODELS = ∅`, so a future
+   edit cannot put an id in both. Ablate by planting a duplicate.
+8. **Snapshot staleness is visible.** The dated-snapshot guard from design point
+   4. It reports age; it does not claim correctness, and its test name says so.
 
 Every guard gets driven red by ablation before it counts, per the unit's
 verification discipline.
