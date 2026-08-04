@@ -48,16 +48,13 @@ large infrastructure PRs) are out of scope.
 - Worktree: `/Users/jun/.codex/worktrees/250c/opencodex`, detached at
   `9289891a5` (other unit's commits, contained in local `dev`; stack branches
   fork from `origin/dev`, not from this HEAD).
-- lidge Linux baseline (`bun run test` on dev HEAD, 2026-08-05):
-  8101 pass / 10 skip / 12 fail — 5 unique failing tests, duplicated in the
-  summary output:
-  - `blocked worker completion preserves concurrent policy PUT edits`
-  - `storage_mutation_busy clears inflight so a later policy run can start`
-  - `GET /api/keys > serves a discriminating prefix and never the secret`
-  - `PATCH /api/keys > renames a key without echoing key material`
-  - `apiKeys config compatibility > a salvaged credential stays manageable: it gets a real id`
-  All campaign deltas are measured against this baseline (pre-existing,
-  environment-suspect storage/keyring suites).
+- lidge Linux baseline (`bun run test` on dev HEAD, 2026-08-05): the first
+  cold-cache run showed 12 fails with a phantom
+  `ROLLUP_COST_SEMANTICS_VERSION` import error (an identifier that exists
+  nowhere in the repo) plus storage/keyring suites — a first-run module-cache
+  race, not repo state. Warm-cache rerun: **8212 pass / 10 skip / 0 fail,
+  EXIT=0** (`/tmp/ocx-baseline-test2.log` on lidge). Campaign deltas are
+  measured against the green warm baseline.
 
 ## Work-phase map
 
