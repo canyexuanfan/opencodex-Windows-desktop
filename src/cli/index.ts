@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { currentExternalCodexModelProvider, restoreNativeCodex, restoreNativeCodexAsync, shouldInjectApiAuthHeader } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
-import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
+import { resolveCodexHistoryJobTarget, runCodexHistoryJob } from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
 import {
   codexAutoStartEnabled,
@@ -708,13 +708,22 @@ async function handleStatus() {
   }
 }
 
-function handleRecoverHistory() {
+async function handleRecoverHistory() {
   if (args[1] !== "--legacy-openai") {
     console.error("Usage: ocx recover-history --legacy-openai");
     console.error("Only use this if an older syncResumeHistory build already remapped OpenAI Codex App history to opencodex before backup support existed.");
     process.exit(1);
   }
-  const r = restoreLegacyOpenaiHistory();
+  // Manifest-independent legacy ejection, serialized like every other history
+  // mutation. It is a separate operation from generic restore precisely because
+  // it must not read, consume or replace the backup manifest.
+  const outcome = await runCodexHistoryJob({
+    ...resolveCodexHistoryJobTarget(),
+    operation: "recover-legacy-openai",
+  });
+  const r = outcome.kind === "converged"
+    ? { rows: outcome.rows, files: outcome.files, failed: undefined }
+    : { rows: 0, files: 0, failed: true as const };
   if (r.failed) {
     console.error(
       "⚠️  Recovery SKIPPED: the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command.",
@@ -790,7 +799,7 @@ switch (command) {
     break;
   }
   case "recover-history":
-    handleRecoverHistory();
+    await handleRecoverHistory();
     break;
   case "uninstall":
   case "remove":
