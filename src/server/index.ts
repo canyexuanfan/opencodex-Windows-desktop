@@ -570,8 +570,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
-        const nativeSlugs = nativeOpenAiSlugs();
+        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
+        const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
+        const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
+        const disabledNatives = disabledNativeSlugs(config);
+        const disabledModels = new Set(config.disabledModels ?? []);
+        const accountSelectors = includeAccountBoundNativeOpenAi
+          ? visibleCodexAccountSelectors(config)
+          : [];
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -615,8 +622,20 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           // Disabled natives stay in the catalog shape with visibility "hide" (mirrors the
           // on-disk sync; codex-rs keeps them out of the picker itself).
           const maMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
-          const entries = buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config));
-          return jsonResponse({ models: applyNativeVisibility(entries, disabledNativeSlugs(config)) }, 200, req, config);
+          // Account rows use the same hidden-inclusive supported set as on-disk sync. This lets a
+          // newly re-enabled native reappear under each selector before the next sync, while the
+          // no-selector path keeps nativeOpenAiSlugs()'s existing visibility-sensitive behavior.
+          const catalogNativeSlugs = accountSelectors.length > 0
+            ? NATIVE_OPENAI_MODELS
+            : nativeSlugs;
+          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors);
+          return jsonResponse({
+            models: applyNativeVisibility(
+              entries,
+              disabledModels,
+              accountSelectors.length > 0,
+            ),
+          }, 200, req, config);
         }
         // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
         // (pure availability list — disabled natives are omitted entirely).
@@ -644,14 +663,34 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
             reasoning_efforts: efforts.map(effort => grokEffortOption(effort, effort === defaultEffort)),
           };
         };
-        const data = [
-          ...visibleNativeSlugs(config).map(id => ({
+        const nativeModelRow = (id: string, metadataId = id) => ({
             id,
             object: "model",
             created: 0,
             owned_by: "openai",
-            ...grokEffortFields(nativeReasoningEfforts(id), nativeDefaultReasoningEffort(id)),
-          })),
+            ...grokEffortFields(
+              nativeReasoningEfforts(metadataId),
+              nativeDefaultReasoningEffort(metadataId),
+            ),
+          });
+        // Selector-active discovery follows the same complete supported set as the Codex catalog
+        // for both bare and qualified rows. Without selectors, the live catalog continues to own
+        // bare availability.
+        const selectorNativeSlugs = accountSelectors.length > 0
+          ? NATIVE_OPENAI_MODELS.filter(slug => !disabledNatives.has(slug))
+          : [];
+        const visibleNatives = includeNativeOpenAi
+          ? accountSelectors.length > 0 ? selectorNativeSlugs : visibleNativeSlugs(config)
+          : [];
+        const visibleAccountNatives = accountSelectors.flatMap(selector =>
+          selectorNativeSlugs.flatMap(metadataId => {
+            const id = `${selector}/${metadataId}`;
+            return disabledModels.has(id) ? [] : [{ id, metadataId }];
+          })
+        );
+        const data = [
+          ...visibleNatives.map(id => nativeModelRow(id)),
+          ...visibleAccountNatives.map(({ id, metadataId }) => nativeModelRow(id, metadataId)),
           ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({
             id: m.alias ?? `${m.provider}/${m.id}`,
             object: "model",

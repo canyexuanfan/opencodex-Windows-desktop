@@ -552,8 +552,10 @@ export interface OcxConfig {
   /** Claude Code inbound + launcher settings. */
   claudeCode?: OcxClaudeCodeConfig;
   /**
-   * Up to 5 routed model ids ("<provider>/<model>") to feature FIRST in the injected Codex catalog.
-   * Codex's spawn_agent only advertises the first 5 routed models, so this picks which 5 appear.
+   * Up to 5 Codex-facing catalog ids to feature first. Values may be bare catalog ids,
+   * exact account-qualified "<selector>/<native-openai-model>" ids, or routed
+   * "<provider>/<model>" ids. With account selectors, one bare native choice can expand
+   * into a selector-qualified group; Codex still advertises only the first 5 visible rows.
    */
   subagentModels?: string[];
   /**
@@ -616,12 +618,17 @@ export interface OcxConfig {
    */
   streamMode?: "auto" | "legacy-tee" | "eager-relay";
   /**
-   * Custom override for the injected multi-agent guidance body (the text inside the
-   * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
-   * collab surface would have fired; firing gates are unchanged. Placeholders:
-   * `{{model}}` -> injectionModel, `{{effort}}` -> injectionEffort, `{{roster}}` ->
-   * the resolved sub-agent roster block ("" when nothing resolves), `{{fallback}}` ->
-   * the configured subagent model fallback guidance block ("" when unset).
+   * Custom override for the injected v2 multi-agent guidance body (the text inside
+   * the <multi_agent_mode> tags). After guidance is enabled and the v2 surface and
+   * catalog-state gates pass, a configured injectionModel is sufficient to render it;
+   * otherwise an eligible roster or fallback is required. Placeholders: `{{model}}` -> the
+   * effective preferred model for the request (a bare native model is account-qualified
+   * only when the request targets an explicit account selector; unresolved or ambiguous
+   * bare values become "", while unresolved explicit routed or account-qualified values
+   * remain unchanged),
+   * `{{effort}}` -> injectionEffort, `{{roster}}` -> the resolved sub-agent roster
+   * block ("" when nothing resolves), `{{fallback}}` -> the configured subagent
+   * model fallback guidance block ("" when unset).
    */
   injectionPrompt?: string;
   /**
@@ -644,10 +651,10 @@ export interface OcxConfig {
    */
   subagentEffortCap?: string;
   /**
-   * Models hidden from Codex. Routed ids are namespaced ("<provider>/<model>") and are excluded
-   * from the catalog + /v1/models entirely. BARE ids (no "/") are native GPT passthrough slugs:
-   * their catalog entries flip to visibility "hide" (entry preserved, picker-hidden) and they
-   * are omitted from the bare /v1/models list.
+   * Models hidden from Codex discovery without blocking direct proxy calls. Routed provider ids
+   * are excluded from the catalog + /v1/models entirely. Account-qualified native ids hide only
+   * their generated selector row and are omitted from raw /v1/models. BARE native GPT ids hide
+   * the bare row plus every generated selector row and omit that model family from raw discovery.
    */
   disabledModels?: string[];
   /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 목록. */

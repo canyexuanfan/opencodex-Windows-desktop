@@ -31,9 +31,9 @@ import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
-import { filterSupportedNativeSlugs } from "./parsing";
 import type { RawEntry } from "./parsing";
 import { readCurrentCatalogOrCache, unique } from "./bundled";
+import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
 
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
@@ -121,6 +121,28 @@ export function visibleNativeSlugs(config: Pick<OcxConfig, "disabledModels">): s
   return nativeOpenAiSlugs().filter(slug => !disabled.has(slug));
 }
 
+/** Whether an enabled canonical OpenAI provider can serve exact account-qualified routes. */
+export function shouldIncludeAccountBoundNativeOpenAi(
+  config: Pick<OcxConfig, "providers">,
+): boolean {
+  const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
+  if (!provider || provider.disabled === true) return false;
+  // Registry routing defaults an omitted authMode on the built-in OpenAI row to forward.
+  const canonical = provider.authMode === undefined
+    ? { ...provider, authMode: "forward" as const }
+    : provider;
+  return isCanonicalOpenAiForwardProvider(canonical);
+}
+
+/** Whether native ChatGPT/Codex rows belong in this provider configuration. */
+export function shouldIncludeNativeOpenAi(config: Pick<OcxConfig, "providers">): boolean {
+  const hasEnabledProvider = Object.values(config.providers)
+    .some(provider => provider.disabled !== true);
+  // Preserve the existing no-enabled-provider catalog bootstrap, but do not use that bootstrap
+  // exception for account-qualified rows: exact-account routing requires a live OpenAI provider.
+  return !hasEnabledProvider || shouldIncludeAccountBoundNativeOpenAi(config);
+}
+
 /** Native slugs exposed to Claude Desktop show/export/apply (opt-out via claudeCode.desktopNativeModels). */
 export function desktopVisibleNativeSlugs(config: Pick<OcxConfig, "claudeCode" | "disabledModels">): string[] {
   if (config.claudeCode?.desktopNativeModels === false) return [];
@@ -135,11 +157,23 @@ export function nativeModelRows(config: Pick<OcxConfig, "disabledModels">): Arra
   });
 }
 
-export function applyNativeVisibility(entries: RawEntry[], disabledNative: Set<string>): RawEntry[] {
+export function applyNativeVisibility(
+  entries: RawEntry[],
+  disabledModels: ReadonlySet<string>,
+  hideBareNative = false,
+): RawEntry[] {
   for (const entry of entries) {
     const slug = typeof entry.slug === "string" ? entry.slug : "";
-    if (!slug || slug.includes("/") || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug)) continue;
-    entry.visibility = disabledNative.has(slug) ? "hide" : "list";
+    const accountBoundSlug = trustedAccountBoundNativeCatalogSlug(entry);
+    const nativeSlug = accountBoundSlug ?? slug;
+    if (!nativeSlug
+      || (!accountBoundSlug && slug.includes("/"))
+      || !SUPPORTED_NATIVE_OPENAI_SLUGS.has(nativeSlug)) continue;
+    const disabled = disabledModels.has(nativeSlug)
+      || (accountBoundSlug !== undefined && disabledModels.has(slug));
+    entry.visibility = disabled || (!accountBoundSlug && hideBareNative)
+      ? "hide"
+      : "list";
   }
   return entries;
 }
@@ -173,8 +207,19 @@ export function nativeOpenAiSlugs(): string[] {
 
 export function listCatalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
-  const live = filterSupportedNativeSlugs(cat?.models ?? []);
+  const models = cat?.models ?? [];
+  const live = models.flatMap(entry => {
+    const slug = typeof entry.slug === "string" ? entry.slug : "";
+    return !slug.includes("/") && SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug) ? [slug] : [];
+  });
+  const accountBound = models.flatMap(entry => {
+    const slug = trustedAccountBoundNativeCatalogSlug(entry);
+    return slug !== undefined && SUPPORTED_NATIVE_OPENAI_SLUGS.has(slug) ? [slug] : [];
+  });
+  // Deliberately ignore `visibility`: it is a rendered projection of disabledModels and account
+  // selectors, so treating it as fresh availability would shrink the supported set between syncs.
+  // visibleNativeSlugs applies the current disabledModels source of truth for public consumers.
   // Ensure documented additions (e.g. gpt-5.3-codex-spark) appear even when the bundled catalog
   // predates the slug — mirrors nativeOpenAiSlugs() which already merges them for /v1/models.
-  return unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
+  return unique([...live, ...accountBound, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
 }

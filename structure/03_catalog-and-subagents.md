@@ -9,8 +9,9 @@
   (`src/codex/data/upstream-models.json` — exact per-slug ladders: luna has no ultra);
 - clones a native template for routed `provider/model` entries;
 - forces strict Codex catalog fields required by the current parser;
-- hides `disabledModels` (routed namespaced ids are excluded; BARE native slugs flip the
-  catalog entry to `visibility: "hide"` and drop from the bare `/v1/models` list);
+- hides `disabledModels` without blocking direct routing (routed provider ids are excluded;
+  account-qualified native ids hide only that selector row; BARE native slugs hide the bare row
+  and all account-selector clones and drop that model family from raw `/v1/models`);
 - applies exact provider/model compatibility exclusions after live discovery and metadata
   augmentation, so upstream-advertised but uncallable rows never enter dashboard or Codex pickers;
 - strips native-only service tier and WebSocket metadata unless explicitly enabled;
@@ -64,6 +65,10 @@ Pool mode routes across main plus added Codex credentials. Key rules:
   which maps to the config-only sentinel `@main`; the sentinel deliberately sits outside the
   pool-account id grammar. Selectors must not collide with provider or combo ids
   (`src/codex/account-namespaces.ts`, `src/codex/account-namespace-match.ts`).
+- **Selector labels carry no account-role semantics.** When at least one selector is advertisable,
+  the Codex catalog clones each supported native row per selector and hides the bare picker rows;
+  bare ids remain routable and stay in raw `/v1/models` unless explicitly disabled. Missing stored
+  account targets are not advertised, and private account ids never become catalog labels.
 - **Rotation is sticky.** A conversation stays on its selected account while that account is
   usable; failure moves it, success does not (`src/codex/pool-rotation.ts`).
 - **The credential store is generation-guarded.** A refresh takes a lock and persists only if the
@@ -125,9 +130,16 @@ the request, and they never raise it.
 
 ## Subagents
 
-Codex `spawn_agent` advertises only the highest-priority first five catalog models. `subagentModels`
-is capped at five ids and may contain routed `provider/model` slugs or native model slugs. Startup
-seeds native GPT defaults only when the field is unset; an explicit empty list persists.
+Codex `spawn_agent` advertises only the highest-priority first five picker-visible catalog rows.
+Use at most five configured `subagentModels` ids; they may contain bare catalog ids, routed
+`provider/model` ids, or exact account-qualified `<selector>/<native-openai-model>` ids. The
+dashboard offers bare native and routed choices; exact account-qualified choices are configured
+through `ocx agent subagents set` or the opencodex configuration.
+
+When account selectors are active, one featured bare native id expands into a complete selector row
+group. Catalog priorities use the selector count as a stride so each group stays together without
+widening Codex's five-row advertisement window. Startup seeds bare native GPT defaults only when
+`subagentModels` is unset; an explicit empty list persists.
 
 Quota-aware fallback walks a configured chain when the featured model is exhausted, probing
 availability on a bounded interval (default 60 s, `src/codex/subagent-model-fallback.ts`). It rewrites
