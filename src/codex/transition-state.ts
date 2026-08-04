@@ -10,8 +10,7 @@
  * Design record: devlog/_plan/260804_codex_write_substrate/005_contract.md §1.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, lstatSync, realpathSync } from "node:fs";
 
 import { Database } from "bun:sqlite";
 
@@ -29,8 +28,8 @@ import type {
   UpdateCodexHistoryTransition,
 } from "./convergence-types";
 import { resolveCodexHomeDir } from "./home";
-import { hasInjectedCodexRouting } from "./injected-marker";
 import { readIntegrationRecord } from "./integration-record";
+import { classifyNativeRoutedResidue } from "./native-residue";
 import {
   CodexUserIdentityRefusal,
   resolveCodexCoordinatorDatabasePath,
@@ -261,16 +260,6 @@ function validateHistoryWrite(expected: CodexTransitionVersion, history: CodexHi
   }
 }
 
-function hasNativeRoutedResidue(): boolean {
-  const configPath = join(resolveCodexHomeDir(), "config.toml");
-  try {
-    return hasInjectedCodexRouting(readFileSync(configPath, "utf8"));
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return false;
-    throw error;
-  }
-}
-
 /**
  * The missing-row incident proved that absence is not authority: installing
  * `{0,null}` over a legacy JSON pair or routed native bytes loses the only
@@ -283,7 +272,7 @@ function assertInitialStateCanBeCreated(): void {
       "A missing coordinator row cannot be initialized over legacy or invalid Codex integration state.",
     );
   }
-  if (hasNativeRoutedResidue()) {
+  if (classifyNativeRoutedResidue().kind !== "clean") {
     throw new CodexCoordinatorLegacyAmbiguousError(
       "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
     );
