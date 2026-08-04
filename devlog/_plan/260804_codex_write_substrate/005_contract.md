@@ -556,7 +556,7 @@ indistinguishable from its failure condition.
 /** Bumped by every cooperating CONFIG write. Owned by src/config.ts. */
 export interface ConfigGeneration { readonly value: number; }
 
-/** Bumped by every cooperating NATIVE commit. Owned by transition-state.ts. */
+/** Bumped by every cooperating NATIVE ROUTING commit. Owned by transition-state.ts. */
 export interface NativeGeneration { readonly value: number; }
 
 export type ConfigGenerationRead =
@@ -575,6 +575,33 @@ export type BumpConfigGeneration = (expected: ConfigGeneration) => ConfigGenerat
 Round 2 #6: the previous version said "two counters, both in the record" and
 then defined one. They are distinct because they answer different questions —
 did the user's configuration move, versus did somebody else write Codex's files.
+
+The WP9 seam audit forced a narrower definition of that second question. The
+implemented transition row requires every positive `native_generation` to carry
+the same `history_tx_id` as `current_tx_id`, a non-null `history_direction`, and
+a non-empty `history_authority_snapshot_id`
+(`src/codex/transition-state.ts:74-83`). `beginCodexTransition` therefore always
+publishes a pending HISTORY SCHEDULE with the pair
+(`src/codex/transition-state.ts:314-344`), and `assertPublished` rejects a caller
+that did not publish one (`src/codex/transition-state.ts:420-428`). Advancing the
+pair for catalog bytes alone would invent history work that does not exist and
+cross WP10/WP12's boundary.
+
+So the native generation identifies a **NATIVE ROUTING transition**: `config.toml`,
+the generated profile, and the injection journal, exactly the artifacts whose
+routing change requires history follow-up. The active catalog, hashed/legacy
+catalog backups, and models cache are not routing artifacts. Rewriting them can
+change what Codex lists; it cannot change where Codex sends traffic. A
+`scope:"catalog"` commit therefore neither reads `CommitExpectation` nor advances
+the native pair. The implemented `ConvergeOutcome` confirms that boundary:
+`catalog-only` has no `nativeGeneration` or `currentTxId`, while the full routing
+outcomes carry both (`src/codex/convergence-types.ts:207-224`).
+
+That is an honest reduction in protection: a catalog-only commit is not guarded
+against staleness by the native pair. Its independent protection is the per-source
+fingerprint check below. A catalog-only commit must never write a routing artifact;
+if a future phase needs to write one, it uses `scope:"full"` and publishes the
+native transition plus its truthful history schedule.
 
 WP8b adds executable `readConfigGeneration` and `bumpConfigGeneration` exports to
 `src/config.ts` with the callable types above. They use a singleton
@@ -595,7 +622,7 @@ and `src/config.ts` is now explicitly IN.
 export interface CommitExpectation {
   /** Read at admission. */
   readonly nativeBefore: number;
-  /** What OUR commit will produce. Always nativeBefore + 1. */
+  /** What OUR full routing commit will produce. Always nativeBefore + 1. */
   readonly nativeAfter: number;
   /** Identifies the commit that performed the bump. */
   readonly txId: string;
@@ -615,15 +642,17 @@ native + config coordination provides **no cooperating interleaving while the
 process is alive**; a crash can still leave any prefix of the artifact sequence with
 the old coordinator pair.
 
-Recovery is therefore artifact-specific. Config, generated profile, catalog,
-hashed/legacy backups, cache, and journal recover only from their ledger baseline
-plus matching post-image; a missing/null post-image preserves and refuses. History
-rows, manifest entries, and rollouts remain `pending` and are re-probed/repaired by
-the history guardian. A missing record with native residue or an invalid/ambiguous
-record refuses automatic deletion. On restart, observation compares every artifact
-to the ledger/current pair, records the unresolved surfaces, and schedules a fresh
-current transition; idempotence is required but is not described as filesystem
-atomicity.
+Recovery for a `scope:"full"` routing transition is therefore artifact-specific.
+Config, generated profile, catalog, hashed/legacy backups, cache, and journal
+recover only from their ledger baseline plus matching post-image; a missing/null
+post-image preserves and refuses. History rows, manifest entries, and rollouts
+remain `pending` and are re-probed/repaired by the history guardian. A missing
+record with native residue or an invalid/ambiguous record refuses automatic
+deletion. On restart, observation compares every artifact to the ledger/current
+pair, records the unresolved surfaces, and schedules a fresh current transition;
+idempotence is required but is not described as filesystem atomicity. Catalog-only
+staleness is instead admitted by the source fingerprints below, not retroactively
+described as protection by a pair it never advanced.
 
 ### Prevention for cooperating writers (round 2 #5)
 
@@ -649,10 +678,42 @@ A candidate records the canonical parent directory and the file identity
 symlink can retarget while the path string is unchanged, and `atomicWriteFile`
 resolves the effective target only at commit (`src/config.ts:190-199`).
 
+The WP9 seam auditor then demonstrated the missing content dimension by gathering
+a candidate, truncating and rewriting the catalog in place, and committing the
+stale candidate. Path, canonical parent, parent identity, file identity, config
+generation, and native pair all remained unchanged. Target identity says where a
+write will land; it does not say that the bytes gather consumed are still current.
+
+The catalog admission snapshot therefore also retains a SHA-256 fingerprint of
+the **exact byte buffer gather actually read** for every source that influenced
+the prepared output: the active catalog, whichever hashed/legacy backup or models
+cache was selected as a fallback, and any later file source whose bytes influence
+that candidate. The gather reader computes the digest from the same buffer it
+returns and records the source's canonical path; a separate pre-read is not
+equivalent. Immediately before the first commit write, commit re-reads every
+recorded source and compares its digest. Any mismatch is `stale`. An unreadable
+source, an unresolvable canonical source, or ambiguous source identity is refused
+rather than assumed unchanged.
+
+This is deliberately a per-source fingerprint of what one gather actually read.
+It is not the deleted `ContentRevision` design, does not hash the whole persisted
+configuration, and does not turn content into a global revision or transition
+authority. That rejected design tried to make one content value stand in for
+cooperating generations and failed the A→B→A case. This check instead binds a
+prepared catalog candidate to the finite set of file bytes that produced it while
+leaving config admission and native routing authority with their existing owners.
+
 **What this does not do** (round 2 #6): it cannot detect a parent-symlink A→B→A
 that happens entirely between two checks. C17 is therefore scoped to *cooperating
 transitions and single-direction drift*, not to arbitrary filesystem ABA. Claiming
 otherwise would be a promise the filesystem does not offer.
+
+The same limit applies to source bytes: fingerprints detect single-direction
+content drift, including an ordinary in-place truncate-and-rewrite, but not a full
+content A→B→A that returns to identical bytes before the commit check. The re-read
+is also not filesystem atomicity; a non-cooperating writer can still change bytes
+after the final comparison. The outcome must preserve those C17 bounds rather than
+promote a digest into a guarantee the filesystem cannot provide.
 
 ## 4. Admission returns a snapshot, not a boolean
 
@@ -661,7 +722,13 @@ Audit #8: `040`'s intent reader returns ON/OFF while `010`'s gather needs a full
 "two reads" is wrong.
 
 ```ts
-/** The minimal, working WP8b/WP9 snapshot; it authorizes catalog work only. */
+/** Exact gather-time evidence for one file source that influenced the candidate. */
+export interface CatalogSourceFingerprint {
+  readonly canonicalPath: string;
+  readonly sha256: string;
+}
+
+/** The shared WP8b/WP9 snapshot; it authorizes catalog work only. */
 export interface CatalogAdmissionSnapshot {
   config: Readonly<OcxConfig>;
   generation: number;
@@ -670,6 +737,8 @@ export interface CatalogAdmissionSnapshot {
     cache: string;
     catalogBackups: readonly string[];
   }>;
+  /** Populated from the exact buffers gather read, never from separate pre-reads. */
+  sourceFingerprints: readonly CatalogSourceFingerprint[];
 }
 
 export interface AdmissionSnapshot {
@@ -700,6 +769,13 @@ export interface AdmissionSnapshot {
 }
 ```
 
+Pre-gather capture begins with an empty `sourceFingerprints` list because fallback
+selection has not happened yet. Gather does not mutate that snapshot: it returns
+the prepared candidate with an immutable copy whose list is the exact set of file
+sources its readers consumed. Commit accepts only that candidate-bound copy and
+refuses an incomplete list; it never treats the empty pre-gather value as evidence
+that a source stayed unchanged.
+
 The earlier one-read claim is withdrawn. There are three authoritative observation
 points, each with a different job:
 
@@ -709,7 +785,10 @@ points, each with a different job:
 2. **Under-lock:** while native + config coordination is held, fully re-read snapshot
    B and compare digest, config generation, intent, ownership, external provider,
    canonical targets, journal identity, and provenance identity. A mismatch rejects
-   before the first native write.
+   before the first native write. For catalog work, re-read and compare every
+   gather-time `sourceFingerprint` immediately before the first write as §3 requires;
+   `scope:"catalog"` performs that check without reading or advancing a native
+   `CommitExpectation`.
 3. **Post-commit:** re-read persisted config and observe every native/catalog/history
    surface into `CodexObservedState`. The outcome is not `converged` unless this
    observation agrees with admitted intent and the exact expected native pair.
@@ -943,6 +1022,9 @@ contract:
 | JSON provenance ledger | `updateIntegrationRecord` in `src/codex/integration-record.ts` | `src/codex/convergence.ts` only |
 | persisted OpenCodex config bytes and config generation | private writers in `src/config.ts` | exported `saveConfig`, `mutatePersistedConfig`, `saveConfigPreservingClaudeCode`, and the generation API in that same module only |
 
+`src/codex/internal/catalog-writer.ts` is the contract-owned name. Phase documents
+must use it; `internal/catalog-commit.ts` is not an alternate name for this owner.
+
 `inject.ts` is split: observation/parsing and pure config/profile transforms stay
 readable there; every export that calls `atomicWriteFile`/`unlinkSync` moves to
 `internal/native-writer.ts`. `journal.ts` is split into read/validate/classify code
@@ -1000,7 +1082,11 @@ still returns 2xx while reporting a non-converged disposition. Concatenate all t
 TypeScript fences in document order, prepend the §1 `OcxConfig` import, and compile
 with the repository TypeScript compiler so WP8b cannot regress to TS2304 or a
 bodyless TS2391 declaration. Table-drive each artifact observation and require
-`isApplied` only for the fully applied aggregate.
+`isApplied` only for the fully applied aggregate. A catalog-only commit neither
+requests a `CommitExpectation` nor changes the native pair, and its projected
+outcome has no pair fields. Gather from a catalog source, truncate-and-rewrite that
+same inode, and require commit to return `stale` before any write; repeat for each
+selected backup/cache fallback and refuse unreadable or ambiguous re-reads.
 
 `tests/codex-user-identity.test.ts`: real child processes vary every environment
 home/runtime variable named in §7 and resolve one final database path for one
@@ -1027,9 +1113,11 @@ writes to it.
 - C16 — one owner, one schema; a record from any phase reads in every other.
 - C17 — cooperating transition ABA is detected by the durable config/native
   generations and exact txId, and a parent target that drifts once between gather
-  and the under-lock commit check is detected by canonical target identity. An
-  arbitrary filesystem A→B→A retarget that completes wholly between two checks is
-  explicitly not claimed.
+  and the under-lock commit check is detected by canonical target identity. A
+  gathered catalog source whose bytes drift once is detected by its per-source
+  fingerprint even when dev+inode and both generations are unchanged. An arbitrary
+  filesystem or content A→B→A that completes wholly between two checks, and a write
+  after the final comparison, are explicitly not claimed.
 - Contributes to C15 with detect-and-repair: the latest native pair is durably
   pending before spawn, a stale Worker cannot replace its transition row or the
   winner's schedule, and the guardian
