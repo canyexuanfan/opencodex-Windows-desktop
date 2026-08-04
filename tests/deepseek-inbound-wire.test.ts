@@ -132,8 +132,65 @@ describe("the inbound scope survives the handleResponses replay", () => {
     expect(request.body.stream).toBe(false);
   });
 
-  test("ordinary HTTP Responses requests keep streaming upstream", async () => {
-    expect((await drive("responses")).body.stream).toBe(true);
+  test("ordinary HTTP Responses requests also use bounded JSON upstream (#875)", async () => {
+    // The reliability policy is transport-neutral: DeepSeek's Responses stream can
+    // deliver output without a terminal, so HTTP turns get the same bounded JSON
+    // upstream as WS turns — and a synthesized terminal SSE back.
+    const request = await drive("responses");
+    expect(request.body.stream).toBe(false);
+  });
+
+  test("an HTTP streaming client receives a synthesized terminal SSE instead of a stall (#875)", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean };
+      if (body.stream === true) {
+        // Old world: a terminal-less SSE that never closes — the stall the issue
+        // reported. The policy must never send stream:true, so fail loudly here.
+        return new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      return Response.json({
+        id: "resp_deepseek",
+        object: "response",
+        status: "completed",
+        output: [{
+          type: "function_call",
+          id: "fc_1",
+          call_id: "call_1",
+          name: "search",
+          arguments: "{\"q\":\"docs\"}",
+          status: "completed",
+        }],
+      });
+    }) as typeof fetch;
+
+    const config = { providers: { deepseek: deepseekProvider() } } as unknown as OcxConfig;
+    const deadline = AbortSignal.timeout(5_000);
+    const response = await handleResponses(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: MODEL, input: "ping", stream: true }),
+      }),
+      config,
+      { model: "", provider: "" },
+      { abortSignal: deadline },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    const sequence = [...text.matchAll(/"type":"(response\.[^"]+)"/g)].map(match => match[1]);
+    expect(sequence).toEqual([
+      "response.created",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+    expect(text).toContain("data: [DONE]");
+    // The function-call item survives with id/call_id byte-identical.
+    expect(text).toContain('"fc_1"');
+    expect(text).toContain('"call_1"');
   });
 
   test("an oversized upstream JSON body fails closed instead of buffering without limit", async () => {

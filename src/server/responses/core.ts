@@ -102,7 +102,7 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
-import { providerModelWebsocketUpstreamStreaming, type InboundWire } from "../../providers/registry";
+import { providerModelResponsesUpstreamStreaming, type InboundWire } from "../../providers/registry";
 import type { AdapterRequest } from "../../adapters/base";
 import {
   hasKeyPoolFailover,
@@ -187,6 +187,7 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
+import { responsesJsonToSseBody } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -860,9 +861,13 @@ async function applyFinalRouteRequestNormalization(args: {
     }
     parsed.modelId = route.modelId;
   }
-  const websocketUpstreamStreaming = inboundTransport === "websocket"
-    ? providerModelWebsocketUpstreamStreaming(route.providerName, route.provider, route.modelId)
-    : undefined;
+  // Transport-neutral reliability policy (#875): applies to any Responses
+  // upstream whose final adapter is openai-responses, not only WS turns.
+  const responsesUpstreamStreaming = providerModelResponsesUpstreamStreaming(
+    route.providerName,
+    route.provider,
+    route.modelId,
+  );
 
   // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
   // this request will actually use (#404).
@@ -872,7 +877,7 @@ async function applyFinalRouteRequestNormalization(args: {
   logCtx.providerAdapter = route.provider.adapter;
   logCtx.routeDecision = route.routeDecision;
 
-  if (websocketUpstreamStreaming === false) {
+  if (responsesUpstreamStreaming === false && route.provider.adapter === "openai-responses") {
     parsed.stream = false;
     if (parsed._rawBody && typeof parsed._rawBody === "object") {
       (parsed._rawBody as Record<string, unknown>).stream = false;
@@ -1501,6 +1506,11 @@ async function handleResponsesInner(
     );
   }
 
+  // Captured before normalization: whether the CLIENT asked for SSE. The
+  // transport-neutral upstream-streaming policy below may force a bounded JSON
+  // upstream for reliability (#875); the answer must then be reframed to SSE
+  // for streaming clients.
+  const clientRequestedStream = parsed.stream;
   await applyFinalRouteRequestNormalization({
     parsed,
     route,
@@ -2235,6 +2245,28 @@ async function handleResponsesInner(
         }
         return repairResponsesSnapshotJson(restored, outbound);
       })();
+      // #875: the transport-neutral reliability policy forced a bounded JSON
+      // upstream for a client that asked for SSE. Reframe the completed JSON
+      // as the canonical terminal SSE sequence (created → output_item.done →
+      // terminal → [DONE]) so Codex commits the turn instead of hanging on a
+      // stream that never closes. Non-streaming clients keep the plain JSON.
+      if (clientRequestedStream === true
+        && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
+        && route.provider.adapter === "openai-responses") {
+        try {
+          const completed = JSON.parse(clientJson) as Record<string, unknown>;
+          const sseHeaders = sanitizePassthroughHeaders(headers);
+          sseHeaders.set("content-type", "text/event-stream");
+          sseHeaders.set("cache-control", "no-store");
+          return new Response(responsesJsonToSseBody(completed), {
+            status: upstreamResponse.status,
+            statusText: upstreamResponse.statusText,
+            headers: sseHeaders,
+          });
+        } catch {
+          // Non-JSON despite content-type: fall through to the plain relay.
+        }
+      }
       return new Response(clientJson, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
