@@ -368,6 +368,36 @@ observe-only OAuth token bytes (or explicit absence), the exact
 headers after transport defaults. Header names are lowercased and sorted while values
 stay byte-exact only inside the HMAC input.
 
+Effective discovery policy is its own component, not a field of the one below. Round
+7 reproduced why: `tests/helpers/provider-registry-discovery.ts:15-30` assigns
+`modelDiscovery` and `preserveCustomDestination` onto a live `PROVIDER_REGISTRY` row
+and restores them in a `finally`, and three tests drive the real `gatherRoutedModels`
+through it (`tests/provider-model-discovery-contract.test.ts:182,210,253`). Those
+fields decide results — `resolveProviderModelDiscovery` reads the live entry and
+derives the filter plus the clamped `maxModels`/`maxResponseBytes` from it
+(`src/providers/model-discovery.ts:123-136`). With a flight already active, a caller
+holding the same config reference, generation and cache decision joined it and
+received rows its own policy required rejecting: `fetchCount=1` with both callers
+getting three rows, against a control run where the same override alone returned the
+fallback and warned about the two-row limit.
+
+So before flight lookup the owner captures a detached, recursively frozen effective
+discovery-policy snapshot per enabled provider: the registry-transport match outcome,
+the exact `url`/`path`/`query` location policy including explicit absence, the final
+method and URL, the complete declarative filter, and the clamped `maxResponseBytes`
+and `maxModels`. Its HMAC is `discoveryPolicyIdentity`, and the flight consumes only
+that snapshot — nothing re-reads the registry after keying. Filing this under the
+native component would have hidden it exactly when it matters, because that component
+is `unused` without combos and the reproduction has no combos. A registry source
+revision is also insufficient: the helper changes content without changing one.
+
+Two exported Sets were investigated in the same round and deliberately excluded.
+Nothing in this repository mutates `CALLABLE_CONFIGURED_COMPATIBILITY_MODELS`
+(`src/codex/catalog/provider-fetch.ts:286`) or `JAWCODE_CATALOG_AUGMENT_PROVIDERS`
+(`src/codex/catalog/parsing.ts:121`); each is a module-load literal with a single read
+site. Treating them as authority would make every export authority. Freezing them is
+optional defense in depth, not a prerequisite for this phase.
+
 The native component is explicit `unused` when no combo needs native rows. Otherwise
 the evidence owner captures a detached, deeply frozen ordered native slug/capability
 snapshot and records every active-catalog/cache consultation, including absence, as
@@ -832,6 +862,19 @@ accept A's native rows. The named broken mutation **omit
 `native-catalog-selection`/`nativeCatalogSourceIdentity` from the map and result
 identity** must turn this test red.
 
+Repeat once more with config, auth and native sources all unchanged while A is live,
+and change only the effective discovery policy through the existing
+`withRegistryDiscovery` helper — the reachable mutation path, not a synthetic one.
+B must capture a different `discoveryPolicyIdentity`, claim its own flight or reject
+A's result as stale, and must never accept rows its own `maxModels`/filter would have
+rejected. Pair it with the control the audit used: the same override with no
+concurrent flight returns the fallback and warns about the row limit, which is what
+makes the joined result recognizably wrong rather than merely different. The named
+broken mutations that must turn this red are **file discovery policy under the native
+component** (it is `unused` without combos, and this case has none) and **key the
+snapshot by a registry source revision instead of its content** (the helper mutates
+the entry in place without moving any revision).
+
 Each row verifies the private identity inside the owner-level unit fixture, while
 instrumented production log/response/serialization sinks receive neither that
 identity nor the API key, OAuth token, configured secret header, auth-store bytes, or
@@ -1125,7 +1168,7 @@ processes only. No verification invokes `ocx start`, `stop`, `sync`, `restore`,
 | Criterion | Proof | Concrete broken mutation that makes it red |
 |---|---|---|
 | **C1** — gather is filesystem-write-free across user homes and scratch, performs no executable probe/subprocess, and commit is synchronous, fixed, K -> C ordered, one-shot, and receipt-exact | T1 + T3 + T5 | call cold `resolveCodexRuntime`/`loadBundledCodexCatalog`, add an `await` beneath commit, acquire C before K, reorder replacements, pre-set a receipt bit, or replay a consumed candidate |
-| **C2/C17** — complete gather-authority identity prevents or rejects cross-admission flight reuse across config/auth/native/source/process drift without exposing credentials; provider model-cache/cooldown decisions are detached, deeply immutable, owner-epoch-bound, effective-boundary-bound, and captured before flight lookup; permanent K makes every first-party authoritative read-transform-write fresh by under-K recomputation or complete post-acquisition evidence revalidation; retained-gathered-first/K-second races are covered against convergence and another retained writer; owner-held config generation, required home/runtime evidence, deeply frozen non-aliased memo snapshots plus epochs, every closed PRESENT/ABSENT source observation, and target identity reject stale work before write; create-once backups publish atomically without clobber | T2 + T3 | restore partial `gatherFlightKey` plus a bare result, omit OAuth/native authority components, put raw or plain-hashed credentials in the identity, decide/re-read model-cache or cooldown after flight lookup, omit any owner epoch bump or TTL/cooldown boundary identity, leave retained `/api/sync`'s `onDiskCatalog` read before K but guard only replacement, start startup/CLI/restore's authoritative read before K, return or shallow-freeze a private cache snapshot so nested mutation bypasses epoch movement, omit ABSENT `config.toml`/`codex-runtime.json`, skip CODEX_HOME re-resolution, release C before callback, remove same-inode digest comparison, open a second SQLite observer, or replace exclusive publication with overwriting rename |
+| **C2/C17** — complete gather-authority identity prevents or rejects cross-admission flight reuse across config/auth/discovery-policy/native/source/process drift without exposing credentials; provider model-cache/cooldown decisions are detached, deeply immutable, owner-epoch-bound, effective-boundary-bound, and captured before flight lookup; permanent K makes every first-party authoritative read-transform-write fresh by under-K recomputation or complete post-acquisition evidence revalidation; retained-gathered-first/K-second races are covered against convergence and another retained writer; owner-held config generation, required home/runtime evidence, deeply frozen non-aliased memo snapshots plus epochs, every closed PRESENT/ABSENT source observation, and target identity reject stale work before write; create-once backups publish atomically without clobber | T2 + T3 | restore partial `gatherFlightKey` plus a bare result, omit OAuth/native authority components, file effective discovery policy under the combo-gated native component or key it by a registry source revision rather than its content, put raw or plain-hashed credentials in the identity, decide/re-read model-cache or cooldown after flight lookup, omit any owner epoch bump or TTL/cooldown boundary identity, leave retained `/api/sync`'s `onDiskCatalog` read before K but guard only replacement, start startup/CLI/restore's authoritative read before K, return or shallow-freeze a private cache snapshot so nested mutation bypasses epoch movement, omit ABSENT `config.toml`/`codex-runtime.json`, skip CODEX_HOME re-resolution, release C before callback, remove same-inode digest comparison, open a second SQLite observer, or replace exclusive publication with overwriting rename |
 | **Catalog/native boundary** — catalog-only never reads/advances the native pair or writes routing/history artifacts | T6 | call `expectation()`/`beginTransition`, add pair fields to `catalog-only`, or invoke config/profile/journal/history writer |
 | **Best-effort compatibility** — all 16 primary writes retain 2xx/201 and original follow-up order for every catalog failure | T4 | let lazy import/factory/admission throw, scope “zero writes” to the whole route, or return before Claude/Desktop follow-up |
 | **C14, WP9-bounded** — the 16 management roots reach catalog writers only through convergence; exactly four documented transitional roots remain until WP12; every low-level mutation requires permanent K's fresh acquisition-bound permit and runtime liveness/transaction/home assertion | T2 barriers + permit negatives + T5 symbol graph | add a fifth root, omit K/permit/assertion from one retained chain, accept a leaked/reused/forged/wrong-home permit, hide a writer through alias/re-export/computed import, or accidentally require WP12 to have already rewired `/api/sync`/startup/CLI/restore |
