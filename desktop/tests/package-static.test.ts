@@ -97,7 +97,8 @@ describe("desktop package contract", () => {
     expect(customInstaller).toContain("Shell32::SHChangeNotify");
   });
 
-  test("copies production dependencies instead of preserving development cache hardlinks", () => {
-    expect(resourcePreparation).toContain('"--backend=copyfile"');
+  test("copies production dependencies without reinstalling the bundled Bun package", () => {
+    expect(resourcePreparation).toContain("copyProductionDependencies");
+    expect(resourcePreparation).toContain("delete metadata.dependencies.bun");
   });
 });
