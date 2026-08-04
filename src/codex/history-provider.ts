@@ -157,7 +157,7 @@ function patchFirstLineProviderInPlace(path: string, expectedId: string, provide
   }
 }
 
-type CodexHistoryProvider = "openai" | "opencodex";
+export type CodexHistoryProvider = "openai" | "opencodex";
 
 export interface CodexHistorySyncResult {
   rows: number;
