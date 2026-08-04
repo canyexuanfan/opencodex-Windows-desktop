@@ -1,0 +1,287 @@
+import { useCallback, useEffect, useState } from "react";
+import { Notice } from "../ui";
+import { useT } from "../i18n/shared";
+
+type ProfileDto = {
+  id: string;
+  model: string;
+  revision: string;
+  candidates: Array<{ provider: string; model: string }>;
+  require: Record<string, unknown>;
+  optimize: Record<string, number>;
+  limits: Record<string, number>;
+  unknownEvidence: Record<string, string>;
+};
+
+type DryRunCandidate = {
+  provider: string;
+  model: string;
+  eligible: boolean;
+  exclusions: Array<{ code: string; detail?: string }>;
+  score?: { total: number; components: Record<string, number | undefined> };
+};
+
+type Analytics = {
+  totalRequests: number;
+  successRate: number | null;
+  fallbackRate: number | null;
+  confidence: string | null;
+  historyTruncated: boolean;
+  cooldownTriggeringFailures: number;
+  durationMs: { p50?: number; p95?: number; p99?: number; sampleCount: number };
+  firstOutputMs: { p50?: number; p95?: number; p99?: number; sampleCount: number; coverage: number | null };
+  breakdown: Array<{ provider: string; model: string; requests: number; successRate: number | null; p50DurationMs?: number }>;
+};
+
+function fmtMs(value: number | undefined): string {
+  return value === undefined ? "–" : `${Math.round(value)}ms`;
+}
+
+function fmtRate(value: number | null | undefined): string {
+  return value === null || value === undefined ? "–" : `${Math.round(value * 100)}%`;
+}
+
+export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
+  const t = useT();
+  const [profiles, setProfiles] = useState<ProfileDto[]>([]);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [selected, setSelected] = useState<ProfileDto | null>(null);
+  const [context, setContext] = useState("");
+  const [tools, setTools] = useState(false);
+  const [image, setImage] = useState(false);
+  const [structured, setStructured] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<{ candidates: DryRunCandidate[]; selectedIndex: number | null; trace?: { profile?: { revision?: string } } } | null>(null);
+  const [dryRunError, setDryRunError] = useState("");
+  const [running, setRunning] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoadError("");
+    try {
+      const [profilesRes, analyticsRes] = await Promise.all([
+        fetch(`${apiBase}/api/routing-profiles`),
+        fetch(`${apiBase}/api/routing-analytics`),
+      ]);
+      if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
+      const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
+      const next = profilesJson.profiles ?? [];
+      setProfiles(next);
+      setSelected(current => current ?? next[0] ?? null);
+      if (analyticsRes.ok) {
+        const analyticsJson = await analyticsRes.json() as Analytics;
+        setAnalytics(analyticsJson);
+      }
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiBase]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  const runDryRun = async () => {
+    if (!selected) return;
+    setRunning(true);
+    setDryRunError("");
+    setDryRunResult(null);
+    try {
+      const response = await fetch(`${apiBase}/api/routing-profiles/dry-run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          profile: selected.id,
+          evidence: {
+            ...(context.trim() ? { contextWindow: Number(context.trim()) } : {}),
+            ...(tools ? { toolsRequired: true } : {}),
+            ...(image ? { imageInputRequired: true } : {}),
+            ...(structured ? { structuredOutputRequired: true } : {}),
+          },
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        setDryRunError((body as { error?: { message?: string } }).error?.message ?? `dry-run ${response.status}`);
+        return;
+      }
+      setDryRunResult(body as typeof dryRunResult);
+    } catch (error) {
+      setDryRunError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="page" data-page="routing">
+      <div className="page-head">
+        <h2>{t("routing.title")}</h2>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
+      </div>
+      <p className="muted">{t("routing.subtitle")}</p>
+
+      {loadError ? <Notice tone="err">{t("routing.loadFailed")}: {loadError}</Notice> : null}
+
+      {profiles.length === 0 && !loadError ? (
+        <div className="panel">{t("routing.empty")}</div>
+      ) : (
+        <div className="panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {profiles.map(profile => (
+            <button
+              key={profile.id}
+              type="button"
+              className="model-card"
+              style={{ textAlign: "left", cursor: "pointer" }}
+              onClick={() => setSelected(profile)}
+              aria-pressed={selected?.id === profile.id}
+            >
+              <div className="card-badges">
+                <strong>{profile.id}</strong>
+                <span className="badge badge-muted">{profile.model}</span>
+                <span className="badge badge-muted">{t("routing.revision")}: {profile.revision}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {selected ? (
+        <div className="panel" style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <h3>{t("routing.detail")}: {selected.model}</h3>
+          <div>
+            <span className="field-label">{t("routing.candidates")}</span>
+            <div className="model-grid">
+              {selected.candidates.map(candidate => (
+                <div key={`${candidate.provider}/${candidate.model}`} className="model-card">
+                  {candidate.provider}/{candidate.model}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="field-label">{t("routing.require")}</span>
+            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {Object.keys(selected.require).length ? JSON.stringify(selected.require, null, 2) : t("routing.none")}
+            </pre>
+          </div>
+          <div>
+            <span className="field-label">{t("routing.optimize")}</span>
+            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(selected.optimize, null, 2)}
+            </pre>
+          </div>
+          <div>
+            <span className="field-label">{t("routing.limits")}</span>
+            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {Object.keys(selected.limits).length ? JSON.stringify(selected.limits, null, 2) : t("routing.none")}
+            </pre>
+          </div>
+          <div>
+            <span className="field-label">{t("routing.unknownEvidence")}</span>
+            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(selected.unknownEvidence, null, 2)}
+            </pre>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="panel" style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+        <h3>{t("routing.dryRun")}</h3>
+        <label className="field-label" htmlFor="routing-context">
+          {t("routing.dryRunContext")}
+          <input
+            id="routing-context"
+            className="input"
+            type="number"
+            min={1}
+            value={context}
+            onChange={event => setContext(event.target.value)}
+          />
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={tools} onChange={event => setTools(event.target.checked)} />
+          {t("routing.dryRunTools")}
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={image} onChange={event => setImage(event.target.checked)} />
+          {t("routing.dryRunImage")}
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={structured} onChange={event => setStructured(event.target.checked)} />
+          {t("routing.dryRunStructured")}
+        </label>
+        <button type="button" className="btn btn-primary" disabled={!selected || running} onClick={() => void runDryRun()}>
+          {t("routing.dryRunRun")}
+        </button>
+        {dryRunError ? <Notice tone="err">{dryRunError}</Notice> : null}
+        {dryRunResult ? (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>{t("routing.candidate")}</th>
+                <th>{t("routing.eligible")}</th>
+                <th>{t("routing.exclusions")}</th>
+                <th>{t("routing.score")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dryRunResult.candidates.map((candidate, index) => (
+                <tr key={`${candidate.provider}/${candidate.model}`}>
+                  <td>
+                    {candidate.provider}/{candidate.model}
+                    {index === dryRunResult.selectedIndex ? ` ✓ (${t("routing.selected")})` : ""}
+                  </td>
+                  <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
+                  <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
+                  <td>{candidate.score ? candidate.score.total.toFixed(3) : "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </div>
+
+      <div className="panel" style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+        <h3>{t("routing.analytics")}</h3>
+        {analytics ? (
+          <>
+            <div className="card-badges">
+              <span className="badge badge-muted">{t("routing.analyticsTotal")}: {analytics.totalRequests}</span>
+              <span className="badge badge-muted">{t("routing.analyticsSuccessRate")}: {fmtRate(analytics.successRate)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsFallbackRate")}: {fmtRate(analytics.fallbackRate)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP50")}: {fmtMs(analytics.durationMs.p50)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP95")}: {fmtMs(analytics.durationMs.p95)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP99")}: {fmtMs(analytics.durationMs.p99)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsCooldown")}: {analytics.cooldownTriggeringFailures}</span>
+              <span className="badge badge-muted">{t("routing.analyticsConfidence")}: {analytics.confidence ?? "–"}</span>
+              {analytics.historyTruncated ? <span className="badge badge-muted">{t("routing.analyticsTruncated")}</span> : null}
+            </div>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>{t("routing.candidate")}</th>
+                  <th>{t("routing.analyticsRequests")}</th>
+                  <th>{t("routing.analyticsSuccessRate")}</th>
+                  <th>{t("routing.analyticsP50")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.breakdown.map(row => (
+                  <tr key={`${row.provider}/${row.model}`}>
+                    <td>{row.provider}/{row.model}</td>
+                    <td>{row.requests}</td>
+                    <td>{fmtRate(row.successRate)}</td>
+                    <td>{fmtMs(row.p50DurationMs)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <p className="muted">{t("routing.analyticsEmpty")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
