@@ -120,7 +120,11 @@ describe("bounded-JSON HTTP path carries canonical ids (#938 + #875)", () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  test("the synthesized terminal SSE contains no upstream UUID item ids", async () => {
+  test("the synthesized terminal SSE contains no upstream UUID item ids (un-enriched saved seed)", async () => {
+    // The live path must backfill the registry policy through routedProviderConfig —
+    // no manual enrichProviderFromRegistry (the ordinary saved-config shape).
+    const plainSeed = { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
+    expect(plainSeed.responsesItemIdRepair).toBeUndefined();
     globalThis.fetch = (async () => Response.json({
       id: "resp_deepseek",
       object: "response",
@@ -132,7 +136,7 @@ describe("bounded-JSON HTTP path carries canonical ids (#938 + #875)", () => {
       ],
     })) as typeof fetch;
 
-    const config = { providers: { deepseek: deepseekProvider() } } as unknown as OcxConfig;
+    const config = { providers: { deepseek: plainSeed } } as unknown as OcxConfig;
     const response = await handleResponses(
       new Request("http://localhost/v1/responses", {
         method: "POST",
