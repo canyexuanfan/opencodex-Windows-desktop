@@ -10,12 +10,14 @@ import { clearableDeadline } from "../src/lib/abort";
 import type { RequestLogContext } from "../src/server/request-log";
 import { startServer } from "../src/server";
 import {
+  estimateClaudeRequestTokens,
   fetchWithHeaderDeadline,
   handleClaudeMessages,
   readBoundedPassthroughBody,
   resolvePassthroughBodyGuard,
   tapAnthropicSseForLog,
 } from "../src/server/claude-messages";
+import { estimateTokens } from "../src/lib/token-estimate";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { SERVER_BUDGET_MS } from "./helpers/test-budget";
@@ -933,6 +935,98 @@ test("count_tokens returns a positive estimate in the exact contract shape", asy
   } finally {
     await server.stop(true);
   }
+});
+
+/** Minimal PNG header (signature + IHDR) so the attachment sniffer can read real dimensions. */
+function countTokensPngBase64(width: number, height: number): string {
+  const u32be = (n: number): number[] => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
+  const bytes = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ...u32be(13), 0x49, 0x48, 0x44, 0x52, // len + "IHDR"
+    ...u32be(width), ...u32be(height),
+    8, 6, 0, 0, 0, // bit depth, color type, etc.
+  ];
+  return Buffer.from(Uint8Array.from(bytes)).toString("base64");
+}
+
+test("count_tokens prices base64 attachments as attachments, not characters", async () => {
+  saveConfig(mockConfig("http://127.0.0.1:1/v1"));
+  const server = startServer(0);
+  try {
+    const data = "A".repeat(700_000); // ~512KB decoded; counting chars would report ~200k tokens
+    const response = await fetch(new URL("/v1/messages/count_tokens", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: "what is in this screenshot?" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data } },
+          ],
+        }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    const json = await response.json() as { input_tokens: number };
+    // ceil(700000 * 3/4 / 512) = 1026 attachment tokens plus a small text remainder.
+    expect(json.input_tokens).toBeGreaterThanOrEqual(1026);
+    expect(json.input_tokens).toBeLessThan(2000);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("estimateClaudeRequestTokens matches the plain char estimate for text-only bodies", () => {
+  const raw = {
+    system: "be brief",
+    messages: [{ role: "user", content: "count me please, this is a sentence" }],
+    tools: [{ name: "Read", input_schema: { type: "object" } }],
+  };
+  const parts = [raw.system, JSON.stringify(raw.messages), JSON.stringify(raw.tools)];
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(Math.max(1, estimateTokens(parts.join("\n"), "m")));
+});
+
+test("estimateClaudeRequestTokens prices sniffable images by pixel dimensions", () => {
+  const raw = {
+    messages: [{
+      role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: countTokensPngBase64(1500, 2000) } }],
+    }],
+  };
+  const estimate = estimateClaudeRequestTokens(raw, "m");
+  // ceil(1500 * 2000 / 750) = 4000 attachment tokens plus the JSON skeleton.
+  expect(estimate).toBeGreaterThanOrEqual(4000);
+  expect(estimate).toBeLessThan(4100);
+});
+
+test("estimateClaudeRequestTokens strips base64 documents nested in tool_result content", () => {
+  const raw = {
+    messages: [{
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: "Q".repeat(400_000) } }],
+      }],
+    }],
+  };
+  const estimate = estimateClaudeRequestTokens(raw, "m");
+  // ceil(400000 * 3/4 / 512) = 586 tokens, nowhere near the ~114k a char count would report.
+  expect(estimate).toBeGreaterThanOrEqual(586);
+  expect(estimate).toBeLessThan(1000);
+});
+
+test("estimateClaudeRequestTokens counts text-source documents as ordinary text", () => {
+  const text = "plain text document body ".repeat(40);
+  const raw = {
+    messages: [{
+      role: "user",
+      content: [{ type: "document", source: { type: "text", media_type: "text/plain", data: text } }],
+    }],
+  };
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(Math.max(1, estimateTokens(JSON.stringify(raw.messages), "m")));
 });
 
 test("claudeCode.enabled=false -> 403 permission_error on both routes", async () => {
