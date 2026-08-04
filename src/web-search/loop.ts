@@ -372,18 +372,23 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
           cachedRequest = request;
           cachedAdapter = requestAdapter;
         }
-        deps.onAttemptSend?.(recovery);
         let response: Response;
         try {
-          response = requestAdapter.fetchResponse
-            ? await requestAdapter.fetchResponse(request, {
+          if (requestAdapter.fetchResponse) {
+            deps.onAttemptSend?.(recovery);
+            response = await requestAdapter.fetchResponse(request, {
               abortSignal: headerDeadline.signal,
               timeoutMs: connectTimeoutMs,
               returnRawErrors: true,
               stream: true,
-            })
-          : await fetchWithResetRetry(
-              () => {
+            });
+          } else {
+            response = await fetchWithResetRetry(
+              (retryRecovery) => {
+                // Record every helper-driven send (the callback runs for the first attempt and
+                // each connection-reset replay); preserve the caller's recovery kind
+                // (rate-limit-429 / key-429) when the retry layer supplies none.
+                deps.onAttemptSend?.(retryRecovery ?? recovery);
                 const h = new Headers(request.headers);
                 if (!h.has("accept-encoding")) h.set("accept-encoding", "identity");
                 return fetch(request.url, {
@@ -394,7 +399,8 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
                 });
               },
               { abortSignal: headerDeadline.signal, label: "web-search-loop" },
-              );
+            );
+          }
         } finally {
           request.releaseBodyObservation?.();
         }
@@ -448,7 +454,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         adapter = rotated;
         // Stall-watchdog seam between bounded retry fetches (audit 011 B3).
         yield { type: "heartbeat" };
-        prepared = await fetchOnce(adapter);
+        prepared = await fetchOnce(adapter, "key-429");
       }
 
       // Final headers have arrived. Clear only the deadline timer before ANY body read.

@@ -262,7 +262,9 @@ recovery loop, so a 413/401 replay cannot re-arm it). The same wait-and-replay a
 other key-auth surface that bypasses that loop: the Responses passthrough wire (e.g. the
 built-in DeepSeek preset), the image/video bridge and web-search sidecar loops (before their
 `on429` key rotation), and Anthropic terminal-guard continuations (before key/account
-failover). Codex never retries 429 client-side (openai/codex#30471), so this is the only
+failover). The policy covers HTTP-capable adapters only: custom `runTurn` transports in the
+image loop run through an event queue and never receive an HTTP status, so they are outside
+the HTTP retry scope and cannot replay a 429. Codex never retries 429 client-side (openai/codex#30471), so this is the only
 defense for those providers; the final 429 still carries `Retry-After` for clients that honor
 it. Concurrent requests each honor their own policy — there is no process-wide shared cooldown
 (unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
