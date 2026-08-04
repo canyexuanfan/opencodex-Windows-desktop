@@ -62,6 +62,7 @@ describe("desktop package contract", () => {
       createDesktopShortcut: "always",
       createStartMenuShortcut: true,
       deleteAppDataOnUninstall: false,
+      differentialPackage: false,
       artifactName: "OpenCodex-Setup-${version}-x64.${ext}",
     });
     expect(packageJson.build?.nsis?.artifactName).toContain("${version}");
