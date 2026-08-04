@@ -14,6 +14,7 @@
  * behavior at its own commit, which a runtime placeholder here would break.
  */
 import type { OcxConfig } from "../types";
+import type { ProviderModelDiscoveryFilter } from "../providers/registry";
 
 /**
  * The non-CAS JSON record for the Codex integration.
@@ -389,6 +390,37 @@ export interface CatalogProcessLocalEvidence {
   readonly bundledCatalog: CatalogProcessLocalObservation;
 }
 
+export type CatalogDiscoveryPolicyField<T> =
+  | Readonly<{ state: "absent" }>
+  | Readonly<{ state: "present"; value: T }>;
+
+export interface CatalogTrustedOpenAiApiPolicySnapshot {
+  readonly state: "unused" | "transport-mismatch" | "registry-models-absent" | "captured";
+  readonly models?: readonly string[];
+  readonly modelContextWindows?: Readonly<Record<string, number>>;
+  readonly modelMaxInputTokens?: Readonly<Record<string, number>>;
+  readonly modelInputModalities?: Readonly<Record<string, readonly string[]>>;
+  readonly modelReasoningEfforts?: Readonly<Record<string, readonly string[]>>;
+}
+
+/** Detached effective policy consumed by one enabled provider inside a gather flight. */
+export interface CatalogProviderDiscoveryPolicySnapshot {
+  readonly provider: string;
+  readonly registryTransportMatch: boolean;
+  readonly location: Readonly<{
+    readonly spec: "absent" | "present";
+    readonly url: CatalogDiscoveryPolicyField<string | undefined>;
+    readonly path: CatalogDiscoveryPolicyField<string | undefined>;
+    readonly query: CatalogDiscoveryPolicyField<Readonly<Record<string, string>> | undefined>;
+  }>;
+  readonly finalMethod: "GET";
+  readonly finalUrl: string;
+  readonly filter: CatalogDiscoveryPolicyField<ProviderModelDiscoveryFilter | undefined>;
+  readonly maxResponseBytes: number;
+  readonly maxModels: number;
+  readonly trustedOpenAiApi: CatalogTrustedOpenAiApiPolicySnapshot;
+}
+
 /** Non-secret-bearing identity of every authority input admitted to one gather flight. */
 export interface CatalogGatherAuthorityIdentity {
   readonly version: 1;
@@ -402,6 +434,7 @@ export interface CatalogGatherAuthorityIdentity {
     readonly snapshotIdentity: string;
   }>;
   readonly authSnapshotIdentity: string;
+  readonly discoveryPolicyIdentity: string;
   readonly nativeCatalogSourceIdentity: string;
   readonly sourceEvidenceIdentity: string;
   readonly processLocalEvidenceIdentity: string;

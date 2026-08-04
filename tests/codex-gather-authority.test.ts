@@ -1,0 +1,194 @@
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+
+import {
+  clearGatherRoutedModelsInflight,
+  gatherRoutedModels,
+} from "../src/codex/catalog";
+import { clearModelCache } from "../src/codex/model-cache";
+import { PROVIDER_REGISTRY, type ProviderModelDiscoverySpec } from "../src/providers/registry";
+import type { OcxConfig } from "../src/types";
+import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
+import { withRegistryDiscovery } from "./helpers/provider-registry-discovery";
+
+const originalFetch = globalThis.fetch;
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+function togetherConfig(apiKey = "together-authority-secret"): OcxConfig {
+  return withStubbedProviderFetch({
+    port: 10100,
+    defaultProvider: "together",
+    modelCacheTtlMs: 0,
+    providers: {
+      together: {
+        adapter: "openai-chat",
+        baseUrl: "https://api.together.xyz/v1",
+        authMode: "key",
+        apiKey,
+        models: ["safe-fallback"],
+      },
+    },
+  });
+}
+
+const strictDiscovery: ProviderModelDiscoverySpec = {
+  maxModels: 2,
+  filter: {
+    allOf: [{ path: ["type"], equalsAny: ["chat"] }],
+  },
+};
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  clearModelCache();
+  clearGatherRoutedModelsInflight();
+});
+
+describe("catalog gather discovery-policy authority", () => {
+  test("different live registry policies cannot share a flight", async () => {
+    const config = togetherConfig();
+    const body = {
+      data: [
+        { id: "chat-one", type: "chat" },
+        { id: "chat-two", type: "chat" },
+        { id: "embedding-three", type: "embedding" },
+      ],
+    };
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      globalThis.fetch = (async () => Response.json(body)) as typeof fetch;
+      const control = await withRegistryDiscovery(
+        "together",
+        strictDiscovery,
+        () => gatherRoutedModels(config),
+        { preserveCustomDestination: true },
+      );
+      expect(control.filter(model => model.provider === "together").map(model => model.id))
+        .toEqual(["safe-fallback"]);
+      expect(warning.mock.calls.flat().join(" ")).toContain("2-row model limit");
+
+      clearModelCache("together");
+      clearGatherRoutedModelsInflight();
+      warning.mockClear();
+      const firstResponse = deferred();
+      let fetchCount = 0;
+      globalThis.fetch = (async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) await firstResponse.promise;
+        return Response.json(body);
+      }) as typeof fetch;
+      try {
+        let first!: Promise<Awaited<ReturnType<typeof gatherRoutedModels>>>;
+        await withRegistryDiscovery(
+          "together",
+          { maxModels: 3 },
+          () => { first = gatherRoutedModels(config); },
+          { preserveCustomDestination: true },
+        );
+        expect(fetchCount).toBe(1);
+
+        let second!: Promise<Awaited<ReturnType<typeof gatherRoutedModels>>>;
+        await withRegistryDiscovery(
+          "together",
+          strictDiscovery,
+          () => { second = gatherRoutedModels(config); },
+          { preserveCustomDestination: true },
+        );
+        expect(fetchCount).toBe(2);
+
+        firstResponse.resolve();
+        const [permissive, strict] = await Promise.all([first, second]);
+        expect(fetchCount).toBe(2);
+        expect(permissive.filter(model => model.provider === "together").map(model => model.id))
+          .toEqual(["chat-one", "chat-two", "embedding-three"]);
+        expect(strict.filter(model => model.provider === "together").map(model => model.id))
+          .toEqual(["safe-fallback"]);
+        expect(warning.mock.calls.flat().join(" ")).toContain("2-row model limit");
+      } finally {
+        firstResponse.resolve();
+      }
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  test("a flight uses its captured transport non-match after the registry override is restored", async () => {
+    const config = withStubbedProviderFetch({
+      port: 10100,
+      defaultProvider: "openai-apikey",
+      modelCacheTtlMs: 0,
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://custom-openai.example/v1",
+          authMode: "key",
+          apiKey: "custom-openai-secret",
+        },
+      },
+    });
+    const responseGate = deferred();
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      await responseGate.promise;
+      return Response.json({ data: [{ id: "custom-only" }] });
+    }) as typeof fetch;
+
+    let pending!: Promise<Awaited<ReturnType<typeof gatherRoutedModels>>>;
+    await withRegistryDiscovery(
+      "openai-apikey",
+      {},
+      () => { pending = gatherRoutedModels(config); },
+      { preserveCustomDestination: true },
+    );
+    expect(fetchCount).toBe(1);
+
+    const originalFind = PROVIDER_REGISTRY.find;
+    PROVIDER_REGISTRY.find = function forbiddenPostLookupRegistryRead() {
+      throw new Error("post-lookup provider registry read");
+    } as typeof PROVIDER_REGISTRY.find;
+    try {
+      responseGate.resolve();
+      const models = await pending;
+      expect(models.filter(model => model.provider === "openai-apikey").map(model => model.id))
+        .toEqual(["custom-only"]);
+    } finally {
+      PROVIDER_REGISTRY.find = originalFind;
+      responseGate.resolve();
+    }
+  });
+
+  test("credentials and private authority identities stay out of logs and serialized results", async () => {
+    const credential = "catalog-authority-privacy-secret";
+    const plainDigest = createHash("sha256").update(credential).digest("hex");
+    const config = togetherConfig(credential);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    globalThis.fetch = (async () => Response.json({ data: [{ id: "privacy-model" }] })) as typeof fetch;
+    try {
+      const models = await withRegistryDiscovery(
+        "together",
+        { filter: { allOf: [{ path: ["id"], equalsAny: ["privacy-model"] }] } },
+        () => gatherRoutedModels(config),
+        { preserveCustomDestination: true },
+      );
+      const observable = JSON.stringify({
+        models,
+        logs: [warn, error, log].map(spy => spy.mock.calls),
+      });
+      expect(observable).not.toContain(credential);
+      expect(observable).not.toContain(plainDigest);
+      expect(observable).not.toMatch(/[a-f0-9]{64}/i);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+      log.mockRestore();
+    }
+  });
+});

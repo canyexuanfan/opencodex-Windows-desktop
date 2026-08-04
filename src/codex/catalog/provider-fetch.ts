@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { atomicWriteFile, expandUserPath, getConfigDir, resolveEnvValue, websocketsEnabled } from "../../config";
@@ -56,6 +56,7 @@ import {
   resolveProviderModelDiscovery,
   type ModelDiscoveryResponseFailure,
   type ProviderModelsApiItem,
+  type ResolvedProviderModelDiscovery,
 } from "../../providers/model-discovery";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } from "../../lib/admission";
@@ -67,6 +68,15 @@ import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpen
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
+import type {
+  CatalogAdmissionSnapshot,
+  CatalogDiscoveryPolicyField,
+  CatalogGatherAuthorityIdentity,
+  CatalogProviderDiscoveryPolicySnapshot,
+  CatalogProcessLocalEvidence,
+  CatalogSourceEvidence,
+  CatalogTrustedOpenAiApiPolicySnapshot,
+} from "../convergence-types";
 
 export type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
 
@@ -80,12 +90,15 @@ export interface CatalogGatherProviderAuthOutcome {
 export interface GatherRoutedModelsOptions {
   comboOmissions?: ComboCatalogOmission[];
   providerAuthOutcomes?: CatalogGatherProviderAuthOutcome[];
+  /** Internal convergence sink for the immutable policy that produced the returned rows. */
+  discoveryPolicySnapshots?: CatalogProviderDiscoveryPolicySnapshot[];
 }
 
 interface GatherFlightResult {
   models: CatalogModel[];
   comboOmissions: ComboCatalogOmission[];
-  providerAuthOutcomes: CatalogGatherProviderAuthOutcome[];
+  providerAuthOutcomes: readonly CatalogGatherProviderAuthOutcome[];
+  discoveryPolicySnapshots: readonly CatalogProviderDiscoveryPolicySnapshot[];
 }
 
 interface ModelsAuthResolution {
@@ -105,7 +118,39 @@ type ModelsAuthResolverFactory = (
   outcomes: CatalogGatherProviderAuthOutcome[],
 ) => ModelsAuthResolver;
 
-const gatherInflight = new Map<string, Promise<GatherFlightResult>>();
+interface CapturedModelsRequest {
+  readonly method: "GET";
+  readonly url: string;
+  readonly headersWithoutCredential: Readonly<Record<string, string>>;
+  readonly headersWithCredential: Readonly<Record<string, string>>;
+}
+
+interface CapturedProviderGather {
+  readonly name: string;
+  readonly provider: OcxProviderConfig;
+  readonly discovery: ResolvedProviderModelDiscovery;
+  readonly policy: CatalogProviderDiscoveryPolicySnapshot;
+  readonly request: CapturedModelsRequest;
+  readonly observedAuth?: ModelsAuthResolution;
+}
+
+interface GatherFlightCapture {
+  readonly discoveryPolicyIdentity: string;
+  readonly discoveryPolicySnapshots: readonly CatalogProviderDiscoveryPolicySnapshot[];
+  readonly providers: readonly CapturedProviderGather[];
+  readonly authResolver: ModelsAuthResolver;
+  readonly providerAuthOutcomes: readonly CatalogGatherProviderAuthOutcome[];
+  readonly openAiApiPolicy: CatalogTrustedOpenAiApiPolicySnapshot;
+}
+
+interface GatherInflightEntry {
+  readonly discoveryPolicyIdentity: string;
+  readonly promise: Promise<GatherFlightResult>;
+}
+
+const gatherInflight = new Map<string, GatherInflightEntry[]>();
+const CATALOG_GATHER_AUTHORITY_KEY = randomBytes(32);
+const REQUEST_CREDENTIAL_SENTINEL = `ocx-catalog-credential-${randomBytes(16).toString("hex")}`;
 const MAX_CONCURRENT_CATALOG_GATHERS = 8;
 const gatherGate = createAdmissionGate("catalog_gathers", MAX_CONCURRENT_CATALOG_GATHERS);
 
@@ -129,6 +174,232 @@ function stableJson(value: unknown): string {
     }
     return nested;
   });
+}
+
+function framed(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
+function canonicalAuthorityEncoding(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return `string${framed(value)}`;
+  if (typeof value === "boolean") return value ? "boolean1" : "boolean0";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("Catalog authority cannot encode a non-finite number.");
+    const encoded = Object.is(value, -0) ? "-0" : String(value);
+    return `number${framed(encoded)}`;
+  }
+  if (Array.isArray(value)) {
+    return `array${value.length}:${value.map(item => framed(canonicalAuthorityEncoding(item))).join("")}`;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort((left, right) => left.localeCompare(right));
+    return `object${keys.length}:${keys.map(key => (
+      `${framed(key)}${framed(canonicalAuthorityEncoding(record[key]))}`
+    )).join("")}`;
+  }
+  throw new TypeError(`Catalog authority cannot encode ${typeof value}.`);
+}
+
+function keyedGatherIdentity(domain: string, value: unknown): string {
+  return createHmac("sha256", CATALOG_GATHER_AUTHORITY_KEY)
+    .update(framed(domain))
+    .update(framed(canonicalAuthorityEncoding(value)))
+    .digest("hex");
+}
+
+function keyedGatherBytesIdentity(domain: string, value: Uint8Array): string {
+  return createHmac("sha256", CATALOG_GATHER_AUTHORITY_KEY)
+    .update(framed(domain))
+    .update(`${value.byteLength}:`)
+    .update(value)
+    .digest("hex");
+}
+
+export function createCatalogGatherAuthorityIdentity(
+  snapshot: CatalogAdmissionSnapshot,
+  sourceEvidence: CatalogSourceEvidence,
+  processLocal: CatalogProcessLocalEvidence,
+  discoveryPolicies: readonly CatalogProviderDiscoveryPolicySnapshot[],
+): CatalogGatherAuthorityIdentity {
+  const sourceEvidenceIdentity = keyedGatherIdentity("catalog-source-evidence-v1", sourceEvidence);
+  const processLocalEvidenceIdentity = keyedGatherIdentity("catalog-process-local-v1", processLocal);
+  const discoveryPolicyIdentity = keyedGatherIdentity("catalog-discovery-policy-v1", discoveryPolicies);
+  return Object.freeze({
+    version: 1 as const,
+    authorityId: keyedGatherIdentity("catalog-authority-v1", {
+      admittedConfig: snapshot.configIdentity,
+      discoveryPolicyIdentity,
+      sourceEvidenceIdentity,
+      processLocalEvidenceIdentity,
+    }),
+    admittedConfig: Object.freeze({
+      ...snapshot.configIdentity,
+      generation: Object.freeze({ ...snapshot.configIdentity.generation }),
+    }),
+    authSnapshotIdentity: keyedGatherIdentity(
+      "catalog-auth-v1",
+      sourceEvidence.conditional["provider-auth-selection"],
+    ),
+    discoveryPolicyIdentity,
+    nativeCatalogSourceIdentity: keyedGatherIdentity(
+      "catalog-native-v1",
+      sourceEvidence.conditional["native-catalog-selection"],
+    ),
+    sourceEvidenceIdentity,
+    processLocalEvidenceIdentity,
+  });
+}
+
+function detachedClone<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(item => detachedClone(item)) as T;
+  if (value && typeof value === "object") {
+    const clone: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      clone[key] = detachedClone((value as Record<string, unknown>)[key]);
+    }
+    return clone as T;
+  }
+  return value;
+}
+
+function recursivelyFreeze<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value as Record<string, unknown>)) recursivelyFreeze(nested);
+  return Object.freeze(value);
+}
+
+function detachedFrozen<T>(value: T): T {
+  return recursivelyFreeze(detachedClone(value));
+}
+
+function capturedField<T extends object, K extends keyof T>(
+  value: T | undefined,
+  key: K,
+): CatalogDiscoveryPolicyField<T[K]> {
+  if (!value || !Object.hasOwn(value, key)) return Object.freeze({ state: "absent" });
+  return detachedFrozen({ state: "present" as const, value: value[key] });
+}
+
+function captureTrustedOpenAiApiPolicy(
+  name: string,
+  registryTransportMatch: boolean,
+): CatalogTrustedOpenAiApiPolicySnapshot {
+  if (name !== OPENAI_API_PROVIDER_ID) return Object.freeze({ state: "unused" });
+  if (!registryTransportMatch) return Object.freeze({ state: "transport-mismatch" });
+  const entry = getProviderRegistryEntry(name);
+  if (!entry?.models) return Object.freeze({ state: "registry-models-absent" });
+  return detachedFrozen({
+    state: "captured" as const,
+    models: entry.models,
+    ...(entry.modelContextWindows ? { modelContextWindows: entry.modelContextWindows } : {}),
+    ...(entry.modelMaxInputTokens ? { modelMaxInputTokens: entry.modelMaxInputTokens } : {}),
+    ...(entry.modelInputModalities ? { modelInputModalities: entry.modelInputModalities } : {}),
+    ...(entry.modelReasoningEfforts ? { modelReasoningEfforts: entry.modelReasoningEfforts } : {}),
+  });
+}
+
+function captureModelsRequest(
+  name: string,
+  provider: OcxProviderConfig,
+  observedAuth: ModelsAuthResolution | undefined,
+): CapturedModelsRequest {
+  const observed = observedAuth
+    ? { oauthApiBaseUrl: observedAuth.oauthApiBaseUrl }
+    : undefined;
+  const withoutCredential = buildModelsRequest(provider, undefined, name, observed);
+  const withCredential = buildModelsRequest(provider, REQUEST_CREDENTIAL_SENTINEL, name, observed);
+  if (withoutCredential.url !== withCredential.url) {
+    throw new TypeError(`Provider model discovery URL for ${name} depends on credential bytes.`);
+  }
+  return detachedFrozen({
+    method: "GET" as const,
+    url: withoutCredential.url,
+    headersWithoutCredential: withoutCredential.headers,
+    headersWithCredential: withCredential.headers,
+  });
+}
+
+function captureProviderGather(
+  name: string,
+  configured: OcxProviderConfig,
+  authResolver: ModelsAuthResolver,
+): CapturedProviderGather {
+  const enriched = detachedClone(configured);
+  enrichProviderFromRegistry(name, enriched);
+  const provider = recursivelyFreeze(enriched);
+  const observedAuth = authResolver.kind === "observed"
+    && provider.authMode !== "forward"
+    && provider.liveModels !== false
+    ? authResolver.resolve(name, provider)
+    : undefined;
+  const request = captureModelsRequest(name, provider, observedAuth);
+  const resolved = resolveProviderModelDiscovery(name, provider);
+  const discovery = detachedFrozen({
+    ...(resolved.spec ? { spec: resolved.spec } : {}),
+    maxResponseBytes: resolved.maxResponseBytes,
+    maxModels: resolved.maxModels,
+  });
+  const registryTransportMatch = providerMatchesRegistryTransport(name, provider);
+  const trustedOpenAiApi = captureTrustedOpenAiApiPolicy(name, registryTransportMatch);
+  const policy = detachedFrozen({
+    provider: name,
+    registryTransportMatch,
+    location: {
+      spec: discovery.spec ? "present" as const : "absent" as const,
+      url: capturedField(discovery.spec, "url"),
+      path: capturedField(discovery.spec, "path"),
+      query: capturedField(discovery.spec, "query"),
+    },
+    finalMethod: request.method,
+    finalUrl: request.url,
+    filter: capturedField(discovery.spec, "filter"),
+    maxResponseBytes: discovery.maxResponseBytes,
+    maxModels: discovery.maxModels,
+    trustedOpenAiApi,
+  });
+  return Object.freeze({
+    name,
+    provider,
+    discovery,
+    policy,
+    request,
+    ...(observedAuth ? { observedAuth: Object.freeze({ ...observedAuth }) } : {}),
+  });
+}
+
+function captureGatherFlight(
+  config: OcxConfig,
+  createAuthResolver: ModelsAuthResolverFactory,
+): GatherFlightCapture {
+  const providerAuthOutcomes: CatalogGatherProviderAuthOutcome[] = [];
+  const authResolver = createAuthResolver(providerAuthOutcomes);
+  const providers = Object.entries(config.providers)
+    .filter(([, provider]) => provider.disabled !== true)
+    .map(([name, provider]) => captureProviderGather(name, provider, authResolver));
+  const discoveryPolicySnapshots = Object.freeze(providers.map(provider => provider.policy));
+  return Object.freeze({
+    discoveryPolicyIdentity: keyedGatherIdentity("catalog-discovery-policy-v1", discoveryPolicySnapshots),
+    discoveryPolicySnapshots,
+    providers: Object.freeze(providers),
+    authResolver,
+    providerAuthOutcomes: Object.freeze([...providerAuthOutcomes]),
+    openAiApiPolicy: providers.find(provider => provider.name === OPENAI_API_PROVIDER_ID)?.policy.trustedOpenAiApi
+      ?? Object.freeze({ state: "unused" as const }),
+  });
+}
+
+function materializeCapturedHeaders(
+  request: CapturedModelsRequest,
+  apiKey: string | undefined,
+): Record<string, string> {
+  const source = apiKey ? request.headersWithCredential : request.headersWithoutCredential;
+  return Object.fromEntries(Object.entries(source).map(([name, value]) => [
+    name,
+    apiKey ? value.split(REQUEST_CREDENTIAL_SENTINEL).join(apiKey) : value,
+  ]));
 }
 
 function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Record<string, unknown> {
@@ -470,12 +741,12 @@ function observedModelsAuthResolver(
 }
 
 async function fetchProviderModelsWithAuth(
-  name: string,
-  prov: OcxProviderConfig,
+  captured: CapturedProviderGather,
   ttlMs: number,
   contextCap: number | undefined,
   resolveAuth: ModelsAuthResolver,
 ): Promise<CatalogModel[]> {
+  const { name, provider: prov, discovery, request } = captured;
   if (prov.authMode === "forward") return []; // ChatGPT backend has no /models
   const seedVertexDefault = prov.adapter === "google"
     && prov.googleMode === "vertex"
@@ -493,9 +764,9 @@ async function fetchProviderModelsWithAuth(
     clearProviderDiscoveryStatus(name);
     return configured;
   }
-  const auth: ModelsAuthResolution = resolveAuth.kind === "refreshing"
+  const auth: ModelsAuthResolution = captured.observedAuth ?? (resolveAuth.kind === "refreshing"
     ? { apiKey: await resolveModelsAuthToken(name, prov), observed: false }
-    : resolveAuth.resolve(name, prov);
+    : resolveAuth.resolve(name, prov));
   const apiKey = auth.apiKey;
   // A configured default is a real callable selector and must remain discoverable when a
   // compatible provider's live /models request fails (issue #308). Keep this separate from the
@@ -557,13 +828,8 @@ async function fetchProviderModelsWithAuth(
     const stale = getStaleCached(name);
     return stale ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap)) : failedDiscoveryConfigured;
   }
-  const discovery = resolveProviderModelDiscovery(name, prov);
-  const { url, headers } = buildModelsRequest(
-    prov,
-    apiKey,
-    name,
-    auth.observed ? { oauthApiBaseUrl: auth.oauthApiBaseUrl } : undefined,
-  );
+  const url = request.url;
+  const headers = materializeCapturedHeaders(request, apiKey);
   const urlClass = new URL(url).hostname.endsWith("aiplatform.googleapis.com")
     ? "vertex-aiplatform"
     : "provider-models";
@@ -715,7 +981,8 @@ export async function fetchProviderModels(
   ttlMs: number,
   contextCap?: number,
 ): Promise<CatalogModel[]> {
-  return fetchProviderModelsWithAuth(name, prov, ttlMs, contextCap, refreshingModelsAuthResolver);
+  const captured = captureProviderGather(name, prov, refreshingModelsAuthResolver);
+  return fetchProviderModelsWithAuth(captured, ttlMs, contextCap, refreshingModelsAuthResolver);
 }
 
 export function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
@@ -778,7 +1045,7 @@ export async function gatherRoutedModelsForCatalogGather(
     : Uint8Array.from(evidence.authStoreBuffer);
   const authIdentity = authStoreBuffer === null
     ? "absent"
-    : createHash("sha256").update(authStoreBuffer).digest("hex");
+    : keyedGatherBytesIdentity("catalog-observed-auth-v1", authStoreBuffer);
   return gatherRoutedModelsWithAuth(
     config,
     `observed:${authIdentity}:${gatherFlightKey(config)}`,
@@ -793,20 +1060,38 @@ async function gatherRoutedModelsWithAuth(
   createAuthResolver: ModelsAuthResolverFactory,
   options?: GatherRoutedModelsOptions,
 ): Promise<CatalogModel[]> {
-  let promise = gatherInflight.get(key);
-  if (!promise) {
+  const capture = captureGatherFlight(config, createAuthResolver);
+  const bucket = gatherInflight.get(key) ?? [];
+  let entry = bucket.find(candidate => (
+    candidate.discoveryPolicyIdentity === capture.discoveryPolicyIdentity
+  ));
+  if (!entry) {
     const lease = gatherGate.tryAcquire();
     if (!lease) throw new CatalogGatherBusyError();
     // Claim the slot synchronously before any await so same-key callers join this flight.
-    // Distinct keys keep their own entries — a second config must not evict the first.
-    const flight = gatherRoutedModelsUncached(config, createAuthResolver).finally(() => {
-      if (gatherInflight.get(key) === flight) gatherInflight.delete(key);
+    // Distinct authorities retain separate entries even when their legacy bucket matches.
+    let ownedEntry!: GatherInflightEntry;
+    const flight = gatherRoutedModelsUncached(config, capture).finally(() => {
+      const current = gatherInflight.get(key);
+      const index = current?.indexOf(ownedEntry) ?? -1;
+      if (current && index >= 0) current.splice(index, 1);
+      if (current?.length === 0) gatherInflight.delete(key);
       lease.release();
     });
-    gatherInflight.set(key, flight);
-    promise = flight;
+    ownedEntry = Object.freeze({
+      discoveryPolicyIdentity: capture.discoveryPolicyIdentity,
+      promise: flight,
+    });
+    bucket.push(ownedEntry);
+    gatherInflight.set(key, bucket);
+    entry = ownedEntry;
   }
-  const { models, comboOmissions, providerAuthOutcomes } = await promise;
+  const {
+    models,
+    comboOmissions,
+    providerAuthOutcomes,
+    discoveryPolicySnapshots,
+  } = await entry.promise;
   if (options?.comboOmissions) {
     options.comboOmissions.length = 0;
     options.comboOmissions.push(...comboOmissions);
@@ -815,17 +1100,21 @@ async function gatherRoutedModelsWithAuth(
     options.providerAuthOutcomes.length = 0;
     options.providerAuthOutcomes.push(...providerAuthOutcomes);
   }
+  if (options?.discoveryPolicySnapshots) {
+    options.discoveryPolicySnapshots.length = 0;
+    options.discoveryPolicySnapshots.push(...discoveryPolicySnapshots);
+  }
   return models;
 }
 
 async function gatherRoutedModelsUncached(
   config: OcxConfig,
-  createAuthResolver: ModelsAuthResolverFactory,
+  capture: GatherFlightCapture,
 ): Promise<GatherFlightResult> {
   // Flight-local list: joiners copy from the resolved promise, not a process-global last write.
   const localOmissions: ComboCatalogOmission[] = [];
-  const localProviderAuthOutcomes: CatalogGatherProviderAuthOutcome[] = [];
-  const resolveAuth = createAuthResolver(localProviderAuthOutcomes);
+  const localProviderAuthOutcomes = capture.providerAuthOutcomes;
+  const resolveAuth = capture.authResolver;
   const ttlMs = config.modelCacheTtlMs ?? DEFAULT_MODEL_CACHE_TTL_MS;
   // Persisted provider entries can predate newer registry fields (noVisionModels,
   // modelInputModalities, ...). The ROUTER merges registry seeds at request time
@@ -833,24 +1122,21 @@ async function gatherRoutedModelsUncached(
   // same merged view or its advertisements drift from actual proxy behavior (e.g. a
   // vision-sidecar model advertised text-only, blocking image attachments app-side).
   // Enrich a CLONE: hydrated defaults must never leak into the persisted config.
-  const activeProviders = Object.entries(config.providers)
-    .filter(([, prov]) => prov.disabled !== true)
-    .map(([name, prov]): [string, OcxProviderConfig] => {
-      const enriched = { ...prov };
-      enrichProviderFromRegistry(name, enriched);
-      return [name, enriched];
-    });
+  const activeProviders = capture.providers;
   const lists = await Promise.all(
-    activeProviders.map(([name, prov]) => fetchProviderModelsWithAuth(
-      name,
-      prov,
+    activeProviders.map(provider => fetchProviderModelsWithAuth(
+      provider,
       ttlMs,
-      providerContextCap(config, name),
+      providerContextCap(config, provider.name),
       resolveAuth,
     )),
   );
-  const apiAugmented = augmentRoutedModelsWithRegistryOpenAiApiRows(lists.flat(), config);
-  const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(([name]) => name), config.providers, config)
+  const apiAugmented = augmentRoutedModelsWithCapturedOpenAiApiRows(
+    lists.flat(),
+    config,
+    capture.openAiApiPolicy,
+  );
+  const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(provider => provider.name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).
@@ -915,7 +1201,7 @@ async function gatherRoutedModelsUncached(
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
   // Enriched (registry-hydrated) provider clones, keyed by name — the same view used above so
   // custom rows get the same noVisionModels / inputModalities treatment as discovered rows.
-  const enrichedByName = new Map(activeProviders);
+  const enrichedByName = new Map(activeProviders.map(provider => [provider.name, provider.provider]));
   const customModels = (config.customModels ?? []).map(cm => {
     const rawProvider = config.providers[cm.provider];
     const supportsReasoningSummaries = configuredReasoningSummarySupport(rawProvider, cm.modelId);
@@ -949,6 +1235,7 @@ async function gatherRoutedModelsUncached(
     models: [...deduped, ...customModels],
     comboOmissions: localOmissions,
     providerAuthOutcomes: localProviderAuthOutcomes,
+    discoveryPolicySnapshots: capture.discoveryPolicySnapshots,
   };
 }
 
@@ -958,15 +1245,28 @@ export function augmentRoutedModelsWithRegistryOpenAiApiRows(
 ): CatalogModel[] {
   const configured = config.providers[OPENAI_API_PROVIDER_ID];
   if (!configured || configured.disabled === true || !providerMatchesRegistryTransport(OPENAI_API_PROVIDER_ID, configured)) return models;
-  const entry = getProviderRegistryEntry(OPENAI_API_PROVIDER_ID);
-  if (!entry?.models) return models;
+  return augmentRoutedModelsWithCapturedOpenAiApiRows(
+    models,
+    config,
+    captureTrustedOpenAiApiPolicy(OPENAI_API_PROVIDER_ID, true),
+  );
+}
+
+function augmentRoutedModelsWithCapturedOpenAiApiRows(
+  models: CatalogModel[],
+  config: OcxConfig,
+  policy: CatalogTrustedOpenAiApiPolicySnapshot,
+): CatalogModel[] {
+  if (policy.state !== "captured" || !policy.models) return models;
+  const configured = config.providers[OPENAI_API_PROVIDER_ID];
+  if (!configured || configured.disabled === true) return models;
 
   const existingById = new Map(
     models.filter(model => model.provider === OPENAI_API_PROVIDER_ID).map(model => [model.id, model]),
   );
-  const trustedRows = entry.models.map((id): CatalogModel => {
-    const officialContext = entry.modelContextWindows?.[id];
-    const officialMaxInput = entry.modelMaxInputTokens?.[id];
+  const trustedRows = policy.models.map((id): CatalogModel => {
+    const officialContext = policy.modelContextWindows?.[id];
+    const officialMaxInput = policy.modelMaxInputTokens?.[id];
     const userContext = configured.modelContextWindows?.[id] ?? configured.contextWindow;
     const userMaxInput = configured.modelMaxInputTokens?.[id];
     const providerCap = providerContextCap(config, OPENAI_API_PROVIDER_ID);
@@ -982,8 +1282,8 @@ export function augmentRoutedModelsWithRegistryOpenAiApiRows(
       owned_by: OPENAI_API_PROVIDER_ID,
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxInputTokens ? { maxInputTokens } : {}),
-      ...(entry.modelInputModalities?.[id] ? { inputModalities: [...entry.modelInputModalities[id]!] } : {}),
-      ...(entry.modelReasoningEfforts?.[id] ? { reasoningEfforts: [...entry.modelReasoningEfforts[id]!] } : {}),
+      ...(policy.modelInputModalities?.[id] ? { inputModalities: [...policy.modelInputModalities[id]!] } : {}),
+      ...(policy.modelReasoningEfforts?.[id] ? { reasoningEfforts: [...policy.modelReasoningEfforts[id]!] } : {}),
     };
   });
 
