@@ -730,11 +730,21 @@ export function proxyDownRestartHint(input: {
   proxyRunning: boolean;
   port: number;
   serviceViable: boolean;
+  /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
+  serviceInstalled?: boolean;
+  serviceConflict?: boolean;
 }): string | null {
   if (input.proxyRunning) return null;
+  // `serviceViable` alone conflates "no service at all" with "registered but stale or
+  // stopped". Only the first wants `install`: re-registering an existing service costs a
+  // UAC prompt on Windows and can switch a WinSW backend to Task Scheduler. A conflict
+  // still needs uninstall-then-install, which repairService() refuses outright.
+  const installedButBroken = input.serviceInstalled === true && input.serviceConflict !== true;
   const restart = input.serviceViable
     ? "Restart it with 'ocx service start' (service installed) or 'ocx start'."
-    : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
+    : installedButBroken
+      ? "Restart it with 'ocx start', or refresh the installed service: 'ocx service repair'."
+      : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
   return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
 }
 
@@ -950,6 +960,8 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     proxyRunning: Boolean(live),
     port: live?.port ?? doctorConfig.port ?? 10100,
     serviceViable: startup.serviceViable,
+    serviceInstalled: startup.serviceInstalled,
+    serviceConflict: startup.serviceConflict,
   });
   if (proxyDown) hints.push(proxyDown);
   for (const row of providerApiKeys) {

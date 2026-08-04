@@ -353,7 +353,7 @@ export async function runUpdate(): Promise<void> {
                 : "⚠️  Service refresh failed — starting the proxy directly instead.",
             );
             // Elevation is a Windows-only remedy; elsewhere the refresh fails for
-            // reasons `ocx service install` reports directly (since it now verifies
+            // reasons `ocx service repair` reports directly (since it now verifies
             // the service actually serves).
             console.warn(process.platform === "win32"
               ? "   Run 'ocx service repair' to refresh the background service."

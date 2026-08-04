@@ -164,7 +164,7 @@ sidebar entry: it is entered from the dashboard's startup-state row, which links
 current state needs remediation or merely reports how routing is protected. Its warning state is derived from active
 Codex routing plus the actual service and launcher-shim installation state; the
 `codexAutoStart` preference alone is never presented as proof of restart protection. The page shows
-copyable repair commands (`ocx service install`, `ocx codex-shim install`, and `ocx restore`). On
+copyable repair commands (`ocx service repair` for an installed service or `ocx service install` when none is registered, `ocx codex-shim install`, and `ocx restore`). On
 Windows it can also install an owned, per-user system tray. The resident tray owns only its icon,
 home-scoped singleton, and HKCU Run registration; fixed proxy actions delegate to the CLI so drain,
 service conflict handling, native restore, and PID identity remain centralized. Tray presence never
