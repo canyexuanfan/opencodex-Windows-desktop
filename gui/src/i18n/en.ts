@@ -1,5 +1,10 @@
 // English — source of truth. Its keys define the TKey type; ko/zh/ja must match (compile-checked).
 // Strings with {cmd} render a <code> chip via <Trans>; {var} are plain interpolations.
+/**
+ * English i18n catalog — source of truth. Its keys define the compile-checked `TKey` set;
+ * other locales must match (compile-checked). `{cmd}` renders a <code> chip via <Trans>;
+ * `{var}` are plain interpolations.
+ */
 export const en = {
   // sidebar / nav / common
   "nav.dashboard": "Dashboard",
@@ -574,6 +579,14 @@ export const en = {
   "logs.detail.attempt.reason": "Result / reason",
   "logs.detail.attempt.completed": "Completed",
   "logs.detail.attempt.e2eNote": "Top-level tok/s is end-to-end; each attempt uses its own duration.",
+  "logs.detail.attempt.recovery.transient5xx": "Transient 5xx",
+  "logs.detail.attempt.recovery.connectionReset": "Connection reset",
+  "logs.detail.attempt.recovery.oauth401": "OAuth re-authentication",
+  "logs.detail.attempt.recovery.key429": "Key rate-limited (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "Rate-limited (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth rate-limited (429)",
+  "logs.detail.attempt.recovery.image413": "Image payload too large (413)",
+  "logs.detail.attempt.recovery.unknown": "Unknown recovery reason",
   "logs.detail.reason.usage_missing": "Usage was not reported.",
   "logs.detail.reason.usage_unsupported": "This provider does not report usage.",
   "logs.detail.reason.output_missing": "No positive output token count was reported.",
@@ -1040,6 +1053,9 @@ export const en = {
   "pws.saveSettings": "Save",
   "pws.saving": "Saving…",
   "pws.settingsSaved": "Settings saved.",
+  "pws.accountModeSaved": "Account mode saved.",
+  "pws.accountModeFailed": "Could not switch the account mode.",
+  "pws.accountModeConfirm": "Switch the OpenAI account mode? Running conversations will be reassigned to the other mode's account set, and quota usage will be tracked against the new mode.",
   "pws.settingsUnsavedBar": "You have unsaved changes.",
   "pws.unsavedLeaveBody": "You have unsaved changes. Save them before leaving?",
   "pws.unsavedLeaveTitle": "Unsaved changes",
@@ -1051,6 +1067,14 @@ export const en = {
   "pws.dashboard.title": "Providers overview",
   "pws.dashboard.subtitle": "Manage all your model providers in one place.",
   "pws.dashboard.rateLimits": "RATE LIMITS",
+  "pws.capacity.estimate": "Configured-weight pool estimate",
+  "pws.capacity.currentAccount": "Current effective account",
+  "pws.capacity.nextRecovery": "Next capacity recovery",
+  "pws.capacity.recoveryShare": "+{percent}% pool capacity",
+  "pws.capacity.incomplete": "Incomplete coverage: {excluded} account(s) excluded, including {unknown} unknown plan(s)",
+  "pws.capacity.partial": "Partial window coverage: {count} account(s) do not report every displayed limit window",
+  "pws.capacity.windowPartial": "Partial",
+  "pws.capacity.windowPartialA11y": "{window}: incomplete account coverage",
   "pws.dashboard.recentlyUsed": "RECENTLY USED",
   "pws.dashboard.requests": "{count} requests",
   "pws.dashboard.checkedAgo": "Checked {time}",

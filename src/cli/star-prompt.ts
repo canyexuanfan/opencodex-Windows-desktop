@@ -147,6 +147,8 @@ function printAgentDeferral(): void {
     `       a later version re-asks on its own.\n` +
     `    4. An answer settles it. A No means do nothing and never raise it again\n` +
     `       — do not argue it, re-frame it, or bring it back later.\n` +
+    `\n` +
+    `  Full rule: AGENTS_INSTALL.md in the opencodex package.\n` +
     `  </details>\x1b[0m\n`,
   );
 }

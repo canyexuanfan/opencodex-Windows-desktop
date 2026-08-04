@@ -11,8 +11,10 @@ import {
   providerBaseUrlConfigError,
   providerHeadersConfigError,
   reasoningSummaryDeliveryRecordConfigError,
+  retryOn429PolicyConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
+import { redactSecretString } from "../lib/redact";
 import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -389,6 +391,11 @@ function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: Oc
   return actualKeys.every(key => JSON.stringify(actual[key]) === JSON.stringify((expected as unknown as Record<string, unknown>)[key]));
 }
 
+/**
+ * Validate a provider object arriving at the management write boundary. Returns an error
+ * string, or null when the provider may be persisted. Caller-controlled names/fields are
+ * redacted and JSON-escaped so secrets never reach the response.
+ */
 export function providerManagementConfigError(name: unknown, provider: unknown): string | null {
   if (typeof name !== "string" || !provider || typeof provider !== "object" || Array.isArray(provider)) {
     return "provider must be a plain object";
@@ -420,6 +427,12 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(typed.headers);
   if (headersError) return `provider ${name} ${headersError}`;
+  const retryOn429Error = retryOn429PolicyConfigError(raw.retryOn429);
+  if (retryOn429Error) {
+    // The provider name is caller-controlled and can be token-shaped; redact and JSON-escape
+    // it before it reaches the management API response.
+    return `provider ${JSON.stringify(redactSecretString(name))} ${retryOn429Error}`;
+  }
   const apiKeyTransportError = apiKeyTransportConfigError(typed);
   if (apiKeyTransportError) return `provider ${name} ${apiKeyTransportError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");

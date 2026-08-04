@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Japanese i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ja: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "ダッシュボード",
@@ -534,6 +537,14 @@ export const ja: Record<TKey, string> = {
   "logs.detail.attempt.reason": "結果 / 理由",
   "logs.detail.attempt.completed": "完了",
   "logs.detail.attempt.e2eNote": "トップレベルの tok/s はエンドツーエンドです; 各試行は自身の所要時間を使います。",
+  "logs.detail.attempt.recovery.transient5xx": "一時的な5xxエラー",
+  "logs.detail.attempt.recovery.connectionReset": "接続がリセットされました",
+  "logs.detail.attempt.recovery.oauth401": "OAuth 再認証",
+  "logs.detail.attempt.recovery.key429": "キーがレート制限 (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "レート制限 (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth レート制限 (429)",
+  "logs.detail.attempt.recovery.image413": "画像ペイロードが大きすぎます (413)",
+  "logs.detail.attempt.recovery.unknown": "不明なリカバリ理由",
   "logs.detail.reason.usage_missing": "使用量が報告されませんでした。",
   "logs.detail.reason.usage_unsupported": "このプロバイダーは使用量を報告しません。",
   "logs.detail.reason.output_missing": "正の出力トークン数が報告されませんでした。",
@@ -990,6 +1001,9 @@ export const ja: Record<TKey, string> = {
   "pws.saveSettings": "保存",
   "pws.saving": "保存中…",
   "pws.settingsSaved": "設定を保存しました。",
+  "pws.accountModeSaved": "アカウントモードを保存しました。",
+  "pws.accountModeFailed": "アカウントモードを切り替えられませんでした。",
+  "pws.accountModeConfirm": "OpenAI のアカウントモードを切り替えますか？実行中の会話はもう一方のモードのアカウントセットに再割り当てされ、クォータ使用量は新しいモードで計上されます。",
   "pws.settingsUnsavedBar": "未保存の変更があります。",
   "pws.unsavedLeaveBody": "未保存の変更があります。保存してから移動しますか?",
   "pws.unsavedLeaveTitle": "未保存の変更",
@@ -1001,6 +1015,14 @@ export const ja: Record<TKey, string> = {
   "pws.dashboard.title": "プロバイダー概要",
   "pws.dashboard.subtitle": "すべてのモデルプロバイダーを一か所で管理します。",
   "pws.dashboard.rateLimits": "レート制限",
+  "pws.capacity.estimate": "設定済み重みによるプール推定",
+  "pws.capacity.currentAccount": "現在の有効アカウント",
+  "pws.capacity.nextRecovery": "次の容量回復",
+  "pws.capacity.recoveryShare": "+{percent}% のプール容量",
+  "pws.capacity.incomplete": "対象範囲が不完全です: {excluded} 件を除外（不明なプラン {unknown} 件）",
+  "pws.capacity.partial": "一部の期間の対象範囲が不完全です: {count} 件のアカウントでは表示中のすべての制限期間を取得できません",
+  "pws.capacity.windowPartial": "一部のみ",
+  "pws.capacity.windowPartialA11y": "{window}: アカウントの対象範囲が不完全です",
   "pws.dashboard.recentlyUsed": "最近の使用",
   "pws.dashboard.requests": "{count} リクエスト",
   "pws.dashboard.checkedAgo": "{time} に確認",

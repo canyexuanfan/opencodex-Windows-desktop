@@ -14,10 +14,22 @@ $CODEX_HOME/opencodex.config.toml
 $CODEX_HOME/opencodex-catalog.json
 $CODEX_HOME/opencodex-journal.json
 $CODEX_HOME/models_cache.json
+$CODEX_HOME/.opencodex-native-main-profiles/
 ```
 
 Never assume macOS-only paths. Windows, service installs, and app-launched Codex can all depend on
 the resolved `CODEX_HOME`.
+
+Native-main profile ownership is bound to the real `CODEX_HOME`, not to an OpenCodex instance.
+Its encrypted vault, transaction journal, recovery marker, and referenced quarantine files live in
+the owner-only `.opencodex-native-main-profiles` directory. The unchanged
+`.opencodex-native-profile.lock.sqlite` beside that directory serializes every process sharing the
+home. Only plaintext login staging is instance-local under
+`$OPENCODEX_HOME/native-main-profile-staging`; a stage from one instance is invalid in another.
+These paths and the OS keyring are owner-only: the operating-system account that owns them is the
+trust boundary and already has direct access to active native credentials. OpenCodex detects and
+fails closed on file identities that change during an operation, but it does not claim isolation
+from a malicious process already running as that same trusted OS account.
 
 OpenCodex never overrides an explicit `CODEX_HOME`. On Windows, `ocx doctor` and `ocx status`
 nevertheless diagnose the high-confidence Orca dual-home case: both `CODEX_HOME` and

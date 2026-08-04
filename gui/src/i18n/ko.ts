@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Korean i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ko: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "대시보드",
@@ -568,6 +571,14 @@ export const ko: Record<TKey, string> = {
   "logs.detail.attempt.reason": "결과 / 사유",
   "logs.detail.attempt.completed": "완료",
   "logs.detail.attempt.e2eNote": "상위 tok/s는 전체 요청 기준이며 각 시도는 자체 소요 시간을 사용합니다.",
+  "logs.detail.attempt.recovery.transient5xx": "일시적 5xx 오류",
+  "logs.detail.attempt.recovery.connectionReset": "연결이 재설정됨",
+  "logs.detail.attempt.recovery.oauth401": "OAuth 재인증",
+  "logs.detail.attempt.recovery.key429": "키 요청 한도 초과 (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "요청 한도 초과 (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth 요청 한도 초과 (429)",
+  "logs.detail.attempt.recovery.image413": "이미지 페이로드가 너무 큼 (413)",
+  "logs.detail.attempt.recovery.unknown": "알 수 없는 복구 사유",
   "logs.detail.reason.usage_missing": "usage가 보고되지 않았습니다.",
   "logs.detail.reason.usage_unsupported": "이 프로바이더는 usage 보고를 지원하지 않습니다.",
   "logs.detail.reason.output_missing": "양수 출력 토큰 수가 보고되지 않았습니다.",
@@ -1515,6 +1526,9 @@ export const ko: Record<TKey, string> = {
   "pws.saveSettings": "저장",
   "pws.saving": "저장 중…",
   "pws.settingsSaved": "설정이 저장되었습니다.",
+  "pws.accountModeSaved": "계정 모드가 저장되었습니다.",
+  "pws.accountModeFailed": "계정 모드를 전환할 수 없습니다.",
+  "pws.accountModeConfirm": "OpenAI 계정 모드를 전환할까요? 실행 중인 대화가 다른 모드의 계정 세트로 다시 연결되며, 할당량 사용량은 새 모드로 집계됩니다.",
   "pws.settingsUnsavedBar": "저장하지 않은 변경사항이 있습니다.",
   "pws.unsavedLeaveBody": "저장하지 않은 변경사항이 있습니다. 나가기 전에 저장하시겠습니까?",
   "pws.unsavedLeaveTitle": "미저장 변경사항",
@@ -1526,6 +1540,14 @@ export const ko: Record<TKey, string> = {
   "pws.dashboard.title": "프로바이더 개요",
   "pws.dashboard.subtitle": "모든 모델 프로바이더를 한곳에서 관리합니다.",
   "pws.dashboard.rateLimits": "사용량 제한",
+  "pws.capacity.estimate": "설정 가중치 기반 풀 추정치",
+  "pws.capacity.currentAccount": "현재 유효 계정",
+  "pws.capacity.nextRecovery": "다음 용량 회복",
+  "pws.capacity.recoveryShare": "+{percent}% 풀 용량",
+  "pws.capacity.incomplete": "불완전한 범위: {excluded}개 계정 제외, 알 수 없는 요금제 {unknown}개 포함",
+  "pws.capacity.partial": "일부 기간의 범위가 불완전합니다: {count}개 계정에서 표시된 모든 한도 기간을 확인할 수 없습니다",
+  "pws.capacity.windowPartial": "일부만",
+  "pws.capacity.windowPartialA11y": "{window}: 계정 범위가 불완전합니다",
   "pws.dashboard.recentlyUsed": "최근 사용",
   "pws.dashboard.requests": "{count}건 요청",
   "pws.dashboard.checkedAgo": "{time} 전 확인",

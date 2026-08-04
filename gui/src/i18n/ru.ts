@@ -1,5 +1,8 @@
 import type { TKey } from "./en";
 
+/**
+ * Russian i18n catalog; must match the `TKey` set (compile-checked).
+ */
 export const ru: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "Дашборд",
@@ -566,6 +569,14 @@ export const ru: Record<TKey, string> = {
   "logs.detail.attempt.reason": "Результат / причина",
   "logs.detail.attempt.completed": "Завершено",
   "logs.detail.attempt.e2eNote": "Общий tok/s — сквозной показатель; для каждой попытки используется её собственная длительность.",
+  "logs.detail.attempt.recovery.transient5xx": "Временная ошибка 5xx",
+  "logs.detail.attempt.recovery.connectionReset": "Соединение сброшено",
+  "logs.detail.attempt.recovery.oauth401": "Повторная авторизация OAuth",
+  "logs.detail.attempt.recovery.key429": "Ключ ограничен (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "Ограничение частоты запросов (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth ограничен (429)",
+  "logs.detail.attempt.recovery.image413": "Слишком большой размер изображения (413)",
+  "logs.detail.attempt.recovery.unknown": "Неизвестная причина восстановления",
   "logs.detail.reason.usage_missing": "Данные об использовании не были сообщены.",
   "logs.detail.reason.usage_unsupported": "Этот провайдер не сообщает данные об использовании.",
   "logs.detail.reason.output_missing": "Положительное число выходных токенов не было сообщено.",
@@ -1032,6 +1043,9 @@ export const ru: Record<TKey, string> = {
   "pws.saveSettings": "Сохранить",
   "pws.saving": "Сохранение…",
   "pws.settingsSaved": "Настройки сохранены.",
+  "pws.accountModeSaved": "Режим аккаунта сохранён.",
+  "pws.accountModeFailed": "Не удалось переключить режим аккаунта.",
+  "pws.accountModeConfirm": "Переключить режим аккаунта OpenAI? Текущие беседы будут перенаправлены на другой набор аккаунтов, а использование квоты будет учитываться в новом режиме.",
   "pws.settingsUnsavedBar": "Есть несохранённые изменения.",
   "pws.unsavedLeaveBody": "Есть несохранённые изменения. Сохранить их перед переходом?",
   "pws.unsavedLeaveTitle": "Несохранённые изменения",
@@ -1043,6 +1057,14 @@ export const ru: Record<TKey, string> = {
   "pws.dashboard.title": "Обзор провайдеров",
   "pws.dashboard.subtitle": "Управляйте всеми провайдерами моделей в одном месте.",
   "pws.dashboard.rateLimits": "Лимиты запросов",
+  "pws.capacity.estimate": "Оценка пула по настроенным весам",
+  "pws.capacity.currentAccount": "Текущая активная учётная запись",
+  "pws.capacity.nextRecovery": "Следующее восстановление ёмкости",
+  "pws.capacity.recoveryShare": "+{percent}% ёмкости пула",
+  "pws.capacity.incomplete": "Неполное покрытие: исключено аккаунтов: {excluded}, в том числе с неизвестным планом: {unknown}",
+  "pws.capacity.partial": "Частичное покрытие окон: для {count} аккаунтов доступны не все показанные окна лимитов",
+  "pws.capacity.windowPartial": "Частично",
+  "pws.capacity.windowPartialA11y": "{window}: неполное покрытие аккаунтов",
   "pws.dashboard.recentlyUsed": "Недавно использованные",
   "pws.dashboard.requests": "{count} запросов",
   "pws.dashboard.checkedAgo": "Проверено {time}",

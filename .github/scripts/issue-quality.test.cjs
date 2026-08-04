@@ -22,6 +22,7 @@ const {
   isUnusableVersion,
   countWords,
   hasConcreteDetail,
+  hasActionableReproductionDetail,
   rejectsWorkflowDispatchPullRequest,
   rejectsWorkflowDispatchNonDefaultBranch,
 } = require("./issue-quality.cjs");
@@ -465,6 +466,25 @@ describe("validateIssue - feature", () => {
     assert.ok(vagueResult.reasons.some((r) => r.includes("too vague")));
   });
 
+  it("treats only commands, errors, paths, or exact actions as actionable reproduction detail", () => {
+    assert.equal(hasActionableReproductionDetail("1. choose model deepseek\n2. send a message in codex plugin"), false);
+    assert.equal(hasActionableReproductionDetail("I want to work with deepseek in VSCode, but it dont reply"), false);
+    assert.equal(hasActionableReproductionDetail("1. ocx start --port 10100\n2. Send a request"), true);
+    assert.equal(hasActionableReproductionDetail("Run ocx start and send any streaming request."), true);
+    assert.equal(hasActionableReproductionDetail("ocx start on Raspberry Pi 4, send any streaming request."), true);
+    assert.equal(hasActionableReproductionDetail("send a request"), false);
+    assert.equal(hasActionableReproductionDetail("make a call"), false);
+    assert.equal(hasActionableReproductionDetail("post a command"), false);
+    assert.equal(hasActionableReproductionDetail("make an API call"), true);
+    assert.equal(hasActionableReproductionDetail("send an HTTP request"), true);
+    assert.equal(hasActionableReproductionDetail("send a request to /v1/responses"), true);
+    assert.equal(hasActionableReproductionDetail("The proxy returns HTTP 502 after the first streaming chunk."), true);
+    assert.equal(hasActionableReproductionDetail("Paste ~/.codex/config.toml, then restart the proxy."), true);
+    assert.equal(hasActionableReproductionDetail("```\n\n```"), false);
+    assert.equal(hasActionableReproductionDetail("~~~\n\n~~~"), false);
+    assert.equal(hasActionableReproductionDetail("```\nSIGSEGV at 0x0000\n```"), true);
+  });
+
   it("rejects fenced placeholder-only examples", () => {
     const fencedPlaceholders = [
       "```\nN/A\n```",
@@ -865,6 +885,41 @@ describe("validateIssue - bug", () => {
     assert.equal(result.kind, "bug");
     assert.equal(result.valid, false);
     assert.ok(result.reasons.some((r) => /Reproduction/i.test(r) && /vague/i.test(r)));
+  });
+
+  it("rejects a #977-shaped bug with product keywords but no actionable reproduction", () => {
+    const body = [
+      "### Client or integration",
+      "Other",
+      "### Area",
+      "Proxy and routing",
+      "### Summary",
+      "I want to work with deepseek in VSCode, but it dont reply,just thinking",
+      "### Reproduction",
+      "1.choose model deepseek",
+      "2.send a message in codex plugin",
+      "### Version",
+      "2.10.0",
+      "### Operating system",
+      "Ubuntu 24.04",
+      "### Provider and model",
+      "deepseek",
+    ].join("\n");
+    const result = validateIssue({
+      title: "Dont work in VSCode Codex plugin",
+      body,
+      labels: ["bug", "proxy"],
+    });
+    assert.equal(result.kind, "bug");
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => /Reproduction/i.test(r) && /vague/i.test(r)),
+      `Expected a vague Reproduction reason, got: ${result.reasons.join("; ")}`,
+    );
+    assert.ok(
+      result.guidance.some((g) => /commands|steps/i.test(g)),
+      `Expected reproduction guidance, got: ${result.guidance.join("; ")}`,
+    );
   });
 
   it("rejects unknown Operating system stand-ins on the new bug form", () => {

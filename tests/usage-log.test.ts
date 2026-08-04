@@ -18,6 +18,7 @@ import {
   usageTotalTokens,
   usageReadCacheStatsForTests,
   usageLogRevisionKey,
+  type PersistedUsageEntry,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -37,6 +38,32 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("persists the rate-limit-429 recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-ratelimit-kind",
+      timestamp: 1,
+      provider: "blsc",
+      model: "blsc/DeepSeek-V4-Flash",
+      status: 429,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "blsc",
+        model: "blsc/DeepSeek-V4-Flash",
+        adapter: "openai-chat",
+        status: 429,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["rate-limit-429", "rate-limit-429"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429"]);
+  });
+
+  /** Build one minimal persisted-usage JSONL line for the given request id. */
   const persistedLine = (requestId: string) => JSON.stringify({
     requestId,
     timestamp: 1,

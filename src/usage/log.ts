@@ -7,11 +7,16 @@ import type { OcxUsage } from "../types";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
 
+/**
+ * Recovery kinds recorded per attempt in the usage log; the GUI renders localized labels
+ * for these wire values.
+ */
 export type AttemptRecoveryKind =
   | "transient-5xx"
   | "connection-reset"
   | "oauth-401"
   | "key-429"
+  | "rate-limit-429"
   | "anthropic-oauth-429"
   | "image-413";
 
@@ -173,6 +178,7 @@ const ATTEMPT_RECOVERY_KINDS = new Set<AttemptRecoveryKind>([
   "connection-reset",
   "oauth-401",
   "key-429",
+  "rate-limit-429",
   "anthropic-oauth-429",
   "image-413",
 ]);

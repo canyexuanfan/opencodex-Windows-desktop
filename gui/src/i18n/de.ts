@@ -1,6 +1,9 @@
 // German — generated from en.ts. Must match TKey set (compile-checked).
 import type { TKey } from "./en";
 
+/**
+ * German i18n catalog, generated from en.ts. Must match the `TKey` set (compile-checked).
+ */
 export const de: Record<TKey, string> = {
   "nav.dashboard": "Übersicht",
   "nav.startup": "Startsicherheit",
@@ -549,6 +552,14 @@ export const de: Record<TKey, string> = {
   "logs.detail.attempt.reason": "Ergebnis / Grund",
   "logs.detail.attempt.completed": "Abgeschlossen",
   "logs.detail.attempt.e2eNote": "Tok/s auf oberster Ebene ist Ende-zu-Ende; jeder Versuch nutzt seine eigene Dauer.",
+  "logs.detail.attempt.recovery.transient5xx": "Vorübergehender 5xx-Fehler",
+  "logs.detail.attempt.recovery.connectionReset": "Verbindung zurückgesetzt",
+  "logs.detail.attempt.recovery.oauth401": "OAuth-Neuanmeldung",
+  "logs.detail.attempt.recovery.key429": "Schlüssel ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.rateLimit429": "Ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth ratenbegrenzt (429)",
+  "logs.detail.attempt.recovery.image413": "Bildnutzlast zu groß (413)",
+  "logs.detail.attempt.recovery.unknown": "Unbekannter Wiederherstellungsgrund",
   "logs.detail.reason.usage_missing": "Nutzung wurde nicht gemeldet.",
   "logs.detail.reason.usage_unsupported": "Dieser Anbieter meldet keine Nutzung.",
   "logs.detail.reason.output_missing": "Es wurden keine positiven Ausgabe-Tokens gemeldet.",
@@ -1488,6 +1499,9 @@ export const de: Record<TKey, string> = {
   "pws.saveSettings": "Speichern",
   "pws.saving": "Wird gespeichert…",
   "pws.settingsSaved": "Einstellungen gespeichert.",
+  "pws.accountModeSaved": "Kontomodus gespeichert.",
+  "pws.accountModeFailed": "Kontomodus konnte nicht gewechselt werden.",
+  "pws.accountModeConfirm": "OpenAI-Kontomodus wechseln? Laufende Unterhaltungen werden dem anderen Kontosatz zugeordnet und die Quotennutzung wird unter dem neuen Modus erfasst.",
   "pws.settingsUnsavedBar": "Es gibt ungespeicherte Änderungen.",
   "pws.unsavedLeaveBody": "Es gibt ungespeicherte Änderungen. Vor dem Verlassen speichern?",
   "pws.unsavedLeaveTitle": "Ungespeicherte Änderungen",
@@ -1499,6 +1513,14 @@ export const de: Record<TKey, string> = {
   "pws.dashboard.title": "Anbieterübersicht",
   "pws.dashboard.subtitle": "Verwalten Sie alle Ihre Modellanbieter an einem Ort.",
   "pws.dashboard.rateLimits": "RATE LIMITS",
+  "pws.capacity.estimate": "Pool-Schätzung anhand konfigurierter Gewichtungen",
+  "pws.capacity.currentAccount": "Aktuelles effektives Konto",
+  "pws.capacity.nextRecovery": "Nächste Kapazitätswiederherstellung",
+  "pws.capacity.recoveryShare": "+{percent} % Pool-Kapazität",
+  "pws.capacity.incomplete": "Unvollständige Abdeckung: {excluded} Konten ausgeschlossen, davon {unknown} mit unbekanntem Tarif",
+  "pws.capacity.partial": "Teilweise Fensterabdeckung: {count} Konten melden nicht jedes angezeigte Limitfenster",
+  "pws.capacity.windowPartial": "Teilweise",
+  "pws.capacity.windowPartialA11y": "{window}: unvollständige Kontoabdeckung",
   "pws.dashboard.recentlyUsed": "KÜRZLICH VERWENDET",
   "pws.dashboard.requests": "{count} Anfragen",
   "pws.dashboard.checkedAgo": "Geprüft {time}",

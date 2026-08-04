@@ -50,6 +50,10 @@ interface ProviderAdapter {
 **不经转换**地流式传回。
 **认证：** `forward`（转发调用方 header）或 `key`。
 
+使用 `key` 认证时，[`retryOn429`](/zh-cn/reference/configuration/) 同样适用：流开始前的 429
+会等待并先于其他处理或故障转移，在相同 key 上重放完全相同请求，与翻译后的
+`openai-chat`/Anthropic 请求路径一致。自定义 `runTurn` 传输不在 HTTP 重试循环之内。
+
 - `forward` URL → `{baseUrl}/responses`。`key` provider 默认保留原有的 `{baseUrl}/v1/responses` 构造。
 - `key` provider 可设置经过验证的相对 `responsesPath`；adapter 会移除 `baseUrl` 末尾的一个 `/`，并向 `{trimmedBaseUrl}{responsesPath}` 发送请求。Ark Agent Plan 使用 `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` 和 `responsesPath: "/responses"`。
 - `forward` 模式只会转发安全的 header allowlist（`FORWARD_HEADERS`）：authorization、ChatGPT

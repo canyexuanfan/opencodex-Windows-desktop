@@ -221,6 +221,19 @@ describe("subagent model fallback chain", () => {
     expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(false);
   });
 
+  test("fenced quota priming does not invoke the injected refresh", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let calls = 0;
+    setSubagentQuotaPrimeForTests(async () => {
+      calls += 1;
+    });
+
+    await maybePrimeSubagentQuota(cfg(), Date.now(), { nativeMainReadsForbidden: true });
+
+    expect(calls).toBe(0);
+    expect(getSubagentQuotaPrimeStateForTests()).toEqual({ primedAt: 0, inFlight: false });
+  });
+
   test("concurrent maybePrimeSubagentQuota callers share one in-flight refresh", async () => {
     resetSubagentModelFallbackStateForTests();
     let calls = 0;
