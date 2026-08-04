@@ -54,6 +54,7 @@ export interface StartupHealth {
 
 const COMMANDS = {
   installService: "ocx service install",
+  repairService: "ocx service repair",
   installShim: "ocx codex-shim install",
   restoreNative: "ocx restore",
 } as const;
@@ -88,7 +89,12 @@ export function deriveStartupHealth(inputs: StartupHealthInputs): StartupHealth 
     : inputs.routingKind === "custom-local" || inputs.routingKind === "unknown"
       ? COMMANDS.restoreNative
     : inputs.serviceSupported
-      ? COMMANDS.installService
+      // An already-registered service is refreshed in place: `repair` rewrites its assets
+      // and restarts it without re-registering, so it needs no elevation on Windows and
+      // cannot switch a WinSW install to Task Scheduler the way `install` would. Only a
+      // genuinely absent (or conflicting, which needs uninstall-then-install) service
+      // gets the registering command.
+      ? (inputs.serviceInstalled && !inputs.serviceConflict ? COMMANDS.repairService : COMMANDS.installService)
       : COMMANDS.restoreNative;
   return {
     ...inputs,

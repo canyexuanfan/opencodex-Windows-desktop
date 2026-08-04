@@ -33,6 +33,35 @@ describe("Codex startup health", () => {
     expect(startupHealthSummary(health)).toContain("ocx service install");
   });
 
+  // 260804 #970 follow-up: an already-REGISTERED service is refreshed in place. `install`
+  // re-registers, which needs elevation on Windows and can switch a WinSW backend to Task
+  // Scheduler, so recommending it to someone who already has a service costs them a UAC
+  // prompt they do not need. Ablate by restoring the unconditional installService and the
+  // stale/unhealthy cases below go red.
+  test("an installed but unhealthy service is repaired, not re-registered", () => {
+    for (const broken of [
+      { serviceInstalled: true, serviceStale: true },
+      { serviceInstalled: true, serviceEnabled: false },
+      { serviceInstalled: true, serviceRunning: false },
+    ]) {
+      const health = deriveStartupHealth({ ...base, ...broken });
+      expect(health.status).toBe("at-risk");
+      expect(health.recommendedCommand).toBe("ocx service repair");
+      expect(startupHealthSummary(health)).toContain("ocx service repair");
+    }
+  });
+
+  test("a genuinely absent service still gets the registering command", () => {
+    const health = deriveStartupHealth({ ...base, serviceInstalled: false });
+    expect(health.recommendedCommand).toBe("ocx service install");
+  });
+
+  test("a conflicting service needs uninstall-then-install, not repair", () => {
+    // repairService() refuses a conflict outright — two managers must be torn down first.
+    const health = deriveStartupHealth({ ...base, serviceInstalled: true, serviceConflict: true });
+    expect(health.recommendedCommand).toBe("ocx service install");
+  });
+
   test("treats a background service as restart protection", () => {
     const health = deriveStartupHealth({ ...base, serviceInstalled: true, serviceViable: true, serviceEnabled: true, serviceRunning: true });
     expect(health).toMatchObject({
@@ -171,6 +200,7 @@ describe("Codex startup health", () => {
     expect(typeof body.routingInjected).toBe("boolean");
     expect(body.commands).toEqual({
       installService: "ocx service install",
+      repairService: "ocx service repair",
       installShim: "ocx codex-shim install",
       restoreNative: "ocx restore",
     });
