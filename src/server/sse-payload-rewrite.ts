@@ -141,6 +141,7 @@ export function relaySseWithBlockRewrite(
   let bufferBytes = 0;
   // Relays have several independent teardown paths; disposal is exactly once.
   let disposed = false;
+  let cancelled = false;
   const disposeRewrite = (): void => {
     if (disposed) return;
     disposed = true;
@@ -221,6 +222,9 @@ export function relaySseWithBlockRewrite(
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
+        // A cancel raced this pending read: never feed the rewriter again
+        // after its disposal (#893 review).
+        if (cancelled) return;
         if (done) {
           appendBuffer(decoder.decode());
           emitProcessedBlocks(controller, true);
@@ -239,6 +243,7 @@ export function relaySseWithBlockRewrite(
       }
     },
     cancel(reason) {
+      cancelled = true;
       releaseBuffer();
       disposeRewrite();
       reader.cancel(reason).catch(() => {});

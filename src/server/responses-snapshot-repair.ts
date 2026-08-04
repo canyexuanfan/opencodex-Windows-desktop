@@ -227,7 +227,16 @@ export function createResponsesSnapshotBlockRewrite(
     tainted = true;
   };
 
+  /** Drop one open item and refund its accumulated text from the aggregate. */
+  const closeOpenItem = (index: number): void => {
+    const open = openItems.get(index);
+    if (!open) return;
+    aggregateOpenTextBytes -= Buffer.byteLength(open.text, "utf8");
+    openItems.delete(index);
+  };
+
   const retainCompletedItem = (index: number, item: Record<string, unknown>): void => {
+    if (tainted) return; // fail closed means stop retaining (#893 review)
     const sourceBytes = Buffer.byteLength(JSON.stringify(item), "utf8");
     const previous = completedItems.get(index);
     if (sourceBytes > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES) {
@@ -348,7 +357,7 @@ export function createResponsesSnapshotBlockRewrite(
         return [changed ? jsonBlock(nextEvent) : block];
       }
       if (outputIndex !== undefined && typeof item.type === "string" && item.type.trim().length > 0) {
-        openItems.delete(outputIndex);
+        closeOpenItem(outputIndex);
         retainCompletedItem(outputIndex, item);
       } else {
         taintAndRelease();
@@ -406,7 +415,18 @@ export function createResponsesSnapshotBlockRewrite(
         const open = openItems.get(outputIndex);
         if (open && (itemId === undefined || itemId === open.itemId)) {
           open.textDone = true;
-          if (typeof event.text === "string") open.text = event.text;
+          if (typeof event.text === "string") {
+            // Replacement must keep the aggregate honest and bounded, the
+            // same as delta accumulation (#893 review).
+            const previousBytes = Buffer.byteLength(open.text, "utf8");
+            const nextBytes = Buffer.byteLength(event.text, "utf8");
+            open.text = event.text;
+            aggregateOpenTextBytes += nextBytes - previousBytes;
+            if (nextBytes > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES
+              || aggregateOpenTextBytes > MAX_OPEN_ITEM_AGGREGATE_TEXT_BYTES) {
+              taintAndRelease();
+            }
+          }
         }
       }
       if (typeof event.text !== "string") {
@@ -498,7 +518,7 @@ export function createResponsesSnapshotBlockRewrite(
             output_index: open.outputIndex,
             item: snapshot,
           }));
-          openItems.delete(open.outputIndex);
+          closeOpenItem(open.outputIndex);
           retainCompletedItem(open.outputIndex, snapshot);
         }
       }
