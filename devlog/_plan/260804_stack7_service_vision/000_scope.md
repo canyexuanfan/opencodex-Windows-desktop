@@ -71,6 +71,7 @@ answered in `020` before any code is written.
 
 | Doc | Contents |
 |---|---|
+| `001_audit_response.md` | A-gate FAIL — five blockers, synthesis, and what changed |
 | `010_nim_vision_classification.md` | #964 reconstruction — the classification design and its diff |
 | `020_service_repair_path.md` | #970 reconstruction — call-site inventory and the after-stop safety proof |
 | `030_merge_and_close_sequence.md` | bottom-up merge order, retargeting, and issue closure evidence |

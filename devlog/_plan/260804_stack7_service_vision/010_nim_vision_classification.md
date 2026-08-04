@@ -66,35 +66,82 @@ Three candidate mechanisms, all rejected on evidence:
    while per-page verification finds 15 image-capable chat models. The labels are
    incomplete.
 
-## The design: keep the short list, derive the long one
+## The design: change the predicate, not the list
 
-Maintain `NVIDIA_NIM_VISION_MODELS` — the models that CAN see — and compute
-`noVisionModels` as the complement over the ids we actually classify.
+**A first version of this document proposed maintaining the 15 vision-capable ids
+and deriving text-only as their complement. The A-gate audit falsified it and I
+reproduced the failure** (`001_audit_response.md`, B1). A complement taken over a
+static `NVIDIA_NIM_CHAT_MODELS` still leaves an unclassified id in *neither*
+list:
 
-This inverts the failure mode, which is the whole point. NIM adds models
-continuously, so any hand-maintained list is stale on merge day. The question is
-what happens to an id nobody has classified yet:
+```console
+$ bun run .tmp/probe_complement.ts     # the proposed shape, modelled exactly
+deepseek-ai/deepseek-v4-flash            sidecarWouldRun=true
+moonshotai/kimi-k2.6                     sidecarWouldRun=false
+brandnew/model-nobody-classified         sidecarWouldRun=false   <-- #956 persists
+```
 
-| Design | Unknown new model defaults to | Failure when wrong |
+I had inverted which list is maintained while keeping the closed world. Any
+design expressed purely as *list contents* inherits closed-world semantics,
+because the classification is membership-in-a-list. Escaping it requires changing
+the **predicate**.
+
+### Two fields, one default
+
+1. **`NVIDIA_NIM_VISION_MODELS`** — the 15 verified natively-image-capable ids.
+   These are the exception, and they carry per-model NVIDIA documentation.
+2. **A provider-level default** — for the `nvidia` entry, a model that is *not*
+   in the vision list is treated as needing the sidecar, without enumerating it.
+
+Concretely this means the `nvidia` entry declares its text-only membership as
+"everything except the vision list" rather than as a snapshot of ids. The
+registry already carries per-provider capability flags
+(`ProviderRegistryEntry`, `src/providers/registry.ts:190-230`); this adds one
+more whose semantics are *default-on with an exception list*, and `router.ts`
+merges it beside `noVisionModels` (`src/router.ts:243`) so a user's explicit
+config still wins.
+
+Now the open-domain case lands correctly:
+
+| Design | Unclassified new NIM model | Failure when wrong |
 |---|---|---|
-| #964: enumerate text-only | not in list → **no sidecar** | issue #956 persists — images blocked or 400 |
-| ours: enumerate vision-capable | not in list → **sidecar on** | one extra description hop; image still works |
+| #964: enumerate text-only | no sidecar | **#956 persists** — images blocked or 400 |
+| complement over a static set | no sidecar | **#956 persists** (falsified above) |
+| default-on with an exception list | sidecar runs | one extra description hop; image still works |
 
-The second failure is recoverable and visible in logs. The first is the bug we
-are fixing. The maintained list also shrinks from ~60 entries to 15, and the
-short list is the one with authoritative per-model documentation behind it.
+Only the third actually closes the issue for models NVIDIA has not shipped yet.
 
-This mirrors `CLINE_PASS_TEXT_ONLY_MODELS`
-(`src/providers/registry.ts:627`), which already derives text-only membership as
-`CLINE_PASS_MODELS.filter(id => !CLINE_PASS_IMAGE_MODELS.has(id))`. The pattern
-is established in this file; #964 simply did not follow it.
+### Why the exception list is safe to hand-maintain
+
+The objection that killed the previous design does not apply here. A stale
+*exception* list degrades gracefully: a newly-released vision model missing from
+it gets an unnecessary description hop, which is slower and costs a call but
+still answers. A stale *enumeration* silently reproduces the reported bug. The
+asymmetry is the entire argument, and it only holds when the default is on.
 
 ### Scope boundary
 
-The complement is taken over **chat-capable** NIM ids only. Embeddings,
-rerankers, guard/safety classifiers, OCR and document extraction, image and video
-generation, speech, and simulation endpoints are not chat models and must not
-appear in either list.
+Default-on applies to **chat** ids only. Embeddings, rerankers, guard/safety
+classifiers, OCR and document extraction, image/video generation, speech, and
+simulation endpoints never reach `planVisionSidecar` in the first place — they
+are not routed as chat models — but the implementation must confirm that rather
+than assume it, since a default-on rule has a wider blast radius than a list.
+
+### Verified vision models also need explicit modalities (audit B2)
+
+Keeping a native-vision id out of `noVisionModels` is necessary but **not
+sufficient**. `applyProviderConfigHints` adds `image` to a model's
+`inputModalities` only for `noVisionModels` members
+(`src/codex/catalog/provider-fetch.ts:176-184`), and NIM `/v1/models` publishes
+no modality metadata. So a model left out of both would be advertised text-only
+and the Codex app would block attachments client-side — the model can see, and
+the user still cannot send.
+
+Every id in `NVIDIA_NIM_VISION_MODELS` therefore also gets
+`modelInputModalities[id] = ["text", "image"]`, following the shape
+`ZHIPU_BIGMODEL_INPUT_MODALITIES` already uses
+(`src/providers/registry.ts:327-331`). The test asserts the **emitted catalog
+payload** carries `image`, not merely that the id is absent from a list.
 
 ## Verified vision-capable set (2026-08-04)
 
@@ -139,36 +186,51 @@ Flagged, not yet committed to code:
    - add `NVIDIA_NIM_VISION_MODELS` (the verified set above) with a comment
      recording the verification date, the per-model source, and the standing
      instruction to append to THIS list, never to a text-only one;
-   - add `NVIDIA_NIM_CHAT_MODELS` — the chat ids we classify, seeded from the
-     live catalog snapshot and the existing `NVIDIA_NIM_KIMI_MODELS`;
-   - derive `NVIDIA_NIM_NO_VISION_MODELS` as the filtered complement;
-   - set `noVisionModels` on the `nvidia` entry and extend the entry comment.
-2. No change to `src/vision/index.ts`, `src/codex/catalog/provider-fetch.ts`, or
-   `src/router.ts`. The sidecar, the catalog's image-modality advertisement, and
-   the registry→config merge all already do the right thing once the field is
-   populated — which is why #956 has a working config-only workaround.
+   - add `modelInputModalities` entries pinning `["text","image"]` for each of
+     those ids (audit B2);
+   - declare the provider-level default-on rule on the `nvidia` entry, with the
+     vision list as its exception set, and extend the entry comment to explain
+     why NIM specifically gets a default rather than an enumeration.
+2. The predicate change touches the classification path, so the surfaces that
+   read `noVisionModels` must each be checked rather than assumed:
+   `planVisionSidecar` (`src/vision/index.ts:235`), the fail-closed strip in
+   `src/server/responses/core.ts:1581`, the catalog hint
+   (`src/codex/catalog/provider-fetch.ts:176`), the registry→config merge
+   (`src/router.ts:243`), the seed fill (`src/providers/derive.ts:257`), and
+   `src/cli/models.ts:44`. A user's explicit config `noVisionModels` must keep
+   winning over the default.
+3. No behavioral change is intended for any other provider. The default is
+   scoped to the `nvidia` entry; every other entry keeps enumerating.
 
 ## Tests and the red-green plan
 
 Extend `tests/nvidia-nim-hardening.test.ts` (the file #964 also chose):
 
-1. **Vision-capable ids are absent from `noVisionModels`.** Seed with the five
-   ids #964 got wrong. Ablate by adding one to the vision list's complement and
-   watch it go red. This test is the direct regression guard for #964's defect.
-2. **Representative text-only ids are present** — `deepseek-ai/deepseek-v4-flash`,
-   `z-ai/glm-5.2`, `nvidia/nemotron-3-ultra-550b-a55b`, `openai/gpt-oss-120b`.
-3. **The lists cannot overlap.** A structural assertion that
-   `NVIDIA_NIM_VISION_MODELS ∩ noVisionModels = ∅`. Ablate by planting a
-   duplicate id.
-4. **Sidecar activation end to end** — `planVisionSidecar` returns a plan for a
-   text-only NIM model carrying an image, `undefined` without an image, and
-   `undefined` for `meta/llama-3.2-11b-vision-instruct` even with an image.
-   (#964's equivalent test passes for the wrong reason on ids like kimi-k2.6; ours
-   asserts the corrected classification.)
-5. **A bare persisted nvidia config inherits the field** from the registry via
-   `routeModel` — covers the #956 reporter's exact config shape.
-6. **The catalog advertises image input** for a text-only NIM model and does not
-   fabricate it for a vision-capable one.
+1. **An unclassified id gets the sidecar.** The regression guard for audit B1:
+   a NIM model id that appears in no list at all must still produce a vision
+   plan when the request carries an image. Ablate by reverting to an enumerated
+   `noVisionModels` and watch it go red. This is the test the first design could
+   not have passed.
+2. **Vision-capable ids do NOT get the sidecar.** Seed with the five ids #964 got
+   wrong — `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
+   `moonshotai/kimi-k2.6`, `stepfun-ai/step-3.7-flash`,
+   `mistralai/mistral-medium-3.5-128b` — plus the two llama-3.2 vision ids.
+   `planVisionSidecar` returns `undefined` for each even with an image attached.
+3. **The catalog advertises image input for both classes, for different
+   reasons** (audit B2): a text-only id gets `image` via the `noVisionModels`
+   hint, and a verified vision id gets it via `modelInputModalities`. Assert the
+   emitted payload in both cases. Ablate the `modelInputModalities` entries and
+   watch the vision-id case go red.
+4. **Representative text-only ids still classify correctly** —
+   `deepseek-ai/deepseek-v4-flash`, `z-ai/glm-5.2`,
+   `nvidia/nemotron-3-ultra-550b-a55b`, `openai/gpt-oss-120b`. Sidecar on, no
+   image forwarded raw.
+5. **A user's explicit config wins.** A persisted `nvidia` provider that names
+   its own `noVisionModels` is not overridden by the provider default.
+6. **A bare persisted nvidia config gets the fix** through `routeModel` — the
+   #956 reporter's exact config shape, which today needs a manual workaround.
+7. **No other provider changes classification.** A structural assertion over
+   `PROVIDER_REGISTRY` that the default-on rule is scoped to `nvidia` only.
 
 Every guard gets driven red by ablation before it counts, per the unit's
 verification discipline.

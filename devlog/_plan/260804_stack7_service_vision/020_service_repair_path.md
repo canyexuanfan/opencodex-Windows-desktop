@@ -67,6 +67,33 @@ On macOS and Linux repair delegates straight to `installLaunchd`/`installSystemd
 (`:1787-1793`), so the service-manager outcome is identical. The change is
 Windows-meaningful and non-Windows-neutral.
 
+## The Windows GUI updater never reaches the command at all (audit B3)
+
+Changing the argv is not enough on the surface that matters most.
+`restartAfterUpdate()` sets `skipServiceInstall = true` unconditionally when the
+worker is a non-elevated Windows process (`src/update/job.ts:775-790`):
+
+```ts
+// Windows GUI update worker sets OCX_SERVICE=1 and is never elevated.
+// `schtasks /create` will UAC-fail and can race the subsequent direct start.
+if (process.platform === "win32" && process.env.OCX_SERVICE === "1") {
+  updateJob(job, {}, "Skipping service reinstall from the non-elevated update worker; ...");
+  skipServiceInstall = true;
+```
+
+The dashboard-triggered update is the common GUI path, and it skips the refresh
+entirely — so a pure argv change would fix the CLI while leaving the GUI exactly
+as broken.
+
+The skip's own comment names its justification: `schtasks /create` needs UAC.
+**Repair does not call `/create`** (`src/service.ts:1775-1785`), so the
+justification does not survive this change. The skip must be narrowed to the
+install argv rather than left standing: a non-elevated Windows worker should run
+`service repair` and fall through to the direct start only if that fails.
+
+This makes the reconstruction *larger* than a find-and-replace, and it is the
+part of #970 that actually delivers the fix to the user who reported it.
+
 ## The caveat #970 introduces and does not handle
 
 `bin/ocx.mjs:136-150` decides "a service manages this proxy" from the mere
@@ -79,11 +106,20 @@ the user silently loses their managed service; only the direct-start fallback
 `src/update/index.ts` does not have this hole: it records `isServiceInstalled()`
 before stopping (`:188-194`).
 
-**Our reconstruction closes it:** the update paths try repair first and fall back
-to install when repair reports the service is not actually installed. That keeps
-the non-elevated happy path (the whole point of #970) while preserving today's
-recovery from a stale marker. A straight cherry-pick of #970 would import the
-regression.
+**Our reconstruction closes it — but not by reading the failure** (audit B4).
+`repairService()` throws a plain `Error` for unsupported, conflict, ownership,
+auth, absent-registration, asset-write, start, and health failures alike
+(`src/service.ts:1755-1770`), and `bin/ocx.mjs` spawns with inherited stdio and
+sees only an exit status (`bin/ocx.mjs:251`). "Not installed" is not
+distinguishable from any other failure, so message-matching is unimplementable
+and a blanket "install after any repair failure" would reintroduce the UAC path
+and could re-register a service the user had just deliberately uninstalled.
+
+Instead: after a failed repair, re-run a **structured diagnostic**
+(`diagnoseService()`) and install only when it reports the service genuinely
+absent while the managed-service marker still expresses intent. State beats
+error-message parsing. A straight cherry-pick of #970 would import the
+regression; a naive fix for it would import a worse one.
 
 ## Planned diff
 
@@ -91,10 +127,13 @@ regression.
    keep the export name for out-of-module callers. `serviceRepairCommand()`
    (`:500-511`) returns the backend-neutral `ocx service repair` instead of
    synthesizing `install --native`.
-2. `bin/ocx.mjs` — refresh via repair; on a "not installed" failure retry once
-   with the backend-correct install argv before the direct-start fallback.
-3. `src/update/index.ts`, `src/update/job.ts` — consume the repair argv; the
-   existing non-viable/failed fallbacks stay exactly as they are.
+2. `bin/ocx.mjs` — refresh via repair; on failure consult `diagnoseService()` and
+   install only for a genuinely absent service, before the direct-start fallback.
+3. `src/update/index.ts` — consume the repair argv; existing non-viable/failed
+   fallbacks unchanged.
+4. `src/update/job.ts` — consume the repair argv **and** narrow the
+   Windows/`OCX_SERVICE=1` skip (`:775-790`) so it no longer suppresses a
+   non-registering repair.
 4. Advice strings that fire only for an **installed** service become repair:
    `src/cli/status.ts:171-177`, `src/service.ts:1927`, `:2341-2349`, `:2464-2474`,
    `src/lib/winsw.ts:370-372`. First-install and missing-unit guidance
@@ -118,14 +157,21 @@ until updated — which is the proof the change is load-bearing:
 - `tests/service.test.ts:1243-1251`
 - `tests/doctor.test.ts:473-479`
 - `tests/update-stop-first.test.ts:58-72` (wording plus a stronger argv assertion)
+- `tests/windows-deploy-close-regressions.test.ts:45` — static guard describing
+  the install-only Windows behavior (audit B3)
 
 New coverage:
 
 - the update refresh argv is `service repair` — ablate by restoring the install
   argv and watch it go red;
+- **a non-elevated Windows worker (`OCX_SERVICE=1`) now receives
+  `service repair`** rather than skipping the refresh — the audit-B3 guard;
+  ablate by restoring the unconditional skip and watch it go red;
 - a stale `service-state.json` with no real registration still ends with a
-  managed service (repair throws, install retry succeeds) — ablate by removing
-  the fallback and watch it go red.
+  managed service (repair fails, diagnostic reports absent, install runs) —
+  ablate by removing the diagnostic recheck and watch it go red;
+- a repair that fails for a reason **other** than absence does NOT trigger an
+  install — the audit-B4 guard against reintroducing UAC.
 
 Already-passing coverage that constrains us and must stay green:
 `tests/service.test.ts:897-912` (scheduler repair does no `/create`), `:914-920`

@@ -29,10 +29,18 @@ For each layer, in order:
 1. Confirm the child's base branch is the just-merged parent, then retarget it to
    `dev` (`gh pr edit <n> --base dev`). GitHub does this automatically when the
    parent merges, but it is verified rather than assumed.
-2. Re-read CI on the **exact head sha** — `gh pr checks <n>` plus a sha match.
-   A remembered green is not evidence, and retargeting changes the merge base.
-3. Merge.
-4. Record the merge commit for the issue-closure step below.
+2. **Force a fresh CI run against the new base** (audit B5). Retargeting alone
+   does not produce one: `.github/workflows/ci.yml` uses the default
+   `pull_request` activity types (`opened`/`synchronize`/`reopened`), and a base
+   edit emits `edited`. So `gh pr checks` can report green checks bound to the
+   same head sha that never ran against the new merge base — materially wrong
+   here, because `dev` is well ahead of the stacked heads. Merge current `dev`
+   into the child to trigger `synchronize`.
+3. Verify the run's **base** matches the retargeted PR, not merely that the head
+   sha matches. Sha identity does not imply base identity, and a remembered green
+   is not evidence at all.
+4. Merge.
+5. Record the merge commit for the issue-closure step below.
 
 ### The #954 gate
 
@@ -67,15 +75,30 @@ to the issue it actually resolves. Several were PR-only with no filed issue.
 
 ### Contributor PRs to close as superseded
 
-#964 and #970 close when stack 7 opens, not when it merges — the same policy
-already applied to the six carried PRs earlier in this session, at the user's
-explicit instruction. Each closing comment must name the superseding commits,
-state plainly what changed relative to the contributor's version, and say that
-reopening is one click.
+#964 and #970 close once stack 7 is open **and green** — not the moment it opens.
+
+The first draft of this document said "when stack 7 opens", mirroring the six
+carried PRs closed earlier in this session. That parallel does not hold and the
+earlier text was wrong. Those six were closed with equivalent replacement commits
+already on a branch and patch-id verified; here the replacement does not exist
+yet, and its first design failed the audit gate outright
+(`001_audit_response.md`). Closing a contributor's live path while ours is
+unproven trades a working proposal for a plan.
+
+Each closing comment must name the superseding commits, state plainly what
+changed relative to the contributor's version, and say that reopening is one
+click.
 
 For #964 the comment owes the author a specific correction: five ids in the
 submitted list are natively image-capable, and the reasoning is in `010`. The
-contributor found a real bug and the list shape is what failed, not the finding.
+contributor found a real bug and the list shape is what failed, not the finding —
+and my own first replacement for that shape failed too, which belongs in the
+comment as well.
+
+For #970 the comment should credit the part the PR got right (the `/create`
+elevation diagnosis) and name the two things the reconstruction adds: the
+narrowed Windows GUI skip, without which the reporter's own surface stays broken,
+and the diagnostic-based install fallback.
 
 ## Left open deliberately
 
