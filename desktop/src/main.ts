@@ -1,9 +1,19 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { DesktopBackendSupervisor, type BackendStatus } from "./backend-supervisor.js";
 import { installNavigationPolicy, type NavigationPolicy } from "./navigation.js";
 import { createTray, type TrayController, type TrayStatus } from "./tray.js";
+
+function packagedBuildRevision(): number {
+  try {
+    const raw = JSON.parse(readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as { buildRevision?: unknown };
+    const revision = raw.buildRevision;
+    return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+  } catch {
+    return 0;
+  }
+}
 
 // This must run before app.whenReady so a second process cannot create a window or sidecar.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -24,6 +34,7 @@ if (!hasSingleInstanceLock) {
     bunExecutable: app.isPackaged ? path.join(packagedRoot, "runtime", "bun.exe") : undefined,
     sidecarEntry: app.isPackaged ? path.join(packagedRoot, "src", "desktop", "entry.ts") : undefined,
     desktopVersion: app.getVersion(),
+    desktopBuildRevision: packagedBuildRevision(),
   });
 
   const focusMainWindow = (): void => {

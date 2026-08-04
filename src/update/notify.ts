@@ -112,6 +112,36 @@ export function isNewer(latest: string, current: string, channel: Channel): bool
   return false;
 }
 
+/**
+ * Compare a release's product version and independent build revision.
+ * A build revision is only considered after the channel-aware product versions
+ * are equal, so a future upstream patch release always outranks local rebuilds.
+ */
+export function isNewerRelease(
+  latest: string,
+  current: string,
+  latestBuildRevision: number,
+  currentBuildRevision: number,
+  channel: Channel,
+): boolean {
+  if (isNewer(latest, current, channel)) return true;
+  if (latestBuildRevision <= currentBuildRevision) return false;
+
+  if (channel === "latest") {
+    const l = parseStable(latest);
+    const c = parseStable(current);
+    return !!l && !!c && l[0] === c[0] && l[1] === c[1] && l[2] === c[2];
+  }
+
+  const lPreview = parsePreview(latest);
+  const cPreview = parsePreview(current);
+  return !!lPreview && !!cPreview
+    && lPreview[0] === cPreview[0]
+    && lPreview[1] === cPreview[1]
+    && lPreview[2] === cPreview[2]
+    && lPreview[3] === cPreview[3];
+}
+
 export function isSourceBuildVersion(v: string): boolean {
   return v.trim() === "0.0.0";
 }

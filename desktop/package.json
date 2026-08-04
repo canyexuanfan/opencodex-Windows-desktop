@@ -1,6 +1,7 @@
 {
   "name": "@bitkyc08/opencodex-desktop",
-  "version": "2.8.0",
+  "version": "2.8.1",
+  "buildRevision": 1,
   "private": true,
   "description": "OpenCodex Windows desktop host",
   "type": "module",
