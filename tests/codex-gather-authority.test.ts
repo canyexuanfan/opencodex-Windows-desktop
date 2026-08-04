@@ -244,4 +244,55 @@ describe("catalog gather discovery-policy authority", () => {
       clearModelCache("together");
     }
   });
+
+  /**
+   * The general form of the same defect, found after credentials were fixed.
+   *
+   * `providerCatalogFingerprint` is an allow-list, so every provider field it
+   * does not name was treated as equivalence. Credentials leaked a flight until
+   * `authIdentity` landed; `reasoningEfforts` leaked one after that, and it
+   * changes catalog rows. Enumerating fields cannot converge — the next field
+   * added to a provider row inherits the defect — so the join now compares the
+   * whole admitted provider graph.
+   *
+   * This test uses `reasoningEfforts` because that is what the verifier
+   * reproduced against real routes, but it is really a test of the general rule:
+   * dropping `providerGraphIdentity` from the comparison turns it red.
+   */
+  test("a provider field outside the legacy fingerprint cannot join another admission's flight", async () => {
+    clearModelCache("together");
+    clearGatherRoutedModelsInflight();
+
+    const firstResponse = deferred();
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      if (fetchCount === 1) await firstResponse.promise;
+      return Response.json({ data: [{ id: `model-${fetchCount}` }] });
+    }) as typeof fetch;
+
+    const withEfforts = (efforts: readonly string[]): OcxConfig => {
+      const config = togetherConfig();
+      (config.providers.together as Record<string, unknown>).reasoningEfforts = [...efforts];
+      return config;
+    };
+
+    try {
+      const first = gatherRoutedModels(withEfforts(["low"]));
+      await Bun.sleep(20);
+      expect(fetchCount).toBe(1);
+
+      // Same provider, same endpoint, same credential, same discovery policy —
+      // only a field the legacy fingerprint never listed has moved.
+      const second = gatherRoutedModels(withEfforts(["low", "high"]));
+      await Bun.sleep(20);
+      expect(fetchCount).toBe(2);
+
+      firstResponse.resolve();
+      await Promise.all([first, second]);
+    } finally {
+      clearGatherRoutedModelsInflight();
+      clearModelCache("together");
+    }
+  });
 });

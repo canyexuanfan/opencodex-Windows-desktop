@@ -137,6 +137,7 @@ interface CapturedProviderGather {
 interface GatherFlightCapture {
   readonly discoveryPolicyIdentity: string;
   readonly authIdentity: string;
+  readonly providerGraphIdentity: string;
   readonly discoveryPolicySnapshots: readonly CatalogProviderDiscoveryPolicySnapshot[];
   readonly providers: readonly CapturedProviderGather[];
   readonly authResolver: ModelsAuthResolver;
@@ -157,6 +158,19 @@ interface GatherInflightEntry {
    * through `/api/providers/keys` mid-flight.
    */
   readonly authIdentity: string;
+  /**
+   * The whole admitted provider graph, not a chosen subset.
+   *
+   * `providerCatalogFingerprint` is an ALLOW-LIST, so every field it forgot was
+   * silently treated as equivalence: credentials leaked a flight until
+   * `authIdentity` landed, and `reasoningEfforts` leaked one after that — both
+   * reproduced against real routes. Enumerating fields cannot converge, because
+   * the next field added to a provider row inherits the same defect. This
+   * identity therefore covers the enriched, frozen provider objects the flight
+   * actually gathered from, so a join is refused unless the admissions agree on
+   * everything rather than on everything somebody remembered to list.
+   */
+  readonly providerGraphIdentity: string;
   readonly promise: Promise<GatherFlightResult>;
 }
 
@@ -407,6 +421,17 @@ function captureGatherFlight(
       headers: provider.request.headersWithCredential,
       url: provider.request.url,
     }))),
+    // Every enriched provider row the flight will gather from, in admission order.
+    // Anything that can change a catalog row lives in here by construction.
+    providerGraphIdentity: keyedGatherIdentity("catalog-gather-provider-graph-v1",
+      providers.map(provider => ({
+        name: provider.name,
+        // `fetch` is a caller-owned transport executor, not admitted state: the
+        // outbound transport honors it so a caller can supply its own HTTP path.
+        // It is the one member of a provider row that is legitimately a function,
+        // so it is dropped here rather than allowed to break every encode.
+        provider: omitProviderTransportExecutor(provider.provider),
+      }))),
     discoveryPolicySnapshots,
     providers: Object.freeze(providers),
     authResolver,
@@ -414,6 +439,18 @@ function captureGatherFlight(
     openAiApiPolicy: providers.find(provider => provider.name === OPENAI_API_PROVIDER_ID)?.policy.trustedOpenAiApi
       ?? Object.freeze({ state: "unused" as const }),
   });
+}
+
+/**
+ * Drop the caller-owned transport executor before hashing a provider row.
+ *
+ * Fails closed on anything ELSE that cannot be encoded: the point of hashing the
+ * whole row is that no field escapes the comparison, so a second function member
+ * must surface as an encode error rather than being quietly skipped here.
+ */
+function omitProviderTransportExecutor(provider: OcxProviderConfig): Record<string, unknown> {
+  const entries = Object.entries(provider).filter(([key]) => key !== "fetch");
+  return Object.fromEntries(entries);
 }
 
 function materializeCapturedHeaders(
@@ -1090,6 +1127,7 @@ async function gatherRoutedModelsWithAuth(
   let entry = bucket.find(candidate => (
     candidate.discoveryPolicyIdentity === capture.discoveryPolicyIdentity
     && candidate.authIdentity === capture.authIdentity
+    && candidate.providerGraphIdentity === capture.providerGraphIdentity
   ));
   if (!entry) {
     const lease = gatherGate.tryAcquire();
@@ -1107,6 +1145,7 @@ async function gatherRoutedModelsWithAuth(
     ownedEntry = Object.freeze({
       discoveryPolicyIdentity: capture.discoveryPolicyIdentity,
       authIdentity: capture.authIdentity,
+      providerGraphIdentity: capture.providerGraphIdentity,
       promise: flight,
     });
     bucket.push(ownedEntry);
