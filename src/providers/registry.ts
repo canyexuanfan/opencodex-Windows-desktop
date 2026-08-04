@@ -352,14 +352,14 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
 // Evidence: https://help.aliyun.com/en/model-studio/token-plan-personal-overview
 //           https://help.aliyun.com/en/model-studio/token-plan-quickstart
 const ALIBABA_TOKEN_PLAN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
   "glm-5.2", "deepseek-v4-pro",
 ];
 const ALIBABA_TOKEN_PLAN_QWEN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
 ];
 const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
-  "qwen3.8-max-preview": ["text", "image"],
+  "qwen3.8-max": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-flash": ["text", "image"],
@@ -372,14 +372,14 @@ const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
 // Evidence: https://www.alibabacloud.com/help/en/model-studio/token-plan-overview
 //           https://qwencloud.com/pricing/token-plan (qwen3.8 metadata)
 const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
   "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2",
   "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
   "glm-5.2", "glm-5.1", "glm-5",
   "MiniMax-M2.5",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
 ];
 
 // 260722 Tencent Cloud Coding Plan. The plan's model set is explicitly dynamic; these are the
@@ -450,7 +450,7 @@ const VOLCENGINE_PLAN_TEXT_ONLY_MODELS = [
   "doubao-seed-2.0-pro",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
-  "qwen3.8-max-preview": ["text", "image"],
+  "qwen3.8-max": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-plus": ["text", "image"],
@@ -1492,13 +1492,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
-    defaultModel: "qwen3.8-max-preview",
+    defaultModel: "qwen3.8-max",
     models: ALIBABA_TOKEN_PLAN_MODELS,
     liveModels: false,
     note: "Token Plan Personal Edition · China (Beijing)",
     modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
-      "qwen3.8-max-preview": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
+      "qwen3.8-max": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
       "qwen3.6-flash": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
     },
     modelReasoningEfforts: {
@@ -1508,7 +1508,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEffortMap: { "deepseek-v4-pro": DEEPSEEK_THINKING_REASONING_MAP },
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS,
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
     noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
   },
   {
@@ -1527,7 +1527,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     metadataModelIdNormalize: "case-insensitive",
    modelInputModalities: ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
-      "qwen3.8-max-preview": 983_616,
+      "qwen3.8-max": 983_616,
       "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000, "qwen3.6-plus": 1_000_000, "qwen3.6-flash": 1_000_000,
       "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-v3.2": 131_072,
       "kimi-k2.7-code": 262_144, "kimi-k2.6": 262_144, "kimi-k2.5": 262_144,
@@ -1536,7 +1536,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
-      "qwen3.8-max-preview": ["low", "high", "xhigh"],
+      "qwen3.8-max": ["low", "high", "xhigh"],
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": DEEPSEEK_THINKING_EFFORTS,
       "deepseek-v4-flash": DEEPSEEK_THINKING_EFFORTS,
@@ -1546,10 +1546,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "deepseek-v4-flash": DEEPSEEK_THINKING_REASONING_MAP,
     },
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS,
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
     noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
-    modelDefaultReasoningEfforts: { "qwen3.8-max-preview": "xhigh" },
+    modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
   },
   // NEEDS_HUMAN 2026-07-10: kept for config compatibility, but this is a dashboard URL,
   // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.

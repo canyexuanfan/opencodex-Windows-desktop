@@ -176,17 +176,31 @@ describe("resolveMatchedPrice", () => {
     expect(price?.cost4.input).toBe(0.25);
   });
 
-  test("17f. Alibaba Token Plan Qwen 3.8 uses the temporary Routeway proxy", () => {
+  // 260804: Qwen published a per-token rate for the stable qwen3.8-max, which is exactly
+  // the exit condition the old Routeway reseller overlay named, so the proxy rate is gone.
+  test("17f. Alibaba Token Plan Qwen 3.8 uses the vendor-published rate", () => {
     for (const provider of ["alibaba-token-plan", "alibaba-token-plan-intl"]) {
-      const price = resolveMatchedPrice(provider, "qwen3.8-max-preview");
+      const price = resolveMatchedPrice(provider, "qwen3.8-max");
       expect(price).toMatchObject({
         provider,
-        modelId: "qwen3.8-max-preview",
-        cost4: { input: 1.5, output: 5, cacheRead: 0.15, cacheWrite: 0 },
+        modelId: "qwen3.8-max",
+        cost4: { input: 2, output: 6, cacheRead: 0, cacheWrite: 0 },
         source: "expected",
-        status: "verified-derived",
+        status: "verified",
       });
-      expect(price?.sourceRef).toContain("temporary reseller proxy");
+      // The source string must keep carrying what the vendor figure does NOT cover:
+      // there is no Model Studio billing row yet, and no published cache rate. Dropping
+      // either caveat would present an announcement price as billing-table verified.
+      expect(price?.sourceRef).toContain("qwen.ai/blog");
+      expect(price?.sourceRef).toContain("cache rates unpublished");
+      expect(price?.sourceRef).not.toContain("routeway");
+    }
+  });
+
+  test("17g. the retired qwen3.8-max-preview id no longer resolves", () => {
+    // Alibaba retires the preview endpoint; capability metadata follows the stable id.
+    for (const provider of ["alibaba-token-plan", "alibaba-token-plan-intl"]) {
+      expect(resolveMatchedPrice(provider, "qwen3.8-max-preview")).toBeNull();
     }
   });
 
@@ -280,8 +294,8 @@ describe("resolveMatchedPrice", () => {
       "kimi-code/kimi-k2.6",
       "kimi-code/kimi-k2.5",
       "kimi-code/kimi-for-coding",
-      "alibaba-token-plan/qwen3.8-max-preview",
-      "alibaba-token-plan-intl/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
+      "alibaba-token-plan-intl/qwen3.8-max",
       "cursor/auto",
     ]) {
       expect(keys.has(expected)).toBe(true);

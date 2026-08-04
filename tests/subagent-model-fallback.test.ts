@@ -61,7 +61,7 @@ function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
     ],
     subagentModelFallback: [
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ],
     ...overrides,
@@ -108,13 +108,13 @@ describe("subagent model fallback chain", () => {
   test("buildSubagentModelChain dedupes and preserves order", () => {
     expect(buildSubagentModelChain("gpt-5.6-sol", cfg())).toEqual([
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ]);
     expect(buildSubagentModelChain("kimi/k3", cfg())).toEqual([
       "kimi/k3",
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
   });
 
@@ -123,7 +123,7 @@ describe("subagent model fallback chain", () => {
     updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected).toEqual({
-      model: "alibaba-token-plan/qwen3.8-max-preview",
+      model: "alibaba-token-plan/qwen3.8-max",
       rewritten: true,
       skipped: ["gpt-5.6-sol"],
     });
@@ -144,10 +144,10 @@ describe("subagent model fallback chain", () => {
   test("selectAvailableSubagentModel skips cached routed failures", () => {
     resetSubagentModelFallbackStateForTests();
     updateAccountQuota("pool-a", 95, undefined, 20);
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg());
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "quota exhausted", cfg());
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected.model).toBe("kimi/k3");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg())).toBe(true);
   });
 
   test("selectAvailableSubagentModel skips stale fallback entries that cannot route", () => {
@@ -215,7 +215,7 @@ describe("subagent model fallback chain", () => {
     await priming;
     expect(midRefreshModel).toBe("gpt-5.6-sol");
     expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     );
     expect(getSubagentQuotaPrimeStateForTests().primedAt).toBeGreaterThan(0);
     expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(false);
@@ -240,7 +240,7 @@ describe("subagent model fallback chain", () => {
     await Promise.all([a, b, c]);
     expect(calls).toBe(1);
     expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     );
   });
 
@@ -287,8 +287,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure records the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg());
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "429", cfg());
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg())).toBe(true);
     expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
   });
 
@@ -306,7 +306,7 @@ describe("subagent model fallback chain", () => {
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
       rewritten: false,
-      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max", "kimi/k3"],
     });
   });
 
@@ -324,7 +324,7 @@ describe("subagent model fallback chain", () => {
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
       rewritten: false,
-      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max", "kimi/k3"],
     });
   });
 
@@ -574,8 +574,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure records failures under the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "pool-a");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "pool-a")).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "429", cfg(), "pool-a");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg(), "pool-a")).toBe(true);
     expect(isSubagentModelUnavailable("kimi/k3", cfg(), "pool-a")).toBe(false);
   });
 
@@ -585,13 +585,13 @@ describe("subagent model fallback chain", () => {
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
       "model_fallback = [",
-      "  \"alibaba-token-plan/qwen3.8-max-preview\",",
+      "  \"alibaba-token-plan/qwen3.8-max\",",
       "  \"kimi/k3\",",
       "]",
       "",
     ].join("\n"), "utf8");
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ]);
   });
@@ -602,13 +602,13 @@ describe("subagent model fallback chain", () => {
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
       "model_fallback = [",
-      "  \"alibaba-token-plan/qwen3.8-max-preview\",",
+      "  \"alibaba-token-plan/qwen3.8-max\",",
       "]",
       "tools = [\"search\", \"edit\"]",
       "",
     ].join("\n"), "utf8");
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
   });
 
@@ -651,8 +651,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure scopes routed-provider health globally", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg(), "account-a");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "account-b")).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "quota exhausted", cfg(), "account-a");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg(), "account-b")).toBe(true);
   });
 
   test("applySubagentModelFallback rewrites parsed request model", () => {
@@ -670,11 +670,11 @@ describe("subagent model fallback chain", () => {
     );
     expect(result).toEqual({
       from: "gpt-5.6-sol",
-      to: "alibaba-token-plan/qwen3.8-max-preview",
+      to: "alibaba-token-plan/qwen3.8-max",
       skipped: ["gpt-5.6-sol"],
     });
-    expect(parsed.modelId).toBe("alibaba-token-plan/qwen3.8-max-preview");
-    expect((parsed._rawBody as { model?: string }).model).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect(parsed.modelId).toBe("alibaba-token-plan/qwen3.8-max");
+    expect((parsed._rawBody as { model?: string }).model).toBe("alibaba-token-plan/qwen3.8-max");
   });
 
   test("applySubagentModelFallback is a no-op for main turns", () => {
@@ -694,7 +694,7 @@ describe("subagent model fallback chain", () => {
     writeFileSync(join(dir, "agents", "executor.toml"), [
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
-      "model_fallback = [\"alibaba-token-plan/qwen3.8-max-preview\"]",
+      "model_fallback = [\"alibaba-token-plan/qwen3.8-max\"]",
       "",
     ].join("\n"), "utf8");
     updateAccountQuota("pool-a", 95);
@@ -709,12 +709,12 @@ describe("subagent model fallback chain", () => {
       new Headers({ "x-openai-subagent": "collab_spawn" }),
       cfg({ subagentModelFallback: undefined }),
     );
-    expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max");
     expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
   });
 

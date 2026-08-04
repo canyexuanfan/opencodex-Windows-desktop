@@ -434,11 +434,11 @@ describe("multiAgentGuidanceText", () => {
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       {
         injectionPrompt: "FALLBACK={{fallback}}",
-        subagentModelFallback: ["alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+        subagentModelFallback: ["alibaba-token-plan/qwen3.8-max", "kimi/k3"],
       },
     );
     expect(text).toContain("FALLBACK=");
-    expect(text).toContain("alibaba-token-plan/qwen3.8-max-preview");
+    expect(text).toContain("alibaba-token-plan/qwen3.8-max");
     expect(text).toContain("kimi/k3");
   });
 
