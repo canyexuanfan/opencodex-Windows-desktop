@@ -729,12 +729,94 @@ function isTooTerseFeatureSection(text) {
 }
 
 /**
- * Bug Reproduction needs steps or concrete signals. A title-like phrase with
- * no commands, paths, digits, or product keywords is not actionable.
+ * Bug Reproduction needs concrete signals that let a maintainer reproduce the
+ * failure. Product keywords alone (e.g. "choose model deepseek" or "send a
+ * message in the codex plugin") are not actionable: the report must name a
+ * command, an error, a file/config path, or an exact observed output.
  */
+// Commands and exact technical actions, e.g. "ocx start", "run bun",
+// "send a streaming request", "curl https://...".
+const REPRO_COMMAND_RE = new RegExp([
+    "\\b(?:run|start|stop|restart|install|launch|execute|reproduce|trigger|invoke)\\s+(?:(?:the|an|a)\\s+)?(?:ocx|bun|npm|pnpm|yarn|curl|node|codex|proxy|server|dashboard|plugin)\\b",
+    "\\b(?:ocx|bun|npm|pnpm|yarn|curl|node|codex)\\s+(?:start|run|stop|restart|install|config|--[a-z-]+)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+(?:streaming|api|http|json|completion|chat|config|auth|embedding|post|graphql|grpc)\\s+(?:request|call|command|prompt|query)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+(?:api|curl|endpoint|url)\\b",
+    "\\b(?:send|issue|make|post)\\s+(?:a|an|any)\\s+[\\w.-]+\\s+request\\s+to\\s+(?:the\\s+)?(?:endpoint|url|api|server|proxy|\\S+/\\S+)\\b",
+    "\\b(?:pip|npm|bun)\\s+install\\b",
+    "\\b(?:curl|wget)\\s+[^\\s]+",
+].join("|"), "i");
+
+// Error, exception, and failure tokens, plus status codes in status context
+// (bare 3-digit numbers can be ports or version numbers).
+const REPRO_FAILURE_RE = new RegExp([
+    "\\b(?:segfault|sigsegv|panic|abort|exception|traceback|stack\\s*trace|timeout|timed\\s*out|refused|reset|denied|failed?|error|crash|hang|hangs?|stuck|spinning|empty\\s*response)\\b",
+    "\\b(?:status\\s*(?:code\\s*)?|code\\s*|http\\s*)(?:is|of|:)?\\s*[1-5]\\d\\d\\b",
+].join("|"), "i");
+
+// File, config, and log paths such as ~/.codex/config.toml or C:\\logs\\ocx.log.
+const REPRO_PATH_RE = new RegExp([
+    "~?/[\\w.@-]+(?:/[\\w.@-]+)+",
+    "[A-Za-z]:\\\\(?:[\\w.@-]+\\\\)+[\\w.@-]+",
+    "~?/[\\w.@-]+/[\\w.@-]+\\.(?:json|yaml|yml|toml|conf|log|env|txt|ts|js|tsx|jsx|sh|ps1|py)",
+    "[\\w.@-]+\\.(?:json|yaml|yml|toml|conf|log|env)\\b",
+].join("|"));
+const ACTIONABLE_REPRO_RE = new RegExp(
+  [REPRO_COMMAND_RE.source, REPRO_FAILURE_RE.source, REPRO_PATH_RE.source].join("|"),
+  "i",
+);
+
+// Sigil-only fences with no body content are never actionable.
+const EMPTY_FENCE_RE = /^[ \t]{0,3}(?:```+|~~~+)\s*\n\s*\n[ \t]{0,3}(?:```+|~~~+)\s*$/;
+
+/**
+ * True when a bug Reproduction names commands, error tokens, file/config
+ * paths, or exact technical actions. Product/model mentions without any of
+ * those signals (e.g. #977) are treated as unactionable. Fenced blocks only
+ * count as actionable when their body contains non-whitespace content.
+ */
+function hasActionableReproductionDetail(text) {
+  const c = clean(text);
+  if (!c) return false;
+  if (ACTIONABLE_REPRO_RE.test(c)) return true;
+  // Fenced blocks: only count when the body has non-whitespace content.
+  if (/```|~~~/.test(c)) {
+    const parts = stripFencedActionableContent(c);
+    if (parts) return true;
+  }
+  return false;
+}
+
+/**
+ * Walk the text looking for a fenced code block whose body contains
+ * non-whitespace content. Returns the non-empty body or null.
+ */
+function stripFencedActionableContent(text) {
+  const fenceRe = /^[ \t]{0,3}(`{3,}|~{3,})/;
+  const lines = text.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const m = lines[i].match(fenceRe);
+    if (!m) { i++; continue; }
+    const marker = m[1];
+    const markerLen = marker.length;
+    // Find the closing fence on a later line.
+    let j = i + 1;
+    const endRe = new RegExp(
+      `^[ \\t]{0,3}${marker[0] === "`" ? "`" : "~"}{${markerLen},}[ \\t]*$`,
+    );
+    while (j < lines.length && !endRe.test(lines[j])) j++;
+    if (j > i + 1) {
+      const body = lines.slice(i + 1, j).join("\n");
+      if (body.trim()) return body;
+    }
+    i = j + 1;
+  }
+  return null;
+}
+
 function isTooTerseBugReproduction(text) {
   if (isEmpty(text) || isPlaceholder(text)) return false;
-  if (hasConcreteDetail(text)) return false;
+  if (hasActionableReproductionDetail(text)) return false;
   return countWords(text) < 12;
 }
 
@@ -1221,6 +1303,7 @@ module.exports = {
   isUnusableVersion,
   countWords,
   hasConcreteDetail,
+  hasActionableReproductionDetail,
   labelForKind,
   KIND_TO_LABEL,
   AREA_LABELS,
