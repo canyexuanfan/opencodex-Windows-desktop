@@ -128,7 +128,12 @@ typecheck/tests in the WP8b commit:
 1. `ConvergeRequest.scope` with at least `"catalog" | "full"`, plus a concrete
    catalog request constructor. The production management callbacks use only
    `scope: "catalog"`; `"full"` remains the compatibility/current-behavior branch
-   until WP12 replaces it with authoritative admission.
+   until WP12 replaces it with authoritative admission. `ConvergeRequest` is the
+   public caller shape and does **not** gain a config field: permitting arbitrary
+   callers to substitute catalog authority would make the scoped funnel weaker than
+   the callback it replaces. Instead, WP8b exports a management-only factory that
+   captures the management context's exact config object and returns a
+   `ConvergeCodex`; the factory is not re-exported by the public Codex facade.
 2. A concrete `CatalogAdmissionSnapshot` plus catalog-scoped snapshot reader that
    accepts the same `OcxConfig` object the current callback already uses and captures
    only the config generation and catalog target identities WP9 validates. It
@@ -263,7 +268,9 @@ callback already uses. `prepareCatalogSync` receives `admission.config` — **th
 object**, not a separate `readConfigDiagnostics()` result. The generation token
 detects a cooperating persisted transition before commit. WP12 later replaces this
 limited input with its authoritative full admission; WP9 does not import that future
-helper.
+helper. There is no resident config global and no persisted config re-read in this
+catalog-only path: either would change the current callback's behavior when its
+long-lived config object differs from disk.
 
 Gather performs provider auth/network work, source loading, parsing, merging,
 serialization, cache-wrapper construction, and backup planning. It performs no
@@ -395,17 +402,46 @@ and test imports migrate. The dependency-graph test, not an `rg` spelling guard,
 proves no alias, re-export, wrapper, or dynamic import reaches the writers outside
 `convergence.ts` (`005_contract.md` §Test plan).
 
+That reachability rule is per domain, not repository-wide. WP9 proves only the
+catalog row below; the composed WP13 Scenario A must consume the complete per-domain
+table from `005_contract.md:927-960` and must not assert that every writer is
+unreachable outside `convergence.ts`:
+
+| Domain | Low-level writer owner | Permitted runtime roots |
+|---|---|---|
+| catalog, hashed/legacy backups, models cache | `src/codex/internal/catalog-commit.ts` | `src/codex/convergence.ts` only |
+| history DB rows, manifest, rollout files | history write exports in `src/codex/internal/history-writer.ts` | `src/codex/history-worker.ts` only |
+| transition pair and history schedule/terminal row | `src/codex/transition-state.ts` | `src/codex/convergence.ts` and `src/codex/history-worker.ts` only |
+
+Therefore WP13 Scenario A's repository-wide sentence at
+`050_composed_acceptance.md:249` is attributable to WP13 and must be replaced there
+with symbol-level assertions against each contract row. A valid history Worker is a
+required permitted root, not a writer leak.
+
 ## The first production `convergeCodex` is catalog-scoped for management
 
 WP8b declared this function as a type only. WP9 now adds a non-placeholder
-implementation in `src/codex/convergence.ts`:
+implementation in `src/codex/convergence.ts`. The management-only factory closes
+over the exact object received by `handleManagementAPI`; the internal function makes
+that reference's path to capture explicit without adding it to `ConvergeRequest`:
 
 ```diff
-+export async function convergeCodex(
++interface ConvergenceContext {
++  readonly catalogConfig?: Readonly<OcxConfig>;
++}
++
++async function convergeCodexInContext(
 +  request: ConvergeRequest,
++  context: ConvergenceContext,
 +): Promise<ConvergeOutcome> {
 +  if (request.scope === "catalog") {
-+    const admission = captureCatalogAdmissionSnapshot(request);
++    if (!context.catalogConfig) {
++      return catalogContextMissingOutcome();
++    }
++    const admission = captureCatalogAdmissionSnapshot(
++      request,
++      context.catalogConfig,
++    );
 +    const gathered = await gatherCodexCatalogCandidate(admission);
 +    const catalog = commitCatalogAgainstCurrentGeneration(admission, gathered);
 +    return projectCatalogOnlyOutcome(catalog, {
@@ -416,7 +452,32 @@ implementation in `src/codex/convergence.ts`:
 +
 +  return coordinateLegacyFullBehavior(request);
 +}
++
++export const convergeCodex: ConvergeCodex = (request) =>
++  convergeCodexInContext(request, {});
++
++export function createManagementConvergeCodex(
++  config: Readonly<OcxConfig>,
++): ConvergeCodex {
++  return (request) => convergeCodexInContext(request, { catalogConfig: config });
++}
++
++function captureCatalogAdmissionSnapshot(
++  request: ConvergeRequest,
++  config: Readonly<OcxConfig>,
++): CatalogAdmissionSnapshot {
++  return {
++    config, // exact captured reference; never a global and never a persisted re-read
++    generation: readRequiredConfigGeneration(request),
++    targets: captureCatalogTargets(config),
++  };
++}
 ```
+
+`catalogContextMissingOutcome` is a typed no-write failure for an accidental naked
+`convergeCodex({scope:"catalog", ...})` call. It does not recover by consulting disk
+or process state. Production management never reaches it because the bound factory
+is the only catalog-scoped construction path.
 
 `projectCatalogOnlyOutcome` reports the actual catalog/cache/backup result and
 synthesizes history and observed fields as no-change/not-evaluated. It never calls
@@ -431,10 +492,16 @@ full native convergence before its safety phases existed.
 
 Delete `refreshCodexCatalogBestEffort` from
 `src/server/management-api.ts:105-112` and
-`src/server/management/context.ts:54-69`. Replace it with one injected production
-funnel:
+`src/server/management/context.ts:12,68`. Replace it with one injected production
+factory plus the bound funnel. The dependency seam takes a factory, rather than an
+already-bound function, so tests can assert `configArg === config` at construction:
 
 ```diff
+-  refreshCodexCatalog?: () => Promise<void>;
++  createManagementConvergeCodex?: (
++    config: Readonly<OcxConfig>,
++  ) => ConvergeCodex;
+
 -  refreshCodexCatalogBestEffort: () => Promise<void>;
 +  convergeCodex: (request: ConvergeRequest) => Promise<ConvergeOutcome>;
 ```
@@ -447,9 +514,24 @@ funnel:
 -      await refreshCodexModelCatalog(config);
 -    } catch { /* catalog absent */ }
 -  }
-+  const converge = deps.convergeCodex
-+    ?? (await import("../codex/convergence")).convergeCodex;
++  let boundConvergeCodex: ConvergeCodex | undefined;
++  async function convergeCodex(
++    request: ConvergeRequest,
++  ): Promise<ConvergeOutcome> {
++    if (!boundConvergeCodex) {
++      const create = deps.createManagementConvergeCodex
++        ?? (await import("../codex/convergence")).createManagementConvergeCodex;
++      boundConvergeCodex = create(config);
++    }
++    return boundConvergeCodex(request);
++  }
 ```
+
+The lazy bind preserves today's behavior for management requests that never refresh
+the catalog: they do not load catalog convergence. On the first catalog mutation,
+`src/server/management-api.ts:105-112`'s in-scope `config` object is passed by
+identity into the factory, retained in its closure, and handed unchanged to
+`captureCatalogAdmissionSnapshot`; gather then receives it as `admission.config`.
 
 Each of the 16 current awaits — provider 6
 (`src/server/management/provider-routes.ts:147,338,487,512,527,546`), model 6
@@ -524,9 +606,12 @@ generation owners:
   graph (static imports, dynamic imports, aliases, and re-exports) and prove every
   direct writer in `src/codex/internal/catalog-commit.ts` is reachable only from
   `convergence.ts`.
-- Drive all 16 real management routes with an injected `convergeCodex`, assert one
-  `scope: "catalog"` call using the same config object as today's callback, preserve
-  each primary 2xx/201, and observe the additive `catalogRefresh`.
+- Drive all 16 real management routes with an injected convergence factory, assert
+  its construction argument is reference-equal to the exact config
+  object passed to `handleManagementAPI`, assert one `scope: "catalog"` call, preserve
+  each primary 2xx/201, and observe the additive `catalogRefresh`. A gather spy also
+  asserts `admission.config` is that same reference, proving the entire path rather
+  than only the factory boundary.
 - For every management route, inject spies that fail on config/profile/journal/history
   writes and assert zero calls; assert history and observed result sections are the
   contract's no-change/not-evaluated projection.

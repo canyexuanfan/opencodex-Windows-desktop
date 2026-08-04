@@ -24,8 +24,9 @@ an unimplemented suite was run.
 IN: a future `tests/codex-composed-acceptance.test.ts` plus narrowly named child
 fixtures under `tests/helpers/`; the production CLI, server, management routes,
 convergence entry point, real filesystem, real Bun Workers, and real SQLite files.
-Service-manager entry points are a separate disposable-host job; they are not part
-of the developer-workstation invocation of this suite.
+Service-manager entry points are a separate disposable-host runner at
+`scripts/disposable-host/codex-service-composed-acceptance.ts`; they are not part
+of the developer-workstation invocation or Bun's ordinary test discovery.
 
 OUT: mocks of `convergeCodex`, direct calls to phase-local gather/commit/history
 helpers as acceptance proof, the live proxy on port 10100, the user's homes, the
@@ -125,11 +126,36 @@ service-manager registration API. P02/P04/P17 are seeded with
 startup/cleanup path cannot issue per-login-session `launchctl setenv/unsetenv`
 (`src/server/system-env.ts:251-258,364-391`).
 
-"Disposable" means a throwaway VM/OS host and a **throwaway OS account**, not a temp
-home on a developer account. Before any service setup or row is run, the job must
-prove all of the following for that account; an unavailable query,
-permission error, nonempty registration, or existing artifact is a hard failure, not
-a skip:
+Negative evidence is not proof of disposability. The empty-service gate protects
+this workstation because its existing service makes the gate fail, but a normal
+developer account with no installed service would pass it. The disposable-host job
+therefore requires a positive, image-provisioned sentinel **before it performs even
+the read-only service queries below**. On POSIX the sentinel is the root-owned,
+non-symlink regular file `/etc/opencodex-disposable-service-host-v1`; on Windows it
+is the non-reparse regular file
+`C:\ProgramData\OpenCodex\opencodex-disposable-service-host-v1` owned by `SYSTEM`
+or `Administrators`. Its exact bytes are
+`OPENCODEX_DISPOSABLE_SERVICE_HOST_V1\n`; only root/`SYSTEM`/`Administrators` may
+write it. The runner checks path type, owner, write permissions/ACL, and exact bytes
+at process start. Missing, redirected, broadly writable, or mismatched sentinel
+state is a hard failure before any service query, setup, or lifecycle command.
+
+The runner is deliberately outside `bunfig.toml`'s `tests` root, has no
+`.test.ts`/`.spec.ts` suffix, and is invoked only by the separately labelled CI
+job as `bun run scripts/disposable-host/codex-service-composed-acceptance.ts`.
+`bun run test`, bare `bun test`, and `bun test ./tests/` must not import or spawn it.
+An ordinary repo-hygiene test reads `bunfig.toml`, `package.json`, and the test
+import graph to assert those three commands remain rooted at `tests/` and have no
+edge to the disposable runner. The disposable runner also proves its own sentinel
+check ran before recording any platform query in its event ledger. Thus an explicit
+positive marker and non-discoverability are the first gate; the absence checks below
+remain a second gate, never the evidence that the host is disposable.
+
+"Disposable" still means a throwaway VM/OS host and a **throwaway OS account**, not
+a temp home on a developer account. After the positive sentinel passes and before
+any service setup or row is run, the job must prove all of the following for that
+account; an unavailable query, permission error, nonempty registration, or existing
+artifact is a hard failure, not a skip:
 
 - macOS: `launchctl list | awk '$3 == "com.opencodex.proxy" { print }'` prints
   nothing, and `test ! -e "$HOME/Library/LaunchAgents/com.opencodex.proxy.plist"`
@@ -210,7 +236,8 @@ database lives under the fixed effective-user runtime root, not under the case r
 `/tmp/opencodex-runtime-v1-<uid>/native-write-locks/<sha256(canonical CODEX_HOME)>.sqlite`
 on POSIX and
 `<FOLDERID_LocalAppData>/OpenCodex/Runtime/v1/<SID>/native-write-locks/<sha256(canonical CODEX_HOME)>.sqlite`
-on Windows (`005_contract.md:693-721`). Before spawning a child, the harness resolves
+on Windows (`005_contract.md` §7, "The lock namespace has one environment-independent
+root per effective user"). Before spawning a child, the harness resolves
 that exact path through the production identity/runtime resolver, checks that the
 hash input is the case's canonical `CODEX_HOME`, and requires the exact database and
 its `-journal`, `-wal`, and `-shm` sidecars to be absent. A pre-existing file fails
@@ -234,8 +261,10 @@ Parameterize the 30 workstation-safe rows P01-P08, P11-P17, and P19-P33 in the
 ordinary suite. Run P09/P10/P18/P34-P36 only in the separately gated disposable-host
 job above. The workstation rows seed authorizing isolated state without any service
 artifact; the disposable P34-P36 setup installs its fixture service only after the
-empty-registration gate. Invoke the real entry and read the integration record
-transition id plus a recursive before/after manifest. Every native mutation must have
+empty-registration gate. Invoke the real entry, read `integration-record.ts` for
+provenance/extensions, read the transition id, native generation, and history
+schedule/state through `transition-state.ts`, and capture a recursive before/after
+manifest. Every native mutation must have
 exactly one admitted transaction; OFF entries must produce a removal transaction, not
 a skip. P20-P33 retain their existing primary 2xx/201 behavior and expose the contract disposition;
 P30/P33 still complete their Claude/Desktop follow-up. The two job manifests together,
@@ -245,8 +274,10 @@ not either one alone, make the 36-row census.
 P17, P18, P24-P33, P35, and P36 visibly reach direct writers. The management rows
 also pass through the bare catch at `src/server/management-api.ts:105-112`, so no
 typed transaction can be observed. **GREEN:** all 36 rows yield either one recorded
-transition or a typed no-write refusal/busy outcome, and the module graph has no
-writer reachable outside `convergence.ts`.
+transition or a typed no-write refusal/busy outcome, and the symbol-level module
+graph enforces every domain row in `005_contract.md` §8's permitted-root table:
+native/journal/catalog/provenance writes root at `convergence.ts`, history writes
+root at `history-worker.ts`, and transition-state writes root only at those two.
 
 ### B — two-process race after approval, before commit
 
@@ -380,8 +411,9 @@ replace B's pending schedule, and the live guardian makes B the clean terminal o
 
 ### I — retry beyond the old horizon, without restart
 
-Seed the sole record with unresolved current history at `attempts: 60` and
-`nextRetryAt` due now, then start one P02 server and keep it alive. Hold the real DB
+Seed the canonical `transition-state.ts` coordinator row with unresolved current
+history at `attempts: 60` and `nextRetryAt` due now, then start one P02 server and
+keep it alive. Hold the real DB
 through the first retry, observe the attempt advance beyond 60 and another finite
 timer remain armed, then release. Wait no longer than one exported production
 backoff cap plus a 2 s watchdog and assert the same PID converges; no restart/module
@@ -413,8 +445,10 @@ unchanged intent still repairs observed state.
 
 Sequence P02 apply, P07 remove, P08 apply, P18 remove, and P02 startup using the same
 isolated homes. After each transition, read the record only through its production
-owner and assert history, provenance, generation, unknown top-level keys, and
-unknown section keys survive. For an absent baseline, matching post-image removal
+owner in `integration-record.ts` and assert provenance plus unknown record/ledger/
+entry extension keys survive. Separately read `transition-state.ts` and assert the
+native generation, current transaction id, history observation, and schedule match
+the same transition. For an absent baseline, matching post-image removal
 must restore absence. For a present baseline, restore exact bytes. Change current
 bytes after apply and require preservation/conflict. Corrupt or remove the record
 and require automatic refusal before mutation.
@@ -483,7 +517,7 @@ fixture and entry point.
 | C13 | **Not provable through a production entry point.** Run typecheck, full suite, GUI lint, privacy scan, docs build, then require this composed suite's case manifest and red/green evidence | those static/broad gates can be green today while A-L are red; C13 alone proves none of C1-C12 |
 | C14 | A's workstation and disposable-host manifests together drive P01-P36; P20-P33 cover 14 route shapes/16 calls; module-graph reachability and transition receipts must agree | 16 management call sites and multiple CLI/startup paths reach direct writers instead of one funnel |
 | C15 | P02/P07/P19 through H in both directions: B commits only after A's manifest/rollout post-images exist, B's pending schedule survives A's terminal conflict, and the guardian repairs B | only DB substeps are transactional; processes can overtake file writes and stale completion has no conditional terminal update |
-| C16 | P02/P07/P08/P18/P17 sequence through K, preserving both optional sections and unknown keys | no shared record owner/schema exists |
+| C16 | P02/P07/P08/P18/P17 sequence through K, preserving optional provenance and record/ledger/entry extensions through `integration-record.ts` while every phase reads the same transition/history row through `transition-state.ts` | no shared record owner/schema exists |
 | C17 | P19 through G with production config A→B→A and one-way parent retarget | no generation or stable target expectation exists; equal content passes |
 | C18 | P19 through E with independently different HOME and USERPROFILE in real children | no uid/SID lock exists, so environment-home variation does not contend |
 
@@ -537,8 +571,10 @@ WP13 passes only when A-L are red on the pre-substrate revision for the named
 observable reason, green on the composed revision, all 36 production rows are in
 the paired workstation/disposable-host manifests, C1-C12 and C14-C18 have
 artifact-level evidence, C13 is separately green, every child/Worker is joined, the
-service gate is empty before and after its job, and teardown removes only the suite's
-explicit temporary roots plus the validated four-name lock-file allowlist. A missing
-row, a same-process substitute for E/H, a mocked convergence function, a test that
-passes on both revisions without a separate substrate-sensitive RED, or a green broad
-suite beside any red composed case is a failure.
+positive sentinel is verified before the disposable event ledger's first service
+query, the negative service gate is empty before and after that job, ordinary test
+commands cannot discover the disposable runner, and teardown removes only the
+suite's explicit temporary roots plus the validated four-name lock-file allowlist.
+A missing row, a same-process substitute for E/H, a mocked convergence function, a
+test that passes on both revisions without a separate substrate-sensitive RED, or a
+green broad suite beside any red composed case is a failure.

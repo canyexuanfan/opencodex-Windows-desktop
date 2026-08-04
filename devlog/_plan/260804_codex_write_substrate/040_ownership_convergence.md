@@ -210,14 +210,19 @@ not to `integrations/codex.json`.
 
 7. If intent is ON, WP9 gather receives `admission.config` — **that exact object**.
    OFF does not gather.
-8. Call WP11 with `admitted: admission`. Under native->config coordination,
-   authoritatively re-read steps 1-6 into a second `AdmissionSnapshot` and compare
-   digest, generation, intent, ownership, external provider, canonical targets,
-   journal identity, provenance identity, and the recomputed authority snapshot ID.
-9. Recover an authorized dead journal, establish baselines, commit apply/remove,
-   conditionally write the expected native generation/`txId` and pending history
-   schedule in the CODEX_HOME-keyed coordinator row, and inspect observed state
-   inside the coordinated section. Release before logging/HTTP shaping.
+8. Call WP11 with `admitted: admission`. WP11 opens native/coordinator transaction
+   `N` with `BEGIN IMMEDIATE`, then acquires config transaction `C` **while holding
+   N**. With both held, authoritatively re-read steps 1-6 into a second
+   `AdmissionSnapshot` and compare digest, generation, intent, ownership, external
+   provider, canonical targets, journal identity, provenance identity, and the
+   recomputed authority snapshot ID.
+9. Still inside `N -> C`, reclassify every artifact whose classification can
+   authorize a write, recover an authorized dead journal, establish baselines,
+   commit apply/remove, persist provenance, and conditionally install the expected
+   native generation/`txId` plus pending history schedule. Every transition-row
+   read/write uses the **already-open N connection**; opening a second coordinator
+   connection inside this section would contend with its own `BEGIN IMMEDIATE`.
+   Release `C`, then `COMMIT N`, and only afterward inspect/log/shape HTTP output.
 10. Run WP10 history afterward under its sibling lock with the same
     `CommitExpectation` and authority snapshot identity; stale jobs are rejected.
 
@@ -241,6 +246,35 @@ checks **detect** interference and return `deferred`; they do not retroactively
 claim prevention. Regather/retry ends at `deadlineMs`, after which unresolved work
 is named. This distinction is the correction required by audit #5 and
 `005_contract.md` §3.
+
+### Every classify-then-write path uses the same exclusion
+
+The old plan protected the final config comparison but left other validation
+results usable after their exclusion had ended. That was wrong: a classification
+is write authority only for the bytes and coordinator state observed while the
+writer still excludes cooperating mutation.
+
+The invariant applies to every WP12 sequence, not only adoption:
+
+1. Open native/coordinator transaction `N` with `BEGIN IMMEDIATE`.
+2. Acquire config transaction `C` while holding `N` whenever config bytes,
+   generation, routing, canonical targets, or config-derived authority participate.
+3. On the already-open `N` connection, authoritatively reread the transition row;
+   then reread/reclassify service authority, external routing, journal liveness,
+   integration-record/provenance identity, artifact baselines, current post-images,
+   and structural-removal evidence immediately before the writes they authorize.
+4. Under that same `N -> C` exclusion, perform the provenance update, journal
+   recovery, baseline capture, apply/restore/unlink, and transition-row operation.
+   Release `C`, then `COMMIT N`. Failure or disagreement rolls back `N` and writes
+   nothing; logging, retries, history dispatch, and response shaping happen later.
+
+Thus pre-gather admission and any operator-facing pre-lock classification are only
+candidate observations. They may refuse early, but they never authorize a write.
+Baseline capture -> provenance write -> artifact write, current-post-image
+classification -> restore/unlink, dead-journal classification -> recovery, and
+authority/provenance classification -> any JSON/native write all repeat their final
+classification inside the transaction above. This is the common exclusion required
+for every classify-then-write sequence in this phase.
 
 ## External `model_provider` is a separate veto — C9
 
@@ -281,7 +315,14 @@ and restore unions. Import the section types:
 
 WP12 writes only `record.provenance` through `updateIntegrationRecord`. The JSON
 record keeps exactly `version`, the provenance ledger, and unknown extension keys
-at the record, ledger, and entry levels. It does **not** keep
+at the record, ledger, entry, artifact, and baseline levels. Passthrough is
+recursive: every `CodexArtifactId` object variant and both baseline object variants
+(`absent` and `present`) accept unknown keys, validators preserve each unknown value
+verbatim (including nested objects/arrays), and an older writer changing a known
+field must deep-equal preserve those extensions. The contract currently states and
+tests only record/ledger/entry passthrough; audit round 5 #3 requires its artifact
+and baseline types/validators to carry the same index-signature and preservation
+rule. It does **not** keep
 `nativeGeneration`, `currentTxId`, a pending/running history schedule, retry ownership,
 or the next due time. Putting those fields here was wrong: two different coordinators
 could each serialize their own read/replace and still overwrite one another.
@@ -302,6 +343,17 @@ the pair and installs that transition's pending schedule in one `UPDATE ... WHER
 native_generation = ? AND current_tx_id IS ?`; `updateCodexHistoryTransition`
 conditionally claims/completes/reschedules that same row and additionally matches
 `history_tx_id`. A zero-row update writes nothing.
+
+Audit round 5 #new 6 exposes a contract-schema hole: SQL
+`CHECK(history_direction IN ('apply', 'remove'))` accepts `NULL`. WP12's producing
+invariant is stricter: every row with `native_generation > 0` carries a non-null
+`history_direction` of `apply` or `remove`, and terminal history updates retain that
+direction together with the matching transaction/authority metadata. The contract's
+positive-generation `CHECK` in `005_contract.md` must be tightened to require
+`history_direction IS NOT NULL` as well as membership in the two-value set. Until
+that contract correction lands, convergence still refuses to produce or accept a
+positive-generation row with a null direction. Scheduling is a SQLite transition-row
+operation; it never writes scheduling state to the integration record.
 
 That row is the transition/scheduling authority. `readIntegrationRecord()` supplies
 only provenance needed to prove an artifact baseline/post-image. Observation joins
@@ -367,7 +419,7 @@ bytes may still route through OpenCodex, so OFF would later restore the routed b
 as the baseline forever. That mechanism was wrong.
 
 **INFERRED operator-recovery UX:** keep the explicit operator-only command, but make
-adoption a read-only proof followed by a record write:
+adoption a serialized proof-and-provenance transaction:
 
 ```text
 ocx restore --adopt-current-codex-baseline
@@ -376,11 +428,13 @@ ocx restore --adopt-current-codex-baseline
 The flag is rejected in service/agent-driven/automatic contexts and requires an
 interactive confirmation naming the canonical Codex home. It requires the proxy
 stopped, owned service authority, no external provider, no journal envelope, and a
-single read-only classification of every target as `native-clean | ocx-residue |
-ambiguous`. **Only all `native-clean` may adopt.** `ocx-residue` and `ambiguous` both
-abort before quarantine or record replacement; the command prints the exact surface
-and evidence and asks the operator to clean/inspect it outside this flow. There is no
-automatic “salvage by filename” fallback in WP12.
+pre-lock read-only classification of every target as `native-clean | ocx-residue |
+ambiguous`. That first observation exists to inform/refuse before lock acquisition;
+it is not write authority. **Only all `native-clean` may proceed to the locked
+revalidation.** `ocx-residue` and `ambiguous` both abort before quarantine or record
+replacement; the command prints the exact surface and evidence and asks the operator
+to clean/inspect it outside this flow. There is no automatic “salvage by filename”
+fallback in WP12.
 
 The ledger is unavailable here, so positive residue proof comes only from the
 artifact's own structure:
@@ -396,19 +450,35 @@ artifact's own structure:
 The ASCII `->` above is the documentation spelling; implementation compares the
 exact Unicode prefix already emitted at `src/codex/catalog/sync.ts:283,346`.
 
-Once the same observation is all native-clean, `integration-record.ts` atomically
-quarantines an unreadable JSON record to a timestamped sibling, preserving its bytes,
-and `updateIntegrationRecord` creates only exact current `present`/`absent`
-provenance baselines. A lost record has no quarantine source. Adoption changes no
-Codex artifact. If `readCodexTransitionState()` returns a ready row, adoption
-preserves its pair and complete history state. If the row is missing/
-`legacy-ambiguous`, only the same all-native-clean proof may initialize the contract
-`{0,null}` row with `history.status:"unknown"`; it never imports a positive pair from
-OPENCODEX_HOME-local legacy JSON. A subsequent explicit `convergeCodex` performs
-apply/remove from the verified clean baseline.
+The previous version validated native-clean state and wrote provenance across an
+unlocked gap. A CLI convergence could change an artifact after final validation but
+before JSON replacement or transition-row initialization, permanently recording a
+baseline for a state that no longer existed. OFF could later “restore” those wrong
+bytes. That mechanism was unsafe and is replaced by this exact order:
 
-If any target changes between classification and JSON replacement, target identity
-or digest validation fails and adoption writes nothing. The command prints the
+1. Acquire native/coordinator transaction `N` with `BEGIN IMMEDIATE`.
+2. While holding `N`, acquire config transaction `C` where the all-surface proof
+   reads config/generation/routing (the normal adoption path does).
+3. Using the **already-open N connection**, authoritatively reread the transition
+   row and every canonical target, then repeat the complete structural table above,
+   config/authority/journal checks, target identities, digests, and baseline bytes.
+4. Only if that under-lock result is still exactly all `native-clean` and agrees
+   with the pre-lock observation may `integration-record.ts` quarantine unreadable
+   JSON, `updateIntegrationRecord` write exact current `present`/`absent` baselines,
+   and the same N connection initialize a missing row as contract `{0,null}` with
+   `history.status:"unknown"`. Release `C`, then `COMMIT N`.
+
+If any under-lock classification, identity, digest, authority, row state, or baseline
+disagrees with the pre-lock observation, adoption refuses, rolls back/releases the
+locks, reports the changed surface and both observations, and writes nothing. It does
+not reclassify the new state as an acceptable baseline in the same invocation and does
+not retry adoption automatically.
+
+A ready transition row is preserved byte-for-byte, including its pair, direction,
+authority metadata, and complete history state/schedule. A lost record has no
+quarantine source. Adoption changes no Codex artifact and never imports a positive
+pair from OPENCODEX_HOME-local legacy JSON. A subsequent explicit `convergeCodex`
+performs apply/remove from the verified clean baseline. The command prints the
 quarantine path and adopted provenance identity, never a newly invented `txId`.
 Tests never auto-confirm this action.
 
@@ -434,7 +504,7 @@ proof and blocks automatic replay.
 +function reconcileJournalUnlocked(
 +  inspection: AuthorizedDeadJournal,
 +): RestoreJournalResult {
-+  // Called only by convergence inside the coordinated commit.
++  // Called only after convergence re-inspects under N -> C, before C release/N commit.
 +}
 ```
 
@@ -600,6 +670,13 @@ All tests use temporary homes, real contract record owner, port `0`, and product
    conditional row update cannot clear the newer pending schedule.
 6. Two distinct `OPENCODEX_HOME` processes sharing one canonical `CODEX_HOME`
    observe one coordinator pair; exactly one expected-row update wins.
+7. Instrument lock events for each classify-then-write path and assert
+   `BEGIN N -> acquire C -> authoritative classify/read/write on the same N
+   connection -> release C -> COMMIT N`; a second coordinator connection is never
+   opened inside the callback.
+8. Seed a positive-generation row with null direction and require convergence to
+   reject it. Valid apply/remove rows retain their non-null direction through every
+   terminal history update; the tightened contract CHECK rejects the null fixture.
 
 ### Provenance/restoration/recovery
 
@@ -621,12 +698,21 @@ All tests use temporary homes, real contract record owner, port `0`, and product
    adoption refuses instead of guessing. Table-drive every structural-proof row
    above, including exact clean negatives.
 9. Only an all-native-clean observation may quarantine a corrupt JSON record and
-   write exact current baselines. Assert native bytes and the coordinator pair/
-   pending schedule are unchanged; then normal `convergeCodex` succeeds.
+   write exact current baselines. Pause after the pre-lock observation, mutate one
+   target through a cooperating CLI convergence, then resume: under-lock
+   revalidation disagrees, so adoption reports/refuses and writes/quarantines/
+   initializes nothing. Assert native bytes and the coordinator pair/pending
+   schedule belong to the winner; then a fresh, explicitly confirmed adoption may
+   start from a new pre-lock observation.
 10. Missing transition row + all-native-clean initializes only `{0,null}` with
-    unknown history; a legacy positive JSON pair is never imported.
+    unknown history on the already-open N connection; a legacy positive JSON pair
+    is never imported.
 11. Adoption aborts atomically on one unreadable or changed target, external
     provider, live writer, running proxy, or noninteractive/agent-driven invocation.
+12. Seed unknown nested extension values independently on every artifact-id variant
+    and on both `absent`/`present` baseline variants. Exercise ordinary provenance
+    update, post-image update, restoration, and adoption; require deep-equal
+    preservation at record, ledger, entry, artifact, and baseline levels.
 
 ### Observed state and fresh intent
 
@@ -685,7 +771,9 @@ live proxy on 10100.
 - **C10 (narrowed)** — two contract baseline classes only. Matching current
   post-images restore; current-byte drift preserves/reports. No hash claims to prove
   absence of edit-and-revert. Lost/corrupt ledger adoption requires a complete
-  verified native-clean observation; structural residue or ambiguity refuses.
+  verified native-clean observation repeated under `N -> C`; disagreement with the
+  pre-lock observation refuses and writes nothing. Artifact and baseline extension
+  keys survive recursively, not only record/ledger/entry keys.
 - **C11** — observed state is the contract `CodexObservedState`; unchanged intent
   still converges and re-observes.
 - **C12** — the same running server honors subprocess OFF then ON using a pre-gather
@@ -696,7 +784,8 @@ live proxy on 10100.
 - There is one convergence entry point and one shared result family.
 - Native pair/pending schedule authority is the canonical-CODEX_HOME coordinator
   row. JSON retains only version, provenance, and extension keys, never transition
-  or scheduling authority.
+  or scheduling authority. Every positive generation has a non-null apply/remove
+  direction; the contract SQLite CHECK must enforce that invariant.
 - **N2** — WP12 rewires all remaining callers and passes its own typecheck/tests in
   the same commit. WP13 adds composed proof, not missing implementation.
 

@@ -51,7 +51,7 @@ IN:
 - `src/codex/convergence.ts` (MODIFY) — add history execution behind the existing
   `convergeCodex`; callers still use only the contract request/result.
 - `src/codex/transition-state.ts` (MODIFY only through its public API) — WP10 calls
-  `readCodexTransitionState` and `updateCodexTransitionState`; the latter conditionally
+  `readCodexTransitionState` and `updateCodexHistoryTransition`; the latter conditionally
   updates the pending history schedule where the native pair and `history_tx_id` still
   match. It never stores that pair or schedule in `integrations/codex.json`.
 - `src/codex/inject.ts`, `src/codex/sync.ts` (MODIFY) — remove direct history
@@ -291,7 +291,7 @@ UPDATE codex_transition_state
 
 The coordinator database path already encodes effective user plus canonical
 `CODEX_HOME`; the row is deliberately a singleton, not one row per
-`OPENCODEX_HOME`. `updateCodexTransitionState(expected, next)` executes the statement
+`OPENCODEX_HOME`. `updateCodexHistoryTransition(expected, state)` executes the statement
 above. Its `kind:"updated"` result means exactly one changed row published A's
 result; the implementation maps zero changed rows to `kind:"conflict"`. Conflict
 means A was overtaken: it MUST NOT write JSON, MUST NOT overwrite or clear the newer
@@ -322,8 +322,8 @@ Outcome order:
 - readable unsupported shape -> `unknown/schema` with both probe counts null;
 - watchdog -> `unknown/timeout`, not `worker-died`;
 - shutdown cancellation -> `unknown/shutdown-cancelled`, join, then drain;
-- `worker.onerror`, malformed terminal message, or early close ->
-  `unknown/worker-died`;
+- `worker.onerror`, malformed terminal message, or early close -> reread the
+  coordinator row before attempting `unknown/worker-died`;
 - initial pair/snapshot mismatch or zero-row terminal update ->
   `pending/overtaken`, no self-retry;
 - coordinator update failure -> returned `unknown/record-write-failed`; the existing
@@ -333,6 +333,20 @@ The Worker closes in `finally`; the parent still waits for `close`/join using th
 repository's existing discipline (`src/storage/worker-lifecycle.ts:150-209`). A
 watchdog is containment, not convergence. It may interrupt legitimate large
 history, so timeout can never be recorded as success.
+
+The reread on `worker.onerror`, malformed terminal IPC, or early close is mandatory
+because the Worker may have committed its terminal SQLite update and died before
+`postMessage`. The parent first calls `readCodexTransitionState`. If the row still
+matches the job's native pair and `history_tx_id` and already contains a terminal
+history state, that durable state is the result and the parent writes nothing. If a
+newer pair owns the row, the parent returns `pending/overtaken` and arms the winner's
+schedule. Only when the exact job still owns a `pending` or `running` row may the
+parent conditionally call
+`updateCodexHistoryTransition(expected, workerDiedState)`; a zero-row result follows
+the same overtaken rule. If the reread is unavailable, the parent leaves the row
+intact, returns `unknown/record-write-failed`, and lets the guardian retry from
+durable state. A missing terminal message is therefore never permission to
+overwrite a committed success with synthetic `worker-died`.
 
 ## Fail-fast automatic mode and explicit mode
 
@@ -373,7 +387,7 @@ belong to the SQLite coordinator row keyed by canonical `CODEX_HOME`, not to an
 Both `history-worker.ts` and `history-job.ts` consume the contract-owned coordinator
 API from `src/codex/transition-state.ts`; neither owns SQL or a second row shape. The
 Worker calls `readCodexTransitionState` before traversal and
-`updateCodexTransitionState(expected, next)` after its post-probe. The parent/guardian
+`updateCodexHistoryTransition(expected, state)` after its post-probe. The parent/guardian
 uses the same reader to arm the current schedule after conflict.
 
 They never parse, write, or atomically replace `integrations/codex.json`. A terminal
@@ -485,10 +499,7 @@ unknown rather than zero-looking success.
 +    const result = syncCodexHistoryProvider(request.targetProvider, request.stateDbPath, request.backupPath, policy(request));
 +    const postProbe = countPendingOpencodexHistory(request.stateDbPath, request.backupPath);
 +    const state = classifyHistoryState(result, postProbe, request.expectation.txId);
-+    const update = updateCodexTransitionState(expected, {
-+      ...expected,
-+      history: state,
-+    });
++    const update = updateCodexHistoryTransition(expected, state);
 +    if (update.kind === "conflict") return postOvertaken(request, postProbe);
 +    if (update.kind === "unavailable") return postRecordWriteFailed(request, postProbe);
 +    self.postMessage({ type: "done", requestId: request.requestId, state, postProbe, expectation: request.expectation, authoritySnapshotId: request.authoritySnapshotId });
@@ -501,6 +512,12 @@ unknown rather than zero-looking success.
 
 `release()` above is private to Worker implementation; unlike the native public
 API, no caller can retain it across unrelated work.
+
+The parent terminal handler does not map missing IPC directly to `worker-died`.
+Its error/close branch performs the reread rule above after join: adopt a matching
+terminal row, arm a newer winner, or conditionally publish `worker-died` only while
+the exact job still owns `pending`/`running`. This branch is tested at the seam
+between the Worker's successful SQLite commit and `postMessage`.
 
 ### Convergence dispatch, no inline branch
 
@@ -568,7 +585,10 @@ satisfy C15.
 - Restart/module reload re-arms unresolved state.
 - Worker error, malformed response, early close, watchdog, cancellation, and final
   coordinator-row write failure retain their distinct contract reasons, carry nullable
-  probe counts, remain non-converged, and join exactly once.
+  probe counts, remain non-converged, and join exactly once. For
+  error/malformed/close, the parent rereads first: an already-terminal matching row
+  wins; only a matching `pending`/`running` row may be conditionally changed to
+  `worker-died`.
 - An overtaken transition does not retry itself.
 
 ### Measured responsiveness — C3
