@@ -263,18 +263,28 @@ function isLoopbackHostname(hostname: string | undefined): boolean {
   return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
+/**
+ * The `ocx` command a user should rerun for the service state they actually have.
+ *
+ * `installed` alone is not enough: `repairService()` refuses a Task-Scheduler-plus-WinSW
+ * conflict outright, so recommending repair there names a command guaranteed to fail.
+ * Install IS the valid conflict recovery, because `installWindows` removes the native
+ * backend first. Exported so the guard tests the real selector rather than a copy of it.
+ */
+export function serviceRetryCommand(
+  diag: Pick<ServiceDiagnostic, "installed" | "conflict"> = diagnoseService(),
+): string {
+  return diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
+}
+
 export function assertServiceAuthEnvironment(): void {
   const config = loadConfig();
   if (isLoopbackHostname(config.hostname)) return;
   if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
   // Reached from `service repair` as well as `install`, so name a command that can
-  // actually succeed. `installed` alone is not enough: repairService() refuses a
-  // Task-Scheduler-plus-WinSW conflict outright, so recommending repair there sends the
-  // user to a command guaranteed to fail. Install IS the valid recovery for a conflict,
-  // because installWindows removes the native backend first. Same predicate as the other
-  // three sites (autostart-health, the health cache, doctor).
+  // actually succeed (see serviceRetryCommand).
   const diag = diagnoseService();
-  const retry = diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
+  const retry = serviceRetryCommand(diag);
   throw new Error(
     `OPENCODEX_API_AUTH_TOKEN is required before ${diag.installed ? "refreshing" : "installing"} a service `
       + `for non-loopback hostname. Set it in the same shell, then rerun \`${retry}\`.`,

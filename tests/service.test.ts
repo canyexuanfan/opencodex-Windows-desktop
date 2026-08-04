@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
@@ -1117,16 +1117,18 @@ describe("launchctl load verification", () => {
  * served. These helpers answer the second question.
  */
 describe("auth preflight retry command (260804 #970 follow-up)", () => {
-  // The preflight runs before BOTH install and repair. Naming the wrong one costs the
-  // user a round trip: repair refuses a two-manager conflict outright, so recommending
-  // it there is a command guaranteed to fail. Install is the valid conflict recovery
-  // because installWindows removes the native backend first.
-  test("picks the command that can actually succeed", () => {
-    const pick = (installed: boolean, conflict: boolean) =>
-      installed && !conflict ? "ocx service repair" : "ocx service install";
-    expect(pick(true, false)).toBe("ocx service repair");
-    expect(pick(false, false)).toBe("ocx service install");
-    expect(pick(true, true)).toBe("ocx service install");
+  // Calls the PRODUCTION selector, not a copy of its logic. An earlier version of this
+  // test re-implemented the predicate as a local lambda and would have stayed green with
+  // the fix reverted — a guard that cannot fail is worse than no guard.
+  test("serviceRetryCommand picks the command that can actually succeed", () => {
+    // Registered and healthy enough to refresh in place: repair, no elevation needed.
+    expect(serviceRetryCommand({ installed: true, conflict: false })).toBe("ocx service repair");
+    // Nothing registered: repairService() would refuse, so install is the only option.
+    expect(serviceRetryCommand({ installed: false, conflict: false })).toBe("ocx service install");
+    // Task Scheduler AND WinSW both present: repairService() refuses this outright
+    // (see the conflict guard in repairService), and installWindows removes the native
+    // backend first, so install is the valid recovery.
+    expect(serviceRetryCommand({ installed: true, conflict: true })).toBe("ocx service install");
   });
 });
 
