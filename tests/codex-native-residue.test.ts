@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -17,7 +18,6 @@ import { Database } from "bun:sqlite";
 
 import {
   buildCatalogEntries,
-  exactComboCatalogSlugs,
   readCodexCatalogPath,
   syncCatalogModels,
 } from "../src/codex/catalog";
@@ -300,28 +300,28 @@ for (const shape of catalogConfigShapes) {
 
 const catalogPathShapes: Array<{
   name: string;
-  configuredPath: (outsideRoot: string) => string;
+  configuredPath: (outsideRoot: string, leaf: string) => string;
 }> = [
-  { name: "root-relative", configuredPath: () => "custom.json" },
-  { name: "nested-relative", configuredPath: () => "nested/routes.json" },
+  { name: "root-relative", configuredPath: (_outsideRoot, leaf) => `${leaf}.json` },
+  { name: "nested-relative", configuredPath: (_outsideRoot, leaf) => `nested/${leaf}.json` },
   {
     name: "absolute inside CODEX_HOME",
-    configuredPath: () => canonicalPathInCodexHome("absolute-direct.json"),
+    configuredPath: (_outsideRoot, leaf) => canonicalPathInCodexHome(`${leaf}.json`),
   },
   {
     name: "absolute outside CODEX_HOME",
-    configuredPath: outsideRoot => join(outsideRoot, "external.json"),
+    configuredPath: (outsideRoot, leaf) => join(outsideRoot, `${leaf}.json`),
   },
   {
     name: "parent-escaping relative",
-    configuredPath: () => `../${basename(codexHome)}-escape.json`,
+    configuredPath: (_outsideRoot, leaf) => `../${basename(codexHome)}-${leaf}.json`,
   },
 ];
 
 for (const shape of catalogPathShapes) {
   test(`configured catalog classification follows the ${shape.name} path`, () => {
     const outsideRoot = mkdtempSync(join(tmpdir(), "ocx-native-residue-catalog-outside-"));
-    const configuredPath = shape.configuredPath(outsideRoot);
+    const configuredPath = shape.configuredPath(outsideRoot, `catalog-${randomUUID()}`);
     const targetPath = resolve(realpathSync.native(codexHome), configuredPath);
     try {
       mkdirSync(dirname(targetPath), { recursive: true });
@@ -495,65 +495,72 @@ test("duplicate configured catalog paths are indeterminate", () => {
   });
 });
 
-const comboAliasConfig = {
-  combos: {
-    deepseek: { alias: "deepseek-v4-flash", targets: [{ provider: "fixture", model: "one" }] },
-    old: { alias: "old-public", targets: [{ provider: "fixture", model: "two" }] },
-    stable: { alias: "stable-public", targets: [{ provider: "fixture", model: "three" }] },
-  },
-};
-const productionBareComboAliases = [...exactComboCatalogSlugs(comboAliasConfig)]
-  .filter(alias => !alias.includes("/"));
+const arbitraryComboAlias = `round4-edge-bare-${randomUUID()}`;
 
-for (const alias of productionBareComboAliases) {
-  test(`production-derived bare combo alias ${alias} is routed residue`, () => {
-    const [id] = Object.entries(comboAliasConfig.combos)
-      .find(([, combo]) => combo.alias === alias)!;
-    const models = buildCatalogEntries(
-      null,
-      [],
-      [{ provider: "combo", id, alias, owned_by: "combo" }],
-      undefined,
-      false,
-      "default",
-      exactComboCatalogSlugs(comboAliasConfig),
-    );
-    const combo = models.find(model => model.slug === alias);
-    expect(combo).toMatchObject({
-      slug: alias,
+test(`production-generated arbitrary bare combo alias ${arbitraryComboAlias} is routed residue`, async () => {
+  const catalogPath = canonicalPathInCodexHome("opencodex-catalog.json");
+  writeFileSync(catalogPath, JSON.stringify({ models: [] }));
+  const config: OcxConfig = {
+    port: 10100,
+    defaultProvider: "fixture",
+    providers: {
+      fixture: {
+        adapter: "openai-chat",
+        baseUrl: "https://fixture.invalid/v1",
+        liveModels: false,
+        models: ["combo-member"],
+        modelContextWindows: { "combo-member": 128_000 },
+      },
+    },
+    disabledModels: ["fixture/combo-member"],
+    combos: {
+      edge: {
+        alias: arbitraryComboAlias,
+        targets: [{ provider: "fixture", model: "combo-member" }],
+      },
+    },
+  };
+
+  const sync = await syncCatalogModels(config);
+  const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as {
+    models: Array<Record<string, unknown>>;
+  };
+  const routedRows = catalog.models.filter(model =>
+    typeof model.description === "string"
+      && model.description.startsWith("Routed via opencodex → ")
+  );
+
+  expect(sync).toMatchObject({ path: catalogPath, catalogWritten: true });
+  expect(arbitraryComboAlias).not.toContain("/");
+  expect(routedRows).toEqual([
+    expect.objectContaining({
+      slug: arbitraryComboAlias,
       description: "Routed via opencodex → combo (combo).",
       owned_by: "combo",
-    });
-    writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({ models: [combo] }));
-
-    expect(classifyNativeRoutedResidue()).toMatchObject({
-      kind: "residue",
-      surface: "catalog",
-    });
-    expect(readCodexTransitionState()).toEqual({
-      kind: "legacy-ambiguous",
-      message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
-    });
+    }),
+  ]);
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "residue",
+    surface: "catalog",
   });
-}
-
-for (const slug of [
-  "user/model",
-  "vendor/deepseek-v4-flash",
-  "local/vision_2",
-  "acme/text-pro",
-]) {
-  test(`foreign slash-bearing slug ${slug} is indeterminate`, () => {
-    writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({
-      models: [{ slug, description: "User-authored catalog row" }],
-    }));
-
-    expect(classifyNativeRoutedResidue()).toMatchObject({
-      kind: "indeterminate",
-      surface: "catalog",
-    });
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
   });
-}
+});
+
+const arbitraryForeignSlug = `foreign-${randomUUID()}/model-${randomUUID()}`;
+
+test(`arbitrary foreign slash-bearing slug ${arbitraryForeignSlug} is indeterminate`, () => {
+  writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({
+    models: [{ slug: arbitraryForeignSlug, description: "User-authored catalog row" }],
+  }));
+
+  expect(classifyNativeRoutedResidue()).toMatchObject({
+    kind: "indeterminate",
+    surface: "catalog",
+  });
+});
 
 test("a native-tagged history row with routed latest rollout metadata refuses coordinator initialization", () => {
   createHistoryDatabase("openai", ["openai", "opencodex"]);
