@@ -44,8 +44,16 @@ import type {
   EffortClampDiagnostic,
   ResolvedCodexRuntime,
 } from "../runtime";
+import type {
+  CatalogGatherEvidenceSession,
+  CatalogGatherReadableSourceRole,
+} from "./filesystem-evidence";
 
 export { isSpawnableCodexCandidate, codexExecInvocation } from "../exec-invocation";
+export type {
+  CatalogGatherEvidenceSession,
+  CatalogGatherReadableSourceRole,
+} from "./filesystem-evidence";
 
 export const BUNDLED_CATALOG_CACHE_MS = 60_000;
 
@@ -292,22 +300,6 @@ export function loadBundledCodexCatalog(deps: BundledCatalogDeps = {}): Readonly
     );
   }
   return null;
-}
-
-export type CatalogGatherReadableSourceRole =
-  | "active-catalog-merge"
-  | "hashed-backup-fallback"
-  | "legacy-backup-fallback"
-  | "models-cache-fallback"
-  | "runtime-selection";
-
-/**
- * Temporary structural seam for WP9's filesystem-evidence owner.
- * The owner maps each closed role to its admitted path and records PRESENT or
- * ABSENT before returning the exact bytes. This adapter never reads a path.
- */
-export interface CatalogGatherEvidenceSession {
-  readSource(role: CatalogGatherReadableSourceRole): Uint8Array | null;
 }
 
 export type CatalogGatherProcessLocalObservation =

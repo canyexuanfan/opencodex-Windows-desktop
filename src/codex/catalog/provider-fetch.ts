@@ -66,14 +66,12 @@ import type { CatalogModel } from "./parsing";
 import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
+import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
+
+export type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
 
 /** Concurrent gatherRoutedModels callers with the same catalog identity share one live discovery.
  *  Keyed by gatherFlightKey so a different config cannot join or evict the wrong flight. */
-export interface CatalogGatherProviderAuthEvidence {
-  /** Exact auth-store bytes already read and recorded by the filesystem-evidence owner. */
-  readonly authStoreBuffer: Uint8Array | null;
-}
-
 export interface CatalogGatherProviderAuthOutcome {
   readonly provider: string;
   readonly state: OAuthActiveTokenObservation["kind"];

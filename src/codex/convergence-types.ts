@@ -350,6 +350,7 @@ export type CatalogConditionalSourceRole =
   | "hashed-backup-fallback"
   | "legacy-backup-fallback"
   | "models-cache-fallback"
+  | "native-catalog-selection"
   | "runtime-selection"
   | "provider-auth-selection";
 
@@ -365,6 +366,45 @@ export interface CatalogFilesystemIdentity {
 
 export interface CatalogParentIdentity extends CatalogFilesystemIdentity {
   readonly canonicalPath: string;
+}
+
+/** Required evidence for the selector that chose every CODEX_HOME-derived path. */
+export interface CatalogHomeSelectionObservation {
+  readonly selector: Readonly<{
+    readonly kind: "environment" | "default";
+    /** Exact pre-canonicalization selector string used by the production resolver. */
+    readonly raw: string;
+  }>;
+  readonly canonicalCodexHome: string;
+  readonly rootIdentity: CatalogFilesystemIdentity;
+}
+
+export type CatalogProcessLocalObservation =
+  | { readonly state: "unused" }
+  | { readonly state: "used"; readonly epoch: number; readonly valueIdentity: string };
+
+/** Candidate-bound evidence for mutable process-local authority, never file evidence. */
+export interface CatalogProcessLocalEvidence {
+  readonly runtime: CatalogProcessLocalObservation;
+  readonly bundledCatalog: CatalogProcessLocalObservation;
+}
+
+/** Non-secret-bearing identity of every authority input admitted to one gather flight. */
+export interface CatalogGatherAuthorityIdentity {
+  readonly version: 1;
+  /** Process-local keyed HMAC over every component below; never a raw content hash. */
+  readonly authorityId: string;
+  readonly admittedConfig: Readonly<{
+    /** Opaque WeakMap identity of the exact resident Readonly<OcxConfig> reference. */
+    readonly referenceIdentity: string;
+    readonly generation: ConfigGeneration;
+    /** Keyed HMAC of the exact canonical config snapshot, including secret-bearing fields. */
+    readonly snapshotIdentity: string;
+  }>;
+  readonly authSnapshotIdentity: string;
+  readonly nativeCatalogSourceIdentity: string;
+  readonly sourceEvidenceIdentity: string;
+  readonly processLocalEvidenceIdentity: string;
 }
 
 /** Exact gather-time evidence for one consulted filesystem source. */
@@ -397,6 +437,8 @@ export type CatalogConditionalSourceObservations = Readonly<{
 }>;
 
 export interface CatalogSourceEvidence {
+  /** Required before any CODEX_HOME-derived target or source path is accepted. */
+  readonly homeSelection: CatalogHomeSelectionObservation;
   readonly required: CatalogRequiredSourceObservations;
   /** Every role is a required key; an empty list means the role was not consulted. */
   readonly conditional: CatalogConditionalSourceObservations;
@@ -406,6 +448,8 @@ export interface CatalogSourceEvidence {
 export interface CatalogAdmissionSnapshot {
   config: Readonly<OcxConfig>;
   generation: ConfigGeneration;
+  /** Exact retained-reference/generation/snapshot identity used by gather authority. */
+  readonly configIdentity: CatalogGatherAuthorityIdentity["admittedConfig"];
   targets: Readonly<{
     catalog: string;
     cache: string;

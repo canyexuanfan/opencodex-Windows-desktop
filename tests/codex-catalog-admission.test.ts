@@ -29,6 +29,7 @@ const CONDITIONAL_SOURCE_ROLES = [
   "hashed-backup-fallback",
   "legacy-backup-fallback",
   "models-cache-fallback",
+  "native-catalog-selection",
   "provider-auth-selection",
   "runtime-selection",
 ] as const satisfies readonly CatalogConditionalSourceRole[];
@@ -40,11 +41,13 @@ type MissingRequiredEvidence = Omit<CatalogSourceEvidence, "required"> & Readonl
 type MissingConditionalEvidence = Omit<CatalogSourceEvidence, "conditional"> & Readonly<{
   conditional: Omit<CatalogConditionalSourceObservations, "runtime-selection">;
 }>;
+type MissingHomeEvidence = Omit<CatalogSourceEvidence, "homeSelection">;
 
 const STRUCTURALLY_INVALID_EVIDENCE_ASSIGNABILITY: readonly [
   IsAssignable<MissingRequiredEvidence, CatalogSourceEvidence>,
   IsAssignable<MissingConditionalEvidence, CatalogSourceEvidence>,
-] = [false, false];
+  IsAssignable<MissingHomeEvidence, CatalogSourceEvidence>,
+] = [false, false, false];
 
 let testRoot = "";
 let codexHome = "";
@@ -87,6 +90,11 @@ test("captures the given config reference, generation, and catalog target identi
   expect(snapshot.config).toBe(residentConfig);
   expect(snapshot.config.port).toBe(30300);
   expect(snapshot.generation).toEqual({ value: 1 });
+  expect(snapshot.configIdentity).toEqual({
+    referenceIdentity: expect.any(String),
+    generation: { value: 1 },
+    snapshotIdentity: expect.any(String),
+  });
   expect(JSON.parse(snapshot.targets.catalog)).toMatchObject({
     path: join(codexHome, "opencodex-catalog.json"),
     canonicalParent: codexHome,
@@ -112,6 +120,11 @@ test("captures the given config reference, generation, and catalog target identi
     },
     fileIdentity: null,
   });
+  expect(snapshot.sourceEvidence.homeSelection).toEqual({
+    selector: { kind: "environment", raw: codexHome },
+    canonicalCodexHome: codexHome,
+    rootIdentity: { volume: expect.any(String), fileId: expect.any(String) },
+  });
   expect(Object.keys(snapshot.sourceEvidence.conditional).sort()).toEqual(CONDITIONAL_SOURCE_ROLES);
   for (const observations of Object.values(snapshot.sourceEvidence.conditional)) {
     expect(observations).toEqual([]);
@@ -119,6 +132,7 @@ test("captures the given config reference, generation, and catalog target identi
 });
 
 test("captures PRESENT catalog target-selection evidence from the exact config bytes", () => {
+  saveConfig(config());
   const selectedCatalog = join(codexHome, "selected-catalog.json");
   const configBytes = Buffer.from(
     `model_catalog_json = ${JSON.stringify(selectedCatalog)}\n`,
@@ -151,11 +165,31 @@ test("captures PRESENT catalog target-selection evidence from the exact config b
   });
 });
 
-test("rejects missing required and conditional evidence keys structurally", () => {
-  expect(STRUCTURALLY_INVALID_EVIDENCE_ASSIGNABILITY).toEqual([false, false]);
+test("binds opaque config identity to the exact reference, generation, and snapshot", () => {
+  saveConfig(config());
+  const firstConfig = config(20200);
+  const equalButDistinctConfig = config(20200);
+
+  const first = captureCatalogAdmissionSnapshot(firstConfig).configIdentity;
+  const sameReference = captureCatalogAdmissionSnapshot(firstConfig).configIdentity;
+  const distinctReference = captureCatalogAdmissionSnapshot(equalButDistinctConfig).configIdentity;
+  firstConfig.port = 30300;
+  const mutated = captureCatalogAdmissionSnapshot(firstConfig).configIdentity;
+
+  expect(sameReference).toEqual(first);
+  expect(distinctReference.referenceIdentity).not.toBe(first.referenceIdentity);
+  expect(distinctReference.snapshotIdentity).toBe(first.snapshotIdentity);
+  expect(mutated.referenceIdentity).toBe(first.referenceIdentity);
+  expect(mutated.snapshotIdentity).not.toBe(first.snapshotIdentity);
+  expect(mutated.generation).toEqual(first.generation);
+});
+
+test("rejects missing home, required, and conditional evidence keys structurally", () => {
+  expect(STRUCTURALLY_INVALID_EVIDENCE_ASSIGNABILITY).toEqual([false, false, false]);
 });
 
 test("changes target identity when a parent symlink retargets without changing the path", () => {
+  saveConfig(config());
   const parentA = join(testRoot, "catalog-parent-a");
   const parentB = join(testRoot, "catalog-parent-b");
   const linkedParent = join(testRoot, "catalog-parent");

@@ -7,29 +7,31 @@
  * later phase. This reader therefore captures only the exact resident config,
  * its cooperating generation, and identities for catalog-owned targets.
  */
-import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { createHmac, randomBytes } from "node:crypto";
+import { join, resolve } from "node:path";
 
-import { readConfigGeneration } from "../config";
+import { observeConfigGeneration } from "../config";
 import type { OcxConfig } from "../types";
 import type {
   CatalogAdmissionSnapshot,
   CatalogConvergeRequestInput,
-  CatalogFilesystemIdentity,
-  CatalogSourceObservation,
+  ConfigGeneration,
   ConvergeRequest,
 } from "./convergence-types";
 import {
-  activeCodexConfigPath,
-  activeDefaultCatalogPath,
-  activeCodexModelsCachePath,
   catalogBackupPathFor,
-  isDefaultCatalogPath,
   legacyCatalogBackupPath,
-  resolveActiveCodexConfigPath,
+  samePath,
 } from "./catalog/parsing";
 import { readRootTomlString } from "./paths";
+import {
+  acceptCatalogGatherSourcePath,
+  captureAndSealCatalogHomeSelection,
+  captureCatalogGatherTargetIdentity,
+  createCatalogGatherEvidenceSession,
+  readCatalogGatherSource,
+  sealCatalogGatherEvidenceSession,
+} from "./catalog/filesystem-evidence";
 
 /**
  * Construct the one request shape permitted for management catalog refreshes.
@@ -51,93 +53,81 @@ export function createCatalogConvergeRequest({
   };
 }
 
-function optionalFileIdentity(path: string): Readonly<{ device: string; inode: string }> | null {
-  try {
-    const entry = statSync(path, { bigint: true });
-    return { device: String(entry.dev), inode: String(entry.ino) };
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return null;
+const CONFIG_IDENTITY_KEY = randomBytes(32);
+const configReferenceIdentities = new WeakMap<object, string>();
+let nextConfigReferenceIdentity = 0;
+
+function encodeLengthPrefixed(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
+}
+
+function canonicalConfigEncoding(value: unknown, ancestors = new Set<object>()): string {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "undefined": return "undefined";
+    case "boolean": return value ? "boolean:1" : "boolean:0";
+    case "string": return `string:${encodeLengthPrefixed(value)}`;
+    case "number": {
+      if (!Number.isFinite(value)) throw new TypeError("Catalog config identity cannot encode a non-finite number.");
+      return `number:${Object.is(value, -0) ? "-0" : String(value)}`;
     }
-    throw error;
+    case "bigint":
+    case "function":
+    case "symbol":
+      throw new TypeError(`Catalog config identity cannot encode ${typeof value}.`);
+    case "object": break;
+  }
+
+  if (ancestors.has(value)) throw new TypeError("Catalog config identity cannot encode a cyclic graph.");
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError("Catalog config identity cannot encode symbol keys.");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items = Array.from({ length: value.length }, (_, index) => (
+        Object.hasOwn(value, index)
+          ? `item:${canonicalConfigEncoding(value[index], ancestors)}`
+          : "hole"
+      ));
+      return `array:${value.length}:${items.map(encodeLengthPrefixed).join("")}`;
+    }
+    const keys = Object.keys(value).sort();
+    const entries = keys.map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) {
+        throw new TypeError("Catalog config identity cannot encode accessor properties.");
+      }
+      return `${encodeLengthPrefixed(key)}${encodeLengthPrefixed(canonicalConfigEncoding(descriptor.value, ancestors))}`;
+    });
+    return `object:${keys.length}:${entries.join("")}`;
+  } finally {
+    ancestors.delete(value);
   }
 }
 
-/**
- * Encode identity evidence in the contract-owned string slot.
- *
- * `CatalogAdmissionSnapshot` deliberately owns the target shape. Encoding the
- * evidence here avoids a second shared target type while still detecting the
- * parent-symlink retarget that a textual path alone missed during C2 review.
- */
-function captureTargetIdentity(path: string): string {
-  const textualPath = resolve(path);
-  const canonicalParent = realpathSync.native(dirname(textualPath));
-  const parent = statSync(canonicalParent, { bigint: true });
-  return JSON.stringify({
-    path: textualPath,
-    canonicalParent,
-    parentIdentity: { device: String(parent.dev), inode: String(parent.ino) },
-    fileIdentity: optionalFileIdentity(textualPath),
+function keyedConfigIdentity(domain: string, payload: string): string {
+  return createHmac("sha256", CONFIG_IDENTITY_KEY)
+    .update(encodeLengthPrefixed(domain))
+    .update(encodeLengthPrefixed(payload))
+    .digest("hex");
+}
+
+function catalogConfigIdentity(
+  config: Readonly<OcxConfig>,
+  generation: ConfigGeneration,
+): CatalogAdmissionSnapshot["configIdentity"] {
+  let referenceIdentity = configReferenceIdentities.get(config);
+  if (!referenceIdentity) {
+    nextConfigReferenceIdentity += 1;
+    referenceIdentity = keyedConfigIdentity("catalog-config-reference-v1", String(nextConfigReferenceIdentity));
+    configReferenceIdentities.set(config, referenceIdentity);
+  }
+  return Object.freeze({
+    referenceIdentity,
+    generation: Object.freeze({ ...generation }),
+    snapshotIdentity: keyedConfigIdentity("catalog-config-snapshot-v1", canonicalConfigEncoding(config)),
   });
-}
-
-function catalogFilesystemIdentity(
-  entry: Readonly<{ dev: bigint; ino: bigint }>,
-): CatalogFilesystemIdentity {
-  return { volume: String(entry.dev), fileId: String(entry.ino) };
-}
-
-function captureCatalogTargetSelection(): Readonly<{
-  catalogPath: string;
-  observation: CatalogSourceObservation<"catalog-target-selection">;
-}> {
-  const logicalPath = resolve(activeCodexConfigPath());
-  const canonicalParent = realpathSync.native(dirname(logicalPath));
-  const parent = statSync(canonicalParent, { bigint: true });
-  const parentIdentity = {
-    canonicalPath: canonicalParent,
-    ...catalogFilesystemIdentity(parent),
-  };
-
-  let bytes: Buffer;
-  try {
-    bytes = readFileSync(logicalPath);
-  } catch (error) {
-    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
-      throw error;
-    }
-    return {
-      catalogPath: activeDefaultCatalogPath(),
-      observation: {
-        state: "absent",
-        role: "catalog-target-selection",
-        logicalPath,
-        canonicalPath: resolve(canonicalParent, basename(logicalPath)),
-        parentIdentity,
-        fileIdentity: null,
-      },
-    };
-  }
-
-  const canonicalPath = realpathSync.native(logicalPath);
-  const file = statSync(canonicalPath, { bigint: true });
-  const configuredCatalogPath = readRootTomlString(bytes.toString("utf8"), "model_catalog_json");
-
-  return {
-    catalogPath: configuredCatalogPath
-      ? resolveActiveCodexConfigPath(configuredCatalogPath)
-      : activeDefaultCatalogPath(),
-    observation: {
-      state: "present",
-      role: "catalog-target-selection",
-      logicalPath,
-      canonicalPath,
-      parentIdentity,
-      fileIdentity: catalogFilesystemIdentity(file),
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    },
-  };
 }
 
 /**
@@ -148,39 +138,42 @@ function captureCatalogTargetSelection(): Readonly<{
 export function captureCatalogAdmissionSnapshot(
   config: Readonly<OcxConfig>,
 ): CatalogAdmissionSnapshot {
-  const generation = readConfigGeneration();
+  const generation = observeConfigGeneration();
   if (generation.kind !== "ready") {
     throw new Error(`Cannot capture Codex catalog admission: config generation is ${generation.reason}.`);
   }
 
-  const targetSelection = captureCatalogTargetSelection();
-  const catalogPath = targetSelection.catalogPath;
+  const evidenceSession = createCatalogGatherEvidenceSession();
+  const homeSelection = captureAndSealCatalogHomeSelection(evidenceSession);
+  const configPath = join(homeSelection.canonicalCodexHome, "config.toml");
+  acceptCatalogGatherSourcePath(evidenceSession, "catalog-target-selection", configPath);
+  const configBytes = readCatalogGatherSource(evidenceSession, "catalog-target-selection");
+  const configuredCatalogPath = configBytes === null
+    ? null
+    : readRootTomlString(Buffer.from(configBytes).toString("utf8"), "model_catalog_json");
+  const defaultCatalogPath = join(homeSelection.canonicalCodexHome, "opencodex-catalog.json");
+  const catalogPath = configuredCatalogPath
+    ? resolve(homeSelection.canonicalCodexHome, configuredCatalogPath)
+    : defaultCatalogPath;
   const backupPaths = [
     catalogBackupPathFor(catalogPath),
-    ...(isDefaultCatalogPath(catalogPath) ? [legacyCatalogBackupPath()] : []),
+    ...(samePath(catalogPath, defaultCatalogPath) ? [legacyCatalogBackupPath()] : []),
   ];
+  const targets = {
+    catalog: captureCatalogGatherTargetIdentity(evidenceSession, catalogPath),
+    cache: captureCatalogGatherTargetIdentity(
+      evidenceSession,
+      join(homeSelection.canonicalCodexHome, "models_cache.json"),
+    ),
+    catalogBackups: backupPaths.map(path => captureCatalogGatherTargetIdentity(evidenceSession, path)),
+  };
+  const sourceEvidence = sealCatalogGatherEvidenceSession(evidenceSession);
 
   return {
     config,
     generation: generation.generation,
-    targets: {
-      catalog: captureTargetIdentity(catalogPath),
-      cache: captureTargetIdentity(activeCodexModelsCachePath()),
-      catalogBackups: backupPaths.map(captureTargetIdentity),
-    },
-    sourceEvidence: {
-      required: {
-        "catalog-target-selection": targetSelection.observation,
-      },
-      conditional: {
-        "bundled-catalog-template": [],
-        "active-catalog-merge": [],
-        "hashed-backup-fallback": [],
-        "legacy-backup-fallback": [],
-        "models-cache-fallback": [],
-        "runtime-selection": [],
-        "provider-auth-selection": [],
-      },
-    },
+    configIdentity: catalogConfigIdentity(config, generation.generation),
+    targets,
+    sourceEvidence,
   };
 }
