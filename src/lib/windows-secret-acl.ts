@@ -170,6 +170,11 @@ export function resetHardenedStateForTests(): void {
   timedOutPaths.clear();
 }
 
+/** Forget a successful file harden after an ephemeral path has been removed or replaced. */
+export function forgetHardenedSecretPath(targetPath: string): void {
+  hardenedPaths.delete(targetPath);
+}
+
 function effectivePlatform(): string {
   return platformOverride ?? platform;
 }

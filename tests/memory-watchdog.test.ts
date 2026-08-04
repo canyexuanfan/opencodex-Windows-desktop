@@ -178,6 +178,7 @@ describe("GET /api/system/memory", () => {
 	      heapUsed: number; external: number; arrayBuffers: number; observedBytes: number; observedMetric: string;
 	      jscHeap: { heapSize: number } | null;
 	      responseState: { count: number; totalBytes: number; largestBytes: number; oldestAgeMs: number };
+	      appOwnedBytes: { budgetBytes: number; retainedBytes: number; evictableBytes: number; pinnedBytes: number; overBudgetBytes: number };
 	      streamMode: string; eagerRelay: unknown;
 	      watchdog: { samples: unknown[]; warnThresholdBytes: number; observedBytes: number; observedMetric: string } | null;
 	      activeTurnCount: number; isDraining: boolean;
@@ -198,6 +199,11 @@ describe("GET /api/system/memory", () => {
     expect(typeof body.responseState.largestBytes).toBe("number");
     expect(typeof body.responseState.oldestAgeMs).toBe("number");
     expect(body.responseState.count).toBeGreaterThanOrEqual(0);
+    expect(typeof body.appOwnedBytes.budgetBytes).toBe("number");
+    expect(typeof body.appOwnedBytes.retainedBytes).toBe("number");
+    expect(typeof body.appOwnedBytes.evictableBytes).toBe("number");
+    expect(typeof body.appOwnedBytes.pinnedBytes).toBe("number");
+    expect(typeof body.appOwnedBytes.overBudgetBytes).toBe("number");
     expect(body.streamMode).toBe("auto");
     // Non-win32 test runners report no gate decision; win32 reports one.
     if (process.platform === "win32") expect(body.eagerRelay).not.toBeNull();

@@ -162,6 +162,6 @@ export async function drainAndShutdown(
   abortStorageCleanupPolicyJob();
   setStorageCleanupPolicyLiveSink(null);
   setStorageCleanupPolicyJobLiveApply(null);
-  s?.stop(true);
+  await s?.stop(true);
   draining = false;
 }

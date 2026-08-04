@@ -19,6 +19,7 @@ import {
 } from "../config";
 import { reconcileOAuthProviders } from "../oauth";
 import { invalidateCodexModelsCache } from "../codex/catalog";
+import { registerDefaultAppOwnedMemoryStores } from "../lib/app-owned-memory-stores";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
@@ -308,6 +309,7 @@ export function startServer(port?: number, options: ServerStartOptions = {}) {
   // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
   // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
   hydrateRequestLogsFromDisk();
+  registerDefaultAppOwnedMemoryStores();
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
   startMemoryWatchdog();

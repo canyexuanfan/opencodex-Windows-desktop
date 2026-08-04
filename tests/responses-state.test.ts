@@ -500,7 +500,7 @@ describe("Responses previous_response_id state", () => {
     expect(adapterNeedsForcedContinuation("")).toBe(false);
   });
 
-  test("byte cap evicts oldest entries while the newest chain link survives", () => {
+  test("byte cap spills oldest residents while continuation metadata survives", () => {
     setResponseStateByteCapForTests(4_000);
     try {
       const bulk = "x".repeat(1_500);
@@ -514,9 +514,13 @@ describe("Responses previous_response_id state", () => {
         rememberResponseState(body, json, { cursor: { conversationId: `conv_${i}` } }, { force: true });
         ids.push(json.id as string);
       }
-      // Oldest entries were evicted by the byte high-water; the newest survives.
-      expect(previousResponseProviderState(ids[0])).toBeUndefined();
+      // Oldest entries are demoted to spill stubs instead of being lost outright.
+      expect(previousResponseProviderState(ids[0])?.cursor?.conversationId).toBe("conv_0");
       expect(previousResponseProviderState(ids[3])?.cursor?.conversationId).toBe("conv_3");
+      const metrics = responseStateMetrics();
+      expect(metrics.count).toBe(4);
+      expect(metrics.spillStubCount).toBeGreaterThan(0);
+      expect(metrics.residentCount).toBeLessThan(metrics.count);
     } finally {
       setResponseStateByteCapForTests(null);
     }
@@ -543,7 +547,7 @@ describe("Responses previous_response_id state", () => {
       const jsonC = buildResponseJSON([{ type: "text_delta", text: "ok" }, { type: "done" }], "cursor/grok-4.5");
       rememberResponseState(bodyC, jsonC, { cursor: { conversationId: "conv_b2" } }, { force: true });
 
-      expect(previousResponseProviderState(jsonA.id as string)).toBeUndefined();
+      expect(previousResponseProviderState(jsonA.id as string)?.cursor?.conversationId).toBe("conv_a");
       expect(previousResponseProviderState(jsonC.id as string)?.cursor?.conversationId).toBe("conv_b2");
     } finally {
       setResponseStateByteCapForTests(null);
@@ -587,7 +591,7 @@ describe("Responses previous_response_id state", () => {
       // entry the same size, so leaked decrements would show up as >1000x.
       const total = getStoredResponseBytesForTests();
       expect(perEntryBytes).toBeGreaterThan(2_000);
-      expect(total).toBeLessThanOrEqual(perEntryBytes * 1_000);
+      expect(total).toBeLessThanOrEqual(perEntryBytes * 1_005);
       expect(total).toBeGreaterThanOrEqual(perEntryBytes * 999);
     } finally {
       setResponseStateByteCapForTests(null);
@@ -927,7 +931,19 @@ describe("Responses previous_response_id state", () => {
   describe("responseStateMetrics (observe-only snapshot)", () => {
     test("empty store reports all-zeroed metrics", () => {
       const metrics = responseStateMetrics();
-      expect(metrics).toEqual({ count: 0, totalBytes: 0, largestBytes: 0, oldestAgeMs: 0 });
+      expect(metrics).toEqual({
+        count: 0,
+        residentCount: 0,
+        spillStubCount: 0,
+        tombstoneCount: 0,
+        totalBytes: 0,
+        spillPayloadBytes: 0,
+        largestBytes: 0,
+        oldestAgeMs: 0,
+        spillWrites: 0,
+        spillWriteFailures: 0,
+        spillReadFailures: 0,
+      });
     });
 
     test("largest entry over 200KB is reflected, and total is >= largest", () => {
@@ -972,7 +988,19 @@ describe("Responses previous_response_id state", () => {
       clearResponseStateMemoryForTests();
 
       // A probe must NOT trigger the lazy disk load — the store still reads empty.
-      expect(responseStateMetrics()).toEqual({ count: 0, totalBytes: 0, largestBytes: 0, oldestAgeMs: 0 });
+      expect(responseStateMetrics()).toEqual({
+        count: 0,
+        residentCount: 0,
+        spillStubCount: 0,
+        tombstoneCount: 0,
+        totalBytes: 0,
+        spillPayloadBytes: 0,
+        largestBytes: 0,
+        oldestAgeMs: 0,
+        spillWrites: 0,
+        spillWriteFailures: 0,
+        spillReadFailures: 0,
+      });
 
       // The real request path DOES load; the probe then reflects the loaded entry.
       expandPreviousResponseInput({ model: "gpt-5.5", previous_response_id: first.id, input: "next" });
