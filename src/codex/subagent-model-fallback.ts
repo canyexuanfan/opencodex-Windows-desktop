@@ -92,13 +92,22 @@ function pollIntervalMs(config: OcxConfig): number {
   return configured;
 }
 
+function fallbackChainKey(model: string, config: OcxConfig): string {
+  const selector = codexAccountNamespaceForModel(config.codexAccountNamespaces, model);
+  if (!selector) return JSON.stringify(["model", model.toLowerCase()]);
+  const slash = model.indexOf("/");
+  // Selector keys are exact-case account boundaries. Keep that segment distinct while
+  // retaining legacy case-insensitive de-duplication for the native model suffix.
+  return JSON.stringify(["account", selector, model.slice(slash + 1).toLowerCase()]);
+}
+
 function normalizedChain(primary: string, config: OcxConfig, extra: readonly string[] = []): string[] {
   const chain: string[] = [];
   const seen = new Set<string>();
   const push = (model: string | undefined) => {
     if (!model || model.trim() === "") return;
     const trimmed = model.trim();
-    const key = trimmed.toLowerCase();
+    const key = fallbackChainKey(trimmed, config);
     if (seen.has(key)) return;
     seen.add(key);
     chain.push(trimmed);

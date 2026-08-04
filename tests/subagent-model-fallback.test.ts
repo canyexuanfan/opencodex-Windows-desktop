@@ -128,6 +128,21 @@ describe("subagent model fallback chain", () => {
       "gpt-5.6-sol",
       "alibaba-token-plan/qwen3.8-max",
     ]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a", Work: "account-b" },
+      subagentModelFallback: ["Work/gpt-5.5"],
+    }))).toEqual(["work/gpt-5.5", "Work/gpt-5.5"]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a" },
+      subagentModelFallback: ["Work/gpt-5.5"],
+    }))).toEqual(["work/gpt-5.5", "Work/gpt-5.5"]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a" },
+      subagentModelFallback: ["work/GPT-5.5"],
+    }))).toEqual(["work/gpt-5.5"]);
+    expect(buildSubagentModelChain("kimi/k3", cfg({
+      subagentModelFallback: ["KIMI/K3"],
+    }))).toEqual(["kimi/k3"]);
   });
 
   test("selectAvailableSubagentModel skips quota-exhausted native models", () => {
@@ -195,6 +210,21 @@ describe("subagent model fallback chain", () => {
       model: "team/gpt-5.5",
       rewritten: true,
       skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("case-distinct account selector fallbacks remain independent", () => {
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { work: "account-a", Work: "account-b" },
+      pausedCodexAccountIds: ["account-a"],
+      subagentModelFallback: ["work/gpt-5.5", "Work/gpt-5.5", "kimi/k3"],
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "Work/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "work/gpt-5.5"],
     });
   });
 
