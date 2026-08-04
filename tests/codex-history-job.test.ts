@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,3 +132,30 @@ test("an overrun Worker returns a typed timeout rather than hanging", async () =
   if (outcome.kind === "failed") expect(outcome.reason).toBe("timeout");
   expect(Date.now() - started).toBeLessThan(20_000);
 }, 30_000);
+
+/**
+ * The async restore wrapper owns history; the synchronous body must not also do
+ * it, or every restore would run the transition twice — once unserialized on the
+ * caller thread, which is the path this phase exists to remove.
+ *
+ * Asserted against the SOURCE rather than by running it. The synchronous body
+ * resolves its state database from a module-load constant
+ * (`history-provider.ts:16`), so a test that moves `CODEX_HOME` cannot observe
+ * which database it would have touched — a behavioural version of this passed
+ * with `skipHistory` ignored entirely, which is worse than no test. Removing the
+ * guard changes this text, and that is something a check can actually see.
+ */
+test("the synchronous restore body is gated on skipHistory", () => {
+  const source = readFileSync(join(import.meta.dir, "..", "src", "codex", "inject.ts"), "utf8");
+  const body = source.slice(source.indexOf("export function restoreNativeCodex("));
+  const historyCall = body.indexOf("syncCodexHistoryProvider(\"openai\"");
+  expect(historyCall).toBeGreaterThan(-1);
+
+  // The inline call is reachable only through the gate.
+  const gate = body.indexOf("options.skipHistory");
+  expect(gate).toBeGreaterThan(-1);
+  expect(gate).toBeLessThan(historyCall);
+
+  // And the async wrapper is the thing that sets it.
+  expect(source).toContain("restoreNativeCodex({ skipHistory: true })");
+});

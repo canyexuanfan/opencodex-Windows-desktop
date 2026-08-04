@@ -643,9 +643,9 @@ describe("service lifecycle cleanup ordering", () => {
 
     expect(stopCase).toContain("ops.stop();");
     expect(stopCase).toContain("await stopTrackedProxyForServiceCommand();");
-    expect(stopCase).toContain("restoreNativeCodex();");
+    expect(stopCase).toContain("restoreNativeCodexAsync();");
     expect(stopCase.indexOf("ops.stop();")).toBeLessThan(stopCase.indexOf("stopTrackedProxyForServiceCommand();"));
-    expect(stopCase.indexOf("stopTrackedProxyForServiceCommand();")).toBeLessThan(stopCase.indexOf("restoreNativeCodex();"));
+    expect(stopCase.indexOf("stopTrackedProxyForServiceCommand();")).toBeLessThan(stopCase.indexOf("restoreNativeCodexAsync();"));
   });
 
   test("direct service uninstall kills the tracked proxy before deleting service assets", async () => {
@@ -655,10 +655,10 @@ describe("service lifecycle cleanup ordering", () => {
     expect(uninstallCase).toContain("ops.stop();");
     expect(uninstallCase).toContain("await stopTrackedProxyForServiceCommand();");
     expect(uninstallCase).toContain("ops.uninstall();");
-    expect(uninstallCase).toContain("restoreNativeCodex();");
+    expect(uninstallCase).toContain("restoreNativeCodexAsync();");
     expect(uninstallCase.indexOf("ops.stop();")).toBeLessThan(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();"));
     expect(uninstallCase.indexOf("stopTrackedProxyForServiceCommand();")).toBeLessThan(uninstallCase.indexOf("ops.uninstall();"));
-    expect(uninstallCase.indexOf("ops.uninstall();")).toBeLessThan(uninstallCase.indexOf("restoreNativeCodex();"));
+    expect(uninstallCase.indexOf("ops.uninstall();")).toBeLessThan(uninstallCase.indexOf("restoreNativeCodexAsync();"));
   });
 
   test("Windows service install ends the running task before rewriting its assets, with write retry", async () => {

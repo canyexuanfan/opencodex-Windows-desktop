@@ -218,7 +218,7 @@ export async function handleManagementAPI(
   if (routed) return routed;
 
   if (url.pathname === "/api/stop" && req.method === "POST") {
-    const { restoreNativeCodex } = await import("../codex/inject");
+    const { restoreNativeCodexAsync } = await import("../codex/inject");
     const { stopServiceIfInstalled, isServiceOwnershipError } = await import("../service");
     try {
       stopServiceIfInstalled();
@@ -231,7 +231,7 @@ export async function handleManagementAPI(
       }
       throw err;
     }
-    const restore = restoreNativeCodex();
+    const restore = await restoreNativeCodexAsync();
     // Both managed configs come down together on an explicit teardown. The daemon's own
     // syncCleanup skips this when OCX_SERVICE is set (so a crash/respawn keeps the fence),
     // which is exactly why an intentional stop has to do it here.

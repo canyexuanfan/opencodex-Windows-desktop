@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort, verifyPidIdentity } from "./config";
 import { loadConfig } from "./config";
-import { restoreNativeCodex } from "./codex/inject";
+import { restoreNativeCodex, restoreNativeCodexAsync } from "./codex/inject";
 import { stripGrokConfig } from "./grok/inject";
 import { isWslRuntime } from "./codex/home";
 import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./lib/bun-runtime";
@@ -2584,7 +2584,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
           process.exitCode = 1;
           break;
         }
-        const restore = restoreNativeCodex();
+        const restore = await restoreNativeCodexAsync();
         if (restore.success) console.log("✅ service stopped + native Codex restored.");
         else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
         // The Grok fence is the other managed config this command owns. Leaving it behind
@@ -2622,7 +2622,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
         process.exit(1);
       }
       {
-        const restore = restoreNativeCodex();
+        const restore = await restoreNativeCodexAsync();
         if (!restore.success) {
           console.error(`⚠️ native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` before using native Codex.`);
         }

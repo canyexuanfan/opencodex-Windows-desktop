@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
-import { currentExternalCodexModelProvider, restoreNativeCodex, shouldInjectApiAuthHeader } from "../codex/inject";
+import { currentExternalCodexModelProvider, restoreNativeCodex, restoreNativeCodexAsync, shouldInjectApiAuthHeader } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
 import { restoreLegacyOpenaiHistory } from "../codex/history-provider";
 import { reconcileJournal } from "../codex/journal";
@@ -525,7 +525,7 @@ async function handleStop() {
     }
   }
   if (!ownershipBlocked) {
-    const r = restoreNativeCodex();
+    const r = await restoreNativeCodexAsync();
     if (r.success) console.log(`↩️  ${r.message}`);
     else {
       stopFailed = true;
@@ -587,8 +587,8 @@ async function handleUninstall() {
     });
   }
 
-  await runStep("native Codex restored", () => {
-    const r = restoreNativeCodex();
+  await runStep("native Codex restored", async () => {
+    const r = await restoreNativeCodexAsync();
     if (!r.success) throw new Error(r.message);
   });
 
@@ -765,7 +765,7 @@ switch (command) {
     }
     let r: { success: boolean; message: string };
     try {
-      r = restoreNativeCodex();
+      r = await restoreNativeCodexAsync();
     } catch (err) {
       r = { success: false, message: err instanceof Error ? err.message : String(err) };
     }

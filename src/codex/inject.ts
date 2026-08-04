@@ -788,7 +788,38 @@ export function removeCodexConfig(options: { preserveProfile?: boolean } = {}): 
  * so plain `codex` works when the proxy is stopped. Called by `ocx stop`, the proxy shutdown
  * handler, and `ocx restore`. Idempotent + atomic.
  */
-export function restoreNativeCodex(): { success: boolean; message: string } {
+/**
+ * Restore native Codex, running history in a Worker under H.
+ *
+ * Prefer this everywhere. The synchronous variant below exists only for the
+ * process-exit path, where awaiting a thread is its own hazard.
+ */
+export async function restoreNativeCodexAsync(): Promise<{ success: boolean; message: string }> {
+  const inline = restoreNativeCodex({ skipHistory: true });
+  const outcome = await runCodexHistoryJob({
+    ...resolveCodexHistoryJobTarget(),
+    operation: deriveCodexHistoryOperation({
+      direction: "restore",
+      // Restore always returns history to native when it runs at all; the
+      // opt-out belongs to apply, which is what put opencodex there.
+      resumeHistory: true,
+      legacyMode: false,
+    }),
+  });
+  const historyMsg = outcome.kind === "converged"
+    ? (outcome.rows > 0
+      ? ` Resume history restored from opencodex backup (${outcome.rows} thread(s)).`
+      : "")
+    : outcome.kind === "skipped"
+      ? ""
+      // A lock we could not take is reported, never counted as nothing to do.
+      : ` ⚠️ Codex resume history could NOT be restored — the Codex app appears to be holding the history database. Close Codex and run \`ocx restore\` again.`;
+  return { success: inline.success, message: `${inline.message}${historyMsg}` };
+}
+
+export function restoreNativeCodex(
+  options: { skipHistory?: boolean } = {},
+): { success: boolean; message: string } {
   const activeProvider = currentExternalCodexModelProvider();
   if (activeProvider) {
     removeJournal();
@@ -812,7 +843,11 @@ export function restoreNativeCodex(): { success: boolean; message: string } {
   try {
     skipWhenProvablyNoop = !shouldInjectApiAuthHeader(loadConfig());
   } catch { /* unreadable config: keep the conservative write-open restore */ }
-  const history = syncCodexHistoryProvider("openai", undefined, undefined, { skipWhenProvablyNoop });
+  // `skipHistory` is how the async wrapper takes this work for itself: the
+  // native files come down here, and history runs in the Worker under H.
+  const history = options.skipHistory
+    ? { rows: 0, files: 0 }
+    : syncCodexHistoryProvider("openai", undefined, undefined, { skipWhenProvablyNoop });
   const msg = cat.removed > 0
     ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
     : cfg.message;
