@@ -191,4 +191,57 @@ describe("catalog gather discovery-policy authority", () => {
       log.mockRestore();
     }
   });
+
+  /**
+   * Two admissions that differ ONLY in credential must not share a flight.
+   *
+   * The flight key's fingerprint carries endpoints and model lists but no
+   * `authMode`, key or headers, and discovery policy does not carry them either.
+   * So a key rotated through `/api/providers/keys` mid-flight left the second
+   * admission joining the first, receiving rows the OLD key had fetched, and
+   * reporting `committed` — the catalog ended up holding the old key's models
+   * under the new key's admission.
+   *
+   * Removing `authIdentity` from the join comparison collapses the two fetches
+   * back into one and turns this red.
+   */
+  test("a rotated credential cannot join the flight it did not authorize", async () => {
+    clearModelCache("together");
+    clearGatherRoutedModelsInflight();
+
+    const firstResponse = deferred();
+    const seenKeys: string[] = [];
+    let fetchCount = 0;
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      fetchCount += 1;
+      const headers = new Headers((init?.headers ?? {}) as HeadersInit);
+      seenKeys.push(headers.get("authorization") ?? headers.get("x-api-key") ?? "none");
+      if (fetchCount === 1) await firstResponse.promise;
+      return Response.json({ data: [{ id: `model-for-call-${fetchCount}` }] });
+    }) as unknown as typeof fetch;
+
+    try {
+      const oldKey = gatherRoutedModels(togetherConfig("old-key"));
+      // The flight claims its slot synchronously, but the request itself starts a
+      // few microtasks later; yield until it is actually in flight.
+      await Bun.sleep(20);
+      expect(fetchCount).toBe(1);
+
+      // The rotation: same provider, same endpoint, same discovery policy — only
+      // the credential moved.
+      const newKey = gatherRoutedModels(togetherConfig("new-key"));
+      await Bun.sleep(20);
+      expect(fetchCount).toBe(2);
+
+      firstResponse.resolve();
+      await Promise.all([oldKey, newKey]);
+
+      // Each admission fetched under its own credential; neither borrowed the other's.
+      expect(seenKeys.some(value => value.includes("old-key"))).toBe(true);
+      expect(seenKeys.some(value => value.includes("new-key"))).toBe(true);
+    } finally {
+      clearGatherRoutedModelsInflight();
+      clearModelCache("together");
+    }
+  });
 });

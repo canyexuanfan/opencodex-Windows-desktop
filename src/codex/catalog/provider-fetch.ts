@@ -136,6 +136,7 @@ interface CapturedProviderGather {
 
 interface GatherFlightCapture {
   readonly discoveryPolicyIdentity: string;
+  readonly authIdentity: string;
   readonly discoveryPolicySnapshots: readonly CatalogProviderDiscoveryPolicySnapshot[];
   readonly providers: readonly CapturedProviderGather[];
   readonly authResolver: ModelsAuthResolver;
@@ -145,6 +146,17 @@ interface GatherFlightCapture {
 
 interface GatherInflightEntry {
   readonly discoveryPolicyIdentity: string;
+  /**
+   * The credential half of the join decision.
+   *
+   * `gatherFlightKey`'s fingerprint carries endpoints and model lists but no
+   * `authMode`, key or headers, and discovery policy does not carry them either.
+   * Two admissions differing ONLY in credential therefore produced the same key
+   * and the same policy, so the second joined the first and published rows the
+   * old key had fetched — reproduced against the real routes by rotating a key
+   * through `/api/providers/keys` mid-flight.
+   */
+  readonly authIdentity: string;
   readonly promise: Promise<GatherFlightResult>;
 }
 
@@ -382,6 +394,19 @@ function captureGatherFlight(
   const discoveryPolicySnapshots = Object.freeze(providers.map(provider => provider.policy));
   return Object.freeze({
     discoveryPolicyIdentity: keyedGatherIdentity("catalog-discovery-policy-v1", discoveryPolicySnapshots),
+    // Credentials are hashed under the same unexported per-process key, never
+    // stored or compared in the clear: this value can reach a map key and must
+    // not disclose a token. The final headers are included because a static
+    // header can carry authority just as an `apiKey` can.
+    authIdentity: keyedGatherIdentity("catalog-gather-auth-v1", providers.map(provider => ({
+      name: provider.name,
+      authMode: provider.provider.authMode ?? null,
+      liveModels: provider.provider.liveModels ?? null,
+      credential: provider.provider.apiKey ?? null,
+      observedAuth: provider.observedAuth ?? null,
+      headers: provider.request.headersWithCredential,
+      url: provider.request.url,
+    }))),
     discoveryPolicySnapshots,
     providers: Object.freeze(providers),
     authResolver,
@@ -1064,6 +1089,7 @@ async function gatherRoutedModelsWithAuth(
   const bucket = gatherInflight.get(key) ?? [];
   let entry = bucket.find(candidate => (
     candidate.discoveryPolicyIdentity === capture.discoveryPolicyIdentity
+    && candidate.authIdentity === capture.authIdentity
   ));
   if (!entry) {
     const lease = gatherGate.tryAcquire();
@@ -1080,6 +1106,7 @@ async function gatherRoutedModelsWithAuth(
     });
     ownedEntry = Object.freeze({
       discoveryPolicyIdentity: capture.discoveryPolicyIdentity,
+      authIdentity: capture.authIdentity,
       promise: flight,
     });
     bucket.push(ownedEntry);
