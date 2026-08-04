@@ -12,7 +12,7 @@ four phase docs are rewritten as consumers against the reviewer's section list.
 A contract nobody collected is a fifth opinion.
 
 All current-code citations in this document were rechecked on 2026-08-05 at
-`b8168510f32ef583f14660067e0783d88df5df0c`.
+`9e405e2b46f668c81141ffdb6ecc776841c7761a`.
 
 ## IN / OUT
 
@@ -410,7 +410,9 @@ type SynchronousCompatibilityHandoff<T> = T extends PromiseLike<unknown> ? never
 /**
  * WP10's narrow native-mutation-to-history-authorization exclusion. The callback
  * starts only after N is held, must authorize exactly once through the supplied
- * transaction-bound closure, and returns before N is committed and released.
+ * transaction-bound closure, and returns before N is committed and released. A
+ * compatibility adoption additionally requires the opener's still-live exclusive
+ * creation claim; an earlier path-absence observation is never authority.
  */
 export type WithCodexCompatibilityNativeHandoff = <T>(
   intent: CodexCompatibilityNativeIntent,
@@ -644,6 +646,22 @@ finds no caller of `readCodexTransitionState`, `beginCodexTransition`, or
 points at `src/codex/transition-state.ts:348-385,473-518` are reached only by tests
 today. Shipping the owner therefore did not initialize existing routed installations.
 
+The twelfth absence-as-guarantee review found that “truly absent” was still a
+check-then-open claim. The owner records `ENOENT` from `lstatSync`
+(`src/codex/transition-state.ts:356-373`), later opens with `create:true`, and passes
+the stale boolean into initialization (`src/codex/transition-state.ts:374-385`). A
+second process can create an unversioned/rowless file between those steps, yet the
+first process treats it as its own new database. WP10 therefore changes the opener's
+behavior, not its public `openCodexCoordinatorTransaction(finalDatabasePath)`
+signature: before any SQLite open, it attempts an OS-level no-clobber
+`O_CREAT | O_EXCL | O_RDWR` claim at mode `0600` (or the platform-equivalent exclusive
+create), retains that descriptor, and records its descriptor identity. `EEXIST` —
+including a file that appeared after an earlier `ENOENT` — enters the strict existing-
+database path. Any preliminary `lstat` remains path-safety evidence only. The
+exclusive winner opens the already-created path with
+`{ readwrite:true, create:false }`; only its private `createdByThisOpen` authority may
+reach compatibility adoption. Row absence alone never supplies that authority.
+
 The **general initializer remains unchanged and fail-closed**. Read/observe,
 `BeginCodexTransition`, Worker claim/terminal work, guardian retry, explicit legacy
 recovery, and direct transaction opens may create the ordinary unscheduled `{0,null}`
@@ -666,19 +684,36 @@ callback; its closed intent is `retained-apply` with exactly
 exactly once. Residue detection, startup observation, a Worker/guardian retry,
 history-only recovery, or an arbitrary operation value is not positive authority.
 
-When and only when that handoff finds a truly absent coordinator database, a missing
-or valid non-legacy integration record, and positively classified routed residue, it
-acquires `BEGIN IMMEDIATE` and captures **authoritative row absence plus that routed
-observation** without installing `{0,null,unknown}`. The retained native callback then
-runs. Its bound `authorize(next)` requires `next.operation === intent.operation` and,
-on the same already-open handle, creates the schema and inserts singleton 1 directly
-as generation zero, null txId, and the fresh complete
-`pending/wp10-compatibility` schedule; it then sets `user_version = 1`. Callback or
-authorization failure rolls the transaction back and dispatches no Worker. This is a
-compatibility schedule over evidence the current high-level operation just took
-responsibility for, not an empty baseline inferred from residue. Once the row exists,
-legacy JSON fields have no authority and are removed on the next successful non-CAS
-record update while all unrelated unknown keys survive.
+When and only when that handoff still owns the exclusive creation descriptor for the
+exact coordinator file, has a missing or valid non-legacy integration record, and has
+positively classified routed residue, it acquires `BEGIN IMMEDIATE` and captures
+**creation ownership, authoritative row absence, and that routed observation** without
+installing `{0,null,unknown}`. The retained native callback then runs. Its bound
+`authorize(next)` requires `next.operation === intent.operation` and, on the same
+already-open handle, creates the schema and inserts singleton 1 directly as generation
+zero, null txId, and the fresh complete `pending/wp10-compatibility` schedule; it then
+sets `user_version = 1`. A no-clobber loser, an ordinary opener of any existing file,
+or a creator whose path identity changed cannot enter this branch.
+
+WP10 chooses **safe exact-identity cleanup** for an exclusively created coordinator
+whose callback, one-shot authorization, or precommit transaction fails. The owner
+rolls back and closes SQLite while retaining the exclusive creation descriptor,
+compares that descriptor's `fstat` identity with a fresh non-symlink regular-file
+`lstat` of the final path, and unlinks only that exact file before releasing the
+descriptor. It never unlinks an `EEXIST` path, a substituted identity, or a database
+that committed a valid schema/row. Successful cleanup restores real path absence and
+dispatches no Worker; the next legitimate high-level operation must win a new
+no-clobber claim and repeat integration-record/residue classification rather than
+reuse stale evidence. This disposition is required because the current rollback/close
+path (`src/codex/transition-state.ts:386-390`) leaves a zero-byte, version-zero,
+rowless file, which every later strict opener correctly refuses and would otherwise
+wedge the installation. Identity mismatch or unlink failure is surfaced as a typed
+database/unsafe-path failure and is never bypassed by adoption.
+
+This is a compatibility schedule over evidence the current high-level operation just
+took responsibility for, not an empty baseline inferred from residue. Once the row
+exists, legacy JSON fields have no authority and are removed on the next successful
+non-CAS record update while all unrelated unknown keys survive.
 
 A missing JSON file is valid and the first provenance update creates `{version:1}`.
 Unreadable/unparseable JSON is not empty: provenance mutation fails closed. Unknown
@@ -2143,6 +2178,29 @@ mere residue detection opt into adoption, insert an unscheduled `{0,null}` row f
 or authorize restore from a post-callback clean observation; the real apply/restore
 fixture returns `legacy-ambiguous` or the named negative fixture creates authority.
 
+Add a cross-process no-clobber race to `tests/codex-transition-state.test.ts`. Process
+A pauses after its path-safety `lstat` observes `ENOENT`; process B exclusively creates
+the coordinator path, leaves it unversioned/rowless, and closes; A then resumes. A's
+exclusive claim must receive `EEXIST`, enter the strict existing-database path, return
+`legacy-ambiguous`, and leave a retained-native-callback sentinel untouched. **Broken
+change:** restore `databaseWasAbsent = true` from the earlier `ENOENT` plus SQLite
+`create:true`, or treat `EEXIST` as creator authority; A adopts B's rowless file and
+the callback sentinel fires. The existing static fixture that places a rowless database
+before invocation also passes under that broken check-then-open implementation, so it
+is necessary negative coverage but not evidence that creation ownership is atomic.
+
+Add a table-driven first-adoption abort case to
+`tests/codex-native-residue.test.ts`: once with the retained callback throwing before
+authorization and once with the one-shot authorization rejecting the operation, hold
+the exclusive descriptor through rollback/SQLite close, prove exact-identity unlink
+restores path absence, then run the next legitimate real high-level operation. That
+second operation must acquire a fresh exclusive claim, reclassify current residue,
+commit the exact generation-zero pending compatibility schedule, and dispatch its
+Worker. **Broken change:** rollback/close without exact-identity unlink, release the
+creation descriptor before cleanup, or retain a zero-byte database; the second
+operation receives `EEXIST`, follows strict rowless refusal, and never reaches its
+callback/schedule assertion.
+
 `tests/codex-convergence-contract.test.ts`: every `ConvergeOutcome` variant maps
 to the §5 row, `busy` carries `Retry-After`, and a best-effort management caller
 still returns 2xx while reporting a non-converged disposition. Concatenate all
@@ -2418,7 +2476,10 @@ writes to it.
   eventually repairs history. WP10 holds N from each retained native mutation through
   its compatibility authorization; a newer native handoff replaces even a pending or
   running older schedule, and the older Worker loses its terminal CAS. H has one contract-owned final path per effective
-  user/canonical home/canonical state DB and takes only fail-fast `H -> N`; inverse
+  user/canonical home/canonical state DB and takes only fail-fast `H -> N`;
+  compatibility adoption requires a still-live OS-exclusive creation claim, and a
+  failed first adoption exact-identity-unlinks only its own uncommitted coordinator so
+  retry can claim a genuinely absent path. Inverse
   `N/K/C -> H` edges are forbidden. Only `missing` proves path absence; a present
   valid matching v1 manifest is `ready` with a validated non-negative count, including
   zero, while
@@ -2427,11 +2488,13 @@ writes to it.
   C2/C12 (generation-guarded catalog commit plus the phase-specific catalog/full
   admission and observation sequences). **Broken change:** acquire N only after the
   retained native mutation, release N before compatibility authorization, restore a
-  caller-supplied expected row or second-connection read, route an existing routed
+  caller-supplied expected row or second-connection read, derive creator authority from
+  `lstat` `ENOENT` plus SQLite `create:true`, omit exact-identity cleanup after a failed
+  first adoption, route an existing routed
   installation through the strict clean-only initializer, let observation/residue
   alone create a generation-zero row, restore the terminal-only compatibility
   predicate, release H between surfaces, classify a
   present ready-zero manifest as missing/unsupported, or commit catalog bytes after a
-  generation/evidence conflict; the stale-row/one-handle, routed apply/restore,
-  negative-adoption, handoff-order, terminal-CAS, serialization, manifest, or
+  generation/evidence conflict; the stale-row/one-handle, no-clobber-race, abort-retry,
+  routed apply/restore, negative-adoption, handoff-order, terminal-CAS, serialization, manifest, or
   stale-commit fixture fails respectively.
