@@ -97,7 +97,7 @@ describe("xAI auth-mode transport selection", () => {
     });
   });
 
-  test("flattens nested root tool unions for xAI without changing other providers", () => {
+  test("flattens nested root tool unions for xAI while other providers get a root object type", () => {
     const schema = {
       oneOf: [
         { type: "object", properties: { mode: { type: "string", enum: ["view"] } } },
@@ -120,7 +120,7 @@ describe("xAI auth-mode transport selection", () => {
       ...parsed(),
       context: { messages: [], tools: [{ name: "automation_update", description: "Update", parameters: schema }] },
     });
-    expect((JSON.parse(otherRequest.body) as { tools: Array<{ function: { parameters: unknown } }> }).tools[0].function.parameters).toEqual(schema);
+    expect((JSON.parse(otherRequest.body) as { tools: Array<{ function: { parameters: unknown } }> }).tools[0].function.parameters).toEqual({ ...schema, type: "object" });
   });
 
   test("omits an xAI tool whose root schema cannot be normalized safely", () => {
