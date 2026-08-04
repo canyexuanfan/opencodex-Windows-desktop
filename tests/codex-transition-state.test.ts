@@ -189,25 +189,30 @@ test("a native CAS with a matching generation but the wrong txId still conflicts
   });
 });
 
-test("a native CAS expecting a positive generation with a null txId still conflicts", () => {
-  expect(beginCodexTransition(
-    { nativeGeneration: 0, currentTxId: null },
-    transition("tx-current"),
-  ).kind).toBe("updated");
+for (const generation of [1, 2, 4]) {
+  test(`a native CAS at generation ${generation} never treats a null txId as a wildcard`, () => {
+    let currentTxId: string | null = null;
+    for (let nextGeneration = 1; nextGeneration <= generation; nextGeneration++) {
+      const nextTxId = `tx-current-${nextGeneration}`;
+      expect(beginCodexTransition(
+        { nativeGeneration: nextGeneration - 1, currentTxId },
+        transition(nextTxId),
+      ).kind).toBe("updated");
+      currentTxId = nextTxId;
+    }
 
-  // The generation agrees, but null is not a wildcard for the txId half of
-  // the pair. Weakening the predicate for a null expectation makes this win.
-  const nullTxId = beginCodexTransition(
-    { nativeGeneration: 1, currentTxId: null },
-    transition("tx-forged"),
-  );
-  expect(nullTxId.kind).toBe("conflict");
+    const nullTxId = beginCodexTransition(
+      { nativeGeneration: generation, currentTxId: null },
+      transition("tx-forged"),
+    );
+    expect(nullTxId.kind).toBe("conflict");
 
-  expect(readCodexTransitionState()).toMatchObject({
-    kind: "ready",
-    state: { nativeGeneration: 1, currentTxId: "tx-current" },
+    expect(readCodexTransitionState()).toMatchObject({
+      kind: "ready",
+      state: { nativeGeneration: generation, currentTxId },
+    });
   });
-});
+}
 
 test("a native CAS with a matching txId but the wrong generation still conflicts", () => {
   expect(beginCodexTransition(
@@ -285,27 +290,29 @@ test("the row validator refuses a malformed row the CHECK constraints never saw"
   expect(readCodexTransitionState()).toEqual({ kind: "unavailable", reason: "database" });
 });
 
-test("the row validator refuses an unknown non-null history direction", () => {
-  expect(beginCodexTransition(
-    { nativeGeneration: 0, currentTxId: null },
-    transition("tx-unknown-direction"),
-  ).kind).toBe("updated");
+for (const direction of ["sideways", "reverse", "forward", "APPLY", ""] as const) {
+  test(`the row validator refuses unknown history direction ${JSON.stringify(direction)}`, () => {
+    expect(beginCodexTransition(
+      { nativeGeneration: 0, currentTxId: null },
+      transition("tx-unknown-direction"),
+    ).kind).toBe("updated");
 
-  const database = new Database(coordinatorPath);
-  try {
-    database.exec("PRAGMA ignore_check_constraints = ON");
-    database.run(
-      "UPDATE codex_transition_state SET history_direction = 'sideways' WHERE singleton = 1",
-    );
-    expect(database.query<{ history_direction: string }, []>(
-      "SELECT history_direction FROM codex_transition_state WHERE singleton = 1",
-    ).get()?.history_direction).toBe("sideways");
-  } finally {
-    database.close();
-  }
+    const database = new Database(coordinatorPath);
+    try {
+      database.exec("PRAGMA ignore_check_constraints = ON");
+      database.query(
+        "UPDATE codex_transition_state SET history_direction = ? WHERE singleton = 1",
+      ).run(direction);
+      expect(database.query<{ history_direction: string }, []>(
+        "SELECT history_direction FROM codex_transition_state WHERE singleton = 1",
+      ).get()?.history_direction).toBe(direction);
+    } finally {
+      database.close();
+    }
 
-  expect(readCodexTransitionState()).toEqual({ kind: "unavailable", reason: "database" });
-});
+    expect(readCodexTransitionState()).toEqual({ kind: "unavailable", reason: "database" });
+  });
+}
 
 test("the row validator refuses every whitespace-only txId", () => {
   expect(beginCodexTransition(
@@ -313,17 +320,19 @@ test("the row validator refuses every whitespace-only txId", () => {
     transition("tx-blank"),
   ).kind).toBe("updated");
 
-  const blankTxIds = [
-    ["ASCII spaces", "   "],
-    ["tab", "\t"],
-    ["newline", "\n"],
-    ["vertical tab", "\v"],
-    ["form feed", "\f"],
-    ["non-breaking space", "\u00a0"],
-    ["em space", "\u2003"],
-  ] as const;
+  const trimRemovedCodePoints: Array<[string, string]> = [];
+  for (let codePoint = 0; codePoint <= 0x10ffff; codePoint++) {
+    const character = String.fromCodePoint(codePoint);
+    if (character.trim() === "") {
+      trimRemovedCodePoints.push([
+        `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`,
+        character,
+      ]);
+    }
+  }
+  expect(trimRemovedCodePoints.some(([, value]) => value === "\r")).toBe(true);
 
-  for (const [label, txId] of blankTxIds) {
+  for (const [label, txId] of trimRemovedCodePoints) {
     const database = new Database(coordinatorPath);
     try {
       database.exec("PRAGMA ignore_check_constraints = ON");
@@ -393,6 +402,19 @@ test("the opaque capability never exposes a reachable database handle", () => {
       enumerable: true,
       configurable: true,
     });
+
+    let prototype: object | null = controller.capability;
+    while (prototype !== null) {
+      for (const key of Reflect.ownKeys(prototype)) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(prototype, key)!;
+        const intrinsicLegacyProtoAccessor = prototype === Object.prototype && key === "__proto__";
+        if (!intrinsicLegacyProtoAccessor) {
+          expect(descriptor.get, `getter ${String(key)} on capability prototype chain`).toBeUndefined();
+          expect(descriptor.set, `setter ${String(key)} on capability prototype chain`).toBeUndefined();
+        }
+      }
+      prototype = Reflect.getPrototypeOf(prototype);
+    }
 
     const reachable = new Set<unknown>();
     const walk = (value: unknown, depth: number): void => {

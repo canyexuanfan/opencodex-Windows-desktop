@@ -34,8 +34,12 @@ interface IdentityProbeResult {
   databasePath: string;
 }
 
-async function runIdentityProbe(env: Record<string, string>): Promise<IdentityProbeResult> {
+async function runIdentityProbe(
+  env: Record<string, string>,
+  cwd: string,
+): Promise<IdentityProbeResult> {
   const child = Bun.spawn([process.execPath, "--eval", identityProbe], {
+    cwd,
     env: { ...process.env, ...env },
     stdin: "ignore",
     stdout: "pipe",
@@ -111,6 +115,7 @@ test("real processes resolve one identity and coordinator path across every home
       temp: join(root, "temp"),
       codexHome: join(root, "ambient-codex"),
       opencodexHome: join(root, "ambient-opencodex"),
+      workingDirectory: join(root, "working-directory"),
     };
     for (const path of Object.values(paths)) mkdirSync(path, { recursive: true });
     return { root, paths };
@@ -145,7 +150,7 @@ test("real processes resolve one identity and coordinator path across every home
         OPENCODEX_HOME: paths.opencodexHome,
         OCX_TEST_CANONICAL_CODEX_HOME: canonicalHome,
         ...accountEnvironment,
-      });
+      }, paths.workingDirectory);
     }));
 
     const osIdentity = resolveEffectiveUserIdentity();
