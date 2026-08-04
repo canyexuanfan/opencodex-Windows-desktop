@@ -1049,6 +1049,45 @@ test("estimateClaudeRequestTokens keeps base64-shaped tool_use input counted as 
   );
 });
 
+test("estimateClaudeRequestTokens leaves complete attachment-shaped tool_use input intact", () => {
+  // Even a full {type:"image", source:{type:"base64", data}} object inside tool_use.input
+  // is a tool argument, not an attachment: the translator replays it verbatim inside
+  // function_call arguments, so it must count at its serialized size.
+  const raw = {
+    messages: [{
+      role: "assistant",
+      content: [{
+        type: "tool_use",
+        id: "t1",
+        name: "upload_image",
+        input: { type: "image", source: { type: "base64", media_type: "image/png", data: "C".repeat(50_000) } },
+      }],
+    }],
+  };
+
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(
+    Math.max(1, estimateTokens(JSON.stringify(raw.messages), "m")),
+  );
+});
+
+test("estimateClaudeRequestTokens leaves attachment-shaped tool schemas intact", () => {
+  // Tool definitions are forwarded to routed providers; an attachment-shaped example in a
+  // schema is not an attachment either.
+  const raw = {
+    messages: [{ role: "user", content: "hi" }],
+    tools: [{
+      name: "upload",
+      input_schema: { type: "object" },
+      example: { type: "image", source: { type: "base64", media_type: "image/png", data: "D".repeat(30_000) } },
+    }],
+  };
+  const parts = [JSON.stringify(raw.messages), JSON.stringify(raw.tools)];
+
+  expect(estimateClaudeRequestTokens(raw, "m")).toBe(
+    Math.max(1, estimateTokens(parts.join("\n"), "m")),
+  );
+});
+
 test("estimateClaudeRequestTokens counts text-source documents as ordinary text", () => {
   const text = "plain text document body ".repeat(40);
   const raw = {

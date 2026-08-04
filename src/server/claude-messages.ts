@@ -872,42 +872,53 @@ function estimateBase64AttachmentTokens(data: string): number {
 
 /**
  * Char-based token estimate for an Anthropic-shaped request body. Base64 attachment
- * payloads (image/document sources, wherever they nest — including tool_result content)
- * are counted as a bounded per-attachment estimate instead of raw characters: one 2MB
- * screenshot is ~2.7M base64 chars, which the plain chars/token divide reports as
- * hundreds of thousands of tokens versus a real cost around 1.6k. That breaks the >2x
- * drift bound the estimator is held to (devlog 260711_claude_inbound 040 §3). Text and
- * url sources are left in place and counted as characters.
+ * payloads (image/document blocks in message content, including blocks nested in
+ * tool_result.content) are counted as a bounded per-attachment estimate instead of raw
+ * characters: one 2MB screenshot is ~2.7M base64 chars, which the plain chars/token
+ * divide reports as hundreds of thousands of tokens versus a real cost around 1.6k.
+ * That breaks the >2x drift bound the estimator is held to (devlog 260711_claude_inbound
+ * 040 §3). Text and url sources are left in place and counted as characters, as is
+ * anything outside protocol content positions (tool_use.input, tool schemas).
  */
 export function estimateClaudeRequestTokens(
   raw: { system?: unknown; messages?: unknown; tools?: unknown },
   modelId: string | undefined,
 ): number {
   let attachmentTokens = 0;
-  const stripAttachments = (value: unknown): string =>
-    JSON.stringify(value, (_key, entry: unknown) => {
-      // Match only real attachment blocks. A bare {type:"base64", data} shape can also
-      // appear inside tool_use.input, and those arguments ARE sent to routed providers,
-      // so they must keep counting as text.
-      if (entry && typeof entry === "object") {
-        const block = entry as { type?: unknown; source?: unknown };
-        if (block.type === "image" || block.type === "document") {
-          const source = block.source as { type?: unknown; data?: unknown } | undefined;
-          if (source && typeof source === "object" && source.type === "base64" && typeof source.data === "string") {
-            attachmentTokens += estimateBase64AttachmentTokens(source.data);
-            return {
-              ...(entry as Record<string, unknown>),
-              source: { ...(source as Record<string, unknown>), data: "" },
-            };
-          }
-        }
+  // Blank base64 payloads ONLY in protocol content positions: message content blocks and
+  // blocks nested in tool_result.content. tool_use.input and tool schemas can legitimately
+  // contain attachment-shaped JSON, and those bytes ARE serialized into function_call
+  // arguments / tool definitions for routed providers, so they must keep counting as text.
+  // system is text-only per the Anthropic protocol (no attachment sources), so it is
+  // stringified as-is.
+  const sanitizeBlock = (block: unknown): unknown => {
+    if (!block || typeof block !== "object") return block;
+    const b = block as Record<string, unknown>;
+    if (b.type === "image" || b.type === "document") {
+      const source = b.source as { type?: unknown; data?: unknown } | undefined;
+      if (source && typeof source === "object" && source.type === "base64" && typeof source.data === "string") {
+        attachmentTokens += estimateBase64AttachmentTokens(source.data);
+        return { ...b, source: { ...(source as Record<string, unknown>), data: "" } };
       }
-      return entry;
-    });
+      return block;
+    }
+    if (b.type === "tool_result" && Array.isArray(b.content)) {
+      return { ...b, content: (b.content as unknown[]).map(sanitizeBlock) };
+    }
+    return block;
+  };
+  const sanitizedMessages = (messages: unknown): unknown =>
+    Array.isArray(messages)
+      ? messages.map(message => {
+          if (!message || typeof message !== "object") return message;
+          const m = message as Record<string, unknown>;
+          return Array.isArray(m.content) ? { ...m, content: (m.content as unknown[]).map(sanitizeBlock) } : message;
+        })
+      : messages;
   const parts: string[] = [];
-  if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : stripAttachments(raw.system));
-  if (raw.messages !== undefined) parts.push(stripAttachments(raw.messages));
-  if (raw.tools !== undefined) parts.push(stripAttachments(raw.tools));
+  if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
+  if (raw.messages !== undefined) parts.push(JSON.stringify(sanitizedMessages(raw.messages)));
+  if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
   return Math.max(1, estimateTokens(parts.join("\n"), modelId) + attachmentTokens);
 }
 
