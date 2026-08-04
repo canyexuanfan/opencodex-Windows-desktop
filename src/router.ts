@@ -22,6 +22,7 @@ import {
 import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
 import { getStaleCached } from "./codex/model-cache";
 import { codexAccountNamespaceEntries } from "./codex/account-namespaces";
+import { getEffectiveActiveCodexAccountId } from "./codex/routing";
 import {
   buildRouteDecisionTrace,
   type RouteDecisionKind,
@@ -32,6 +33,7 @@ import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
 import { candidateCapabilityEvidence } from "./routing/capability";
 import { policyCandidateHealthEvidence } from "./routing/health";
+import { quotaEvidenceForCandidate } from "./routing/quota";
 
 export class NoEligiblePolicyCandidateError extends Error {
   /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
@@ -506,6 +508,13 @@ function routeModelInternal(
       model: candidate.model,
       capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
       health: policyCandidateHealthEvidence(config, candidate, now),
+      quota: quotaEvidenceForCandidate({
+        provider: candidate.provider,
+        model: candidate.model,
+        codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+          ? getEffectiveActiveCodexAccountId(config)
+          : undefined,
+      }),
     }));
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence, now);
     if (evaluation.selectedIndex === null) {

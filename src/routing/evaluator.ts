@@ -22,11 +22,14 @@ import {
 } from "./trace";
 import { getRoutingProfile, policyModelId, type NormalizedRoutingProfile } from "./profile";
 import { healthScore } from "./health";
+import { quotaScore } from "./quota";
 
 /** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
 export const HEALTH_UNKNOWN_PENALTY_SCORE = 0.3;
 /** Unknown health under "allow": neutral midpoint of the [0,1] health scale. */
 export const HEALTH_UNKNOWN_NEUTRAL_SCORE = 0.5;
+/** Unknown quota under "penalize": deterministic low floor. */
+export const QUOTA_UNKNOWN_PENALTY_SCORE = 0.3;
 
 export interface PolicyRequestEvidence {
   /** Required context window for this request (tokens). */
@@ -93,6 +96,7 @@ function booleanRequirement(
 function requirementFor(
   require: NormalizedRoutingProfile["require"],
   capability: RouteCapabilityEvidence | undefined,
+  quota: RouteQuotaEvidence | undefined,
 ): RouteRequirementEvidence[] {
   const requirements: RouteRequirementEvidence[] = [];
   if (require.minContextWindow !== undefined) {
@@ -107,6 +111,17 @@ function requirementFor(
     } else {
       requirements.push({ id: "min-context-window", expected: require.minContextWindow, outcome: "unknown" });
     }
+  }
+  // minQuotaHeadroom gates only KNOWN headroom. Unknown quota is governed by
+  // the profile's `unknownEvidence.quota` policy (exclude / penalize / allow)
+  // via the quota score path - never by the capability unknown policy.
+  if (require.minQuotaHeadroom !== undefined && typeof quota?.headroom === "number") {
+    requirements.push({
+      id: "min-quota-headroom",
+      expected: require.minQuotaHeadroom,
+      actual: quota.headroom,
+      outcome: quota.headroom >= require.minQuotaHeadroom ? "satisfied" : "unsatisfied",
+    });
   }
   const tools = booleanRequirement("tools", require.tools, capability?.tools);
   if (tools) requirements.push(tools);
@@ -258,7 +273,7 @@ export function evaluatePolicyProfile(
       candidate => candidate.provider === declared.provider && candidate.model === declared.model,
     ) ?? { provider: declared.provider, model: declared.model };
     const requirements = [
-      ...requirementFor(profile.require, evidence.capability),
+      ...requirementFor(profile.require, evidence.capability, evidence.quota),
       ...requestRequirementFor(requestEvidence, evidence.capability),
     ];
     const exclusions: RouteExclusionReason[] = [];
@@ -307,13 +322,33 @@ export function evaluatePolicyProfile(
       healthValue = HEALTH_UNKNOWN_NEUTRAL_SCORE;
     }
 
+    // Quota scoring (RI-07): unknown quota follows the profile policy;
+    // exhausted or low-headroom evidence lowers the score.
+    const quota = evidence.quota;
+    let quotaValue = quota ? quotaScore(quota) : null;
+    if (quotaValue === null) {
+      if (profile.unknownEvidence.quota === "exclude") {
+        exclusions.push({ code: "unknown-quota" });
+        eligible = false;
+      } else if (profile.unknownEvidence.quota === "penalize") {
+        quotaValue = QUOTA_UNKNOWN_PENALTY_SCORE;
+      }
+    }
+
     const priorityScore = configuredPriorityScore(index, profile.candidates.length);
     const healthWeight = profile.optimize.health;
+    const quotaWeight = profile.optimize.quota;
+    const implementedWeight = healthWeight + quotaWeight;
+    const priorityWeight = Math.max(0, 1 - implementedWeight);
     const components: RouteScoreEvidence["components"] = { configuredPriority: priorityScore };
-    let total = priorityScore;
+    let total = priorityWeight * priorityScore;
     if (healthWeight > 0 && healthValue !== null) {
-      total = priorityScore * (1 - healthWeight) + healthValue * healthWeight;
+      total += healthWeight * healthValue;
       components.health = healthValue;
+    }
+    if (quotaWeight > 0 && quotaValue !== null) {
+      total += quotaWeight * quotaValue;
+      components.quota = quotaValue;
     }
     const score: RouteScoreEvidence = { total, components };
     const evaluated: PolicyEvaluationCandidate = {

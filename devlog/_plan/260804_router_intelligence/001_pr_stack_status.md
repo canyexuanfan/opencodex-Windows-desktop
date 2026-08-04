@@ -45,8 +45,8 @@ other; closing one is a maintainer decision and neither is stale.
 | RI-03 | `feat/ri-03-routing-analytics` | `dev` (post-#1004 merge) | `a594938c5` | #1005 | https://github.com/lidge-jun/opencodex/pull/1005 | MERGED |
 | RI-04 | `feat/ri-04-policy-profile-core` | `dev` (post-#1005 merge) | `31c9f0b28` | #1011 | https://github.com/lidge-jun/opencodex/pull/1011 | MERGED |
 | RI-05 | `feat/ri-05-capability-aware-routing` | `dev` (post-#1011 merge) | `088194a3a` | #1012 | https://github.com/lidge-jun/opencodex/pull/1012 | MERGED |
-| RI-06 | `feat/ri-06-health-aware-routing` | `dev` (post-#1012 merge) | `af692bb7a` | #1013 | https://github.com/lidge-jun/opencodex/pull/1013 | in progress |
-| RI-07 | `feat/ri-07-quota-aware-routing` | `feat/ri-06` head | pending | pending | pending | queued |
+| RI-06 | `feat/ri-06-health-aware-routing` | `dev` (post-#1012 merge) | `af692bb7a` | #1013 | https://github.com/lidge-jun/opencodex/pull/1013 | MERGED |
+| RI-07 | `feat/ri-07-quota-aware-routing` | `dev` (post-#1013 merge) | `0c5100271` (pre-restack) | #1014 | https://github.com/lidge-jun/opencodex/pull/1014 | in progress |
 | RI-08 | `feat/ri-08-cost-aware-routing` | `feat/ri-07` head | pending | pending | pending | queued |
 | RI-09 | `feat/ri-09-route-explainability-api` | `feat/ri-08` head | pending | pending | pending | queued |
 | RI-10 | `feat/ri-10-routing-intelligence-ui` | `feat/ri-09` head | pending | pending | pending | queued |

@@ -41,6 +41,8 @@ export interface RoutingProfileValidationIssue {
 
 export interface NormalizedRoutingProfileRequirements {
   minContextWindow?: number;
+  /** Minimum remaining quota headroom fraction (0..1). */
+  minQuotaHeadroom?: number;
   tools?: boolean;
   imageInput?: boolean;
   structuredOutput?: boolean;
@@ -64,6 +66,7 @@ export interface NormalizedRoutingProfile {
 
 const REQUIRE_KEYS = [
   "minContextWindow",
+  "minQuotaHeadroom",
   "tools",
   "imageInput",
   "structuredOutput",
@@ -247,11 +250,18 @@ export function routingProfileIssues(
       issues.push({ path: ["require"], message: "require must be an object" });
     } else {
       const require = body.require as Record<string, unknown>;
-      if (require.minContextWindow !== undefined
+  if (require.minContextWindow !== undefined
         && (typeof require.minContextWindow !== "number"
           || !Number.isInteger(require.minContextWindow)
           || require.minContextWindow < 1)) {
         issues.push({ path: ["require", "minContextWindow"], message: "minContextWindow must be a positive integer" });
+      }
+      if (require.minQuotaHeadroom !== undefined
+        && (typeof require.minQuotaHeadroom !== "number"
+          || !Number.isFinite(require.minQuotaHeadroom)
+          || require.minQuotaHeadroom < 0
+          || require.minQuotaHeadroom > 1)) {
+        issues.push({ path: ["require", "minQuotaHeadroom"], message: "minQuotaHeadroom must be a number from 0 to 1" });
       }
       for (const key of ["tools", "imageInput", "structuredOutput", "localOnly", "remoteAllowed", "encryptedCodexTasks"] as const) {
         if (require[key] !== undefined && typeof require[key] !== "boolean") {

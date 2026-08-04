@@ -108,9 +108,9 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd` (enforced by the dry-run evaluator when candidate cost evidence is known). |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
-`require` supports: `minContextWindow` (positive integer), and the booleans `tools`, `imageInput`,
-`structuredOutput`, `localOnly`, `remoteAllowed`, `encryptedCodexTasks`; plus `reasoningEffort` and
-`serviceTier` strings.
+`require` supports: `minContextWindow` (positive integer), `minQuotaHeadroom` (0..1 fraction),
+and the booleans `tools`, `imageInput`, `structuredOutput`, `localOnly`, `remoteAllowed`,
+`encryptedCodexTasks`; plus `reasoningEffort` and `serviceTier` strings.
 
 For `unknownEvidence.capability`, `penalize` currently behaves like `allow`: scoring has only a
 configured-priority component until a capability score dimension ships (planned with RI-06+), so
