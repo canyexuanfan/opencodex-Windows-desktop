@@ -1,0 +1,234 @@
+import { describe, expect, test } from "bun:test";
+import {
+  createResponsesSnapshotBlockRewrite,
+  hasResponsesSnapshotRepair,
+  repairResponsesSnapshotJson,
+} from "../src/server/responses-snapshot-repair";
+import {
+  composeSseBlockRewrites,
+  payloadRewriteAsBlockRewrite,
+  relaySseWithBlockRewrite,
+} from "../src/server/sse-payload-rewrite";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
+
+function dataBlock(payload: unknown): string {
+  return `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}`;
+}
+
+function eventsOf(blocks: readonly string[]): Record<string, unknown>[] {
+  return blocks.map((block) => JSON.parse(block.replace(/^data: /, "")) as Record<string, unknown>);
+}
+
+function typesOf(blocks: readonly string[]): string[] {
+  return eventsOf(blocks).map(event => String(event.type));
+}
+
+const ISSUE_FIXTURE = {
+  created: { type: "response.created", response: { id: "resp_1" } },
+  itemAdded: { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1" } },
+  delta: { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "hello" },
+  completed: { type: "response.completed", response: { id: "resp_1" } },
+};
+
+describe("createResponsesSnapshotBlockRewrite", () => {
+  test("the exact #893 issue fixture yields the full canonical lifecycle and a committed message", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite(undefined, createTestTranslatorBudget());
+    const out: string[] = [];
+    for (const event of [ISSUE_FIXTURE.created, ISSUE_FIXTURE.itemAdded, ISSUE_FIXTURE.delta, ISSUE_FIXTURE.completed]) {
+      out.push(...rewrite(dataBlock(event)));
+    }
+    expect(typesOf(out)).toEqual([
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+    // Snapshot field backfills.
+    const created = eventsOf(out)[0]!.response as Record<string, unknown>;
+    expect(created.status).toBe("in_progress");
+    expect(created.parallel_tool_calls).toBe(true);
+    expect(created.tool_choice).toBe("auto");
+    expect(created.tools).toEqual([]);
+    // The repaired item-added has role/status/content.
+    const added = eventsOf(out)[1]!.item as Record<string, unknown>;
+    expect(added.role).toBe("assistant");
+    expect(added.status).toBe("in_progress");
+    expect(Array.isArray(added.content)).toBe(true);
+    // The injected done carries the accumulated text.
+    const textDone = eventsOf(out)[4]!;
+    expect(textDone.text).toBe("hello");
+    // The committed done item and terminal output contain the message.
+    const doneItem = eventsOf(out)[6]!.item as Record<string, unknown>;
+    expect(doneItem.status).toBe("completed");
+    const terminal = eventsOf(out)[7]!.response as Record<string, unknown>;
+    expect(terminal.status).toBe("completed");
+    const output = terminal.output as Record<string, unknown>[];
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({ type: "message", id: "msg_1", status: "completed" });
+    expect((output[0]!.content as Record<string, unknown>[])[0]).toMatchObject({ text: "hello" });
+  });
+
+  test("an explicit output: [] in the terminal snapshot is authoritative (never reconstructed)", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock(ISSUE_FIXTURE.created));
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+    rewrite(dataBlock(ISSUE_FIXTURE.delta));
+    const out = rewrite(dataBlock({
+      type: "response.completed",
+      response: { id: "resp_1", status: "completed", output: [] },
+    }));
+    const terminal = eventsOf(out).find(event => event.type === "response.completed")!;
+    expect((terminal.response as Record<string, unknown>).output).toEqual([]);
+  });
+
+  test("already-canonical streams pass through byte-identical", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    const canonical = [
+      { type: "response.created", response: { id: "r", status: "in_progress", output: [], parallel_tool_calls: true, tool_choice: "auto", tools: [] } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "m", role: "assistant", status: "in_progress", content: [] } },
+      { type: "response.content_part.added", item_id: "m", output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } },
+      { type: "response.output_text.delta", item_id: "m", output_index: 0, logprobs: [], delta: "hi" },
+      { type: "response.output_text.done", item_id: "m", output_index: 0, logprobs: [], text: "hi" },
+      { type: "response.content_part.done", item_id: "m", output_index: 0, content_index: 0, part: { type: "output_text", text: "hi", annotations: [] } },
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", id: "m", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] } },
+      { type: "response.completed", response: { id: "r", status: "completed", output: [{ type: "message", id: "m", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] }], parallel_tool_calls: true, tool_choice: "auto", tools: [] } },
+    ];
+    const out: string[] = [];
+    for (const event of canonical) out.push(...rewrite(dataBlock(event)));
+    expect(out).toHaveLength(canonical.length);
+    // No injections: exactly the same event type sequence.
+    expect(typesOf(out)).toEqual(canonical.map(event => event.type));
+  });
+
+  test("malformed JSON and non-data blocks pass through untouched", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    expect(rewrite("data: {not json")).toEqual(["data: {not json"]);
+    expect(rewrite(": comment-only")).toEqual([": comment-only"]);
+  });
+
+  test("a contradictory duplicate open index taints the stream: fail closed, no injection", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded)); // same open output_index reused
+    rewrite(dataBlock(ISSUE_FIXTURE.delta));
+    const out = rewrite(dataBlock(ISSUE_FIXTURE.completed));
+    // Fail closed: the terminal arrives with no injected closing events and no reconstruction.
+    expect(typesOf(out)).toEqual(["response.completed"]);
+    const terminal = eventsOf(out)[0]!.response as Record<string, unknown>;
+    expect(Object.hasOwn(terminal, "output")).toBe(false);
+  });
+
+  test("an oversized completed item taints reconstruction but field repairs continue", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite(undefined, createTestTranslatorBudget());
+    rewrite(dataBlock({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "big" } }));
+    rewrite(dataBlock({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "message", id: "big", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: "x".repeat(9 * 1024 * 1024), annotations: [] }],
+      },
+    }));
+    const out = rewrite(dataBlock({ type: "response.completed", response: { id: "r" } }));
+    expect(typesOf(out)).toEqual(["response.completed"]);
+    const terminal = eventsOf(out)[0]!.response as Record<string, unknown>;
+    // Field backfills still applied, but no output reconstruction.
+    expect(terminal.status).toBe("completed");
+    expect(Object.hasOwn(terminal, "output")).toBe(false);
+  });
+
+  test("gateway-closed items get no injected duplicates", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
+    rewrite(dataBlock({ type: "response.content_part.added", item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }));
+    rewrite(dataBlock(ISSUE_FIXTURE.delta));
+    rewrite(dataBlock({ type: "response.output_text.done", item_id: "msg_1", output_index: 0, text: "hello" }));
+    rewrite(dataBlock({ type: "response.content_part.done", item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text", text: "hello", annotations: [] } }));
+    rewrite(dataBlock({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] } }));
+    const out = rewrite(dataBlock(ISSUE_FIXTURE.completed));
+    expect(typesOf(out)).toEqual(["response.completed"]);
+  });
+
+  test("request defaults fill snapshot fields from the request", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite({
+      parallel_tool_calls: false,
+      tool_choice: { type: "function", name: "search" },
+      tools: [{ type: "function", name: "search" }],
+    });
+    const out = rewrite(dataBlock(ISSUE_FIXTURE.created));
+    const response = eventsOf(out)[0]!.response as Record<string, unknown>;
+    expect(response.parallel_tool_calls).toBe(false);
+    expect(response.tool_choice).toEqual({ type: "function", name: "search" });
+    expect(response.tools).toEqual([{ type: "function", name: "search" }]);
+  });
+});
+
+describe("repairResponsesSnapshotJson", () => {
+  test("backfills missing fields on a non-streaming response", () => {
+    const repaired = repairResponsesSnapshotJson(JSON.stringify({ id: "r", output: [] }));
+    const parsed = JSON.parse(repaired) as Record<string, unknown>;
+    expect(parsed.status).toBe("completed");
+    expect(parsed.parallel_tool_calls).toBe(true);
+    expect(parsed.output).toEqual([]);
+  });
+
+  test("invalid JSON passes through", () => {
+    expect(repairResponsesSnapshotJson("{nope")).toBe("{nope");
+  });
+});
+
+describe("hasResponsesSnapshotRepair", () => {
+  test("only explicit true enables", () => {
+    expect(hasResponsesSnapshotRepair(true)).toBe(true);
+    expect(hasResponsesSnapshotRepair(false)).toBe(false);
+    expect(hasResponsesSnapshotRepair(undefined)).toBe(false);
+  });
+});
+
+describe("relaySseWithBlockRewrite (stream level)", () => {
+  test("the issue fixture flows through the relay as the full canonical sequence", async () => {
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const event of [ISSUE_FIXTURE.created, ISSUE_FIXTURE.itemAdded, ISSUE_FIXTURE.delta, ISSUE_FIXTURE.completed]) {
+          controller.enqueue(encoder.encode(`${dataBlock(event)}\n\n`));
+        }
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+    const rewrite = createResponsesSnapshotBlockRewrite(undefined, createTestTranslatorBudget());
+    const body = relaySseWithBlockRewrite(upstream, rewrite, createTestTranslatorBudget());
+    const text = await new Response(body).text();
+    const sequence = [...text.matchAll(/"type":"([^"]+)"/g)].map(match => match[1]);
+    for (const expected of [
+      "response.created",
+      "response.output_item.added",
+      "response.content_part.added",
+      "response.output_text.delta",
+      "response.output_text.done",
+      "response.content_part.done",
+      "response.output_item.done",
+      "response.completed",
+    ]) {
+      expect(sequence).toContain(expected);
+    }
+    expect(text).toContain("data: [DONE]");
+  });
+
+  test("composition: payload rewrite then lifecycle repair", async () => {
+    const chain = composeSseBlockRewrites(
+      payloadRewriteAsBlockRewrite(payload => payload.replace("hello", "hola")),
+      createResponsesSnapshotBlockRewrite(),
+    );
+    chain(dataBlock(ISSUE_FIXTURE.itemAdded));
+    const out = chain(dataBlock(ISSUE_FIXTURE.delta));
+    // content_part.added injected first; the delta's payload got the payload rewrite.
+    expect(typesOf(out)).toEqual(["response.content_part.added", "response.output_text.delta"]);
+    expect(JSON.stringify(out[1])).toContain("hola");
+  });
+});

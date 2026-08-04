@@ -9,6 +9,39 @@ import type { TranslatorBudget } from "../lib/translator-budget";
 
 export type SsePayloadRewrite = (payload: string) => string;
 
+/**
+ * Block-level SSE rewrite: maps one complete SSE event block (without its
+ * blank-line delimiter) to zero or more replacement blocks. This is the
+ * contract lifecycle repair needs: injecting missing canonical events
+ * (#893) is impossible in the one-payload-in/one-payload-out model.
+ */
+export type SseBlockRewrite = (block: string) => readonly string[];
+
+/** Adapt a payload rewrite to the block contract (replace only on change). */
+export function payloadRewriteAsBlockRewrite(rewrite: SsePayloadRewrite): SseBlockRewrite {
+  return (block) => {
+    const payload = sseDataPayload(block);
+    if (payload === null) return [block];
+    const rewritten = rewrite(payload);
+    return rewritten !== payload ? [replaceSseDataPayload(block, rewritten)] : [block];
+  };
+}
+
+/** Chain block rewrites: every block stage N emits feeds stage N+1. */
+export function composeSseBlockRewrites(...rewrites: SseBlockRewrite[]): SseBlockRewrite {
+  const active = rewrites.filter(Boolean);
+  if (active.length === 0) return (block) => [block];
+  return (block) => {
+    let blocks: readonly string[] = [block];
+    for (const rewrite of active) {
+      const next: string[] = [];
+      for (const current of blocks) next.push(...rewrite(current));
+      blocks = next;
+    }
+    return blocks;
+  };
+}
+
 /** Split one complete SSE event block while retaining its original blank-line delimiter. */
 export function nextSseBlock(buffer: string): { block: string; delimiter: string; rest: string } | null {
   const match = buffer.match(/\r?\n\r?\n/);
@@ -68,6 +101,20 @@ export function composeSsePayloadRewrites(...rewrites: SsePayloadRewrite[]): Sse
 export function relaySseWithPayloadRewrite(
   body: ReadableStream<Uint8Array>,
   rewrite: SsePayloadRewrite,
+  translatorBudget: TranslatorBudget,
+): ReadableStream<Uint8Array> {
+  return relaySseWithBlockRewrite(body, payloadRewriteAsBlockRewrite(rewrite), translatorBudget);
+}
+
+/**
+ * Relay an SSE body through a single JS pull wrapper, applying a block-level
+ * rewrite that may emit zero or more blocks per upstream event (lifecycle
+ * event injection, #893). The original stream's delimiter style is preserved
+ * for every emitted block.
+ */
+export function relaySseWithBlockRewrite(
+  body: ReadableStream<Uint8Array>,
+  rewrite: SseBlockRewrite,
   translatorBudget: TranslatorBudget,
 ): ReadableStream<Uint8Array> {
   const reader = body.getReader();
@@ -130,20 +177,14 @@ export function relaySseWithPayloadRewrite(
     let next: { block: string; delimiter: string; rest: string } | null;
     while ((next = nextSseBlock(buffer))) {
       replaceBuffer(next.rest);
-      const payload = sseDataPayload(next.block);
-      const rewrittenPayload = payload ? rewrite(payload) : undefined;
-      const block = payload && rewrittenPayload !== undefined && rewrittenPayload !== payload
-        ? replaceSseDataPayload(next.block, rewrittenPayload)
-        : next.block;
-      enqueueText(controller, block + next.delimiter);
+      for (const outBlock of rewrite(next.block)) {
+        enqueueText(controller, outBlock + next.delimiter);
+      }
     }
     if (flushFinal && buffer.length > 0) {
-      const payload = sseDataPayload(buffer);
-      const rewrittenPayload = payload ? rewrite(payload) : undefined;
-      const block = payload && rewrittenPayload !== undefined && rewrittenPayload !== payload
-        ? replaceSseDataPayload(buffer, rewrittenPayload)
-        : buffer;
-      enqueueText(controller, block);
+      for (const outBlock of rewrite(buffer)) {
+        enqueueText(controller, outBlock);
+      }
       releaseBuffer();
     }
   };
