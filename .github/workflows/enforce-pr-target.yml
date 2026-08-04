@@ -52,6 +52,8 @@ jobs:
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
+              uncheckReviewReadinessBoxes,
+              REVIEW_READINESS_CLAIM_INDEX,
               resetReviewReadinessSection
             } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
@@ -64,6 +66,7 @@ jobs:
               defaultEnforcerState,
               defaultReadinessState,
               completionIsStale,
+              readinessClaimViolations,
               READINESS_STATE_VERSION
             } = require(
               path.join(
@@ -79,7 +82,8 @@ jobs:
               buildReadinessCommentBody,
               buildFailureSections,
               failureSummary,
-              buildStaleNotice
+              buildStaleNotice,
+              buildClaimCheckNotice
             } = require(
               path.join(
                 process.cwd(),
@@ -416,6 +420,7 @@ jobs:
 
             let readinessStateOverride = null;
             let headDriftNotice = [];
+            let revalidationNotice = [];
             if (headDrifted) {
               // Re-fetch the PR so an author edit that landed while this job
               // was reading cannot be clobbered by the reset.
@@ -452,10 +457,99 @@ jobs:
               checklistComplete = readiness.present && readiness.complete;
             }
 
+            // The bot verifies the two checklist claims it can check itself.
+            // The CI box only counts when the head's `ci` check (the repo's
+            // documented "CI passed" signal) is green; the latest-dev box only
+            // counts while the head is at most READINESS_LATEST_DEV_BEHIND_MAX
+            // commits behind the base. A disproved claim unchecks that box and
+            // keeps the PR a draft, exactly like a head-drift reset.
+            let claimViolations = [];
+            let claimNotice = [];
+            if (
+              checklistRequired &&
+              checklistComplete &&
+              !headDrifted &&
+              failures.length === 0
+            ) {
+              let ciGreen = true;
+              try {
+                const { data: checksData } =
+                  await github.rest.checks.listForRef({
+                    owner,
+                    repo,
+                    ref: pr.head.sha,
+                    per_page: 100
+                  });
+                const ciCheck = (checksData.check_runs ?? []).find(
+                  check => check.name === "ci"
+                );
+                // No `ci` check means no CI run exists for this head (for
+                // example a docs-only change): there is nothing to contradict
+                // the author's claim. A real `ci` check must be completed
+                // successfully.
+                ciGreen =
+                  ciCheck === undefined ||
+                  (ciCheck.status === "completed" &&
+                    ciCheck.conclusion === "success");
+              } catch (error) {
+                core.warning(
+                  `Could not list checks for the readiness claim check: ${error.message}`
+                );
+                ciGreen = false;
+              }
+              claimViolations = readinessClaimViolations({
+                ciGreen,
+                behindBase,
+                behindUnknown: ancestryLookupFailed
+              });
+              if (claimViolations.length > 0) {
+                const { data: freshPr } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number
+                });
+                const freshReadiness = extractReviewReadiness(
+                  freshPr.body ?? ""
+                );
+                readinessStateOverride = defaultReadinessState();
+                claimNotice = buildClaimCheckNotice(
+                  claimViolations,
+                  freshPr.head.sha
+                );
+                if (freshReadiness.present) {
+                  const uncheckedBody = uncheckReviewReadinessBoxes(
+                    freshPr.body ?? "",
+                    claimViolations.map(
+                      code => REVIEW_READINESS_CLAIM_INDEX[code]
+                    )
+                  );
+                  if (uncheckedBody !== freshPr.body) {
+                    await github.rest.pulls.update({
+                      owner,
+                      repo,
+                      pull_number,
+                      body: uncheckedBody
+                    });
+                  }
+                  readiness = extractReviewReadiness(uncheckedBody);
+                } else {
+                  readiness = freshReadiness;
+                }
+                checklistComplete = readiness.present && readiness.complete;
+              }
+            }
+
             // A contributor PR stays a draft while the checklist is open, even
             // when every quality gate already passes.
             const mustDraft =
               failures.length > 0 || (checklistRequired && !checklistComplete);
+
+            // Which reset notice (head drift vs claim check) accompanies the
+            // draft path; only one can be active because the claim check is
+            // skipped when the head drifted.
+            revalidationNotice = headDrifted
+              ? headDriftNotice
+              : claimNotice;
 
             if (mustDraft) {
               let draftConverted = false;
@@ -513,7 +607,7 @@ jobs:
                   readinessState,
                   readiness,
                   [
-                    ...headDriftNotice,
+                    ...revalidationNotice,
                     "This PR stays in draft until every box above is ticked."
                   ]
                 );
@@ -636,7 +730,7 @@ jobs:
                     readinessState,
                     readiness,
                     [
-                      ...headDriftNotice,
+                      ...revalidationNotice,
                       checklistComplete
                         ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
                         : pr.draft || draftConverted
@@ -692,7 +786,7 @@ jobs:
                 readinessState,
                 readiness,
                 [
-                  ...headDriftNotice,
+                  ...revalidationNotice,
                   pr.draft || draftConverted
                     ? "This PR stays in draft until every box above is ticked."
                     : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."

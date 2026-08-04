@@ -52,6 +52,10 @@ tells you exactly what to change:
   to test and tick the boxes again against the latest code. A retarget to
   `dev` clears the wrong-branch message automatically and is remembered by the
   gate; the draft stays until the checklist is complete.
+  Before a completion is accepted, the gate verifies the two checklist claims
+  it can check itself: the head's `ci` check must be green, and the branch
+  must be on the latest `dev` commit or at most 10 commits behind it. A
+  disproved claim unticks the matching box and keeps the PR a draft.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a

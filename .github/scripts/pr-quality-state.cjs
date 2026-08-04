@@ -14,6 +14,10 @@ const READINESS_STATE_PATTERN =
  */
 const READINESS_STATE_VERSION = 2;
 
+/** A completed checklist may attest "on the latest dev" while the head is up to
+ * this many commits behind the base. Beyond it the box no longer holds. */
+const READINESS_LATEST_DEV_BEHIND_MAX = 10;
+
 /** Parse the enforcer state marker, or `null` when absent or unreadable. */
 function parseState(body, warn = () => {}) {
   const match = body?.match(STATE_PATTERN);
@@ -112,6 +116,31 @@ function defaultReadinessState() {
  * complete checklist with no recorded head at all (the completion job may
  * still be queued for an older head).
  */
+
+/**
+ * Bot-side verification of the two checklist claims the gate can check itself.
+ * The CI box only holds when the head's `ci` check is green, and the
+ * latest-dev box only holds while the head is at most
+ * READINESS_LATEST_DEV_BEHIND_MAX commits behind the base. Unknown state
+ * (compare or checks lookup failed) fails closed: an unverifiable claim is a
+ * violation, because an attestation must not ride on missing evidence.
+ */
+function readinessClaimViolations({
+  ciGreen,
+  behindBase,
+  behindUnknown = false,
+  behindMax = READINESS_LATEST_DEV_BEHIND_MAX
+}) {
+  const violations = [];
+  if (!ciGreen) {
+    violations.push("ci_green");
+  }
+  if (behindUnknown || behindBase > behindMax) {
+    violations.push("latest_dev");
+  }
+  return violations;
+}
+
 function completionIsStale({
   checklistRequired,
   checklistComplete,
@@ -147,6 +176,8 @@ function completionIsStale({
 }
 
 module.exports = {
+  READINESS_LATEST_DEV_BEHIND_MAX,
+  readinessClaimViolations,
   STATE_PATTERN,
   READINESS_STATE_PATTERN,
   READINESS_STATE_VERSION,

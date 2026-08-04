@@ -4,7 +4,8 @@ const {
   REVIEW_READINESS_ITEMS
 } = require("./pr-quality.cjs");
 const {
-  readinessStateMarker
+  readinessStateMarker,
+  READINESS_LATEST_DEV_BEHIND_MAX
 } = require("./pr-quality-state.cjs");
 
 /** Marks the bot's review-readiness checklist message. */
@@ -157,6 +158,26 @@ function failureSummary(failures, { pr }) {
     .join("; ");
 }
 
+/** The notice shown when the gate's own claim check disproves a ticked box. */
+function buildClaimCheckNotice(violations, liveHeadSha) {
+  const lines = [];
+  for (const code of violations) {
+    if (code === "ci_green") {
+      lines.push(
+        `GitHub CI is not green on the current head ${inlineCode(liveHeadSha.slice(0, 7))}; the **CI green** box has been unticked.`
+      );
+    } else if (code === "latest_dev") {
+      lines.push(
+        `The PR is more than ${READINESS_LATEST_DEV_BEHIND_MAX} commits behind ${inlineCode("dev")}; the **latest dev** box has been unticked.`
+      );
+    }
+  }
+  lines.push(
+    "The checklist has been reset: re-test against the latest code and tick the boxes again."
+  );
+  return lines;
+}
+
 /** The reset notice shown when a completion no longer covers the live head. */
 function buildStaleNotice({ completionHeadSha, liveHeadSha, eventAction }) {
   let lead;
@@ -181,5 +202,6 @@ module.exports = {
   descriptionFailureLines,
   buildFailureSections,
   failureSummary,
-  buildStaleNotice
+  buildStaleNotice,
+  buildClaimCheckNotice
 };

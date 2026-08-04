@@ -11,6 +11,8 @@ const {
   defaultEnforcerState,
   defaultReadinessState,
   completionIsStale,
+  readinessClaimViolations,
+  READINESS_LATEST_DEV_BEHIND_MAX,
   READINESS_STATE_VERSION
 } = require("./pr-quality-state.cjs");
 
@@ -198,6 +200,64 @@ describe("completionIsStale", () => {
         eventHeadSha: base.liveHeadSha
       }),
       false,
+    );
+  });
+});
+
+describe("readinessClaimViolations", () => {
+  it("passes when CI is green and the head is current", () => {
+    assert.deepEqual(
+      readinessClaimViolations({ ciGreen: true, behindBase: 0 }),
+      [],
+    );
+    assert.deepEqual(
+      readinessClaimViolations({ ciGreen: true, behindBase: 10 }),
+      [],
+    );
+  });
+
+  it("flags red CI", () => {
+    assert.deepEqual(
+      readinessClaimViolations({ ciGreen: false, behindBase: 0 }),
+      ["ci_green"],
+    );
+  });
+
+  it("flags a head more than the threshold behind the base", () => {
+    assert.deepEqual(
+      readinessClaimViolations({
+        ciGreen: true,
+        behindBase: READINESS_LATEST_DEV_BEHIND_MAX + 1,
+      }),
+      ["latest_dev"],
+    );
+  });
+
+  it("flags both when both claims fail", () => {
+    assert.deepEqual(
+      readinessClaimViolations({
+        ciGreen: false,
+        behindBase: READINESS_LATEST_DEV_BEHIND_MAX + 20,
+      }),
+      ["ci_green", "latest_dev"],
+    );
+  });
+
+  it("fails closed when the behind count is unknown", () => {
+    assert.deepEqual(
+      readinessClaimViolations({
+        ciGreen: true,
+        behindBase: 0,
+        behindUnknown: true,
+      }),
+      ["latest_dev"],
+    );
+  });
+
+  it("honours a custom threshold", () => {
+    assert.deepEqual(
+      readinessClaimViolations({ ciGreen: true, behindBase: 5, behindMax: 4 }),
+      ["latest_dev"],
     );
   });
 });

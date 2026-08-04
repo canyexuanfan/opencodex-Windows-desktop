@@ -35,6 +35,10 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
   commits are pushed afterwards, the gate moves the PR back to draft, resets
   the checklist and the notification, and asks the author to test and tick the
   boxes again against the latest code.
+  Before a completion is accepted, the gate verifies the two checklist claims
+  it can check itself: the head's `ci` check must be green, and the branch
+  must be on the latest `dev` commit or at most 10 commits behind it. A
+  disproved claim unticks the matching box and keeps the PR a draft.
   Authors with repository push permission skip the ancestry heuristic only. As
   with the approval requirement above, this is enforced by convention until
   branch protection is configured (see the note under the change log).

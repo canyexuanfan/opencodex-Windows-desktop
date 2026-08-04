@@ -115,6 +115,12 @@ export type RunOptions = {
   openPulls?: unknown[];
   /** Page-keyed open PR fixtures for `pulls.list` (1-based via array index). */
   openPullPages?: unknown[][];
+  /**
+   * Check-runs `checks.listForRef` reports for the head. Defaults to a green
+   * `ci` check so completed-checklist scenarios pass the claim check.
+   * Pass a red/pending/missing set to exercise the claim-check reset paths.
+   */
+  checkRuns?: Array<{ name: string; status: string; conclusion: string | null }>;
 };
 
 /**
@@ -135,6 +141,11 @@ const DEFAULT_BODY = [
   "- [x] Run `bun test tests/ci-workflows.test.ts`",
   "- [x] Confirm enforce-pr-target behaviour locally",
 ].join("\n");
+
+/** The repo's documented "CI passed" check, green by default. */
+const DEFAULT_GREEN_CHECKS = [
+  { name: "ci", status: "completed", conclusion: "success" },
+];
 
 const DEFAULT_PR = {
   number: 42,
@@ -612,6 +623,13 @@ export async function runEnforcePrTarget(
       },
       createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
       updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
+    },
+    checks: {
+      listForRef: (args: unknown) =>
+        respond("checks.listForRef", args, {
+          total_count: (options.checkRuns ?? DEFAULT_GREEN_CHECKS).length,
+          check_runs: options.checkRuns ?? DEFAULT_GREEN_CHECKS,
+        }),
     },
     repos: {
       getCollaboratorPermissionLevel: (args: unknown) =>
