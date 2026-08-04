@@ -1,4 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { act } from "react";
+import type { Root } from "react-dom/client";
+import Combos from "../src/pages/Combos";
+import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
+import { writeSessionListCache } from "../src/session-list-cache";
 
 /**
  * WP3 (devlog/_plan/260730_gui_hydration_loading_unify/020_page_migration.md).
@@ -107,4 +114,84 @@ test("the status line yields its live region to an error notice", async () => {
       surface.name,
     ).toBe(true);
   }
+});
+
+const globals = ["document", "window", "navigator", "localStorage", "sessionStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
+let previousGlobals: Record<(typeof globals)[number], unknown>;
+let testWindow: Window;
+const originalFetch = globalThis.fetch;
+
+const API_BASE = "http://localhost";
+const CACHE_KEY = `ocx.combos.workspace.v1:${API_BASE}`;
+const CACHED_PAGE = {
+  combos: [],
+  providers: [{ name: "openai", disabled: false, hiddenFromPicker: false, authMode: "forward", adapter: "openai", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5" }],
+  models: [{ provider: "openai", id: "gpt-5", namespaced: "openai/gpt-5" }],
+  cataloguedComboIds: [],
+};
+
+beforeEach(() => {
+  clearClientResourceStoresForTests();
+  previousGlobals = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
+  testWindow = new Window({ url: "http://localhost/#combos" });
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: testWindow.document },
+    window: { configurable: true, value: testWindow.window },
+    navigator: { configurable: true, value: testWindow.navigator },
+    localStorage: { configurable: true, value: testWindow.localStorage },
+    sessionStorage: { configurable: true, value: testWindow.sessionStorage },
+  });
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  writeSessionListCache(CACHE_KEY, CACHED_PAGE);
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  clearClientResourceStoresForTests();
+  testWindow.close();
+  for (const key of globals) {
+    Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
+  }
+});
+
+test("Combos announces silent revalidation over cached content via aria-busy", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  type Gate = { resolve: () => void };
+  let release!: Gate;
+  const gate = new Promise<void>(resolve => { release = { resolve }; });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/combos") || url.includes("/api/config") || url.includes("/api/models")) {
+      await gate;
+      if (url.includes("/api/combos")) return Response.json([]);
+      if (url.includes("/api/config")) return Response.json({ providers: CACHED_PAGE.providers });
+      return Response.json([]);
+    }
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LanguageProvider><Combos apiBase={API_BASE} /></LanguageProvider>);
+  });
+  await act(async () => { await new Promise<void>(r => testWindow.setTimeout(r, 0)); });
+
+  const body = container.querySelector<HTMLElement>(".combos-workspace-shell-body");
+  expect(body).not.toBeNull();
+  expect(body?.getAttribute("aria-busy")).toBe("true");
+
+  await act(async () => {
+    release.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => { await new Promise<void>(r => testWindow.setTimeout(r, 20)); });
+
+  expect(container.querySelector<HTMLElement>(".combos-workspace-shell-body")?.getAttribute("aria-busy")).toBe("false");
+
+  await act(async () => { root.unmount(); });
+  container.remove();
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ComboWorkspace from "../components/ComboWorkspace";
 import {
   type ComboItem,
@@ -55,7 +55,7 @@ function seedCombos(cacheKey: string): CachedCombosPage | null {
 export default function Combos({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
-  const cached = seedCombos(cacheKey);
+  const cached = useMemo(() => seedCombos(cacheKey), [cacheKey]);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -158,10 +158,10 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     cacheKey,
     [apiBase],
     loadCombos,
-    { isEmpty: () => false },
+    { isEmpty: () => false, initialData: cached ?? undefined },
   );
   const { state } = resource;
-  const data = state.data ?? cached;
+  const data = state.data;
   const combos = data?.combos ?? [];
   const providers = data?.providers ?? [];
   const models = data?.models ?? [];
