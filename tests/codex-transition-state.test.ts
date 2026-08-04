@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -17,13 +17,18 @@ import {
 } from "../src/codex/user-identity";
 
 let codexHome = "";
+let opencodexHome = "";
 let coordinatorPath = "";
 let previousCodexHome: string | undefined;
+let previousOpencodexHome: string | undefined;
 
 beforeEach(() => {
   previousCodexHome = process.env.CODEX_HOME;
+  previousOpencodexHome = process.env.OPENCODEX_HOME;
   codexHome = mkdtempSync(join(tmpdir(), "ocx-transition-state-codex-home-"));
+  opencodexHome = mkdtempSync(join(tmpdir(), "ocx-transition-state-opencodex-home-"));
   process.env.CODEX_HOME = codexHome;
+  process.env.OPENCODEX_HOME = opencodexHome;
   coordinatorPath = resolveCodexCoordinatorDatabasePath(
     resolveEffectiveUserIdentity(),
     realpathSync.native(codexHome),
@@ -33,10 +38,13 @@ beforeEach(() => {
 afterEach(() => {
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = previousCodexHome;
+  if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = previousOpencodexHome;
   for (const suffix of ["", "-journal", "-wal", "-shm"]) {
     rmSync(`${coordinatorPath}${suffix}`, { force: true });
   }
   rmSync(codexHome, { recursive: true, force: true });
+  rmSync(opencodexHome, { recursive: true, force: true });
 });
 
 function transition(txId: string) {
@@ -48,7 +56,7 @@ function transition(txId: string) {
   };
 }
 
-test("a matching conditional transition update succeeds", () => {
+test("a missing database initializes only from clean integration and native state", () => {
   expect(readCodexTransitionState()).toEqual({
     kind: "ready",
     state: {
@@ -76,6 +84,45 @@ test("a matching conditional transition update succeeds", () => {
     expect(result.state.currentTxId).toBe("tx-winner");
     expect(result.state.historySchedule?.direction).toBe("apply");
   }
+});
+
+/**
+ * The missing-row review fixture carried the old JSON pair and history. Before
+ * this regression, initialization silently replaced that evidence with
+ * `{0,null}`, making an interrupted legacy transition look clean.
+ */
+test("a missing database with legacy JSON transition fields is legacy-ambiguous", () => {
+  const integrations = join(opencodexHome, "integrations");
+  mkdirSync(integrations, { recursive: true });
+  writeFileSync(join(integrations, "codex.json"), JSON.stringify({
+    version: 1,
+    nativeGeneration: 7,
+    currentTxId: "legacy",
+    history: { status: "pending", txId: "legacy" },
+  }));
+
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized over legacy or invalid Codex integration state.",
+  });
+});
+
+/**
+ * Absence of the coordinator file also said nothing about native bytes. The
+ * exact marker-owned routing grammar is authoritative residue and must prevent
+ * a fresh zero row from claiming no transition ever happened.
+ */
+test("a missing database with native routed residue is legacy-ambiguous", () => {
+  writeFileSync(join(codexHome, "config.toml"), [
+    "# Auto-injected by opencodex",
+    'openai_base_url = "http://127.0.0.1:10100/v1"',
+    "",
+  ].join("\n"));
+
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+  });
 });
 
 test("an existing database without the singleton row is legacy-ambiguous", () => {
@@ -128,6 +175,24 @@ test("a positive generation cannot carry a null direction", () => {
     ).get()?.history_direction).toBe("apply");
   } finally {
     database.close();
+  }
+});
+
+/**
+ * A capability backed by a nominal transaction is not opaque if its caller can
+ * simply open another connection. The C-phase review found the old test only
+ * checked a boolean in one object and never exercised SQLite exclusion.
+ */
+test("the opaque coordinator capability cannot reach a second connection", () => {
+  expect(readCodexTransitionState().kind).toBe("ready");
+  const controller = openCodexCoordinatorTransaction(coordinatorPath);
+  try {
+    expect(() => {
+      const second = openCodexCoordinatorTransaction(coordinatorPath);
+      second.close();
+    }).toThrow();
+  } finally {
+    controller.close();
   }
 });
 

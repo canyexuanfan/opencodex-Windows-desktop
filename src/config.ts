@@ -6,6 +6,16 @@ import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
 import {
+  bumpConfigGenerationAtPath,
+  bumpCurrentConfigGeneration,
+  initializeConfigGeneration,
+  readConfigGenerationAtPath,
+} from "./codex/generation";
+import type {
+  BumpConfigGeneration,
+  ReadConfigGeneration,
+} from "./codex/convergence-types";
+import {
   CODEX_ACCOUNT_NAMESPACE_COMBO_ALIAS_COLLISION_ERROR,
   codexAccountNamespaceForModel,
   codexProviderNamespaceKey,
@@ -1763,6 +1773,7 @@ function configMutationDatabasePath(): string {
 }
 
 let configMutationLockDepth = 0;
+let configMutationDatabase: Database | null = null;
 
 /**
  * Serialize synchronous config and Codex credential-generation commits across processes with an
@@ -1789,7 +1800,11 @@ export function withConfigMutationLockSync<T>(fn: () => T): T {
     try { chmodSync(path, 0o600); } catch { /* platform may ignore chmod */ }
     database.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
     transactionOpen = true;
+    initializeConfigGeneration(database);
   } catch (cause) {
+    if (transactionOpen) {
+      try { database?.exec("ROLLBACK"); } catch { /* close below still releases the OS lock */ }
+    }
     try { database?.close(); } catch { /* acquisition already failed */ }
     const code = cause && typeof cause === "object" && "code" in cause
       ? String((cause as { code?: unknown }).code)
@@ -1801,6 +1816,7 @@ export function withConfigMutationLockSync<T>(fn: () => T): T {
   }
 
   configMutationLockDepth = 1;
+  configMutationDatabase = database;
   try {
     const value = fn();
     database.exec("COMMIT");
@@ -1814,19 +1830,52 @@ export function withConfigMutationLockSync<T>(fn: () => T): T {
     throw error;
   } finally {
     configMutationLockDepth = 0;
+    configMutationDatabase = null;
     try { database.close(); } catch { /* the OS lock is released with the handle */ }
   }
 }
 
-function persistConfigUnlocked(config: OcxConfig): void {
+function bumpGenerationForCooperatingConfigWrite(): void {
+  if (!configMutationDatabase) {
+    throw new Error("A cooperating config write requires the config mutation transaction.");
+  }
+  bumpCurrentConfigGeneration(configMutationDatabase);
+}
+
+export const readConfigGeneration: ReadConfigGeneration = () => {
+  try {
+    return readConfigGenerationAtPath(configMutationDatabasePath());
+  } catch {
+    return { kind: "unavailable", reason: "database" };
+  }
+};
+
+export const bumpConfigGeneration: BumpConfigGeneration = expected => {
+  try {
+    return bumpConfigGenerationAtPath(configMutationDatabasePath(), expected);
+  } catch {
+    return { kind: "unavailable", reason: "database" };
+  }
+};
+
+function persistConfigUnlocked(config: OcxConfig): boolean {
   const configPath = getConfigPath();
-  atomicWriteFile(configPath, JSON.stringify(config, null, 2) + "\n");
+  const bytes = JSON.stringify(config, null, 2) + "\n";
+  try {
+    if (readFileSync(configPath, "utf8") === bytes) return false;
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+  atomicWriteFile(configPath, bytes);
+  return true;
 }
 
 export function saveConfig(config: OcxConfig): void {
   // Keep the real-home assertion ahead of even lock-directory preparation.
   assertNotRealHomeUnderTest(getConfigDir());
-  withConfigMutationLockSync(() => persistConfigUnlocked(config));
+  withConfigMutationLockSync(() => {
+    if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
+  });
 }
 
 export type PersistedConfigMutation<T> = {
@@ -1906,7 +1955,7 @@ export function mutatePersistedConfig<T>(
         continue;
       }
 
-      persistConfigUnlocked(confirmedConfig);
+      if (persistConfigUnlocked(confirmedConfig)) bumpGenerationForCooperatingConfigWrite();
       return { status: "committed", value: confirmed.value };
     }
     return { status: "unavailable", reason: "conflict" };
@@ -2165,10 +2214,10 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
       const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
       if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
       else persistedConfig.hostname = persistedBinding.hostname;
-      persistConfigUnlocked(persistedConfig);
+      if (persistConfigUnlocked(persistedConfig)) bumpGenerationForCooperatingConfigWrite();
       persistedLiveServerBinding.set(config, persistedBinding);
     } else {
-      persistConfigUnlocked(config);
+      if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
     }
     if (claudeCodeBaseline.has(config)) {
       claudeCodeBaseline.set(config, structuredClone(config.claudeCode));

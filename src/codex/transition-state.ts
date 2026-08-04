@@ -10,12 +10,27 @@
  * Design record: devlog/_plan/260804_codex_write_substrate/005_contract.md §1.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 
 import { Database } from "bun:sqlite";
 
-import type { CodexHistoryState, CommitExpectation } from "./convergence-types";
+import type {
+  BeginCodexTransition,
+  CodexCoordinatorTransaction,
+  CodexCoordinatorTransactionController,
+  CodexHistoryState,
+  CodexTransitionState,
+  CodexTransitionVersion,
+  CommitExpectation,
+  ReadCodexTransitionState,
+  TransitionStateRead,
+  TransitionStateUpdate,
+  UpdateCodexHistoryTransition,
+} from "./convergence-types";
 import { resolveCodexHomeDir } from "./home";
+import { hasInjectedCodexRouting } from "./injected-marker";
+import { readIntegrationRecord } from "./integration-record";
 import {
   CodexUserIdentityRefusal,
   resolveCodexCoordinatorDatabasePath,
@@ -131,61 +146,10 @@ interface TransitionRow {
   history_backup_entries: unknown;
 }
 
-export interface CodexTransitionVersion {
-  readonly nativeGeneration: number;
-  readonly currentTxId: string | null;
-}
-
-export interface CodexTransitionState extends CodexTransitionVersion {
-  readonly history: CodexHistoryState;
-  readonly historySchedule: null | Readonly<{
-    direction: "apply" | "remove";
-    authoritySnapshotId: string;
-  }>;
-}
-
-export type TransitionStateRead =
-  | { kind: "ready"; state: CodexTransitionState }
-  | { kind: "legacy-ambiguous"; message: string }
-  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
-
-export type TransitionStateUpdate =
-  | { kind: "updated"; state: CodexTransitionState }
-  | { kind: "conflict"; current: CodexTransitionState }
-  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
-
-export interface BeginCodexTransitionNext {
-  readonly txId: string;
-  readonly direction: "apply" | "remove";
-  readonly authoritySnapshotId: string;
-  readonly nextRetryAt: string;
-}
-
-export type BeginCodexTransition = (
-  expected: CodexTransitionVersion,
-  next: BeginCodexTransitionNext,
-) => TransitionStateUpdate;
-
-export type UpdateCodexHistoryTransition = (
-  expected: CodexTransitionVersion,
-  history: CodexHistoryState,
-) => TransitionStateUpdate;
-
 const codexCoordinatorTransactionBrand: unique symbol = Symbol("CodexCoordinatorTransaction");
 
-export interface CodexCoordinatorTransaction {
+interface BrandedCodexCoordinatorTransaction extends CodexCoordinatorTransaction {
   readonly [codexCoordinatorTransactionBrand]: true;
-  readonly beginTransition: BeginCodexTransition;
-}
-
-export interface CodexCoordinatorTransactionController {
-  readonly capability: CodexCoordinatorTransaction;
-  expectation(): CommitExpectation;
-  assertPublished(expectation: CommitExpectation): void;
-  assertStablePath(): void;
-  commit(): void;
-  rollback(): void;
-  close(): void;
 }
 
 export class CodexCoordinatorTransactionError extends Error {
@@ -297,6 +261,35 @@ function validateHistoryWrite(expected: CodexTransitionVersion, history: CodexHi
   }
 }
 
+function hasNativeRoutedResidue(): boolean {
+  const configPath = join(resolveCodexHomeDir(), "config.toml");
+  try {
+    return hasInjectedCodexRouting(readFileSync(configPath, "utf8"));
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * The missing-row incident proved that absence is not authority: installing
+ * `{0,null}` over a legacy JSON pair or routed native bytes loses the only
+ * evidence that an interrupted transition still needs salvage.
+ */
+function assertInitialStateCanBeCreated(): void {
+  const integration = readIntegrationRecord();
+  if (integration.kind === "invalid") {
+    throw new CodexCoordinatorLegacyAmbiguousError(
+      "A missing coordinator row cannot be initialized over legacy or invalid Codex integration state.",
+    );
+  }
+  if (hasNativeRoutedResidue()) {
+    throw new CodexCoordinatorLegacyAmbiguousError(
+      "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+    );
+  }
+}
+
 function initialize(database: Database, databaseWasAbsent: boolean): void {
   const version = database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
   if (version !== 0 && version !== COORDINATOR_SCHEMA_VERSION) {
@@ -314,7 +307,10 @@ function initialize(database: Database, databaseWasAbsent: boolean): void {
       "The existing coordinator database has no authoritative transition row.",
     );
   }
-  if (!existing) database.query(INITIALIZE_TRANSITION_ROW).run(new Date().toISOString());
+  if (!existing) {
+    assertInitialStateCanBeCreated();
+    database.query(INITIALIZE_TRANSITION_ROW).run(new Date().toISOString());
+  }
   if (version === 0) database.exec(`PRAGMA user_version = ${COORDINATOR_SCHEMA_VERSION}`);
   readState(database);
 }
@@ -322,7 +318,7 @@ function initialize(database: Database, databaseWasAbsent: boolean): void {
 function createCapability(
   database: Database,
   onResult: (result: TransitionStateUpdate) => void,
-): CodexCoordinatorTransaction {
+): BrandedCodexCoordinatorTransaction {
   let consumed = false;
   return {
     [codexCoordinatorTransactionBrand]: true,
@@ -485,7 +481,7 @@ function mapReadError(error: unknown): TransitionStateRead {
   return mapUnavailable(error);
 }
 
-export function readCodexTransitionState(): TransitionStateRead {
+export const readCodexTransitionState: ReadCodexTransitionState = () => {
   let transaction: CodexCoordinatorTransactionController | undefined;
   try {
     transaction = openCodexCoordinatorTransaction(currentCoordinatorDatabasePath());
@@ -501,7 +497,7 @@ export function readCodexTransitionState(): TransitionStateRead {
   } finally {
     transaction?.close();
   }
-}
+};
 
 function readCommittedState(): TransitionStateRead {
   const path = currentCoordinatorDatabasePath();

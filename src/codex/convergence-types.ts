@@ -68,26 +68,29 @@ export interface CodexHistoryState {
  * rollout whose semantic pre-image is retained.
  */
 export type CodexArtifactId =
-  | { readonly kind: "config" }
-  | { readonly kind: "generated-profile" }
-  | { readonly kind: "active-catalog"; readonly canonicalPath: string }
+  | { readonly kind: "config"; readonly [extra: string]: unknown }
+  | { readonly kind: "generated-profile"; readonly [extra: string]: unknown }
+  | { readonly kind: "active-catalog"; readonly canonicalPath: string;
+      readonly [extra: string]: unknown }
   | { readonly kind: "catalog-backup"; readonly form: "hashed" | "legacy";
-      readonly canonicalPath: string }
-  | { readonly kind: "models-cache" }
-  | { readonly kind: "injection-journal" }
-  | { readonly kind: "history-row"; readonly stateDbId: string; readonly threadId: string }
+      readonly canonicalPath: string; readonly [extra: string]: unknown }
+  | { readonly kind: "models-cache"; readonly [extra: string]: unknown }
+  | { readonly kind: "injection-journal"; readonly [extra: string]: unknown }
+  | { readonly kind: "history-row"; readonly stateDbId: string; readonly threadId: string;
+      readonly [extra: string]: unknown }
   | { readonly kind: "history-manifest"; readonly stateDbId: string;
-      readonly canonicalPath: string }
+      readonly canonicalPath: string; readonly [extra: string]: unknown }
   | { readonly kind: "history-manifest-entry"; readonly stateDbId: string;
-      readonly threadId: string }
+      readonly threadId: string; readonly [extra: string]: unknown }
   | { readonly kind: "history-rollout"; readonly stateDbId: string;
-      readonly canonicalPath: string };
+      readonly canonicalPath: string; readonly [extra: string]: unknown };
 
 export interface CodexProvenanceEntry {
   artifact: CodexArtifactId;
   baseline:
-    | { kind: "absent" }
-    | { kind: "present"; sha256: string; bytesBase64: string };
+    | { kind: "absent"; readonly [extra: string]: unknown }
+    | { kind: "present"; sha256: string; bytesBase64: string;
+        readonly [extra: string]: unknown };
   /** Hash of what WE wrote. null when the write did not complete. */
   postImage: string | null;
   txId: string;
@@ -254,6 +257,67 @@ export interface CommitExpectation {
   readonly nativeAfter: number;
   /** Identifies the commit that performed the bump. */
   readonly txId: string;
+}
+
+/** The authoritative pair and history schedule stored under canonical CODEX_HOME. */
+export interface CodexTransitionVersion {
+  readonly nativeGeneration: number;
+  readonly currentTxId: string | null;
+}
+
+export interface CodexTransitionState extends CodexTransitionVersion {
+  readonly history: CodexHistoryState;
+  readonly historySchedule: null | Readonly<{
+    direction: "apply" | "remove";
+    authoritySnapshotId: string;
+  }>;
+}
+
+export type TransitionStateRead =
+  | { kind: "ready"; state: CodexTransitionState }
+  | { kind: "legacy-ambiguous"; message: string }
+  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
+
+export type TransitionStateUpdate =
+  | { kind: "updated"; state: CodexTransitionState }
+  | { kind: "conflict"; current: CodexTransitionState }
+  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
+
+export interface BeginCodexTransitionNext {
+  readonly txId: string;
+  readonly direction: "apply" | "remove";
+  readonly authoritySnapshotId: string;
+  readonly nextRetryAt: string;
+}
+
+export type BeginCodexTransition = (
+  expected: CodexTransitionVersion,
+  next: BeginCodexTransitionNext,
+) => TransitionStateUpdate;
+
+export type ReadCodexTransitionState = () => TransitionStateRead;
+
+export type UpdateCodexHistoryTransition = (
+  expected: CodexTransitionVersion,
+  history: CodexHistoryState,
+) => TransitionStateUpdate;
+
+/**
+ * A coordinator transaction never exposes its SQLite connection. The runtime
+ * owner adds a private brand so only its one-shot factory can create one.
+ */
+export interface CodexCoordinatorTransaction {
+  readonly beginTransition: BeginCodexTransition;
+}
+
+export interface CodexCoordinatorTransactionController {
+  readonly capability: CodexCoordinatorTransaction;
+  expectation(): CommitExpectation;
+  assertPublished(expectation: CommitExpectation): void;
+  assertStablePath(): void;
+  commit(): void;
+  rollback(): void;
+  close(): void;
 }
 
 /** The minimal, working WP8b/WP9 snapshot; it authorizes catalog work only. */

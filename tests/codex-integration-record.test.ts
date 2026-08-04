@@ -6,7 +6,11 @@ import {
   readIntegrationRecord,
   updateIntegrationRecord,
 } from "../src/codex/integration-record";
-import type { CodexIntegrationRecord } from "../src/codex/convergence-types";
+import type {
+  CodexArtifactId,
+  CodexIntegrationRecord,
+  CodexProvenanceEntry,
+} from "../src/codex/convergence-types";
 
 let opencodexHome = "";
 let previousOpencodexHome: string | undefined;
@@ -22,6 +26,26 @@ function writeRecord(value: unknown): void {
 
 function persistedRecord(): Record<string, unknown> {
   return JSON.parse(readFileSync(integrationRecordPath(), "utf8")) as Record<string, unknown>;
+}
+
+function knownArtifactFields(artifact: CodexArtifactId): CodexArtifactId {
+  switch (artifact.kind) {
+    case "config":
+    case "generated-profile":
+    case "models-cache":
+    case "injection-journal":
+      return { kind: artifact.kind };
+    case "active-catalog":
+      return { kind: artifact.kind, canonicalPath: artifact.canonicalPath };
+    case "catalog-backup":
+      return { kind: artifact.kind, form: artifact.form, canonicalPath: artifact.canonicalPath };
+    case "history-row":
+    case "history-manifest-entry":
+      return { kind: artifact.kind, stateDbId: artifact.stateDbId, threadId: artifact.threadId };
+    case "history-manifest":
+    case "history-rollout":
+      return { kind: artifact.kind, stateDbId: artifact.stateDbId, canonicalPath: artifact.canonicalPath };
+  }
 }
 
 beforeEach(() => {
@@ -47,34 +71,38 @@ describe("Codex integration record", () => {
   });
 
   test("preserves future keys at record, ledger, entry, artifact, and both baseline levels", () => {
+    const artifacts: CodexArtifactId[] = [
+      { kind: "config", futureArtifact: { owner: "future-config" } },
+      { kind: "generated-profile", futureArtifact: { owner: "future-profile" } },
+      { kind: "active-catalog", canonicalPath: "/catalog", futureArtifact: { owner: "future-catalog" } },
+      { kind: "catalog-backup", form: "hashed", canonicalPath: "/backup", futureArtifact: { owner: "future-backup" } },
+      { kind: "models-cache", futureArtifact: { owner: "future-cache" } },
+      { kind: "injection-journal", futureArtifact: { owner: "future-journal" } },
+      { kind: "history-row", stateDbId: "db-row", threadId: "thread-row", futureArtifact: { owner: "future-row" } },
+      { kind: "history-manifest", stateDbId: "db-manifest", canonicalPath: "/manifest", futureArtifact: { owner: "future-manifest" } },
+      { kind: "history-manifest-entry", stateDbId: "db-entry", threadId: "thread-entry", futureArtifact: { owner: "future-entry" } },
+      { kind: "history-rollout", stateDbId: "db-rollout", canonicalPath: "/rollout", futureArtifact: { owner: "future-rollout" } },
+    ];
     writeRecord({
       version: 1,
       futureRecord: { mode: "newer" },
       provenance: {
         futureLedger: ["keep"],
-        entries: [
-          {
-            artifact: { kind: "config", futureArtifact: { owner: "future-config" } },
-            baseline: { kind: "absent", futureAbsentBaseline: 17 },
-            postImage: "old-config-post-image",
-            txId: "tx-config",
-            at: "2026-08-04T00:00:00.000Z",
-            futureEntry: { evidence: true },
-          },
-          {
-            artifact: { kind: "generated-profile", futureArtifact: { owner: "future-profile" } },
-            baseline: {
-              kind: "present",
-              sha256: "baseline-sha",
-              bytesBase64: "YmFzZWxpbmU=",
-              futurePresentBaseline: { codec: 2 },
-            },
-            postImage: "old-profile-post-image",
-            txId: "tx-profile",
-            at: "2026-08-04T00:00:01.000Z",
-            futureEntry: { evidence: false },
-          },
-        ],
+        entries: artifacts.map((artifact, index): CodexProvenanceEntry => ({
+          artifact,
+          baseline: index % 2 === 0
+            ? { kind: "absent", futureAbsentBaseline: index }
+            : {
+                kind: "present",
+                sha256: `baseline-sha-${index}`,
+                bytesBase64: "YmFzZWxpbmU=",
+                futurePresentBaseline: { codec: index },
+              },
+          postImage: `old-post-image-${index}`,
+          txId: `tx-${index}`,
+          at: `2026-08-04T00:00:${String(index).padStart(2, "0")}.000Z`,
+          futureEntry: { evidence: index },
+        })),
       },
     });
 
@@ -82,7 +110,7 @@ describe("Codex integration record", () => {
       version: 1,
       provenance: {
         entries: record.provenance!.entries.map((entry, index) => ({
-          artifact: { kind: entry.artifact.kind } as typeof entry.artifact,
+          artifact: knownArtifactFields(entry.artifact),
           baseline: entry.baseline.kind === "absent"
             ? { kind: "absent" }
             : {
@@ -103,16 +131,18 @@ describe("Codex integration record", () => {
     const ledger = saved.provenance as Record<string, unknown>;
     expect(ledger.futureLedger).toEqual(["keep"]);
     const entries = ledger.entries as Array<Record<string, unknown>>;
-    expect(entries[0]!.futureEntry).toEqual({ evidence: true });
-    expect(entries[1]!.futureEntry).toEqual({ evidence: false });
-    expect((entries[0]!.artifact as Record<string, unknown>).futureArtifact)
-      .toEqual({ owner: "future-config" });
-    expect((entries[1]!.artifact as Record<string, unknown>).futureArtifact)
-      .toEqual({ owner: "future-profile" });
-    expect((entries[0]!.baseline as Record<string, unknown>).futureAbsentBaseline).toBe(17);
+    expect(entries.map(entry => entry.futureEntry)).toEqual(
+      artifacts.map((_, index) => ({ evidence: index })),
+    );
+    expect(entries.map(entry => (entry.artifact as Record<string, unknown>).futureArtifact)).toEqual(
+      artifacts.map(artifact => artifact.futureArtifact),
+    );
+    expect((entries[0]!.baseline as Record<string, unknown>).futureAbsentBaseline).toBe(0);
     expect((entries[1]!.baseline as Record<string, unknown>).futurePresentBaseline)
-      .toEqual({ codec: 2 });
-    expect(entries.map(entry => entry.postImage)).toEqual(["new-post-image-0", "new-post-image-1"]);
+      .toEqual({ codec: 1 });
+    expect(entries.map(entry => entry.postImage)).toEqual(
+      artifacts.map((_, index) => `new-post-image-${index}`),
+    );
   });
 
   test("fails closed on unparseable bytes without invoking the mutator or resetting the file", () => {
@@ -133,10 +163,26 @@ describe("Codex integration record", () => {
     expect(readFileSync(integrationRecordPath(), "utf8")).toBe("{ definitely-not-json");
   });
 
-  test("creates the minimal v1 record when the file is missing", () => {
-    const result = updateIntegrationRecord(record => record);
+  test("creates the minimal v1 record on the first provenance write", () => {
+    const firstEntry: CodexProvenanceEntry = {
+      artifact: { kind: "config" },
+      baseline: { kind: "absent" },
+      postImage: "first-post-image",
+      txId: "tx-first",
+      at: "2026-08-04T00:00:00.000Z",
+    };
+    const result = updateIntegrationRecord(record => ({
+      ...record,
+      provenance: { entries: [firstEntry] },
+    }));
 
-    expect(result).toEqual({ kind: "updated", record: { version: 1 } });
-    expect(persistedRecord()).toEqual({ version: 1 });
+    expect(result).toEqual({
+      kind: "updated",
+      record: { version: 1, provenance: { entries: [firstEntry] } },
+    });
+    expect(persistedRecord()).toEqual({
+      version: 1,
+      provenance: { entries: [firstEntry] },
+    });
   });
 });
