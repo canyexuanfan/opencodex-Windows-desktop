@@ -481,6 +481,24 @@ describe("kiro oauth — import-first", () => {
     expect(cred.accountId).toBe(sqliteArn);
   });
 
+  test("a session switch between the SQLite read and whoami discards whoami's ARN (#993)", async () => {
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA", refresh_token: "rt-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        // Another process switches the active CLI session mid-flight.
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB", refresh_token: "rt-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    // Account A's token must never carry account B's ARN.
+    expect(cred.accountId).toBeUndefined();
+    expect(cred.kiro?.profileArn).toBeUndefined();
+  });
+
   test("invalid recovery data names the file the operator must remove", async () => {
     seedKiroCliDb({ access_token: "aoa-prior", refresh_token: "rt-prior" });
     writeFileSync(kiroCliRecoveryPath(), "not a recovery database", { mode: 0o600 });

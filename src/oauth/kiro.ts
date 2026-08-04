@@ -275,7 +275,20 @@ async function oauthCredentialFromImported(
   runner: KiroCliRunner,
   signal?: AbortSignal,
 ): Promise<OAuthCredentials> {
-  const identity = imported.source === "sqlite" ? await readKiroCliIdentity(runner, signal) : {};
+  let identity: { email?: string; profileArn?: string } = {};
+  if (imported.source === "sqlite") {
+    identity = await readKiroCliIdentity(runner, signal);
+    // Session-switch race (#993 review): another process may have switched the
+    // active Kiro CLI session between the SQLite read and whoami. Accept
+    // whoami's identity only when the session token STILL matches the import —
+    // refresh token, or access token when refresh is absent.
+    if (identity.profileArn !== undefined) {
+      const current = readKiroCliSqliteCredential();
+      const importedKey = imported.refresh || imported.access;
+      const currentKey = current ? current.refresh || current.access : "";
+      if (!current || currentKey !== importedKey) identity = {};
+    }
+  }
   // Builder ID imports often lack a profileArn in SQLite; whoami against the
   // SAME active CLI session can supply it (#993). Imported stays authoritative.
   const resolvedProfileArn = imported.profileArn ?? identity.profileArn;
