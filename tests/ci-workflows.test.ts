@@ -694,7 +694,14 @@ describe("GitHub Actions hardening", () => {
     return { workflow, jobs, steps: steps!, allSteps, script };
   }
 
-  const SCRIPT_LOAD = ["require", "require", "require"] as const;
+  const SCRIPT_LOAD = [
+    "require",
+    "require",
+    "require",
+    "require",
+    "require",
+    "require",
+  ] as const;
 
   /** Reads every allowed-base PR performs before any enforcement writes. */
   function readsAllowedBase(tail: string[] = []): string[] {
@@ -1007,11 +1014,14 @@ describe("GitHub Actions hardening", () => {
       return found;
     }
 
-    // Five `pulls.update` sites: the maintainer checklist retirement and the
-    // checklist injection (body only), plus the prefix add, the stale-prefix
-    // strip, and the restore-half strip. `base` and `state` are accepted by
-    // this endpoint and none of them belong anywhere here.
+    // Seven `pulls.update` sites: the maintainer checklist retirement, the
+    // checklist injection, the head-drift reset, and the claim-check uncheck
+    // (body only), plus the prefix add, the stale-prefix strip, and the
+    // restore-half strip. `base` and `state` are accepted by this endpoint
+    // and none of them belong anywhere here.
     expect(callArgs("github.rest.pulls.update")).toEqual([
+      ["body", "owner", "pull_number", "repo"],
+      ["body", "owner", "pull_number", "repo"],
       ["body", "owner", "pull_number", "repo"],
       ["body", "owner", "pull_number", "repo"],
       ["owner", "pull_number", "repo", "title"],
@@ -1045,7 +1055,9 @@ describe("GitHub Actions hardening", () => {
           !name.endsWith(".list") &&
           !name.endsWith(".listComments") &&
           name !== "github.rest.repos.getCollaboratorPermissionLevel" &&
-          name !== "github.rest.repos.compareCommitsWithBasehead",
+          name !== "github.rest.repos.compareCommitsWithBasehead" &&
+          // The claim check reads check-runs; it must never count as a write.
+          name !== "github.rest.checks.listForRef",
       );
     expect([...new Set(restWrites)].sort()).toEqual([
       "github.rest.issues.createComment",
@@ -1282,6 +1294,7 @@ describe("GitHub Actions hardening", () => {
       // No prior enforcer history: the checklist completion alone lifts the
       // draft and notifies the maintainers from MAINTAINERS.md.
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "graphql",
         "issues.createComment",
       ]));
@@ -1292,6 +1305,570 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain("Maintainers notified: @lidge-jun @Ingwannu @Wibias");
       expect(readinessBody).toContain('"maintainersPinged":true');
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("completing the checklist records the head it was completed on", async () => {
+      // A pre-binding v1 state has no recorded SHA. Completion on the current
+      // head binds forward instead of resetting, so a checklist that was
+      // completed before this feature exists does not draft every already-ready
+      // PR on the first run after the upgrade.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 1,
+          autoDraftedByBot: true,
+          maintainersPinged: true,
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const readinessBody = lastReadinessCommentBody(result);
+      // The completion is bound to the exact head that was reviewed.
+      expect(readinessBody).toContain(
+        '"completedAtHeadSha":"3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b"',
+      );
+      // A migrated v1 state is rewritten at the current version.
+      expect(readinessBody).toContain('"version":2');
+      expect(readinessBody).toContain("Completed against head `3f1c0de`");
+      // Already pinged before the upgrade: no second notification.
+      expect(readinessBody).toContain('"maintainersPinged":true');
+      expect(readinessBody).not.toContain("Maintainers notified");
+    });
+
+    test("new commits after checklist completion re-draft, reset the checklist, and clear the notification state", async () => {
+      // The reviewer's gap: a completed checklist is an attestation about a
+      // specific head. When new commits land, the attestation no longer covers
+      // the code under review, so the gate resets the boxes and the maintainer
+      // ping, converts the PR back to a draft, and tells the author to
+      // re-test and re-tick on the latest code.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: "1111111111111111111111111111111111111111",
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [resetBody] = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(resetBody.body).toContain(CHECKLIST_START);
+      expect(resetBody.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(resetBody.body).toContain("- [ ] My PR is ready for review.");
+      expect(resetBody.body).not.toContain("- [x]");
+
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
+
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).toContain(
+        "New commits were pushed after the checklist was completed on `1111111`",
+      );
+      expect(readinessBody).toContain(
+        "The checklist has been reset: re-test against the latest code and tick all four boxes again.",
+      );
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a checklist completed on the current head is not reset on a rerun", async () => {
+      // Same head, same boxes, already notified: the rerun is a no-op apart
+      // from refreshing the readiness message. No re-draft, no body rewrite,
+      // no second maintainer ping.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "issues.updateComment",
+      ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(callsTo(result, "graphql")).toEqual([]);
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("**4/4** boxes ticked");
+      expect(readinessBody).toContain(
+        '"completedAtHeadSha":"3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b"',
+      );
+      expect(readinessBody).toContain('"maintainersPinged":true');
+      expect(readinessBody).not.toContain("Maintainers notified");
+    });
+
+    test("new commits after completion still enforce quality failures", async () => {
+      // The head-drift reset folds into the existing failure path instead of
+      // short-circuiting it: a PR that drifted onto a wrong base is drafted,
+      // the checklist resets, AND the wrong-base gate still fails closed with
+      // its title prefix and explanation.
+      const result = await run({
+        pr: {
+          base: { ref: "main" },
+          draft: false,
+          title: "Add a thing",
+          body: readinessChecklistBody(4),
+        },
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: "1111111111111111111111111111111111111111",
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsWrongBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.updateComment",
+        "issues.createComment",
+        "pulls.update",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+        "issues.updateComment",
+        "issues.updateComment",
+      ]));
+      expect(lastEnforcerCommentBody(result)).toContain("Wrong target branch");
+      expect(lastEnforcerCommentBody(result)).toContain("[WRONG BRANCH]");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(true);
+
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain(
+        "New commits were pushed after the checklist was completed",
+      );
+    });
+
+    test("a completion whose ticks predate the live head is rejected and reset", async () => {
+      // A push raced the `edited` job: the event saw the older head the boxes
+      // were ticked against, but the live head is newer. Binding the
+      // completion to the live head would attest code the author never ticked
+      // against, so the gate rejects the completion, resets the boxes, and
+      // re-drafts instead of sliding the attestation forward.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        eventPayload: {
+          head: { sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "The checklist was ticked before the current head `3f1c0de` was pushed.",
+      );
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).not.toContain("Maintainers notified");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a synchronize event does not inherit an unrecorded complete checklist", async () => {
+      // The boxes were ticked on head A, but the edited job has not yet
+      // persisted completedAtHeadSha. A synchronize for head B must not
+      // mark B ready with A's attestation; it must reset and re-draft.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        eventAction: "synchronize",
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "A complete checklist was found on a synchronize event with no recorded completion head",
+      );
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).not.toContain("Maintainers notified");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a complete checklist with red CI unchecks the CI box and re-drafts", async () => {
+      // The author ticked every box, but the head's `ci` check is red. The
+      // gate checks the CI claim itself and unticked the CI box instead of
+      // letting a false attestation lift the draft.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        checkRuns: [{ name: "ci", status: "completed", conclusion: "failure" }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      // Only the CI box is unticked; the other three stay checked.
+      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(bodyUpdate.body).toContain("- [x] I pushed my PR to the latest dev commit.");
+      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "GitHub CI is not green on the current head `3f1c0de`; the **CI green** box has been unticked.",
+      );
+      expect(readinessBody).toContain("**3/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a complete checklist more than 10 commits behind dev unchecks the latest-dev box and re-drafts", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        compareByBasehead: {
+          "dev...3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b": { ahead_by: 0, behind_by: 11 },
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      // Only the latest-dev box is unticked; CI stays checked.
+      expect(bodyUpdate.body).toContain("- [x] All CI tests are green on my local testing.");
+      expect(bodyUpdate.body).toContain("- [ ] I pushed my PR to the latest dev commit.");
+      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "The PR is more than 10 commits behind `dev`; the **latest dev** box has been unticked.",
+      );
+      expect(readinessBody).toContain("**3/4** boxes ticked");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a complete checklist with red CI and a stale dev base unchecks both boxes", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        checkRuns: [{ name: "ci", status: "completed", conclusion: "failure" }],
+        compareByBasehead: {
+          "dev...3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b": { ahead_by: 0, behind_by: 42 },
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(bodyUpdate.body).toContain("- [ ] I pushed my PR to the latest dev commit.");
+      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("GitHub CI is not green on the current head");
+      expect(readinessBody).toContain("more than 10 commits behind `dev`");
+      expect(readinessBody).toContain("**2/4** boxes ticked");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a checks lookup failure fails closed for the CI claim", async () => {
+      // Cannot verify CI: the claim is unverifiable, so the box is unticked
+      // and the PR stays a draft rather than riding on missing evidence.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        failOn: ["checks.listForRef"],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(bodyUpdate.body).toContain("- [x] I pushed my PR to the latest dev commit.");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("GitHub CI is not green on the current head");
+      expect(result.warnings.some(w => w.includes("Could not list checks for the readiness claim check"))).toBe(true);
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a head exactly 10 commits behind dev keeps the latest-dev box", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        compareByBasehead: {
+          "dev...3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b": { ahead_by: 0, behind_by: 10 },
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "graphql",
+        "issues.createComment",
+      ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("markPullRequestReadyForReview");
+    });
+
+    test("a head with no ci check at all keeps the CI box (docs-only style PRs)", async () => {
+      // No CI run exists for this head: there is nothing to contradict the
+      // author's claim, so the CI box survives.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        checkRuns: [],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "graphql",
+        "issues.createComment",
+      ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts[0]!.query).toContain("markPullRequestReadyForReview");
+    });
+
+    test("a pending ci check cannot attest green", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        checkRuns: [{ name: "ci", status: "in_progress", conclusion: null }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("GitHub CI is not green on the current head");
+    });
+
+    test("a completion recorded while quality gates fail still binds the head", async () => {
+      // The mustDraft failure path returns before the completion block, so
+      // without an explicit record the checklist would stay unbound while a
+      // quality gate is red — the author could push un-attested code and have
+      // the newest head bound to the old attestation once the gate clears.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          title: "GUI: fix provider list spacing",
+          body: readinessChecklistBody(4),
+        },
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "issues.createComment",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+        "issues.updateComment",
+        "issues.createComment",
+      ]));
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(true);
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        '"completedAtHeadSha":"3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b"',
+      );
+      expect(readinessBody).toContain('"version":2');
+      expect(readinessBody).toContain(
+        "**All four boxes are ticked.** This PR still stays in draft until the issues above are resolved.",
+      );
+    });
+
+    test("a stale recorded head with an already-open checklist still recovers the reset state", async () => {
+      // Partial-reset window: the body update succeeded but the readiness
+      // comment failed, leaving unticked boxes with the old completion head
+      // and ping flag. The stale-record detection must not depend on the
+      // boxes being ticked, or the next completion would be reset one extra
+      // cycle and the ping would silently survive.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(0),
+        },
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: "1111111111111111111111111111111111111111",
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "issues.updateComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      // No body rewrite: the boxes are already unticked from the failed reset.
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).toContain(
+        "New commits were pushed after the checklist was completed on `1111111`",
+      );
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("a stale event on a never-completed checklist does not wipe bot state or post a reset notice", async () => {
+      // `ticksPredateLiveHead` must only fire for an actual completion. A
+      // stale event on an open checklist has nothing to reset: posting the
+      // notice would be noise, and replacing the stored state would drop the
+      // bot's draft-ownership record (`autoDraftedByBot`).
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(1),
+        },
+        eventPayload: {
+          head: { sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        },
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: true,
+          maintainersPinged: false,
+        })],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "issues.updateComment",
+      ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      expect(callsTo(result, "graphql")).toEqual([]);
+      const readinessBody = lastReadinessCommentBody(result);
+      // Ownership is preserved and no reset was performed or announced.
+      expect(readinessBody).toContain('"autoDraftedByBot":true');
+      expect(readinessBody).not.toContain('"completedAtHeadSha"');
+      expect(readinessBody).not.toContain("ticked before the current head");
+      expect(readinessBody).not.toContain("has been reset");
     });
 
     test("an empty PR cannot be laundered into ready by ticking the injected boxes", async () => {
@@ -1467,6 +2044,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "graphql",
         "issues.updateComment",
         "issues.createComment",
@@ -1727,6 +2305,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "graphql",
         "issues.updateComment",
         "issues.createComment",
@@ -1787,6 +2366,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "pulls.update",
         "graphql",
         "issues.updateComment",
@@ -2101,6 +2681,7 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "pulls.update",
         "graphql",
         "issues.updateComment",
@@ -2252,6 +2833,7 @@ describe("GitHub Actions hardening", () => {
       // created comment is the readiness checklist message, which did not
       // exist on the busy PR yet.
       expect(methodsOf(result)).toEqual(readsAllowedBasePaged([
+        "checks.listForRef",
         "pulls.update",
         "graphql",
         "issues.updateComment",
@@ -2376,6 +2958,7 @@ describe("GitHub Actions hardening", () => {
 
       expect(callsTo(result, "pulls.update")).toEqual([]);
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "graphql",
         "issues.updateComment",
         "issues.createComment",
@@ -2469,6 +3052,7 @@ describe("GitHub Actions hardening", () => {
           comments: [botComment(active)],
         });
         expect(methodsOf(restored)).toEqual(readsAllowedBase([
+          "checks.listForRef",
           "pulls.update",
           "graphql",
           "issues.updateComment",
@@ -2528,6 +3112,7 @@ describe("GitHub Actions hardening", () => {
         comments: [botComment({ version: 1, active: "true", autoDraftedByBot: 1, titlePrefixedByBot: "yes" })],
       });
       expect(methodsOf(loose)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "pulls.update",
         "graphql",
         "issues.updateComment",
@@ -2549,6 +3134,7 @@ describe("GitHub Actions hardening", () => {
         comments: [botComment({ version: 1, active: true, autoDraftedByBot: null, titlePrefixedByBot: 0 })],
       });
       expect(methodsOf(falsy)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "graphql",
         "issues.updateComment",
         "issues.createComment",
@@ -2742,6 +3328,7 @@ describe("GitHub Actions hardening", () => {
       // The first comment's state is the one honoured: it says the bot
       // prefixed and drafted, so both are undone.
       expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "checks.listForRef",
         "pulls.update",
         "graphql",
         "issues.updateComment",
@@ -3040,9 +3627,18 @@ describe("GitHub Actions hardening", () => {
     expect(script).toMatch(/checklistComplete = readiness\.present && readiness\.complete/);
     expect(script).toMatch(/Maintainers notified:/);
     expect(script).toMatch(/maintainersPinged\s*=\s*true/);
-    expect(script).toMatch(/READINESS_MARKER = "<!-- pr-quality-readiness -->"/);
     expect(script).toMatch(/readMaintainerLogins\(\)/);
     expect(script).toMatch(/fs\.readFileSync/);
+
+    // The readiness marker and the state serializers live in the shared
+    // modules the script loads; the script itself must import and use them.
+    const messagesModule = await readText(
+      ".github/scripts/pr-quality-messages.cjs",
+    );
+    expect(messagesModule).toMatch(
+      /READINESS_MARKER = "<!-- pr-quality-readiness -->"/,
+    );
+    expect(script).toMatch(/pr-quality-messages\.cjs/);
 
     // Pending ownership is written before mutations; convertToDraft runs next;
     // a later upsertComment records autoDraftedByBot only after success (#631).

@@ -32,6 +32,16 @@ const REVIEW_READINESS_ITEMS = [
 ];
 
 /**
+ * Which checklist box each bot-verifiable claim maps to. The order must stay
+ * in sync with REVIEW_READINESS_ITEMS: index 0 is the CI claim and index 1 is
+ * the latest-dev claim.
+ */
+const REVIEW_READINESS_CLAIM_INDEX = {
+  ci_green: 0,
+  latest_dev: 1
+};
+
+/**
  * Exact instruction / checklist lines from `.github/PULL_REQUEST_TEMPLATE.md`.
  * Untouched templates must not count as substance.
  */
@@ -320,6 +330,79 @@ function stripReviewReadinessSection(body) {
   return stripped.replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
+/**
+ * Replace the bot-managed readiness section with a fresh unticked copy.
+ * Used when new commits land after the checklist was completed: the old
+ * attestation covered a different head, so every box resets and the author
+ * must re-tick against the latest code. Malformed marker sets (duplicates,
+ * extra pairs) stay untouched, matching `stripReviewReadinessSection`.
+ */
+
+/**
+ * Untick only the given 0-based checklist boxes inside the bot-managed
+ * section, leaving every other box and the surrounding body byte-for-byte
+ * unchanged. Used when the gate's own claim check disproves a ticked box
+ * (CI not green, head too far behind dev): the false claim is removed while
+ * the still-true boxes survive. Malformed marker sets stay untouched.
+ */
+function uncheckReviewReadinessBoxes(body, indexes) {
+  if (typeof body !== "string") return body;
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) return body;
+  if (
+    body.split(REVIEW_READINESS_START).length - 1 !== 1 ||
+    body.split(REVIEW_READINESS_END).length - 1 !== 1
+  ) {
+    return body;
+  }
+  const wanted = new Set(indexes);
+  let boxIndex = 0;
+  const section = body.slice(
+    start + REVIEW_READINESS_START.length,
+    end
+  );
+  const updatedSection = section.replace(
+    /^([ \t]*[-*]\s+)\[([ xX])\](?=\s)/gm,
+    (match, lead, mark) => {
+      const current = boxIndex;
+      boxIndex += 1;
+      if (wanted.has(current) && mark !== " ") {
+        return lead + "[ ]";
+      }
+      return match;
+    }
+  );
+  if (updatedSection === section) return body;
+  return (
+    body.slice(0, start + REVIEW_READINESS_START.length) +
+    updatedSection +
+    body.slice(end)
+  );
+}
+
+function resetReviewReadinessSection(body) {
+  if (typeof body !== "string") return body;
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) return body;
+  if (
+    body.split(REVIEW_READINESS_START).length - 1 !== 1 ||
+    body.split(REVIEW_READINESS_END).length - 1 !== 1
+  ) {
+    return body;
+  }
+  const section = buildReviewReadinessSection();
+  // Splice only the bounded section: the author's surrounding content —
+  // including deliberate blank lines and trailing markdown — stays byte for
+  // byte identical to what they wrote.
+  return (
+    body.slice(0, start) +
+    section +
+    body.slice(end + REVIEW_READINESS_END.length)
+  );
+}
+
 function collectPrQualityFailures({
   baseRef,
   allowedBases,
@@ -389,6 +472,9 @@ module.exports = {
   extractReviewReadiness,
   appendReviewReadinessSection,
   stripReviewReadinessSection,
+  REVIEW_READINESS_CLAIM_INDEX,
+  uncheckReviewReadinessBoxes,
+  resetReviewReadinessSection,
   collectPrQualityFailures,
   hasEscapedNewlines,
   stripPrTemplateBoilerplate,

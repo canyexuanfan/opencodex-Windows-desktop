@@ -46,9 +46,16 @@ tells you exactly what to change:
   commit, all correct Codex and CodeRabbit findings fixed, and the
   ready-for-review confirmation. Once every box is ticked the check marks the
   PR ready for review and notifies the maintainers listed in `MAINTAINERS.md`
-  (excluding the author). A retarget to `dev` clears the wrong-branch message
-  automatically and is remembered by the gate; the draft stays until the
-  checklist is complete.
+  (excluding the author). Completion is bound to the exact commit the PR head
+  pointed at: if new commits are pushed afterwards, the gate moves the PR back
+  to draft, resets the checklist and the maintainer notification, and asks you
+  to test and tick the boxes again against the latest code. A retarget to
+  `dev` clears the wrong-branch message automatically and is remembered by the
+  gate; the draft stays until the checklist is complete.
+  Before a completion is accepted, the gate verifies the two checklist claims
+  it can check itself: the head's `ci` check must be green, and the branch
+  must be on the latest `dev` commit or at most 10 commits behind it. A
+  disproved claim unticks the matching box and keeps the PR a draft.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a
