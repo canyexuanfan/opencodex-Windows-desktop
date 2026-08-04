@@ -853,6 +853,7 @@ async function applyFinalRouteRequestNormalization(args: {
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
+  logCtx.routeDecision = route.routeDecision;
 
   if (websocketUpstreamStreaming === false) {
     parsed.stream = false;
@@ -1444,6 +1445,7 @@ async function handleResponsesInner(
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
       try {
         route = routeModel(config, fallback.to);
+        logCtx.routeDecision = route.routeDecision;
       } catch (err) {
         if (err instanceof NoAvailableComboTargetsError) {
           return comboUnavailableResponse(err.message);

@@ -8,6 +8,7 @@ import {
 import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
 import { readCodexCatalogPath } from "../codex/catalog";
 import type { OcxUsage } from "../types";
+import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
 import type { AdapterRequest } from "../adapters/base";
 import { redactSecretString } from "../lib/redact";
 import {
@@ -96,6 +97,8 @@ export interface RequestLogContext {
   affinity?: "reused" | "new_bind" | "rebound" | "cleared";
   transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
   terminalSource?: "upstream" | "synthetic";
+  /** Bounded route-decision trace (RI-01); never contains secrets. */
+  routeDecision?: RouteDecisionTraceV1;
 }
 
 export interface RequestLogEntry {
@@ -147,6 +150,8 @@ export interface RequestLogEntry {
   transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
   /** Whether the terminal came from a real upstream SSE event or a proxy synthetic tail. */
   terminalSource?: "upstream" | "synthetic";
+  /** Bounded route-decision trace (RI-01); never contains secrets. */
+  routeDecision?: RouteDecisionTraceV1;
 }
 
 const requestLog: RequestLogEntry[] = [];
@@ -247,7 +252,18 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     ...(entry.usage ? { usage: entry.usage } : {}),
     ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
     ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
+    ...(entry.routeDecision
+      ? { routeDecision: normalizeRouteDecisionTraceForLog(entry.routeDecision) }
+      : {}),
   };
+}
+
+/**
+ * Hydration guard: persisted traces are re-normalized before they enter the
+ * in-memory ring buffer so a hand-edited or corrupt row cannot poison the DTO.
+ */
+function normalizeRouteDecisionTraceForLog(entry: RouteDecisionTraceV1): RouteDecisionTraceV1 {
+  return normalizeRouteDecisionTrace(entry) ?? entry;
 }
 
 /**
@@ -330,6 +346,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
       ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
       ...failureDiagnostics,
+      ...(entry.routeDecision ? { routeDecision: entry.routeDecision } : {}),
     });
   } catch {
     /* request logging must never fail a user request */
@@ -817,6 +834,7 @@ export function addFinalRequestLog(
     ...(logCtx.affinity ? { affinity: logCtx.affinity } : {}),
     ...(logCtx.transportPhase ? { transportPhase: logCtx.transportPhase } : {}),
     ...(logCtx.terminalSource ? { terminalSource: logCtx.terminalSource } : {}),
+    ...(logCtx.routeDecision ? { routeDecision: logCtx.routeDecision } : {}),
   });
   if (isUsageDebugEnabled()) {
     appendUsageDebug({
