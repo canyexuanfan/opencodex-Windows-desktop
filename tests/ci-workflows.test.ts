@@ -1263,6 +1263,81 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
+    test("an empty PR cannot be laundered into ready by ticking the injected boxes", async () => {
+      // The unit tests pin `assessPrDescription` against the injected section.
+      // This pins the sequence that would exploit it end to end, because the
+      // exploit needs two runs and a body the bot itself wrote in between:
+      // open with no description (run one injects), tick the four boxes the
+      // bot just added (run two), and the PR is ready for review with the
+      // author having written nothing at all.
+      const { script } = await readEnforcePrTarget();
+      const injectRun = await runEnforcePrTarget(script, {
+        pr: { base: { ref: "dev" }, draft: false, body: "" },
+        authorPermission: "read",
+      });
+      expect(
+        injectRun.warnings.some(
+          w => w.startsWith("setFailed:") && w.includes("bad description"),
+        ),
+      ).toBe(true);
+
+      // Take the body the bot actually wrote, not a hand-built fixture: the
+      // exploit is only real if the injected text is what gets ticked.
+      const injectedBody = (
+        callsTo(injectRun, "pulls.update") as Array<{ body?: string }>
+      ).find(call => typeof call.body === "string")?.body;
+      expect(injectedBody).toContain(CHECKLIST_START);
+
+      const tickedRun = await runEnforcePrTarget(script, {
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: injectedBody!.replace(/- \[ \]/g, "- [x]"),
+        },
+        authorPermission: "read",
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+      expect(
+        tickedRun.warnings.some(
+          w => w.startsWith("setFailed:") && w.includes("bad description"),
+        ),
+      ).toBe(true);
+      // `markPullRequestReadyForReview` goes out over `graphql`. Four ticked
+      // boxes must not summon it while the description gate is still failing.
+      expect(methodsOf(tickedRun)).not.toContain("graphql");
+    });
+
+    test("the injected checklist does not satisfy the gui screenshot gate", async () => {
+      // Same laundering shape on the screenshot axis: the injected section adds
+      // renderable structure but no image, so a gui-cued contributor PR with a
+      // complete checklist and no screenshot must still fail and stay drafted.
+      const guiBody = [
+        "## Summary",
+        "",
+        "Reworks the gui settings panel so the provider list keeps its scroll",
+        "position when a preset is applied from the sidebar.",
+        "",
+        "## Test plan",
+        "",
+        "`bun run build:gui` — pass; verified by hand in the dashboard.",
+      ].join("\n");
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4, guiBody),
+        },
+        authorPermission: "read",
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+      expect(
+        result.warnings.some(
+          w => w.startsWith("setFailed:") && w.includes("screenshot"),
+        ),
+      ).toBe(true);
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
     test("a maintainer PR drafted during a permission-lookup failure is restored once the lookup recovers", async () => {
       // The permission lookup fails closed: a clean maintainer PR is treated
       // as a contributor PR, gets the checklist and a draft. When the lookup
