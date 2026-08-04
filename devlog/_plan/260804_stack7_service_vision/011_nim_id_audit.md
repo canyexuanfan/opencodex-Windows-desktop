@@ -93,11 +93,20 @@ real model.
 
 ## What this audit demonstrates
 
-The dropped ids are mostly harmless-looking noise — a delisted model classified
-wrongly costs nothing because nobody can route to it. But 32 of 64 entries being
-unverifiable, including a typo'd duplicate, is the measure of how much of #964's
-list was assembled rather than verified. The six reversed entries were the
-visible damage; this is the extent of it.
+Dropping is safe, but not for the reason first written here. A delisted id **is**
+still reachable: `routeModel` accepts an arbitrary namespaced id for a configured
+provider (`src/router.ts:402-421`), the default-provider fallback accepts
+arbitrary ids (`:451-455`), and a stale discovery cache or custom row can surface
+one. The correct statement is narrower: **excluding these ids leaves them at
+today's unclassified behavior even when reached**, since the current `nvidia`
+entry classifies none of them, and a user's own `noVisionModels` entry still
+survives the union merge.
+
+What the drop count measures is provenance. 32 of 64 entries unverifiable —
+including `nvidia/nemotron-nano-3-30b-a3b`, a reversed-name typo of a real id the
+same list also spells correctly — shows how much of #964's list was assembled
+rather than verified. The six reversed entries were the visible damage; this is
+the extent of it.
 
 It also bounds the fix honestly. 26 verified ids is a real fix for real models,
 not a claim about NIM as a whole.

@@ -14,6 +14,10 @@ as superseded.
 | #964 | @Yuxin-Qiao | #956 | NVIDIA NIM text-only models never activate the vision sidecar |
 | #970 | @stephen-drew | — | `ocx update` re-registers the background service from a non-elevated updater |
 
+A third item was added after the roadmap cycle opened, at the user's request:
+renaming `qwen3.8-max-preview` to the now-stable `qwen3.8-max` and replacing its
+reseller-proxy price overlay with Alibaba's published $2/$6 rate (`040`).
+
 Layer 7 is the last layer. After it lands the stack merges bottom-up from #952
 and every issue a landed layer resolves gets closed with its merge commit named.
 
@@ -40,14 +44,17 @@ The overnight unit carried six contributor fixes verbatim with `git cherry-pick 
 because the code was right and only the base was wrong. These two are different:
 each has a design defect that a straight cherry-pick would import.
 
-**#964** classifies NVIDIA NIM models with a hand-written 60-entry allowlist, and
-five entries are backwards: `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
-`moonshotai/kimi-k2.6`, `stepfun-ai/step-3.7-flash`, and
-`mistralai/mistral-medium-3.5-128b` are natively image-capable per NVIDIA's own
-documentation. Listing them makes the proxy substitute another model's text
-description for an image the model could have read — silent quality loss, no
-error. Issue #956's own body carries two of the same errors, so reporter and
-author shared the premise.
+**#964** classifies NVIDIA NIM models with a hand-written ~64-entry allowlist, and
+**six** entries are backwards: `thinkingmachines/inkling`,
+`minimaxai/minimax-m3`, `moonshotai/kimi-k2.6`, `moonshotai/kimi-k2.5`,
+`stepfun-ai/step-3.7-flash`, and `mistralai/mistral-medium-3.5-128b` are natively
+image-capable per NVIDIA's own documentation. Listing them makes the proxy
+substitute another model's text description for an image the model could have
+read — silent quality loss, no error. Issue #956's own body carries two of the
+same errors, so reporter and author shared the premise.
+
+A per-id audit of the whole list (`011`) found only 26 of ~64 entries verifiable
+as text-only; 32 are absent from NVIDIA's current catalog and are dropped.
 
 Two attempts to replace the list *shape* were then falsified at the audit gate
 (`001`, `002`), and the root cause is recorded in `002`: NIM is the first

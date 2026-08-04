@@ -41,12 +41,12 @@ fourth time in this session's line of work that a hand-written allowlist over an
 open string domain has been wrong; the pattern is the finding, not the individual
 entries.
 
-One caveat carried forward: the Mistral Medium 3.5 evidence describes the
-**self-hosted** VLM NIM container, and that documentation explicitly warns not to
-assume a general text endpoint exposes vision. We attach to hosted
-`integrate.api.nvidia.com`. Re-verify against the hosted model page before the id
-lands. Either way it is not confidently text-only, so #964's classification of it
-is unsupported.
+*(Resolved.) The Mistral Medium 3.5 caveat — that the first evidence described a
+**self-hosted** VLM container rather than the hosted endpoint — was closed at the
+round-4 gate. NVIDIA's hosted inference reference targets
+`integrate.api.nvidia.com`, defaults to this exact id, and documents `image_url`
+input, and the Build page reports a free hosted endpoint with Text and Image
+modalities. It ships in the vision set with no pending recheck.
 
 ## Why not classify by name, tag, or API
 
@@ -135,7 +135,7 @@ badly but because it claimed knowledge that does not exist.
    five, so **every carried id is verified against NVIDIA documentation or
    dropped**. Dropping costs today's behavior; assuming costs a silent
    regression.
-2. **Pin the 15 verified vision-capable ids** with explicit
+2. **Pin the 16 verified vision-capable ids** with explicit
    `modelInputModalities: ["text","image"]`, so they become usable instead of
    merely unlisted.
 3. **Leave unknown ids alone.** They keep today's behavior in both directions.
@@ -202,8 +202,9 @@ mistralai/mistral-medium-3.5-128b
 
 Flagged, not yet committed to code:
 
-- `mistralai/mistral-medium-3.5-128b` — hosted-endpoint recheck pending (above);
-  NVIDIA also showed a 2026-08-07 deprecation date.
+- `mistralai/mistral-medium-3.5-128b` — hosted endpoint **confirmed** at the
+  round-4 gate, so it ships. NVIDIA showed a 2026-08-07 deprecation date; when
+  the id goes away it classifies nothing, which is harmless.
 - `nvidia/llama-3.1-nemotron-nano-vl-8b-v1` — catalog indicated imminent
   deprecation; harmless if it disappears (an absent id classifies nothing).
 - `google/paligemma` — established VLM, but its detail page 404s. Excluded from
@@ -220,7 +221,7 @@ Flagged, not yet committed to code:
 Confined to `src/providers/registry.ts`. **No predicate change**, so no consumer
 edits — the reason this draft is implementable where draft 2 was not.
 
-1. `NVIDIA_NIM_VISION_MODELS` — the 15 verified ids, with a comment recording the
+1. `NVIDIA_NIM_VISION_MODELS` — the 16 verified ids, with a comment recording the
    verification date, per-model source, and the standing instruction that a new
    NIM model must be classified deliberately, never assumed.
 2. `NVIDIA_NIM_NO_VISION_MODELS` — **the 26 ids verified in `011_nim_id_audit.md`
@@ -245,10 +246,12 @@ under a predicate change.
 
 Extend `tests/nvidia-nim-hardening.test.ts` (the file #964 also chose):
 
-1. **Vision-capable ids do NOT get the sidecar.** Seed with the five ids #964 got
-   wrong — `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
-   `moonshotai/kimi-k2.6`, `stepfun-ai/step-3.7-flash`,
-   `mistralai/mistral-medium-3.5-128b` — plus the two llama-3.2 vision ids.
+1. **Vision-capable ids do NOT get the sidecar.** Seed with all **six** ids #964
+   got wrong — `thinkingmachines/inkling`, `minimaxai/minimax-m3`,
+   `moonshotai/kimi-k2.6`, **`moonshotai/kimi-k2.5`**,
+   `stepfun-ai/step-3.7-flash`, `mistralai/mistral-medium-3.5-128b` — plus the
+   two llama-3.2 vision ids. k2.5 was the round-3 P0 and must appear in both this
+   test and the emitted-modality test below, not only in the list.
    `planVisionSidecar` returns `undefined` for each even with an image attached.
    This is the direct regression guard for #964's defect. Ablate by adding one
    back to `noVisionModels` and watch it go red.
