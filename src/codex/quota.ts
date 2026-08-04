@@ -323,6 +323,11 @@ export function updateAccountQuota(
   const quota: StoredAccountQuota = {
     ...(existing?.weeklyPercent !== undefined ? { weeklyPercent: existing.weeklyPercent } : {}),
     ...(existing?.monthlyPercent !== undefined ? { monthlyPercent: existing.monthlyPercent } : {}),
+    // Carry provenance with the value it describes. Dropping it here would downgrade a proven
+    // explicit-primary reading to "unproven" on the next unrelated weekly update.
+    ...(existing?.monthlyPercent !== undefined && existing.monthlyIsPrimaryWindow === true
+      ? { monthlyIsPrimaryWindow: true }
+      : {}),
     ...(existing?.weeklyResetAt !== undefined ? { weeklyResetAt: existing.weeklyResetAt } : {}),
     ...(existing?.monthlyResetAt !== undefined ? { monthlyResetAt: existing.monthlyResetAt } : {}),
     ...(existing?.resetCredits !== undefined ? { resetCredits: existing.resetCredits } : {}),
@@ -338,6 +343,10 @@ export function updateAccountQuota(
   if (nextMonthly !== undefined) {
     quota.monthlyPercent = nextMonthly;
     if (nextMonthlyResetAt !== undefined) quota.monthlyResetAt = nextMonthlyResetAt;
+    // A caller-supplied monthly value arrives without window provenance, so it REPLACES the
+    // proven reading and must not inherit its flag — otherwise an unproven number would be
+    // treated as governing evidence.
+    delete quota.monthlyIsPrimaryWindow;
   }
   if (resetCredits !== undefined) quota.resetCredits = resetCredits;
 

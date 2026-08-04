@@ -14,6 +14,7 @@ import {
   isCompleteCodexQuotaRecoverySnapshot,
   parseUsageQuota,
   setAccountQuotaFromParsed,
+  updateAccountQuota,
 } from "../src/codex/quota";
 import upstreamModels from "../src/codex/data/upstream-models.json";
 import {
@@ -404,6 +405,14 @@ describe("Codex cooldown recovery worker", () => {
     expect(parsedMonthly?.monthlyIsPrimaryWindow).toBe(true);
     setAccountQuotaFromParsed("provenance-probe", parsedMonthly);
     expect(getAccountQuota("provenance-probe")?.monthlyIsPrimaryWindow).toBe(true);
+
+    // updateAccountQuota() rebuilds the record too. An unrelated weekly update must not
+    // downgrade a proven reading to unproven, and a caller-supplied monthly value — which
+    // arrives with no window information at all — must not inherit the proof.
+    updateAccountQuota("provenance-probe", 20, 111);
+    expect(getAccountQuota("provenance-probe")?.monthlyIsPrimaryWindow).toBe(true);
+    updateAccountQuota("provenance-probe", undefined, undefined, 44, 222);
+    expect(getAccountQuota("provenance-probe")?.monthlyIsPrimaryWindow).toBeUndefined();
     // Missing EVIDENCE still fails closed — that is the guard that matters.
     expect(isCompleteCodexQuotaRecoverySnapshot({}, "plus")).toBe(false);
     expect(isCompleteCodexQuotaRecoverySnapshot(null, "plus")).toBe(false);
