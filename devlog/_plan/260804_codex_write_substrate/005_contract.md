@@ -986,9 +986,12 @@ Before consulting the in-flight map, gather constructs and recursively freezes o
    credential state, exact resolved API-key or observe-only OAuth access-token bytes
    (or explicit absence), the exact `provider-auth-selection` observation that chose
    an OAuth account/token, and the final discovery method, URL, and normalized header
-   set after transport defaults. Header names are lowercase and sorted; values remain
-   byte-exact inside the keyed input. Forward and local modes are explicit states, not
-   absence;
+   set after transport defaults. Beside it, a detached recursively frozen effective
+   discovery-policy snapshot records the registry-transport match outcome, the exact
+   `url`/`path`/`query` location policy (including explicit absence), the final method
+   and URL, the complete declarative filter, and the clamped `maxResponseBytes` and
+   `maxModels`. Header names are lowercase and sorted; values remain byte-exact inside
+   the keyed input. Forward and local modes are explicit states, not absence;
 3. the exact native-slug/source input. When combo resolution needs native rows, the
    filesystem-evidence owner returns a detached immutable ordered slug/capability
    snapshot and records every consulted active-catalog/cache source, PRESENT or
@@ -1189,6 +1192,8 @@ export interface CatalogGatherAuthorityIdentity {
     readonly snapshotIdentity: string;
   }>;
   readonly authSnapshotIdentity: string;
+  /** HMAC of every result-affecting field in the detached effective discovery policy. */
+  readonly discoveryPolicyIdentity: string;
   readonly nativeCatalogSourceIdentity: string;
   readonly sourceEvidenceIdentity: string;
   readonly processLocalEvidenceIdentity: string;
