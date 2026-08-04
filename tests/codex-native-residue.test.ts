@@ -9,11 +9,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Database } from "bun:sqlite";
 
-import { buildCatalogEntries, syncCatalogModels } from "../src/codex/catalog";
+import {
+  buildCatalogEntries,
+  readCodexCatalogPath,
+  syncCatalogModels,
+} from "../src/codex/catalog";
 import { buildProfileFile } from "../src/codex/inject";
 import { classifyNativeRoutedResidue } from "../src/codex/native-residue";
 import { readCodexTransitionState } from "../src/codex/transition-state";
@@ -234,6 +238,62 @@ test("a routed catalog at the configured nested path refuses coordinator initial
     message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
   });
 });
+
+test("a BOM-prefixed configured catalog refuses coordinator initialization", () => {
+  writeFileSync(
+    pathInCodexHome("config.toml"),
+    '\uFEFFmodel_catalog_json = "bom-catalog.json"\n',
+  );
+  const productionTarget = readCodexCatalogPath();
+  mkdirSync(dirname(productionTarget), { recursive: true });
+  writeFileSync(productionTarget, routedCatalog());
+
+  expect(classifyNativeRoutedResidue()).toEqual({
+    kind: "residue",
+    surface: "catalog",
+    path: productionTarget,
+  });
+  expect(readCodexTransitionState()).toEqual({
+    kind: "legacy-ambiguous",
+    message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+  });
+});
+
+const catalogConfigShapes: Array<{
+  name: string;
+  content: string;
+  strictOnlyTargets?: string[];
+}> = [
+  {
+    name: "quoted key",
+    content: '"model_catalog_json" = "quoted.json"\n',
+    strictOnlyTargets: ["quoted.json"],
+  },
+  { name: "single-quoted value", content: "model_catalog_json = 'single.json'\n" },
+  { name: "BOM prefix", content: '\uFEFFmodel_catalog_json = "bom.json"\n' },
+  { name: "CRLF", content: 'model_catalog_json = "crlf.json"\r\n' },
+  { name: "leading whitespace", content: '  model_catalog_json = "ws.json"\n' },
+  { name: "after table header", content: '[tools]\nmodel_catalog_json = "nested.json"\n' },
+  { name: "trailing comment", content: 'model_catalog_json = "cmt.json" # comment\n' },
+];
+
+for (const shape of catalogConfigShapes) {
+  test(`catalog candidate coverage matches production for ${shape.name}`, () => {
+    writeFileSync(pathInCodexHome("config.toml"), shape.content);
+    for (const target of shape.strictOnlyTargets ?? []) {
+      writeFileSync(pathInCodexHome(target), JSON.stringify({ models: [] }));
+    }
+    const productionTarget = readCodexCatalogPath();
+    mkdirSync(dirname(productionTarget), { recursive: true });
+    writeFileSync(productionTarget, routedCatalog());
+
+    expect(classifyNativeRoutedResidue()).toEqual({
+      kind: "residue",
+      surface: "catalog",
+      path: productionTarget,
+    });
+  });
+}
 
 test("an atomic-write artifact beside the configured catalog is indeterminate", () => {
   const catalogPath = canonicalPathInCodexHome("nested/custom-catalog.json");

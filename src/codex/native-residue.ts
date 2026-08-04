@@ -19,6 +19,7 @@ import {
   CODEX_PROFILE_PATH,
   DEFAULT_CATALOG_PATH,
   getCodexHome,
+  readRootTomlString,
 } from "./paths";
 
 export type NativeResidueSurface =
@@ -168,7 +169,7 @@ function catalogPathKey(path: string): string {
 
 function catalogTargets(
   codexHome: string,
-  configuredPath?: string,
+  configuredPaths: readonly string[] = [],
 ): CatalogTarget[] {
   const targets = new Map<string, CatalogTarget>();
   const add = (path: string, configured: boolean) => {
@@ -176,7 +177,9 @@ function catalogTargets(
     const existing = targets.get(key);
     targets.set(key, { path: resolve(path), configured: configured || existing?.configured === true });
   };
-  if (configuredPath !== undefined) add(resolve(codexHome, configuredPath), true);
+  for (const configuredPath of configuredPaths) {
+    add(resolve(codexHome, configuredPath), true);
+  }
   add(join(codexHome, CATALOG_FILE_NAME), false);
   return [...targets.values()];
 }
@@ -193,38 +196,45 @@ function inspectConfig(codexHome: string, path: string): ConfigObservation {
     };
   }
 
+  const productionConfiguredPath = readRootTomlString(read.content, "model_catalog_json");
+  const productionConfiguredPaths = productionConfiguredPath === null
+    ? []
+    : [productionConfiguredPath];
   let parsed: unknown;
   try {
-    parsed = Bun.TOML.parse(read.content);
+    parsed = Bun.TOML.parse(read.content.replace(/^\uFEFF/, ""));
   } catch (error) {
     return {
       classification: indeterminate("config", read.path, `malformed TOML: ${errorReason(error)}`),
-      catalogTargets: catalogTargets(codexHome),
+      catalogTargets: catalogTargets(codexHome, productionConfiguredPaths),
     };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return {
       classification: indeterminate("config", read.path, "TOML root is not a table"),
-      catalogTargets: catalogTargets(codexHome),
+      catalogTargets: catalogTargets(codexHome, productionConfiguredPaths),
     };
   }
 
   const document = parsed as Record<string, unknown>;
   let targets: CatalogTarget[];
   if (!Object.hasOwn(document, "model_catalog_json")) {
-    targets = catalogTargets(codexHome);
+    targets = catalogTargets(codexHome, productionConfiguredPaths);
   } else if (typeof document.model_catalog_json !== "string" || !document.model_catalog_json.trim()) {
     return {
       classification: indeterminate("config", read.path, "model_catalog_json must be one non-empty string"),
-      catalogTargets: catalogTargets(codexHome),
+      catalogTargets: catalogTargets(codexHome, productionConfiguredPaths),
     };
   } else {
     try {
-      targets = catalogTargets(codexHome, document.model_catalog_json);
+      targets = catalogTargets(codexHome, [
+        ...productionConfiguredPaths,
+        document.model_catalog_json,
+      ]);
     } catch (error) {
       return {
         classification: indeterminate("config", read.path, `model_catalog_json cannot be resolved: ${errorReason(error)}`),
-        catalogTargets: catalogTargets(codexHome),
+        catalogTargets: catalogTargets(codexHome, productionConfiguredPaths),
       };
     }
   }
