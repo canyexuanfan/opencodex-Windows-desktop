@@ -302,26 +302,26 @@ const catalogPathShapes: Array<{
   name: string;
   configuredPath: (outsideRoot: string, leaf: string) => string;
 }> = [
-  { name: "root-relative", configuredPath: (_outsideRoot, leaf) => `${leaf}.json` },
-  { name: "nested-relative", configuredPath: (_outsideRoot, leaf) => `nested/${leaf}.json` },
+  { name: "root-relative", configuredPath: (_outsideRoot, leaf) => leaf },
+  { name: "nested-relative", configuredPath: (_outsideRoot, leaf) => `nested/${leaf}` },
   {
     name: "absolute inside CODEX_HOME",
-    configuredPath: (_outsideRoot, leaf) => canonicalPathInCodexHome(`${leaf}.json`),
+    configuredPath: (_outsideRoot, leaf) => canonicalPathInCodexHome(leaf),
   },
   {
     name: "absolute outside CODEX_HOME",
-    configuredPath: (outsideRoot, leaf) => join(outsideRoot, `${leaf}.json`),
+    configuredPath: (outsideRoot, leaf) => join(outsideRoot, leaf),
   },
   {
     name: "parent-escaping relative",
-    configuredPath: (_outsideRoot, leaf) => `../${basename(codexHome)}-${leaf}.json`,
+    configuredPath: (_outsideRoot, leaf) => `../${basename(codexHome)}-${leaf}`,
   },
 ];
 
 for (const shape of catalogPathShapes) {
   test(`configured catalog classification follows the ${shape.name} path`, () => {
     const outsideRoot = mkdtempSync(join(tmpdir(), "ocx-native-residue-catalog-outside-"));
-    const configuredPath = shape.configuredPath(outsideRoot, `catalog-${randomUUID()}`);
+    const configuredPath = shape.configuredPath(outsideRoot, randomUUID());
     const targetPath = resolve(realpathSync.native(codexHome), configuredPath);
     try {
       mkdirSync(dirname(targetPath), { recursive: true });
@@ -346,6 +346,56 @@ for (const shape of catalogPathShapes) {
       rmSync(targetPath, { force: true });
       rmSync(outsideRoot, { recursive: true, force: true });
     }
+  });
+}
+
+const productionCatalogLeafShapes = [
+  { name: "extensionless", suffix: "" },
+  { name: ".txt", suffix: ".txt" },
+  { name: ".json5", suffix: ".json5" },
+  { name: "trailing dot", suffix: "." },
+  { name: "uppercase .JSON", suffix: ".JSON" },
+] as const;
+
+for (const shape of productionCatalogLeafShapes) {
+  const configuredLeaf = `${randomUUID()}${shape.suffix}`;
+  test(`production writer routes the ${shape.name} configured catalog ${configuredLeaf}`, async () => {
+    const catalogPath = canonicalPathInCodexHome(`nested/${configuredLeaf}`);
+    mkdirSync(dirname(catalogPath), { recursive: true });
+    writeFileSync(
+      pathInCodexHome("config.toml"),
+      `model_catalog_json = ${JSON.stringify(`nested/${configuredLeaf}`)}\n`,
+    );
+    writeFileSync(catalogPath, JSON.stringify({ models: [] }));
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-chat",
+          baseUrl: "https://fixture.invalid/v1",
+          liveModels: false,
+          models: ["fixture-model"],
+        },
+      },
+    };
+
+    const sync = await syncCatalogModels(config);
+    const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as {
+      models: Array<Record<string, unknown>>;
+    };
+    const routedRows = catalog.models.filter(model =>
+      typeof model.description === "string"
+        && model.description.startsWith("Routed via opencodex → ")
+    );
+
+    expect(sync).toMatchObject({ path: catalogPath, catalogWritten: true });
+    expect(routedRows).toHaveLength(1);
+    expect(classifyNativeRoutedResidue()).toEqual({
+      kind: "residue",
+      surface: "catalog",
+      path: catalogPath,
+    });
   });
 }
 
@@ -495,7 +545,7 @@ test("duplicate configured catalog paths are indeterminate", () => {
   });
 });
 
-const arbitraryComboAlias = `round4-edge-bare-${randomUUID()}`;
+const arbitraryComboAlias = randomUUID();
 
 test(`production-generated arbitrary bare combo alias ${arbitraryComboAlias} is routed residue`, async () => {
   const catalogPath = canonicalPathInCodexHome("opencodex-catalog.json");
@@ -549,11 +599,12 @@ test(`production-generated arbitrary bare combo alias ${arbitraryComboAlias} is 
   });
 });
 
-const arbitraryForeignSlug = `foreign-${randomUUID()}/model-${randomUUID()}`;
+const arbitraryForeignSlug = `${randomUUID()}/${randomUUID()}`;
+const arbitraryForeignDescription = randomUUID();
 
-test(`arbitrary foreign slash-bearing slug ${arbitraryForeignSlug} is indeterminate`, () => {
+test(`arbitrary foreign row ${arbitraryForeignSlug} described as ${arbitraryForeignDescription} is indeterminate`, () => {
   writeFileSync(pathInCodexHome("opencodex-catalog.json"), JSON.stringify({
-    models: [{ slug: arbitraryForeignSlug, description: "User-authored catalog row" }],
+    models: [{ slug: arbitraryForeignSlug, description: arbitraryForeignDescription }],
   }));
 
   expect(classifyNativeRoutedResidue()).toMatchObject({
