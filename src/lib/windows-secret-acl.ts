@@ -49,15 +49,27 @@ type HardenedIdentity = string | null;
 /**
  * Portable file identity for the ACL success memo.
  *
- * `bigint: true` is what makes this work on Windows: the default `ino` is 0 on
- * NTFS, while the bigint variant carries the file index. A zero or failed read
- * yields `null`, and a null memo entry never satisfies a later lookup.
+ * `dev:ino` alone is NOT identity, and believing it was is what a Linux CI run
+ * caught: ext4 reuses the inode of an unlinked file immediately, so 100 of 100
+ * unlink/recreate cycles produced the SAME `ino` — while macOS reused none in
+ * 200 cycles and happily reported the fix working. A same-name replacement would
+ * therefore have kept inheriting the previous file's ACLs on the platform most
+ * of CI runs on.
+ *
+ * `ctimeNs` is what actually distinguishes them: it differed in 100 of 100 of
+ * those same cycles. It also moves on any metadata change, so a file whose
+ * permissions were altered underneath us re-hardens rather than being trusted —
+ * conservative in the safe direction, since hardening is idempotent.
+ *
+ * `bigint: true` serves both: `ctimeNs` exists only in the bigint variant, and
+ * the plain `ino` is 0 on NTFS. A zero-ino or failed read yields `null`, and a
+ * null memo entry never satisfies a later lookup.
  */
 function fileIdentity(targetPath: string): HardenedIdentity {
   try {
     const stats = statSync(targetPath, { bigint: true });
     if (stats.ino === 0n) return null;
-    return `${stats.dev}:${stats.ino}`;
+    return `${stats.dev}:${stats.ino}:${stats.ctimeNs}`;
   } catch {
     return null;
   }

@@ -714,7 +714,15 @@ describe("stable-path harden memo is bound to file identity, not pathname", () =
     resetHardenedStateForTests();
     const stable = join(testDir, "coordinator.sqlite");
     writeFileSync(stable, "first", "utf8");
-    const firstIdentity = statSync(stable).ino;
+    // Identity here must match what the memo records, NOT just the inode.
+    // ext4 reuses the inode of an unlinked file immediately — 100 of 100 cycles
+    // on Linux CI — so an inode-only guard asserts something false and this test
+    // failed there while passing on macOS.
+    const identityOf = (path: string): string => {
+      const s = statSync(path, { bigint: true });
+      return `${s.dev}:${s.ino}:${s.ctimeNs}`;
+    };
+    const firstIdentity = identityOf(stable);
 
     setPlatformForTests("win32");
     const previousUsername = process.env.USERNAME;
@@ -731,8 +739,9 @@ describe("stable-path harden memo is bound to file identity, not pathname", () =
       // Release, then replace the file at the SAME pathname.
       unlinkSync(stable);
       writeFileSync(stable, "second", "utf8");
-      const secondIdentity = statSync(stable).ino;
-      // Guard the guard: if the filesystem reused the inode this proves nothing.
+      const secondIdentity = identityOf(stable);
+      // Guard the guard: if the filesystem handed back an identical identity,
+      // the replacement is indistinguishable and this test proves nothing.
       expect(secondIdentity).not.toBe(firstIdentity);
 
       // Reacquire. The replacement has never been hardened.
