@@ -632,12 +632,14 @@ state authorizer. `history-job.ts` is the sole bridge and scheduling edge in §8
 middle inventory. WP12-final graph reachability removes the compatibility handoff
 once admission-snapshot scheduling owns native convergence.
 
-What does **not** move from WP11 is equally explicit: WP10 does not implement
+What does **not** move is equally explicit: WP10 does not implement
 `codex-write-lock.ts`, the uid/SID namespace mechanics for that full lock, canonical
 target/admission validation, finite async acquisition/retry and result taxonomy,
 `CommitExpectation`, provenance coordination, or adoption by every native writer.
-WP11 still owns that complete async N → K → C mechanism and its broader caller
-rewire. WP10 only closes the retained native-mutation-to-history-authorization gap
+**WP12** owns that complete async N → K → C mechanism and its caller rewire — the two
+are one phase, because round 7 established that the mechanism cannot be audited apart
+from the caller that supplies its admission snapshot (`030_lock_protocol.md`, Round 6
+resolution). WP10 only closes the retained native-mutation-to-history-authorization gap
 using the coordinator database and transition owner that already landed in WP8b.
 
 Explicit legacy recovery cannot honestly advance `nativeGeneration`: §3 defines it

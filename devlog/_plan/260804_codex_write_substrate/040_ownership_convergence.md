@@ -12,12 +12,23 @@ teardown fails open for errors outside its one mismatch class
 check also does not authorize overwriting a `config.toml` whose effective
 `model_provider` is now external.
 
-WP9-WP11 already provide the working `convergeCodex` funnel, catalog split,
-history protocol, CODEX_HOME-keyed coordinator row, integration-record owner, and
-native lock. WP12 completes the mechanisms behind that funnel: tri-state service
-authority, file-backed intent, journal/provenance admission, restoration, and
-observed-state inspection. It does **not** add another record module, another
-convergence module, another route mapping, or another public result union.
+WP9 and WP10 provide the catalog split, the history protocol, the CODEX_HOME-keyed
+coordinator row, and the integration-record owner.
+
+**The native lock is NOT among them.** Round 7 merged WP11 into this phase: the N
+mechanism has exactly one consumer, and the two things needed to exercise its API —
+a runtime `AdmissionSnapshot` producer and the `inject.ts` synchronous-native /
+awaited-history split — both live here. A standalone WP11 could only have proven that
+a fabricated snapshot drives the primitive, never that its API fits its one real
+caller. The lock's design is `030_lock_protocol.md`, which is now this phase's lock
+section; the sentence that used to stand here claimed a working funnel WP11 had not
+in fact delivered.
+
+WP12 therefore delivers the lock **with its first production caller**, plus the
+mechanisms behind the funnel: tri-state service authority, file-backed intent,
+journal/provenance admission, restoration, and observed-state inspection. It does
+**not** add another record module, another convergence module, another route mapping,
+or another public result union.
 
 The prior plan named `write-lock.ts`, created `ownership-convergence.ts`, redefined
 `integrations/codex.json`, and exported `convergeCodexToPersistedIntent`. Those are

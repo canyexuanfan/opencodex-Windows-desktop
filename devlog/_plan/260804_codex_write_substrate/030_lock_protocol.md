@@ -104,25 +104,51 @@ So the narrowing as written *was* a dodge, and its own falsification test — "i
 apply path cannot legally take N either, fold WP11 into WP12" — has now fired. The
 resolution is recorded below rather than argued away.
 
-#### Resolution: WP11 becomes mechanism-only, and its caller moves to WP12
+#### Resolution: WP11 MERGES INTO WP12. This document becomes WP12's lock section.
 
-WP11 ships `src/codex/codex-write-lock.ts` and its tests, and **nothing in
-`convergence.ts`**. It is explicitly a mechanism phase whose consumer is WP12, in the
-same way WP8b shipped the contract before anything consumed it. This is not the same
-failure as defect #10 (a coordinator no production caller ever initialized) provided
-two conditions hold, and B must satisfy both:
+My first attempt at a resolution was "mechanism-only": ship the lock and its tests,
+move the caller to WP12, and defend the boundary by analogy to WP8b, which also
+shipped before it had a consumer. Round 7 rejected the analogy, correctly.
 
-- The goalplan records WP12 as the phase that supplies the admission producer, the
-  apply/restore split in `inject.ts`, and the first real call edge. WP11 is not
-  closable as "done" in the sense of "in production"; it is closable as "the
-  mechanism is correct and proven by real two-process tests".
-- WP11's tests drive the **production module**, not a copy, through real child
-  processes — which its test plan already requires — so the mechanism is executed
-  even before a production caller exists.
+WP8b was a **contract** consumed by four later phases; publishing it first is what
+stopped WP9-WP12 from inventing four incompatible shapes. WP11 has exactly **one**
+planned consumer, and the two things needed to exercise its API — a production
+`AdmissionSnapshot` producer and the apply/restore split in `inject.ts` — both arrive
+in that same consumer. So a standalone WP11 can only prove that a **fabricated**
+snapshot and a **fabricated** callback drive the primitive. It cannot prove the API
+fits the one real caller it exists for. That is precisely the shape this unit keeps
+producing: a green, unusable seam.
 
-If WP12 does not land the caller, the honest state of this unit is that the lock is
-unused, and the PR body must say exactly that instead of implying the substrate is
-live. That sentence is a deliverable of WP14, not a footnote.
+The surrounding documents already assume the merged shape and were never consistent
+with a standalone WP11:
+
+- `005_contract.md:635` assigns WP11 "that complete async N → K → C mechanism **and
+  its broader caller rewire**".
+- `040_ownership_convergence.md:15` states WP9-WP11 "already provide the working
+  `convergeCodex` funnel ... and native lock" — a claim a mechanism-only WP11 makes
+  false.
+- `040_ownership_convergence.md:211` is where the actual call edge lives.
+
+So the merge is not a concession, it is the reading that makes three documents agree.
+
+**What this means concretely:**
+
+- The N mechanism has **no independent completion gate**. It is audited together
+  with its first production caller, or it is not audited.
+- It may still land as its own commit for reviewability. A commit boundary is not a
+  phase boundary.
+- The goalplan work-phase is restructured accordingly: `wp11` is closed as *merged*,
+  and `wp12` carries the mechanism, the admission producer, the `inject.ts`
+  apply/restore split, and the first call edge as required tasks.
+- **F4 is the exception and lands alone.** The ACL pathname-cache defect is a live
+  bug in shipped code (`src/lib/windows-secret-acl.ts`), independent of the lock, and
+  it has its own falsifiable test. It does not wait for WP12.
+
+Everything below this line is therefore **WP12's lock section**, rewritten to the
+decisions above. Where the historical text conflicts with them, the decisions win —
+and the sections that conflicted have been rewritten rather than annotated, because
+round 7's finding was exactly that corrective prose above a contradictory body is
+instance #16 of treating an absence as a guarantee.
 
 ### F2 — the initializer's residue guard reads the AMBIENT home, not the locked one
 
@@ -315,11 +341,18 @@ IN:
 - `src/codex/codex-write-lock.ts` (NEW) — exact contract module name; canonical
   target identity, effective-user namespace, finite async acquisition, synchronous
   coordinated commit, release, and typed lock mechanics.
-- `src/codex/convergence.ts` (MODIFY, **narrowed by F1**) — add
-  `convergeCodexNativeUnderLock`, the production entry that takes N and publishes a
-  transition. It does NOT move the existing catalog commit under N: that seam keeps
-  `K -> C` until WP12 supplies admission and the adoption path, because N refuses to
-  open on a routed home today and rewiring now would break every applied install.
+- `src/codex/convergence.ts` (MODIFY) — add the native convergence entry that takes
+  N and publishes a transition, called by the WP12 admission pipeline. It does NOT
+  move the **existing catalog commit** under N: that seam keeps its current `K -> C`
+  (`src/codex/convergence.ts:393-406`), because N refuses to open on a routed home
+  and rewiring it would break every applied install (F1).
+- `src/codex/inject.ts` (MODIFY) — split the synchronous native mutation from the
+  awaited history dispatch (`:530` journal, `:601` native writes, `:614` awaited
+  history) so the native section can sit beneath N and history stays outside it.
+- The WP12 admission producer (MODIFY/NEW per `040_ownership_convergence.md`) —
+  without it there is no `AdmissionSnapshot` at runtime and the lock's API cannot be
+  called at all. `AdmissionSnapshot` is today only an interface
+  (`src/codex/convergence-types.ts:495`).
 - `src/codex/transition-state.ts` (MODIFY through its public owner API) — lend
   WP11 a narrow opaque capability backed by the already-open coordinator
   transaction; this module remains the sole native-generation/transition-row owner.
@@ -366,7 +399,7 @@ them in `src/codex/codex-write-lock.ts`; it does not publish the former
 ```ts
 import type {
   AdmissionSnapshot,
-  BeginCodexTransition,
+  CodexCoordinatorTransaction,
   CommitExpectation,
 } from "./convergence-types";
 
@@ -417,14 +450,16 @@ export interface CodexWriteCommitContext {
   readonly coordinator: CodexCoordinatorTransaction;
 }
 
-const codexCoordinatorTransactionBrand: unique symbol = Symbol(
-  "CodexCoordinatorTransaction",
-);
-
-export interface CodexCoordinatorTransaction {
-  readonly [codexCoordinatorTransactionBrand]: true;
-  readonly beginTransition: BeginCodexTransition;
-}
+// NO local brand and NO local interface here. `CodexCoordinatorTransaction` is
+// imported above from `./convergence-types` (`src/codex/convergence-types.ts:331`);
+// its private brand belongs to `src/codex/transition-state.ts:148` and to nothing
+// else. Redeclaring either compiles fine in isolation — which is why the per-document
+// fence check did not catch it for several rounds — and then fails at the only place
+// that matters, assigning a real `openCodexCoordinatorTransaction(...).capability`:
+//
+//   TS2741: Property '[codexCoordinatorTransactionBrand]' is missing in type
+//   'convergence-types.CodexCoordinatorTransaction' but required in type
+//   'plan.CodexCoordinatorTransaction'.
 
 type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 
@@ -445,8 +480,9 @@ export type WithCodexWriteLock = <T>(
 `CodexWriteLockResult` is the lock module's own bounded mechanism result.
 `convergence.ts` exhaustively projects it into `ConvergeOutcome`; no route consumes
 it directly. `CodexCoordinatorTransaction` is the only handle passed to the
-callback. It is branded and exposes only the contract's null-safe conditional
-transition-row update. It is one-shot for this transition, and WP11 verifies that
+callback — **imported**, not redeclared, from `./convergence-types`. It is branded by
+`transition-state.ts` alone and exposes only the contract's null-safe conditional
+transition-row update. It is one-shot for this transition, and the lock verifies that
 it returned `updated` for the exact expectation before allowing C to release. It
 exposes neither the `Database` object nor `COMMIT`,
 `ROLLBACK`, or `close`. Opening another connection in the callback is wrong: it
@@ -486,7 +522,9 @@ an authoritative re-read inside the coordinated commit; WP11 does not reduce it 
 a boolean or manufacture an authority receipt.
 
 `withConfigMutationLockSync` is already synchronous, fail-fast, and reentrant only
-for the current synchronous stack (`src/config.ts:1767-1818`). The native lock may
+for the current synchronous stack (`src/config.ts:1779-1839`, which includes the
+callback execution, commit, rollback, and close the shorter range cut off). The
+native lock may
 hold it because no await occurs. Config-generation reads/updates and
 provenance-only `updateIntegrationRecord` calls happen before that callback returns.
 The native generation bump, `txId`, and pending history schedule are owned by the
@@ -503,8 +541,8 @@ If the config coordinator is busy, the attempt releases the native lock and retr
 only while the outer monotonic deadline remains; deadline expiry returns typed
 `busy`. It never releases and commits against the old admission. A non-cooperating
 filesystem writer remains detectable after commit, as scoped by `005_contract.md`
-§3; WP11 does not promise a portable conditional rename that `src/config.ts:1853-1859`
-explicitly says the filesystem lacks.
+§3; this phase does not promise a portable conditional rename that
+`src/config.ts:1949` explicitly says the filesystem lacks.
 
 ## Canonical `CODEX_HOME` identity — C6
 
@@ -566,9 +604,23 @@ Walk components one at a time; never recursive-mkdir across an unvalidated paren
   existing path.
 - Windows validates non-junction identity and runs the existing required per-user
   ACL owner within the remaining outer deadline
-  (`src/lib/windows-secret-acl.ts:217-328,404-494`). Failure/timeout refuses.
+  (`src/lib/windows-secret-acl.ts:45,217-328,404-494,512`). A **verified** ACL,
+  ownership, or path failure refuses. **Timeout does not**: exhausting the outer
+  budget is `busy/deadline` and retryable, because a short caller-supplied deadline
+  proves nothing about safety (F5). That requires preserving the `ETIMEDOUT`
+  discriminator through sanitization at `src/lib/windows-secret-acl.ts:484`, which
+  today rethrows an untyped `Error` and destroys it.
+- The ACL success memo must be bound to **file identity**, not pathname. Today it is
+  a `Set<string>` of paths (`src/lib/windows-secret-acl.ts:36,461`), so a file
+  replaced at the same name inherits the previous file's hardening — probed as
+  `{identityChanged:true, firstCalls:3, totalCalls:3, replacementWasRechecked:false}`
+  (F4). Ephemeral temps already invalidate through `forgetEphemeralSecretPath`
+  (`src/config.ts:214,241,309,336,480,501-510`); the stable destination memo that
+  `hardenStableLockFile` uses never does.
 - Existing DB or `-journal` must be regular, same-user private entries. Existing
-  `-wal`/`-shm` refuses; WP11 forces rollback journal mode.
+  `-wal`/`-shm` refuses. The lock **verifies** rollback journal mode rather than
+  forcing it: a pinned-Bun probe shows `bun:sqlite` already opens `delete` and leaves
+  no `-wal`/`-shm` sidecar after a committed `BEGIN IMMEDIATE` (F3).
 - `openStableLockFile` retains the side descriptor; validate descriptor metadata,
   assert path identity before/after SQLite open, after `BEGIN IMMEDIATE`, before
   commit, and before close.
@@ -606,16 +658,50 @@ No `node:os` home accessor is imported.
 
 The total timeout is required, finite, integral, and within `0..30_000` ms.
 Acquisition uses monotonic `performance.now()`. Zero receives one fail-fast
-`BEGIN IMMEDIATE`. Only SQLite busy/locked retries; filesystem, ACL, malformed DB,
-identity, permission, and journal-mode failures are refusals.
+`BEGIN IMMEDIATE`. **Two** conditions retry: SQLite busy/locked, and exhaustion of
+the outer budget during Windows ACL work, which is `busy/deadline` (F5). Verified
+filesystem, ACL, malformed DB, identity, permission, and journal-mode failures are
+refusals. The distinction is not cosmetic: a refusal tells the caller never to try
+again, and a short deadline is not evidence of an unsafe namespace.
 
 Retry sleeps are async uniformly bounded 25-75 ms, clipped to remaining deadline,
 and abortable. Barging is allowed; no caller/test infers FIFO. Candidate SQLite and
 side descriptors close after every failed attempt.
 
-`AsyncLocalStorage<ReadonlySet<string>>` rejects same-task same-home reentrancy.
+`AsyncLocalStorage<ReadonlySet<string>>` rejects same-task same-home reentrancy. It
+is a **diagnosis** layer, not the exclusion mechanism: a second open on a held path
+in the same process already fails `SQLITE_BUSY`, because `busy_timeout = 0` precedes
+`BEGIN IMMEDIATE` (`src/codex/transition-state.ts:416`). Its only job is to turn that
+indistinguishable `busy` into a typed `refused/reentrant` (F3), so its test asserts
+the typed reason and not "does not hang" — the latter passes with ALS deleted.
 A separate task is an ordinary contender. Caller exceptions propagate after
 rollback/release; they are never converted to busy/refused.
+
+**The ambient-home re-assert sits here, in the acquisition loop, not before it.**
+Every attempt performs, in one uninterrupted synchronous stack:
+
+```text
+canonicalAmbient = realpathSync.native(getCodexHome())
+require canonicalAmbient === canonicalTarget      // both sides canonicalized
+openCodexCoordinatorTransaction(finalDatabasePath) // no await, no callback between
+```
+
+Re-comparing the value captured before the retry sleeps proves nothing, because
+`getCodexHome()` re-reads the environment on every call (`src/codex/paths.ts:32-35`)
+and the coordinator's own residue guard reads it again inside the open. Only a fresh
+read that shares a synchronous stack with the open denies another task the chance to
+interleave. "N bounds it" is false and was struck: N serializes the coordinator
+database, not `process.env`, and it is not even held until the open begins.
+
+Canonicalizing **both** sides is required, not tidiness. With no `CODEX_HOME` set,
+`getCodexHome()` returns `defaultCodexHome()` **without** `realpath`
+(`src/codex/paths.ts:23`), so on a machine where `~/.codex` is a symlink an
+uncanonicalized ambient value refuses the very home it names.
+
+The real fix is to parameterize `classifyNativeRoutedResidue()` with the canonical
+target and remove ambient authority from the guard entirely. The adjacency rule above
+is the bounded version that survives until that lands, and the merged WP12 phase
+carries the parameterization as a task.
 
 ```diff
 +const transaction = openCodexCoordinatorTransaction(finalDatabasePath);
@@ -758,8 +844,15 @@ probe. Do not substitute Node or a same-process environment mutation.
 - Compile-time async callback rejection plus runtime thenable rejection and release.
 - Callback throw releases then propagates.
 - Namespace symlink/junction, wrong owner/mode, DB/journal substitution, WAL/SHM,
-  malformed DB, ACL failure/timeout, unsupported filesystem all refuse without
-  repair/deletion.
+  malformed DB, **verified** ACL failure, and unsupported filesystem all refuse
+  without repair/deletion. ACL **timeout** is `busy/deadline`, not refusal (F5).
+- **Release → replace → reacquire** (F4): harden a coordinator DB, release the
+  acquisition, unlink and recreate a different file at the same pathname, then
+  reacquire and assert the replacement was re-hardened. Substituting the file while
+  a single acquisition is still held does NOT exercise the memo and passes with the
+  fix removed — that shape is explicitly insufficient.
+- Environment mutation **during** acquisition retry, not merely before it: a home
+  changed while the contender sleeps must be caught by the fresh adjacent read.
 - Windows CI executes real SID/junction/ACL success; POSIX executes real uid/mode.
 - Dependency graph proves no inverse C->N or C->H acquisition and no held N->H;
   history's only H->N edges are the fail-fast claim and terminal operations.
@@ -790,27 +883,61 @@ syncs, restores, or ensures the proxy; port 10100 is untouched.
 
 ## Accept criteria
 
+Every criterion below names the **mutation that must turn it red**. A criterion with
+no such mutation is not a criterion; this unit has shipped five live defects beside
+8000 passing tests, so "the suite is green" carries no weight here. Each one was
+checked against the question *would this still pass with the mechanism removed?* —
+and the ones that did were rewritten rather than kept.
+
 - **C5** — finite async acquisition yields typed acquired/busy/refused behavior;
   callback is synchronous/bounded; no stale takeover or FIFO claim exists.
+  *Red when:* N acquisition is replaced by direct callback execution — the real
+  two-process exclusion test must fail.
 - **C6** — all real spellings of one existing home share one lock; distinct homes
   do not; missing homes refuse before artifacts.
+  *Red when:* the canonicalization step is dropped — symlink and tilde spellings
+  must stop contending.
 - **C7/C18** — namespace keys on effective uid/SID beneath the OS runtime directory,
   never any home accessor. Real pinned-Bun children with independently varied HOME
   and USERPROFILE prove one lock for one user/home.
+  *Red when:* the uid/SID component is replaced by any home accessor — the two
+  children must stop sharing one lock.
 - Config generation, authoritative admission re-read, native/provenance writes,
   and the conditional transition-row update share N->C; C releases before N commits.
-- **F1** — a routed CODEX_HOME returns typed `refused/lock_unavailable` carrying the
-  coordinator's legacy-ambiguous reason rather than throwing, and the existing
-  catalog commit path still succeeds on a routed home because it was NOT moved
-  under N in this phase.
-- **F2** — an explicit `codexHome` that differs from the ambient `getCodexHome()`
-  returns `refused/authority_not_proven` and creates no namespace, because the
-  coordinator's residue guard would otherwise have inspected a different directory.
+  *Red when:* the apply/restore → N call edge is removed — the production-path test
+  must fail. This criterion is unmeetable without the WP12 caller, which is exactly
+  why the phases are merged.
+- **F1** — a routed CODEX_HOME returns a typed refusal carrying the coordinator's
+  legacy-ambiguous reason rather than throwing, **and** the existing catalog commit
+  still succeeds on that same routed home.
+  *Red when:* the catalog commit is moved under N — the routed-home catalog test
+  must fail. That is the regression this finding exists to prevent.
+- **F2** — the successful matched-home path reaches `BEGIN IMMEDIATE`, and a home
+  changed **during acquisition retry** is caught.
+  *Red when:* the fresh adjacent ambient read is replaced by the value captured
+  before the retry sleeps — the environment-change-during-retry test must fail. A
+  test that only exercises mismatched-home refusal is insufficient: it passes even
+  if the matched path never acquires anything.
 - **F3** — same-process reentrancy returns `refused/reentrant`, distinguishable from
-  the `busy` that SQLite alone would have produced.
+  the `busy` SQLite alone produces.
+  *Red when:* ALS is removed — the reason must degrade to `busy`. Asserting only
+  "does not hang" is vacuous, because `busy_timeout = 0` already guarantees that.
+- **F4** — a coordinator database released, replaced at the same pathname, and
+  reacquired is re-hardened.
+  *Red when:* identity binding / memo invalidation is removed — the
+  release → replace → **reacquire** test must fail. Substituting during a single
+  held acquisition never reaches the memo and would pass with the fix gone.
+- **F5** — outer-budget exhaustion during ACL work returns retryable
+  `busy/deadline`; verified ACL/ownership/path failure returns non-retryable refusal.
+  *Red when:* `ETIMEDOUT` is collapsed into a generic refusal — the deadline
+  classification test must fail.
 - `transition-state.ts` alone owns native generation/txId/history scheduling; JSON
-  owns none of them, and WP11 never opens a second coordinator connection in C.
+  owns none of them, and the lock never opens a second coordinator connection in C.
 - Lock edges are N->C and short fail-fast H->N only; stale history jobs are rejected
   by generation/transaction identity without any C->N, C->H, or held N->H edge.
-- **N2** — WP11 extends the already-working funnel and typechecks/preserves behavior
-  at its own commit; WP12 strengthens admission without supplying missing mechanics.
+- **Phase honesty** — the goalplan records the merge: `wp11` closed as *merged*, and
+  `wp12` carrying the mechanism, the admission producer, the `inject.ts` split, and
+  the first call edge as required tasks. If the caller does not land, the PR body
+  says the lock is unused, in those words.
+  *Red when:* the WP12 admission producer is removed — the production-entry test or
+  the compile must fail.
