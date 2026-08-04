@@ -154,6 +154,27 @@ bun run build:gui      # Vite GUI build
 Run `bun run typecheck` and `bun run test` before proposing or approving any
 non-trivial change. CI runs these on Linux, Windows, and macOS.
 
+## Issues and pull requests (agents)
+
+Agent-created issues and PRs must use the repository templates. The gates
+below enforce them, so a freeform or mismatched submission is rejected rather
+than nudged.
+
+- **Creating an issue:** open it through the template chooser and use the
+  matching form in `.github/ISSUE_TEMPLATE/` — `bug_report.yml` (Bug report),
+  `feature_request.yml` (Feature proposal), `documentation.yml`
+  (Documentation), or `provider_compatibility.yml` (Provider or API
+  compatibility). Keep the form's section headings exactly as generated;
+  `enforce-issue-quality` validates the headings and closes untemplated or
+  mislabeled issues (`.github/ISSUE_TEMPLATE/config.yml` disables blank
+  issues, so there is no freeform fallback).
+- **Opening a pull request:** fill every section of
+  `.github/PULL_REQUEST_TEMPLATE.md` (Summary, Verification, Checklist).
+  `enforce-target` rejects empty, thin, or malformed descriptions, and a PR
+  whose title or description mentions `gui` must include a screenshot of the
+  UI change in the description. When the PR resolves an issue, add
+  `Closes #<number>` so merging updates the tracker automatically.
+
 ## Branch policy
 
 - `dev` — the single integration branch and the target for every pull request.
