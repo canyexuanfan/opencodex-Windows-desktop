@@ -25,12 +25,12 @@ transition that was not published (`src/codex/transition-state.ts:74-83,314-344,
 
 All current-code citations and diff context below were rechecked on 2026-08-04
 against the live worktree rooted at
-`364496fc968fd12734a2e6fe2bec9e219d9d1c90`, including the concurrent in-progress
-WP9 source edits. The contract citations refer to the authoritative worktree amendment:
+`2becc771977afb112fc8db45ed878fb67625c1a5`, including the WP9 source edits now
+present at that HEAD. The contract citations refer to the authoritative worktree amendment:
 permanent K, owner-held config generation,
 home/source/process-local evidence, and no-clobber publication are at
-`005_contract.md:609-763,830-1280`; K's owner/path and the four
-transitional chains are fixed at `005_contract.md:1372-1570`.
+`005_contract.md:609-1107,1109-1350`; K's owner/path and the four
+transitional chains are fixed at `005_contract.md:1442-1640`.
 
 ## IN / OUT
 
@@ -41,7 +41,7 @@ IN — observe-only admission and gather:
   `config-mutation.sqlite`. The existing `readConfigGeneration` is not that API:
   it resolves/records the path and opens SQLite with `create:true`
   (`src/config.ts:1745-1776,1799-1807,1849-1854`,
-  `src/codex/generation.ts:97-103`). WP9
+  `src/codex/generation.ts:110-142`). WP9
   consumes the contract-owned `withExpectedConfigGenerationSync`; it does not
   wrap this observer in the lock or redefine the generation contract.
 - `src/codex/catalog-admission.ts` (MODIFY) — keep the landed request constructor
@@ -51,7 +51,7 @@ IN — observe-only admission and gather:
   assign an opaque identity to the exact retained config reference plus its keyed
   snapshot, and carry the contract-owned `sourceEvidence`. Do not redefine
   `createCatalogConvergeRequest` or `captureCatalogAdmissionSnapshot`, which
-  already exist at lines 38-52 and 148-185.
+  already exist at lines 40-53 and 138-179.
 - `src/codex/convergence-types.ts` (MODIFY) — synchronize the already contract-owned
   closed `CatalogSourceRole`, `CatalogHomeSelectionObservation`,
   `CatalogSourceObservation`, `CatalogSourceEvidence`,
@@ -91,13 +91,20 @@ IN — observe-only admission and gather:
   cache hits and replacements are process-local. The current worktree's runtime owner
   already publishes/returns deeply frozen detached values
   (`src/codex/runtime.ts:16-48,90-105,417-470,505-516`), and the bundled owner does
-  likewise (`src/codex/catalog/bundled.ts:52-130,260-283`); WP9 preserves those
+  likewise (`src/codex/catalog/bundled.ts:60-138,268-302`); WP9 preserves those
   round-4-closed semantics rather than reintroducing the audited private-cache alias.
   The ordinary resolver reaches `probeVersion`, whose sandbox deliberately calls
   `mkdtempSync` and `rmSync` (`src/codex/runtime.ts:286-335,505-516`), while
   bundled loading both calls the persisting resolver and runs `codex debug models`
-  (`src/codex/catalog/bundled.ts:212-258,271-294`). Neither path is reachable from
+  (`src/codex/catalog/bundled.ts:220-267,268-302`). Neither path is reachable from
   gather.
+- `src/codex/model-cache.ts` (MODIFY) — **round-6 scope amendment:** this is the
+  canonical owner of the per-provider models/freshness/cooldown decision consumed by
+  flight authority, so WP9 must add its deep-frozen detached snapshots and monotonic
+  owner epoch here rather than asking `provider-fetch.ts` to attest to state it does
+  not own. Today fresh/stale readers expose the private array, `setCached` retains the
+  caller alias, and failure, clear, reconcile, and eviction mutate without an epoch
+  (`src/codex/model-cache.ts:17-21,74-86,147-168,172-208,225-226`).
 - `src/oauth/index.ts`, `src/oauth/store.ts`,
   `src/codex/catalog/provider-fetch.ts` (MODIFY) — add and consume an observe-only
   active-token snapshot. The filesystem-evidence owner reads the exact auth-store
@@ -109,7 +116,7 @@ IN — observe-only admission and gather:
   an intent lock, creates/removes an intent file, hardens a path, or backs up malformed
   credentials. The current token resolver can enter refresh/persistence
   (`src/oauth/index.ts:327-400`) and the ordinary refresh-capable gather awaits it
-  (`src/codex/catalog/provider-fetch.ts:474-500`).
+  (`src/codex/catalog/provider-fetch.ts:472-499`).
   Replace the partial `providerCatalogFingerprint` single-flight identity with the
   complete contract-owned gather-authority identity. Authority capture happens before
   the map lookup; the flight consumes the captured config/auth/native/source/process
@@ -125,7 +132,7 @@ IN — observe-only admission and gather:
   relative `model_catalog_json` resolves below the canonical active home, an absolute
   configured target remains absolute even outside that home, and an existing catalog
   leaf symlink resolves to and writes through its real target
-  (`src/codex/catalog/parsing.ts:52-80`, `src/config.ts:125-160,188-209`).
+  (`src/codex/catalog/parsing.ts:52-80`, `src/config.ts:125-164,192-213`).
 
 IN — fixed commit and convergence:
 
@@ -142,13 +149,13 @@ IN — fixed commit and convergence:
 - `src/codex/user-identity.ts` (MODIFY) — add
   `resolveCodexCatalogSerializationDatabasePath` beside the landed native coordinator
   resolver. Consumers use its final path verbatim; the K and N database paths must be
-  distinct (`005_contract.md:1372-1483`).
+  distinct (`005_contract.md:1442-1553`).
 - `src/codex/internal/catalog-writer.ts` (NEW/MOVE) — the contract-owned low-level
   owner for catalog, hashed/legacy backups, and models cache. Every mutator requires
   the permit plus canonical owning `CODEX_HOME` and calls K's runtime assertion before
   temp creation, hardening, unlink, link, rename, truncate, replacement, or any other
   filesystem mutation. It never reads or mutates K's private registry. Do not create
-  the obsolete `internal/catalog-commit.ts` name (`005_contract.md:1485-1518`).
+  the obsolete `internal/catalog-commit.ts` name (`005_contract.md:1555-1589`).
 - `src/codex/convergence.ts` (NEW) — primary catalog gather/commit orchestration for
   the 16 management mutations. The symbol graph additionally permits only the exact
   four WP9 transitional writer chains below; WP12 removes those exceptions.
@@ -186,12 +193,17 @@ IN — management callers and tests:
   return values, and compatibility behavior stay unchanged; explicit imports needed
   after the facade stops re-exporting writers are mechanical. This is freshness-safe
   serialization of the retained roots, not WP12's convergence rewire
-  (`005_contract.md:1519-1570`).
+  (`005_contract.md:1591-1640`).
 - `tests/codex-refresh.test.ts` and the existing management route suites (MODIFY).
 - `tests/codex-runtime.test.ts` (MODIFY) — retain the current regression proving nested
   mutation through a returned runtime cache graph cannot alter owner state
   (`tests/codex-runtime.test.ts:138-148`) and use only the intentional owner
   mutation/invalidation seam when a test needs to move the cache epoch.
+- `tests/codex-catalog.test.ts`, `tests/app-owned-memory.test.ts`, and
+  `tests/gather-routed-models-single-flight.test.ts` (MODIFY) — focused owner and
+  flight tests for nested alias isolation, every required epoch bump, and
+  pre-lookup TTL/cooldown decisions. These are the only additional files pulled by
+  the round-6 owner-scope correction.
 - `tests/codex-convergence-contract.test.ts` (CREATE). It does not exist in the
   WP8b tree; WP9 creates it rather than “extending” an imaginary file.
 
@@ -208,6 +220,13 @@ OUT:
   without replacing K.
 - Any runtime command that starts, stops, syncs, restores, ensures, or manages the
   live service; any write to real `~/.codex` or `~/.opencodex`; GUI/release/deploy.
+
+The round-6 scope amendment stops at the authority owner. `model-cache.ts` already
+depends only on the catalog model type and the generic generation-reconciliation and
+memory-budget hooks; advancing its epoch inside reconciliation and the existing
+eviction callback requires no WP10 history owner, WP11 N acquisition, or WP12 full
+admission/observer/provenance surface. The three focused tests above are the only
+additional file scope. No phase boundary or N -> K -> C edge changes.
 
 WP9 typechecks at its own commit. `management-convergence.ts` contains working
 catalog behavior, not a placeholder waiting for WP12. WP12 may consolidate the
@@ -235,11 +254,11 @@ consumer, while deferring it to WP11/WP12 would leave WP9's retained writers uns
 
 The guarantee is **filesystem-write-free**, not globally side-effect-free. Gather may
 update bounded discovery-status, provider model cache, and in-flight admission maps
-(`src/codex/catalog/provider-fetch.ts:525-537,572-588,686-692,798-820`); they are
+(`src/codex/catalog/provider-fetch.ts:523-543,570-586,684-690,796-818`); they are
 permitted because they do not mutate user files and are reset between isolated tests.
 The runtime and bundled memos are observe-only from gather, but their owners can
 replace them concurrently (`src/codex/runtime.ts:417-470`,
-`src/codex/catalog/bundled.ts:52-130`), which is why the candidate seals epochs and
+`src/codex/catalog/bundled.ts:60-138`), which is why the candidate seals epochs and
 identities. No credential, raw provider error, source path, or digest may escape
 through those caches into `CatalogDisposition`.
 
@@ -268,7 +287,7 @@ This bound deliberately catches the writes hidden by the old plan:
 - `loadBundledCodexCatalog()` and `runCodexDebugModels()` are forbidden beneath
   gather. The current bundled loader resolves/persists a runtime and executes
   `codex debug models --bundled` without an isolated gather environment
-  (`src/codex/catalog/bundled.ts:212-294`).
+  (`src/codex/catalog/bundled.ts:220-302`).
 
 The observe-only generation API opens an existing database with `readonly:true`,
 performs only schema/version/select checks, and closes it. Missing DB/table/row,
@@ -310,19 +329,19 @@ evidence; token bytes never do.
 Round 5 closes a separate live-flight authority hole. The current
 `providerCatalogFingerprint` includes endpoint/catalog fields but excludes
 `authMode`, `apiKey`, and `headers`
-(`src/codex/catalog/provider-fetch.ts:136-158`); `gatherFlightKey` hashes that partial
-projection (`src/codex/catalog/provider-fetch.ts:161-180`) and the map joins solely by
-the resulting key (`src/codex/catalog/provider-fetch.ts:792-820`). Those omitted
+(`src/codex/catalog/provider-fetch.ts:134-156`); `gatherFlightKey` hashes that partial
+projection (`src/codex/catalog/provider-fetch.ts:159-179`) and the map joins solely by
+the resulting key (`src/codex/catalog/provider-fetch.ts:790-819`). Those omitted
 fields are behavioral: forward mode exits with no models, credential resolution is
 awaited, and the effective request headers are then built
-(`src/codex/catalog/provider-fetch.ts:474-500,548-568`). The observed failure was A at
+(`src/codex/catalog/provider-fetch.ts:472-499,546-566`). The observed failure was A at
 generation N in forward mode, B admitted at N+1 in key mode, and B receiving A's
 empty promise result with no A authority in its candidate.
 
 The current in-progress worktree adds a plain SHA-256 of the observed auth-store
-buffer as a key prefix (`src/codex/catalog/provider-fetch.ts:773-787`). It still omits
+buffer as a key prefix (`src/codex/catalog/provider-fetch.ts:771-787`). It still omits
 static key/forward mode and configured headers, and `GatherFlightResult` still carries
-no authority (`src/codex/catalog/provider-fetch.ts:87-91`). It therefore neither
+no authority (`src/codex/catalog/provider-fetch.ts:85-89`). It therefore neither
 closes the failing sequence nor meets the privacy rule below.
 
 WP9 keeps single-flight because equivalent concurrent management mutations should
@@ -357,17 +376,61 @@ revision identities of provider registry data, generated Jawcode metadata, and t
 pinned upstream-model snapshot used during assembly. `provider-fetch.ts` consumes
 this captured value; it may not call the current hidden native source path after the
 flight is keyed. Today that path reaches `nativeOpenAiSlugs()` during combo assembly
-(`src/codex/catalog/provider-fetch.ts:880-904`), and the owner can read active catalog
+(`src/codex/catalog/provider-fetch.ts:878-903`), and the owner can read active catalog
 or cache while selecting slugs (`src/codex/catalog/metadata.ts:169-179`).
 
 Relevant process-local flight input includes the settled runtime/bundled
 epoch/value evidence and a per-provider immutable model-cache/cooldown snapshot with
 its owner epoch and value identity. The latter controls whether discovery uses fresh,
-stale, configured, or network data (`src/codex/catalog/provider-fetch.ts:519-560`),
+stale, configured, or network data (`src/codex/catalog/provider-fetch.ts:517-560`),
 so omitting it again treats absence of evidence as equality. It binds map admission
 but is not added to K -> C revalidation because the producing flight itself may
 advance that cache. Runtime/bundled evidence remains candidate-bound and
 commit-revalidated exactly as already specified.
+
+Round 6 makes both ownership and ordering executable. `model-cache.ts` replaces its
+mutable `CacheEntry.models` with a private recursively deep-frozen clone and exposes
+recursively readonly types. `setCached` clones every reachable object/array before
+publication and retains no caller alias; `getFreshCached`, `getStaleCached`, and the
+new flight-decision capture return detached recursively deep-frozen snapshots rather
+than the private graph. The owner's process-lifetime epoch advances before every
+result-affecting publication: every `setCached`, including a byte-identical
+replacement; every `markModelsFetchFailure`; every state-changing provider/all clear;
+every accepted reconciliation generation; and every budget eviction that removes an
+entry. The epoch is monotonic and is not reset by test cleanup. Omitting any one of
+those bumps is a contract failure, not an optimization.
+
+The flight race is decided before the map, not repaired inside the promise. After the
+exact config, effective auth, native-source, and runtime/bundled inputs are known,
+gather takes one clock observation and synchronously asks the owner for an ordered
+decision for every enabled provider: `unused`, `fresh-cache`, `cooldown`, or
+`network`. Each used snapshot includes the detached fresh/stale models or explicit
+absence, owner epoch, stored `fetchedAt`/`failureAt`, and exact
+`freshUntil`/`cooldownUntil`. The authority owner computes its domain-separated keyed
+value identity and the aggregate `modelCacheDecisionIdentity`; only then may code
+consult `gatherInflight` (`src/codex/catalog/provider-fetch.ts:796-819`).
+
+`gatherRoutedModelsUncached` receives those immutable decisions as arguments. Once a
+flight has claimed a slot, its provider branches may not call `getFreshCached`,
+`getStaleCached`, or `isModelsFetchCoolingDown`; even a network-failure fallback uses
+the stale/absence value sealed before lookup. A success or failure may mutate the
+owner through `setCached`/`markModelsFetchFailure`, which advances the epoch and makes
+a later admission distinct. Time passage itself does not bump the epoch: crossing
+`freshUntil` or `cooldownUntil` changes the effective decision and therefore its keyed
+identity, so a post-boundary caller cannot join a pre-boundary flight even when the
+stored value and owner epoch are unchanged. Calls captured on the same side of the
+same boundary may still coalesce.
+
+The fourth-cache audit found no additional mutable process-local input to catalog
+model selection. `gatherInflight` is the coordination map being keyed, while
+`lastDropWarnSignature`, combo warning signatures, and the last-omission sink affect
+logging or retain an output copy; the flight result uses its own local omissions and
+none of those maps is read to choose models
+(`src/codex/catalog/provider-fetch.ts:108-110,273-281,821-852`,
+`src/codex/catalog/aggregation.ts:39-69,238-244`). Discovery-status/live-count maps
+likewise feed management status, not provider model selection. If any such side map
+becomes a gather input later, it must join the pre-lookup immutable authority capture
+and owner-epoch rule before that change lands.
 
 No raw API key, OAuth token, secret header, auth-store buffer, or stable plain digest
 is a field of the identity. Only opaque process-keyed HMAC values and the opaque
@@ -444,7 +507,7 @@ comparison remain outside C17 (`005_contract.md:830-943`).
 catalog first and clone it as the native template; read the on-disk catalog
 separately as the merge source. The invariant is explicit at
 `structure/03_catalog-and-subagents.md:23-27` and implemented at
-`src/codex/catalog/bundled.ts:482-490` plus
+`src/codex/catalog/bundled.ts:474-483` plus
 `src/codex/catalog/sync.ts:517-523`.
 
 The WP9 edit removes the materializing fallback call from the tail of
@@ -465,6 +528,10 @@ sealed `CatalogProcessLocalEvidence`, plus the complete deep-frozen
 requires exact equality with the caller's expected authority; mismatch returns
 retryable stale without constructing the candidate. Memo-derived graphs are
 recursively frozen detached snapshots and cannot alias the owners' private caches.
+The authority equality includes the ordered pre-lookup provider cache/cooldown
+decisions, but commit does not revalidate their epoch because the producing flight is
+allowed to advance that owner while resolving; the result-authority equality is the
+binding proof for this flight-only input.
 Commit marks a successfully constructed candidate consumed before validation and
 before the first write; a second call returns `candidate-consumed` and writes nothing.
 No route can inspect, serialize, reconstruct, or replay it.
@@ -554,7 +621,7 @@ creates and hardens a unique adjacent temp, then uses an operation whose contrac
 destination-must-not-exist: exclusive hard link or a platform
 rename-without-replace equivalent. Ordinary overwrite rename is never a fallback.
 The existing `atomicWriteFile` cannot implement this contract because its final
-operation is an overwriting rename (`src/config.ts:188-220`, especially line 209).
+operation is an overwriting rename (`src/config.ts:192-245`, especially line 213).
 The unpublished temp is scrubbed and removed on every path.
 
 If publication returns `EEXIST`, another process won after validation. Commit
@@ -564,7 +631,7 @@ regular, non-routed valid catalog backup is preserved and the receipt becomes
 is `refused`. The loser never unlinks, truncates, or overwrites the winner. This
 exception applies only to a backup create-once target, never to a backup selected as
 a gather source; selected source observations remain strict
-(`005_contract.md:1034-1054`).
+(`005_contract.md:1087-1107`).
 
 ## C. Catalog-only convergence
 
@@ -574,9 +641,9 @@ WP9 does not redeclare request, snapshot, projection, or shared result types.
 `management-convergence.ts` consumes:
 
 - `createCatalogConvergeRequest` from
-  `src/codex/catalog-admission.ts:38-52`;
+  `src/codex/catalog-admission.ts:40-53`;
 - `captureCatalogAdmissionSnapshot` from
-  `src/codex/catalog-admission.ts:148-185`;
+  `src/codex/catalog-admission.ts:138-179`;
 - `projectCatalogOnlyOutcome` from its landed owner at
   `src/codex/management-convergence.ts:63-75`;
 - shared `CatalogDisposition`, `ConvergeOutcome`, and `ConvergeCodex` from
@@ -770,7 +837,36 @@ instrumented production log/response/serialization sinks receive neither that
 identity nor the API key, OAuth token, configured secret header, auth-store bytes, or
 their plain SHA-256 values. The named privacy mutation
 **put `apiKey`, header values, token text, or a stable unkeyed credential digest into
-the fingerprint/identity** fails that assertion and `privacy:scan`.
+the fingerprint/identity** must fail those behavioral sink assertions. Round 6
+verified that `bun run privacy:scan` still passes against the current plain auth-store
+digest, so the scanner remains a supplemental hygiene gate and is not proof of this
+non-disclosure property.
+
+Add the model-cache owner/flight matrix with one fake clock and the real public owner
+APIs. Seed nested models through `setCached`, mutate the caller's original nested
+object/array, then attempt the same through `getFreshCached` and `getStaleCached`.
+The owner snapshot and a second read remain byte-identical and recursively frozen.
+The named broken mutation **retain the `setCached` array or return the private cache
+graph** must change the second read without any assignment/epoch and turn this row red.
+
+Pause A after its per-provider decision is captured and before its flight settles.
+Run separate rows for byte-identical `setCached`, `markModelsFetchFailure`, provider
+and all-cache clear, accepted reconciliation, and real budget eviction. Each mutation
+must advance the owner epoch, change B's decision/value identity, and prevent B from
+joining or accepting A. The named broken mutations **omit the set bump for an equal
+replacement**, **omit the failure/cooldown bump**, **omit the clear bump**, **omit the
+reconcile bump**, and **omit the eviction bump** each make exactly their row red. The
+harness observes the epoch immediately around each owner call so a later mutation
+cannot accidentally mask a missing bump; omitting ANY required bump therefore fails.
+
+Finally capture one A immediately before a cache TTL boundary and one immediately
+before a cooldown boundary, advance the fake clock across exactly that boundary with
+no owner mutation, and capture B. B's effective decision changes to `network`, its
+identity differs, and it cannot join A. Instrument the flight body so every
+post-lookup call to `getFreshCached`, `getStaleCached`, or
+`isModelsFetchCoolingDown` fails the test. The named broken mutation **key only epoch
+and stored value, then decide or re-read freshness/cooldown after claiming the
+flight** turns both boundary rows red.
 
 Table-drive every `CatalogSourceRole`: required config target selection,
 filesystem-backed bundled-template source, active catalog, selected hashed backup,
@@ -800,7 +896,7 @@ A's resolved config/source evidence and skip home re-resolution**; it incorrectl
 commits into A while Codex reads B.
 
 Freeze the current target-selection semantics with three real-file fixtures
-(`src/codex/catalog/parsing.ts:52-80`, `src/config.ts:125-160,188-209`):
+(`src/codex/catalog/parsing.ts:52-80`, `src/config.ts:125-164,192-213`):
 
 - relative `model_catalog_json = "nested/a.json"` resolves beneath the canonical
   `CODEX_HOME`, and gather/commit compare and write that derived target. The named
@@ -890,12 +986,14 @@ comparison, parent A→B→A entirely between checks, or a write after the compa
 Broken mutations that must turn T2 red, in addition to the named mutations above:
 omit the required ABSENT config observation, remove digest comparison while retaining
 generation/file identity, release C before callback, acquire C before K, call
-`readConfigGenerationAtPath` from inside the guard, or remove the low-level mutator's
-runtime permit assertion. The absent->present target switch commits obsolete bytes,
+`readConfigGenerationAtPath` from inside the guard, remove the low-level mutator's
+runtime permit assertion, return/retain a mutable model-cache alias, omit any required
+model-cache owner-epoch bump, capture cache/cooldown after map lookup, or omit the
+effective TTL/cooldown boundary from its decision identity. The absent->present target switch commits obsolete bytes,
 the same-inode rewrite commits stale bytes, process B commits N+1 while A is paused,
 retained-gathered X overwrites K-published Y, a leaked/forged/wrong-home permit reaches
-filesystem mutation, inverse order deadlocks/self-contends, or the guard opens the
-forbidden second handle.
+filesystem mutation, a post-mutation/boundary caller joins the wrong provider flight,
+inverse order deadlocks/self-contends, or the guard opens the forbidden second handle.
 
 ### T3 — exact four-step receipt and bytes
 
@@ -977,7 +1075,7 @@ Broken mutations that must turn T5 red: add a static top-level management-conver
 import, alias a catalog writer into a management route, replace a literal import with
 a computed dynamic import, or add an absence-only `existsSync`/target `realpath`
 outside the evidence owner. Also restore a bare-promise flight map, let the flight
-re-resolve auth/native sources after keying, remove the permit parameter from one mutator, add a
+re-resolve auth/native/model-cache decisions after keying, remove the permit parameter from one mutator, add a
 fifth unpermitted root, bypass the permit assertion before one filesystem mutator, or
 invert any lock edge. The sentinel, compile fixture, or fail-closed graph must reject
 each; T2, not the graph, rejects a permit whose runtime lifetime/home is invalid.
@@ -1008,6 +1106,7 @@ Static/focused gates for the WP9 commit:
 
 ```bash
 bun test tests/codex-refresh.test.ts tests/codex-convergence-contract.test.ts
+bun test tests/codex-catalog.test.ts tests/app-owned-memory.test.ts tests/gather-routed-models-single-flight.test.ts
 bun test tests/codex-config-generation.test.ts tests/codex-sync-api.test.ts tests/codex-models-cache-invalidate.test.ts tests/codex-runtime.test.ts
 bun test tests/model-visibility-management-api.test.ts tests/management-provider-validation.test.ts tests/combo-management-api.test.ts tests/codex-v2-gate.test.ts
 bun run typecheck
@@ -1026,7 +1125,7 @@ processes only. No verification invokes `ocx start`, `stop`, `sync`, `restore`,
 | Criterion | Proof | Concrete broken mutation that makes it red |
 |---|---|---|
 | **C1** — gather is filesystem-write-free across user homes and scratch, performs no executable probe/subprocess, and commit is synchronous, fixed, K -> C ordered, one-shot, and receipt-exact | T1 + T3 + T5 | call cold `resolveCodexRuntime`/`loadBundledCodexCatalog`, add an `await` beneath commit, acquire C before K, reorder replacements, pre-set a receipt bit, or replay a consumed candidate |
-| **C2/C17** — complete gather-authority identity prevents or rejects cross-admission flight reuse across config/auth/native/source/process drift without exposing credentials; permanent K makes every first-party authoritative read-transform-write fresh by under-K recomputation or complete post-acquisition evidence revalidation; retained-gathered-first/K-second races are covered against convergence and another retained writer; owner-held config generation, required home/runtime evidence, deeply frozen non-aliased memo snapshots plus epochs, every closed PRESENT/ABSENT source observation, and target identity reject stale work before write; create-once backups publish atomically without clobber | T2 + T3 | restore partial `gatherFlightKey` plus a bare result, omit OAuth/native authority components, put raw or plain-hashed credentials in the identity, leave retained `/api/sync`'s `onDiskCatalog` read before K but guard only replacement, start startup/CLI/restore's authoritative read before K, return or shallow-freeze a private cache snapshot so nested mutation bypasses epoch movement, omit ABSENT `config.toml`/`codex-runtime.json`, skip CODEX_HOME re-resolution, release C before callback, remove same-inode digest comparison, open a second SQLite observer, or replace exclusive publication with overwriting rename |
+| **C2/C17** — complete gather-authority identity prevents or rejects cross-admission flight reuse across config/auth/native/source/process drift without exposing credentials; provider model-cache/cooldown decisions are detached, deeply immutable, owner-epoch-bound, effective-boundary-bound, and captured before flight lookup; permanent K makes every first-party authoritative read-transform-write fresh by under-K recomputation or complete post-acquisition evidence revalidation; retained-gathered-first/K-second races are covered against convergence and another retained writer; owner-held config generation, required home/runtime evidence, deeply frozen non-aliased memo snapshots plus epochs, every closed PRESENT/ABSENT source observation, and target identity reject stale work before write; create-once backups publish atomically without clobber | T2 + T3 | restore partial `gatherFlightKey` plus a bare result, omit OAuth/native authority components, put raw or plain-hashed credentials in the identity, decide/re-read model-cache or cooldown after flight lookup, omit any owner epoch bump or TTL/cooldown boundary identity, leave retained `/api/sync`'s `onDiskCatalog` read before K but guard only replacement, start startup/CLI/restore's authoritative read before K, return or shallow-freeze a private cache snapshot so nested mutation bypasses epoch movement, omit ABSENT `config.toml`/`codex-runtime.json`, skip CODEX_HOME re-resolution, release C before callback, remove same-inode digest comparison, open a second SQLite observer, or replace exclusive publication with overwriting rename |
 | **Catalog/native boundary** — catalog-only never reads/advances the native pair or writes routing/history artifacts | T6 | call `expectation()`/`beginTransition`, add pair fields to `catalog-only`, or invoke config/profile/journal/history writer |
 | **Best-effort compatibility** — all 16 primary writes retain 2xx/201 and original follow-up order for every catalog failure | T4 | let lazy import/factory/admission throw, scope “zero writes” to the whole route, or return before Claude/Desktop follow-up |
 | **C14, WP9-bounded** — the 16 management roots reach catalog writers only through convergence; exactly four documented transitional roots remain until WP12; every low-level mutation requires permanent K's fresh acquisition-bound permit and runtime liveness/transaction/home assertion | T2 barriers + permit negatives + T5 symbol graph | add a fifth root, omit K/permit/assertion from one retained chain, accept a leaked/reused/forged/wrong-home permit, hide a writer through alias/re-export/computed import, or accidentally require WP12 to have already rewired `/api/sync`/startup/CLI/restore |
