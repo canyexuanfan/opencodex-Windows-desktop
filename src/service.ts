@@ -2475,7 +2475,7 @@ export async function serviceStatusReport(
     : null);
   const staleLine = stalePlist && stalePlist.loaded && !stalePlist.matchesPlist
     ? "   launchd is running an OLDER plist than the one on disk.\n"
-      + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service install\n`
+      + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service repair\n`
     : "";
 
   return `⚠️  ${diag.summary}\n`
