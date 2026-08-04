@@ -1116,6 +1116,20 @@ describe("launchctl load verification", () => {
  * a port — so `install`/`start` printed a green checkmark for a service that never
  * served. These helpers answer the second question.
  */
+describe("auth preflight retry command (260804 #970 follow-up)", () => {
+  // The preflight runs before BOTH install and repair. Naming the wrong one costs the
+  // user a round trip: repair refuses a two-manager conflict outright, so recommending
+  // it there is a command guaranteed to fail. Install is the valid conflict recovery
+  // because installWindows removes the native backend first.
+  test("picks the command that can actually succeed", () => {
+    const pick = (installed: boolean, conflict: boolean) =>
+      installed && !conflict ? "ocx service repair" : "ocx service install";
+    expect(pick(true, false)).toBe("ocx service repair");
+    expect(pick(false, false)).toBe("ocx service install");
+    expect(pick(true, true)).toBe("ocx service install");
+  });
+});
+
 describe("service serving confirmation", () => {
   describe("launchdListenPort", () => {
     test("reads the port baked into the plist, not the current config", () => {

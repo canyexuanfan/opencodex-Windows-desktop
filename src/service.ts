@@ -267,13 +267,17 @@ export function assertServiceAuthEnvironment(): void {
   const config = loadConfig();
   if (isLoopbackHostname(config.hostname)) return;
   if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
-  // Reached from `service repair` as well as `install` (serviceCommand and
-  // repairService both assert it), so name the command the caller actually ran —
-  // telling an already-registered user to install re-registers for no reason.
-  const retry = diagnoseService().installed ? "ocx service repair" : "ocx service install";
+  // Reached from `service repair` as well as `install`, so name a command that can
+  // actually succeed. `installed` alone is not enough: repairService() refuses a
+  // Task-Scheduler-plus-WinSW conflict outright, so recommending repair there sends the
+  // user to a command guaranteed to fail. Install IS the valid recovery for a conflict,
+  // because installWindows removes the native backend first. Same predicate as the other
+  // three sites (autostart-health, the health cache, doctor).
+  const diag = diagnoseService();
+  const retry = diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
   throw new Error(
-    "OPENCODEX_API_AUTH_TOKEN is required before installing a service for non-loopback hostname. " +
-      `Set it in the same shell, then rerun \`${retry}\`.`,
+    `OPENCODEX_API_AUTH_TOKEN is required before ${diag.installed ? "refreshing" : "installing"} a service `
+      + `for non-loopback hostname. Set it in the same shell, then rerun \`${retry}\`.`,
   );
 }
 
@@ -1627,6 +1631,9 @@ function installLaunchd(): void {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   const p = plistPath();
+  // Capture this BEFORE writing: the write below makes the plist exist unconditionally,
+  // so a post-write existsSync would call every fresh install an "installed" service.
+  const wasInstalled = existsSync(p);
   writeFileSync(p, buildPlist(), "utf8");
   // Best-effort: an absent job is fine here, and a failed unload is caught by the
   // load verification below with a better message than a raw unload error.
@@ -1641,7 +1648,7 @@ function installLaunchd(): void {
       + `  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n`
       // macOS `service repair` delegates straight to installLaunchd, so this fires for
       // an already-installed service too; repair reloads it without re-registering.
-      + `then re-run '${existsSync(p) ? "ocx service repair" : "ocx service install"}'.`,
+      + `then re-run '${wasInstalled ? "ocx service repair" : "ocx service install"}'.`,
     );
   }
   writeServiceInstallState();
