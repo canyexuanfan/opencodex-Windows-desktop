@@ -134,11 +134,14 @@ The existing probe reads only `proxy.running`/`startup.serviceViable`; reading
 `serviceInstalled` from the same response is a field access, not a new
 mechanism.
 
-So: repair fails → the status probe that already runs reports
-`serviceInstalled === false` → install once → otherwise fall through to the
-direct start without re-registering. Callers inside the TypeScript runtime
-(`src/update/index.ts`, `src/update/job.ts`) can call `diagnoseService()`
-directly.
+So: repair fails → the status probe reports `serviceInstalled === false` →
+install once → otherwise fall through to the direct start without re-registering.
+Callers inside the TypeScript runtime (`src/update/index.ts`,
+`src/update/job.ts`) can call `diagnoseService()` directly.
+
+**Implementation note:** that probe currently runs only on the *success* path,
+after a service command exits 0 (`bin/ocx.mjs:253`). The failure path must move
+or duplicate it. The planned failure-path test is what catches this.
 
 A straight cherry-pick of #970 would import the stale-marker regression; a naive
 fix for it would import a worse one.

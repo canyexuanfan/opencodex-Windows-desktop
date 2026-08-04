@@ -67,6 +67,11 @@ trackers untrustworthy.
 | #915 | cooldown early-recovery probe | #955 |
 | #962 | custom rows inherit provider metadata (carried #965) | #973 |
 | #956 | NIM vision classification | stack 7 |
+
+**#956 closes with a bounded scope statement.** `010` fixes the classification
+for verified ids and explicitly leaves unknown/future NIM models unchanged. The
+closing comment must say so rather than implying a complete fix — otherwise the
+issue reads as resolved for a model NVIDIA ships next month, which it is not.
 | issues fixed by the six carried contributor fixes | — | #953 |
 
 The #953 row is deliberately unresolved here: the six carried fixes

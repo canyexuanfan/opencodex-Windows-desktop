@@ -101,10 +101,25 @@ would advertise image input for every one of them.
 
 ### The constraint, stated honestly
 
-NVIDIA is the first provider in this registry asked to classify over an
-**unbounded** model set. Twelve of the thirteen entries that declare
-`noVisionModels` pair it with a static `models` list; NIM has none, uses live
-discovery, and publishes neither modality nor model-kind metadata.
+Seventeen registry entries declare `noVisionModels`; fifteen pair it with a
+static `models` list:
+
+```console
+$ rg -c "^\s+noVisionModels:" src/providers/registry.ts
+17
+```
+
+The two exceptions are `opencode-go` (`registry.ts:877`) and `opencode-free`
+(`registry.ts:1585`). Neither is a counter-pattern: both classify only known ids
+and leave unknown ones untouched, and `opencode-free` additionally has a
+provider-specific `-free` suffix filter (`provider-fetch.ts:636`) — a model-kind
+signal NVIDIA does not publish.
+
+*(An earlier revision of this section said "12 of 13" and named `opencode-zen`
+as the exception. Both were wrong; see `003_audit_response_r3.md`.)*
+
+NIM has no `models` list, uses live discovery, and publishes neither modality nor
+model-kind metadata.
 
 So an unknown NIM id carries no signal distinguishing a text-only chat model from
 an embedding endpoint. **No predicate over an id string can recover information
@@ -113,15 +128,21 @@ badly but because it claimed knowledge that does not exist.
 
 ### What this design does instead
 
-1. **Enumerate text-only ids**, as #964 did — for a *known* id the
-   classification is real, checkable, and fixes the reported bug. Correct the
-   five false positives.
+1. **Enumerate text-only ids — but only ids we have actually verified.** Draft 3
+   said "for a known id the classification is real and verifiable" while
+   inheriting ~54 unaudited entries from #964 and calling them known. A sixth
+   false positive (`moonshotai/kimi-k2.5`) surfaced immediately after correcting
+   five, so **every carried id is verified against NVIDIA documentation or
+   dropped**. Dropping costs today's behavior; assuming costs a silent
+   regression.
 2. **Pin the 15 verified vision-capable ids** with explicit
    `modelInputModalities: ["text","image"]`, so they become usable instead of
    merely unlisted.
 3. **Leave unknown ids alone.** They keep today's behavior in both directions.
-4. **Surface staleness** with a dated snapshot test, so the list's age is visible
-   rather than silently rotting.
+4. **Record the verification date in the registry comment.** A dated *test* was
+   considered and dropped (`003_audit_response_r3.md`): a local date assertion
+   has no NVIDIA input, so it detects elapsed time rather than drift, and its
+   cheapest CI fix is bumping the date without auditing anything.
 
 | Case | Behavior | Honest? |
 |---|---|---|
@@ -134,11 +155,11 @@ evidence supports. #956 stays partially open for models NVIDIA ships after the
 snapshot — recorded as a known limitation rather than hidden behind a mechanism
 that does not work.
 
-### Point 4 is a maintenance signal, not a correctness guarantee
+### The known-id half is only as good as its audit
 
-The snapshot test tells a maintainer the classification is N days old. It cannot
-tell them it is *wrong*. It must not be described in the PR as if it closed the
-open-world gap.
+This design's correctness rests entirely on the per-id verification, not on the
+list's shape. That is why the audit is a gating step rather than a nicety, and
+why an unverifiable id is dropped instead of carried.
 
 ### Verified vision models also need explicit modalities (audit B2)
 
@@ -241,15 +262,18 @@ Extend `tests/nvidia-nim-hardening.test.ts` (the file #964 also chose):
    `deepseek-ai/deepseek-v4-flash`, `z-ai/glm-5.2`,
    `nvidia/nemotron-3-ultra-550b-a55b`, `openai/gpt-oss-120b`. Sidecar on, no
    image forwarded raw.
-5. **A user's explicit config wins.** A persisted `nvidia` provider that names
-   its own `noVisionModels` is not overridden by the provider default.
+5. **A user's config additions are preserved.** `mergeStringArray` **unions**
+   registry and user arrays (`src/router.ts:95`, `:243`), so a user cannot
+   remove a registry classification by supplying their own list. An earlier
+   revision asserted the user's list "wins", which is not the shipped semantic
+   (`003_audit_response_r3.md`). Replacement/negation semantics would be a
+   separate change with its own design cost; out of scope here.
 6. **A bare persisted nvidia config gets the fix** through `routeModel` — the
    #956 reporter's exact config shape, which today needs a manual workaround.
 7. **The two lists cannot overlap.** A structural assertion that
    `NVIDIA_NIM_VISION_MODELS ∩ NVIDIA_NIM_NO_VISION_MODELS = ∅`, so a future
    edit cannot put an id in both. Ablate by planting a duplicate.
-8. **Snapshot staleness is visible.** The dated-snapshot guard from design point
-   4. It reports age; it does not claim correctness, and its test name says so.
+8. *(Dropped — the dated-snapshot guard. See `003_audit_response_r3.md` R3-B4.)*
 
 Every guard gets driven red by ablation before it counts, per the unit's
 verification discipline.
