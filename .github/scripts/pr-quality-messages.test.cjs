@@ -24,9 +24,10 @@ const ALLOWED_BASES = ["dev"];
 const DEFAULT_BASE = "dev";
 
 describe("inlineCode", () => {
-  it("wraps values in backticks and escapes embedded backticks", () => {
+  it("wraps values with a delimiter longer than any backtick run", () => {
     assert.equal(inlineCode("dev"), "`dev`");
-    assert.equal(inlineCode("a`b"), "`a\\`b`");
+    assert.equal(inlineCode("a`b"), "``a`b``");
+    assert.equal(inlineCode("a``b"), "```a``b```");
     assert.equal(inlineCode(42), "`42`");
   });
 });
@@ -62,13 +63,15 @@ describe("buildReadinessCommentBody", () => {
     assert.ok(body.includes("tick all four boxes there."));
   });
 
-  it("renders the ready-for-review variant when the checklist is absent", () => {
+  it("states the checklist is not required without claiming the PR is ready", () => {
     const body = buildReadinessCommentBody(
       { version: 2 },
       { present: false, complete: false, checked: 0, total: 0, items: [] },
-      [],
+      ["⚠️ **Wrong target branch**"],
     ).join("\n");
     assert.ok(body.includes("not required for this author."));
+    assert.ok(!body.includes("This PR is ready for review"));
+    assert.ok(body.includes("⚠️ **Wrong target branch**"));
     assert.ok(!body.includes("boxes ticked"));
   });
 });
@@ -147,7 +150,20 @@ describe("buildStaleNotice", () => {
       completionHeadSha: null,
       liveHeadSha: "2222222222222222222222222222222222222222"
     });
-    assert.match(notice[0], /ticked before the current head `2222222` was pushed/);
+    assert.ok(notice[0].includes("ticked before the current head `2222222` was pushed"));
+  });
+
+  it("covers an unrecorded complete checklist on synchronize", () => {
+    const notice = buildStaleNotice({
+      completionHeadSha: null,
+      liveHeadSha: "2222222222222222222222222222222222222222",
+      eventAction: "synchronize"
+    });
+    assert.match(
+      notice[0],
+      /synchronize event with no recorded completion head/,
+    );
+    assert.ok(notice[0].includes("current head is `2222222`"));
   });
 
   it("matches the injected section text it resets", () => {

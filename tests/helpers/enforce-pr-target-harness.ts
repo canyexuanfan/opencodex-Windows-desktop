@@ -71,6 +71,12 @@ export type RunOptions = {
    */
   eventPayload?: PullRequestState;
   /**
+   * Webhook `action` delivered on the event (opened/edited/synchronize/...).
+   * Defaults to `"opened"`. Pass `"synchronize"` to exercise push-path
+   * completion provenance rules.
+   */
+  eventAction?: string;
+  /**
    * Comments as `listComments` returns them, PAGE BY PAGE. Pass more than one
    * page to prove the script paginates: an audit round replaced `paginate` with
    * a single `listComments` call, which loses a bot comment that has scrolled
@@ -722,7 +728,7 @@ export async function runEnforcePrTarget(
      * runner and absent here is another `if (payload.x) return;`.
      */
     payload = {
-      action: "opened",
+      action: options.eventAction ?? "opened",
       number: eventPr.number,
       pull_request: eventPr,
       repository: {

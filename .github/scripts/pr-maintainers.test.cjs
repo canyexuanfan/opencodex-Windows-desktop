@@ -30,9 +30,9 @@ describe("parseMaintainerLogins", () => {
     ]);
   });
 
-  it("returns the whole text when the section heading is missing", () => {
+  it("returns an empty list when the section heading is missing", () => {
     const text = "- [@only](https://github.com/only) is listed.";
-    assert.deepEqual(parseMaintainerLogins(text), ["only"]);
+    assert.deepEqual(parseMaintainerLogins(text), []);
   });
 
   it("handles empty and duplicate-free output", () => {

@@ -11,7 +11,13 @@ const {
 const READINESS_MARKER = "<!-- pr-quality-readiness -->";
 
 function inlineCode(value) {
-  return `\`${String(value).replaceAll("`", "\\`")}\``;
+  const text = String(value);
+  const longestBacktickRun = Math.max(
+    0,
+    ...(text.match(/`+/g) ?? []).map(run => run.length)
+  );
+  const delimiter = "`".repeat(longestBacktickRun + 1);
+  return `${delimiter}${text}${delimiter}`;
 }
 
 function readinessChecklistLines(readiness) {
@@ -36,7 +42,7 @@ function buildReadinessCommentBody(state, readiness, extra) {
     "",
     readiness.present
       ? "This PR is kept in **draft** until every requirement below is fulfilled. The tickable checklist has been added to your PR description — tick all four boxes there."
-      : "This PR is ready for review; the review readiness checklist is not required for this author.",
+      : "The review readiness checklist is not required for this author.",
     "",
     ...(readiness.present ? readinessChecklistLines(readiness) : []),
     "",
@@ -152,11 +158,17 @@ function failureSummary(failures, { pr }) {
 }
 
 /** The reset notice shown when a completion no longer covers the live head. */
-function buildStaleNotice({ completionHeadSha, liveHeadSha }) {
+function buildStaleNotice({ completionHeadSha, liveHeadSha, eventAction }) {
+  let lead;
+  if (completionHeadSha !== null) {
+    lead = `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(liveHeadSha.slice(0, 7))}.`;
+  } else if (eventAction === "synchronize") {
+    lead = `A complete checklist was found on a synchronize event with no recorded completion head; the current head is ${inlineCode(liveHeadSha.slice(0, 7))}.`;
+  } else {
+    lead = `The checklist was ticked before the current head ${inlineCode(liveHeadSha.slice(0, 7))} was pushed.`;
+  }
   return [
-    completionHeadSha !== null
-      ? `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(liveHeadSha.slice(0, 7))}.`
-      : `The checklist was ticked before the current head ${inlineCode(liveHeadSha.slice(0, 7))} was pushed.`,
+    lead,
     "The checklist has been reset: re-test against the latest code and tick all four boxes again."
   ];
 }

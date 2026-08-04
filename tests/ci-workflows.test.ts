@@ -1509,6 +1509,42 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
+    test("a synchronize event does not inherit an unrecorded complete checklist", async () => {
+      // The boxes were ticked on head A, but the edited job has not yet
+      // persisted completedAtHeadSha. A synchronize for head B must not
+      // mark B ready with A's attestation; it must reset and re-draft.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        eventAction: "synchronize",
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase([
+        "pulls.get",
+        "pulls.update",
+        "issues.createComment",
+        "graphql",
+        "issues.updateComment",
+      ]));
+      const drafts = callsTo(result, "graphql") as [{ query: string }];
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]!.query).toContain("convertPullRequestToDraft");
+      expect(drafts[0]!.query).not.toContain("markPullRequestReadyForReview");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "A complete checklist was found on a synchronize event with no recorded completion head",
+      );
+      expect(readinessBody).toContain("**0/4** boxes ticked");
+      expect(readinessBody).toContain('"completedAtHeadSha":null');
+      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(readinessBody).not.toContain("Maintainers notified");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
     test("a completion recorded while quality gates fail still binds the head", async () => {
       // The mustDraft failure path returns before the completion block, so
       // without an explicit record the checklist would stay unbound while a

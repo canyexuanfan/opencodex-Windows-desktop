@@ -108,7 +108,9 @@ function defaultReadinessState() {
  * live head (new commits landed after the last completion) or when the boxes
  * were ticked in an event that saw an older head than the live one — a push
  * raced the `edited` job, so no completion head was recorded yet but the
- * ticks predate the code under review.
+ * ticks predate the code under review — or when a synchronize event sees a
+ * complete checklist with no recorded head at all (the completion job may
+ * still be queued for an older head).
  */
 function completionIsStale({
   checklistRequired,
@@ -116,20 +118,31 @@ function completionIsStale({
   readinessPresent,
   completionHeadSha,
   eventHeadSha,
-  liveHeadSha
+  liveHeadSha,
+  eventAction
 }) {
   const completionRecordedForLiveHead =
     completionHeadSha !== null && completionHeadSha === liveHeadSha;
+  // A push raced the edited job: the event still carries the older head the
+  // boxes were ticked against.
   const ticksPredateLiveHead =
     completionHeadSha === null &&
     checklistComplete &&
     eventHeadSha !== liveHeadSha;
+  // A complete checklist with no recorded head on synchronize has no
+  // provenance for which head was attested. The edited job may still be
+  // queued for an older head; do not let this push inherit that attestation.
+  const unrecordedCompleteOnSynchronize =
+    completionHeadSha === null &&
+    checklistComplete &&
+    eventAction === "synchronize";
 
   return (
     checklistRequired &&
     readinessPresent &&
     ((completionHeadSha !== null && !completionRecordedForLiveHead) ||
-      ticksPredateLiveHead)
+      ticksPredateLiveHead ||
+      unrecordedCompleteOnSynchronize)
   );
 }
 

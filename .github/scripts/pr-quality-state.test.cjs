@@ -151,6 +151,32 @@ describe("completionIsStale", () => {
       false,
     );
   });
+  it("is stale when a complete checklist has no recorded head on synchronize", () => {
+    assert.equal(
+      completionIsStale({
+        ...base,
+        checklistComplete: true,
+        completionHeadSha: null,
+        eventHeadSha: base.liveHeadSha,
+        eventAction: "synchronize"
+      }),
+      true,
+    );
+  });
+
+  it("is not stale for an unrecorded complete checklist on a non-synchronize event", () => {
+    assert.equal(
+      completionIsStale({
+        ...base,
+        checklistComplete: true,
+        completionHeadSha: null,
+        eventHeadSha: base.liveHeadSha,
+        eventAction: "edited"
+      }),
+      false,
+    );
+  });
+
 
   it("is not stale for maintainers or absent checklists", () => {
     assert.equal(

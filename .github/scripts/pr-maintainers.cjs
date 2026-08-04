@@ -3,20 +3,23 @@
 /**
  * Maintainers from `MAINTAINERS.md` text. Only the current-maintainers table
  * is authoritative; the change log below it can mention retired accounts.
+ * Missing the section heading means we cannot identify current maintainers,
+ * so the recipient list is empty rather than scanning the whole file.
  */
 function parseMaintainerLogins(text) {
   const sectionStart = text.indexOf("## Current maintainers");
+  if (sectionStart === -1) {
+    return [];
+  }
+
   const nextHeading = text.indexOf(
     "\n## ",
     sectionStart + "## Current maintainers".length
   );
-  const section =
-    sectionStart === -1
-      ? text
-      : text.slice(
-          sectionStart,
-          nextHeading === -1 ? text.length : nextHeading
-        );
+  const section = text.slice(
+    sectionStart,
+    nextHeading === -1 ? text.length : nextHeading
+  );
   const logins = [
     ...section.matchAll(
       /\[\@([A-Za-z0-9_-]+)\]\(https:\/\/github\.com\/[^)]*\)/g
