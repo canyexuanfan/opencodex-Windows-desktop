@@ -36,8 +36,8 @@ export function payloadRewriteAsBlockRewrite(rewrite: SsePayloadRewrite): SseBlo
 /** Chain block rewrites: every block stage N emits feeds stage N+1. */
 export function composeSseBlockRewrites(...rewrites: SseBlockRewrite[]): SseBlockRewrite {
   const active = rewrites.filter(Boolean);
-  if (active.length === 0) return (block) => [block];
-  return (block) => {
+  if (active.length === 0) return Object.assign((block: string) => [block], {});
+  const composed: SseBlockRewrite = (block: string) => {
     let blocks: readonly string[] = [block];
     for (const rewrite of active) {
       const next: string[] = [];
@@ -46,6 +46,17 @@ export function composeSseBlockRewrites(...rewrites: SseBlockRewrite[]): SseBloc
     }
     return blocks;
   };
+  // Child disposal is part of the contract: one idempotent disposer for the
+  // whole chain, so relay teardown never leaks a nested collector.
+  let disposed = false;
+  composed.dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const rewrite of active) {
+      try { rewrite.dispose?.(); } catch { /* teardown must not throw */ }
+    }
+  };
+  return composed;
 }
 
 /** Split one complete SSE event block while retaining its original blank-line delimiter. */
@@ -128,6 +139,13 @@ export function relaySseWithBlockRewrite(
   const encoder = new TextEncoder();
   let buffer = "";
   let bufferBytes = 0;
+  // Relays have several independent teardown paths; disposal is exactly once.
+  let disposed = false;
+  const disposeRewrite = (): void => {
+    if (disposed) return;
+    disposed = true;
+    try { rewrite.dispose?.(); } catch { /* teardown must not throw */ }
+  };
 
   const appendBuffer = (fragment: string): void => {
     if (!fragment) return;
@@ -207,7 +225,7 @@ export function relaySseWithBlockRewrite(
           appendBuffer(decoder.decode());
           emitProcessedBlocks(controller, true);
           releaseBuffer();
-          rewrite.dispose?.();
+          disposeRewrite();
           controller.close();
           return;
         }
@@ -215,14 +233,14 @@ export function relaySseWithBlockRewrite(
         emitProcessedBlocks(controller);
       } catch (error) {
         releaseBuffer();
-        rewrite.dispose?.();
+        disposeRewrite();
         try { await reader.cancel(error); } catch { /* already closed */ }
         controller.error(error);
       }
     },
     cancel(reason) {
       releaseBuffer();
-      rewrite.dispose?.();
+      disposeRewrite();
       reader.cancel(reason).catch(() => {});
     },
   });

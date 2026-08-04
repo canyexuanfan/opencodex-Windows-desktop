@@ -175,6 +175,10 @@ type OpenItem = {
   item: Record<string, unknown>;
 };
 
+/** Open-item retention bounds (#893 review): aggregate, not just per-item. */
+const MAX_OPEN_ITEMS = MAX_COMPLETED_OUTPUT_ITEMS;
+const MAX_OPEN_ITEM_AGGREGATE_TEXT_BYTES = MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES;
+
 type RetainedOutputItem = {
   item: Record<string, unknown>;
   sourceBytes: number;
@@ -196,6 +200,7 @@ export function createResponsesSnapshotBlockRewrite(
   const openItems = new Map<number, OpenItem>();
   const completedItems = new Map<number, RetainedOutputItem>();
   let aggregateItemBytes = 0;
+  let aggregateOpenTextBytes = 0;
   let tainted = false;
 
   const releaseRetained = (): void => {
@@ -205,7 +210,21 @@ export function createResponsesSnapshotBlockRewrite(
     completedItems.clear();
     openItems.clear();
     aggregateItemBytes = 0;
+    aggregateOpenTextBytes = 0;
     tainted = false;
+  };
+
+  const taintAndRelease = (): void => {
+    // Fail closed means stop RETAINING too: open state and charged collectors
+    // are released immediately, and no further state accumulates (#893 review).
+    if (aggregateItemBytes > 0) {
+      budget?.releaseRetained(aggregateItemBytes, { kind: "retained_collectors" });
+    }
+    completedItems.clear();
+    openItems.clear();
+    aggregateItemBytes = 0;
+    aggregateOpenTextBytes = 0;
+    tainted = true;
   };
 
   const retainCompletedItem = (index: number, item: Record<string, unknown>): void => {
@@ -217,7 +236,7 @@ export function createResponsesSnapshotBlockRewrite(
         aggregateItemBytes -= previous.sourceBytes;
         budget?.releaseRetained(previous.sourceBytes, { kind: "retained_collectors" });
       }
-      tainted = true;
+      taintAndRelease();
       return;
     }
     const retainedDelta = sourceBytes - (previous?.sourceBytes ?? 0);
@@ -239,7 +258,8 @@ export function createResponsesSnapshotBlockRewrite(
       completedItems.delete(highestIndex);
       aggregateItemBytes -= evicted.sourceBytes;
       budget?.releaseRetained(evicted.sourceBytes, { kind: "retained_collectors" });
-      tainted = true;
+      taintAndRelease();
+      return;
     }
   };
 
@@ -278,13 +298,15 @@ export function createResponsesSnapshotBlockRewrite(
       const itemType = typeof event.item.type === "string" ? event.item.type : "";
       const id = typeof event.item.id === "string" ? event.item.id : undefined;
       if (outputIndex === undefined || !id) {
-        tainted = true;
+        taintAndRelease();
       } else {
-        if (openItems.has(outputIndex)) tainted = true; // contradictory reuse of an open index
+        if (openItems.has(outputIndex)) taintAndRelease(); // contradictory reuse of an open index
+        if (openItems.size >= MAX_OPEN_ITEMS) taintAndRelease(); // aggregate retention bound
         // Unsupported types (function_call, …) reserve their index but are
         // never injected — a sparse gateway that leaves one open blocks only
         // the terminal reconstruction, not message repair (#893 review).
         const injectable = itemType === "message" || itemType === "reasoning";
+        if (!tainted) {
         openItems.set(outputIndex, {
           itemId: id,
           outputIndex,
@@ -296,6 +318,7 @@ export function createResponsesSnapshotBlockRewrite(
           text: "",
           item: event.item,
         });
+        }
       }
       const item = repairOutputItem(event.item, "in_progress");
       if (item !== event.item) {
@@ -305,7 +328,7 @@ export function createResponsesSnapshotBlockRewrite(
     }
 
     if (type === "response.output_item.done" && !isPlainObject(event.item)) {
-      tainted = true;
+      taintAndRelease();
     }
 
     if (type === "response.output_item.done" && isPlainObject(event.item)) {
@@ -314,11 +337,21 @@ export function createResponsesSnapshotBlockRewrite(
         nextEvent = { ...nextEvent, item };
         changed = true;
       }
+      // Identity correlation: a done event only closes the tracked item when
+      // id AND type agree — a mismatched done is a contradictory stream and
+      // must go fail-closed rather than close/reconstruct the wrong item.
+      const tracked = outputIndex !== undefined ? openItems.get(outputIndex) : undefined;
+      const doneId = typeof event.item.id === "string" ? event.item.id : undefined;
+      const doneType = typeof event.item.type === "string" ? event.item.type : undefined;
+      if (tracked && (doneId !== tracked.itemId || doneType !== tracked.type)) {
+        taintAndRelease();
+        return [changed ? jsonBlock(nextEvent) : block];
+      }
       if (outputIndex !== undefined && typeof item.type === "string" && item.type.trim().length > 0) {
         openItems.delete(outputIndex);
         retainCompletedItem(outputIndex, item);
       } else {
-        tainted = true;
+        taintAndRelease();
       }
     }
 
@@ -357,11 +390,14 @@ export function createResponsesSnapshotBlockRewrite(
     if (type === "response.output_text.delta" && typeof event.delta === "string" && outputIndex !== undefined) {
       const open = openItems.get(outputIndex);
       if (open && (itemId === undefined || itemId === open.itemId)) {
+        const deltaBytes = Buffer.byteLength(event.delta, "utf8");
         open.text += event.delta;
+        aggregateOpenTextBytes += deltaBytes;
         // Unbounded text accumulation is a retention hole (#893 review):
-        // overshoot the per-item byte cap and the stream goes fail-closed.
-        if (Buffer.byteLength(open.text, "utf8") > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES) {
-          tainted = true;
+        // overshoot per-item or aggregate caps and the stream goes fail-closed.
+        if (Buffer.byteLength(open.text, "utf8") > MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES
+          || aggregateOpenTextBytes > MAX_OPEN_ITEM_AGGREGATE_TEXT_BYTES) {
+          taintAndRelease();
         }
       }
     }
@@ -519,6 +555,12 @@ export function repairResponsesSnapshotJson(payload: string, requestBody?: unkno
     return payload;
   }
   if (!isPlainObject(response)) return payload;
+  // Canonical output for non-stream completed responses: absent or malformed
+  // output becomes the canonical empty list; explicit arrays stay authoritative.
+  if (!Array.isArray(response.output)) {
+    const repaired = repairResponseSnapshot({ ...response, output: [] }, "completed", requestDefaults(requestBody));
+    return JSON.stringify(repaired);
+  }
   const repaired = repairResponseSnapshot(response, "completed", requestDefaults(requestBody));
   return repaired === response ? payload : JSON.stringify(repaired);
 }

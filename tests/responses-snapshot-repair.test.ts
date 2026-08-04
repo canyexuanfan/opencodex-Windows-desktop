@@ -254,6 +254,32 @@ describe("createResponsesSnapshotBlockRewrite", () => {
       expect(frame.indexOf("\ndata:")).toBe(-1);
     }
   });
+
+  test("a done event with a mismatched identity closes nothing and fails closed", () => {
+    const rewrite = createResponsesSnapshotBlockRewrite();
+    rewrite(dataBlock(ISSUE_FIXTURE.itemAdded)); // tracks msg_1
+    rewrite(dataBlock({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: { type: "message", id: "msg_WRONG", status: "completed", content: [{ type: "output_text", text: "wrong", annotations: [] }] },
+    }));
+    const out = rewrite(dataBlock(ISSUE_FIXTURE.completed));
+    // Fail closed: no injection, and the wrong item is never reconstructed.
+    expect(typesOf(out)).toEqual(["response.completed"]);
+    expect(JSON.stringify(out)).not.toContain("msg_WRONG");
+    const terminal = eventsOf(out)[0]!.response as Record<string, unknown>;
+    expect(Object.hasOwn(terminal, "output")).toBe(false);
+  });
+
+  test("composed chains dispose every child exactly once", () => {
+    let disposed = 0;
+    const childA = Object.assign((block: string) => [block], { dispose: () => { disposed++; } });
+    const childB = Object.assign((block: string) => [block], { dispose: () => { disposed++; } });
+    const chain = composeSseBlockRewrites(childA, childB);
+    chain.dispose?.();
+    chain.dispose?.();
+    expect(disposed).toBe(2);
+  });
 });
 
 describe("repairResponsesSnapshotJson", () => {
