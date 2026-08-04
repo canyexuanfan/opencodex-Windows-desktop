@@ -78,3 +78,54 @@ minting and must not weaken packaged-build auth.
 - All gates in step 4 pass; evidence pasted into the phase record.
 - `gh pr view 988 --json state` shows `MERGED`; `origin/dev` contains the
   merge commit.
+
+## Review verdict (main + Franklin sol-medium independent pass)
+
+Security design: PASS. `/opencodex-session` responds only when
+`issueGuiSession` succeeds (`src/server/index.ts:995-1004`); issuance
+requires GET, local mode, allowed origin, loopback Host
+(`src/server/management-auth.ts:213-237`); session use rechecks origin +
+CSRF (`management-auth.ts:287-300`); bootstrap docs are no-store,
+frame-denied, attribute-escaped (`src/server/gui-static.ts:59-105`).
+`changeOrigin:false` keeps the Vite origin across bootstrap + `/api`
+(`gui/vite.config.ts:19-27`); the client holds credentials in memory,
+same-origin only (`gui/src/api.ts:28-35,81-87,108-120,145-156`).
+Emoji ban: PASS. Contrast: PASS with margin after the fix (`--amber` =
+6.26:1 light, 9.65:1 dark, better than the PR's hardcoded pair).
+
+Corrections applied as commit `e2d8ca430` on the PR branch
+(maintainerCanModify, pushed after full pre-push gates):
+
+1. a11y FAIL (merge-blocking): silent revalidation was announced by
+   `aria-busy` alone — no live region. Added an sr-only
+   `role="status" aria-live="polite" aria-atomic="true"` span carrying
+   `common.loading` inside the Combos shell body
+   (`gui/src/pages/Combos.tsx`) and the Models combos pending strut
+   (`gui/src/pages/Models.tsx`), matching the `DataSurfaceStatus` contract
+   (`gui/src/components/data-surface.tsx:64-89`).
+   `gui/tests/page-loading-contract.test.tsx` now asserts the
+   role/live/sr-only/text contract, not just the attribute flip.
+2. Claude pool toggle accessible name was state-only ("On"/"Off") — now the
+   stable `anthropicPool.title`; `aria-pressed` carries state
+   (`gui/src/components/provider-workspace/AnthropicAccountPoolSettings.tsx`).
+3. Token bypasses: warning hex pair → `var(--amber)`
+   (`gui/src/styles/provider-overview-dashboard.css`); `72ch` →
+   `var(--prose-measure)`, stale status-strip comment rewritten
+   (`gui/src/styles-combos-workspace.css`); `48px` → `var(--space-12)`
+   (`gui/src/styles-models-workspace.css`).
+
+Left as-is (not merge-blocking): inline `8px`/`fontSize: 12` in the combo
+forms (pre-existing file-local pattern); extra rendered-toggle and live
+cross-origin negative tests (unit-level origin/CSRF negatives already cover
+the gate; follow-up candidate).
+
+## Gate evidence (pre-push, local)
+
+- `bun run typecheck` — 0 errors
+- `bun run lint:gui` — pass
+- `bun run build:gui` — pass
+- `cd gui && bun test tests` — 584 pass / 0 fail
+- `bun test tests/provider-workspace-auth.test.ts tests/server-management-auth.test.ts`
+  — 35 pass / 0 fail
+- Pre-push hook (typecheck + lint + full `bun run test` + privacy:scan +
+  doctor) — passed, push exit 0
