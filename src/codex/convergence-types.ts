@@ -332,15 +332,78 @@ export interface CodexCoordinatorTransactionController {
   close(): void;
 }
 
-/** The minimal, working WP8b/WP9 snapshot; it authorizes catalog work only. */
+/** Why a filesystem observation influenced catalog preparation. Closed by contract. */
+export type CatalogRequiredSourceRole = "catalog-target-selection";
+
+export type CatalogConditionalSourceRole =
+  | "bundled-catalog-template"
+  | "active-catalog-merge"
+  | "hashed-backup-fallback"
+  | "legacy-backup-fallback"
+  | "models-cache-fallback"
+  | "runtime-selection"
+  | "provider-auth-selection";
+
+export type CatalogSourceRole =
+  | CatalogRequiredSourceRole
+  | CatalogConditionalSourceRole;
+
+/** Portable normalized identity: POSIX dev/inode or Windows volume/file id. */
+export interface CatalogFilesystemIdentity {
+  readonly volume: string;
+  readonly fileId: string;
+}
+
+export interface CatalogParentIdentity extends CatalogFilesystemIdentity {
+  readonly canonicalPath: string;
+}
+
+/** Exact gather-time evidence for one consulted filesystem source. */
+export type CatalogSourceObservation<R extends CatalogSourceRole = CatalogSourceRole> =
+  | {
+      readonly state: "present";
+      readonly role: R;
+      readonly logicalPath: string;
+      readonly canonicalPath: string;
+      readonly parentIdentity: CatalogParentIdentity;
+      readonly fileIdentity: CatalogFilesystemIdentity;
+      /** Digest of the exact buffer returned to gather. */
+      readonly sha256: string;
+    }
+  | {
+      readonly state: "absent";
+      readonly role: R;
+      readonly logicalPath: string;
+      readonly canonicalPath: string;
+      readonly parentIdentity: CatalogParentIdentity;
+      readonly fileIdentity: null;
+    };
+
+export type CatalogRequiredSourceObservations = Readonly<{
+  [R in CatalogRequiredSourceRole]: CatalogSourceObservation<R>;
+}>;
+
+export type CatalogConditionalSourceObservations = Readonly<{
+  [R in CatalogConditionalSourceRole]: readonly CatalogSourceObservation<R>[];
+}>;
+
+export interface CatalogSourceEvidence {
+  readonly required: CatalogRequiredSourceObservations;
+  /** Every role is a required key; an empty list means the role was not consulted. */
+  readonly conditional: CatalogConditionalSourceObservations;
+}
+
+/** The shared WP8b/WP9 snapshot; it authorizes catalog work only. */
 export interface CatalogAdmissionSnapshot {
   config: Readonly<OcxConfig>;
-  generation: number;
+  generation: ConfigGeneration;
   targets: Readonly<{
     catalog: string;
     cache: string;
     catalogBackups: readonly string[];
   }>;
+  /** Candidate-bound present/absent evidence, produced by the sole read owner. */
+  sourceEvidence: CatalogSourceEvidence;
 }
 
 export interface AdmissionSnapshot {

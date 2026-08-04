@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -12,8 +13,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { captureCatalogAdmissionSnapshot } from "../src/codex/catalog-admission";
+import type {
+  CatalogConditionalSourceObservations,
+  CatalogConditionalSourceRole,
+  CatalogRequiredSourceObservations,
+  CatalogRequiredSourceRole,
+  CatalogSourceEvidence,
+} from "../src/codex/convergence-types";
 import { saveConfig } from "../src/config";
 import type { OcxConfig } from "../src/types";
+
+const CONDITIONAL_SOURCE_ROLES = [
+  "active-catalog-merge",
+  "bundled-catalog-template",
+  "hashed-backup-fallback",
+  "legacy-backup-fallback",
+  "models-cache-fallback",
+  "provider-auth-selection",
+  "runtime-selection",
+] as const satisfies readonly CatalogConditionalSourceRole[];
+
+type IsAssignable<From, To> = [From] extends [To] ? true : false;
+type MissingRequiredEvidence = Omit<CatalogSourceEvidence, "required"> & Readonly<{
+  required: Omit<CatalogRequiredSourceObservations, CatalogRequiredSourceRole>;
+}>;
+type MissingConditionalEvidence = Omit<CatalogSourceEvidence, "conditional"> & Readonly<{
+  conditional: Omit<CatalogConditionalSourceObservations, "runtime-selection">;
+}>;
+
+const STRUCTURALLY_INVALID_EVIDENCE_ASSIGNABILITY: readonly [
+  IsAssignable<MissingRequiredEvidence, CatalogSourceEvidence>,
+  IsAssignable<MissingConditionalEvidence, CatalogSourceEvidence>,
+] = [false, false];
 
 let testRoot = "";
 let codexHome = "";
@@ -55,7 +86,7 @@ test("captures the given config reference, generation, and catalog target identi
 
   expect(snapshot.config).toBe(residentConfig);
   expect(snapshot.config.port).toBe(30300);
-  expect(snapshot.generation).toBe(1);
+  expect(snapshot.generation).toEqual({ value: 1 });
   expect(JSON.parse(snapshot.targets.catalog)).toMatchObject({
     path: join(codexHome, "opencodex-catalog.json"),
     canonicalParent: codexHome,
@@ -68,6 +99,60 @@ test("captures the given config reference, generation, and catalog target identi
     fileIdentity: { device: expect.any(String), inode: expect.any(String) },
   });
   expect(snapshot.targets.catalogBackups).toHaveLength(2);
+
+  expect(snapshot.sourceEvidence.required["catalog-target-selection"]).toEqual({
+    state: "absent",
+    role: "catalog-target-selection",
+    logicalPath: join(codexHome, "config.toml"),
+    canonicalPath: join(codexHome, "config.toml"),
+    parentIdentity: {
+      canonicalPath: codexHome,
+      volume: expect.any(String),
+      fileId: expect.any(String),
+    },
+    fileIdentity: null,
+  });
+  expect(Object.keys(snapshot.sourceEvidence.conditional).sort()).toEqual(CONDITIONAL_SOURCE_ROLES);
+  for (const observations of Object.values(snapshot.sourceEvidence.conditional)) {
+    expect(observations).toEqual([]);
+  }
+});
+
+test("captures PRESENT catalog target-selection evidence from the exact config bytes", () => {
+  const selectedCatalog = join(codexHome, "selected-catalog.json");
+  const configBytes = Buffer.from(
+    `model_catalog_json = ${JSON.stringify(selectedCatalog)}\n`,
+    "utf8",
+  );
+  writeFileSync(join(codexHome, "config.toml"), configBytes);
+
+  const snapshot = captureCatalogAdmissionSnapshot(config());
+  const observation = snapshot.sourceEvidence.required["catalog-target-selection"];
+
+  expect(JSON.parse(snapshot.targets.catalog)).toMatchObject({ path: selectedCatalog });
+  if (observation.state !== "present") {
+    throw new Error(`Expected PRESENT target-selection evidence, received ${observation.state}.`);
+  }
+  expect(observation).toEqual({
+    state: "present",
+    role: "catalog-target-selection",
+    logicalPath: join(codexHome, "config.toml"),
+    canonicalPath: join(codexHome, "config.toml"),
+    parentIdentity: {
+      canonicalPath: codexHome,
+      volume: expect.any(String),
+      fileId: expect.any(String),
+    },
+    fileIdentity: {
+      volume: expect.any(String),
+      fileId: expect.any(String),
+    },
+    sha256: createHash("sha256").update(configBytes).digest("hex"),
+  });
+});
+
+test("rejects missing required and conditional evidence keys structurally", () => {
+  expect(STRUCTURALLY_INVALID_EVIDENCE_ASSIGNABILITY).toEqual([false, false]);
 });
 
 test("changes target identity when a parent symlink retargets without changing the path", () => {

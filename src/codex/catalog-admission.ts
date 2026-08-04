@@ -7,23 +7,29 @@
  * later phase. This reader therefore captures only the exact resident config,
  * its cooperating generation, and identities for catalog-owned targets.
  */
-import { realpathSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 
 import { readConfigGeneration } from "../config";
 import type { OcxConfig } from "../types";
 import type {
   CatalogAdmissionSnapshot,
   CatalogConvergeRequestInput,
+  CatalogFilesystemIdentity,
+  CatalogSourceObservation,
   ConvergeRequest,
 } from "./convergence-types";
 import {
+  activeCodexConfigPath,
+  activeDefaultCatalogPath,
   activeCodexModelsCachePath,
   catalogBackupPathFor,
   isDefaultCatalogPath,
   legacyCatalogBackupPath,
-  readCodexCatalogPath,
+  resolveActiveCodexConfigPath,
 } from "./catalog/parsing";
+import { readRootTomlString } from "./paths";
 
 /**
  * Construct the one request shape permitted for management catalog refreshes.
@@ -76,6 +82,64 @@ function captureTargetIdentity(path: string): string {
   });
 }
 
+function catalogFilesystemIdentity(
+  entry: Readonly<{ dev: bigint; ino: bigint }>,
+): CatalogFilesystemIdentity {
+  return { volume: String(entry.dev), fileId: String(entry.ino) };
+}
+
+function captureCatalogTargetSelection(): Readonly<{
+  catalogPath: string;
+  observation: CatalogSourceObservation<"catalog-target-selection">;
+}> {
+  const logicalPath = resolve(activeCodexConfigPath());
+  const canonicalParent = realpathSync.native(dirname(logicalPath));
+  const parent = statSync(canonicalParent, { bigint: true });
+  const parentIdentity = {
+    canonicalPath: canonicalParent,
+    ...catalogFilesystemIdentity(parent),
+  };
+
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(logicalPath);
+  } catch (error) {
+    if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") {
+      throw error;
+    }
+    return {
+      catalogPath: activeDefaultCatalogPath(),
+      observation: {
+        state: "absent",
+        role: "catalog-target-selection",
+        logicalPath,
+        canonicalPath: resolve(canonicalParent, basename(logicalPath)),
+        parentIdentity,
+        fileIdentity: null,
+      },
+    };
+  }
+
+  const canonicalPath = realpathSync.native(logicalPath);
+  const file = statSync(canonicalPath, { bigint: true });
+  const configuredCatalogPath = readRootTomlString(bytes.toString("utf8"), "model_catalog_json");
+
+  return {
+    catalogPath: configuredCatalogPath
+      ? resolveActiveCodexConfigPath(configuredCatalogPath)
+      : activeDefaultCatalogPath(),
+    observation: {
+      state: "present",
+      role: "catalog-target-selection",
+      logicalPath,
+      canonicalPath,
+      parentIdentity,
+      fileIdentity: catalogFilesystemIdentity(file),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    },
+  };
+}
+
 /**
  * Capture the catalog-only evidence WP9 can validate without consulting WP12.
  * The config reference is retained verbatim; no persisted config re-read may
@@ -89,7 +153,8 @@ export function captureCatalogAdmissionSnapshot(
     throw new Error(`Cannot capture Codex catalog admission: config generation is ${generation.reason}.`);
   }
 
-  const catalogPath = readCodexCatalogPath();
+  const targetSelection = captureCatalogTargetSelection();
+  const catalogPath = targetSelection.catalogPath;
   const backupPaths = [
     catalogBackupPathFor(catalogPath),
     ...(isDefaultCatalogPath(catalogPath) ? [legacyCatalogBackupPath()] : []),
@@ -97,11 +162,25 @@ export function captureCatalogAdmissionSnapshot(
 
   return {
     config,
-    generation: generation.generation.value,
+    generation: generation.generation,
     targets: {
       catalog: captureTargetIdentity(catalogPath),
       cache: captureTargetIdentity(activeCodexModelsCachePath()),
       catalogBackups: backupPaths.map(captureTargetIdentity),
+    },
+    sourceEvidence: {
+      required: {
+        "catalog-target-selection": targetSelection.observation,
+      },
+      conditional: {
+        "bundled-catalog-template": [],
+        "active-catalog-merge": [],
+        "hashed-backup-fallback": [],
+        "legacy-backup-fallback": [],
+        "models-cache-fallback": [],
+        "runtime-selection": [],
+        "provider-auth-selection": [],
+      },
     },
   };
 }
