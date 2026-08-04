@@ -80,6 +80,9 @@ answered in `020` before any code is written.
 | Doc | Contents |
 |---|---|
 | `001_audit_response.md` | A-gate FAIL — five blockers, synthesis, and what changed |
+| `002_audit_response_r2.md` | A-gate FAIL round 2 — root cause and the design that follows |
+| `003_audit_response_r3.md` | A-gate FAIL round 3 — a sixth false positive changes the method |
 | `010_nim_vision_classification.md` | #964 reconstruction — the classification design and its diff |
+| `011_nim_id_audit.md` | per-id verification of #964's list: 26 ship, 6 reversed, 32 dropped |
 | `020_service_repair_path.md` | #970 reconstruction — call-site inventory and the after-stop safety proof |
 | `030_merge_and_close_sequence.md` | bottom-up merge order, retargeting, and issue closure evidence |

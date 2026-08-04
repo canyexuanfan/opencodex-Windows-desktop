@@ -194,6 +194,7 @@ google/gemma-4-31b-it
 google/diffusiongemma-26b-a4b-it
 minimaxai/minimax-m3
 moonshotai/kimi-k2.6
+moonshotai/kimi-k2.5
 stepfun-ai/step-3.7-flash
 thinkingmachines/inkling
 mistralai/mistral-medium-3.5-128b
@@ -222,9 +223,12 @@ edits — the reason this draft is implementable where draft 2 was not.
 1. `NVIDIA_NIM_VISION_MODELS` — the 15 verified ids, with a comment recording the
    verification date, per-model source, and the standing instruction that a new
    NIM model must be classified deliberately, never assumed.
-2. `NVIDIA_NIM_NO_VISION_MODELS` — the text-only enumeration, seeded from #964's
-   list with the five false positives removed and the existing
-   `NVIDIA_NIM_KIMI_MODELS` reconciled (kimi-k2.6 moves to the vision list).
+2. `NVIDIA_NIM_NO_VISION_MODELS` — **the 26 ids verified in `011_nim_id_audit.md`
+   and no others.** #964 submitted ~64; six were image-capable and 32 could not
+   be verified against any current NVIDIA page, so they are dropped rather than
+   carried. `NVIDIA_NIM_KIMI_MODELS` is reconciled: k2.5 and k2.6 move to the
+   vision list while k2-thinking and k2-instruct stay text-only, and all four
+   remain in the reasoning-suppression list, which is an independent axis.
 3. `modelInputModalities` pinning `["text","image"]` for each vision id (B2),
    following `ZHIPU_BIGMODEL_INPUT_MODALITIES` (`src/providers/registry.ts:327-331`).
 4. Set `noVisionModels` on the `nvidia` entry and extend the entry comment with
