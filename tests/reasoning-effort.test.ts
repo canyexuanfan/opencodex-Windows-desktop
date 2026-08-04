@@ -640,14 +640,14 @@ describe("thinking-budget models (260709)", () => {
         },
       },
     } as unknown as OcxConfig;
-    const route = routeModel(config, "alibaba-token-plan/qwen3.8-max-preview");
+    const route = routeModel(config, "alibaba-token-plan/qwen3.8-max");
 
     expect(route.provider.modelInputModalities?.[route.modelId]).toEqual(["text", "image"]);
     expect(route.provider.thinkingBudgetModels).toContain(route.modelId);
     expect(route.provider.modelReasoningEfforts?.[route.modelId]).toEqual(["low", "medium", "high", "xhigh", "max"]);
 
     const body = buildBody(route.provider, route.modelId, { reasoning: "max", maxOutputTokens: 65536 });
-    expect(body).toMatchObject({ model: "qwen3.8-max-preview", thinking_budget: 65536 });
+    expect(body).toMatchObject({ model: "qwen3.8-max", thinking_budget: 65536 });
     expect(body).not.toHaveProperty("reasoning_effort");
   });
 

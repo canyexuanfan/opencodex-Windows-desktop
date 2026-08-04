@@ -42,7 +42,11 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
     expect(src).toContain("spawnWorkerFn: spawnGuiUpdateWorker");
     // Foreign listeners must stay fail-closed; npm rename is covered by ocx identity.
     expect(src).not.toContain("killAnyListenPidOnPort");
-    expect(src).toContain('process.platform === "win32" && process.env.OCX_SERVICE === "1"');
+    // 260804 #970: this skip is now conditional on the refresh actually re-registering.
+    // `service repair` needs no elevation, so skipping it would leave the dashboard
+    // update — the common Windows path — with a stale service it could have refreshed.
+    expect(src).toContain('process.env.OCX_SERVICE === "1" && refreshRegisters');
+    expect(src).toContain('const refreshRegisters = (svcArgs ?? []).includes("install")');
     // Native WinSW installs must stop via stopWinswService, not Task Scheduler /end only.
     expect(src).toContain("readServiceBackend");
     expect(src).toContain("stopWinswService");

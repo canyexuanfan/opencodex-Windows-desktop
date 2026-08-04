@@ -294,12 +294,16 @@ describe("xAI outbound compatibility headers", () => {
     ]) expect(seen[0].has(name)).toBe(false);
   });
 
-  test("same resolved transport refreshes req-id but keeps conv-id stable", async () => {
+  test("same resolved transport pins one req-id per logical request (identical replays) and keeps conv-id stable", async () => {
     const { seen } = await capture("oauth", 2);
     expect(seen).toHaveLength(2);
     expect(seen[0].get("x-grok-req-id")).toMatch(UUID_V4);
     expect(seen[1].get("x-grok-req-id")).toMatch(UUID_V4);
-    expect(seen[1].get("x-grok-req-id")).not.toBe(seen[0].get("x-grok-req-id"));
+    // A same-target 429 replay must be byte-identical, including x-grok-req-id; a new resolve
+    // (e.g. after key rotation) produces a fresh transport and therefore a fresh id.
+    expect(seen[1].get("x-grok-req-id")).toBe(seen[0].get("x-grok-req-id"));
+    const freshTransport = await capture("oauth", 1);
+    expect(freshTransport.seen[0].get("x-grok-req-id")).not.toBe(seen[0].get("x-grok-req-id"));
     expect(seen[0].get("x-grok-conv-id")).toBe(deriveXaiConvId("codex-session-abc"));
     expect(seen[1].get("x-grok-conv-id")).toBe(seen[0].get("x-grok-conv-id"));
     expect(seen[1].get("x-grok-session-id")).toBe(seen[0].get("x-grok-session-id"));

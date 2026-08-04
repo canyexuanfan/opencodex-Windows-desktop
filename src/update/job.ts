@@ -300,7 +300,9 @@ export function restartCommand(
   const startArgs = pinPort
     ? [launcher, "start", "--port", String(Math.trunc(port))]
     : [launcher, "start"];
-  const svcArgs = serviceInstalled ? [launcher, ...(serviceArgs ?? ["service", "install"])] : startArgs;
+  // Default to the non-registering refresh: an update path reaching here has an already
+  // installed service, and `install` would demand elevation on Windows scheduler backends.
+  const svcArgs = serviceInstalled ? [launcher, ...(serviceArgs ?? ["service", "repair"])] : startArgs;
   if (installer === "npm") {
     const bin = nodeBin();
     const args = svcArgs;
@@ -648,6 +650,8 @@ export interface RestartIo {
   serviceHealthTimeoutMs?: number;
   sleepMs?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Test seam — defaults to process.platform so the Windows-only branch is reachable off Windows. */
+  platform?: NodeJS.Platform;
   /** Service-mode install/reinstall command (defaults to spawnSync via runLoggedCommand). */
   runService?: (
     job: UpdateJobState,
@@ -782,11 +786,17 @@ async function restartAfterUpdate(
     const preServiceAllow = reclaimKillAllowlist();
     const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
     let skipServiceInstall = false;
-    // Windows GUI update worker sets OCX_SERVICE=1 and is never elevated.
-    // `schtasks /create` will UAC-fail and can race the subsequent direct start.
-    // Keep systemd/launchd reinstall on non-Windows supervisors.
-    if (process.platform === "win32" && process.env.OCX_SERVICE === "1") {
-      updateJob(job, {}, "Skipping service reinstall from the non-elevated update worker; falling back to a direct proxy start.");
+    // This skip existed because the refresh ran `ocx service install`, whose Windows
+    // scheduler path always reaches `schtasks /create` — elevation the GUI update worker
+    // (OCX_SERVICE=1) never has. `service repair` rewrites the wrapper assets and
+    // restarts the EXISTING task with no `/create`, so the reason no longer applies and
+    // skipping would leave the dashboard-triggered update — the most common Windows
+    // path — with a stale service it could have refreshed.
+    //
+    // Only a caller that still passes install argv keeps the old behavior.
+    const refreshRegisters = (svcArgs ?? []).includes("install");
+    if ((io.platform ?? process.platform) === "win32" && process.env.OCX_SERVICE === "1" && refreshRegisters) {
+      updateJob(job, {}, "Skipping service re-registration from the non-elevated update worker; falling back to a direct proxy start.");
       skipServiceInstall = true;
     }
     if (!freed && !skipServiceInstall) {
