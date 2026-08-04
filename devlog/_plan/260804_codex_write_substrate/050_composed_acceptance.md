@@ -11,7 +11,8 @@ call sites invoke a swallowed best-effort catalog writer
 (`src/codex/history-migration-guardian.ts:34-35,87-90`). A phase-local green test
 can miss every one of those seams.
 
-This document specifies the one suite that is allowed to claim C1-C18 for the
+This document specifies the one acceptance program, split across a workstation-safe
+suite and a disposable-host service job, that is allowed to claim C1-C18 for the
 composed system. All citations were rechecked on 2026-08-04 at
 `ee182744af6958478523fb97ece6af2efb63b082`. The substrate modules named by
 `005_contract.md` do not exist at that revision; the current red signatures below
@@ -22,13 +23,15 @@ an unimplemented suite was run.
 
 IN: a future `tests/codex-composed-acceptance.test.ts` plus narrowly named child
 fixtures under `tests/helpers/`; the production CLI, server, management routes,
-service dispatcher, convergence entry point, real filesystem, real Bun Workers,
-and real SQLite files.
+convergence entry point, real filesystem, real Bun Workers, and real SQLite files.
+Service-manager entry points are a separate disposable-host job; they are not part
+of the developer-workstation invocation of this suite.
 
 OUT: mocks of `convergeCodex`, direct calls to phase-local gather/commit/history
-helpers as acceptance proof, the live proxy on port 10100, the user's homes, GUI
-controls, six file integrations, release/deploy/publish work, arbitrary filesystem
-ABA, and historical edit-and-revert detection.
+helpers as acceptance proof, the live proxy on port 10100, the user's homes, the
+owner's installed service and service-manager registrations, GUI controls, six file
+integrations, release/deploy/publish work, arbitrary filesystem ABA, and historical
+edit-and-revert detection.
 
 ## The proof rule
 
@@ -48,7 +51,7 @@ The suite records the parent SHA, composed SHA, case id, entry-point id, child P
 temporary roots, transition ids/generations, and the red/green oracle. This is how
 we know a test is not decoration that passes on both revisions.
 
-## Production entry-point census — 36 rows
+## Production entry-point census — 36 rows, two execution classes
 
 The count is by independently invokable command/route or independently scheduled
 production path. Aliases that execute the same branch are one row. The management
@@ -65,8 +68,8 @@ surface has **14 route shapes and 16 current catalog-write call sites** because
 | P06 | `ocx sync-cache` | directly calls `invalidateCodexModelsCache` (`src/cli/index.ts:849-855`) |
 | P07 | `ocx restore` / `ocx eject` | dispatch calls `restoreNativeCodex` (`src/cli/index.ts:745-790`) |
 | P08 | `ocx restore back` | the reverse branch calls `syncModelsToCodex` (`src/cli/index.ts:747-764`) |
-| P09 | `ocx stop` | `handleStop` restores native state (`src/cli/index.ts:456-551`), dispatched at `src/cli/index.ts:737-743` |
-| P10 | `ocx uninstall` / `ocx remove` | restores native state before deleting owned OpenCodex state (`src/cli/index.ts:554-638`), dispatched at `src/cli/index.ts:795-798` |
+| P09 | `ocx stop` — **disposable host only** | `handleStop` calls the globally addressed service manager before restoring native state (`src/cli/index.ts:456-551`), dispatched at `src/cli/index.ts:737-743` |
+| P10 | `ocx uninstall` / `ocx remove` — **disposable host only** | stops and removes a globally addressed service before restoring native state and deleting owned OpenCodex state (`src/cli/index.ts:554-638`), dispatched at `src/cli/index.ts:795-798` |
 | P11 | `ocx recover-history --legacy-openai` | directly calls `restoreLegacyOpenaiHistory` (`src/cli/index.ts:711-724,792-794`) |
 | P12 | `ocx provider add ... --sync` | live-proxy branch calls `syncModelsToCodex` (`src/cli/provider.ts:130-146,216-239`) |
 | P13 | `ocx models add` | dispatches the custom add and live sync (`src/cli/models.ts:110-166,315-319`) |
@@ -74,7 +77,7 @@ surface has **14 route shapes and 16 current catalog-write call sites** because
 | P15 | `ocx v2 mode ...` | persists mode then calls `syncModelsToCodex` (`src/cli/v2.ts:143-168`) |
 | P16 | `ocx v2 on|off` | changed transition calls `syncModelsToCodex` (`src/cli/v2.ts:172-198`) |
 | P17 | startup reconciliation path | journal replay is before bind (`src/cli/index.ts:169-176`), server construction directly invalidates cache (`src/server/index.ts:362-403`), and start arms the history guardian (`src/cli/index.ts:318-322`) |
-| P18 | `POST /api/stop` | stops service, directly restores Codex, then drains (`src/server/management-api.ts:167-194`) |
+| P18 | `POST /api/stop` — **disposable host only** | calls `stopServiceIfInstalled`, directly restores Codex, then drains (`src/server/management-api.ts:167-194`) |
 | P19 | `POST /api/sync` | calls `syncModelsToCodex` with the server-captured config (`src/server/management/config-routes.ts:261-268`) |
 | P20 | `POST /api/providers` | provider create reaches catalog write (`src/server/management/provider-routes.ts:99-147`) |
 | P21 | `PATCH /api/providers?name=...` | provider edit reaches catalog write (`src/server/management/provider-routes.ts:151-338`) |
@@ -90,9 +93,9 @@ surface has **14 route shapes and 16 current catalog-write call sites** because
 | P31 | `DELETE /api/combos?id=...` | deletes combo then refreshes (`src/server/management/combo-routes.ts:203-217`) |
 | P32 | `PUT /api/v2` | saves agent settings then refreshes (`src/server/management/agent-settings-routes.ts:178-280`) |
 | P33 | `PUT /api/subagent-models` | saves roster, refreshes, then runs Claude/Desktop follow-up (`src/server/management/agent-settings-routes.ts:518-528`) |
-| P34 | `ocx service start` | service dispatcher starts the installed wrapper (`src/service.ts:2511-2563`), whose baked command is `ocx start --port ...` (`src/service.ts:340,1378`) |
-| P35 | `ocx service stop` | verifies stop, then directly restores native Codex (`src/service.ts:2564-2595`) |
-| P36 | `ocx service uninstall` / `remove` | removes service, then directly restores native Codex (`src/service.ts:2610-2635`) |
+| P34 | `ocx service start` — **disposable host only** | service dispatcher starts the installed wrapper (`src/service.ts:2511-2563`), whose baked command is `ocx start --port ...` (`src/service.ts:340,1378`) |
+| P35 | `ocx service stop` — **disposable host only** | verifies stop, then directly restores native Codex (`src/service.ts:2564-2595`) |
+| P36 | `ocx service uninstall` / `remove` — **disposable host only** | removes service, then directly restores native Codex (`src/service.ts:2610-2635`) |
 
 `ocx restart` and tray restart compose P09/P04 or P03/P02
 (`src/cli/index.ts:939-949,963-967`); service install eventually launches P02; they
@@ -100,6 +103,52 @@ do not own another Codex writer. CLI runtime model/combo commands that call the
 management API are covered by the receiving P20-P33 route. If implementation finds
 another production edge, this count changes and C14 remains red until the row and
 runtime matrix are amended.
+
+### Hard service-manager gate
+
+The suite as previously written would have taken down the owner's proxy. The
+authoritative audit observed `com.opencodex.proxy` installed and running as PID 72848
+on this machine (`009_audit_synthesis_r4.md:17-24`). A temporary
+`OPENCODEX_HOME` does **not** namespace the launchd label
+`com.opencodex.proxy` or the Task Scheduler/systemd name `opencodex-proxy`:
+they are fixed constants (`src/service.ts:42-43`), and start/stop/remove address
+those constants directly (`src/service.ts:1640-1672,1868-1898,2045-2072`). Windows
+also has the fixed native service id `opencodex-proxy-native`
+(`src/lib/winsw.ts:33`).
+
+Therefore P34-P36 are removed from the workstation suite. The same audit found P09,
+P10, and P18 calling `stopServiceIfInstalled` / `uninstallServiceIfInstalled`, which
+query or mutate those global registrations (`src/service.ts:2204-2266`); those rows
+also run only in the disposable-host job. P01-P08, P11-P17, and P19-P33 do not call a
+service-manager registration API. P02/P04/P17 are seeded with
+`claudeCode.systemEnv:false` and no system-env tracking record, so their production
+startup/cleanup path cannot issue per-login-session `launchctl setenv/unsetenv`
+(`src/server/system-env.ts:251-258,364-391`).
+
+"Disposable" means a throwaway VM/OS host and a **throwaway OS account**, not a temp
+home on a developer account. Before any service setup or row is run, the job must
+prove all of the following for that account; an unavailable query,
+permission error, nonempty registration, or existing artifact is a hard failure, not
+a skip:
+
+- macOS: `launchctl list | awk '$3 == "com.opencodex.proxy" { print }'` prints
+  nothing, and `test ! -e "$HOME/Library/LaunchAgents/com.opencodex.proxy.plist"`
+  succeeds.
+- Windows: `schtasks.exe /Query /TN opencodex-proxy` exits nonzero with the
+  task-not-found result, and `sc.exe query opencodex-proxy-native` exits with service
+  error 1060 (service does not exist).
+- Linux: `systemctl --user list-unit-files opencodex-proxy.service --no-legend
+  --no-pager` prints nothing, `systemctl --user status opencodex-proxy.service`
+  reports the unit not found, and
+  `test ! -e "$HOME/.config/systemd/user/opencodex-proxy.service"` succeeds.
+
+Only after that empty result may fixture setup install the service state needed by a
+row. Each P09/P10/P18/P34-P36 case starts from a restored clean VM/account snapshot,
+runs the empty gate, installs and starts/stops only its fixture registration as the
+row requires, invokes the row, tears that registration down, reruns the same platform
+gate, and requires the same empty result. State is not carried from one service row
+to the next. The job never runs on an account that has a real OpenCodex service,
+regardless of which home installed it.
 
 ## Harness: real isolated processes, never the user's state
 
@@ -153,16 +202,41 @@ ownership, and file/record observations—never `sleep` as readiness. Each child
 a hard watchdog, all Workers are joined, all spawned PIDs are proven exited, and
 only then is the known temporary root removed. A teardown failure fails the case.
 
+The native lock is the deliberate exception to the temporary-root statement. Its
+database lives under the fixed effective-user runtime root, not under the case root:
+`/tmp/opencodex-runtime-v1-<uid>/native-write-locks/<sha256(canonical CODEX_HOME)>.sqlite`
+on POSIX and
+`<FOLDERID_LocalAppData>/OpenCodex/Runtime/v1/<SID>/native-write-locks/<sha256(canonical CODEX_HOME)>.sqlite`
+on Windows (`005_contract.md:693-721`). Before spawning a child, the harness resolves
+that exact path through the production identity/runtime resolver, checks that the
+hash input is the case's canonical `CODEX_HOME`, and requires the exact database and
+its `-journal`, `-wal`, and `-shm` sidecars to be absent. A pre-existing file fails
+the case; it is never adopted or deleted.
+
+After every child and Worker is joined and every SQLite handle is closed, teardown
+re-resolves the same path, rechecks the effective uid/SID, canonical-home hash, owner,
+mode/ACL, and non-symlink/non-reparse components, then removes only that four-name
+allowlist: `<hash>.sqlite`, `<hash>.sqlite-journal`, `<hash>.sqlite-wal`, and
+`<hash>.sqlite-shm`. It does not glob, enumerate, truncate, or remove the shared
+runtime root or `native-write-locks` directory. A failed identity check aborts
+cleanup and fails the case. Each allowlisted file is removed only if it exists and
+was absent at preflight. This confines per-case lock files without touching another
+Codex home's per-user lock state.
+
 ## Runnable composed scenarios
 
 ### A — every entry reaches one funnel
 
-Parameterize P01-P36. Seed an authorizing isolated installation, invoke the real
-entry, and read the integration record transition id plus a recursive before/after
-manifest. Every native mutation must have exactly one admitted transaction; OFF
-entries must produce a removal transaction, not a skip. P20-P33 retain their
-existing primary 2xx/201 behavior and expose the contract disposition; P30/P33
-still complete their Claude/Desktop follow-up.
+Parameterize the 30 workstation-safe rows P01-P08, P11-P17, and P19-P33 in the
+ordinary suite. Run P09/P10/P18/P34-P36 only in the separately gated disposable-host
+job above. The workstation rows seed authorizing isolated state without any service
+artifact; the disposable P34-P36 setup installs its fixture service only after the
+empty-registration gate. Invoke the real entry and read the integration record
+transition id plus a recursive before/after manifest. Every native mutation must have
+exactly one admitted transaction; OFF entries must produce a removal transaction, not
+a skip. P20-P33 retain their existing primary 2xx/201 behavior and expose the contract disposition;
+P30/P33 still complete their Claude/Desktop follow-up. The two job manifests together,
+not either one alone, make the 36-row census.
 
 **RED today:** `convergence.ts` and the integration record do not exist; P06, P11,
 P17, P18, P24-P33, P35, and P36 visibly reach direct writers. The management rows
@@ -207,7 +281,8 @@ durable unresolved state.
 ### D — foreign/unknown authority creates nothing
 
 Create foreign service-home evidence, then repeat with corrupt and unreadable
-mirror evidence. Snapshot the whole temp root and the expected OS-runtime namespace,
+mirror evidence. Snapshot the whole temp root and the exact case-specific OS-runtime
+lock path,
 invoke P02, P04, P19, one of P20-P33, P07, P18, P35, and P36, and compare byte/path
 manifests. Assert no lock directory, SQLite DB/journal, integration record, native
 journal, backup, catalog/cache, config/profile, history manifest/row, or rollout
@@ -237,9 +312,18 @@ uid/SID-scoped database.
 Invoke P19 from children using default, explicit, absolute, tilde, symlink, and
 platform case-equivalent spellings of one existing home; they must contend on one
 lock. Two different homes acquire independently. Missing home, namespace symlink,
-wrong-owner/mode, malformed DB, and finite-deadline contention return typed
-`refused` or `busy`, never throw; a normal run proves `acquired` through a
-`converged` response.
+malformed DB, and finite-deadline contention return typed `refused` or `busy`, never
+throw; a normal run proves `acquired` through a `converged` response.
+
+Wrong-owner/mode activation is not fabricated with `chown` in ordinary CI: an
+unprivileged POSIX account cannot create a path owned by another uid. That case stays
+in `tests/codex-user-identity.test.ts` and uses the resolver seam required by the
+contract (`005_contract.md:773-777`): a child process calls the exported production
+resolver while the filesystem-inspection seam reports the real fixture directory with
+`uid !== process.getuid()` (or a broad mode), then proves typed refusal and zero
+callback/SQLite-open activity. Windows uses the corresponding owner/ACL seam. A job
+that instead uses a real foreign owner must be a separately labelled privileged
+disposable job; it is not required for ordinary CI and may not run on a workstation.
 
 **RED today:** no such exclusion exists, so same-home contenders both mutate and
 unsafe namespace fixtures are not classified. **GREEN:** the exact
@@ -259,20 +343,37 @@ detects the cooperating ABA and target identity detects single-direction retarge
 An arbitrary parent-symlink A→B→A wholly between checks is deliberately not claimed
 (`005_contract.md` §3).
 
-### H — history overtaking is rejected before mutation
+### H — history overtaking after stale mutation is detected and repaired
 
-Hold the production history lock with a helper child after transition A has
-committed native ON but before A's Worker mutates history. Process B invokes P07 or
-P19 with desired OFF and commits the newer native expectation. Release the history
-lock. Place sentinels in the manifest, every rollout, and DB before release; assert
-A returns `pending/overtaken` without changing any sentinel, then B alone produces
-OFF history. Reverse ON/OFF and repeat.
+This must reach the contract's hard half: B commits **after** A has changed history,
+not before A's initial expectation check. Seed at least two production-shaped
+rollouts. A holder child opens the real state DB and prints `DB_WRITE_HELD` only after
+`BEGIN IMMEDIATE` succeeds. That permits A's reads but blocks its later DB write. The
+parent sends P19 to a single P02 server for transition A. Through the production
+Worker, A commits its native pair, writes the manifest, changes at least one rollout, and then
+parks at the real DB transaction (`src/codex/history-provider.ts:606-648` for apply;
+the reverse path changes rollouts before its DB transaction at `:656-690`). The
+parent uses `fs.watch` plus an immediate byte recheck and proceeds only after both the
+manifest and rollout post-images are observed; no timer or injected Worker hook
+declares the pause.
+
+While A is blocked mid-traversal, process B invokes P07 or P19 in the opposite
+direction. Require B's newer `{nativeGeneration,currentTxId}` and its
+`history:{status:"pending",txId:B,...}` schedule to be durable before releasing the
+holder. Release `BEGIN IMMEDIATE` before A's production busy deadline; A finishes
+its remaining DB work and reaches the terminal conditional record update. Assert A
+reports `pending/overtaken`, B's exact pending schedule was not replaced by A, and
+the guardian in the same P02 process observes B, runs after A releases the history
+lock, and repairs manifest, every
+rollout, and DB to B. Reverse ON/OFF and repeat. The real SQLite write lock plus the
+observed manifest/rollout post-image is the deterministic mid-traversal barrier; no
+mock or direct history helper is accepted.
 
 **RED today:** manifest and rollouts are outside SQLite's transaction
-(`src/codex/history-provider.ts:606-648,656-695`) and there is no history lock or
-expected transition, so scheduling order can overwrite the newer direction.
-**GREEN:** the losing expectation is rejected before its first probe/write and the
-highest native generation owns final history.
+(`src/codex/history-provider.ts:606-648,656-695`) and there is no transition-owned
+terminal conditional update, so A can overwrite/cancel the newer direction or leave
+its stale bytes terminal. **GREEN:** A is allowed to mutate stale history, cannot
+replace B's pending schedule, and the live guardian makes B the clean terminal owner.
 
 ### I — retry beyond the old horizon, without restart
 
@@ -333,6 +434,33 @@ external guard, while restore deletes the journal even when external
 (`src/codex/inject.ts:764-769`). **GREEN:** the external-provider veto is checked
 after service authority and before every artifact for every row.
 
+## Substrate-sensitivity audit
+
+The named RED is mandatory for every scenario. The observations in the last column
+are either baseline-green controls that can pass without the substrate or easier
+halves that do not activate the defect; recording only one of them is a false proof
+and does not satisfy the scenario.
+
+| Scenario | Observation that must be RED before the substrate | Baseline-green or non-defining observation that cannot count as RED |
+|---|---|---|
+| A | at least one row reaches a direct writer or lacks the sole-funnel receipt; the complete 36-row manifest cannot be produced | a row's primary CLI/HTTP success status |
+| B | stale A writes catalog/native bytes after B changes admitted config | provider request reached the fixture and a later fresh call succeeds |
+| C | `/healthz` or SSE exceeds its watchdog while the production history path waits on the held DB | health/SSE with no overlapping DB contention |
+| D | P02/P04/P19/P20 creates or changes an artifact under foreign/unknown authority | P07/P18/P35/P36 may already refuse through teardown ownership checks; those rows are coverage, not the RED oracle |
+| E | same-uid/SID contenders with different environment homes both enter mutation | distinct canonical Codex homes proceeding independently is the expected control |
+| F | equivalent spellings fail to contend or an unsafe namespace reaches callback/SQLite open | two different canonical homes acquiring independently; an ambient OS error from an unconstructible `chown` fixture |
+| G | cooperating A→B→A or one-way target retarget lets stale A mutate | final config bytes equalling A after A→B→A |
+| H | after A has changed manifest/rollout bytes, A can replace B's pending schedule or B is not repaired | rejecting A at the initial pre-mutation expectation check tests only the easy half |
+| I | attempt 61 has no next timer or the same PID never repairs after release | a retry below the old 60-tick horizon |
+| J | unchanged OFF leaves residue/reapplies it, or unchanged ON leaves a required artifact absent | already-clean ON/OFF no-op behavior and invalid-config parsing by itself |
+| K | missing/conflicting provenance permits mutation or current-byte drift is overwritten | a simple untouched present baseline that the filename-based restore already happens to reproduce |
+| L | a dead journal or another native artifact changes while an external provider is active | external-provider detection with no journal/residue present |
+
+Any case that is green on both SHAs is labelled `baseline-green-control` in the case
+manifest and cannot satisfy a criterion. Each A-L scenario needs its named
+substrate-sensitive RED artifact and corresponding GREEN artifact under the same
+fixture and entry point.
+
 ## C1-C18 matrix
 
 | Criterion | Production proof | What fails on the current revision |
@@ -343,15 +471,15 @@ after service authority and before every artifact for every row.
 | C4 | P02/P19 through C/I: unresolved is durable, attempt 61+ is armed, same PID later converges | current guardian terminates at 60 and has no durable typed record |
 | C5 | P19 through F: converged proves acquired, zero-deadline contention proves busy, unsafe namespace proves refused | no native lock API/taxonomy exists; both contenders write |
 | C6 | P19 through F across equivalent and distinct real homes | textual-path callers have no common cross-process lock |
-| C7 | P19 through D/E/F: no home-derived namespace; wrong-owner/symlink namespace refuses | no per-user namespace exists; current paths are home/environment-derived elsewhere |
+| C7 | P19 through D/E/F proves no home-derived namespace; the F resolver-seam child proves wrong-owner/mode refusal without privileged `chown` | no per-user namespace exists; current paths are home/environment-derived elsewhere |
 | C8 | P02/P04/P07/P18/P19/P20/P35/P36 through D, with full manifest including runtime lock path | current ownership check is teardown-only and fails open; management/startup bypass it |
 | C9 | P02/P04/P07/P18/P19/P20/P35/P36 through L | management/startup write around the guard and external restore deletes the journal |
 | C10 | P02/P07/P08/P18 through K | filename/filter restore has no baseline/post-image record and cannot restore proven absence safely |
 | C11 | P19 through J for OFF-with-residue and ON-with-absence | no persisted Codex intent/observer; `/api/sync` always follows the old apply seam |
 | C12 | one P02 server plus a subprocess config writer, then P19 OFF and ON through J | P19 passes the long-lived captured `config` object (`src/server/management/config-routes.ts:261-264`) |
 | C13 | **Not provable through a production entry point.** Run typecheck, full suite, GUI lint, privacy scan, docs build, then require this composed suite's case manifest and red/green evidence | those static/broad gates can be green today while A-L are red; C13 alone proves none of C1-C12 |
-| C14 | A drives all P01-P36; P20-P33 cover 14 route shapes/16 calls; module-graph reachability and transition receipts must agree | 16 management call sites and multiple CLI/startup paths reach direct writers instead of one funnel |
-| C15 | P02/P07/P19 through H in both directions with manifest/rollout/DB sentinels | only DB substeps are transactional; processes can overtake file writes |
+| C14 | A's workstation and disposable-host manifests together drive P01-P36; P20-P33 cover 14 route shapes/16 calls; module-graph reachability and transition receipts must agree | 16 management call sites and multiple CLI/startup paths reach direct writers instead of one funnel |
+| C15 | P02/P07/P19 through H in both directions: B commits only after A's manifest/rollout post-images exist, B's pending schedule survives A's terminal conflict, and the guardian repairs B | only DB substeps are transactional; processes can overtake file writes and stale completion has no conditional terminal update |
 | C16 | P02/P07/P08/P18/P17 sequence through K, preserving both optional sections and unknown keys | no shared record owner/schema exists |
 | C17 | P19 through G with production config A→B→A and one-way parent retarget | no generation or stable target expectation exists; equal content passes |
 | C18 | P19 through E with independently different HOME and USERPROFILE in real children | no uid/SID lock exists, so environment-home variation does not contend |
@@ -377,8 +505,9 @@ the exact false proof WP13 exists to prevent.
   namespaces; parallelization is allowed only after distinct runtime roots and PIDs
   are proven in the case manifest.
 - Windows CI must exercise real SID, junction/reparse, ACL, and USERPROFILE behavior;
-  POSIX CI must exercise real uid, symlink, and mode/owner behavior. Platform skips
-  are limited to the opposite platform's primitive, never the shared criterion.
+  POSIX CI must exercise real uid, symlink, mode, and the wrong-owner resolver seam.
+  A real foreign-owner fixture is privileged-disposable-only. Platform skips are
+  limited to the opposite platform's primitive, never the shared criterion.
 
 ## What this suite deliberately does not prove
 
@@ -403,8 +532,10 @@ the exact false proof WP13 exists to prevent.
 
 WP13 passes only when A-L are red on the pre-substrate revision for the named
 observable reason, green on the composed revision, all 36 production rows are in
-the case manifest, C1-C12 and C14-C18 have artifact-level production evidence, C13
-is separately green, every child/Worker is joined, and the only removed paths are
-the suite's explicit temporary roots. A missing row, a same-process substitute for
-E/H, a mocked convergence function, a test that passes on both revisions, or a
-green broad suite beside any red composed case is a failure.
+the paired workstation/disposable-host manifests, C1-C12 and C14-C18 have
+artifact-level evidence, C13 is separately green, every child/Worker is joined, the
+service gate is empty before and after its job, and teardown removes only the suite's
+explicit temporary roots plus the validated four-name lock-file allowlist. A missing
+row, a same-process substitute for E/H, a mocked convergence function, a test that
+passes on both revisions without a separate substrate-sensitive RED, or a green broad
+suite beside any red composed case is a failure.

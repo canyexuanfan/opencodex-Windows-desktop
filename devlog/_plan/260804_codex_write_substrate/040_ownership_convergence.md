@@ -13,11 +13,11 @@ check also does not authorize overwriting a `config.toml` whose effective
 `model_provider` is now external.
 
 WP9-WP11 already provide the working `convergeCodex` funnel, catalog split,
-history protocol, generations, integration-record owner, and native lock. WP12
-completes the mechanisms behind that funnel: tri-state service authority,
-file-backed intent, journal/provenance admission, restoration, and observed-state
-inspection. It does **not** add another record module, another convergence module,
-another route mapping, or another public result union.
+history protocol, CODEX_HOME-keyed coordinator row, integration-record owner, and
+native lock. WP12 completes the mechanisms behind that funnel: tri-state service
+authority, file-backed intent, journal/provenance admission, restoration, and
+observed-state inspection. It does **not** add another record module, another
+convergence module, another route mapping, or another public result union.
 
 The prior plan named `write-lock.ts`, created `ownership-convergence.ts`, redefined
 `integrations/codex.json`, and exported `convergeCodexToPersistedIntent`. Those are
@@ -30,7 +30,7 @@ in that commit, and typechecks/preserves behavior without a future phase. WP13 m
 re-prove composition; it is not required to make WP12 correct.
 
 All current-code citations and diff context below were rechecked on 2026-08-04 at
-`2d5e080dea3e7000bf2111b381c7c1a3c4f5fb11`.
+`bd1065a85c4981a1662e3676243d7de3b4ed9c81`.
 
 ## IN / OUT
 
@@ -39,12 +39,13 @@ IN:
 | Path | Change | Why |
 |---|---|---|
 | `src/types.ts` | MODIFY | Add `clientIntegrations.codex?: boolean`; absent means desired ON. |
-| `src/config.ts` | MODIFY | Parse the extension-safe object; own config generation bumps and authoritative `AdmissionSnapshot` reads. |
+| `src/config.ts` | MODIFY | Parse the extension-safe object; implement `readConfigGeneration`/`bumpConfigGeneration`; own authoritative config inputs to `AdmissionSnapshot`. |
 | `src/service.ts` | MODIFY | Preserve all service registration/mirror evidence instead of skipping corrupt/unreadable rows. |
 | `src/integrations/native/ownership-preflight.ts` | MODIFY | Tri-state read-only service-home authority; only owned permits native mutation. |
 | `src/codex/convergence.ts` | MODIFY | Complete admission, provenance, restore, observation, and lifecycle routing behind the contract entry point. |
 | `src/codex/convergence-types.ts` | IMPORT ONLY | Consume `AdmissionSnapshot`, `CodexObservedState`, `ConvergeOutcome`, `CodexProvenanceLedger`, and section types; no WP12 union. |
-| `src/codex/integration-record.ts` | USE/MODIFY THROUGH OWNER API | Read/update provenance and native transition through the contract owner; no path/schema/parser here. |
+| `src/codex/integration-record.ts` | USE/MODIFY THROUGH OWNER API | Read/update provenance and extension keys through the contract owner; no transition pair, history state/schedule, path/schema/parser, or parallel merge here. |
+| `src/codex/transition-state.ts` | CONSUME | Use `readCodexTransitionState`, `beginCodexTransition`, and `updateCodexHistoryTransition` for the canonical-CODEX_HOME pair and history state/schedule. |
 | `src/codex/codex-write-lock.ts` | CONSUME | Correct WP11 module name; no lock redesign. |
 | `src/codex/journal.ts` | MODIFY | Read-only typed inspection; authorized recovery only inside convergence. |
 | `src/codex/inject.ts` | MODIFY | Receipt-gated internal apply/restore mechanics; remove filename-based deletion authority. |
@@ -132,27 +133,91 @@ stop, uninstall, retry, and observe uses this sequence. No caller selects a subs
    legal only when no residue needs provenance proof; corrupt/lost/conflicting
    provenance refuses.
 6. Authoritatively read persisted config, config generation, intent, and ownership;
-   return one exact `AdmissionSnapshot`:
+   return the contract's complete `AdmissionSnapshot`. The five-field object printed
+   here before round 4 was wrong: it silently dropped the external-provider veto,
+   target identity, journal/provenance identity, and the authority ID, so WP11 could
+   not compare the authority it claimed to admit.
 
 ```ts
+import type {
+  AdmissionSnapshot,
+  ConvergeCodex,
+  ConvergeOutcome,
+  ConvergeRequest,
+} from "./convergence-types";
+
+declare const configRead: Pick<
+  AdmissionSnapshot,
+  "config" | "configDigest" | "intent"
+> & { readonly generation: { readonly value: AdmissionSnapshot["generation"] } };
+declare const serviceRead: Pick<AdmissionSnapshot, "ownership">;
+declare const routingRead: Pick<AdmissionSnapshot, "externalProvider">;
+declare const targetRead: AdmissionSnapshot["canonicalTargets"];
+declare const journalRead: { readonly identity: AdmissionSnapshot["journalIdentity"] };
+declare const provenanceRead: { readonly identity: AdmissionSnapshot["provenanceIdentity"] };
+declare const authorityRead: { readonly id: AdmissionSnapshot["authoritySnapshotId"] };
+
 const admission: AdmissionSnapshot = {
-  config: diagnostics.config,
-  configDigest,
-  intent,
-  generation: configGeneration.value,
-  ownership,
+  config: configRead.config,
+  configDigest: configRead.configDigest,
+  intent: configRead.intent,
+  generation: configRead.generation.value,
+  ownership: serviceRead.ownership,
+  externalProvider: routingRead.externalProvider,
+  canonicalTargets: {
+    codexHome: targetRead.codexHome,
+    opencodexHome: targetRead.opencodexHome,
+    config: targetRead.config,
+    profile: targetRead.profile,
+    catalog: targetRead.catalog,
+    cache: targetRead.cache,
+    journal: targetRead.journal,
+    integrationRecord: targetRead.integrationRecord,
+    catalogBackups: targetRead.catalogBackups,
+    historyDb: targetRead.historyDb,
+    historyManifest: targetRead.historyManifest,
+    historyRollouts: targetRead.historyRollouts,
+  },
+  journalIdentity: journalRead.identity,
+  provenanceIdentity: provenanceRead.identity,
+  authoritySnapshotId: authorityRead.id,
 };
 ```
+
+This object is not a WP12 approximation of the type. `AdmissionSnapshot` is imported
+from `convergence-types.ts`, and the contract compilation fixture rejects either a
+missing field or a locally invented replacement.
+
+Concrete read/API ownership is fixed here so an implementer cannot fill the object
+from a resident server cache:
+
+| Field | Reader/API owner |
+|---|---|
+| `config`, `configDigest`, `intent`, `generation` | `src/config.ts` `readConfigDiagnostics()` plus `readConfigGeneration()`; digest is over the exact persisted bytes represented by that diagnostic result. |
+| `ownership` | `src/integrations/native/ownership-preflight.ts` `inspectNativeCodexOwnership()`, projected only after `src/service.ts` has inspected every registration/mirror. |
+| `externalProvider` | `src/codex/inject.ts` `externalCodexModelProvider()` over the exact persisted config bytes above. |
+| `canonicalTargets` | `src/codex/convergence.ts` `resolveCanonicalCodexTargets()`; it composes the canonical path owners once, without creating a target. |
+| `journalIdentity` | `src/codex/journal.ts` `inspectJournal()`; identity hashes the preserved envelope plus liveness verdict, not merely its path. |
+| `provenanceIdentity` | `src/codex/integration-record.ts` `readIntegrationRecord()`; identity covers the validated provenance section and its unknown-key-preserving envelope. |
+| `authoritySnapshotId` | `src/codex/convergence.ts` `hashAdmissionAuthority()` over the canonical encoding of every preceding authority field. |
+
+The native `{nativeGeneration,currentTxId}` pair is deliberately not smuggled into
+`provenanceIdentity`. WP12 reads it separately through
+`src/codex/transition-state.ts` `readCodexTransitionState()`. That owner opens the
+final path from `resolveCodexCoordinatorDatabasePath(identity,
+canonicalCodexHome)`, so the pair belongs to the CODEX_HOME-keyed coordinator row,
+not to `integrations/codex.json`.
 
 7. If intent is ON, WP9 gather receives `admission.config` — **that exact object**.
    OFF does not gather.
 8. Call WP11 with `admitted: admission`. Under native->config coordination,
    authoritatively re-read steps 1-6 into a second `AdmissionSnapshot` and compare
-   digest, generation, intent, ownership, canonical targets, journal identity, and
-   provenance identity.
+   digest, generation, intent, ownership, external provider, canonical targets,
+   journal identity, provenance identity, and the recomputed authority snapshot ID.
 9. Recover an authorized dead journal, establish baselines, commit apply/remove,
-   write the expected native generation/`txId`, and inspect observed state inside
-   the coordinated section. Release before logging/HTTP shaping.
+   conditionally write the expected native generation/`txId` and pending history
+   schedule in the CODEX_HOME-keyed coordinator row, and inspect observed state
+   inside the coordinated section. Release before logging/HTTP shaping.
 10. Run WP10 history afterward under its sibling lock with the same
     `CommitExpectation` and authority snapshot identity; stale jobs are rejected.
 
@@ -203,22 +268,47 @@ External is projected through the contract's `refused` authority/result. It is n
 Delete the former `CodexIntegrationRecordV1`, transaction, artifact, ledger-row,
 and restore unions. Import the section types:
 
-```ts
-import type {
-  CodexProvenanceEntry,
-  CodexProvenanceLedger,
-} from "./convergence-types";
-import {
-  readIntegrationRecord,
-  updateIntegrationRecord,
-} from "./integration-record";
+```diff
++import type {
++  CodexProvenanceEntry,
++  CodexProvenanceLedger,
++} from "./convergence-types";
++import {
++  readIntegrationRecord,
++  updateIntegrationRecord,
++} from "./integration-record";
 ```
 
-WP12 writes only `record.provenance` through `updateIntegrationRecord`; history,
-generation, unknown top-level keys, and unknown section keys survive. Unparseable
-or wrong-version record fails closed. No WP12 code joins
+WP12 writes only `record.provenance` through `updateIntegrationRecord`. The JSON
+record keeps exactly `version`, the provenance ledger, and unknown extension keys
+at the record, ledger, and entry levels. It does **not** keep
+`nativeGeneration`, `currentTxId`, a pending/running history schedule, retry ownership,
+or the next due time. Putting those fields here was wrong: two different coordinators
+could each serialize their own read/replace and still overwrite one another.
+
+Unparseable or wrong-version JSON fails closed. No WP12 code joins
 `getConfigDir()/integrations/codex.json`, validates the top-level schema, or runs a
 parallel read/merge/write (`005_contract.md` §1).
+
+### Transition pair and schedule come from the coordinator row
+
+The authoritative transition read is `readCodexTransitionState()` from
+`src/codex/transition-state.ts`. It opens the exact SQLite path returned by
+`resolveCodexCoordinatorDatabasePath(identity, canonicalCodexHome)`; consumers
+append no identity, version, directory, or filename. Its singleton row contains the
+native generation, current transaction ID, complete `CodexHistoryState`, and
+`historySchedule {direction,authoritySnapshotId}`. `beginCodexTransition` advances
+the pair and installs that transition's pending schedule in one `UPDATE ... WHERE
+native_generation = ? AND current_tx_id IS ?`; `updateCodexHistoryTransition`
+conditionally claims/completes/reschedules that same row and additionally matches
+`history_tx_id`. A zero-row update writes nothing.
+
+That row is the transition/scheduling authority. `readIntegrationRecord()` supplies
+only provenance needed to prove an artifact baseline/post-image. Observation joins
+the coordinator pair/schedule with the JSON provenance at read time; neither source
+is copied into the other. Two `OPENCODEX_HOME` installations sharing one canonical
+Codex home therefore see one pair and one pending owner instead of two generation
+counters that both call themselves current.
 
 ## When provenance entries are written
 
@@ -229,7 +319,8 @@ parallel read/merge/write (`005_contract.md` §1).
    contract baselines.
 3. Commit one artifact.
 4. Read current bytes after the successful write and persist its `postImage` hash.
-5. Repeat; then write the expected native generation/`txId` and observe.
+5. Repeat; then conditionally write the expected native generation/`txId` plus the
+   pending history schedule to the coordinator row and observe both stores.
 
 A filename, marker, slug, mtime, backup name, or location is not creation proof. A
 crash after native write but before `postImage` leaves unknown provenance and cannot
@@ -266,38 +357,63 @@ observations. C10 is therefore narrowed to current-byte drift detection and safe
 restoration from current evidence. No test or documentation may claim detection of
 an edit-and-revert ABA that leaves identical bytes.
 
-## Lost/corrupt ledger operator recovery — carried #10
+## Lost/corrupt ledger operator recovery — carried #10, round-4 E1
 
 Automatic convergence always refuses lost/corrupt provenance and preserves native
 bytes. “Start a fresh record” is not recovery; it silently turns unknown artifacts
-into owned artifacts.
+into owned artifacts. The prior adoption design did exactly that to a worse input: it
+called whatever bytes happened to be present “native.” After a crash mid-apply those
+bytes may still route through OpenCodex, so OFF would later restore the routed bytes
+as the baseline forever. That mechanism was wrong.
 
-**INFERRED operator-recovery UX:** provide one explicit operator-only adoption flow
-in the existing CLI, separate from normal convergence:
+**INFERRED operator-recovery UX:** keep the explicit operator-only command, but make
+adoption a read-only proof followed by a record write:
 
 ```text
 ocx restore --adopt-current-codex-baseline
 ```
 
 The flag is rejected in service/agent-driven/automatic contexts and requires an
-interactive confirmation naming the canonical Codex home and that current bytes
-will become the baseline. It performs read-only service/external/journal checks
-first, requires the proxy stopped and no live journal writer, asks the
-`integration-record.ts` owner to atomically move an unreadable record to a
-timestamped sibling quarantine (preserving its bytes), then uses
-`updateIntegrationRecord` against the now-absent canonical path to create a
-valid record whose `present` baselines are the exact current bytes. A lost record
-has no quarantine source but follows the same exact-current-baseline validation. It
-changes no Codex native artifact.
+interactive confirmation naming the canonical Codex home. It requires the proxy
+stopped, owned service authority, no external provider, no journal envelope, and a
+single read-only classification of every target as `native-clean | ocx-residue |
+ambiguous`. **Only all `native-clean` may adopt.** `ocx-residue` and `ambiguous` both
+abort before quarantine or record replacement; the command prints the exact surface
+and evidence and asks the operator to clean/inspect it outside this flow. There is no
+automatic “salvage by filename” fallback in WP12.
 
-If even one target is unreadable/ambiguous, adoption aborts before replacing the
-record. A subsequent explicit `convergeCodex` performs the requested apply/remove
-from the adopted baseline. The command prints the quarantine path and resulting
-`txId`; automatic callers receive only the provenance refusal and operator
-instruction. Tests never auto-confirm this action.
+The ledger is unavailable here, so positive residue proof comes only from the
+artifact's own structure:
 
-This is a recovery path, not a second convergence entry point: adoption establishes
-authority evidence; all native mutation still goes through `convergeCodex`.
+| Surface | Structural residue proof without the ledger | Native-clean gate |
+|---|---|---|
+| `config.toml` | The `# Auto-injected by opencodex` marker immediately owns a root `openai_base_url` (`src/codex/injected-marker.ts:53-60`); or the same marker immediately precedes the complete legacy table grammar emitted at `src/codex/inject.ts:119-134` and the root selector is `model_provider = "opencodex"`; managed subagent values are owned only by the exact markers in `src/codex/subagent-defaults.ts:10-11`. The recovery detector is stricter than the ordinary routing predicate at `src/codex/injected-marker.ts:68-71`, which does not by itself prove legacy creation. | TOML parses; none of those marker/value pairs or the exact legacy selector+owned-table structure exists; routing class is `native`. A bare local URL, malformed marker adjacency, or unowned `opencodex` table is ambiguous, not clean. |
+| generated profile | File content matches one complete generated profile grammar: the OpenCodex banner plus its routing keys/provider block; `src/codex/inject.ts:436-460` is the generator. | Path absent, or readable content does not select OpenCodex and contains no generated banner. The basename `opencodex.config.toml` alone proves nothing; a partial signature is ambiguous. |
+| catalog/cache | A row has both a namespaced slug and the stable `Routed via opencodex -> ` description signature used by `isOcxAuthoredRoutedEntry` (`src/codex/catalog/sync.ts:334-347`). | Every readable row lacks that paired signature and no active catalog/cache points to an OpenCodex-only routed slug. A filename, `owned_by`, or `comp_hash` alone is never proof. |
+| history DB/manifest/rollouts | A valid manifest pre-image and its exact DB row/rollout identity jointly prove the OpenCodex transform. | The DB, manifest, and rollouts parse and the joint probe finds no owned transform. A lone `model_provider = opencodex`, path, or manifest entry is ambiguous because it cannot reconstruct the pre-image by itself. |
+| journal/backups/partial transaction | Any journal envelope or validated partial-transaction marker is residue; a valid backup is evidence to inspect, not authority to restore. | Journal is absent and every backup/partial artifact is either structurally foreign or absent. An unreadable envelope, backup named by convention only, missing companion, or hashless partial is ambiguous. |
+
+The ASCII `->` above is the documentation spelling; implementation compares the
+exact Unicode prefix already emitted at `src/codex/catalog/sync.ts:283,346`.
+
+Once the same observation is all native-clean, `integration-record.ts` atomically
+quarantines an unreadable JSON record to a timestamped sibling, preserving its bytes,
+and `updateIntegrationRecord` creates only exact current `present`/`absent`
+provenance baselines. A lost record has no quarantine source. Adoption changes no
+Codex artifact. If `readCodexTransitionState()` returns a ready row, adoption
+preserves its pair and complete history state. If the row is missing/
+`legacy-ambiguous`, only the same all-native-clean proof may initialize the contract
+`{0,null}` row with `history.status:"unknown"`; it never imports a positive pair from
+OPENCODEX_HOME-local legacy JSON. A subsequent explicit `convergeCodex` performs
+apply/remove from the verified clean baseline.
+
+If any target changes between classification and JSON replacement, target identity
+or digest validation fails and adoption writes nothing. The command prints the
+quarantine path and adopted provenance identity, never a newly invented `txId`.
+Tests never auto-confirm this action.
+
+This is a recovery path, not a second native mutation entry point: adoption establishes
+provenance only; every Codex artifact mutation still goes through `convergeCodex`.
 
 ## Journal inspection and recovery
 
@@ -332,9 +448,11 @@ returns the contract's `CodexObservedState`; `convergeCodex` returns the contrac
 `ConvergeOutcome`.
 
 The observer reads service/external authority, managed config fragments, profile,
-catalog/cache and routed slugs, journal/liveness, provenance/generation/tx identity,
-history DB/manifest/rollouts, backups, and partial transaction residue. It performs
-no repair.
+catalog/cache and routed slugs, journal/liveness, JSON provenance, the coordinator
+row's generation/tx pair and history schedule, history DB/manifest/rollouts, backups,
+and partial transaction residue. It performs no repair. Only the coordinator row
+explains history status or may own/clear a pending schedule; JSON provenance cannot
+override a newer coordinator transaction.
 
 Desired ON converges only when the contract observer says applied. Desired OFF
 converges only when residue is removed/restored. External/refused/partial remains
@@ -391,6 +509,7 @@ Delete WP12's status logic and custom result adapter. Current route
 -  return jsonResponse(result, result.ok ? 200 : 500);
 +  const outcome = await convergeCodex({
 +    action: "converge",
++    scope: "full",
 +    reason: "api-sync",
 +    mode: "explicit",
 +    deadlineMs: EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS,
@@ -409,10 +528,26 @@ Status, body, and `Retry-After` belong only to
 or WP12-specific request/result type.
 
 ```ts
-export async function convergeCodex(
+declare const convergeCodexImpl: (
   request: ConvergeRequest,
-): Promise<ConvergeOutcome>;
+) => Promise<ConvergeOutcome>;
+export const convergeCodex: ConvergeCodex = request => convergeCodexImpl(request);
+declare const EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS: number;
+void convergeCodex({
+  action: "converge",
+  scope: "full",
+  reason: "api-sync",
+  mode: "explicit",
+  deadlineMs: EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS,
+});
 ```
+
+The bodyless declaration printed here before round 4 was wrong and compiled as
+TS2391. WP12 imports the contract's `ConvergeCodex` alias and assigns the real
+implementation to it; the phase doc does not redeclare the alias or declare a
+function without a body. `convergeCodexImpl` above is the compile-fixture name for
+the existing implementation body that WP12 modifies. The compile-only call is the
+`/api/sync` request above; omitting `scope:"full"` reproduces TS2345.
 
 Callers say when/reason/mode/deadline. They never supply desired state, ownership,
 journal verdict, provenance verdict, or apply/remove direction. `action:"observe"`
@@ -456,8 +591,11 @@ All tests use temporary homes, real contract record owner, port `0`, and product
    — detection, not prevention.
 3. Exhaust `deadlineMs`; assert typed unresolved outcome and no unbounded loop.
 4. Native expected generation with another `txId` at the same number is
-   interference.
-5. Stale history `CommitExpectation` is rejected before mutation.
+   interference in the coordinator row; JSON provenance remains byte-identical.
+5. Stale history `CommitExpectation` is rejected before mutation, and its terminal
+   conditional row update cannot clear the newer pending schedule.
+6. Two distinct `OPENCODEX_HOME` processes sharing one canonical `CODEX_HOME`
+   observe one coordinator pair; exactly one expected-row update wins.
 
 ### Provenance/restoration/recovery
 
@@ -471,11 +609,20 @@ All tests use temporary homes, real contract record owner, port `0`, and product
 5. Crash between native write and post-image record; restart preserves/refuses.
 6. Lost record and corrupt record: every automatic/normal explicit convergence
    refuses and preserves bytes.
-7. Operator adoption with no confirmation does nothing; confirmed isolated CLI
-   flow quarantines the bad record, writes exact current present baselines through
-   the owner, changes no native bytes, then normal `convergeCodex` succeeds.
-8. Adoption aborts atomically on one unreadable target, external provider, live
-   writer, running proxy, or noninteractive/agent-driven invocation.
+7. Operator adoption with no confirmation does nothing. Confirmed adoption with
+   one marker-owned config fragment, exact generated profile, routed catalog row,
+   jointly owned history transform, or journal envelope refuses and changes neither
+   native bytes nor JSON.
+8. A markerless/basename-only/partial signature is `ambiguous`, not native-clean;
+   adoption refuses instead of guessing. Table-drive every structural-proof row
+   above, including exact clean negatives.
+9. Only an all-native-clean observation may quarantine a corrupt JSON record and
+   write exact current baselines. Assert native bytes and the coordinator pair/
+   pending schedule are unchanged; then normal `convergeCodex` succeeds.
+10. Missing transition row + all-native-clean initializes only `{0,null}` with
+    unknown history; a legacy positive JSON pair is never imported.
+11. Adoption aborts atomically on one unreadable or changed target, external
+    provider, live writer, running proxy, or noninteractive/agent-driven invocation.
 
 ### Observed state and fresh intent
 
@@ -509,6 +656,16 @@ bun run lint:gui
 bun run privacy:scan
 ```
 
+Round-4 document compile gate: extract every `ts` fence above in document order,
+concatenate them, prepend `import type { OcxConfig } from "../types";`, and resolve
+`AdmissionSnapshot`, `ConvergeRequest`, and `ConvergeCodex` from their exact
+`005_contract.md` definitions (the imported outcome remains opaque because neither
+fixture inspects an outcome field).
+On 2026-08-04 the installed `bun x tsc --noEmit --strict --skipLibCheck
+--moduleResolution bundler --module esnext --target es2022` exited **0 with zero
+diagnostics**. The request fixture includes `scope:"full"`; the function surface is
+the `ConvergeCodex` alias, not a bodyless declaration.
+
 Live proof is the in-process server/subprocess test bound to port `0` with isolated
 homes. Evidence names one server PID, two config-writer PIDs, prevention/deferred
 interference traces, recovery quarantine/record hashes, and observed ON/OFF results.
@@ -523,8 +680,8 @@ live proxy on 10100.
 - **C9** — external provider remains a separate veto and preserves all bytes.
 - **C10 (narrowed)** — two contract baseline classes only. Matching current
   post-images restore; current-byte drift preserves/reports. No hash claims to prove
-  absence of edit-and-revert. Lost/corrupt ledger has an explicit, confirmed,
-  non-mutating adoption path; automatic behavior refuses.
+  absence of edit-and-revert. Lost/corrupt ledger adoption requires a complete
+  verified native-clean observation; structural residue or ambiguity refuses.
 - **C11** — observed state is the contract `CodexObservedState`; unchanged intent
   still converges and re-observes.
 - **C12** — the same running server honors subprocess OFF then ON using a pre-gather
@@ -533,6 +690,9 @@ live proxy on 10100.
 - `/api/sync` calls only `convergeCodex` + `toSyncResponse`; no WP12 status/header
   owner exists.
 - There is one convergence entry point and one shared result family.
+- Native pair/pending schedule authority is the canonical-CODEX_HOME coordinator
+  row. JSON retains only version, provenance, and extension keys, never transition
+  or scheduling authority.
 - **N2** — WP12 rewires all remaining callers and passes its own typecheck/tests in
   the same commit. WP13 adds composed proof, not missing implementation.
 

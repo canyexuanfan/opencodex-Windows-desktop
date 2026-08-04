@@ -13,18 +13,23 @@ A contract nobody collected is a fifth opinion.
 
 ## IN / OUT
 
-IN: `src/codex/integration-record.ts` (NEW — sole owner of the record),
+IN: `src/config.ts` (MODIFY — durable config-generation API),
+`src/codex/integration-record.ts` (NEW — sole owner of the JSON record),
+`src/codex/transition-state.ts` (NEW — sole owner of the CODEX_HOME-keyed
+SQLite transition row),
 `src/codex/convergence.ts` (NEW — the single entry point),
 `src/codex/convergence-types.ts` (NEW — every shared type),
 `src/codex/generation.ts` (NEW), `src/codex/user-identity.ts` (NEW — §7),
 `src/server/management/sync-response.ts` (NEW — the one adapter),
 `tests/codex-integration-record.test.ts` (NEW),
+`tests/codex-transition-state.test.ts` (NEW),
 `tests/codex-convergence-contract.test.ts` (NEW),
 `tests/codex-user-identity.test.ts` (NEW).
 
-OUT: catalog mechanics (WP9), history mechanics (WP10), lock mechanics (WP11),
-ownership mechanics (WP12). This phase owns *shapes and the funnel*, not the
-work inside them.
+OUT: catalog mechanics (WP9), history mechanics (WP10), native-lock acquisition
+and retry mechanics (WP11), ownership mechanics (WP12). The final coordinator
+path, transition table/CAS, config-generation API, shapes and funnel are IN;
+the domain work performed while those coordinators are held is OUT.
 
 ### What "lands first" has to mean (round 2 N2)
 
@@ -32,10 +37,10 @@ The reviewer showed the previous version could not land: it was "OUT: every
 behavior" while declaring a runtime `convergeCodex`, and a throwing placeholder
 is not a safe commit.
 
-So WP8b lands **types, validators, the record owner, the identity resolver and
-the response adapter — and rewires nothing.** `convergeCodex` is declared here
-as a type only; WP9 supplies its first real implementation and rewires the
-catalog callers at that commit.
+So WP8b lands **types, validators, both durable-state owners, the config-generation
+API, the final coordinator-path resolver and the response adapter — and rewires
+nothing.** `convergeCodex` is declared here as a type only; WP9 supplies its first
+real implementation and rewires the catalog callers at that commit.
 
 **Invariant for every phase in this unit:** each phase typechecks and preserves
 behavior at its own commit. No phase may leave a placeholder that a later phase
@@ -47,26 +52,28 @@ is required to replace before the tree is correct.
 containing different fields, so a record from either is malformed to the other
 (audit #3).
 
+**TypeScript compile prelude.** The TypeScript fences in this document are
+concatenated contract fragments. Compile them in document order after prepending
+`import type { OcxConfig } from "../types";`. `OcxConfig` is the real export used
+by `src/config.ts:34`; omitting this prelude gives TS2304 even though the contract
+itself is otherwise valid.
+
 ```ts
 /**
- * The single durable record for the Codex integration.
+ * The non-CAS JSON record for the Codex integration.
  *
- * ONE owner. WP10 (history state) and WP12 (provenance) both write here, and
- * both go through `updateIntegrationRecord` — never their own read/merge/write.
- * Round 1 had two owners and two schemas for this exact file.
+ * ONE owner. WP12 writes provenance here through `updateIntegrationRecord` —
+ * never its own read/merge/write. Cross-process transition state is deliberately
+ * absent; it belongs to the CODEX_HOME-keyed SQLite row below.
  *
- * Every section is OPTIONAL at v1. A record written before a section existed is
- * VALID, not malformed: absence means "that subsystem has not spoken yet". This
- * is what lets WP10 land before WP12 without a migration.
+ * Provenance is OPTIONAL at v1. A record written before WP12 is valid, and
+ * unknown extension sections from a newer writer remain valid and preserved.
  */
 export interface CodexIntegrationRecord {
   version: 1;
-  history?: CodexHistoryState;
   provenance?: CodexProvenanceLedger;
-  /** Bumped by every cooperating native commit. See §3. */
-  nativeGeneration?: number;
-  /** The transaction that owns `nativeGeneration`; null is legal only at zero. */
-  currentTxId?: string | null;
+  /** Unknown keys from a newer writer survive every older-writer update. */
+  readonly [extra: string]: unknown;
 }
 ```
 
@@ -137,6 +144,8 @@ export interface CodexProvenanceEntry {
   postImage: string | null;
   txId: string;
   at: string;
+  /** Entry-level extensions are preserved, not only ledger/top-level keys. */
+  readonly [extra: string]: unknown;
 }
 
 export interface CodexProvenanceLedger {
@@ -221,63 +230,202 @@ never a zero-looking count.
 compatibility outcome; it is never persisted as durable history and never answers
 `isApplied` or `converged` with a false-looking boolean.
 
-### Durable read/update and initialization
+### Durable state: the JSON CAS was wrong
+
+The previous contract called `updateIntegrationRecord` a CAS because it compared
+two JSON fields and replaced the file while *the caller's* coordinator was held.
+That was wrong. Native and history callers hold different coordinators, so an old
+history Worker can read JSON at N, a native transition can replace it at N+1, and
+the Worker can then replace the file with stale N. Serialization under two
+non-overlapping locks is not compare-and-swap.
+
+The key was wrong as well. `integrations/codex.json` is under `OPENCODEX_HOME`, but
+native exclusion is keyed by canonical `CODEX_HOME`. Two OpenCodex installations
+sharing one Codex home therefore serialized and then consulted different counters.
+The pair and all history scheduling/terminal state move to one SQLite row in the
+final CODEX_HOME-keyed coordinator database. The JSON record keeps exactly
+`version`, the provenance ledger, and unknown extension members; none is the
+authority for transition admission, Worker overtaking, or retry scheduling.
 
 ```ts
-export interface IntegrationRecordVersion {
+export interface CodexTransitionVersion {
   readonly nativeGeneration: number;
   readonly currentTxId: string | null;
 }
 
+export interface CodexTransitionState extends CodexTransitionVersion {
+  /** Durable schedule and latest terminal observation for this exact pair. */
+  readonly history: CodexHistoryState;
+  readonly historySchedule: null | Readonly<{
+    direction: "apply" | "remove";
+    authoritySnapshotId: string;
+  }>;
+}
+
 export type IntegrationRecordRead =
-  | { kind: "missing"; record: null; version: { nativeGeneration: 0; currentTxId: null } }
-  | { kind: "ready"; record: CodexIntegrationRecord; version: IntegrationRecordVersion }
-  | { kind: "legacy-ambiguous"; record: CodexIntegrationRecord }
+  | { kind: "missing"; record: null }
+  | { kind: "ready"; record: CodexIntegrationRecord }
   | { kind: "invalid"; message: string };
 
 export type ReadIntegrationRecord = () => IntegrationRecordRead;
 
 export type IntegrationRecordUpdate =
-  | { kind: "updated"; record: CodexIntegrationRecord; version: IntegrationRecordVersion }
-  | { kind: "conflict"; current: IntegrationRecordVersion }
+  | { kind: "updated"; record: CodexIntegrationRecord }
   | { kind: "invalid"; message: string };
 
 /**
- * Compare `expected` against both native fields, apply `mutate`, and atomically
- * replace the record while the caller's coordinator is held. A mismatch writes
- * nothing. The updater preserves unknown keys at every object level.
+ * Update only non-CAS JSON data. Callers may not add transition or schedule
+ * fields. The updater preserves unknown keys at every object level.
  */
 export type UpdateIntegrationRecord = (
-  expected: IntegrationRecordVersion,
   mutate: (record: CodexIntegrationRecord) => CodexIntegrationRecord,
 ) => IntegrationRecordUpdate;
+
+export type TransitionStateRead =
+  | { kind: "ready"; state: CodexTransitionState }
+  | { kind: "legacy-ambiguous"; message: string }
+  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
+
+export type TransitionStateUpdate =
+  | { kind: "updated"; state: CodexTransitionState }
+  | { kind: "conflict"; current: CodexTransitionState }
+  | { kind: "unavailable"; reason: "busy" | "unsafe-path" | "database" };
+
+export type ReadCodexTransitionState = () => TransitionStateRead;
+
+/** Publish N+1 and its pending schedule with one conditional SQLite UPDATE. */
+export type BeginCodexTransition = (
+  expected: CodexTransitionVersion,
+  next: Readonly<{
+    txId: string;
+    direction: "apply" | "remove";
+    authoritySnapshotId: string;
+    nextRetryAt: string;
+  }>,
+) => TransitionStateUpdate;
+
+/** Change only history columns when the exact native pair still owns the row. */
+export type UpdateCodexHistoryTransition = (
+  expected: CodexTransitionVersion,
+  history: CodexHistoryState,
+) => TransitionStateUpdate;
 ```
 
 WP8b implements and exports `const readIntegrationRecord: ReadIntegrationRecord`
 and `const updateIntegrationRecord: UpdateIntegrationRecord` from
-`src/codex/integration-record.ts`; these are executable functions in that phase,
-not ambient declarations.
+`src/codex/integration-record.ts`, plus
+`readCodexTransitionState`, `beginCodexTransition`, and
+`updateCodexHistoryTransition` from
+`src/codex/transition-state.ts`; these are executable functions in that phase, not
+ambient declarations.
 
-A missing file normalizes to `{ nativeGeneration: 0, currentTxId: null }`; the
-first successful update creates `version:1` and persists both native fields even
-when it writes only `history` or `provenance`. A v1 record with neither native field
-has the same initial meaning, which keeps the history-only/provenance-only landing
-order valid. A positive generation without a nonblank `currentTxId`, a txId without
-its generation, `generation` from the abandoned draft schema, or `null` paired with
-a nonzero generation is `legacy-ambiguous`: automatic mutation fails closed and an
-explicit observation/recovery must establish a current pair. It is never silently
-coerced to the initial state.
+The coordinator is a **sibling**, not an extension of `config-mutation.sqlite`.
+The existing database path is derived from `getConfigDir()`
+(`src/config.ts:1731-1762`), whose resolver reads `OPENCODEX_HOME`
+(`src/config.ts:530-534,1254-1256`); extending it would repeat the split-key
+defect. The sibling uses the same Bun SQLite pattern — private
+file, `busy_timeout=0`, `BEGIN IMMEDIATE`, process-exit lock release
+(`src/config.ts:1767-1818`) — but its final database path is keyed by effective
+user plus canonical `CODEX_HOME` (§7). WP11's native exclusion transaction and
+both transition-state callers open this same database.
 
-`updateIntegrationRecord` does one read-modify-write under the caller's coordinator.
-Native transition N uses expected `{N,currentTxId}` and writes `{N+1,newTxId}`;
-history/provenance completion uses the exact current pair it started from. Thus a
-late Worker receives `conflict` rather than overwriting a competing txId at the same
-number. Unknown keys survive top-level and section updates so a newer writer's
-record survives an older binary.
+The exact singleton row is:
 
-Unreadable or unparseable is not "empty": it fails closed and the caller reports
-rather than silently starting a fresh record. Losing provenance silently is how
-`005_disable_leaves_a_broken_file.md` became possible.
+```sql
+CREATE TABLE codex_transition_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  native_generation INTEGER NOT NULL CHECK (native_generation >= 0),
+  current_tx_id TEXT,
+  history_status TEXT NOT NULL,
+  history_reason TEXT,
+  history_attempts INTEGER NOT NULL CHECK (history_attempts >= 0),
+  history_next_retry_at TEXT,
+  history_tx_id TEXT,
+  history_direction TEXT CHECK (history_direction IN ('apply', 'remove')),
+  history_authority_snapshot_id TEXT,
+  history_pending_rows INTEGER,
+  history_backup_entries INTEGER,
+  updated_at TEXT NOT NULL,
+  CHECK (history_status IN
+    ('converged', 'pending', 'running', 'blocked', 'unknown')),
+  CHECK (history_reason IS NULL OR history_reason IN
+    ('db-busy', 'permission', 'unreadable', 'schema', 'timeout',
+     'shutdown-cancelled', 'worker-died', 'overtaken', 'record-write-failed')),
+  CHECK (history_pending_rows IS NULL OR history_pending_rows >= 0),
+  CHECK (history_backup_entries IS NULL OR history_backup_entries >= 0),
+  CHECK ((native_generation = 0 AND current_tx_id IS NULL)
+      OR (native_generation > 0 AND length(trim(current_tx_id)) > 0)),
+  CHECK ((native_generation = 0
+          AND history_tx_id IS NULL
+          AND history_direction IS NULL
+          AND history_authority_snapshot_id IS NULL)
+      OR (native_generation > 0
+          AND history_tx_id = current_tx_id
+          AND length(trim(history_authority_snapshot_id)) > 0)),
+  CHECK (native_generation > 0 OR
+    (history_status = 'unknown'
+     AND history_reason IS NULL
+     AND history_attempts = 0
+     AND history_next_retry_at IS NULL
+     AND history_pending_rows IS NULL
+     AND history_backup_entries IS NULL))
+);
+```
+
+The observation columns project to `CodexHistoryState`; direction and authority
+snapshot are schedule metadata required to restart the exact Worker after process
+death. `not-evaluated` remains ephemeral and is rejected by the table. A native
+transition publishes its winner and schedule atomically with this null-safe conditional update
+(SQLite `IS` is required for the initial null txId):
+
+```sql
+UPDATE codex_transition_state
+   SET native_generation = ?, current_tx_id = ?,
+       history_status = 'pending', history_reason = NULL,
+       history_attempts = 0, history_next_retry_at = ?, history_tx_id = ?,
+       history_direction = ?, history_authority_snapshot_id = ?,
+       history_pending_rows = NULL, history_backup_entries = NULL,
+       updated_at = ?
+ WHERE singleton = 1
+   AND native_generation = ?
+   AND current_tx_id IS ?;
+```
+
+The first two bound values are `{nativeAfter,newTxId}`; the last two are the
+expected `{nativeBefore,currentTxId}`. Worker claim/retry/terminal updates use the
+same `WHERE native_generation = ? AND current_tx_id IS ?` predicate and additionally
+require `history_tx_id IS ?`; they change only `history_*`, never the native pair.
+The row count, not a later JSON read, is the CAS result.
+
+A zero-row native result means another transition won despite this caller's
+admission: do not write JSON or spawn its Worker; any native bytes already committed
+are unresolved and the current row's winner owns repair. Re-admit if the deadline
+permits, otherwise return `deferred`. A zero-row Worker result means `overtaken`:
+do not write the JSON record, do not clear the
+winner's timer, and schedule from the row returned by a fresh read. A zero-row
+guardian update means its timer was stale and is replaced from the current row.
+Database busy/unavailable is typed `busy`/`deferred`; no caller guesses success.
+
+Initialization first verifies the no-legacy/native-clean precondition while the
+native lock excludes another initializer, then uses one `BEGIN IMMEDIATE`
+transaction: create the table, then
+`INSERT OR IGNORE` singleton 1 as `{0,null}` with an `unknown` history observation,
+zero attempts and no txId/direction/authority/timer/counts, and sets
+`PRAGMA user_version = 1`. That initialization is legal only when the
+JSON has no legacy `nativeGeneration`, `currentTxId`, `generation`, or durable
+`history` member and native observation finds no unresolved routed residue. When
+the row is absent, any such legacy field or native residue is `legacy-ambiguous`; automatic
+mutation refuses and explicit salvage/native-clean adoption must establish the row.
+An `OPENCODEX_HOME`-local positive pair is never imported because a second home may
+hold a different claimant. Once the row exists, legacy JSON fields have no authority
+and are removed on the next successful non-CAS record update while all unrelated
+unknown keys survive.
+
+A missing JSON file is valid and the first provenance update creates `{version:1}`.
+Unreadable/unparseable JSON is not empty: provenance mutation fails closed. Unknown
+members survive at the record, ledger, and individual `CodexProvenanceEntry` levels;
+tests seed a nested future key in an entry and require deep-equal preservation
+after an older-writer update.
 
 ## 2. One convergence entry point
 
@@ -408,13 +556,38 @@ indistinguishable from its failure condition.
 /** Bumped by every cooperating CONFIG write. Owned by src/config.ts. */
 export interface ConfigGeneration { readonly value: number; }
 
-/** Bumped by every cooperating NATIVE commit. Owned by convergence.ts. */
+/** Bumped by every cooperating NATIVE commit. Owned by transition-state.ts. */
 export interface NativeGeneration { readonly value: number; }
+
+export type ConfigGenerationRead =
+  | { kind: "ready"; generation: ConfigGeneration }
+  | { kind: "unavailable"; reason: "busy" | "database" };
+
+export type ConfigGenerationBump =
+  | { kind: "updated"; generation: ConfigGeneration }
+  | { kind: "conflict"; current: ConfigGeneration }
+  | { kind: "unavailable"; reason: "busy" | "database" };
+
+export type ReadConfigGeneration = () => ConfigGenerationRead;
+export type BumpConfigGeneration = (expected: ConfigGeneration) => ConfigGenerationBump;
 ```
 
 Round 2 #6: the previous version said "two counters, both in the record" and
 then defined one. They are distinct because they answer different questions —
 did the user's configuration move, versus did somebody else write Codex's files.
+
+WP8b adds executable `readConfigGeneration` and `bumpConfigGeneration` exports to
+`src/config.ts` with the callable types above. They use a singleton
+`config_generation(singleton INTEGER PRIMARY KEY CHECK(singleton=1), value INTEGER
+NOT NULL CHECK(value>=0))` row in the existing `config-mutation.sqlite`. Creation
+and `INSERT OR IGNORE (1,0)` happen under that database's `BEGIN IMMEDIATE`.
+`bumpConfigGeneration({value:N})` executes
+`UPDATE config_generation SET value = value + 1 WHERE singleton = 1 AND value = N`;
+one changed row returns N+1, zero rows returns `conflict` with a fresh current read,
+and busy/open failure returns `unavailable`. Every cooperating persisted config
+commit calls the bump before committing the SQLite transaction; unchanged mutations
+do not bump. This closes the former scope hole: WP9 delegates this owner to WP8b,
+and `src/config.ts` is now explicitly IN.
 
 ### The expected transition
 
@@ -431,16 +604,16 @@ export interface CommitExpectation {
 
 The rule, stated so a test can check it:
 
-> After the commit, the record must show **exactly** `nativeAfter` AND `txId`
+> After the commit, the coordinator row must show **exactly** `nativeAfter` AND `txId`
 > equal to ours. `nativeAfter` with a different `txId` is another writer that
 > raced us to the same number. Anything else is interference: the outcome is
 > `deferred` with the surface named, never `converged`.
 
 The earlier “there is no window” claim was wrong. Process exclusion cannot make
-separate file replacements and the integration-record replacement atomic. Holding
+separate file replacements and the coordinator-row update atomic. Holding
 native + config coordination provides **no cooperating interleaving while the
 process is alive**; a crash can still leave any prefix of the artifact sequence with
-the old record pair.
+the old coordinator pair.
 
 Recovery is therefore artifact-specific. Config, generated profile, catalog,
 hashed/legacy backups, cache, and journal recover only from their ledger baseline
@@ -608,17 +781,17 @@ This contract chooses **detect-and-repair**, not a transition gate shared across
 the complete history unit. The guarantee is eventual convergence to the latest
 durable native transition:
 
-1. The native record CAS that writes `{nativeAfter, txId}` also writes
-   `history:{status:"pending", txId, nextRetryAt:<due>, ...}` for that same
-   transition **before** any Worker spawn. If spawn never occurs or the Worker dies,
-   the guardian/startup reader still has durable work to schedule.
-2. A Worker checks that the record contains its `{nativeAfter, txId}` immediately
-   after acquiring the history lock. A mismatch returns `pending/overtaken` without
-   mutation and schedules observation of the current pair.
+1. The native coordinator CAS writes `{nativeAfter, txId}` and the complete
+   `history_status='pending'` schedule in the **same SQLite row update** before any
+   Worker spawn. If spawn never occurs or the Worker dies, the guardian/startup
+   reader still has durable work to schedule.
+2. A Worker checks that the coordinator row contains its `{nativeAfter, txId}`
+   immediately after acquiring the history lock. A mismatch returns
+   `pending/overtaken` without mutation and schedules observation of the current row.
 3. Because a newer native transition can commit during traversal, the Worker uses
-   `updateIntegrationRecord({nativeGeneration:nativeAfter,currentTxId:txId}, ...)`
-   for its terminal state. A CAS conflict means its result is stale; it does not
-   overwrite the newer transition's pending schedule and returns `overtaken`.
+   the §1 conditional SQLite update for its terminal history state. A zero-row CAS
+   means its result is stale; it does not touch JSON, overwrite the newer pending
+   schedule, or clear the winner's timer, and returns `overtaken`.
 4. If an old Worker mutated history before detecting that final conflict, the newest
    transition remains durably pending and runs after the old Worker releases the
    history lock. Therefore stale history may exist temporarily, but it cannot become
@@ -629,8 +802,13 @@ write after a newer native commit; the testable claim is that the latest pair st
 durably scheduled and eventually owns the clean under-lock post-probe, even across
 spawn failure, Worker death, or process restart.
 
-Ordering, so absence of deadlock is checkable: **native lock → history lock,
-never the inverse**, and they are never held simultaneously.
+Ordering, so absence of deadlock is checkable: the native callback performs its
+transition-row UPDATE in the native coordinator transaction, then releases it before
+history dispatch. A Worker holds the history lock while traversing and attempts only
+a fail-fast short coordinator CAS at claim/terminal boundaries; it never invokes the
+native callback or waits on config coordination. `SQLITE_BUSY` leaves the current
+pending row intact and retries after the history lock is released. Native and history
+domain callbacks are never nested.
 
 ## 7. The lock namespace has one environment-independent root per effective user
 
@@ -669,8 +847,8 @@ export type UserIdentity =
 
 The key alone was not enough. The earlier `<os-runtime-dir>` called an undefined
 resolver and allowed service/CLI processes to choose different parents through
-`TMPDIR`, `XDG_RUNTIME_DIR`, or `LOCALAPPDATA`. `resolveOsRuntimeDirectory` is now
-the sole algorithm below and reads none of those variables.
+`TMPDIR`, `XDG_RUNTIME_DIR`, or `LOCALAPPDATA`. The private root resolution used by
+the final-path resolver below reads none of those variables.
 
 ```ts
 /**
@@ -681,14 +859,22 @@ the sole algorithm below and reads none of those variables.
 export type ResolveEffectiveUserIdentity = () => UserIdentity;
 
 /**
- * Return the canonical, private per-user runtime root. The result never depends
- * on HOME, USERPROFILE, TMPDIR, XDG_RUNTIME_DIR, TEMP, TMP or LOCALAPPDATA.
+ * Return the FINAL SQLite coordinator database path for this exact canonical
+ * CODEX_HOME. Consumers append no uid/SID, version, directory or filename.
  */
-export type ResolveOsRuntimeDirectory = (identity: UserIdentity) => string;
+export type ResolveCodexCoordinatorDatabasePath = (
+  identity: UserIdentity,
+  canonicalCodexHome: string,
+) => string;
 ```
 
 WP8b implements and exports constants of both function types from
 `src/codex/user-identity.ts`; it does not ship declarations without bodies.
+`resolveCodexCoordinatorDatabasePath` is the **one exported path resolver**.
+Its private helpers may resolve/validate the runtime root, but WP11, transition
+state, history, tests and cleanup consume the returned database path verbatim.
+No consumer appends `opencodex`, `native-write-locks`, `v1`, uid/SID, the home
+digest, or `.sqlite` a second time.
 
 Exact platform algorithm:
 
@@ -712,7 +898,7 @@ Exact platform algorithm:
   SID, canonicalization, reparse, owner, or ACL failure refuses; there is no temp or
   ProgramData fallback.
 
-The lock database path is
+The final path returned by `resolveCodexCoordinatorDatabasePath` is
 `<resolved-per-user-root>/native-write-locks/<sha256-of-canonical-CODEX_HOME>.sqlite`.
 POSIX directories are `0700` and files `0600`; Windows applies the required ACL to
 the root, database, and rollback journal. Every existing component is checked before
@@ -723,7 +909,8 @@ path is a refusal, never something the resolver repairs in place.
 The test that matters, and the one my first version could not have failed: two
 child processes with different `HOME`, `USERPROFILE`, `TMPDIR`, `XDG_RUNTIME_DIR`,
 `TEMP`, `TMP`, and `LOCALAPPDATA` values but the same effective uid/SID and canonical
-`CODEX_HOME` must resolve the same root and take the same lock.
+`CODEX_HOME` must resolve the same **final database path**, take the same lock, and
+read/update the same singleton transition row.
 
 ## 8. Names
 
@@ -736,6 +923,41 @@ Audit #13. Fixed here so no phase invents a variant:
 | the entry point | `src/codex/convergence.ts` |
 | generations | `src/codex/generation.ts` |
 | history worker | `src/codex/history-worker.ts` |
+
+### Writer inventory and permitted roots
+
+The previous rule — “every low-level writer is under `internal/` and only
+`convergence.ts` may reach it” — was unsatisfiable. `history-worker.ts` must call
+history writers directly after it acquires the history lock. A module guard also
+cannot distinguish importing a reader from importing a writer when both symbols
+live in `inject.ts` or `journal.ts`. The inventory, not a directory slogan, is the
+contract:
+
+| Domain | Low-level writer owner | Permitted runtime roots |
+|---|---|---|
+| native config/profile | `src/codex/internal/native-writer.ts` | `src/codex/convergence.ts` only |
+| injection journal create/mark/restore/remove | `src/codex/internal/journal-writer.ts` | `src/codex/convergence.ts` only |
+| catalog, hashed/legacy backups, models cache | `src/codex/internal/catalog-writer.ts` | `src/codex/convergence.ts` only |
+| history DB rows, manifest, rollout files | history write exports in `src/codex/internal/history-writer.ts` | `src/codex/history-worker.ts` only |
+| transition pair and history schedule/terminal row | `src/codex/transition-state.ts` | `src/codex/convergence.ts` and `src/codex/history-worker.ts` only |
+| JSON provenance ledger | `updateIntegrationRecord` in `src/codex/integration-record.ts` | `src/codex/convergence.ts` only |
+| persisted OpenCodex config bytes and config generation | private writers in `src/config.ts` | exported `saveConfig`, `mutatePersistedConfig`, `saveConfigPreservingClaudeCode`, and the generation API in that same module only |
+
+`inject.ts` is split: observation/parsing and pure config/profile transforms stay
+readable there; every export that calls `atomicWriteFile`/`unlinkSync` moves to
+`internal/native-writer.ts`. `journal.ts` is split into read/validate/classify code
+(`journal.ts`) and the four mutating operations in `internal/journal-writer.ts`.
+The writer half may import the reader half; the reader half never imports or
+re-exports the writer. `catalog.ts` likewise stops re-exporting direct writer
+symbols. These splits are required before a module-level reachability assertion can
+mean “reader imports are safe.”
+
+The contract test publishes this table as data and walks static imports, dynamic
+imports, re-exports and aliases at **symbol** granularity. Every inventoried writer
+must have exactly the permitted roots above, and every filesystem/SQLite mutator of
+a Codex-owned artifact must appear in the inventory. `history-job.ts`, management
+routes, CLI modules, `sync.ts`, `refresh.ts`, `inject.ts`, and `journal.ts` are not
+permitted roots; they call convergence, dispatch a Worker, or read only.
 
 ## 9. Baseline classes
 
@@ -756,53 +978,60 @@ Housing a finding in the wrong unit is not housing it.
 ## Test plan
 
 `tests/codex-integration-record.test.ts`: a v1 record with only `history` is
-valid to a provenance reader and vice versa (audit #3); unknown top-level keys
-survive a write; unparseable fails closed rather than resetting. Missing and
-field-free v1 records initialize to `{0,null}` and persist both native fields on
-first update. Generation-only/tx-only legacy records refuse. Two updates expecting
-the same pair race; exactly one updates and the loser returns `conflict` without
-overwriting the winner's txId or pending history schedule.
+rejected as legacy transition state rather than treated as current authority; a
+provenance-only record is valid. Unknown record, ledger, and individual-entry keys
+survive a write, including a nested future object on one `CodexProvenanceEntry`;
+unparseable fails closed rather than resetting. Missing creates only
+`{version:1,provenance}` when provenance first writes.
+
+`tests/codex-transition-state.test.ts`: two processes use different
+`OPENCODEX_HOME` values and one canonical `CODEX_HOME`, resolve one final database
+path, and observe one singleton row. Two native updates expecting `{0,null}` race;
+exactly one conditional UPDATE changes one row and the loser returns `conflict`.
+Pause an old Worker, publish a newer pair plus pending schedule, then finish the old
+Worker: its terminal UPDATE changes zero rows and cannot alter JSON or the winner's
+schedule. Missing DB/table initializes only from native-clean/no-legacy state;
+legacy JSON pair/schedule, residue beside a missing row, malformed row, busy DB and
+unsafe path all fail closed with the specified typed outcome.
 
 `tests/codex-convergence-contract.test.ts`: every `ConvergeOutcome` variant maps
 to the §5 row, `busy` carries `Retry-After`, and a best-effort management caller
-still returns 2xx while reporting a non-converged disposition. Compile the exported
-type block with the repository TypeScript compiler so WP8b cannot regress to a
+still returns 2xx while reporting a non-converged disposition. Concatenate all ten
+TypeScript fences in document order, prepend the §1 `OcxConfig` import, and compile
+with the repository TypeScript compiler so WP8b cannot regress to TS2304 or a
 bodyless TS2391 declaration. Table-drive each artifact observation and require
 `isApplied` only for the fully applied aggregate.
 
 `tests/codex-user-identity.test.ts`: real child processes vary every environment
-home/runtime variable named in §7 and resolve one root/lock for one effective uid or
-SID. POSIX activates wrong owner/mode/symlink and non-sticky `/tmp` refusal through a
+home/runtime variable named in §7 and resolve one final database path for one
+effective uid or SID. POSIX activates wrong owner/mode/symlink and non-sticky `/tmp` refusal through a
 resolver seam; Windows CI activates token/SID failure, known-folder failure, reparse,
 owner, and broad-ACL refusal. No case falls back to an environment directory.
 
 WP10's Worker tests pause an old Worker during traversal, commit a newer transition,
-then let the old mutation finish. Its terminal CAS must conflict, the newer pending
-state must survive, and the guardian must repair it. Repeat with spawn suppressed,
+then let the old mutation finish. Its terminal SQLite CAS must change zero rows, the
+newer pending state must survive, and the guardian must repair it. Repeat with spawn suppressed,
 Worker death, timeout, shutdown cancellation, unreadable/schema probes, and terminal
 record-write failure; every failed probe count is null and the latest transition
 remains durably schedulable.
 
 **The funnel must be provable, not grepped** (round 2 #2). A grep guard misses a
-wrapper in the same module, a re-export, an alias and a dynamic import — and the
-tree has all four today: `refreshCodexModelCatalog` wraps the catalog writers
-(`src/codex/refresh.ts:40-52`), `restoreNativeCodex` wraps config/catalog/history
-removal (`src/codex/inject.ts:764-794`), and `src/codex/catalog.ts:11` re-exports
-the direct writers.
-
-So the low-level writers move into `src/codex/internal/` whose **only** permitted
-importer is `convergence.ts`, and the guard test walks the module dependency
-GRAPH — static imports, dynamic imports, re-exports and aliases — asserting no
-other path reaches them. Reachability, not spelling.
+wrapper, re-export, alias or dynamic import. The writer-inventory test above is the
+enforcement surface; it permits the history Worker without opening native/catalog
+writes to it.
 
 ## Accept criteria
 
 - C14 — all 16 management callers funnel through `convergeCodex`, enforced by the
   import guard test.
 - C16 — one owner, one schema; a record from any phase reads in every other.
-- C17 — an A→B→A cycle between gather and commit is detected by generation, and
-  a parent-symlink retarget is detected by target identity.
+- C17 — cooperating transition ABA is detected by the durable config/native
+  generations and exact txId, and a parent target that drifts once between gather
+  and the under-lock commit check is detected by canonical target identity. An
+  arbitrary filesystem A→B→A retarget that completes wholly between two checks is
+  explicitly not claimed.
 - Contributes to C15 with detect-and-repair: the latest native pair is durably
-  pending before spawn, a stale Worker cannot replace its record, and the guardian
+  pending before spawn, a stale Worker cannot replace its transition row or the
+  winner's schedule, and the guardian
   eventually repairs history. WP10 implements that protocol. Also contributes to
   C2/C12 (generations and the three-read admission/observation sequence).
