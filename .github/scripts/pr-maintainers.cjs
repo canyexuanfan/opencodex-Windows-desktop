@@ -7,11 +7,12 @@
  * so the recipient list is empty rather than scanning the whole file.
  */
 function parseMaintainerLogins(text) {
-  const sectionStart = text.indexOf("## Current maintainers");
-  if (sectionStart === -1) {
+  const heading = /^## Current maintainers[ \t]*\r?$/m.exec(text ?? "");
+  if (heading === null) {
     return [];
   }
 
+  const sectionStart = heading.index;
   const nextHeading = text.indexOf(
     "\n## ",
     sectionStart + "## Current maintainers".length

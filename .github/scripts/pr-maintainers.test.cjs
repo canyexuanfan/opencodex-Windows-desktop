@@ -34,6 +34,20 @@ describe("parseMaintainerLogins", () => {
     const text = "- [@only](https://github.com/only) is listed.";
     assert.deepEqual(parseMaintainerLogins(text), []);
   });
+  it("does not match a ### subsection or prose mentioning the heading", () => {
+    const subsection = [
+      "### Current maintainers",
+      "| [@subsection](https://github.com/subsection) | x |",
+    ].join("\n");
+    assert.deepEqual(parseMaintainerLogins(subsection), []);
+
+    const prose = [
+      "See the ## Current maintainers section below.",
+      "| [@prose](https://github.com/prose) | x |",
+    ].join("\n");
+    assert.deepEqual(parseMaintainerLogins(prose), []);
+  });
+
 
   it("handles empty and duplicate-free output", () => {
     assert.deepEqual(parseMaintainerLogins(""), []);
