@@ -425,6 +425,62 @@ describe("kiro oauth — import-first", () => {
     expect(existsSync(kiroCliRecoveryPath())).toBe(false);
   });
 
+  test("whoami supplies a valid profileArn when the SQLite import lacks one (#993)", async () => {
+    const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCD1234";
+    seedKiroCliDb({ access_token: "aoa-builder", refresh_token: "rt-builder" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ email: "builder@example.com", profileArn: arn }) };
+      }
+      throw new Error(`unexpected Kiro CLI command: ${args[0]}`);
+    };
+
+    const cred = await loginKiro({}, { cliRunner: runner });
+
+    expect(cred).toMatchObject({
+      access: "aoa-builder",
+      accountId: arn,
+      kiro: { profileArn: arn },
+    });
+  });
+
+  test("a nested profile.arn shape is accepted (#993)", async () => {
+    const arn = "arn:aws:codewhisperer:eu-west-1:123456789012:profile/XY-99";
+    seedKiroCliDb({ access_token: "aoa-nested", refresh_token: "rt-nested" });
+    const nestedRunner = async (args: string[]) => {
+      if (args[0] === "whoami") return { exitCode: 0, stdout: JSON.stringify({ profile: { arn } }) };
+      throw new Error("unexpected");
+    };
+    const nested = await loginKiro({}, { cliRunner: nestedRunner });
+    expect(nested.accountId).toBe(arn);
+  });
+
+  test("a malformed whoami ARN is ignored without breaking the login (#993)", async () => {
+    seedKiroCliDb({ access_token: "aoa-bad", refresh_token: "rt-bad" });
+    const badRunner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ profileArn: "not-an-arn", email: "bad@example.com" }) };
+      }
+      throw new Error("unexpected");
+    };
+    const bad = await loginKiro({}, { cliRunner: badRunner });
+    // Malformed ARN: login still succeeds for ungated models, but no ARN is borrowed.
+    expect(bad.accountId).toBeUndefined();
+    expect(bad.kiro?.profileArn).toBeUndefined();
+  });
+
+  test("an imported SQLite profileArn stays authoritative over whoami (#993)", async () => {
+    const sqliteArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/SQLITE";
+    const whoamiArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/WHOAMI";
+    seedKiroCliDb({ access_token: "aoa-both", refresh_token: "rt-both", profile_arn: sqliteArn });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") return { exitCode: 0, stdout: JSON.stringify({ profileArn: whoamiArn }) };
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.accountId).toBe(sqliteArn);
+  });
+
   test("invalid recovery data names the file the operator must remove", async () => {
     seedKiroCliDb({ access_token: "aoa-prior", refresh_token: "rt-prior" });
     writeFileSync(kiroCliRecoveryPath(), "not a recovery database", { mode: 0o600 });
