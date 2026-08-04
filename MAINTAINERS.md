@@ -31,6 +31,10 @@ see [The retired `dev2-go` line](#the-retired-dev2-go-line).
   all correct Codex and CodeRabbit findings fixed, and the ready-for-review
   confirmation. When all four boxes are ticked the gate marks the PR ready and
   notifies the maintainers listed in `MAINTAINERS.md` (excluding the author).
+  Completion is bound to the exact commit the PR head pointed at: if new
+  commits are pushed afterwards, the gate moves the PR back to draft, resets
+  the checklist and the notification, and asks the author to test and tick the
+  boxes again against the latest code.
   Authors with repository push permission skip the ancestry heuristic only. As
   with the approval requirement above, this is enforced by convention until
   branch protection is configured (see the note under the change log).

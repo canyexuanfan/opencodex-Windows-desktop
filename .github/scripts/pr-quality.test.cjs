@@ -14,6 +14,7 @@ const {
   extractReviewReadiness,
   appendReviewReadinessSection,
   stripReviewReadinessSection,
+  resetReviewReadinessSection,
   collectPrQualityFailures,
 } = require("./pr-quality.cjs");
 
@@ -398,6 +399,58 @@ describe("review readiness checklist", () => {
     assert.equal(stripReviewReadinessSection(SECTION), "");
     assert.equal(stripReviewReadinessSection("plain body"), "plain body");
     assert.equal(stripReviewReadinessSection(null), null);
+  });
+
+  it("resets every checked box to unticked and keeps the surrounding body", () => {
+    const body = [
+      "## Summary",
+      "Author content.",
+      "",
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+      "",
+      "## Test plan",
+      "- Ran the suite.",
+    ].join("\n");
+    const reset = resetReviewReadinessSection(body);
+    const extracted = extractReviewReadiness(reset);
+    assert.equal(extracted.present, true);
+    assert.equal(extracted.complete, false);
+    assert.equal(extracted.checked, 0);
+    assert.equal(extracted.total, 4);
+    assert.equal((reset.match(/\[x\]/g) || []).length, 0);
+    assert.ok(reset.includes("Author content."));
+    assert.ok(reset.includes("## Test plan"));
+  });
+
+  it("resets a partially ticked section as well", () => {
+    const partial = SECTION.replace(
+      "- [ ] My PR is ready for review.",
+      "- [x] My PR is ready for review.",
+    );
+    const reset = resetReviewReadinessSection(partial);
+    const extracted = extractReviewReadiness(reset);
+    assert.equal(extracted.checked, 0);
+    assert.equal(extracted.complete, false);
+  });
+
+  it("is idempotent on an already-unticked section", () => {
+    const once = resetReviewReadinessSection(
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+    );
+    assert.equal(resetReviewReadinessSection(once), once);
+    assert.equal(extractReviewReadiness(once).checked, 0);
+  });
+
+  it("leaves markerless and malformed bodies alone", () => {
+    assert.equal(resetReviewReadinessSection("plain body"), "plain body");
+    assert.equal(resetReviewReadinessSection(null), null);
+    const duplicate = SECTION + SECTION;
+    assert.equal(resetReviewReadinessSection(duplicate), duplicate);
+    const inverted =
+      "<!-- pr-quality-readiness-checklist:end -->\n" +
+      "<!-- pr-quality-readiness-checklist:start -->\n" +
+      "- [x] orphan box";
+    assert.equal(resetReviewReadinessSection(inverted), inverted);
   });
 });
 

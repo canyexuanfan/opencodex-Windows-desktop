@@ -52,6 +52,7 @@ jobs:
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
+              resetReviewReadinessSection,
               REVIEW_READINESS_ITEMS
             } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
@@ -67,7 +68,10 @@ jobs:
             const READINESS_MARKER = "<!-- pr-quality-readiness -->";
             const READINESS_STATE_PATTERN =
               /<!-- pr-quality-readiness-state:([\s\S]*?) -->/;
-            const READINESS_STATE_VERSION = 1;
+            // v2 adds `completedAtHeadSha` so a completed checklist is bound
+            // to the exact head it attested. v1 states (no field) are read the
+            // same way: the binding only starts on the next completion.
+            const READINESS_STATE_VERSION = 2;
             const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
@@ -177,7 +181,8 @@ jobs:
               return {
                 version: READINESS_STATE_VERSION,
                 autoDraftedByBot: false,
-                maintainersPinged: false
+                maintainersPinged: false,
+                completedAtHeadSha: null
               };
             }
 
@@ -580,7 +585,48 @@ jobs:
               });
               readiness = extractReviewReadiness(injectedBody);
             }
-            const checklistComplete = readiness.present && readiness.complete;
+            let checklistComplete = readiness.present && readiness.complete;
+
+            // A completed checklist is an attestation about a specific head.
+            // If new commits land after completion, that attestation no longer
+            // covers the code under review: reset the boxes and the
+            // notification state, re-draft, and tell the author to re-test and
+            // re-tick against the latest code. State written before this
+            // feature existed has no recorded head, so the binding only starts
+            // at the next completion (the completion path records the SHA).
+            const completionHeadSha =
+              storedReadinessState?.completedAtHeadSha ?? null;
+            const headDrifted =
+              checklistRequired &&
+              checklistComplete &&
+              completionHeadSha !== null &&
+              completionHeadSha !== pr.head.sha;
+
+            let readinessStateOverride = null;
+            let headDriftNotice = [];
+            if (headDrifted) {
+              const resetBody = resetReviewReadinessSection(pr.body ?? "");
+              if (resetBody !== pr.body) {
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number,
+                  body: resetBody
+                });
+              }
+              readiness = extractReviewReadiness(resetBody);
+              checklistComplete = readiness.present && readiness.complete;
+              readinessStateOverride = {
+                version: READINESS_STATE_VERSION,
+                autoDraftedByBot: false,
+                maintainersPinged: false,
+                completedAtHeadSha: null
+              };
+              headDriftNotice = [
+                `New commits were pushed after the checklist was completed on ${inlineCode(String(completionHeadSha).slice(0, 7))}; the current head is ${inlineCode(pr.head.sha.slice(0, 7))}.`,
+                "The checklist has been reset: re-test against the latest code and tick all four boxes again."
+              ];
+            }
 
             // A contributor PR stays a draft while the checklist is open, even
             // when every quality gate already passes.
@@ -589,9 +635,11 @@ jobs:
 
             if (mustDraft) {
               let draftConverted = false;
-              const readinessState = storedReadinessState
-                ? { ...storedReadinessState }
-                : defaultReadinessState();
+              const readinessState =
+                readinessStateOverride ??
+                (storedReadinessState
+                  ? { ...storedReadinessState }
+                  : defaultReadinessState());
               const state = storedState?.active
                 ? { ...storedState }
                 : {
@@ -640,6 +688,7 @@ jobs:
                   readinessState,
                   readiness,
                   [
+                    ...headDriftNotice,
                     "This PR stays in draft until every box above is ticked."
                   ]
                 );
@@ -758,6 +807,7 @@ jobs:
                     readinessState,
                     readiness,
                     [
+                      ...headDriftNotice,
                       checklistComplete
                         ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
                         : pr.draft || draftConverted
@@ -811,6 +861,7 @@ jobs:
                 readinessState,
                 readiness,
                 [
+                  ...headDriftNotice,
                   pr.draft || draftConverted
                     ? "This PR stays in draft until every box above is ticked."
                     : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
@@ -930,11 +981,17 @@ jobs:
                 notified = true;
               }
 
+              // Bind the completion to the exact head it attested. A later
+              // `synchronize` event with a different head resets the checklist
+              // and the notification state (see `headDrifted` above).
+              readinessState.completedAtHeadSha = pr.head.sha;
+
               await upsertReadinessComment(
                 readinessState,
                 readiness,
                 [
                   "✅ **All four boxes are ticked.**",
+                  `Completed against head ${inlineCode(pr.head.sha.slice(0, 7))}; new commits after this will reset the checklist.`,
                   readyConverted
                     ? "This pull request has been marked Ready for Review."
                     : pr.draft

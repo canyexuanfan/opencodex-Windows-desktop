@@ -320,6 +320,30 @@ function stripReviewReadinessSection(body) {
   return stripped.replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
+/**
+ * Replace the bot-managed readiness section with a fresh unticked copy.
+ * Used when new commits land after the checklist was completed: the old
+ * attestation covered a different head, so every box resets and the author
+ * must re-tick against the latest code. Malformed marker sets (duplicates,
+ * extra pairs) stay untouched, matching `stripReviewReadinessSection`.
+ */
+function resetReviewReadinessSection(body) {
+  if (typeof body !== "string") return body;
+  const start = body.indexOf(REVIEW_READINESS_START);
+  const end = body.indexOf(REVIEW_READINESS_END);
+  if (start === -1 || end === -1 || end <= start) return body;
+  if (
+    body.split(REVIEW_READINESS_START).length - 1 !== 1 ||
+    body.split(REVIEW_READINESS_END).length - 1 !== 1
+  ) {
+    return body;
+  }
+  const section = buildReviewReadinessSection();
+  const reset =
+    body.slice(0, start) + section + body.slice(end + REVIEW_READINESS_END.length);
+  return reset.replace(/\n{3,}/g, "\n\n").trimEnd();
+}
+
 function collectPrQualityFailures({
   baseRef,
   allowedBases,
@@ -389,6 +413,7 @@ module.exports = {
   extractReviewReadiness,
   appendReviewReadinessSection,
   stripReviewReadinessSection,
+  resetReviewReadinessSection,
   collectPrQualityFailures,
   hasEscapedNewlines,
   stripPrTemplateBoilerplate,
