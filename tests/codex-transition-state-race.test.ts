@@ -203,11 +203,13 @@ test("two real processes racing first use publish exactly one initial transition
     // terminal state is pinned exactly by `finalKinds`.
     expect(firstKinds.filter(kind => kind === "updated").length).toBeLessThanOrEqual(1);
     for (const result of results) {
-      expect(
-        result.first?.kind === "updated"
-          || result.first?.kind === "conflict"
-          || (result.first?.kind === "unavailable" && result.first.reason === "busy"),
-      ).toBe(true);
+      const acceptable = result.first?.kind === "updated"
+        || result.first?.kind === "conflict"
+        || (result.first?.kind === "unavailable" && result.first.reason === "busy");
+      // Report the actual value on failure; `toBe(true)` alone says only that
+      // something unexpected happened, which is the least useful thing a race
+      // test can tell you.
+      expect({ acceptable, first: result.first }).toMatchObject({ acceptable: true });
     }
 
     const finalKinds = results.map(result => result.final?.kind).sort();

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -548,4 +548,30 @@ test("a begin whose txId matches but whose generation does not is rejected", () 
   const after = readCodexTransitionState();
   expect(after.kind).toBe("ready");
   if (after.kind === "ready") expect(after.state.currentTxId).toBe("tx-one");
+});
+
+/**
+ * A permissive coordinator is never LEFT permissive.
+ *
+ * The flake fix relaxed WHEN mode is judged, not whether. Two processes reaching
+ * first use together both see ENOENT, and the loser can lstat the winner's file
+ * before its chmod lands; refusing there reported `unsafe-path` for what was only
+ * a schedule (1-in-12 on a 16-core box). Ownership is still decided before the
+ * open — a file owned by somebody else is not a race and waiting cannot make it
+ * ours — while mode is narrowed once below the open and judged on the settled
+ * state.
+ *
+ * This asserts the outcome that matters and can actually be observed: after a
+ * read, the file is owner-only again. Removing the narrowing leaves it 0644 and
+ * turns this red.
+ */
+test("a coordinator found group-readable is narrowed back to owner-only", () => {
+  expect(readCodexTransitionState().kind).toBe("ready");
+
+  chmodSync(coordinatorPath, 0o644);
+  expect(statSync(coordinatorPath).mode & 0o777).toBe(0o644);
+
+  const read = readCodexTransitionState();
+  expect(read.kind).toBe("ready");
+  expect(statSync(coordinatorPath).mode & 0o777).toBe(0o600);
 });

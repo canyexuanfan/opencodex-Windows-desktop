@@ -361,7 +361,17 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
       }
       if (process.platform !== "win32") {
         const uid = process.getuid?.();
-        if (uid === undefined || before.uid !== uid || (before.mode & 0o777) !== 0o600) {
+        // Ownership is decided here; MODE is not.
+        //
+        // Two processes reaching first use together both observe ENOENT, and the
+        // loser can lstat the winner's file in the window between its creation
+        // and its chmod. Refusing on mode here read as a permission problem when
+        // it was a schedule — a real 1-in-12 flake on a 16-core box. Our own file
+        // is ours to narrow, so the mode decision moves below the open, where it
+        // can tighten once and then judge the settled state. A file owned by
+        // somebody else is still refused immediately: that is not a race, and no
+        // amount of waiting makes it ours.
+        if (uid === undefined || before.uid !== uid) {
           throw new CodexUserIdentityRefusal(
             "The coordinator database has unsafe ownership or permissions.",
           );
@@ -374,6 +384,29 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
     database = new Database(finalDatabasePath, { create: true });
     if (databaseWasAbsent) {
       try { chmodSync(finalDatabasePath, 0o600); } catch { /* Windows applies ACLs in WP11. */ }
+    }
+    // Re-check ownership and mode AFTER the open, not only before it.
+    //
+    // Two processes reaching first use together both see ENOENT, and the loser
+    // opens the winner's file in the window before the winner's chmod lands. Its
+    // pre-open check had already passed (the file did not exist), so without this
+    // the loser refused with `unsafe-path` — a real flake, reproduced 1-in-12 on
+    // a 16-core box, that read as a permission problem when it was a schedule.
+    //
+    // Narrowing our own descriptor's mode is safe and idempotent; a file that is
+    // still wrong afterwards is genuinely wrong, not merely early.
+    if (process.platform !== "win32") {
+      const uid = process.getuid?.();
+      let current = lstatSync(finalDatabasePath);
+      if ((current.mode & 0o777) !== 0o600) {
+        try { chmodSync(finalDatabasePath, 0o600); } catch { /* refused below */ }
+        current = lstatSync(finalDatabasePath);
+      }
+      if (uid === undefined || current.uid !== uid || (current.mode & 0o777) !== 0o600) {
+        throw new CodexUserIdentityRefusal(
+          "The coordinator database has unsafe ownership or permissions.",
+        );
+      }
     }
     const opened = lstatSync(finalDatabasePath);
     if (opened.isSymbolicLink() || !opened.isFile()) {
