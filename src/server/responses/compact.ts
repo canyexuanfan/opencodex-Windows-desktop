@@ -424,8 +424,6 @@ export async function handleResponsesCompact(
       // Same connect timeout + keep-alive reset + transient-5xx recovery as /v1/responses —
       // compact hits the same ChatGPT host and must soft-avoid / clear affinity (#186).
       upstream = await sendCompactAttempt(compactProvider, headers, "normal");
-      // A real HTTP response proves the host was reached (#914).
-      resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
     } catch (err) {
       if (req.signal.aborted) {
         recordCompactPoolOutcome(outcomeCtx, 499);
@@ -501,8 +499,6 @@ export async function handleResponsesCompact(
         outcomeCtx = alternate.authCtx;
         try {
           upstream = await sendCompactAttempt(alternate.provider, alternate.headers, "single");
-          // A real HTTP response proves the host was reached (#914).
-          resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
         } catch (err) {
           if (req.signal.aborted) {
             recordCompactPoolOutcome(outcomeCtx, 499);

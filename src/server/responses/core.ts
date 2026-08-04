@@ -1801,9 +1801,6 @@ async function handleResponsesInner(
     } finally {
       request.releaseBodyObservation?.();
     }
-    // A real HTTP response proves the host was reached: clear any pre-connection
-    // reachability streak recorded for it (#914).
-    resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
 
     // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
     // passthrough wire. This branch returns before the recovery loop below, so Responses-shaped
