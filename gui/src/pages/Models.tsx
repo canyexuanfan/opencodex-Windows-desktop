@@ -87,6 +87,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const loadPendingRef = useRef(false);
   // multi_agent_v2 / ultra gate. null = endpoint unavailable (older proxy build) -> section hidden.
   const [v2, setV2] = useState<V2Status | null>(null);
+  const [v2Loading, setV2Loading] = useState(true);
   const [v2Busy, setV2Busy] = useState(false);
   const [v2Note, setV2Note] = useState("");
   const v2BusyRef = useRef(false);
@@ -178,6 +179,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
       });
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
+    } finally {
+      setV2Loading(false);
     }
   }, [apiBase]);
 
@@ -898,7 +901,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
           </div>
         </div>
 
-        {v2 && (
+        {(v2Loading || v2) && (
           <div className="models-v2-mode-row row">
             <span className="muted text-control">{t("models.v2Label")}</span>
             <div className="segmented models-segmented" role="radiogroup" aria-label={t("models.v2Label")}>
@@ -907,10 +910,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
                   key={mode}
                   type="button"
                   role="radio"
-                  aria-checked={(v2.multiAgentMode ?? "default") === mode}
-                  className={`btn btn-sm${(v2.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
-                  style={{ background: (v2.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
-                  disabled={v2Busy}
+                  aria-checked={(v2?.multiAgentMode ?? "default") === mode}
+                  className={`btn btn-sm${(v2?.multiAgentMode ?? "default") === mode ? " btn-primary" : " btn-ghost"}`}
+                  style={{ background: (v2?.multiAgentMode ?? "default") === mode ? undefined : "transparent", color: (v2?.multiAgentMode ?? "default") === mode ? undefined : "var(--muted)" }}
+                  disabled={!v2 || v2Busy}
                   onClick={() => void setMultiAgentMode(mode)}
                 >
                   {t(`models.v2Mode_${mode}` as TKey)}
@@ -921,6 +924,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
               type="button"
               className="btn btn-ghost btn-sm"
               style={{ width: 24, height: 24, minWidth: 24, flex: "0 0 24px", padding: 0, borderRadius: "var(--radius-pill)", color: "var(--muted)" }}
+              disabled={!v2}
               onClick={() => setV2HelpOpen(true)}
               aria-label={t("models.v2Label")}
               aria-haspopup="dialog"
@@ -931,7 +935,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
         )}
       </div>
 
-      {v2 && (v2.enabled || v2.agentsMaxThreadsConflict || v2Note) && (
+      {v2Loading && v2 === null ? (
+        <div className="models-v2-detail-row row" aria-hidden="true">
+          <span className="muted text-control">{t("models.v2ThreadsLabel")}</span>
+          <Select value="" options={[]} onChange={() => {}} disabled label={t("models.v2ThreadsLabel")} />
+        </div>
+      ) : v2 && (v2.enabled || v2.agentsMaxThreadsConflict || v2Note) && (
         <div className="models-v2-detail-row row">
           {v2.enabled && (
             <>
@@ -1037,20 +1046,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const combosBlock = (
     <>
-      {/* Pending strut matches the empty-card chrome so a late /api/combos cannot insert a row. */}
+      {/* Silent height strut: reserves the empty-card slot so a late /api/combos
+          cannot insert a row, without a bordered "Combos · Loading…" placeholder. */}
       {combos === null && !combosError && (
-        <div className="card models-combos-card" aria-busy="true">
-          <div className="row models-combos-empty-head">
-            <div className="row models-field-row" style={{ minWidth: 0 }}>
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              <span className="muted text-label">{t("common.loading")}</span>
-            </div>
-            <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0, visibility: "hidden" }} tabIndex={-1} aria-hidden="true">
-              {t("models.combosSetup")}
-            </a>
-          </div>
-        </div>
+        <div className="models-combos-card models-combos-card--pending" aria-busy="true" />
       )}
       {combos === null && combosError && (
         <div className="card models-combos-card">

@@ -381,6 +381,13 @@ describe("management and data-plane credential separation", () => {
     expect(html).toContain(`name="opencodex-session-token" content="${session?.token}"`);
     expect(html).toContain(`name="opencodex-session-csrf" content="${session?.csrfToken}"`);
 
+    // Extensionless paths double as the session-bootstrap document: the dev GUI fetches
+    // /opencodex-session through Vite so the app shell stays Vite-owned while the backend
+    // still mints an origin-bound loopback session.
+    const bootstrapPage = serveGuiFile("/opencodex-session", guiDist, session ?? undefined);
+    const bootstrapHtml = await bootstrapPage?.text();
+    expect(bootstrapHtml).toContain(`name="opencodex-session-origin" content="${session?.origin}"`);
+
     const sameOriginRead = new Request("http://localhost:10100/api/config", {
       headers: {
         Host: "localhost:10100",

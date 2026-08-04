@@ -11,7 +11,7 @@ import { readSessionListCache, writeSessionListCache } from "../session-list-cac
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 
 type ProviderOption = {
   name: string;
@@ -247,7 +247,6 @@ export default function Combos({ apiBase }: { apiBase: string }) {
           <Notice tone="err">{t("cws.loadFailed")}</Notice>
         </div>
       )}
-      {state.refreshing && <DataSurfaceStatus live={!state.showError}>{t("cws.loading")}</DataSurfaceStatus>}
       <div className="combos-workspace-shell-body">
         <ComboWorkspace
           combos={combos}
