@@ -33,6 +33,14 @@ All current-code citations and diff context below were rechecked on 2026-08-04 a
 Rechecked on 2026-08-05 at `86e5d677b`, with executed probes rather than citation.
 All three change what B must build.
 
+> **Read this section as a HISTORICAL RECORD of how each finding was reached, not
+> as instructions.** It was written while this was still a standalone WP11, so its
+> sentences say "WP11 does X" and some of them propose remedies that later rounds
+> then defeated — the F2 adjacency rule most of all. Every prescriptive decision
+> lives below, in the merged-phase sections; where the two disagree, those win.
+> The findings are kept in their original shape deliberately: a remedy that was
+> wrong is more useful with the reasoning that produced it attached than deleted.
+
 ### F1 — the coordinator refuses to open on every routed install (blocking)
 
 `openCodexCoordinatorTransaction` initializes a missing row only after
@@ -57,11 +65,11 @@ path that `005_contract.md:705-800` designed for this is **not implemented** —
 `withCodexCompatibilityNativeHandoff` and `adoption-pending` have zero occurrences
 in `src/`.
 
-WP11 therefore ships the lock **without rewiring `convergence.ts` to require N**.
-`commitCodexCatalogCandidate` keeps `K -> C` (`src/codex/convergence.ts:393-406`),
-which is already correct and already cross-process safe. `convergence.ts` moves
-under N in WP12, together with the admission pipeline and the adoption path that
-makes opening N legal on a routed home. Landing the lock and its rewiring in one
+The phase therefore ships the lock **without rewiring the existing catalog commit
+to require N**. `commitCodexCatalogCandidate` keeps `K -> C`
+(`src/codex/convergence.ts:393-406`), which is already correct and already
+cross-process safe. That seam moves under N only once the adoption path makes
+opening N legal on a routed home. Landing the lock and its rewiring in one
 phase would mean landing a refusal for the current user base to satisfy a document.
 
 That is not a scope dodge: WP11's own accept criteria (C5/C6/C7/C18) are about
@@ -174,12 +182,16 @@ The guard passed by inspecting a directory that is not the one being locked. Eve
 existing caller happens to pass the ambient home, so the defect is latent today and
 becomes live the moment WP11 accepts an explicit `codexHome` — which its API does.
 
-Consequence for WP11: `CodexWriteLockOptions.codexHome` may not be forwarded to a
-coordinator whose safety guard reads a different home. WP11 refuses with
+Consequence: `CodexWriteLockOptions.codexHome` may not be forwarded to a
+coordinator whose safety guard reads a different home. The lock refuses with
 `authority_not_proven` when the canonical target home is not identical to the
-ambient `getCodexHome()` result, and a test drives the mismatch. Making the
-guard home-parameterized is WP12's job (it owns admission); WP11 must not silently
-accept a home whose residue was never checked.
+ambient `getCodexHome()` result, and a test drives the mismatch.
+
+> The sentence that stood here — "making the guard home-parameterized is WP12's
+> job" — was written when WP11 and WP12 were separate phases, and it was wrong on
+> its own terms even then: round 8's symlink probe showed the comparison alone
+> cannot close this. Parameterizing the guard is required work in THIS phase. See
+> the acquisition section.
 
 **The obvious version of that remedy is itself a TOCTOU**, and it was caught by
 probing rather than by reading. `getCodexHome()` re-resolves `process.env.CODEX_HOME`
@@ -194,10 +206,15 @@ A comparison that calls `getCodexHome()` once to validate and lets the coordinat
 call it again to check residue proves nothing: the second read is a fresh read. So
 the check is not "compare the two", it is **resolve the ambient home exactly once,
 canonicalize it, use that single value for both the comparison and the lock target,
-and refuse if the caller supplied anything else**. WP11 never re-reads the ambient
-home after that point, and the residue guard's own later read is covered only
-because it is bounded by N — a second process that changes the environment cannot
-change ours, and our own code does not mutate `CODEX_HOME` mid-operation.
+and refuse if the caller supplied anything else**.
+
+> ~~And the residue guard's own later read is covered because it is bounded by N — a
+> second process that changes the environment cannot change ours.~~ **Struck.** N
+> serializes the coordinator database, not `process.env`, and it is not even held
+> when that read happens. Round 8 then showed the deeper error: a second process
+> does not need our environment at all, because it can retarget the symlink that
+> our `CODEX_HOME` names. The mechanism is the parameterized guard, not this
+> argument.
 
 That last clause is a claim, not an assumption, so it needs a guard rather than a
 comment: the B phase adds a test that fails if any production module under `src/`
@@ -523,7 +540,7 @@ assert stable lock path; COMMIT N; close DB + side fd
 
 This replaces the former two generic admission callbacks. The first
 `AdmissionSnapshot` is enough to refuse before namespace creation. The second is
-an authoritative re-read inside the coordinated commit; WP11 does not reduce it to
+an authoritative re-read inside the coordinated commit; the lock does not reduce it to
 a boolean or manufacture an authority receipt.
 
 `withConfigMutationLockSync` is already synchronous, fail-fast, and reentrant only
@@ -590,7 +607,7 @@ import {
 
 Call `resolveEffectiveUserIdentity()`, then pass that identity and the canonical
 `CODEX_HOME` to `resolveCodexCoordinatorDatabasePath(...)`. Its return value is the
-**final database path** and is consumed verbatim. WP11 does not import
+**final database path** and is consumed verbatim. The lock does not import
 `resolveOsRuntimeDirectory`, encode uid/SID, hash the home for path construction,
 or append `opencodex`, `native-write-locks`, a version, or `.sqlite`. The prior
 version reconstructed those segments locally; that was wrong because it let the
@@ -605,7 +622,7 @@ Walk components one at a time; never recursive-mkdir across an unvalidated paren
   junctions, or reparse redirects. `ENOENT` permits one `mkdirSync(..., 0700)`,
   followed by the same validation.
 - POSIX requires exact effective uid and mode `0700` for directories, `0600` for
-  the DB/rollback journal. Wrong owner/mode refuses; WP11 does not chmod a suspect
+  the DB/rollback journal. Wrong owner/mode refuses; the lock does not chmod a suspect
   existing path.
 - Windows validates non-junction identity and runs the existing required per-user
   ACL owner within the remaining outer deadline
