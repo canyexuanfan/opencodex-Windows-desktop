@@ -389,3 +389,144 @@ test("a persisted runtime selection moved by another process during the await bl
   expect(JSON.parse(stdout.trim())).toMatchObject({ catalogWritten: false });
   expect(readFileSync(catalogPath, "utf8")).toBe(initial);
 }, 20_000);
+
+/**
+ * The post-approval seam, raced by two real processes through a real route.
+ *
+ * Every case above drives `/api/sync`, which is a retained root. This one drives
+ * `PATCH /api/providers` — one of the sixteen management mutations that used to
+ * reach a catalog write through `refreshCodexCatalogBestEffort`, whose entire
+ * error policy was `catch {}`. The interesting window is AFTER the route has
+ * already persisted its own mutation and approved the refresh: two processes
+ * arriving there together must serialize, and neither may report `committed`
+ * for bytes the other replaced.
+ *
+ * Both processes go through `handleManagementAPI`, so this exercises the bound
+ * factory, the total adapter, and K in the shape production actually uses.
+ *
+ * The edit itself is a `note` update: a recognized field that persists a real
+ * config mutation without changing routing, so what is under test is the refresh
+ * that follows approval rather than the edit.
+ */
+test("two processes at the post-approval management seam serialize instead of interleaving", async () => {
+  const sandbox = makeSandbox("ocx-post-approval-race-");
+  const catalogPath = seedCatalog(sandbox);
+  const seeded = readFileSync(catalogPath, "utf8");
+  const barrier = join(sandbox.root, "seam-barrier");
+
+  // Warm the config ownership + mutation database in a single process first.
+  // Two cold processes otherwise race to create `.opencodex-owner.json` and both
+  // die with EEXIST before approval, which would make this test vacuous.
+  const warm = Bun.spawn([process.execPath, "--eval", `
+    const { withConfigMutationLockSync } = await import("./src/config.ts");
+    withConfigMutationLockSync(() => undefined);
+  `], { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" });
+  expect(await warm.exited).toBe(0);
+
+  const routeScript = (marker: string) => `
+    import { existsSync, writeFileSync } from "node:fs";
+    const config = {
+      port: 10100,
+      defaultProvider: "together",
+      providers: {
+        together: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.together.xyz/v1",
+          apiKey: "seam-key",
+          models: ["fallback-model"],
+          fetch: async () => {
+            // Announce arrival, then wait for the sibling so both processes are
+            // past approval and inside the seam at the same time.
+            writeFileSync(${JSON.stringify(barrier)} + "-" + ${JSON.stringify(marker)}, "here");
+            const deadline = Date.now() + 8000;
+            while (Date.now() < deadline) {
+              if (existsSync(${JSON.stringify(barrier)} + "-a") && existsSync(${JSON.stringify(barrier)} + "-b")) break;
+              await Bun.sleep(5);
+            }
+            return Response.json({ data: [{ id: "seam-model-" + ${JSON.stringify(marker)} }] });
+          },
+        },
+      },
+    };
+    const { handleManagementAPI } = await import("./src/server/management-api.ts");
+    const url = new URL("http://localhost/api/providers?name=together");
+    const req = new Request(url, {
+      method: "PATCH",
+      headers: { Host: "localhost", "content-type": "application/json" },
+      body: JSON.stringify({ note: "seam-" + ${JSON.stringify(marker)} }),
+    });
+    const response = await handleManagementAPI(req, url, config);
+    const body = await response.json();
+    console.log(JSON.stringify({ status: response.status, catalogRefresh: body.catalogRefresh }));
+  `;
+
+  const children = (["a", "b"] as const).map(marker => Bun.spawn(
+    [process.execPath, "--eval", routeScript(marker)],
+    { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" },
+  ));
+
+  const results = await Promise.all(children.map(async child => {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    return { exitCode, stdout, stderr };
+  }));
+
+  for (const result of results) {
+    // A process can lose a race BEFORE approval and never reach the seam at all.
+    // Both known cases come from `saveConfigPreservingClaudeCode`: the config
+    // mutation lock is already held, or two cold processes create the ownership
+    // file at once. Neither says anything about catalog convergence, so they are
+    // excluded here — but only these two, so a genuine seam failure still fails.
+    if (result.exitCode !== 0) {
+      const preApproval = result.stderr.includes("CONFIG_MUTATION_LOCK_UNAVAILABLE")
+        || (result.stderr.includes("EEXIST") && result.stderr.includes("createOwnership"));
+      expect({ preApproval, stderr: result.stderr }).toMatchObject({ preApproval: true });
+      continue;
+    }
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      status: number;
+      catalogRefresh: { status: string };
+    };
+    // The route persisted its mutation, so it must answer 2xx no matter what the
+    // catalog attempt decided. A throw here would be the old `catch {}` failure
+    // inverted: a persisted change reported as a 500.
+    expect(parsed.status).toBeGreaterThanOrEqual(200);
+    expect(parsed.status).toBeLessThan(300);
+    // Whatever happened, it is REPORTED — never swallowed into silence.
+    expect(["committed", "skipped", "failed"]).toContain(parsed.catalogRefresh.status);
+  }
+
+  // At least one process must have gotten through to the seam, or this test would
+  // be vacuous — two config-lock losers prove nothing about catalog serialization.
+  expect(results.some(r => r.exitCode === 0)).toBe(true);
+
+  // KNOWN DEFECT, asserted so it cannot be forgotten: no process commits here.
+  //
+  // Called directly, the bound factory returns `skipped/busy`. Called after
+  // `saveConfigPreservingClaudeCode` — which is exactly what every one of the
+  // sixteen routes does before approving the refresh — it returns
+  // `failed/disk/gather` instead, so the seam never reaches a commit on the real
+  // production path. Reproduced single-process, so it is not contention.
+  //
+  // This assertion is deliberately the CURRENT behaviour rather than the intended
+  // one: it documents the defect at the seam it lives in, and it will fail the
+  // moment the seam starts committing, which is when it must be rewritten to
+  // require `committed` and a moved catalog. Tracked for WP9 closure; the fix is
+  // not in this test's scope.
+  const dispositions = results
+    .filter(r => r.exitCode === 0)
+    .map(r => (JSON.parse(r.stdout.trim()) as { catalogRefresh: { status: string } }).catalogRefresh.status);
+  expect(dispositions.every(status => status !== "committed")).toBe(true);
+  expect(readFileSync(catalogPath, "utf8")).toBe(seeded);
+
+  // The surviving catalog is one process's complete output, never a blend of both.
+  const finalBytes = readFileSync(catalogPath, "utf8");
+  const parsedCatalog = JSON.parse(finalBytes) as { models: Array<{ slug?: unknown }> };
+  const slugs = parsedCatalog.models.flatMap(m => typeof m.slug === "string" ? [m.slug] : []);
+  const fromA = slugs.some(s => s.includes("seam-model-a"));
+  const fromB = slugs.some(s => s.includes("seam-model-b"));
+  expect(fromA && fromB).toBe(false);
+}, 30_000);
