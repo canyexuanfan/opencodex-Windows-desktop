@@ -165,6 +165,7 @@ describe("Codex catalog sync hardening", () => {
 
   test("account rows reconcile idempotently and independently from provider outages", () => {
     const catalogPath = join(codexHome, "catalog.json");
+    const firstCatalogPath = join(opencodexHome, "first-catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     const accountMarker = "account-selector-v1";
     writeFileSync(catalogPath, JSON.stringify({
@@ -202,9 +203,10 @@ describe("Codex catalog sync hardening", () => {
     }, null, 2) + "\n");
 
     const r = runScript(codexHome, opencodexHome, `
-      const { readFileSync } = require("node:fs");
+      const { copyFileSync } = require("node:fs");
       const { syncCatalogModels } = require("./src/codex/catalog");
       const catalogPath = ${JSON.stringify(catalogPath)};
+      const firstCatalogPath = ${JSON.stringify(firstCatalogPath)};
       const config = {
         providers: {
           openai: {
@@ -225,12 +227,9 @@ describe("Codex catalog sync hardening", () => {
           removed: "missing-account"
         }
       };
-      syncCatalogModels(config)
-        .then(() => {
-          const firstRows = JSON.parse(readFileSync(catalogPath, "utf8")).models;
-          return syncCatalogModels(config).then(res => ({ firstRows, res }));
-        })
-        .then(output => console.log(JSON.stringify(output)));
+      await syncCatalogModels(config);
+      copyFileSync(catalogPath, firstCatalogPath);
+      await syncCatalogModels(config);
     `);
     expect(r.status).toBe(0);
     expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
@@ -250,7 +249,7 @@ describe("Codex catalog sync hardening", () => {
       max_context_window?: number;
       auto_compact_token_limit?: number;
     }>;
-    const firstRows = (JSON.parse(r.stdout) as { firstRows: typeof rows }).firstRows;
+    const firstRows = JSON.parse(readFileSync(firstCatalogPath, "utf8")).models as typeof rows;
     expect(rows).toEqual(firstRows);
     const firstBare = firstRows.find(row => row.slug === "gpt-5.5");
     const firstTeam = firstRows.find(row => row.slug === "team/gpt-5.5");

@@ -102,9 +102,10 @@ describe("Codex catalog restore", () => {
     `);
 
     expect(r.status).toBe(0);
+    const resolvedCatalogPath = join(realpathSync.native(codexHome), "catalog.json");
     expect(JSON.parse(r.stdout)).toEqual({
-      first: { removed: 4, kept: 4, path: catalogPath },
-      second: { removed: 0, kept: 4, path: catalogPath },
+      first: { removed: 4, kept: 4, path: resolvedCatalogPath },
+      second: { removed: 0, kept: 4, path: resolvedCatalogPath },
     });
     const restored = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<Record<string, unknown>>;
     expect(restored.find(model => model.slug === "gpt-5.5")).toMatchObject({
