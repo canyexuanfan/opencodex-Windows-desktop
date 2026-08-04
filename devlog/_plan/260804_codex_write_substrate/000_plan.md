@@ -40,12 +40,12 @@ it rather than inventing their share.
 
 | Phase | Doc | Delivers | Depends on |
 |---|---|---|---|
-| WP8b | `005_contract.md` *(to write)* | The shared surfaces: record schema + owner, `/api/sync` response contract, the single convergence entry point, generation counters, module names, and the config-snapshot admission result | — |
+| WP8b | `005_contract.md` | The shared surfaces: record schema + owner, `/api/sync` response contract, the single convergence entry point, generation counters, module names, and the config-snapshot admission result | — |
 | WP9 | `010_catalog_seam.md` | gather/commit split + typed outcome, consuming the contract | WP8b |
 | WP10 | `020_history_isolation.md` | history off the event loop, and the cross-process history protocol | WP8b |
 | WP11 | `030_lock_protocol.md` | the async per-home lock, per-USER namespace | WP8b, WP9, WP10 |
 | WP12 | `040_ownership_convergence.md` | tri-state authority, admission order, absence restoration | WP11 |
-| WP13 | `050_composed_acceptance.md` *(to write)* | one acceptance suite against real production entry points | all |
+| WP13 | `050_composed_acceptance.md` | one acceptance suite against real production entry points | all |
 
 WP9 and WP10 remain independent of each other and both precede WP11: a lock
 around an unsplittable gather-and-write, or around a ten-second blocking history
@@ -104,9 +104,10 @@ remain `FOLLOWUP-FILECLIENT-01` from the prior unit.
   answer is known.
 - C9 — the external-`model_provider` guard survives as an authority distinct from
   service-home ownership.
-- C10 — an artifact that did not exist before apply is *removed* on convergence,
-  not merely filtered; and a baseline-absent artifact the user has since edited is
-  preserved with a reported conflict rather than deleted.
+- C10 — an artifact that did not exist before apply is *removed* only when its
+  current bytes match the recorded post-image; current-byte drift is preserved with
+  a reported conflict rather than deleted. A hash proves only current equality. It
+  cannot prove that no edit-and-revert occurred between observations.
 - C11 — `unchanged` desired state still converges observed state.
 - C12 — a desired-state change made by another process is honored by the running
   server without a restart.
@@ -121,8 +122,11 @@ remain `FOLLOWUP-FILECLIENT-01` from the prior unit.
   opposite directions, not by a same-process flight test (audit #1).
 - C16 — one owner and one schema for `integrations/codex.json`; a record written
   by any phase is readable by every other (audit #3).
-- C17 — a config or catalog A→B→A cycle between gather and commit is DETECTED.
-  Content equality is not revision equality (audit #6).
+- C17 — a cooperating config/native A→B→A transition between gather and commit is
+  detected by generation identity, and single-direction target-identity drift is
+  detected. This does not promise detection of an arbitrary non-cooperating
+  filesystem A→B→A entirely between checks: a hash or equal current bytes cannot
+  prove that no edit-and-revert occurred (audit #6).
 - C18 — two processes for the same OS user with different `HOME`/`USERPROFILE`
   take the SAME lock (audit #7).
 

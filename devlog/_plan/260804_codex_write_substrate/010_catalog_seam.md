@@ -12,15 +12,23 @@ policy is a swallowed exception (`src/server/management-api.ts:105-112`,
 outside a lock and a fixed commit inside it.
 
 This phase fixes that catalog mechanism. It is the **first real implementation**
-of the contract's `convergeCodex`. It does not define another
-entry point, record, route mapping, admission shape, or shared result union. WP8b
-landed those declarations without rewiring behavior (`005_contract.md` §What
-"lands first"). WP9 consumes them and rewires the catalog callers in the same
-commit, so this phase typechecks and preserves the callers' 2xx/201 behavior on
-its own. Nothing here waits for WP10-WP12 to make the tree buildable.
+of the contract's `convergeCodex`, but the earlier decision to send management
+mutations through full apply/injection/history convergence is reversed. Those 16
+callers currently refresh catalog and cache only
+(`src/server/management-api.ts:105-112`, `src/codex/refresh.ts:40-52`); changing a
+provider must not start rewriting `config.toml`, profile, journal, or history in the
+WP9 commit. WP9 therefore implements a catalog-scoped request and rewires only that
+behavior. WP12 installs the authoritative full funnel and rewires `/api/sync` and
+the remaining lifecycle callers after WP10-WP11 supply their safety mechanics.
+
+WP9 does not define another entry point, record, route mapping, admission shape, or
+shared result union. WP8b lands the minimal concrete primitives listed below, not
+declarations that require WP12 to become executable. WP9 consumes them and rewires
+the catalog callers in the same commit, so this phase typechecks and preserves the
+callers' 2xx/201 and native-write behavior on its own.
 
 All current-code citations and diff context below were rechecked on 2026-08-04 at
-`2d5e080dea3e7000bf2111b381c7c1a3c4f5fb11`.
+`47e7cac27723fa09dd7bb1bacac402b1e579b358`.
 
 ## IN / OUT
 
@@ -38,20 +46,20 @@ IN — catalog mechanism:
 - `src/codex/catalog/provider-fetch.ts` (MODIFY) — sanitized, catalog-private
   degradation notices.
 - `src/codex/convergence.ts` (MODIFY) — implement the contract-declared
-  `convergeCodex` for the first time. This phase consumes `AdmissionSnapshot`,
-  `CommitExpectation`, `CatalogDisposition`, and `ConvergeOutcome` from
-  `convergence-types.ts`; it does not redefine them.
+  `convergeCodex` for the first time. The management path consumes the catalog-scoped
+  request/snapshot, generation tokens, `CatalogDisposition`, and `ConvergeOutcome`
+  from `convergence-types.ts`; it does not call WP12's full admission or observer.
 - `src/codex/internal/catalog-commit.ts` (NEW/MOVE) — the prepared catalog/cache/
   backup writer, reachable only from `convergence.ts`, as required by
   `005_contract.md` §Test plan.
-- `src/codex/sync.ts` (MODIFY) — delegate catalog work to `convergeCodex`; retain
-  the existing ordinary-failure injection fallback until later phases replace
-  more of the native path.
+- `src/codex/sync.ts` (NO CHANGE) — explicit sync remains on its current full native
+  path in WP9. WP12 rewires it after the full admission/observation mechanics exist.
 
 IN — production callers:
 
 - `src/server/management/context.ts`, `src/server/management-api.ts` (MODIFY) —
-  inject/call `convergeCodex`, not a catalog-specific orchestrator.
+  inject/call `convergeCodex` with `scope: "catalog"`, not a catalog-specific entry
+  point and not the full convergence scope.
 - `src/server/management/provider-routes.ts` (MODIFY) — six mutations report the
   contract's `CatalogDisposition` while retaining their primary status.
 - `src/server/management/model-routes.ts` (MODIFY) — six mutations, same rule.
@@ -59,8 +67,8 @@ IN — production callers:
   suppressing Claude follow-up work.
 - `src/server/management/agent-settings-routes.ts` (MODIFY) — two mutations,
   without suppressing Claude/Desktop follow-up work.
-- `src/server/management/config-routes.ts` (MODIFY) — explicit sync calls
-  `convergeCodex` and hands the result to the contract adapter.
+- `src/server/management/config-routes.ts` (NO CHANGE) — WP9 leaves explicit sync at
+  current lines 261-268; WP12 moves it to full convergence and the contract adapter.
 - `structure/03_catalog-and-subagents.md`,
   `structure/05_gui-and-management-api.md` (MODIFY) — document the production
   funnel and best-effort mutation semantics.
@@ -95,14 +103,52 @@ OUT:
   and `toSyncResponse` — owned by `005_contract.md` §§1-5. This document deletes
   its old versions instead of restating them.
 - Management status/header ownership. `/api/sync` is mapped only by
-  `src/server/management/sync-response.ts` (`005_contract.md` §5).
+  `src/server/management/sync-response.ts` (`005_contract.md` §5), but WP12 is the
+  phase that first connects that adapter to the production route.
 - Desired-state, ownership, journal, and provenance policy — WP12 consumes the same
   funnel and strengthens admission; WP9 does not reserve fake outcomes for it.
 - The native write lock — WP11. WP9's commit is synchronous now so WP11 can wrap it
   later without changing the catalog contract.
 - History isolation/locking — WP10.
+- Full admission, observed-state projection, apply/remove direction, and production
+  `/api/sync`/lifecycle rewiring — WP12. WP9 must not call their future helpers.
 - `gui/**`, transactional rollback, release/deploy actions, and the live proxy on
   port 10100.
+
+## WP8b prerequisites that make WP9 self-contained
+
+The earlier draft assumed `inspectAdmissionSnapshot`, config/native generation
+owners, and observed-state projection would already exist. They do not: WP12 owns
+the full authority read and observer (`040_ownership_convergence.md:42,119-157,327-378`).
+A WP9 diff that calls those helpers cannot land independently.
+
+WP8b must therefore add these minimal **working** primitives before WP9, with focused
+typecheck/tests in the WP8b commit:
+
+1. `ConvergeRequest.scope` with at least `"catalog" | "full"`, plus a concrete
+   catalog request constructor. The production management callbacks use only
+   `scope: "catalog"`; `"full"` remains the compatibility/current-behavior branch
+   until WP12 replaces it with authoritative admission.
+2. A concrete `CatalogAdmissionSnapshot` plus catalog-scoped snapshot reader that
+   accepts the same `OcxConfig` object the current callback already uses and captures
+   only the config generation and catalog target identities WP9 validates. It
+   performs no service ownership, external-provider, journal, provenance, desired-
+   state, history, or observed-state work and is not `inspectAdmissionSnapshot`.
+3. Concrete config/native generation owners: every cooperating persisted-config
+   commit bumps the config generation through the existing config mutation owner,
+   and the integration-record owner reads/advances native generation plus `txId`.
+   WP9 may consume those tokens; it may not assume WP12 will add their storage or
+   bump sites later.
+4. One contract projection for catalog-only completion. WP9 supplies the real
+   `CatalogDisposition`; history and observed sections are synthesized as
+   **no-change/not-evaluated**, never by invoking WP10 history or WP12 observation.
+
+These are substrate primitives, not a partial ownership implementation. WP12 still
+owns the authoritative full `AdmissionSnapshot`, fresh under-coordination re-read,
+authority/provenance checks, real observed-state projection, and full caller funnel.
+Moving the concrete generation owners forward is an explicit ownership correction
+to `040_ownership_convergence.md:42`: WP12 consumes those WP8b owners instead of
+introducing them after WP9 has already depended on them.
 
 ## The catalog-private candidate
 
@@ -128,7 +174,7 @@ interface CandidateState {
 const states = new WeakMap<CodexCatalogCandidate, CandidateState>();
 
 export async function gatherCodexCatalogCandidate(
-  admission: AdmissionSnapshot,
+  admission: CatalogAdmissionSnapshot,
 ): Promise<CodexCatalogCandidate>;
 
 export function commitCodexCatalogCandidate(
@@ -137,11 +183,12 @@ export function commitCodexCatalogCandidate(
 ): CatalogCommitOutcome;
 ```
 
-The exact `AdmissionSnapshot` returned by the contract admission is passed to
-gather. `prepareCatalogSync` receives `admission.config` — **that object**, not the
-server's captured config and not a separate `readConfigDiagnostics()` result. This
-is the transfer required by `005_contract.md` §4. A gather that reopens config has
-reintroduced the stale-object disagreement audit #8 identified.
+The catalog-scoped snapshot receives the same config object the current management
+callback already uses. `prepareCatalogSync` receives `admission.config` — **that
+object**, not a separate `readConfigDiagnostics()` result. The generation token
+detects a cooperating persisted transition before commit. WP12 later replaces this
+limited input with its authoritative full admission; WP9 does not import that future
+helper.
 
 Gather performs provider auth/network work, source loading, parsing, merging,
 serialization, cache-wrapper construction, and backup planning. It performs no
@@ -273,7 +320,7 @@ and test imports migrate. The dependency-graph test, not an `rg` spelling guard,
 proves no alias, re-export, wrapper, or dynamic import reaches the writers outside
 `convergence.ts` (`005_contract.md` §Test plan).
 
-## The first production `convergeCodex`
+## The first production `convergeCodex` is catalog-scoped for management
 
 WP8b declared this function as a type only. WP9 now adds a non-placeholder
 implementation in `src/codex/convergence.ts`:
@@ -282,30 +329,28 @@ implementation in `src/codex/convergence.ts`:
 +export async function convergeCodex(
 +  request: ConvergeRequest,
 +): Promise<ConvergeOutcome> {
-+  const admission = inspectAdmissionSnapshot();
-+  if (request.action === "observe") return observeWithoutWrite(admission);
++  if (request.scope === "catalog") {
++    const admission = captureCatalogAdmissionSnapshot(request);
++    const gathered = await gatherCodexCatalogCandidate(admission);
++    const catalog = commitCatalogAgainstCurrentGeneration(admission, gathered);
++    return projectCatalogOnlyOutcome(catalog, {
++      history: "no-change",
++      observed: "no-change-not-evaluated",
++    });
++  }
 +
-+  const gathered = admission.intent === "on"
-+    ? await gatherCodexCatalogCandidate(admission)
-+    : null;
-+
-+  return coordinateCurrentNativeBehavior({
-+    request,
-+    admission,
-+    gathered,
-+    commitCatalog: commitCodexCatalogCandidate,
-+  });
++  return coordinateLegacyFullBehavior(request);
 +}
 ```
 
-`coordinateCurrentNativeBehavior` is real at this commit: it preserves the existing
-apply/injection/history behavior and uses the new catalog seam. It is not a throw,
-TODO, compatibility path around `convergeCodex`, or promise that WP10/WP12 must land
-before WP9 works. Later phases replace mechanisms behind this same entry point.
-
-Desired direction comes only from `admission.intent`; callers pass
-`action:"converge"`, never `apply` or `remove`. Desired OFF therefore performs the
-current removal path and is not a catalog `skipped` outcome (`005_contract.md` §2).
+`projectCatalogOnlyOutcome` reports the actual catalog/cache/backup result and
+synthesizes history and observed fields as no-change/not-evaluated. It never calls
+config injection, profile, journal, history, restoration, or WP12 observation.
+`coordinateLegacyFullBehavior` is only a typed adapter over the existing full path;
+WP9 does not route management or `/api/sync` into it. WP12 replaces that branch with
+the authoritative full funnel and rewires the production full callers. This is a
+plain reversal of the earlier WP9 design, which had made provider/model edits perform
+full native convergence before its safety phases existed.
 
 ## Every management caller uses the funnel
 
@@ -341,6 +386,7 @@ Each of the 16 current awaits — provider 6
 -const catalogRefresh = await refreshCodexCatalogBestEffort();
 +const outcome = await convergeCodex({
 +  action: "converge",
++  scope: "catalog",
 +  reason: "management-mutation",
 +  mode: "automatic",
 +  deadlineMs: MANAGEMENT_CODEX_CONVERGENCE_DEADLINE_MS,
@@ -354,29 +400,14 @@ keeps its current 200/201 and the persisted mutation, appends `catalogRefresh`, 
 continues unrelated Claude/Desktop work. That is the best-effort behavior promised
 by `005_contract.md` §2.
 
-## Explicit sync consumes the adapter
+## Explicit sync is deliberately not rewired in WP9
 
-The old status table and manual `Retry-After` logic are deleted. The contract owns
-them in `005_contract.md` §5. `src/server/management/config-routes.ts:261-268`
-only invokes the funnel and adapter:
-
-```diff
- if (url.pathname === "/api/sync" && req.method === "POST") {
--  const result = await syncModelsToCodex(undefined, config, null);
--  return jsonResponse(result, result.ok ? 200 : 500);
-+  const outcome = await convergeCodex({
-+    action: "converge",
-+    reason: "api-sync",
-+    mode: "explicit",
-+    deadlineMs: EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS,
-+  });
-+  return toSyncResponse(outcome);
- }
-```
-
-No phase-local route helper chooses status, body, or headers. A new outcome variant
-must fail the contract adapter's exhaustive `never` check, not silently take a WP9
-default branch.
+`src/server/management/config-routes.ts:261-268` continues to call
+`syncModelsToCodex(undefined, config, null)` in the WP9 commit. Moving that route to
+`convergeCodex` here would require the full admission, observed-state projection,
+history safety, and response semantics that WP10-WP12 have not landed. WP12 performs
+the real diff to `scope: "full"` plus `toSyncResponse`; until then the current route
+status/body behavior remains unchanged.
 
 ## Tests
 
@@ -384,7 +415,7 @@ default branch.
 
 `tests/codex-refresh.test.ts` replaces the all-in-one dependency tests with:
 
-1. gather uses `AdmissionSnapshot.config`, performs provider/parse/assembly work,
+1. gather uses `CatalogAdmissionSnapshot.config`, performs provider/parse/assembly work,
    and leaves a real isolated-home recursive manifest byte-identical;
 2. commit invokes only the fixed writer list; injected provider/parser/subprocess
    functions throw if reached beneath the synchronous boundary;
@@ -419,12 +450,16 @@ generation owners:
   direct writer in `src/codex/internal/catalog-commit.ts` is reachable only from
   `convergence.ts`.
 - Drive all 16 real management routes with an injected `convergeCodex`, assert one
-  call using persisted admission rather than the route's captured config, preserve
+  `scope: "catalog"` call using the same config object as today's callback, preserve
   each primary 2xx/201, and observe the additive `catalogRefresh`.
+- For every management route, inject spies that fail on config/profile/journal/history
+  writes and assert zero calls; assert history and observed result sections are the
+  contract's no-change/not-evaluated projection.
 - A refused/deferred catalog attempt must not suppress combo Claude work or agent
   settings Claude/Desktop work.
-- Drive `POST /api/sync` and assert exact response behavior through
-  `toSyncResponse`; do not duplicate the contract's status table in this suite.
+- Drive `POST /api/sync` and assert it still follows the pre-WP9
+  `syncModelsToCodex` route behavior. The `toSyncResponse` production proof belongs
+  to WP12/WP13.
 
 ## Verification
 
@@ -449,13 +484,15 @@ starts, stops, syncs, restores, or ensures the live proxy on port 10100.
    match the committed catalog.
 4. Drive one best-effort management mutation through the real server boundary;
    observe its primary 2xx and contract disposition.
-5. Drive explicit sync through `convergeCodex` and `toSyncResponse`.
+5. Drive explicit sync and prove WP9 left its current route behavior unchanged.
 
 ## Accept criteria
 
 - **C1** — gather is write-free and commit is synchronous/fixed. Catalog failures
   remain catalog-private until projected through `ConvergeOutcome`; all 16 callers
   preserve their primary success behavior and expose the contract disposition.
+  Their request is `scope: "catalog"`; config/profile/journal/history write spies stay
+  at zero, and history/observed fields are no-change/not-evaluated.
 - **C2 / C17 (contract-scoped)** — real config/native generation changes and
   single-direction target-identity drift reject before write. No content hash or
   path string is presented as arbitrary filesystem ABA protection.
@@ -463,4 +500,6 @@ starts, stops, syncs, restores, or ensures the live proxy on port 10100.
   through `convergeCodex`, and no other importer reaches the direct catalog writers.
 - **N2** — the WP9 commit contains the first working `convergeCodex`, rewires its
   callers in that same commit, passes typecheck, and preserves current behavior.
-  It has no placeholder whose correctness depends on WP10-WP12.
+  WP8b already supplies the concrete catalog snapshot/request/projection and both
+  generation owners; WP9 calls no WP12 admission or observer placeholder. WP12 is
+  explicitly the phase that replaces the legacy full branch and rewires full callers.
