@@ -47,6 +47,7 @@ export interface StartupHealth {
   recommendedCommand: string | null;
   commands: {
     installService: string;
+    repairService: string;
     installShim: string;
     restoreNative: string;
   };

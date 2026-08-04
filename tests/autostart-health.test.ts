@@ -82,6 +82,20 @@ describe("Codex startup health", () => {
     });
   });
 
+  // The stale-cache path re-derives recommendedCommand itself, so it can silently undo
+  // the repair choice deriveStartupHealth made — and the dashboard reads exactly this
+  // value while a probe is revalidating. Asserting status/protection alone missed it.
+  test("the stale-cache path keeps repair for an installed service", () => {
+    const installed = deriveStartupHealth({ ...base, serviceInstalled: true, serviceViable: true, serviceEnabled: true, serviceRunning: true });
+    expect(markStartupHealthDiagnosticStale(installed).recommendedCommand).toBe("ocx service repair");
+
+    const absent = deriveStartupHealth({ ...base, serviceInstalled: false, serviceViable: true, serviceEnabled: true, serviceRunning: true });
+    expect(markStartupHealthDiagnosticStale(absent).recommendedCommand).toBe("ocx service install");
+
+    const conflict = deriveStartupHealth({ ...base, serviceInstalled: true, serviceConflict: true, serviceViable: true, serviceEnabled: true, serviceRunning: true });
+    expect(markStartupHealthDiagnosticStale(conflict).recommendedCommand).toBe("ocx service install");
+  });
+
   test("classifies a healthy Windows shim as CLI-only rather than Desktop-safe", () => {
     const windowsShim = deriveStartupHealth({ ...base, shimInstalled: true, shimHealthy: true });
     expect(windowsShim).toMatchObject({ protection: "shim", shimCoverage: "cli-only", status: "at-risk" });

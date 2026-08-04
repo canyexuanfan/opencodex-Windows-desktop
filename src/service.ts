@@ -267,9 +267,13 @@ export function assertServiceAuthEnvironment(): void {
   const config = loadConfig();
   if (isLoopbackHostname(config.hostname)) return;
   if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
+  // Reached from `service repair` as well as `install` (serviceCommand and
+  // repairService both assert it), so name the command the caller actually ran —
+  // telling an already-registered user to install re-registers for no reason.
+  const retry = diagnoseService().installed ? "ocx service repair" : "ocx service install";
   throw new Error(
     "OPENCODEX_API_AUTH_TOKEN is required before installing a service for non-loopback hostname. " +
-      "Set it in the same shell, then rerun `ocx service install`.",
+      `Set it in the same shell, then rerun \`${retry}\`.`,
   );
 }
 
@@ -1635,7 +1639,9 @@ function installLaunchd(): void {
       `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
       + "A previous job may still be bootstrapped. Try:\n"
       + `  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n`
-      + "then re-run 'ocx service install'.",
+      // macOS `service repair` delegates straight to installLaunchd, so this fires for
+      // an already-installed service too; repair reloads it without re-registering.
+      + `then re-run '${existsSync(p) ? "ocx service repair" : "ocx service install"}'.`,
     );
   }
   writeServiceInstallState();

@@ -660,7 +660,14 @@ async function handleStatus() {
   console.log(`   Health: ${status.healthLabel}`);
   if (!(status.json.proxy.pid || status.json.proxy.health.ok)) {
     console.log("   ↳ Not running — Codex/Claude requests will fail with connection errors.");
-    console.log("     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
+    // The service summary a few lines below already tells a registered-but-not-serving
+    // user to repair. Printing "install the persistent service" unconditionally
+    // contradicted it in the same report, and install re-registers: UAC on Windows and a
+    // possible WinSW-to-scheduler switch for someone who already has a service.
+    const installed = status.json.startup.serviceInstalled && !status.json.startup.serviceConflict;
+    console.log(installed
+      ? "     Restart with 'ocx start', or refresh the installed service: 'ocx service repair'."
+      : "     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");
   }
   console.log(`   Dashboard: ${status.json.dashboard.url}`);
   console.log(`   Config: ${status.json.paths.config}`);
