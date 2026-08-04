@@ -158,9 +158,12 @@ The parent creates one root with `mkdtempSync(join(tmpdir(),
 directories beneath it. No path is derived from the parent process's `HOME`,
 `USERPROFILE`, `CODEX_HOME`, or `OPENCODEX_HOME`.
 
-Every OpenCodex child is spawned as:
+Every OpenCodex child is spawned as follows. This is a call-site excerpt, not a
+compilable unit — `repoRoot`, `fixtureRoot` and the fixture identifiers come
+from the harness that surrounds it, so the fence is tagged `ts-excerpt` to keep
+it out of the unit-wide compile check that the other five documents pass:
 
-```ts
+```ts-excerpt
 Bun.spawn([
   process.execPath,
   resolve(repoRoot, "src/cli/index.ts"),

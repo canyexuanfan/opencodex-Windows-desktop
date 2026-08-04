@@ -136,7 +136,8 @@ typecheck/tests in the WP8b commit:
    state, history, or observed-state work and is not `inspectAdmissionSnapshot`.
 3. Concrete config/native generation owners: every cooperating persisted-config
    commit bumps the config generation through the existing config mutation owner,
-   and the integration-record owner reads/advances native generation plus `txId`.
+   while `transition-state.ts` reads/conditionally advances native generation plus
+   `txId` in the effective-user + canonical-`CODEX_HOME` SQLite coordinator row.
    WP9 may consume those tokens; it may not assume WP12 will add their storage or
    bump sites later.
 4. One contract projection for catalog-only completion. WP9 supplies the real
@@ -157,6 +158,67 @@ introducing them after WP9 has already depended on them.
 or reconstruct a stale candidate.
 
 ```ts
+import type {
+  CatalogAdmissionSnapshot as ContractCatalogAdmissionSnapshot,
+  CommitExpectation as ContractCommitExpectation,
+} from "./convergence-types";
+
+interface CatalogFileIdentity {
+  readonly device: bigint;
+  readonly inode: bigint;
+}
+
+/** Catalog-private evidence for one prepared filesystem target. */
+export interface CatalogTargetIdentity {
+  readonly path: string;
+  readonly canonicalParent: string;
+  readonly parentIdentity: CatalogFileIdentity;
+  readonly fileIdentity: CatalogFileIdentity | null;
+}
+
+/** Sanitized gather detail; provider identity and raw errors never enter it. */
+export interface CatalogGatherNotice {
+  readonly kind: "provider-auth" | "provider-network" | "fallback";
+  readonly retryable: boolean;
+}
+
+interface PreparedCatalogBackup {
+  readonly kind: "keyed" | "legacy";
+  readonly path: string;
+  readonly bytes: Uint8Array;
+  readonly createOnce: true;
+}
+
+export interface CodexCatalogRefreshResult {
+  readonly added: number;
+  readonly path: string;
+  readonly catalogExists: boolean;
+  readonly catalogWritten: boolean;
+  readonly cacheSynced: boolean;
+  readonly comboOmissions: readonly Readonly<{
+    id: string;
+    targets: readonly string[];
+    reason: "incomplete_metadata" | "incompatible_modalities";
+    message: string;
+  }>[];
+}
+
+export interface CatalogWriteReceipt {
+  readonly keyedBackup: "written" | "preserved" | "not-requested";
+  readonly legacyBackup: "written" | "preserved" | "not-requested";
+  readonly catalog: "written" | "not-written";
+  readonly cache: "written" | "not-written";
+}
+
+export interface PreparedCodexCatalogCommit {
+  readonly catalogBytes: Uint8Array;
+  readonly cacheBytes: Uint8Array;
+  readonly backups: readonly PreparedCatalogBackup[];
+  readonly targets: readonly CatalogTargetIdentity[];
+  readonly result: CodexCatalogRefreshResult;
+  readonly notices: readonly CatalogGatherNotice[];
+}
+
 const candidateBrand: unique symbol = Symbol("CodexCatalogCandidate");
 
 export interface CodexCatalogCandidate {
@@ -173,15 +235,28 @@ interface CandidateState {
 
 const states = new WeakMap<CodexCatalogCandidate, CandidateState>();
 
-export async function gatherCodexCatalogCandidate(
-  admission: CatalogAdmissionSnapshot,
-): Promise<CodexCatalogCandidate>;
+/** Signature only; WP9 exports a concrete function with this type. */
+export type GatherCodexCatalogCandidate = (
+  admission: ContractCatalogAdmissionSnapshot,
+) => Promise<CodexCatalogCandidate>;
 
-export function commitCodexCatalogCandidate(
+/** Signature only; WP9 exports a concrete synchronous function with this type. */
+export type CommitCodexCatalogCandidate = (
   candidate: CodexCatalogCandidate,
-  expectation: CommitExpectation,
-): CatalogCommitOutcome;
+  expectation: ContractCommitExpectation,
+) => CodexCatalogCommitResult;
 ```
+
+Ownership is deliberate. `CatalogAdmissionSnapshot` and `CommitExpectation` are
+aliased imports from the shared `convergence-types.ts` contract, so concatenating
+phase excerpts cannot turn the imports into duplicate local definitions; the full
+`AdmissionSnapshot` is also contract-owned but is not referenced by this
+catalog-scoped signature. `PreparedCodexCatalogCommit`, `CatalogTargetIdentity`,
+`CatalogGatherNotice`, `CodexCatalogCommitResult`, `CodexCatalogRefreshResult`, and
+`CatalogWriteReceipt` are catalog-private definitions here. WP11 exposes
+`withCodexWriteLock` as a callback/result API and explicitly has no public handle or
+release method (`030_lock_protocol.md:126-136`), so WP9 neither defines nor imports a
+`CodexWriteLockHandle`.
 
 The catalog-scoped snapshot receives the same config object the current management
 callback already uses. `prepareCatalogSync` receives `admission.config` — **that
@@ -207,7 +282,7 @@ The old plan owned a `ContentRevision` and hashed config/catalog bytes. That des
 is deleted. Content equality passes A→B→A, and a textual path does not reveal a
 parent-symlink retarget. The shared mechanism is `005_contract.md` §3:
 
-- `AdmissionSnapshot.generation` identifies the cooperating config generation used
+- `CatalogAdmissionSnapshot.generation` identifies the cooperating config generation used
   by gather;
 - `CommitExpectation { nativeBefore, nativeAfter, txId }` identifies the one native
   transition this commit is allowed to perform;
@@ -249,7 +324,7 @@ type CatalogGatherOutcome =
   | { kind: "degraded"; candidate: CodexCatalogCandidate; notices: readonly CatalogGatherNotice[] }
   | { kind: "failed"; surface: "provider-auth" | "provider-network"; retryable: boolean };
 
-type CatalogCommitOutcome =
+export type CodexCatalogCommitResult =
   | { kind: "committed"; result: CodexCatalogRefreshResult; writes: CatalogWriteReceipt }
   | { kind: "stale"; reason: "generation" | "target-identity" | "candidate-consumed" }
   | { kind: "failed"; surface: "disk"; writes: CatalogWriteReceipt };

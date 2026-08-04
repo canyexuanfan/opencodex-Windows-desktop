@@ -531,7 +531,11 @@ or WP12-specific request/result type.
 declare const convergeCodexImpl: (
   request: ConvergeRequest,
 ) => Promise<ConvergeOutcome>;
-export const convergeCodex: ConvergeCodex = request => convergeCodexImpl(request);
+// Annotated rather than inferred: `ConvergeCodex` resolves through
+// `./convergence-types`, which does not exist until WP8b lands, so an
+// unannotated parameter compiles as implicit `any` (TS7006) in the excerpt.
+export const convergeCodex: ConvergeCodex = (request: ConvergeRequest) =>
+  convergeCodexImpl(request);
 declare const EXPLICIT_CODEX_CONVERGENCE_DEADLINE_MS: number;
 void convergeCodex({
   action: "converge",

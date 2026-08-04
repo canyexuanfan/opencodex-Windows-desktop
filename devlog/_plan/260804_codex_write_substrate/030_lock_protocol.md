@@ -123,10 +123,18 @@ export interface CodexWriteCommitContext {
 
 type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
 
-export async function withCodexWriteLock<T>(
+/**
+ * A TYPE, not a bodyless declaration.
+ *
+ * `export async function f(...): Promise<T>;` with no body is TS2391, and a
+ * reviewer has caught that exact form in this unit three separate rounds by
+ * compiling the documents. Publishing the shape as a type makes the mistake
+ * structurally impossible to reprint.
+ */
+export type WithCodexWriteLock = <T>(
   options: CodexWriteLockOptions,
   commit: (context: CodexWriteCommitContext) => Synchronous<T>,
-): Promise<CodexWriteLockResult<T>>;
+) => Promise<CodexWriteLockResult<T>>;
 ```
 
 `CodexWriteLockResult` is the lock module's own bounded mechanism result.
