@@ -9,6 +9,7 @@ import {
   beginCodexTransition,
   openCodexCoordinatorTransaction,
   readCodexTransitionState,
+  updateCodexHistoryTransition,
 } from "../src/codex/transition-state";
 import {
   resolveCodexCoordinatorDatabasePath,
@@ -144,4 +145,100 @@ test("the opaque coordinator capability is one-shot", () => {
   } finally {
     controller.close();
   }
+});
+
+/**
+ * The C-phase reviewer found this by running the code rather than the suite:
+ * `new Database(path, { create: false })` is SQLITE_MISUSE on Bun 1.3.14
+ * because the flags name no read mode. Every history update therefore failed
+ * before reaching its conditional UPDATE and returned `unavailable/database`,
+ * so no terminal history state could ever be recorded.
+ *
+ * Eighteen tests were green while that was true, because none of them called
+ * `updateCodexHistoryTransition` at all. That is the gap this file closes.
+ */
+test("a history transition update reaches its conditional UPDATE and records terminal state", () => {
+  const started = beginCodexTransition(
+    { nativeGeneration: 0, currentTxId: null },
+    transition("tx-history"),
+  );
+  expect(started.kind).toBe("updated");
+
+  const updated = updateCodexHistoryTransition(
+    { nativeGeneration: 1, currentTxId: "tx-history" },
+    {
+      status: "converged",
+      attempts: 1,
+      nextRetryAt: null,
+      txId: "tx-history",
+      pendingRows: 0,
+      backupEntries: 0,
+    },
+  );
+
+  // Before the fix this was `unavailable` with reason `database`, every time.
+  expect(updated.kind).toBe("updated");
+
+  const after = readCodexTransitionState();
+  expect(after.kind).toBe("ready");
+  if (after.kind === "ready") {
+    expect(after.state.history.status).toBe("converged");
+    expect(after.state.history.txId).toBe("tx-history");
+    expect(after.state.history.pendingRows).toBe(0);
+  }
+});
+
+/**
+ * The overtaking case the substrate exists for: a stale Worker finishing after
+ * a newer transition committed must NOT publish its terminal state over the
+ * winner's schedule. It must report conflict.
+ */
+test("a stale history update conflicts and leaves the newer transition's schedule intact", () => {
+  beginCodexTransition({ nativeGeneration: 0, currentTxId: null }, transition("tx-a"));
+  const newer = beginCodexTransition(
+    { nativeGeneration: 1, currentTxId: "tx-a" },
+    { ...transition("tx-b"), direction: "remove" as const },
+  );
+  expect(newer.kind).toBe("updated");
+
+  const stale = updateCodexHistoryTransition(
+    { nativeGeneration: 1, currentTxId: "tx-a" },
+    {
+      status: "converged",
+      attempts: 1,
+      nextRetryAt: null,
+      txId: "tx-a",
+      pendingRows: 0,
+      backupEntries: 0,
+    },
+  );
+  expect(stale.kind).toBe("conflict");
+
+  const after = readCodexTransitionState();
+  expect(after.kind).toBe("ready");
+  if (after.kind === "ready") {
+    expect(after.state.currentTxId).toBe("tx-b");
+    expect(after.state.historySchedule?.direction).toBe("remove");
+    // The stale worker must not have published its own terminal status.
+    expect(after.state.history.status).not.toBe("converged");
+  }
+});
+
+/**
+ * Reviewer finding: the happy-path update test still passed with the
+ * conditional WHERE removed, so it did not prove the update is conditional.
+ * This one fails the moment the guard stops matching on BOTH columns.
+ */
+test("a begin whose txId matches but whose generation does not is rejected", () => {
+  beginCodexTransition({ nativeGeneration: 0, currentTxId: null }, transition("tx-one"));
+
+  const wrongGeneration = beginCodexTransition(
+    { nativeGeneration: 7, currentTxId: "tx-one" },
+    transition("tx-two"),
+  );
+  expect(wrongGeneration.kind).toBe("conflict");
+
+  const after = readCodexTransitionState();
+  expect(after.kind).toBe("ready");
+  if (after.kind === "ready") expect(after.state.currentTxId).toBe("tx-one");
 });

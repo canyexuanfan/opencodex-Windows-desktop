@@ -538,7 +538,12 @@ export const updateCodexHistoryTransition: UpdateCodexHistoryTransition = (expec
   let transactionOpen = false;
   try {
     validateHistoryWrite(expected, history);
-    database = new Database(currentCoordinatorDatabasePath(), { create: false });
+    // `{ create: false }` ALONE is SQLITE_MISUSE on Bun 1.3.14: the flags must
+    // name a read mode. Without `readwrite` every history update failed before
+    // reaching its conditional UPDATE and returned `unavailable/database`, so no
+    // terminal history state could ever be recorded — and the four tests here
+    // still passed, because none of them called this function.
+    database = new Database(currentCoordinatorDatabasePath(), { readwrite: true, create: false });
     database.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
     transactionOpen = true;
     const current = readState(database);
