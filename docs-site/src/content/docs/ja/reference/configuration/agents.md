@@ -13,7 +13,7 @@ description: マルチエージェント サーフェス、委任ガイダンス
 | `subagentModels?` | `string[]` | `gpt-5.5`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4-mini` |最大 5 つの bare native id、account-qualified `<selector>/<native-openai-model>` id、または routed `provider/model` id をサブエージェント ピッカーで優先表示します。Subagents ページで選べるのは bare native id と routed id だけで、保存時には exact account-qualified の選択が除外されます。exact の選択には `ocx agent subagents set` を使用するか、設定を直接編集してください。明示的な空リストも保持されます。 |
 | `injectionModel?` | `string` | — |プロキシ作成の v2 委任ガイダンスで使用される、優先されるネイティブまたはルーティングされたサブエージェント モデル。 |
 | `injectionEffort?` | `string` | — |優先努力 (`low` ～ `ultra`)。`injectionModel` でのみ意味があります。 |
-| `injectionPrompt?` | `string` | — |内蔵ガイドボディを交換します。 `{{model}}`、`{{effort}}`、`{{roster}}`、`{{fallback}}`をサポートします。ファイアリングゲートは変更されません。 |
+| `injectionPrompt?` | `string` | — | 組み込みの v2 ガイダンス本文を置き換えます。`{{model}}`、`{{effort}}`、`{{roster}}`、`{{fallback}}`をサポートします。`injectionModel` が設定されていればカスタムプロンプトが生成されます。 |
 | `multiAgentGuidanceEnabled?` | `boolean` | `true` | opencodex が作成した v1/v2 開発者ガイダンスのみを制御します。ネイティブ エージェントのデフォルト、ツール、ルーティング、ロスター、またはエフォート キャップは変更されません。 |
 | `syncCodexSubagentDefaults?` | `boolean` | `false` |同期/再起動中に、Codex のネイティブ デフォルトとして `injectionModel` およびオプションの `injectionEffort` を書き込むようにオプトインします。 `injectionModel`が必要です。 |
 | `subagentModelFallback?` | `string[]` | `[]` |生成された子ターンの優先順位付きグローバル フォールバック モデル。 |

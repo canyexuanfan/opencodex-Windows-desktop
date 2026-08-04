@@ -13,7 +13,7 @@ description: 多代理界面、委派引导、首选模型、回退链、原生�
 | `subagentModels?` | `string[]` | `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4-mini` | 最多五个裸原生 id、账户限定的 `<selector>/<native-openai-model>` id 或路由 `provider/model` id 会优先显示在子代理选择器中。Subagents 页面只提供裸原生和路由 id，保存时会省略精确的账户限定选项；如需精确选择，请使用 `ocx agent subagents set` 或直接编辑配置。显式空列表会被保留。 |
 | `injectionModel?` | `string` | — | 在代理生成的 v2 委派引导中使用的首选原生或路由后的子代理模型。 |
 | `injectionEffort?` | `string` | — | 首选 effort（`low` 到 `ultra`），只有在 `injectionModel` 存在时才有意义。 |
-| `injectionPrompt?` | `string` | — | 替换内置引导正文。支持 `{{model}}`、`{{effort}}`、`{{roster}}` 和 `{{fallback}}`。触发条件保持不变。 |
+| `injectionPrompt?` | `string` | — | 替换内置 v2 指引正文。支持 `{{model}}`、`{{effort}}`、`{{roster}}` 和 `{{fallback}}`。只要配置了 `injectionModel`，自定义提示词就会触发。 |
 | `multiAgentGuidanceEnabled?` | `boolean` | `true` | 只控制 opencodex 生成的 v1/v2 开发者引导；不会改变原生代理默认值、工具、路由、名单或 effort 上限。 |
 | `syncCodexSubagentDefaults?` | `boolean` | `false` | 允许在同步或重启时，将 `injectionModel` 以及可选的 `injectionEffort` 写入为 Codex 的原生默认值。需要 `injectionModel`。 |
 | `subagentModelFallback?` | `string[]` | `[]` | 按优先级排序的全局回退模型，用于派生的子轮次。 |

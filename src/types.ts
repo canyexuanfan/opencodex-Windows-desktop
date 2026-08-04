@@ -618,11 +618,14 @@ export interface OcxConfig {
    */
   streamMode?: "auto" | "legacy-tee" | "eager-relay";
   /**
-   * Custom override for the injected multi-agent guidance body (the text inside the
-   * <multi_agent_mode> tags). When set, it replaces the built-in prompt on whichever
-   * collab surface would have fired; firing gates are unchanged. Placeholders:
-   * `{{model}}` -> the effective preferred model for the request (a bare native
-   * model is account-qualified when possible; otherwise injectionModel or ""),
+   * Custom override for the injected v2 multi-agent guidance body (the text inside
+   * the <multi_agent_mode> tags). After guidance is enabled and the v2 surface and
+   * catalog-state gates pass, a configured injectionModel is sufficient to render it;
+   * otherwise an eligible roster or fallback is required. Placeholders: `{{model}}` -> the
+   * effective preferred model for the request (a bare native model is account-qualified
+   * only when the request targets an explicit account selector; unresolved or ambiguous
+   * bare values become "", while unresolved explicit routed or account-qualified values
+   * remain unchanged),
    * `{{effort}}` -> injectionEffort, `{{roster}}` -> the resolved sub-agent roster
    * block ("" when nothing resolves), `{{fallback}}` -> the configured subagent
    * model fallback guidance block ("" when unset).

@@ -267,6 +267,16 @@ describe("multiAgentGuidanceText", () => {
     );
     expect(exactBare).toContain('Preferred sub-agent: model "local-fast"');
 
+    const exactBareCustom = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "local-fast",
+        codexAccountNamespace: "team",
+        injectionPrompt: "Use {{model}}.",
+      },
+    );
+    expect(exactBareCustom).toBe("<multi_agent_mode>Use local-fast.</multi_agent_mode>");
+
     const bareParent = await multiAgentGuidanceText(
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       { subagentModels: ["gpt-5.6-sol"] },
@@ -303,6 +313,16 @@ describe("multiAgentGuidanceText", () => {
       { injectionModel: "gpt-5.6-sol" },
     );
     expect(ambiguous).toBeNull();
+
+    const ambiguousCustom = await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "gpt-5.6-sol",
+        injectionPrompt: "Use {{model}}.",
+      },
+    );
+    expect(ambiguousCustom).toBe("<multi_agent_mode>Use .</multi_agent_mode>");
+    expect(ambiguousCustom).not.toContain("gpt-5.6-sol");
   });
 
   test("account projection never widens the five-model spawn candidate window", () => {
@@ -354,6 +374,13 @@ describe("multiAgentGuidanceText", () => {
       parsedFixture({ tools: [{ name: "spawn_agent" }] }),
       { injectionModel: "gpt-5.6-sol" },
     )).toBeNull();
+    expect(await multiAgentGuidanceText(
+      parsedFixture({ tools: [{ name: "spawn_agent" }] }),
+      {
+        injectionModel: "gpt-5.6-sol",
+        injectionPrompt: "Use {{model}}.",
+      },
+    )).toBe("<multi_agent_mode>Use .</multi_agent_mode>");
   });
 
   test("effective roster applies alias, visibility, v2 compatibility, stable priority, cap, and diagnostics", async () => {
@@ -561,7 +588,7 @@ describe("multiAgentGuidanceText", () => {
     expect(text).toContain('Preferred sub-agent: model "opencode-go/glm-5.2", reasoning_effort "xhigh"');
   });
 
-  test("injectionPrompt preserves raw model and substitutes only the effective roster", async () => {
+  test("injectionPrompt preserves an unresolved explicit model and substitutes only the effective roster", async () => {
     const dir = codexHomeFixture(V2_ON);
     catalogFixture(dir, [
       { slug: "gpt-5.6-terra", efforts: ["high", "max"], priority: 0, multiAgentVersion: "v2" },

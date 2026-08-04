@@ -311,7 +311,11 @@ export async function multiAgentGuidanceText(
     const fallbackGuidance = subagentFallbackGuidanceText({ subagentModelFallback } as OcxConfig);
     if (!injectionModel && roster === "" && fallbackGuidance === "") return null;
     if (injectionPrompt) {
-      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, preferred?.model ?? injectionModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
+      // Bare ids must resolve to a unique/current-route candidate. Preserve the legacy raw
+      // fallback only for explicit routed/account-qualified ids.
+      const promptModel = preferred?.model
+        ?? (injectionModel?.includes("/") ? injectionModel : undefined);
+      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, promptModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
     }
     if (!preferred && roster === "" && fallbackGuidance === "") return null;
     let text = "When the active spawn_agent tool supports optional \"model\" or \"reasoning_effort\" overrides, "
