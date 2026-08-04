@@ -12,7 +12,7 @@ four phase docs are rewritten as consumers against the reviewer's section list.
 A contract nobody collected is a fifth opinion.
 
 All current-code citations in this document were rechecked on 2026-08-05 at
-`9e405e2b46f668c81141ffdb6ecc776841c7761a`.
+`8a8323f7885da957120218495715cab8593a5d66`.
 
 ## IN / OUT
 
@@ -105,7 +105,14 @@ export type CodexHistoryAuthority =
   | { readonly kind: "explicit-legacy-recovery"; readonly id: string };
 
 export interface CodexHistoryState {
-  status: "converged" | "pending" | "running" | "blocked" | "unknown" | "not-evaluated";
+  status:
+    | "adoption-pending"
+    | "converged"
+    | "pending"
+    | "running"
+    | "blocked"
+    | "unknown"
+    | "not-evaluated";
   /**
    * Why it is not converged, when it is not. These are terminal observations
    * for one attempt, not reasons to collapse the durable retry schedule.
@@ -303,7 +310,7 @@ export interface CodexTransitionVersion {
 }
 
 export interface CodexTransitionState extends CodexTransitionVersion {
-  /** Durable schedule and latest terminal observation for this exact pair. */
+  /** Durable schedule, or non-dispatchable adoption authority, plus latest observation. */
   readonly history: CodexHistoryState;
   readonly historySchedule: null | Readonly<{
     jobId: string;
@@ -411,8 +418,9 @@ type SynchronousCompatibilityHandoff<T> = T extends PromiseLike<unknown> ? never
  * WP10's narrow native-mutation-to-history-authorization exclusion. The callback
  * starts only after N is held, must authorize exactly once through the supplied
  * transaction-bound closure, and returns before N is committed and released. A
- * compatibility adoption additionally requires the opener's still-live exclusive
- * creation claim; an earlier path-absence observation is never authority.
+ * compatibility adoption additionally requires either atomic publication of a
+ * complete `adoption-pending` coordinator or a valid row already in that state;
+ * an earlier path-absence observation and a rowless file are never authority.
  */
 export type WithCodexCompatibilityNativeHandoff = <T>(
   intent: CodexCompatibilityNativeIntent,
@@ -472,7 +480,7 @@ CREATE TABLE codex_transition_state (
   history_backup_entries INTEGER,
   updated_at TEXT NOT NULL,
   CHECK (history_status IN
-    ('converged', 'pending', 'running', 'blocked', 'unknown')),
+    ('adoption-pending', 'converged', 'pending', 'running', 'blocked', 'unknown')),
   CHECK (history_reason IS NULL OR history_reason IN
     ('db-busy', 'permission', 'unreadable', 'schema', 'timeout',
      'shutdown-cancelled', 'worker-died', 'overtaken', 'foreign-state-db',
@@ -500,6 +508,19 @@ CREATE TABLE codex_transition_state (
           AND native_generation > 0
           AND history_tx_id = current_tx_id)),
   CHECK (native_generation = 0 OR history_operation IS NOT NULL),
+  CHECK (history_status != 'adoption-pending' OR
+    (native_generation = 0
+     AND current_tx_id IS NULL
+     AND history_reason IS NULL
+     AND history_attempts = 0
+     AND history_next_retry_at IS NULL
+     AND history_tx_id IS NOT NULL
+     AND history_operation IS NOT NULL
+     AND history_operation != 'recover-legacy-openai'
+     AND history_authority_kind = 'wp10-compatibility'
+     AND length(trim(history_authority_id)) > 0
+     AND history_pending_rows IS NULL
+     AND history_backup_entries IS NULL)),
   CHECK (history_operation IS NOT NULL OR
     (history_status = 'unknown'
      AND history_reason IS NULL
@@ -512,7 +533,9 @@ CREATE TABLE codex_transition_state (
 
 The observation columns project to `CodexHistoryState`; job id, operation and typed
 authority kind/id are schedule metadata required to restart the exact Worker after process
-death. `not-evaluated` remains ephemeral and is rejected by the table. A native
+death. `adoption-pending` carries the same complete identity but is deliberately not
+Worker-dispatchable until a real retained native callback changes it to `pending`.
+`not-evaluated` remains ephemeral and is rejected by the table. A native
 transition publishes its winner and schedule atomically with this null-safe conditional update
 (SQLite `IS` is required for the initial null txId):
 
@@ -651,18 +674,16 @@ check-then-open claim. The owner records `ENOENT` from `lstatSync`
 (`src/codex/transition-state.ts:356-373`), later opens with `create:true`, and passes
 the stale boolean into initialization (`src/codex/transition-state.ts:374-385`). A
 second process can create an unversioned/rowless file between those steps, yet the
-first process treats it as its own new database. WP10 therefore changes the opener's
-behavior, not its public `openCodexCoordinatorTransaction(finalDatabasePath)`
-signature: before any SQLite open, it attempts an OS-level no-clobber
-`O_CREAT | O_EXCL | O_RDWR` claim at mode `0600` (or the platform-equivalent exclusive
-create), retains that descriptor, and records its descriptor identity. `EEXIST` —
-including a file that appeared after an earlier `ENOENT` — enters the strict existing-
-database path. Any preliminary `lstat` remains path-safety evidence only. The
-exclusive winner opens the already-created path with
-`{ readwrite:true, create:false }`; only its private `createdByThisOpen` authority may
-reach compatibility adoption. Row absence alone never supplies that authority.
+first process treats it as its own new database. The thirteenth review then found the
+process-death hole in the proposed exclusive final-path claim: rollback/close plus
+`finally` cleanup handles a caught failure, but kill after creation closes the
+descriptor and leaves the zero-byte path permanently visible. The strict initializer
+correctly rejects that existing version-zero database at
+`src/codex/transition-state.ts:282-303`, so neither the intended callback nor guardian
+recovery can run.
 
-The **general initializer remains unchanged and fail-closed**. Read/observe,
+The **general initializer's authority rule remains unchanged and fail-closed**.
+Read/observe,
 `BeginCodexTransition`, Worker claim/terminal work, guardian retry, explicit legacy
 recovery, and direct transaction opens may create the ordinary unscheduled `{0,null}`
 row only when the JSON record is missing or valid with no legacy transition fields
@@ -674,6 +695,14 @@ checks every routed surface and returns any `indeterminate` result before `resid
 the exception. An `OPENCODEX_HOME`-local positive pair is never imported because a
 second home may hold a different claimant.
 
+Its creation mechanism does change: a native-clean ordinary initializer also builds a
+complete v1 temp database and atomically no-clobber-publishes the ordinary singleton
+`{ native_generation:0, current_tx_id:null, history_status:'unknown' }` with null
+schedule/reason/timer/probe fields and zero attempts. It never opens a missing final
+path with SQLite `create:true`. Thus every coordinator database first visible at the
+final name has a supported schema and authoritative singleton, whether it is the
+ordinary clean row or the compatibility row below.
+
 WP10 adds one private **compatibility-adoption** mode beneath
 `withCodexCompatibilityNativeHandoff`; it is not an option on the public transaction
 opener. “Positively authorized” means all of the following are true: the sole graph-
@@ -684,31 +713,75 @@ callback; its closed intent is `retained-apply` with exactly
 exactly once. Residue detection, startup observation, a Worker/guardian retry,
 history-only recovery, or an arbitrary operation value is not positive authority.
 
-When and only when that handoff still owns the exclusive creation descriptor for the
-exact coordinator file, has a missing or valid non-legacy integration record, and has
-positively classified routed residue, it acquires `BEGIN IMMEDIATE` and captures
-**creation ownership, authoritative row absence, and that routed observation** without
-installing `{0,null,unknown}`. The retained native callback then runs. Its bound
-`authorize(next)` requires `next.operation === intent.operation` and, on the same
-already-open handle, creates the schema and inserts singleton 1 directly as generation
-zero, null txId, and the fresh complete `pending/wp10-compatibility` schedule; it then
-sets `user_version = 1`. A no-clobber loser, an ordinary opener of any existing file,
-or a creator whose path identity changed cannot enter this branch.
+When the final coordinator path is genuinely absent and those record/residue/intent
+preconditions hold, the transition owner uses that same complete-database publisher
+to publish compatibility authority **before** invoking the native callback. It
+exclusively creates a unique mode-`0600` temp file in the final directory, opens
+SQLite only at that temp path, creates the complete v1 schema, and commits singleton 1
+with exactly:
 
-WP10 chooses **safe exact-identity cleanup** for an exclusively created coordinator
-whose callback, one-shot authorization, or precommit transaction fails. The owner
-rolls back and closes SQLite while retaining the exclusive creation descriptor,
-compares that descriptor's `fstat` identity with a fresh non-symlink regular-file
-`lstat` of the final path, and unlinks only that exact file before releasing the
-descriptor. It never unlinks an `EEXIST` path, a substituted identity, or a database
-that committed a valid schema/row. Successful cleanup restores real path absence and
-dispatches no Worker; the next legitimate high-level operation must win a new
-no-clobber claim and repeat integration-record/residue classification rather than
-reuse stale evidence. This disposition is required because the current rollback/close
-path (`src/codex/transition-state.ts:386-390`) leaves a zero-byte, version-zero,
-rowless file, which every later strict opener correctly refuses and would otherwise
-wedge the installation. Identity mismatch or unlink failure is surfaced as a typed
-database/unsafe-path failure and is never bypassed by adoption.
+- `native_generation = 0`, `current_tx_id = NULL`;
+- `history_status = 'adoption-pending'`, `history_reason = NULL`,
+  `history_attempts = 0`, `history_next_retry_at = NULL`;
+- a fresh non-empty `history_tx_id`, the exact intent-derived non-recovery
+  `history_operation`, `history_authority_kind = 'wp10-compatibility'`, and a fresh
+  opaque non-empty `history_authority_id`;
+- `history_pending_rows = NULL`, `history_backup_entries = NULL`, a fresh
+  `updated_at`, and `PRAGMA user_version = 1`.
+
+The temp database uses a completed rollback-journal transaction, is closed with no
+live journal/WAL sidecar, is reopened read-only through the ordinary row validator,
+and its database bytes are fsynced before publication. The owner then publishes it
+with the same atomic no-clobber shape required for create-once backups in §3: a
+same-directory exclusive hard link or platform rename-without-replace equivalent.
+An ordinary replacing rename is forbidden. `EEXIST` means another process won and
+always enters the strict existing-database path after the unpublished temp is
+scrubbed. A successful link/rename is followed by parent-directory fsync; a hard-link
+temp alias is then removed without touching the final name. No SQLite handle opened
+on the temp crosses publication. Cooperating processes never open a published or stale
+temp alias as SQLite; after a crash they may only unlink an alias whose non-symlink
+regular-file identity matches the validated final database.
+
+The publication operation is the crash boundary. Before it, the final path is absent
+and a killed creator can leave only a non-authoritative unique temp; the next real
+operation ignores that temp and can publish anew. During it, the no-replace primitive
+makes the final name atomically either absent or linked to the already complete,
+validated v1 database. After it, including death before temp-alias cleanup, final-path
+reopen, native callback, or authorization, every opener sees the complete typed
+`adoption-pending` row. There is no visible zero-byte/version-zero interval and no
+final-path `finally` unlink on any post-publication failure.
+
+An ordinary opener validates `adoption-pending` as a ready coordinator state, never
+as `legacy-ambiguous`, but it does not dispatch a history Worker: the row proves that
+native mutation may not have started or may have died mid-callback. In WP10, only a
+new positively authorized real retained apply/restore handoff may transition it. That
+handoff takes N, re-runs its current closed-intent native callback idempotently, and
+its transaction-bound `authorize(next)` conditionally replaces the complete row it
+observed with the current operation's fresh `pending/wp10-compatibility` schedule.
+The current operation may match or supersede the interrupted operation; N still makes
+the committed schedule order equal the retained native-mutation order. Callback
+throw, authorization failure, or process death rolls N back and leaves the durable
+`adoption-pending` row unchanged for the next real operation. WP12's fully admitted
+native transition may later supersede it through `BeginCodexTransition`; ordinary
+readers, Worker/guardian claim or terminal paths, explicit legacy recovery, and
+residue observation may not transition it or relabel its authority.
+
+Startup's ordinary apply/restore root therefore recovers automatically by re-entering
+the handoff. If an explicit caller cannot finish within its bounded attempt, it
+returns the typed ready state with `history.status = 'adoption-pending'` and the
+action “rerun the same requested apply/restore”; doctor reports the same action.
+Guardian sees the valid row but arms no history Worker until a native handoff changes
+it to `pending`. It is never a permanent rowless refusal.
+
+The fail-closed guard is not relaxed for pre-existing files. `adoption-pending` may be
+created only in the complete temp database whose final publication won from true path
+absence after the private positive checks; it is never inserted into an existing
+unversioned, unsupported, malformed, or rowless database and is never inferred from
+residue. Such existing databases still refuse exactly as today. Caught pre-publication
+cleanup may exact-identity-unlink only the unpublished temp. Among **cooperating**
+processes that cleanup never unlinks a committed valid final-path row; a foreign
+in-place writer can retain the same file identity, so identity is substitution
+evidence rather than proof of unchanged contents.
 
 This is a compatibility schedule over evidence the current high-level operation just
 took responsibility for, not an empty baseline inferred from residue. Once the row
@@ -2158,7 +2231,9 @@ trap fires.
 The general missing-DB/table path initializes only from native-clean/no-legacy state;
 outside the explicit compatibility-adoption fixture, legacy JSON pair/schedule,
 residue beside a missing row, malformed row, busy DB and unsafe path all fail closed
-with the specified typed outcome.
+with the specified typed outcome. A valid `adoption-pending` row is the sole new
+ready state: read/doctor may report it, but Worker/guardian and explicit recovery may
+not turn it into history work.
 
 `tests/codex-native-residue.test.ts`: add two compatibility-adoption fixtures that
 begin with routed config, routed catalog, routed history rows/rollouts/manifest, and
@@ -2166,40 +2241,50 @@ begin with routed config, routed catalog, routed history rows/rollouts/manifest,
 `injectCodexConfig` high-level path
 (`src/codex/inject.ts:482-654`); the restore fixture enters real
 `restoreNativeCodex` (`src/codex/inject.ts:765-800`). Each must acquire N before its
-retained callback and commit generation zero with the exact pending compatibility
-operation before Worker dispatch; restore remains authorized even though its native
-callback removes the routed config/catalog residue captured at N acquisition. The
-Worker then repairs history and terminally owns the same schedule. Run matching
+retained callback, atomically no-clobber-publish the exact generation-zero
+`adoption-pending` identity before that callback, then conditionally change that same
+row to the current exact pending compatibility operation before Worker dispatch;
+restore remains authorized even though its native callback removes the routed
+config/catalog residue captured before publication. The Worker then repairs history
+and terminally owns the same schedule. Run matching
 negative fixtures for observe/read, guardian/Worker retry, explicit recovery,
 operation/intent mismatch, invalid legacy JSON, indeterminate residue, and an existing
 unversioned or rowless database; none may create a row or invoke the native callback.
 **Broken changes:** route the handoff through the strict clean-only initializer, let
-mere residue detection opt into adoption, insert an unscheduled `{0,null}` row first,
-or authorize restore from a post-callback clean observation; the real apply/restore
-fixture returns `legacy-ambiguous` or the named negative fixture creates authority.
+mere residue detection opt into adoption, publish a rowless/unscheduled `{0,null}`
+database, let Worker/guardian dispatch `adoption-pending`, or authorize restore from a
+post-callback clean observation; the real apply/restore fixture returns
+`legacy-ambiguous`, dispatches history before native recovery, or the named negative
+fixture creates authority.
 
 Add a cross-process no-clobber race to `tests/codex-transition-state.test.ts`. Process
-A pauses after its path-safety `lstat` observes `ENOENT`; process B exclusively creates
-the coordinator path, leaves it unversioned/rowless, and closes; A then resumes. A's
-exclusive claim must receive `EEXIST`, enter the strict existing-database path, return
-`legacy-ambiguous`, and leave a retained-native-callback sentinel untouched. **Broken
-change:** restore `databaseWasAbsent = true` from the earlier `ENOENT` plus SQLite
-`create:true`, or treat `EEXIST` as creator authority; A adopts B's rowless file and
-the callback sentinel fires. The existing static fixture that places a rowless database
-before invocation also passes under that broken check-then-open implementation, so it
-is necessary negative coverage but not evidence that creation ownership is atomic.
+A and B both finish complete valid temp databases after observing final-path absence,
+then race the final no-replace publication. Exactly one final name appears; it is a
+validated v1 `adoption-pending` database from one contestant. The loser receives
+`EEXIST`, scrubs only its unpublished temp, opens the winner as existing ready state,
+and never overwrites or unlinks the final name. Separately place a foreign
+unversioned/rowless file before publication and require strict refusal before the
+native-callback sentinel. **Broken changes:** restore the stale
+`databaseWasAbsent` + SQLite `create:true` path, use ordinary replacing rename, or
+treat an existing rowless file as adoption authority; the final row is malformed,
+the loser replaces the winner, or the callback sentinel fires.
 
-Add a table-driven first-adoption abort case to
-`tests/codex-native-residue.test.ts`: once with the retained callback throwing before
-authorization and once with the one-shot authorization rejecting the operation, hold
-the exclusive descriptor through rollback/SQLite close, prove exact-identity unlink
-restores path absence, then run the next legitimate real high-level operation. That
-second operation must acquire a fresh exclusive claim, reclassify current residue,
-commit the exact generation-zero pending compatibility schedule, and dispatch its
-Worker. **Broken change:** rollback/close without exact-identity unlink, release the
-creation descriptor before cleanup, or retain a zero-byte database; the second
-operation receives `EEXIST`, follows strict rowless refusal, and never reaches its
-callback/schedule assertion.
+Add child-process termination checkpoints to
+`tests/codex-transition-state.test.ts` and
+`tests/codex-native-residue.test.ts`: kill after exclusive temp creation but before
+SQLite open, after SQLite open/complete temp commit but before publication,
+immediately after no-clobber publication but before temp-alias cleanup/final reopen,
+and during the retained native callback. In the first two cases the final path stays
+absent and a subsequent real apply/restore publishes normally. In the latter two the
+final path is a complete validated `adoption-pending` coordinator; the next real
+apply/restore reads it as ready, re-runs its current native callback under N, changes
+it to the exact pending compatibility schedule, and dispatches its Worker. Callback
+throw and authorization rejection leave the same durable `adoption-pending` row and
+return its documented rerun action; they do not unlink the final database. **Broken
+changes:** create the final path before schema/row commit, publish with replacing
+rename, dispatch a Worker directly from `adoption-pending`, or clean the final path in
+`finally`; a killed child leaves rowless refusal, a competing winner is clobbered,
+history runs before native completion, or the next operation cannot recover.
 
 `tests/codex-convergence-contract.test.ts`: every `ConvergeOutcome` variant maps
 to the §5 row, `busy` carries `Retry-After`, and a best-effort management caller
@@ -2477,9 +2562,11 @@ writes to it.
   its compatibility authorization; a newer native handoff replaces even a pending or
   running older schedule, and the older Worker loses its terminal CAS. H has one contract-owned final path per effective
   user/canonical home/canonical state DB and takes only fail-fast `H -> N`;
-  compatibility adoption requires a still-live OS-exclusive creation claim, and a
-  failed first adoption exact-identity-unlinks only its own uncommitted coordinator so
-  retry can claim a genuinely absent path. Inverse
+  compatibility adoption atomically no-clobber-publishes a complete valid v1
+  `adoption-pending` coordinator before native mutation. Process death before
+  publication leaves the final path absent; death after publication leaves durable
+  authority that only a later real native handoff (or WP12 full admission) may move to
+  pending. Inverse
   `N/K/C -> H` edges are forbidden. Only `missing` proves path absence; a present
   valid matching v1 manifest is `ready` with a validated non-negative count, including
   zero, while
@@ -2489,12 +2576,13 @@ writes to it.
   admission and observation sequences). **Broken change:** acquire N only after the
   retained native mutation, release N before compatibility authorization, restore a
   caller-supplied expected row or second-connection read, derive creator authority from
-  `lstat` `ENOENT` plus SQLite `create:true`, omit exact-identity cleanup after a failed
-  first adoption, route an existing routed
+  `lstat` `ENOENT` plus SQLite `create:true`, publish a rowless final-path claim, use a
+  replacing rename, dispatch history from `adoption-pending`, or route an existing routed
   installation through the strict clean-only initializer, let observation/residue
   alone create a generation-zero row, restore the terminal-only compatibility
   predicate, release H between surfaces, classify a
   present ready-zero manifest as missing/unsupported, or commit catalog bytes after a
-  generation/evidence conflict; the stale-row/one-handle, no-clobber-race, abort-retry,
+  generation/evidence conflict; the stale-row/one-handle, no-clobber-race,
+  child-process-death recovery,
   routed apply/restore, negative-adoption, handoff-order, terminal-CAS, serialization, manifest, or
   stale-commit fixture fails respectively.
