@@ -75,6 +75,7 @@
       "menuCategory": "OpenCodex",
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false,
+      "differentialPackage": false,
       "artifactName": "OpenCodex-Setup-${version}-x64.${ext}"
     }
   }
