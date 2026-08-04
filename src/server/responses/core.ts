@@ -64,9 +64,11 @@ import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/
 import {
   applyCodexAuthContextToProvider,
   CodexAccountCooldownError,
+  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
   CodexDirectAuthenticationError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
@@ -100,7 +102,7 @@ import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../provider
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
-import { registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
+import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
 import { redactSecretString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import type { AdmissionLease } from "../../lib/admission";
@@ -111,6 +113,7 @@ import {
   maybePrimeSubagentQuota,
   recordSubagentQuotaFailureForThreadSpawn,
 } from "../../codex/subagent-model-fallback";
+import { isNativeMainTrafficBlocked } from "../../codex/native-profile-startup";
 import {
   beginRequestAttempt,
   catalogModelSupportsServiceTier,
@@ -253,8 +256,8 @@ async function shouldRetryCodexPoolAccountModel400(
 }
 
 /** Pre-stream quota/billing rejections that warrant one alternate-account attempt (#584). */
-function shouldRetryCodexPoolAccountQuota(response: Response): boolean {
-  return response.status === 429 || response.status === 402;
+export function shouldRetryCodexPoolAccountQuota(response: Response): boolean {
+  return response.status === 402 || response.status === 429;
 }
 
 interface CodexPoolAccountRetryArgs {
@@ -272,6 +275,7 @@ interface CodexPoolAccountRetryArgs {
     // first attempt.
     inboundWire?: InboundWire;
     translatorBudget: TranslatorBudget;
+    turnAdmissionLease?: AdmissionLease;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -343,13 +347,18 @@ async function retryCodexPoolOnAlternateAccount(
       req.headers,
       config,
       "pool",
-      { excludeAccountId: firstAuthCtx.accountId, modelId: route.modelId },
+      {
+        excludeAccountId: firstAuthCtx.accountId,
+        modelId: route.modelId,
+        beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+      },
     );
   } catch (error) {
     if (
       !(error instanceof CodexPoolAuthenticationError)
       && !(error instanceof CodexAuthContextError)
       && !(error instanceof CodexAccountCooldownError)
+      && !(error instanceof CodexMainProfileDrainingError)
     ) throw error;
   }
   if (retryAuthCtx?.kind !== "pool" && retryAuthCtx?.kind !== "main-pool") {
@@ -742,6 +751,7 @@ async function resolveResponsesCodexAuth(
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
         accountId: route.codexAccountId,
         modelId: route.modelId,
+        beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
       });
       options.onCodexAuthContextResolved?.(authCtx);
     } else {
@@ -763,6 +773,9 @@ async function resolveResponsesCodexAuth(
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
       return { ok: false, response: cooldownErrorResponse(err, Date.now(), route.codexAccountNamespace) };
+    }
+    if (err instanceof CodexMainProfileDrainingError) {
+      return { ok: false, response: codexMainProfileDrainingResponse() };
     }
     if (err instanceof CodexThreadAffinityExpiredError) {
       return {
@@ -1347,26 +1360,44 @@ async function handleResponsesInner(
   // Exact account selectors are isolated from Pool-wide quota work. A canonical replay miss must
   // also fail closed without polling quota upstream. Cached fallback state can still select a
   // provider with native continuation support below.
-  if (
-    isThreadSpawnRequest(req.headers)
-    && route.codexAccountId === undefined
-    && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
-  ) {
-    await maybePrimeSubagentQuota(config);
-  }
-
+  const threadSpawn = isThreadSpawnRequest(req.headers);
+  const previewSelectionAdmission = threadSpawn && route.codexAccountId === undefined
+    ? codexAccountSelectionForTurn(options.turnAdmissionLease)?.()
+    : undefined;
+  const nativeMainRecoveryBlocked = isNativeMainTrafficBlocked();
+  const nativeMainReadsForbidden = nativeMainRecoveryBlocked
+    || previewSelectionAdmission?.mainProfileDraining === true;
+  const previewSelectionOptions = {
+    nativeMainSelectionOnly: !nativeMainRecoveryBlocked
+      && previewSelectionAdmission?.mainProfileDraining === true,
+  };
   let authCtx: CodexAuthContext = { kind: "main", accountId: null };
   let selectedForwardHeaders = req.headers;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
   let subagentQuotaFailureModel = parsed.modelId;
 
+  try {
+    if (
+      threadSpawn
+      && route.codexAccountId === undefined
+      && !(hasUnexpandedPreviousResponse && isCanonicalOpenAiForwardProvider(route.provider))
+    ) {
+      await maybePrimeSubagentQuota(config, Date.now(), { nativeMainReadsForbidden });
+    }
+
   // Subagent fallback must settle the final model/provider BEFORE route-dependent
   // normalization (virtual models, effort caps, service tier, wire protocol).
   // Preview the preferred Codex account without acquiring a probe lease or refreshing
   // tokens — auth is resolved only after the final route is selected.
-  if (isThreadSpawnRequest(req.headers) && !options.comboAttempt && route.codexAccountId === undefined) {
+  if (threadSpawn && !options.comboAttempt && route.codexAccountId === undefined) {
     const threadId = req.headers.get("x-codex-parent-thread-id");
-    const previewAccountId = previewCodexAccountForRequest(threadId, config);
+    const previewAccountId = previewCodexAccountForRequest(
+      threadId,
+      config,
+      Date.now(),
+      undefined,
+      previewSelectionOptions,
+    );
     subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
     const fallback = applySubagentModelFallback(
       parsed,
@@ -1375,6 +1406,7 @@ async function handleResponsesInner(
       previewAccountId,
       Date.now(),
       unreadableEncryptedAgentTask,
+      previewSelectionOptions,
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -1395,6 +1427,9 @@ async function handleResponsesInner(
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
     }
+  }
+  } finally {
+    previewSelectionAdmission?.release();
   }
 
   // Encrypted child tasks may only reach the canonical native backend. This check
@@ -1545,11 +1580,14 @@ async function handleResponsesInner(
         listOpenAiForwardSidecarCandidates(config),
         req.headers,
         config,
-        // Account-qualified native routes are passthrough, so their in-turn helper is vision.
-        // Scope its cooldown and outcome to the helper model, not the routed text model.
-        route.codexAccountId !== undefined
-          ? { accountId: route.codexAccountId, modelId: resolveOpenAiVisionModel(config) }
-          : undefined,
+        {
+          // Account-qualified native routes are passthrough, so their in-turn helper is vision.
+          // Scope its cooldown and outcome to the helper model, not the routed text model.
+          ...(route.codexAccountId !== undefined
+            ? { exactAccount: { accountId: route.codexAccountId, modelId: resolveOpenAiVisionModel(config) } }
+            : {}),
+          beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+        },
       );
     } catch (err) {
       // Sidecars are optional helpers for an otherwise independent routed turn.
@@ -1560,6 +1598,7 @@ async function handleResponsesInner(
         && !(err instanceof CodexAuthContextError)
         && !(err instanceof CodexAccountCooldownError)
         && !(err instanceof CodexThreadAffinityExpiredError)
+        && !(err instanceof CodexMainProfileDrainingError)
       ) throw err;
     }
   }
@@ -2287,6 +2326,7 @@ async function handleResponsesInner(
         }, 2_000,
         {
           translatorBudget,
+          replayCacheScope: parsed._clientThreadId ?? "global",
           ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2333,6 +2373,7 @@ async function handleResponsesInner(
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,
@@ -2770,6 +2811,7 @@ async function handleResponsesInner(
       () => upstream.abort(), 2_000,
       {
         translatorBudget,
+        replayCacheScope: parsed._clientThreadId ?? "global",
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -2827,6 +2869,7 @@ async function handleResponsesInner(
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed.modelId, {
       translatorBudget,
+      replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
       freeformToolNames,

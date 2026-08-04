@@ -143,6 +143,32 @@ typecheck and GUI build, and `scripts/release.ts` now runs local typecheck, `bun
 `bun run privacy:scan` before the version bump, commit/push, Cross-platform CI wait, and GitHub
 Release workflow dispatch. Docs publishing is separate from npm release publishing.
 
+### Release notes
+
+Release notes are rendered OpenAI-Codex-style by `scripts/release-notes.ts render` inside
+`.github/workflows/release.yml`: `## New Features` / `## Bug Fixes` / `## Documentation` /
+`## Chores` / `## Other Changes` sections with prefix-free, scope-grouped summary bullets
+(`- Providers: Add X; Add Y (#1, #2)`), followed by a `## Changelog` section listing every PR
+as `- #N <title> @author`; when a comparison baseline exists, that section also includes a
+compare link. Carried preview changelogs and the since-preview delta feed the same renderer,
+so stable notes are the aggregate of their preview train. The raw commit dump is
+intentionally gone — non-PR commits stay reachable via the Full Changelog compare link when
+that link is available.
+
+The deterministic renderer produces the structure but not curated prose. Maintainers who want
+the OpenAI-style grouped summaries can run the optional local polish step against the rendered
+body (needs an OpenAI-compatible API key):
+
+```bash
+bun scripts/release-notes.ts render ... --out notes.md
+bun scripts/release-notes.ts polish --in notes.md --out notes.md
+```
+
+`polish` rewrites only the category sections, keeps the machine-rendered Changelog verbatim,
+and fails closed when the rewrite drops, invents, or re-heads any PR reference. It is never
+called from CI — there is no LLM credential on the runner — so the workflow ships the
+deterministic body whenever the maintainer skips it.
+
 ## Release metadata invariants
 
 Every npm release version must map cleanly across four surfaces:
