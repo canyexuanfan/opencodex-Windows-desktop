@@ -437,6 +437,31 @@ describe("management and data-plane credential separation", () => {
     expect(issueGuiSession(new Request("http://localhost:10100/"), config, state)).toBeNull();
   });
 
+  test("GET /opencodex-session serves the bootstrap document from a live server", async () => {
+    const config = remoteConfig();
+    config.hostname = "127.0.0.1";
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        headers: { Host: server.url.host },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/html");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("pragma")).toBe("no-cache");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+      const html = await response.text();
+      expect(html).toContain('name="opencodex-session-token"');
+      expect(html).toContain('name="opencodex-session-csrf"');
+      expect(html).toContain('name="opencodex-session-origin"');
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("a non-loopback binding never issues a GUI session from a forged loopback Host", () => {
     const config = remoteConfig();
     const state = initializeManagementAuthState(config);
