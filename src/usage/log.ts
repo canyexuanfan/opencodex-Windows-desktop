@@ -655,9 +655,11 @@ export function readRecentUsageEntries(limit: number): PersistedUsageEntry[] {
     fd = openSync(path, "r");
     const size = fstatSync(fd).size;
     if (size <= 0) return [];
-    // ~4 KiB/row budget with a floor; expand once if the window yields too few lines.
-    let windowBytes = Math.min(size, Math.max(64 * 1024, Math.ceil(limit) * 4 * 1024));
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Trace-sized rows (up to MAX_TRACE_BYTES, RI-01) need a larger per-row
+    // budget than the pre-trace ledger; keep expanding until the window covers
+    // the file start or the whole file so a restart never hydrates nothing.
+    let windowBytes = Math.min(size, Math.max(64 * 1024, Math.ceil(limit) * 20 * 1024));
+    while (true) {
       const start = Math.max(0, size - windowBytes);
       const buf = Buffer.alloc(size - start);
       readSync(fd, buf, 0, buf.length, start);
@@ -677,6 +679,7 @@ export function readRecentUsageEntries(limit: number): PersistedUsageEntry[] {
       // most recent N valid rows (not N physical lines minus corrupt ones).
       const entries = parseUsageLines(lines);
       if (entries.length >= limit || start === 0 || windowBytes >= size) return entries.slice(-limit);
+      if (windowBytes >= size) break;
       windowBytes = Math.min(size, windowBytes * 4);
     }
     return [];

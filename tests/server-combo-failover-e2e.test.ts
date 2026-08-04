@@ -424,6 +424,34 @@ describe("server combo failover 030 activation matrix", () => {
     }
   });
 
+  test("persists one immutable combo route trace, not the child route trace", async () => {
+    const a = serve(() => chatSuccess("winner", "m1"));
+    const b = serve(() => chatSuccess("backup", "m2"));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await postLogged(config);
+    expect(response.status).toBe(200);
+    await response.text();
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt.routeDecision).toBeDefined();
+      expect(receipt.routeDecision.routeKind).toBe("combo");
+      expect(receipt.routeDecision.requestedModel).toBe("combo/free");
+      expect(receipt.routeDecision.candidates).toHaveLength(2);
+      expect(receipt.routeDecision.selected).toMatchObject({
+        provider: "a",
+        model: "m1",
+        reason: "combo-pick",
+      });
+      // Selection trace stays immutable: exactly one physical attempt happened
+      // and the trace still describes the combo decision, not the child route.
+      expect(receipt.attempts).toHaveLength(1);
+      expect(receipt.attempts![0]).toMatchObject({ provider: "a", model: "m1" });
+    }
+  });
+
   test("preserves distinct failed and winning reasoning wires through restart hydration", async () => {
     const bodies: Array<{ provider: string; effort?: unknown }> = [];
     const a = serve(async request => {

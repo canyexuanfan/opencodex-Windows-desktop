@@ -16,7 +16,7 @@ import {
   previousResponseReplayFailure,
   rememberResponseState,
 } from "../../responses/state";
-import { routeModel, type RouteResult } from "../../router";
+import { comboRouteDecisionTrace, routeModel, type RouteResult } from "../../router";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -966,6 +966,7 @@ export async function handleComboResponses(
       model: requestedModel,
       provider: "combo",
       comboId,
+      routeDecision: logCtx.routeDecision,
       attempts: logCtx.attempts,
       activeAttempt: undefined,
       activeAttemptStartedAt: undefined,
@@ -1000,6 +1001,9 @@ export async function handleComboResponses(
   if (!pick) {
     return comboUnavailableResponse(`No available targets for combo: ${comboId}`);
   }
+  // One immutable combo selection trace, before any child dispatch; child
+  // adoption below must never replace it with a concrete child route trace.
+  logCtx.routeDecision = comboRouteDecisionTrace(config, comboId, pick, requestedModel);
 
   let lastFailure: Response | null = null;
   while (pick) {
@@ -1103,6 +1107,7 @@ export async function handleComboResponses(
         model: requestedModel,
         provider: "combo",
         comboId,
+        routeDecision: logCtx.routeDecision,
         attempts: logCtx.attempts,
         activeAttempt: attempt,
         activeAttemptStartedAt: started,
@@ -1373,6 +1378,7 @@ async function handleResponsesInner(
   let route: RouteResult;
   try {
     route = routeModel(config, parsed.modelId);
+    logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
       return comboUnavailableResponse(err.message);

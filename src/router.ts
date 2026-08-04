@@ -355,6 +355,34 @@ export class NoEnabledOpenAiProviderError extends Error {
   }
 }
 
+/**
+ * One immutable selection trace for a combo request: built once from the
+ * initial pick, before any child dispatch. Fallback execution stays in the
+ * usage entry's `attempts[]`; the trace never changes after selection.
+ */
+export function comboRouteDecisionTrace(
+  config: OcxConfig,
+  comboId: string,
+  pick: ComboPick,
+  requestedModel: string,
+): RouteDecisionTraceV1 {
+  const combo = getCombo(config, comboId);
+  return buildRouteDecisionTrace({
+    requestedModel,
+    routeKind: "combo",
+    selected: {
+      provider: pick.target.provider,
+      model: pick.target.model,
+      reason: "combo-pick",
+      candidateIndex: pick.targetIndex,
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        : {}),
+    },
+    candidates: combo ? comboRouteCandidates(config, pick, combo) : undefined,
+  });
+}
+
 // Codex uses a small number of control-plane model ids that are not part of the public GPT/o
 // naming families. Keep this exact: a broad `codex-*` rule could capture a third-party model.
 const CODEX_INTERNAL_OPENAI_MODELS = new Set(["codex-auto-review"]);
