@@ -306,3 +306,86 @@ for (const publisher of ["convergence", "retained"] as const) {
     expect(readFileSync(catalogPath, "utf8")).toBe(newer);
   }, 20_000);
 }
+
+/**
+ * Runtime authority can move without touching the catalog at all.
+ *
+ * The verifier's R1→R2 case: a retained sync prepares from one Codex runtime,
+ * and while it is awaiting its provider another process rewrites the persisted
+ * runtime selection. Every catalog byte is untouched, so a freshness check built
+ * only from catalog/backup/cache bytes sees nothing and commits a candidate that
+ * was derived under a runtime that is no longer selected.
+ *
+ * `codex-runtime.json` is therefore part of the pre-await filesystem evidence,
+ * PRESENT or ABSENT. Removing it from `retainedCatalogSyncEvidence` turns this
+ * test red while every other retained-root test stays green — which is exactly
+ * why it exists: nothing else in the suite covered that component.
+ */
+test("a persisted runtime selection moved by another process during the await blocks the write", async () => {
+  const sandbox = makeSandbox("ocx-retained-runtime-move-");
+  const catalogPath = seedCatalog(sandbox);
+  const initial = readFileSync(catalogPath, "utf8");
+  const requested = join(sandbox.root, "provider-requested");
+  const release = join(sandbox.root, "provider-release");
+  const runtimeStatePath = join(sandbox.opencodexHome, "codex-runtime.json");
+  writeFileSync(runtimeStatePath, `${JSON.stringify({
+    version: 1,
+    command: "/usr/local/bin/codex-r1",
+    source: "configured",
+    selectedVersion: "1.0.0",
+    updatedAt: new Date(0).toISOString(),
+  }, null, 2)}\n`);
+
+  const config = {
+    port: 10100,
+    defaultProvider: "together",
+    providers: {
+      together: {
+        adapter: "openai-chat",
+        baseUrl: "https://api.together.xyz/v1",
+        apiKey: "runtime-move-key",
+        models: ["fallback-model"],
+      },
+    },
+  };
+
+  const sync = Bun.spawn([process.execPath, "--eval", `
+    import { existsSync, writeFileSync } from "node:fs";
+    const config = ${JSON.stringify(config)};
+    config.providers.together.fetch = async () => {
+      writeFileSync(${JSON.stringify(requested)}, "requested");
+      while (!existsSync(${JSON.stringify(release)})) await Bun.sleep(5);
+      return Response.json({ data: [{ id: "runtime-move-model" }] });
+    };
+    const { syncCatalogModels } = await import("./src/codex/catalog/sync.ts");
+    console.log(JSON.stringify(await syncCatalogModels(config)));
+  `], { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" });
+
+  await Promise.race([
+    waitForPath(requested),
+    sync.exited.then(async exitCode => {
+      const stdout = await new Response(sync.stdout).text();
+      const stderr = await new Response(sync.stderr).text();
+      throw new Error(`sync exited before provider barrier (${exitCode})\nstdout=${stdout}\nstderr=${stderr}`);
+    }),
+  ]);
+
+  // Another process selects a different Codex runtime. No catalog byte changes.
+  writeFileSync(runtimeStatePath, `${JSON.stringify({
+    version: 1,
+    command: "/usr/local/bin/codex-r2",
+    source: "configured",
+    selectedVersion: "2.0.0",
+    updatedAt: new Date(1).toISOString(),
+  }, null, 2)}\n`);
+
+  writeFileSync(release, "release");
+  const [exitCode, stdout, stderr] = await Promise.all([
+    sync.exited,
+    new Response(sync.stdout).text(),
+    new Response(sync.stderr).text(),
+  ]);
+  expect({ exitCode, stderr }).toMatchObject({ exitCode: 0 });
+  expect(JSON.parse(stdout.trim())).toMatchObject({ catalogWritten: false });
+  expect(readFileSync(catalogPath, "utf8")).toBe(initial);
+}, 20_000);

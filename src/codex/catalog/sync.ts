@@ -54,7 +54,7 @@ import {
   replaceActiveCodexCatalog,
   replaceCodexModelsCache,
 } from "../internal/catalog-writer";
-import { peekCodexRuntimeProcessCache } from "../runtime";
+import { codexRuntimeStatePath } from "../runtime";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
 
@@ -581,24 +581,33 @@ function retainedCatalogSyncEvidence(
     legacyBackupBytes: isDefaultCatalogPath(catalogPath)
       ? optionalFileBytes(legacyCatalogBackupPath()) : null,
     modelsCacheBytes: optionalFileBytes(activeCodexModelsCachePath()),
+    // The persisted runtime selection is a pre-await filesystem input, not a
+    // process epoch: another PROCESS can move runtime authority by rewriting this
+    // file, and that move is invisible to our in-process memo. Recorded PRESENT or
+    // ABSENT, because its absence is what makes the resolver fall back.
+    runtimeStateBytes: optionalFileBytes(codexRuntimeStatePath()),
   });
 }
 
 /**
- * The process-local half of the same evidence, observed separately.
+ * The bundled-template half of the same evidence, observed separately.
  *
- * These epochs belong in the freshness comparison — a runtime or bundled-template
- * swap mid-gather changes what the candidate means — but they cannot share the
- * filesystem baseline. Gathering RESOLVES the Codex runtime, so a pre-gather
- * snapshot always disagrees with itself afterwards, and every sync refused to write
- * a catalog nobody else had touched. The filesystem bytes are therefore baselined
- * before the await (an outside writer must lose), while these are baselined once our
- * own observation is finished (only an outside writer moving them afterwards counts).
+ * The runtime process memo is deliberately NOT here, and that exclusion took three
+ * attempts to get honest. Gathering resolves the Codex runtime lazily and under its
+ * own cache key, so this path cannot pre-settle that memo: baselining it before the
+ * await always detected our own side effect and refused every write, and baselining
+ * it after the await captured a runtime that ANOTHER process had moved as though it
+ * were ours — a catalog prepared from R1 committing after authority reached R2.
+ *
+ * Runtime authority is covered where it is actually durable instead: the persisted
+ * `codex-runtime.json` bytes sit in the pre-await filesystem evidence, PRESENT or
+ * ABSENT, so a cross-process runtime move is caught. What is left uncovered, and is
+ * written down rather than papered over, is a same-process in-memory runtime swap
+ * that never touches that file — WP11 owns the lock that makes that case decidable.
  */
 function retainedCatalogProcessEvidence(): string {
   return JSON.stringify({
     bundledCatalogCache: bundledCatalogCacheState(),
-    runtimeProcessCache: peekCodexRuntimeProcessCache(),
   });
 }
 
@@ -737,15 +746,20 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
   }
 
   const comboOmissions: ComboCatalogOmission[] = [];
-  const goModels = await gatherRoutedModels(config, { comboOmissions });
-  // Baseline the process-local epochs only now: gathering resolves the Codex
-  // runtime, so a pre-gather snapshot would have flagged our OWN side effect and
-  // refused every write. The filesystem baseline above is untouched, so a catalog,
-  // backup, cache or target that another writer moved during the await still loses.
+  // Settle the bundled template, then baseline, and only then await. Reading it
+  // here makes the memo ours before anyone else can move it, so a bundled swap
+  // during the await is an outside change rather than our own side effect.
+  //
+  // The persisted runtime selection is covered by the filesystem evidence above
+  // rather than by a process epoch; see `retainedCatalogProcessEvidence` for why
+  // the in-memory runtime memo cannot be baselined honestly from this path.
+  loadBundledCodexCatalog();
   const prepared: RetainedCatalogSyncRead = {
     ...preflightRead,
+    evidence: retainedCatalogSyncEvidence(config, preflightRead.catalogPath, preflightRead.catalog),
     processEvidence: retainedCatalogProcessEvidence(),
   };
+  const goModels = await gatherRoutedModels(config, { comboOmissions });
   const committed = withCatalogWriteSerialization(owningCodexHome, permit => {
     const current = revalidateRetainedCatalogSync(config, prepared);
     if (current === null) return null;
