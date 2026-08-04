@@ -42,7 +42,7 @@ other; closing one is a maintainer decision and neither is stale.
 | RI-01 | `feat/ri-01-route-decision-traces` | `e44d234f0` | `b5a8e7c4c` | #1003 | https://github.com/lidge-jun/opencodex/pull/1003 | DRAFT OPEN |
 | RI-02 | `feat/ri-02-request-history-index` | `b5a8e7c4c` (RI-01 head) | pending | pending | pending | in progress |
 | RI-03 | `feat/ri-03-routing-analytics` | `7efb6e842` (RI-02 head) | pending | pending | pending | in progress |
-| RI-04 | `feat/ri-04-policy-profile-core` | `feat/ri-03` head | pending | pending | pending | queued |
+| RI-04 | `feat/ri-04-policy-profile-core` | `2069e724e` (RI-03 head) | pending | pending | pending | in progress |
 | RI-05 | `feat/ri-05-capability-aware-routing` | `feat/ri-04` head | pending | pending | pending | queued |
 | RI-06 | `feat/ri-06-health-aware-routing` | `feat/ri-05` head | pending | pending | pending | queued |
 | RI-07 | `feat/ri-07-quota-aware-routing` | `feat/ri-06` head | pending | pending | pending | queued |
@@ -132,4 +132,29 @@ other; closing one is a maintainer decision and neither is stale.
     unknown-price honesty, filters, truncation flag, API payload
   - Focused regression suites: 144/144 pass across 6 files
   - `bun run privacy:scan`: passed
+- Remaining Low findings: none
+
+### RI-04 - feat/ri-04-policy-profile-core
+
+- Base SHA: `2069e724ec27e176644a11ff55bef307f5ebe3bf` (RI-03 head)
+- Reviewed commit: same as final (author self-review before push)
+- Findings (self-review): 4 fixed pre-push - (1) `serviceTier` evidence type
+  was `Unknownable` (number|boolean) but service tiers are strings - trace
+  type narrowed to `string | "unknown"`; (2) alias validation missed the
+  reserved `combo/` namespace prefix; (3) trace candidates did not carry
+  `score` - added `score` to `TraceCandidateInput`/`buildCandidate`;
+  (4) test expectation for weight normalization used wrong math (unspecified
+  weights keep defaults; sum 4.35 not 4).
+- Final commit: pending (recorded after commit)
+- PR: pending
+- Verification:
+  - `bun x tsc --noEmit`: PASSED (0 errors)
+  - `bun run test tests/routing-profile.test.ts`: 12/12 pass (validation,
+    normalization, revision digest, collisions, config load, id/alias
+    resolution, dry-run eligibility/unknown/tie-break, API list+dry-run,
+    API error codes)
+  - Focused regression suites: 176/176 pass across 8 files
+  - `bun run privacy:scan`: passed
+  - `tests/config.test.ts`: 109/115 pass; the 6 symlink failures reproduce
+    identically on the pristine base (Windows symlink EPERM, environmental)
 - Remaining Low findings: none
