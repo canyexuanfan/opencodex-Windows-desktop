@@ -1901,14 +1901,19 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
   },
   {
-    id: "opencode-zen",
-    label: "opencode zen",
-    baseUrl: "https://opencode.ai/zen/v1",
-    adapter: "openai-chat",
-    authKind: "key",
-    dashboardUrl: "https://opencode.ai/auth",
-    // #1043: without this the proxy forwards image parts to text-only Zen models and
-    // the upstream rejects the whole request with a 400.
+    id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth",
+    // Same opencode.ai/zen/v1 gateway as `opencode-free` (keyed tier): DeepSeek thinking mode
+    // requires the assistant's original reasoning_content to be replayed on tool-call
+    // continuations, or the gateway answers HTTP 400 (issues #950/#994). Mirror the DeepSeek
+    // reasoning + thinking metadata so `opencode-zen/deepseek-v4-flash-free` — and the other
+    // Zen DeepSeek thinking models — never serialize a bare tool-call turn.
+    modelReasoningEfforts: Object.fromEntries(
+      [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekThinkingEffortsFor(id)]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
+    ),
+    preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
     noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
   },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
