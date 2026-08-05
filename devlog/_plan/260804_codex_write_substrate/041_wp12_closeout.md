@@ -1012,6 +1012,47 @@ transition is published and never resolved. WP-R1c publishes the terminal
 result after the job returns, so the row reflects what actually happened —
 which is the first time that claim is true.
 
+### The migration and the terminal update, made explicit
+
+The widening is not a bump-and-forget. `initialize()` rejects any nonzero
+version it does not recognize (`transition-state.ts:282-285`), so a version
+bump alone would refuse every existing database.
+
+| Existing row | Handling |
+|---|---|
+| v1, generation zero | migrate to v2 with `operation = NULL` — nothing was ever scheduled |
+| v1, positive generation | the operation is unknowable from `direction` alone, so preserve it and refuse unattended use as legacy-ambiguous, never guess |
+| new rows | `operation` is required and non-null; accepting null here would just preserve the defect this exists to close |
+
+And the schema rejects impossible pairs — `direction:"apply"` with
+`operation:"restore-openai"` is not a state a well-formed transition can be in,
+so the CHECK says so rather than letting it through to be misread later.
+
+The terminal update is its own CAS, not a blind write. The acquired callback
+returns a receipt — the generation and txId it just committed — and that is
+what `updateCodexHistoryTransition` is given after the job, inside its own
+short N transaction (`transition-state.ts:569`). No second witness is needed:
+the compare-and-swap on generation and txId already prevents a job that was
+overtaken from overwriting the winner.
+
+Every outcome is handled, because a `busy` that is ignored is the "pending
+forever" defect wearing a different name:
+
+| `updateCodexHistoryTransition` result | Action |
+|---|---|
+| `updated` | terminal recorded |
+| `conflict` | a newer transition won; do not overwrite it |
+| `unavailable / busy` | bounded retry, then a durable retry handoff |
+| `unavailable / database or unsafe-path` | surfaced as a failure, not retried into a wall |
+
+And the outcome union does not line up with the state union one-to-one —
+`CodexHistoryJobOutcome` (`history-job.ts:68-74`) and `CodexHistoryState`
+(`convergence-types.ts:36-52`) name different things — so the mapping is a
+table written down in full, not an `as` cast across two unions that happen to
+share some words. A job that `converged` with zero rows is not the same row as
+a job that was `skipped`, and conflating them is how a user reads "done" for a
+job that did nothing.
+
 Two correctness rules follow from the same round:
 
 - the operation is computed ONCE, before acquisition, included in the witness,
