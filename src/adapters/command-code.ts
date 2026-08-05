@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice, toolChoiceAliases } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
@@ -106,8 +106,12 @@ function currentWorkingDirectory(): string | undefined {
 const MAX_WORKSPACE_STRUCTURE_ENTRIES = 64;
 /** Cap how many recent commit subjects the config carries. */
 const MAX_RECENT_COMMITS = 8;
+/** Cap each recent commit entry to keep the request bounded even for long subjects. */
+const MAX_RECENT_COMMIT_LENGTH = 512;
 /** Cap the git status text sent upstream. */
 const MAX_GIT_STATUS_LENGTH = 2048;
+/** Keep collected workspace/git metadata fresh for this long (ms) so repeated requests reuse it. */
+const WORKSPACE_METADATA_TTL_MS = 30_000;
 
 /** Derive a bounded project slug from the working directory for the `x-project-slug` header. */
 function projectSlug(cwd: string): string {
@@ -122,36 +126,48 @@ interface GitWorkspaceInfo {
   recentCommits: string[];
 }
 
-/** Best-effort git metadata for the upstream config contract; every read fails safe. */
-function gitWorkspaceInfo(cwd: string | undefined): GitWorkspaceInfo {
+const workspaceMetadataCache = new Map<string, { collectedAt: number; value: GitWorkspaceInfo }>();
+
+/** Best-effort git metadata for the upstream config contract; every read fails safe and stays off the event loop. */
+async function gitWorkspaceInfo(cwd: string | undefined): Promise<GitWorkspaceInfo> {
   const fallback: GitWorkspaceInfo = { isGitRepo: false, currentBranch: "", mainBranch: "", gitStatus: "", recentCommits: [] };
   if (!cwd) return fallback;
-  const run = (args: string[]): string => {
+  const cached = workspaceMetadataCache.get(cwd);
+  if (cached && Date.now() - cached.collectedAt < WORKSPACE_METADATA_TTL_MS) return cached.value;
+  const run = async (args: string[]): Promise<string> => {
     try {
-      return execFileSync("git", args, { cwd, encoding: "utf8", timeout: 2000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const result = await execFile("git", args, { cwd, encoding: "utf8", timeout: 2000, windowsHide: true });
+      return (result.stdout as unknown as string | null)?.trim() ?? "";
     } catch {
       return "";
     }
   };
-  const root = run(["rev-parse", "--show-toplevel"]);
-  if (!root) return fallback;
-  return {
-    isGitRepo: true,
-    currentBranch: run(["rev-parse", "--abbrev-ref", "HEAD"]) || "HEAD",
-    mainBranch: run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?.replace(/^origin\//, "") || run(["rev-parse", "--abbrev-ref", "HEAD"]) || "",
-    gitStatus: run(["status", "--porcelain"]).slice(0, MAX_GIT_STATUS_LENGTH),
-    recentCommits: run(["log", "--oneline", `-${MAX_RECENT_COMMITS}`]).split("\n").filter(Boolean).slice(0, MAX_RECENT_COMMITS),
-  };
+  const root = await run(["rev-parse", "--show-toplevel"]);
+  const value = root
+    ? {
+        isGitRepo: true,
+        currentBranch: (await run(["rev-parse", "--abbrev-ref", "HEAD"])) || "HEAD",
+        mainBranch: (await run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).replace(/^origin\//, "") || (await run(["rev-parse", "--abbrev-ref", "HEAD"])) || "",
+        gitStatus: (await run(["status", "--porcelain"])).slice(0, MAX_GIT_STATUS_LENGTH),
+        recentCommits: (await run(["log", "--oneline", `-${MAX_RECENT_COMMITS}`]))
+          .split("\n")
+          .filter(Boolean)
+          .slice(0, MAX_RECENT_COMMITS)
+          .map(commit => commit.slice(0, MAX_RECENT_COMMIT_LENGTH)),
+      }
+    : fallback;
+  workspaceMetadataCache.set(cwd, { collectedAt: Date.now(), value });
+  return value;
 }
 
-function commandCodeConfig(cwd: string | undefined): Record<string, unknown> {
+async function commandCodeConfig(cwd: string | undefined): Promise<Record<string, unknown>> {
   let structure: string[] = [];
   if (cwd) {
     try {
-      structure = readdirSync(cwd).filter(name => !name.startsWith(".")).slice(0, MAX_WORKSPACE_STRUCTURE_ENTRIES);
+      structure = (await readdir(cwd)).filter(name => !name.startsWith(".")).slice(0, MAX_WORKSPACE_STRUCTURE_ENTRIES);
     } catch { /* workspace metadata is optional */ }
   }
-  const git = gitWorkspaceInfo(cwd);
+  const git = await gitWorkspaceInfo(cwd);
   return {
     ...(cwd ? { workingDir: cwd } : {}),
     date: new Date().toISOString().slice(0, 10),
@@ -271,7 +287,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
   const executor = (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
   return {
     name: "command-code",
-    buildRequest(parsed: OcxParsedRequest): AdapterRequest {
+    async buildRequest(parsed: OcxParsedRequest): Promise<AdapterRequest> {
       if (!provider.apiKey) throw new Error("Command Code credential missing — run ocx login command-code");
       const cwd = currentWorkingDirectory();
       const tools = visibleTools(parsed);
@@ -284,7 +300,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
       ].join("\n\n"), parsed.modelId);
       const reasoningEffort = supportedCommandCodeEffort(provider, parsed.modelId, parsed.options.reasoning);
       const body = {
-        config: commandCodeConfig(cwd), memory: null, taste: null, skills: null,
+        config: await commandCodeConfig(cwd), memory: null, taste: null, skills: null,
         permissionMode: "standard", mode: "agent",
         params: {
           model: COMMAND_CODE_MODEL_ALIASES[parsed.modelId] ?? parsed.modelId,

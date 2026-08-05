@@ -28,6 +28,10 @@ function parsed(modelId = "deepseek/deepseek-v4-flash"): OcxParsedRequest {
   };
 }
 
+async function builtRequest(...args: Parameters<ReturnType<typeof createCommandCodeAdapter>["buildRequest"]>) {
+  return createCommandCodeAdapter(provider).buildRequest(...args);
+}
+
 afterEach(() => resetCommandCodeReasoningEffortsForTest());
 
 describe("Command Code provider", () => {
@@ -81,7 +85,7 @@ describe("Command Code provider", () => {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const href = String(input);
       calls.push(href);
-      if (href.includes("whoami")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (href.includes("whoami")) return new Response(JSON.stringify({ ok: true, user: { id: "u-1", userName: "tester" } }), { status: 200 });
       throw new Error(`unexpected fetch: ${href}`);
     }) as typeof globalThis.fetch;
     try {
@@ -91,7 +95,7 @@ describe("Command Code provider", () => {
         onManualCodeInput: async () => "sk-pasted-key",
         signal: controller.signal,
       }, { importLocal: "off" });
-      expect(credentials).toMatchObject({ access: "sk-pasted-key", source: "oauth" });
+      expect(credentials).toMatchObject({ access: "sk-pasted-key", source: "oauth", accountId: "u-1" });
       expect(calls.some(href => href.includes("whoami"))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
@@ -108,10 +112,8 @@ describe("Command Code provider", () => {
     expect(shouldImportLocalCommandCodeAuth({ importLocal: "off" })).toBe(false);
   });
 
-  test("builds the proprietary generate request with an officially supported effort and bearer auth", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest(parsed());
-    expect(request).not.toBeInstanceOf(Promise);
-    const built = request as Exclude<typeof request, Promise<unknown>>;
+  test("builds the proprietary generate request with an officially supported effort and bearer auth", async () => {
+    const built = await builtRequest(parsed());
     const body = JSON.parse(built.body);
     expect(built.url).toBe("https://api.commandcode.ai/alpha/generate");
     expect(built.headers.Authorization).toBe("Bearer secret-command-key");
@@ -120,16 +122,14 @@ describe("Command Code provider", () => {
     expect(built.body).not.toContain("secret-command-key");
   });
 
-  test("passes every canonical Command Code id through unchanged", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest(parsed("xai/grok-4.5"));
-    expect(request).not.toBeInstanceOf(Promise);
-    const built = request as Exclude<typeof request, Promise<unknown>>;
+  test("passes every canonical Command Code id through unchanged", async () => {
+    const built = await builtRequest(parsed("xai/grok-4.5"));
     expect(JSON.parse(built.body).params.model).toBe("xai/grok-4.5");
   });
 
-  test("carries tool-result images in a follow-up user message instead of dropping them", () => {
+  test("carries tool-result images in a follow-up user message instead of dropping them", async () => {
     const image = "data:image/png;base64,AAAA";
-    const request = createCommandCodeAdapter(provider).buildRequest({
+    const built = await builtRequest({
       ...parsed(),
       context: {
         ...parsed().context,
@@ -143,8 +143,6 @@ describe("Command Code provider", () => {
         }],
       },
     });
-    expect(request).not.toBeInstanceOf(Promise);
-    const built = request as Exclude<typeof request, Promise<unknown>>;
     const body = JSON.parse(built.body);
     expect(body.params.messages).toEqual([
       { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1", toolName: "view_image", output: { type: "text", value: "screenshot:[image]" } }] },
@@ -152,10 +150,8 @@ describe("Command Code provider", () => {
     ]);
   });
 
-  test("keeps the generate config to bounded workspace and git metadata", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest(parsed());
-    expect(request).not.toBeInstanceOf(Promise);
-    const built = request as Exclude<typeof request, Promise<unknown>>;
+  test("keeps the generate config to bounded workspace and git metadata", async () => {
+    const built = await builtRequest(parsed());
     const body = JSON.parse(built.body);
     expect(body.config).toHaveProperty("isGitRepo");
     expect(body.config).toHaveProperty("currentBranch");
@@ -163,24 +159,25 @@ describe("Command Code provider", () => {
     expect(body.config).toHaveProperty("gitStatus");
     expect(body.config).toHaveProperty("recentCommits");
     expect(Array.isArray(body.config.recentCommits)).toBe(true);
+    expect(body.config.recentCommits.length).toBeLessThanOrEqual(8);
+    expect(body.config.recentCommits.every((entry: string) => entry.length <= 512)).toBe(true);
+    expect(body.config.gitStatus.length).toBeLessThanOrEqual(2048);
     expect(body.config.structure).toBeInstanceOf(Array);
     expect(typeof body.config.workingDir).toBe("string");
     expect(built.headers["x-project-slug"]?.length ?? 0).toBeLessThanOrEqual(64);
   });
 
-  test("does not advertise an unverified effort for models absent from the official table", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest(parsed("moonshotai/Kimi-K3"));
-    expect(request).not.toBeInstanceOf(Promise);
-    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params).not.toHaveProperty("reasoning_effort");
+  test("does not advertise an unverified effort for models absent from the official table", async () => {
+    const built = await builtRequest(parsed("moonshotai/Kimi-K3"));
+    expect(JSON.parse(built.body).params).not.toHaveProperty("reasoning_effort");
   });
 
-  test("filters tool declarations when tool_choice disables tools", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest({ ...parsed(), options: { toolChoice: "none" } });
-    expect(request).not.toBeInstanceOf(Promise);
-    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.tools).toEqual([]);
+  test("filters tool declarations when tool_choice disables tools", async () => {
+    const built = await builtRequest({ ...parsed(), options: { toolChoice: "none" } });
+    expect(JSON.parse(built.body).params.tools).toEqual([]);
   });
 
-  test("matches a forced namespaced tool choice by dot alias", () => {
+  test("matches a forced namespaced tool choice by dot alias", async () => {
     const namespacedParsed = {
       ...parsed(),
       context: {
@@ -189,9 +186,8 @@ describe("Command Code provider", () => {
       },
       options: { toolChoice: { name: "functions.exec_command" } },
     };
-    const request = createCommandCodeAdapter(provider).buildRequest(namespacedParsed);
-    expect(request).not.toBeInstanceOf(Promise);
-    const tools = JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.tools;
+    const built = await builtRequest(namespacedParsed);
+    const tools = JSON.parse(built.body).params.tools;
     expect(tools).toEqual([{ name: "functions__exec_command", description: "exec", input_schema: { type: "object" } }]);
   });
 
@@ -208,19 +204,16 @@ describe("Command Code provider", () => {
         : new Response("{}", { status: 200 });
     }) as typeof globalThis.fetch;
     const adapter = createCommandCodeAdapter({ ...provider, fetch } as OcxProviderConfig);
-    const request = adapter.buildRequest({ ...parsed(), options: { reasoning: "max" } });
-    expect(request).not.toBeInstanceOf(Promise);
-    const response = await adapter.fetchResponse!(request as Exclude<typeof request, Promise<unknown>>);
+    const request = await adapter.buildRequest({ ...parsed(), options: { reasoning: "max" } });
+    const response = await adapter.fetchResponse!(request);
     expect(response.ok).toBe(true);
     expect(commandCodeReasoningEfforts("deepseek/deepseek-v4-flash")).toEqual(["high"]);
     const generated = requests.filter(request => request.url.endsWith("/alpha/generate"));
     expect(JSON.parse(generated[1]!.body!).params).not.toHaveProperty("reasoning_effort");
   });
 
-  test("omits effort when the caller did not choose one", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest({ ...parsed("claude-haiku-4-5"), options: { maxOutputTokens: 100 } });
-    expect(request).not.toBeInstanceOf(Promise);
-    const built = request as Exclude<typeof request, Promise<unknown>>;
+  test("omits effort when the caller did not choose one", async () => {
+    const built = await builtRequest({ ...parsed("claude-haiku-4-5"), options: { maxOutputTokens: 100 } });
     expect(JSON.parse(built.body).params).not.toHaveProperty("reasoning_effort");
   });
 
@@ -263,9 +256,8 @@ describe("Command Code provider", () => {
     ]);
   });
 
-  test("sends parsed.stream as the wire stream field", () => {
-    const request = createCommandCodeAdapter(provider).buildRequest({ ...parsed(), stream: false });
-    expect(request).not.toBeInstanceOf(Promise);
-    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.stream).toBe(false);
+  test("sends parsed.stream as the wire stream field", async () => {
+    const built = await builtRequest({ ...parsed(), stream: false });
+    expect(JSON.parse(built.body).params.stream).toBe(false);
   });
 });
