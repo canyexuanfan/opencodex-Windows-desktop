@@ -289,6 +289,7 @@ re-deriving the path by hand.
 | A5 | Unknown ownership refuses on the OWNERSHIP authority | Generation warmed first so the run cannot be refused earlier for another reason; assert the exact authority |
 | A6 | External provider is its own veto | With ownership proven `owned`, the refusal authority is `external-provider` |
 | A6b | The external branch stops destroying the journal | A pre-seeded journal survives BYTE-IDENTICAL through the REAL `injectCodexConfig` external path, and the call still returns `success: true` with its preservation message |
+| A6c | External provider wins even when ownership is UNKNOWN | With service evidence unavailable, the refusal is still `external-provider` — the message the user can act on — and every artifact is preserved. A6 cannot catch this, because it proves ownership `owned` first |
 | A7 | The lock has a live production caller | `rg` reachability PLUS a test that observes the lock being taken on the real `injectCodexConfig` path |
 | A8 | The edge is exclusive across processes | A barrier held inside the acquired lock; the loser reports `busy` and its PROCESS-UNIQUE candidate bytes are absent from the final file, so the winner is provable rather than assumed |
 | A9 | The whole native section is inside, history is outside | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
@@ -462,7 +463,11 @@ launchctl print gui/<uid>/<no-such-label>  -> exit 113  "Could not find service 
 launchctl print gui/999999/<label>         -> exit 112  "Could not find domain for user"
 ```
 
-113 is "definitely not registered"; 112 and everything else is "could not ask".
+113 is "definitely not registered in a domain that answered". 112 is "that
+domain does not exist", which is refined further below — it is not simply
+"could not ask", and the table in "Cannot ask is not one state" supersedes any
+earlier reading of this paragraph.
+
 `runLaunchctl` currently discards the numeric status and keeps only a boolean
 (`src/service.ts:551-565`), so the probe needs a variant that preserves it —
 classifying on stderr text alone would rest on output Apple does not treat as a
@@ -584,21 +589,21 @@ So "backend impossible" never overrides a residue on disk:
 | Observation | Verdict | Why |
 |---|---|---|
 | unit file or plist present (or `lstat` fails for any reason other than ENOENT) | at least `present` | an interrupted install leaves it, and it activates on the next login or boot |
-| `systemctl` not invocable AND no unit file | `absent` | no unit to load, and nothing here can load one |
-| `/run/systemd/system` missing AND no unit file | `absent` | systemd is not the init here and left nothing behind |
+| `/run/systemd/system` missing AND no unit file | `absent` | systemd is not the init on this host and nothing is staged |
+| `systemctl` missing while systemd IS the init, no unit file | `unknown` | the manager may hold a definition whose file was deleted; we merely cannot ask |
+| not Linux at all, no unit file | `absent` | this backend has no installer here |
 | `systemctl --user show` exits 0 with `not-found` | `absent` | the manager answered |
 | `systemctl --user show` exits nonzero (bus unreachable) | `unknown` | a user manager may hold a unit we cannot see |
 | `launchctl print` exits 113 | `absent` | measured on macOS 27.0: "Could not find service ... in domain" |
-| `launchctl print` exits 112 AND no plist | `absent` | the GUI domain itself does not exist, and nothing is staged to load |
-| `launchctl print` exits 112 AND a plist exists | `unknown` | something is staged and we cannot see whether it is loaded |
-| `/bin/launchctl` cannot be spawned AND no plist | `absent` | not macOS, or no launchd to hold a job |
+| BOTH `gui/<uid>` and `user/<uid>` answered 113, or are 112, AND no plist | `absent` | every domain that could hold it either answered "no such service" or does not exist |
+| either domain exits 112 AND a plist exists | `unknown` | something is staged and we cannot see whether it is loaded |
+| `/bin/launchctl` cannot be spawned on macOS, no plist | `unknown` | launchd is certainly running; we simply cannot query it |
+| not macOS, no plist | `absent` | launchd does not exist here |
 | not this platform's backend, no artifact | `absent` | that backend has no installer here |
 
-The `112 + no plist` row is the one that decides whether a fresh headless Mac
-works at all. The earlier draft said 112 was always `unknown` while also
-claiming headless machines were saved; both could not be true. 112 means the GUI
-domain does not exist — there is no domain that could be holding a job — so with
-nothing staged on disk that is absence, not silence.
+The domain rows decide whether a fresh headless Mac works at all. An earlier
+draft said 112 was always `unknown` while also claiming headless machines were
+saved; both could not be true.
 
 That reading was challenged on the grounds that a job loaded from a
 since-deleted plist could survive, and it was settled by measurement rather than
@@ -619,6 +624,30 @@ within a domain that answered. So the orphan-job case (a job still loaded after
 its plist was removed) lands in the exit-0 quadrant, where the manager reports
 it; it cannot hide behind a 112, because a domain that cannot be reached is not
 running anything on our behalf.
+
+**One domain is not enough**, and this took a third round to surface.
+`gui/<uid>` and `user/<uid>` are independent domains with separate service sets:
+
+```text
+launchctl print gui/<uid>/com.opencodex.proxy   -> 0    (our live service)
+launchctl print user/<uid>/com.opencodex.proxy  -> 113  (same label, absent there)
+launchctl print user/<uid>                      -> 0    (that domain answers)
+```
+
+A GUI 112 therefore says nothing about a job loaded into the user domain. The
+installer ships an Aqua LaunchAgent, so a user-domain job is atypical — but this
+probe claims that no COMPETING installation exists, not that our own usual path
+is clear. Both domains are queried.
+
+### "I could not ask" is never "it is not there"
+
+The rule that kept catching me across three rounds: a manager definition can
+outlive the file it was loaded from, so a missing artifact plus an unanswerable
+manager is not absence. Only two things prove absence without an answer — the
+platform has no such backend at all, or the init system that would hold it is
+demonstrably not running here. A `launchctl` that will not spawn on macOS, or a
+missing `systemctl` while `/run/systemd/system` exists, is silence. Silence is
+`unknown`.
 
 `existsSync` is not sufficient for the artifact check. A dangling symlink or an
 unreadable path answers "no" to it while still being residue, so the probe uses
