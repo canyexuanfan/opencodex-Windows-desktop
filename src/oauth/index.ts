@@ -864,6 +864,12 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   if (preserveExistingLiveModels && typeof existing?.liveModels === "boolean" && !isLegacyCommandCodeStaticCatalog(existing)) {
     next.liveModels = existing.liveModels;
   }
+  // The Command Code protocol-version pin is an operator compatibility control. A re-login,
+  // add-account, or reauth rebuilds the row from the preset, which has no version; carry the
+  // existing pin so authentication changes do not silently revert the documented control.
+  if (existing?.commandCodeVersion !== undefined) {
+    next.commandCodeVersion = existing.commandCodeVersion;
+  }
   if (existing && getProviderRegistryEntry(provider)?.allowKeyAuthOverride === true) {
     // Shared sanitizeApiKeyValue trim / no-CRLF checks from api-key pool writes.
     let storedApiKey = sanitizeApiKeyValue(existing.apiKey);
@@ -1120,7 +1126,11 @@ export function submitManualLoginCode(provider: string, input: string): { ok: tr
   // protected. Early posts (flow not yet waiting, no expectedState) are stashed and
   // re-validated by the callback loop.
   const parsed = parseCallbackInput(trimmed);
-  if (!parsed.code) return { ok: false, error: "no authorization code found in input" };
+  // Command Code's manual fallback accepts a pasted JSON callback payload
+  // (`{ apiKey, state, ... }`) which has no `code` param. Let it through the
+  // shared gate so the provider-specific parser can validate it.
+  const isCommandCodeJson = provider === "command-code" && trimmed.startsWith("{") && !parsed.code;
+  if (!parsed.code && !isCommandCodeJson) return { ok: false, error: "no authorization code found in input" };
   if (parsed.kind !== "raw" && slot.expectedState !== undefined) {
     if (parsed.state === undefined) return { ok: false, error: "redirect URL is missing the state parameter" };
     if (parsed.state !== slot.expectedState) return { ok: false, error: "state mismatch — paste the redirect URL from THIS login attempt" };

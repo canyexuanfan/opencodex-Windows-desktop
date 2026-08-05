@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir } from "node:fs/promises";
+import { opendir } from "node:fs/promises";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice, toolChoiceAliases } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
@@ -11,6 +11,7 @@ import { configuredReasoningEfforts } from "../reasoning-effort";
 import { commandCodeReasoningEfforts, refreshCommandCodeReasoningEfforts } from "../providers/command-code-efforts";
 import { identifyRoutedModel } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
+import { parseDataUrl } from "./image";
 
 // Retain the short ids emitted by the first local integration. New requests use the live catalog's
 // provider-native IDs directly; this map is compatibility-only and is not a model fallback list.
@@ -24,6 +25,23 @@ const COMMAND_CODE_MODEL_ALIASES: Readonly<Record<string, string>> = {
 function toolResultText(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content;
   return content.map(part => (part.type === "text" ? part.text : "[image]")).join("");
+}
+
+/** Best-effort media type from a remote https URL extension, e.g. image/png. */
+function mediaTypeFromUrl(url: string): string | undefined {
+  const ext = url.split(/[?#]/)[0]!.match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+  if (!ext) return undefined;
+  const known: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp",
+  };
+  return known[ext];
+}
+
+/** Wire image part: `{ type, image, mediaType? }` per the /alpha/generate ModelMessage schema. */
+function wireImagePart(imageUrl: string): Record<string, unknown> {
+  const parsed = parseDataUrl(imageUrl);
+  const mediaType = parsed?.mediaType ?? mediaTypeFromUrl(imageUrl);
+  return { type: "image", image: imageUrl, ...(mediaType ? { mediaType } : {}) };
 }
 
 function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
@@ -51,7 +69,7 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
       // message using the same image encoding as the user branch so the bytes reach the model.
       const images = typeof message.content === "string" ? [] : message.content.filter(part => part.type === "image");
       if (images.length > 0) {
-        out.push({ role: "user", content: images.map(part => ({ type: "image", image: (part as { imageUrl: string }).imageUrl })) });
+        out.push({ role: "user", content: images.map(part => wireImagePart((part as { imageUrl: string }).imageUrl)) });
       }
       continue;
     }
@@ -59,7 +77,7 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
     if (typeof message.content === "string") content.push({ type: "text", text: message.content });
     else for (const part of message.content) {
       if (part.type === "text") content.push({ type: "text", text: part.text });
-      else content.push({ type: "image", image: part.imageUrl });
+      else content.push(wireImagePart(part.imageUrl));
     }
     out.push({ role: "user", content });
   }
@@ -170,7 +188,18 @@ async function commandCodeConfig(cwd: string | undefined): Promise<Record<string
   let structure: string[] = [];
   if (cwd) {
     try {
-      structure = (await readdir(cwd)).filter(name => !name.startsWith(".")).slice(0, MAX_WORKSPACE_STRUCTURE_ENTRIES);
+      // Iterate and stop after the cap instead of materializing every entry: a directory with a
+      // huge number of names must not stall the request path for 64 metadata rows.
+      const dir = await opendir(cwd);
+      try {
+        for await (const entry of dir) {
+          if (entry.name.startsWith(".")) continue;
+          structure.push(entry.name);
+          if (structure.length >= MAX_WORKSPACE_STRUCTURE_ENTRIES) break;
+        }
+      } finally {
+        await dir.close().catch(() => undefined);
+      }
     } catch { /* workspace metadata is optional */ }
   }
   const git = await gitWorkspaceInfo(cwd);

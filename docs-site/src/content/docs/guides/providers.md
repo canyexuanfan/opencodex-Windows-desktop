@@ -216,7 +216,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 69 built-in presets: 58 key-based, seven OAuth, three local, and one default
+opencodex ships 70 built-in presets: 58 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
