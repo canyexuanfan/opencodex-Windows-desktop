@@ -1,0 +1,103 @@
+# 030 — Layer 3: native-profile harness hang and JSON race (#1061)
+
+## The defect, two halves
+
+**Unbounded teardown.** `tests/native-profile-crash-boundaries.test.ts:194-198`:
+
+```ts
+} finally {
+  writeFileSync(p.release, "recover");
+  writeFileSync(p.stop, "stop");
+  expect(await restart.exited).toBe(0);
+}
+```
+
+No deadline, no kill fallback. The child can stall in `server.stop(true)`
+(`tests/helpers/native-profile-startup-child.ts:84`), and the run hangs until CI
+kills the job — the 30-minute hang the issue reports.
+
+**Existence-not-content race.** `waitFor()` at `:80-84` proves only that the file
+exists; `:182-183` then parses it immediately. The child writes that JSON
+non-atomically (`tests/helpers/native-profile-startup-child.ts:71-81`), so a
+partially written file yields `Unexpected EOF`.
+
+## Change map — reuse, do not invent
+
+### `tests/helpers/native-profile-startup-child.ts` — MODIFY
+
+The repository already has an atomic writer with an explicit no-half-written
+guarantee (`src/config.ts:195-217`, documented at `:102-105`):
+
+```ts
+// BEFORE
+import { loadConfig } from "../../src/config";
+...
+writeFileSync(settledPath, JSON.stringify(...));
+
+// AFTER
+import { atomicWriteFile, loadConfig } from "../../src/config";
+...
+atomicWriteFile(settledPath, JSON.stringify(...));
+```
+
+Both write sites (`:72-80`, success and failure) change. Marker files that are
+only checked for existence stay as they are.
+
+### `tests/native-profile-crash-boundaries.test.ts` — MODIFY
+
+Add a parse-aware wait beside the existing `waitFor`, and use it where a parse
+follows:
+
+```ts
+async function waitForJson<T>(path: string, timeout = 10_000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) {
+      try { return JSON.parse(readFileSync(path, "utf8")) as T; }
+      catch (error) { lastError = error; }
+    }
+    await Bun.sleep(10);
+  }
+  throw new Error(`timed out waiting for parseable JSON in ${path}`, { cause: lastError });
+}
+```
+
+Bound the teardown following the pattern the sibling test already uses
+(`tests/native-profile-startup.test.ts:259-269`), with the shared
+`INTERNAL_DEADLINE_MS` from `tests/helpers/test-budget.ts:49-57`:
+
+```ts
+const exit = await Promise.race([child.exited, Bun.sleep(timeoutMs).then(() => null)]);
+if (exit === null) { child.kill(); await child.exited; throw new Error("startup child did not stop"); }
+```
+
+Both halves are fixed with mechanisms already in the tree. Neither is new
+machinery.
+
+## Red-green, and where it is honest about its limits
+
+**The JSON race is deterministically testable.** Write partial JSON (`"{"`), start
+`waitForJson`, then replace it atomically; assert it returns the parsed object
+instead of throwing `Unexpected EOF`. That test fails against the old
+existence-only `waitFor` by construction.
+
+**The hang is not deterministically testable without injection.** Proving the
+timeout branch fires needs a child that deliberately stalls — a test-only env flag
+parking before `server.stop(true)`, a short deadline, and an assertion that the
+child was killed and the error raised. That is the honest way to satisfy
+C-ACTIVATION-GROUNDING-01 here; without it, the bounded wait is present but never
+shown firing, and "it no longer hangs" is unfalsifiable in a passing run.
+
+If the injection proves too invasive for a test helper, the fallback is to state
+plainly in the PR that the timeout path is unexercised — not to claim the fix is
+verified because the suite is green.
+
+## Accept criteria
+
+- Teardown bounded with a kill fallback; no unbounded `await child.exited`.
+- The settled-file read proves parseable JSON, not existence.
+- The child publishes that file atomically.
+- A deterministic test for the parse race; an injected-stall test for the timeout,
+  or an explicit statement that the branch is unexercised.
+- `bun test tests/native-profile-crash-boundaries.test.ts` green on macOS.
