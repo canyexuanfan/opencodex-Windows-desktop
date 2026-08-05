@@ -250,7 +250,7 @@ export function routingProfileIssues(
       issues.push({ path: ["require"], message: "require must be an object" });
     } else {
       const require = body.require as Record<string, unknown>;
-  if (require.minContextWindow !== undefined
+      if (require.minContextWindow !== undefined
         && (typeof require.minContextWindow !== "number"
           || !Number.isInteger(require.minContextWindow)
           || require.minContextWindow < 1)) {

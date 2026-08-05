@@ -6,6 +6,8 @@ import { updateAccountQuota } from "../src/codex/quota";
 import { setCachedProviderAccountQuotaForTests, clearAccountQuotaCache } from "../src/providers/quota";
 import { quotaEvidenceForCandidate, quotaScore } from "../src/routing/quota";
 import { evaluatePolicyProfile, QUOTA_UNKNOWN_PENALTY_SCORE } from "../src/routing/evaluator";
+import { routeModel } from "../src/router";
+import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
 import type { OcxConfig } from "../src/types";
 
 let testDir = "";
@@ -19,6 +21,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearAccountQuotaCache();
+  closeRequestHistoryIndex();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
@@ -141,6 +144,55 @@ describe("quota-aware scoring (RI-07)", () => {
       { provider: "a", model: "m1", capability: { contextWindow: 200000 }, quota: { known: true, headroom: 0.7 } },
     ]);
     expect(enough.candidates[0]!.eligible).toBe(true);
+  });
+
+  test("minQuotaHeadroom unknown is governed by the quota policy, not capability", () => {
+    const strict = config({
+      routingProfiles: {
+        g: {
+          candidates: [{ provider: "a", model: "m1" }],
+          require: { minQuotaHeadroom: 0.5 },
+          unknownEvidence: { capability: "exclude", health: "penalize", quota: "exclude", cost: "penalize" },
+        },
+      },
+    });
+    // Unknown quota at execution: the quota "exclude" policy applies and is
+    // labeled `unknown-quota` - never the capability `unknown-capability` code.
+    const excluded = evaluatePolicyProfile(strict, "g", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+    ]);
+    expect(excluded.candidates[0]!.eligible).toBe(false);
+    expect(excluded.candidates[0]!.exclusions.some(exclusion => exclusion.code === "unknown-quota")).toBe(true);
+    expect(excluded.candidates[0]!.exclusions.some(exclusion => exclusion.code === "unknown-capability")).toBe(false);
+
+    // Default "penalize": unknown headroom stays eligible with the quota floor.
+    const penalizing = config({
+      routingProfiles: {
+        g: {
+          candidates: [{ provider: "a", model: "m1" }],
+          require: { minQuotaHeadroom: 0.5 },
+        },
+      },
+    });
+    const penalized = evaluatePolicyProfile(penalizing, "g", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+    ]);
+    expect(penalized.candidates[0]!.eligible).toBe(true);
+    expect(penalized.candidates[0]!.score!.components.quota).toBe(QUOTA_UNKNOWN_PENALTY_SCORE);
+  });
+
+  test("execution path passes the active codex account into quota evidence", async () => {
+    updateAccountQuota("pool-a", 30, 1_800_000_000_000, 20, 1_900_000_000_000);
+    const cfg = config({
+      codexAccounts: [{ id: "pool-a", email: "pool-a@example.test", isMain: false }],
+      activeCodexAccountId: "pool-a",
+      routingProfiles: {
+        quotaRoute: { candidates: [{ provider: "openai", model: "gpt-5.6" }] },
+      },
+    });
+    const route = routeModel(cfg, "policy/quotaRoute");
+    expect(route.routeDecision!.candidates[0]!.quota?.known).toBe(true);
+    expect(route.routeDecision!.candidates[0]!.quota?.headroom).toBeCloseTo(0.7, 2);
   });
 
   test("exact account selectors and pool strategies remain authoritative", () => {

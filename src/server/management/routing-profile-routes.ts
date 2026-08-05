@@ -10,6 +10,7 @@ import { listRoutingProfileIds, getRoutingProfile, policyPublicModelId } from ".
 import { evaluatePolicyProfile, type PolicyCandidateEvidence, type PolicyRequestEvidence } from "../../routing/evaluator";
 import { candidateCapabilityEvidence } from "../../routing/capability";
 import { policyCandidateHealthEvidence } from "../../routing/health";
+import { quotaEvidenceForCandidate } from "../../routing/quota";
 import { isPlainRecord } from "./shared";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import { jsonResponse } from "../auth-cors";
@@ -112,6 +113,10 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
           model: candidate.model,
           capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
           health: policyCandidateHealthEvidence(config, candidate),
+          quota: quotaEvidenceForCandidate({
+            provider: candidate.provider,
+            model: candidate.model,
+          }),
         }))
       : parseCandidateEvidence(body.candidates);
     if (candidateEvidence === null) {
