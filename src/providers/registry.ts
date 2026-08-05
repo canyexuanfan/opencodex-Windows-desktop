@@ -412,7 +412,7 @@ const TENCENT_CODING_PLAN_MODELS = ["tc-code-latest", "glm-5", "kimi-k2.5", "min
 // is documented as grounds for suspension — see the `note` on both Plan entries.
 // Report a break by opening an issue tagging the owner; the three things that rot first are the
 // static catalogs (liveModels:false cannot self-heal), the base URLs, and those Plan terms.
-// Full evidence ledger: devlog/_plan/260801_pr611_volcengine_evidence/000_evidence_ledger.md
+// Full evidence ledger: devlog/_fin/260801_pr611_volcengine_evidence/000_evidence_ledger.md
 const VOLCENGINE_ARK_MODELS = [
   "doubao-seed-2-1-pro-260628",
   "doubao-seed-2-1-turbo-260628",

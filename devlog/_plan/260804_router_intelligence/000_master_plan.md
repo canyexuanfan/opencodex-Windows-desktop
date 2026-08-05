@@ -86,7 +86,7 @@ Related in-flight work (checked 2026-08-04; no blocking overlap):
 | PR #998 `codex/260803-integration-switches` | Write-substrate changes | Watch for conflict with `request-log.ts`; rebase boundary noted in ledger. |
 | `devlog/_plan/260803_transport_attribution` | #914/#919 policy unit | Now embodied by #922/#966; we consume, not implement. |
 | `devlog/_plan/260803_cooldown_recovery_probe` | #915 recovery probe (Not started) | RI-06 reads cooldown state only; never touches probe leases/generations. |
-| `devlog/_plan/260730_kiro_usage_cumulative_cache` | Usage persist layer (`usage/log.ts`) | Our JSONL extension is additive (`routeDecision` field); we do not touch the `normalizeUsageValue` whitelist or `contextTotalTokens`. |
+| `devlog/_fin/260730_kiro_usage_cumulative_cache` | Usage persist layer (`usage/log.ts`) | Our JSONL extension is additive (`routeDecision` field); we do not touch the `normalizeUsageValue` whitelist or `contextTotalTokens`. |
 | `devlog/_plan/260804_stacked_pr_ci` | Empty placeholder created 2026-08-04 | Referenced; no concrete overlap. |
 
 ## 2. Reuse-versus-new-work table

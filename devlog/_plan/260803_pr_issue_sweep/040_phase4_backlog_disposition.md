@@ -119,7 +119,7 @@ prove correct (`tests/server-live.test.ts:642-675`).
    rather than ordinary account selection. Notably
    `clearCodexAccountCooldown()` must **not** be used — it clears every scope
    and lacks the credential fence.
-7. #893's comment points at `devlog/_plan/260803_sparse_snapshot_repair/` for
+7. #893's comment points at `devlog/_fin/260803_sparse_snapshot_repair/` for
    the same reason. A deferral that names a unit is a schedule; a deferral that
    names nothing is an issue nobody reopens.
 
