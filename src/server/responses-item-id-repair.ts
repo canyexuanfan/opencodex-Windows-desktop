@@ -222,3 +222,25 @@ export function hasResponsesItemIdRepair(config: ResponsesItemIdRepairConfig | u
     || (config?.message?.length ?? 0) > 0
     || (config?.reasoning?.length ?? 0) > 0;
 }
+
+/**
+ * Client-facing id normalization for a WHOLE bounded-JSON Responses object.
+ *
+ * The bounded-JSON policy (#875) answers a streaming client by synthesizing SSE
+ * from a completed JSON body, and reframes the same body into events for WS
+ * turns. Neither path goes through the SSE relay, so neither picks up the SSE
+ * item-id rewrite — a provider that needs id repair would get it on a streaming
+ * response and silently lose it the moment the reliability policy switched the
+ * upstream to bounded JSON. This applies the same rewrite to the object so all
+ * three paths agree. Raw recorded state is untouched: recording happens before
+ * any normalization.
+ */
+export function repairResponsesJsonItemIds(
+  response: Record<string, unknown>,
+  config: ResponsesItemIdRepairConfig,
+  budget?: TranslatorBudget,
+): Record<string, unknown> {
+  const state = createRepairState(config, budget);
+  const rewritten = rewriteResponseSnapshot(state, response);
+  return rewritten.changed ? rewritten.response : response;
+}
