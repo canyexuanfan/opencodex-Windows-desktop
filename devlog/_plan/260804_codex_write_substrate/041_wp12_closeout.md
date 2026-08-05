@@ -997,6 +997,33 @@ API forbids it) and not "widen the row" (nothing needs widening — the operatio
 is derivable from the inputs already present). It is recorded as the schedule
 the transition actually launched.
 
+That last claim was wrong on both counts, and a fifth round found both.
+
+The operation is derivable at publish time, but derivable is not persistable:
+the schema has `history_direction` and no operation column
+(`transition-state.ts:63`), and `BeginCodexTransitionNext` has no operation
+field (`convergence-types.ts:308`). Supplying it means widening the row, the
+type, and the API — which this phase now owns.
+
+And the second is worse, because it is a defect TODAY, not only in this phase's
+scope: `updateCodexHistoryTransition` has **no production caller**, so a
+completed or skipped history job leaves the row permanently `pending`. The
+transition is published and never resolved. WP-R1c publishes the terminal
+result after the job returns, so the row reflects what actually happened —
+which is the first time that claim is true.
+
+Two correctness rules follow from the same round:
+
+- the operation is computed ONCE, before acquisition, included in the witness,
+  and passed verbatim to both the publication and `runCodexHistoryJob`.
+  Re-deriving it after the awaited acquisition would let a mutable
+  `config.syncResumeHistory` diverge between what was scheduled and what ran;
+- the acceptance criterion reads the COMMITTED row and asserts the stored
+  operation equals the single value passed to the job, with table cases over
+  `skip`, `apply-opencodex` and `migrate-openai` — and a test that swapping the
+  dispatched operation fails, so a row that claims one thing while running
+  another cannot pass.
+
 The failure mode a test must not satisfy: asserting `native_generation` and
 `direction` while ignoring `history_status`, `nextRetryAt` and the schedule,
 which would pass on a row that claims nothing real.
