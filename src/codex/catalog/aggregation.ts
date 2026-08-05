@@ -281,6 +281,8 @@ export function resetOpenAiApiCatalogWarningStateForTests(): void {
 export const slugAliasCollisionWarnings = new Set<string>();
 
 export const comboMasqueradeCollisionWarnings = new Set<string>();
+
+export const accountSelectorShadowCollisionWarnings = new Set<string>();
 let lastWarningReconciledGeneration = 0;
 
 export function reconcileCatalogWarningMemos(generation: number): number {
@@ -288,11 +290,13 @@ export function reconcileCatalogWarningMemos(generation: number): number {
   const removed = openAiApiCollisionWarnings.size
     + comboCatalogWarningSignatures.size
     + slugAliasCollisionWarnings.size
-    + comboMasqueradeCollisionWarnings.size;
+    + comboMasqueradeCollisionWarnings.size
+    + accountSelectorShadowCollisionWarnings.size;
   openAiApiCollisionWarnings.clear();
   comboCatalogWarningSignatures.clear();
   slugAliasCollisionWarnings.clear();
   comboMasqueradeCollisionWarnings.clear();
+  accountSelectorShadowCollisionWarnings.clear();
   lastWarningReconciledGeneration = generation;
   return removed;
 }
@@ -302,6 +306,15 @@ export function warnComboMasqueradeCollisionOnce(slug: string): void {
   comboMasqueradeCollisionWarnings.add(slug);
   console.warn(
     `[opencodex] combo alias collision on "${safeCatalogWarningLabel(slug)}": the combo wins and the shadowed provider model is omitted from the catalog.`,
+  );
+}
+
+/** Warn once when a live provider row loses its reserved slug to an account selector. */
+export function warnAccountSelectorShadowedProviderOnce(slug: string): void {
+  if (accountSelectorShadowCollisionWarnings.has(slug)) return;
+  accountSelectorShadowCollisionWarnings.add(slug);
+  console.warn(
+    `[opencodex] account selector collision on "${safeCatalogWarningLabel(slug)}": the account-bound native model wins and the shadowed provider model is omitted from the catalog. Rename the provider or account selector.`,
   );
 }
 

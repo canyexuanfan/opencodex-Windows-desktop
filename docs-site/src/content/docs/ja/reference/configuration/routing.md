@@ -37,9 +37,11 @@ selector の後には bare native OpenAI-family id だけを指定できます�
 
 明示的な選択は Pool assignment strategy と通常の thread affinity を迂回します。対応する account が
 存在しない、一時停止中、cooldown 中、利用不能、または再認証が必要な場合、request は別の account
-へ切り替えず fail closed し、active Pool account も変更しません。bare native model id は通常の
-Pool / Direct routing を維持します。namespace map 自体は model picker row を作成しません。
-selector の検証、衝突規則、privacy guidance は
+へ切り替えず fail closed し、active Pool account も変更しません。適格な selector が 1 つ以上
+設定されると、Codex catalog は bare native picker row を非表示にし、selector ごとに個別の
+`<selector>/<native-openai-model>` row を表示します。bare native model id は明示的に無効化されない
+限り通常の Pool / Direct routing を維持し、raw `/v1/models` にも残ります。対応する保存済み account
+が存在しない selector は表示されません。selector の検証、衝突規則、privacy guidance は
 [プロバイダーの構成](/reference/configuration/providers/)を参照してください。
 
 ## コンボ (`config.combos`)

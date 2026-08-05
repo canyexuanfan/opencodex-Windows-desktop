@@ -848,6 +848,62 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
   });
 });
 
+test("a custom row inherits provider reasoning metadata from the provider-derived row it replaces (#962)", async () => {
+  clearModelCache("ollama");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => { throw new Error("fetch should not be called"); }) as typeof fetch;
+  try {
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "ollama",
+      providers: {
+        ollama: {
+          baseUrl: "http://localhost:11434/v1",
+          adapter: "openai-chat",
+          authMode: "key",
+          liveModels: false,
+          models: ["qwen-coder-3b"],
+          selectedModels: ["qwen-coder-3b"],
+          noReasoningModels: ["qwen-coder-3b"],
+          modelReasoningEfforts: { "qwen-coder-3b": [] },
+        },
+      },
+      customModels: [
+        {
+          id: "cm-962",
+          provider: "ollama",
+          modelId: "qwen-coder-3b",
+          displayName: "Qwen Coder 3B (local)",
+          contextWindow: 32768,
+          inputModalities: ["text"],
+          addedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    // Explicit custom fields stay verbatim; provider capability metadata is inherited from the
+    // replaced provider-derived row (noReasoningModels -> empty reasoning ladder, openai-chat
+    // adapter -> parallel tool calls).
+    const custom = models.find(m => m.provider === "ollama" && m.id === "qwen-coder-3b");
+    expect(custom?.displayName).toBe("Qwen Coder 3B (local)");
+    expect(custom?.contextWindow).toBe(32768);
+    expect(custom?.inputModalities).toEqual(["text"]);
+    expect(custom?.reasoningEfforts).toEqual([]);
+    expect(custom?.parallelToolCalls).toBe(true);
+
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const row = entries.find(e => e.slug === "ollama/qwen-coder-3b");
+    expect(row?.display_name).toBe("Qwen Coder 3B (local)");
+    // The catalog must expose no reasoning levels and no default reasoning level for this model;
+    // the generic low..ultra ladder and the medium default must not be synthesized.
+    expect(row?.supported_reasoning_levels).toEqual([]);
+    expect(row?.default_reasoning_level).toBeUndefined();
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelCache("ollama");
+  }
+});
+
 function openAiApiCatalogConfig(overrides: Record<string, unknown> = {}): OcxConfig {
   return {
     port: 10100,
@@ -993,7 +1049,7 @@ describe("Codex catalog routed normalization", () => {
     expect(anthropic?.supports_parallel_tool_calls).toBe(false);
   });
 
-  test("routed entries fill auto compact when context already exists on the template", () => {
+  test("routed entries fall to the conservative triple instead of inheriting template context (#992)", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -1004,9 +1060,11 @@ describe("Codex catalog routed normalization", () => {
     ]);
     const routed = entries.find(e => e.slug === "local/qwen3-coder");
 
-    expect(routed?.context_window).toBe(272_000);
-    expect(routed?.max_context_window).toBe(272_000);
-    expect(routed?.auto_compact_token_limit).toBe(244_800);
+    // A routed model is not the native template: without known metadata the
+    // entry falls back to the conservative 128k triple.
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.auto_compact_token_limit).toBe(115_200);
   });
 
   test("native gpt-5.4 uses its 1M context window override", () => {
@@ -1140,7 +1198,7 @@ describe("Codex catalog routed normalization", () => {
     expect(sol?.priority).toBe(1);
   });
 
-  test("routed entries still cap stale native max context to their active context window", () => {
+  test("routed entries drop stale native max context with the template window (#992)", () => {
     const template = {
       ...nativeTemplate(),
       context_window: 272_000,
@@ -1151,9 +1209,9 @@ describe("Codex catalog routed normalization", () => {
     ]);
     const routed = entries.find(e => e.slug === "local/qwen3-coder");
 
-    expect(routed?.context_window).toBe(272_000);
-    expect(routed?.max_context_window).toBe(272_000);
-    expect(routed?.auto_compact_token_limit).toBe(244_800);
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.auto_compact_token_limit).toBe(115_200);
   });
 
   test("buildCatalogEntries preserves native bare GPT template fields", () => {
@@ -2243,6 +2301,35 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.input_modalities).toEqual(["text"]);
     expect(routed?.supports_reasoning_summaries).toBe(false);
     expect(routed?.default_reasoning_summary).toBe("none");
+  });
+
+  test("a routed model never inherits the native template's context window (#992)", () => {
+    // /models returns only the id: the routed entry must fall to the
+    // conservative 128k triple, never the native template's larger window.
+    const entries = buildCatalogEntries({ context_window: 372_000 }, [], [
+      { provider: "relay", id: "relay-model" },
+    ]);
+    const routed = entries.find(e => e.slug === "relay/relay-model");
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.auto_compact_token_limit).toBe(115_200);
+  });
+
+  test("a provider context cap never invents routed capacity (#992)", () => {
+    const entries = buildCatalogEntries({ context_window: 372_000 }, [], [
+      { provider: "relay", id: "relay-model", contextCap: 950_000 },
+    ]);
+    const routed = entries.find(e => e.slug === "relay/relay-model");
+    expect(routed?.context_window).toBe(128_000);
+  });
+
+  test("known routed metadata still restores the exact context window (#992)", () => {
+    const entries = buildCatalogEntries({ context_window: 372_000 }, [], [
+      { provider: "relay", id: "relay-model", contextWindow: 256_000 },
+    ]);
+    const routed = entries.find(e => e.slug === "relay/relay-model");
+    expect(routed?.context_window).toBe(256_000);
+    expect(routed?.auto_compact_token_limit).toBe(Math.floor(256_000 * 0.9));
   });
 
   test("model-specific reasoning-summary opt-out reaches the routed catalog (#323)", async () => {

@@ -160,7 +160,18 @@ export interface ProviderRegistryEntry {
    * reframes as Responses events. Use only for upstreams whose streaming response
    * can omit or indefinitely delay the terminal event.
    */
-  modelWebsocketUpstreamStreaming?: Record<string, boolean>;
+  modelResponsesUpstreamStreaming?: Record<string, boolean>;
+  /**
+   * Registry-only client-facing item-id repair policy (#938), filled onto the
+   * runtime provider only when the user has no explicit policy (derive.ts);
+   * never seeded into saved config.
+   */
+  responsesItemIdRepair?: {
+    message?: string[];
+    reasoning?: string[];
+    repairMissingTerminalIds?: boolean;
+    repairInvalidIds?: boolean;
+  };
   /**
    * Responses-API resource path for providers whose route is not `/v1/responses`.
    * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
@@ -352,14 +363,14 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
 // Evidence: https://help.aliyun.com/en/model-studio/token-plan-personal-overview
 //           https://help.aliyun.com/en/model-studio/token-plan-quickstart
 const ALIBABA_TOKEN_PLAN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
   "glm-5.2", "deepseek-v4-pro",
 ];
 const ALIBABA_TOKEN_PLAN_QWEN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
 ];
 const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
-  "qwen3.8-max-preview": ["text", "image"],
+  "qwen3.8-max": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-flash": ["text", "image"],
@@ -372,14 +383,14 @@ const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
 // Evidence: https://www.alibabacloud.com/help/en/model-studio/token-plan-overview
 //           https://qwencloud.com/pricing/token-plan (qwen3.8 metadata)
 const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
   "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2",
   "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
   "glm-5.2", "glm-5.1", "glm-5",
   "MiniMax-M2.5",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
-  "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
+  "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
 ];
 
 // 260722 Tencent Cloud Coding Plan. The plan's model set is explicitly dynamic; these are the
@@ -450,7 +461,7 @@ const VOLCENGINE_PLAN_TEXT_ONLY_MODELS = [
   "doubao-seed-2.0-pro",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
-  "qwen3.8-max-preview": ["text", "image"],
+  "qwen3.8-max": ["text", "image"],
   "qwen3.7-max": ["text", "image"],
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-plus": ["text", "image"],
@@ -519,6 +530,72 @@ const NVIDIA_NIM_KIMI_THINKING_MODELS = [
 const NVIDIA_NIM_KIMI_MODELS = [
   ...NVIDIA_NIM_KIMI_THINKING_MODELS,
   "moonshotai/kimi-k2-instruct", "moonshotai/kimi-k2-instruct-0905",
+];
+/**
+ * 260804 issue #956: NIM publishes no input-modality metadata on `/v1/models`, so the
+ * registry is the only source of truth for which models can see images.
+ *
+ * Two lists, both verified per-model against NVIDIA documentation on 2026-08-04
+ * (build.nvidia.com model pages and docs.api.nvidia.com/nim/reference/*). Evidence and
+ * the per-id audit: devlog/_plan/260804_stack7_service_vision/011_nim_id_audit.md.
+ *
+ * Read `noVisionModels` carefully — it lists models that CANNOT see images, which is
+ * what routes them through the proxy's vision sidecar (src/vision/index.ts) and makes the
+ * catalog advertise image input for them. Membership is wrong in BOTH directions:
+ *   - a text-only model missing from it keeps issue #956 (images blocked or rejected);
+ *   - a vision model wrongly IN it gets its image silently replaced by another model's
+ *     text description — no error, worse answers, extra cost.
+ *
+ * A new NIM id must be classified DELIBERATELY against its NVIDIA page, never assumed
+ * from its name: `google/gemma-4-31b-it` carries no vision marker yet accepts images,
+ * `-vl` also appears on embedding/reranking models, and `google/codegemma-7b` is
+ * text-only while `google/codegemma-1.1-7b` has no current page at all. An unclassified
+ * id is intentionally left alone rather than defaulted, because NIM serves non-chat
+ * endpoints (embeddings, rerankers, guards, OCR) that reach the same code path.
+ */
+const NVIDIA_NIM_VISION_MODELS = [
+  "meta/llama-3.2-11b-vision-instruct", "meta/llama-3.2-90b-vision-instruct",
+  "nvidia/llama-3.1-nemotron-nano-vl-8b-v1", "nvidia/nemotron-nano-12b-v2-vl",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "nvidia/cosmos3-nano-reasoner",
+  "nvidia/ising-calibration-1.5-31b", "nvidia/ising-calibration-1-35b-a3b",
+  "google/gemma-4-31b-it", "google/diffusiongemma-26b-a4b-it",
+  "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
+  "stepfun-ai/step-3.7-flash", "thinkingmachines/inkling",
+  "mistralai/mistral-medium-3.5-128b",
+];
+/**
+ * The catalog advertises image input only for `noVisionModels` members, so a natively
+ * vision-capable model would otherwise be published as text-only and the Codex app would
+ * block attachments before the native path ever runs.
+ */
+const NVIDIA_NIM_VISION_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntries(
+  NVIDIA_NIM_VISION_MODELS.map(id => [id, ["text", "image"]]),
+);
+/**
+ * Text-only NIM chat models — 26 ids, each carrying an explicit `Input Modalities: Text`
+ * (or equivalent) on its NVIDIA page. PR #964 proposed ~64; six of those are natively
+ * image-capable and live in NVIDIA_NIM_VISION_MODELS above, and 32 more had no current
+ * NVIDIA page and were dropped rather than assumed.
+ *
+ * kimi-k2-thinking and kimi-k2-instruct are text-only while k2.5/k2.6 are not — vision
+ * and reasoning are independent axes, so all four stay in NVIDIA_NIM_KIMI_MODELS for
+ * reasoning suppression regardless of which list they appear in here.
+ */
+const NVIDIA_NIM_NO_VISION_MODELS = [
+  "deepseek-ai/deepseek-v4-flash", "deepseek-ai/deepseek-v4-pro",
+  "google/codegemma-7b",
+  "meta/llama-3.1-70b-instruct", "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-1b-instruct", "meta/llama-3.2-3b-instruct",
+  "meta/llama-3.3-70b-instruct", "meta/llama2-70b",
+  "mistralai/mistral-7b-instruct-v0.3", "mistralai/mistral-nemotron",
+  "moonshotai/kimi-k2-thinking", "moonshotai/kimi-k2-instruct",
+  "nvidia/llama-3.1-nemotron-nano-8b-v1", "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  "nvidia/llama-3.3-nemotron-super-49b-v1", "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+  "nvidia/nemotron-3-nano-30b-a3b", "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-mini-4b-instruct",
+  "nvidia/nvidia-nemotron-nano-9b-v2",
+  "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+  "poolside/laguna-xs-2.1", "z-ai/glm-5.2",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
@@ -1077,7 +1154,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // DeepSeek's Codex Responses stream can deliver output without closing on the
     // terminal event. Keep Codex on WebSocket, but use the provider's bounded JSON
     // response upstream so the bridge can synthesize a complete WS event sequence.
-    modelWebsocketUpstreamStreaming: { "deepseek-v4-flash": false },
+    modelResponsesUpstreamStreaming: { "deepseek-v4-flash": false },
+    // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
+    // clients stuck on an uncommitted turn (#938). Client-facing only — raw
+    // continuation snapshots keep the upstream ids.
+    responsesItemIdRepair: { repairInvalidIds: true, repairMissingTerminalIds: true },
     // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
     // this the passthrough adapter falls back to its legacy `/v1/responses`
     // construction and the wire above can never route.
@@ -1235,6 +1316,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Free pricing, but an API key is still required (free key from build.nvidia.com).
     freeTier: true,
     parallelToolCalls: false,
+    // 260804 issue #956: NIM exposes no input modalities, so vision capability is
+    // classified here. Both lists are verified per-model; unlisted ids stay unclassified
+    // by design (see the comment on NVIDIA_NIM_VISION_MODELS).
+    noVisionModels: NVIDIA_NIM_NO_VISION_MODELS,
+    modelInputModalities: NVIDIA_NIM_VISION_INPUT_MODALITIES,
     noReasoningModels: NVIDIA_NIM_KIMI_MODELS,
     modelReasoningEfforts: Object.fromEntries(NVIDIA_NIM_KIMI_MODELS.map(id => [id, []])),
     preserveReasoningContentModels: NVIDIA_NIM_KIMI_THINKING_MODELS,
@@ -1421,13 +1507,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://bailian.console.aliyun.com/cn-beijing?tab=plan",
-    defaultModel: "qwen3.8-max-preview",
+    defaultModel: "qwen3.8-max",
     models: ALIBABA_TOKEN_PLAN_MODELS,
     liveModels: false,
     note: "Token Plan Personal Edition · China (Beijing)",
     modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
-      "qwen3.8-max-preview": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
+      "qwen3.8-max": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
       "qwen3.6-flash": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
     },
     modelReasoningEfforts: {
@@ -1437,7 +1523,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEffortMap: { "deepseek-v4-pro": DEEPSEEK_THINKING_REASONING_MAP },
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS,
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
     noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
   },
   {
@@ -1456,7 +1542,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     metadataModelIdNormalize: "case-insensitive",
    modelInputModalities: ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
-      "qwen3.8-max-preview": 983_616,
+      "qwen3.8-max": 983_616,
       "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000, "qwen3.6-plus": 1_000_000, "qwen3.6-flash": 1_000_000,
       "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-v3.2": 131_072,
       "kimi-k2.7-code": 262_144, "kimi-k2.6": 262_144, "kimi-k2.5": 262_144,
@@ -1465,7 +1551,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
-      "qwen3.8-max-preview": ["low", "high", "xhigh"],
+      "qwen3.8-max": ["low", "high", "xhigh"],
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": DEEPSEEK_THINKING_EFFORTS,
       "deepseek-v4-flash": DEEPSEEK_THINKING_EFFORTS,
@@ -1475,10 +1561,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "deepseek-v4-flash": DEEPSEEK_THINKING_REASONING_MAP,
     },
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS,
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max-preview", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
     noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
-    modelDefaultReasoningEfforts: { "qwen3.8-max-preview": "xhigh" },
+    modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
   },
   // NEEDS_HUMAN 2026-07-10: kept for config compatibility, but this is a dashboard URL,
   // no /models endpoint is documented, and tools are silently ignored upstream per docs.parallel.ai.
@@ -1744,15 +1830,15 @@ export function providerModelWireDefault(
   return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }
 
-/** Resolve a registry-only upstream-streaming compatibility hint for WS turns. */
-export function providerModelWebsocketUpstreamStreaming(
+/** Resolve a registry-only upstream-streaming compatibility hint for Responses turns. */
+export function providerModelResponsesUpstreamStreaming(
   id: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
   modelId: string,
 ): boolean | undefined {
   const entry = getProviderRegistryEntry(id);
-  if (!entry?.modelWebsocketUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
-  return entry.modelWebsocketUpstreamStreaming[modelId.trim().toLowerCase()];
+  if (!entry?.modelResponsesUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  return entry.modelResponsesUpstreamStreaming[modelId.trim().toLowerCase()];
 }
 
 /**

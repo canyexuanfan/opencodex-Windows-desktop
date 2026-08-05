@@ -12,12 +12,12 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
-import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
+import { isVertexTruncatedTurn, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { compileGoogleWireBody } from "./google-wire-compiler";
 import { identifyRoutedModel } from "./identity";
@@ -232,6 +232,28 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
   }];
 }
 
+/**
+ * Client tool_choice enforcement on the wire. The catalog nudge states the same contract in
+ * prose, but without functionCallingConfig the model is free to ignore it. "auto" stays absent
+ * so the common case is byte-identical. The allowedTools variant already filters the
+ * declarations in toolsToGeminiFormat; only its "required" half needs a wire mode.
+ */
+function toolChoiceToGeminiToolConfig(parsed: OcxParsedRequest): Record<string, unknown> | undefined {
+  const choice = parsed.options.toolChoice;
+  if (!choice || choice === "auto") return undefined;
+  if (choice === "none") return { functionCallingConfig: { mode: "NONE" } };
+  if (choice === "required") return { functionCallingConfig: { mode: "ANY" } };
+  if (isAllowedToolChoice(choice)) {
+    return choice.mode === "required" ? { functionCallingConfig: { mode: "ANY" } } : undefined;
+  }
+  return {
+    functionCallingConfig: {
+      mode: "ANY",
+      allowedFunctionNames: [resolveToolChoiceWireName(parsed.context.tools, choice.name)],
+    },
+  };
+}
+
 function usageFromGemini(usage: Record<string, number> | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
   return {
@@ -307,6 +329,10 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       const body: Record<string, unknown> = { contents };
       if (systemInstruction) body.systemInstruction = systemInstruction;
       if (tools) body.tools = tools;
+      // Only meaningful with declarations on the wire: mode ANY with an empty
+      // catalog is a guaranteed upstream 400.
+      const toolConfig = tools ? toolChoiceToGeminiToolConfig(parsed) : undefined;
+      if (toolConfig) body.toolConfig = toolConfig;
 
       const generationConfig: Record<string, unknown> = {};
       if (parsed.options.maxOutputTokens) generationConfig.maxOutputTokens = parsed.options.maxOutputTokens;
@@ -358,6 +384,12 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const draftRequest: Record<string, unknown> = { ...body, sessionId };
         // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
         if (/claude/i.test(wireModelId)) {
+          // VALIDATED would defeat a client's tool_choice "none": honor it by dropping the
+          // declarations instead, the wire shape of a tool-less Claude turn.
+          if (parsed.options.toolChoice === "none") {
+            delete draftRequest.tools;
+            delete draftRequest.toolConfig;
+          }
           const existing = (draftRequest.toolConfig ?? {}) as Record<string, unknown>;
           const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
           draftRequest.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
@@ -596,7 +628,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
         if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-          && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
+          && isVertexTruncatedTurn(lastFinishReason, toolCallsStarted)) {
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }
@@ -752,7 +784,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       // Fail-closed truncation, same as the stream path: a non-stream turn cut off mid tool call
       // (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces an error instead of a silent done.
       if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-        && toolCallsStarted > 0 && isVertexTruncationReason(candidates?.[0]?.finishReason)) {
+        && isVertexTruncatedTurn(candidates?.[0]?.finishReason, toolCallsStarted)) {
         return finish([{ type: "error", message: vertexTruncationErrorMessage(candidates?.[0]?.finishReason) }]);
       }
 

@@ -300,7 +300,9 @@ export function restartCommand(
   const startArgs = pinPort
     ? [launcher, "start", "--port", String(Math.trunc(port))]
     : [launcher, "start"];
-  const svcArgs = serviceInstalled ? [launcher, ...(serviceArgs ?? ["service", "install"])] : startArgs;
+  // Default to the non-registering refresh: an update path reaching here has an already
+  // installed service, and `install` would demand elevation on Windows scheduler backends.
+  const svcArgs = serviceInstalled ? [launcher, ...(serviceArgs ?? ["service", "repair"])] : startArgs;
   if (installer === "npm") {
     const bin = nodeBin();
     const args = svcArgs;
@@ -648,6 +650,8 @@ export interface RestartIo {
   serviceHealthTimeoutMs?: number;
   sleepMs?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Test seam — defaults to process.platform so the Windows-only branch is reachable off Windows. */
+  platform?: NodeJS.Platform;
   /** Service-mode install/reinstall command (defaults to spawnSync via runLoggedCommand). */
   runService?: (
     job: UpdateJobState,
@@ -782,11 +786,17 @@ async function restartAfterUpdate(
     const preServiceAllow = reclaimKillAllowlist();
     const freed = await waitFn(port, hostname, reclaimOptsFor(preServiceAllow));
     let skipServiceInstall = false;
-    // Windows GUI update worker sets OCX_SERVICE=1 and is never elevated.
-    // `schtasks /create` will UAC-fail and can race the subsequent direct start.
-    // Keep systemd/launchd reinstall on non-Windows supervisors.
-    if (process.platform === "win32" && process.env.OCX_SERVICE === "1") {
-      updateJob(job, {}, "Skipping service reinstall from the non-elevated update worker; falling back to a direct proxy start.");
+    // This skip existed because the refresh ran `ocx service install`, whose Windows
+    // scheduler path always reaches `schtasks /create` — elevation the GUI update worker
+    // (OCX_SERVICE=1) never has. `service repair` rewrites the wrapper assets and
+    // restarts the EXISTING task with no `/create`, so the reason no longer applies and
+    // skipping would leave the dashboard-triggered update — the most common Windows
+    // path — with a stale service it could have refreshed.
+    //
+    // Only a caller that still passes install argv keeps the old behavior.
+    const refreshRegisters = (svcArgs ?? []).includes("install");
+    if ((io.platform ?? process.platform) === "win32" && process.env.OCX_SERVICE === "1" && refreshRegisters) {
+      updateJob(job, {}, "Skipping service re-registration from the non-elevated update worker; falling back to a direct proxy start.");
       skipServiceInstall = true;
     }
     if (!freed && !skipServiceInstall) {
@@ -813,24 +823,17 @@ async function restartAfterUpdate(
         const result = run(job, cmd.bin, cmd.args);
         serviceOk = result.status === 0;
         if (!serviceOk) {
-          // On Windows, `schtasks /create` requires an elevated token. The update worker
-          // inherits the (non-admin) proxy's privileges, so a service-managed install
-          // updated from the GUI or a normal terminal fails here with access denied.
-          // Falling back to a direct proxy start keeps the update from leaving the proxy
-          // stopped; the stale service manager can be refreshed later with an admin
-          // `ocx service install`.
-          //
-          // That advice is Windows-only, and on macOS/Linux it now actively misleads:
-          // `ocx service install` gained a non-zero exit for a service that registers
-          // but does not serve, so this branch fires there for a reason elevation
-          // cannot fix. Point at the command that prints the real reason instead.
+          // The refresh that just failed was `ocx service repair` (serviceReinstallArgs),
+          // which needs no elevation because it never calls `schtasks /create`. Advising
+          // `install` here would send the user to re-registration — a UAC prompt on
+          // Windows and a possible WinSW-to-scheduler backend switch — to fix a service
+          // that is already registered. Point at the same command that failed so its
+          // output explains why, on every platform.
           updateJob(
             job,
             {},
-            `Service reinstall failed (exit ${result.status ?? "?"}); falling back to a direct proxy start.`
-            + (process.platform === "win32"
-              ? " Run 'ocx service install' as administrator to refresh the background service manager."
-              : " Run 'ocx service install' by hand to see the reason, then 'ocx service status'."),
+            `Service refresh failed (exit ${result.status ?? "?"}); falling back to a direct proxy start.`
+            + " Run 'ocx service repair' by hand to see the reason, then 'ocx service status'.",
           );
         }
       } finally {

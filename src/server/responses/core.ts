@@ -16,7 +16,8 @@ import {
   previousResponseReplayFailure,
   rememberResponseState,
 } from "../../responses/state";
-import { routeModel, type RouteResult } from "../../router";
+import { comboRouteDecisionTrace, NoEligiblePolicyCandidateError, routeModel, type RouteResult } from "../../router";
+import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -87,7 +88,12 @@ import {
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
-import { fetchWithResetRetry, fetchWithTransientRetry, applyUpstreamRecoveryInit } from "../../lib/upstream-retry";
+import {
+  applyUpstreamRecoveryInit,
+  fetchWithResetRetry,
+  fetchWithTransientRetry,
+  prepareSameTarget429Wait,
+} from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
@@ -97,8 +103,14 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
-import { providerModelWebsocketUpstreamStreaming, type InboundWire } from "../../providers/registry";
-import { hasKeyPoolFailover, rotateProviderTransportOn429 } from "../../providers/key-failover";
+import { providerModelResponsesUpstreamStreaming, type InboundWire } from "../../providers/registry";
+import type { AdapterRequest } from "../../adapters/base";
+import {
+  hasKeyPoolFailover,
+  rateLimitRetryDelayMs,
+  rateLimitRetryPolicyFor,
+  rotateProviderTransportOn429,
+} from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
@@ -152,6 +164,7 @@ import { cancelBodyOnAbort } from "../../lib/abort";
 import {
   createResponsesItemIdPayloadRewrite,
   hasResponsesItemIdRepair,
+  repairResponsesJsonItemIds,
 } from "../responses-item-id-repair";
 import {
   createImageGenCallRestoreRewrite,
@@ -163,7 +176,20 @@ import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/cat
 
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
 import { hasUnreadableEncryptedAgentTask, looksLikeBackendCiphertext, sanitizeEncryptedContentInPlace } from "./encrypted-payload";
-import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./fetch-helpers";
+import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
+import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
+import { recordUpstreamHostFailure, resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import {
+  createResponsesSnapshotBlockRewrite,
+  hasResponsesSnapshotRepair,
+  repairResponsesSnapshotJson,
+} from "../responses-snapshot-repair";
+import {
+  composeSseBlockRewrites,
+  payloadRewriteAsBlockRewrite,
+  relaySseWithBlockRewrite,
+} from "../sse-payload-rewrite";
+import { responsesJsonToSseBody } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -425,7 +451,12 @@ async function retryCodexPoolOnAlternateAccount(
       connectMs,
       stream,
       providerFetch(route.provider),
+      // Credential-bearing forward send: never follow a redirect into a
+      // dead-host rejection after the credential was seen (#914).
+      route.provider.authMode === "forward",
     );
+    // A real HTTP response proves the host was reached (#914).
+    resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
     return {
       kind: "retried",
       authCtx: retryAuthCtx,
@@ -572,6 +603,10 @@ export interface HandleResponsesOptions {
 
 
 
+/**
+ * Build the 499 JSON error the proxy returns when the client disconnects before the
+ * response completes (`client_cancelled`).
+ */
 export function clientCancelledResponse(): Response {
   return formatErrorResponse(499, "client_cancelled", "Client cancelled request");
 }
@@ -828,9 +863,13 @@ async function applyFinalRouteRequestNormalization(args: {
     }
     parsed.modelId = route.modelId;
   }
-  const websocketUpstreamStreaming = inboundTransport === "websocket"
-    ? providerModelWebsocketUpstreamStreaming(route.providerName, route.provider, route.modelId)
-    : undefined;
+  // Transport-neutral reliability policy (#875): applies to any Responses
+  // upstream whose final adapter is openai-responses, not only WS turns.
+  const responsesUpstreamStreaming = providerModelResponsesUpstreamStreaming(
+    route.providerName,
+    route.provider,
+    route.modelId,
+  );
 
   // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
   // this request will actually use (#404).
@@ -838,8 +877,9 @@ async function applyFinalRouteRequestNormalization(args: {
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
+  logCtx.routeDecision = route.routeDecision;
 
-  if (websocketUpstreamStreaming === false) {
+  if (responsesUpstreamStreaming === false && route.provider.adapter === "openai-responses") {
     parsed.stream = false;
     if (parsed._rawBody && typeof parsed._rawBody === "object") {
       (parsed._rawBody as Record<string, unknown>).stream = false;
@@ -867,6 +907,7 @@ async function applyFinalRouteRequestNormalization(args: {
   {
     const guidance = await multiAgentGuidanceText(parsed, {
       multiAgentGuidanceEnabled: config.multiAgentGuidanceEnabled,
+      codexAccountNamespace: route.codexAccountNamespace,
       injectionModel: config.injectionModel,
       injectionEffort: config.injectionEffort,
       subagentModels: config.subagentModels,
@@ -949,6 +990,7 @@ export async function handleComboResponses(
       model: requestedModel,
       provider: "combo",
       comboId,
+      routeDecision: logCtx.routeDecision,
       attempts: logCtx.attempts,
       activeAttempt: undefined,
       activeAttemptStartedAt: undefined,
@@ -983,6 +1025,9 @@ export async function handleComboResponses(
   if (!pick) {
     return comboUnavailableResponse(`No available targets for combo: ${comboId}`);
   }
+  // One immutable combo selection trace, before any child dispatch; child
+  // adoption below must never replace it with a concrete child route trace.
+  logCtx.routeDecision = comboRouteDecisionTrace(config, comboId, pick, requestedModel);
 
   let lastFailure: Response | null = null;
   while (pick) {
@@ -1086,6 +1131,7 @@ export async function handleComboResponses(
         model: requestedModel,
         provider: "combo",
         comboId,
+        routeDecision: logCtx.routeDecision,
         attempts: logCtx.attempts,
         activeAttempt: attempt,
         activeAttemptStartedAt: started,
@@ -1220,6 +1266,10 @@ export function applyServiceTierGate(
   options.serviceTier = undefined;
 }
 
+/**
+ * Route one `/v1/responses` request through the adapter pipeline: recovery loop, passthrough
+ * wire, image/web-search bridges, and the terminal-guard continuation.
+ */
 export async function handleResponses(
   req: Request,
   config: OcxConfig,
@@ -1237,6 +1287,10 @@ export async function handleResponses(
   }
 }
 
+/**
+ * Inner implementation of `handleResponses`; owns the pre-stream recovery loop and the
+ * per-request same-target 429 retry budgets.
+ */
 async function handleResponsesInner(
   req: Request,
   config: OcxConfig,
@@ -1347,10 +1401,16 @@ async function handleResponsesInner(
 
   let route: RouteResult;
   try {
-    route = routeModel(config, parsed.modelId);
+    route = routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
+    logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
       return comboUnavailableResponse(err.message);
+    }
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      // Persist the evaluation trace (per-candidate exclusions + the
+      // no-eligible reason) so failed policy requests stay auditable.
+      logCtx.routeDecision = err.trace;
     }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
@@ -1419,10 +1479,14 @@ async function handleResponsesInner(
 
     if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
       try {
-        route = routeModel(config, fallback.to);
+        route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
+        logCtx.routeDecision = route.routeDecision;
       } catch (err) {
         if (err instanceof NoAvailableComboTargetsError) {
           return comboUnavailableResponse(err.message);
+        }
+        if (err instanceof NoEligiblePolicyCandidateError) {
+          logCtx.routeDecision = err.trace;
         }
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
@@ -1452,6 +1516,11 @@ async function handleResponsesInner(
     );
   }
 
+  // Captured before normalization: whether the CLIENT asked for SSE. The
+  // transport-neutral upstream-streaming policy below may force a bounded JSON
+  // upstream for reliability (#875); the answer must then be reframed to SSE
+  // for streaming clients.
+  const clientRequestedStream = parsed.stream;
   await applyFinalRouteRequestNormalization({
     parsed,
     route,
@@ -1710,7 +1779,16 @@ async function handleResponsesInner(
     const transportFailureResponse = (err: unknown): Response => {
       upstream.abort();
       if (options.abortSignal?.aborted) return clientCancelledResponse();
-      const outcome = err instanceof Error && err.name === "TimeoutError" ? "timeout" : "connect_error";
+      const outcome = classifyTransportFailureKind(err);
+      // Host-level evidence stands regardless of pool membership: a direct
+      // forward send has no pool accounting, but the reachability failure is
+      // still host-wide, not account evidence (#914 review).
+      if (outcome === "connect_neutral") {
+        recordUpstreamHostFailure(
+          upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)),
+          { code: transportErrorCode(err) },
+        );
+      }
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
           threadId: req.headers.get("x-codex-parent-thread-id"),
@@ -1737,7 +1815,14 @@ async function handleResponsesInner(
             method: request.method,
             headers: request.headers,
             body: request.body,
-          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+            route.provider.authMode === "forward")
+            // Every real attempt response — including an intermediate 5xx the
+            // retry wrapper replaces — proves the host was reached (#914 review).
+            .then(res => {
+              resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
+              return res;
+            });
         },
         { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
       );
@@ -1745,6 +1830,64 @@ async function handleResponsesInner(
       return transportFailureResponse(err);
     } finally {
       request.releaseBodyObservation?.();
+    }
+
+    // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
+    // passthrough wire. This branch returns before the recovery loop below, so Responses-shaped
+    // key-auth gateways (e.g. the built-in DeepSeek preset) would otherwise surface 429
+    // immediately with no same-key replay. Pre-stream only — nothing has been relayed yet, so
+    // the replay is lossless (same invariant as the recovery loop). Forward/OAuth providers
+    // keep their pool logic below (rateLimitRetryPolicyFor returns null for them).
+    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+    let rateLimitRetries = 0;
+    while (
+      upstreamResponse.status === 429
+      && rateLimitPolicy !== null
+      && rateLimitRetries < rateLimitPolicy.attempts
+    ) {
+      rateLimitRetries += 1;
+      // Release unread body + deliberate wait via the shared same-target helper.
+      const retryAfterHeader = upstreamResponse.headers.get("retry-after");
+      try {
+        for await (const _ of prepareSameTarget429Wait({
+          body: upstreamResponse.body,
+          signal: options.abortSignal,
+          delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+        })) {
+          // pre-stream: no stall watchdog to feed
+        }
+      } catch {
+        upstream.abort();
+        return clientCancelledResponse();
+      }
+      // Client cancellation wins over any stale timer edge: re-check before dispatching the
+      // replay so the wire never starts work for a request the client already abandoned.
+      if (options.abortSignal?.aborted || upstream.signal.aborted) {
+        upstream.abort();
+        return clientCancelledResponse();
+      }
+      try {
+        upstreamResponse = await fetchWithTransientRetry(
+          recovery => {
+            // The first send of every replay is itself a rate-limit retry; inner transient-5xx
+            // recoveries keep their own label (recovery is provided for those).
+            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery ?? "rate-limit-429");
+            return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+              route.provider.authMode === "forward")
+              .then(res => {
+                resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url)));
+                return res;
+              });
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        );
+      } catch (err) {
+        return transportFailureResponse(err);
+      }
     }
 
     if (usesCodexForwardPoolAuth(authCtx, route.provider) && !authCtx.fixedAccount) {
@@ -1863,6 +2006,17 @@ async function handleResponsesInner(
     // Codex renders that as the opaque "Unknown error" (#452). Combo attempts
     // keep their typed failure envelope. Non-empty bodies are relayed verbatim
     // (headers included) so pool-retry Activation B/D and client diagnostics stay intact.
+    // Manual-redirect policy (#914): a 3xx is relayed as-is (Location preserved
+    // through sanitizePassthroughHeaders) so a redirect to a dead host can never
+    // masquerade as a pre-connection failure after the credential was seen.
+    // The numeric outcome above already classified it neutral — no streak.
+    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+      return new Response(upstreamResponse.body, {
+        status: upstreamResponse.status,
+        statusText: upstreamResponse.statusText,
+        headers: sanitizePassthroughHeaders(upstreamResponse.headers),
+      });
+    }
     if (!upstreamResponse.ok) {
       if (options.comboAttempt) {
         const failure = await consumeComboFailure(upstreamResponse, options.abortSignal);
@@ -1889,7 +2043,8 @@ async function handleResponsesInner(
     // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
-      const needsClientRewrite = imageGenCallAliases.size > 0 || hasResponsesItemIdRepair(repairConfig);
+      const snapshotRepairEnabled = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair);
+      const needsClientRewrite = imageGenCallAliases.size > 0 || hasResponsesItemIdRepair(repairConfig) || snapshotRepairEnabled;
       // Compose opt-in payload rewrites into one parse/stringify pass (image-gen restore first).
       const payloadRewrites = [
         createImageGenCallRestoreRewrite(imageGenCallAliases),
@@ -1897,6 +2052,23 @@ async function handleResponsesInner(
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
+      // #893: sparse-snapshot gateways get field backfills AND lifecycle event
+      // injection at the block level, after payload rewrites. Defaults come
+      // from the finalized OUTBOUND body — the normalized internal tool shapes
+      // are not the Responses wire shapes the snapshot must mirror.
+      const snapshotDefaultsRequest = (() => {
+        try {
+          return JSON.parse(request.body) as unknown;
+        } catch {
+          return undefined;
+        }
+      })();
+      const clientBlockRewrite = snapshotRepairEnabled
+        ? composeSseBlockRewrites(
+          payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)),
+          createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget),
+        )
+        : undefined;
       // #864: win32 rewrite traffic must never enter the tee()+JS-pull chain
       // (Bun#32111 JS-sink segfault — text frames pass, the terminal block is
       // lost). The eager single reader applies the same rewrites inline.
@@ -1942,9 +2114,14 @@ async function handleResponsesInner(
           inspectChunk: chunk => inspector.feed(chunk),
           finishInspection: () => inspector.finish(),
           disposeInspection: () => inspector.dispose(),
-          sawTerminal: () => inspector.reported(),
+          // Stream lifetime follows the protocol terminal even when this request
+          // has no outcome callback configured (reported() would stay false).
+          sawTerminal: () => inspector.terminalSeen(),
           ...(win32EagerRewrite
             ? { rewritePayload: composeSsePayloadRewrites(...payloadRewrites) }
+            : {}),
+          ...(clientBlockRewrite
+            ? { rewriteBlocks: clientBlockRewrite }
             : {}),
           onSynthetic: kind => {
             if (!reportNativeTerminal) return;
@@ -1960,9 +2137,10 @@ async function handleResponsesInner(
           onClientCancel: () => options.onNativePassthroughCancel?.(),
           onDone: () => unregisterTurn(turnAc),
         }, win32EagerRewrite ? { rewriteBudget: translatorBudget } : undefined);
-        // selectEagerPath admits only no-rewrite traffic on both eligible platforms;
-        // win32 rewrite traffic reaches this relay too, but with the payload rewrite
-        // applied inline — never via an image/item-id JS pull wrapper (#32111, #864).
+        // When selected, this relay closes response.completed even if upstream
+        // keeps the connection alive. Windows rewrite traffic applies its
+        // payload transform inline — never via the Bun#32111-unsafe
+        // tee()+JS-pull chain (#864).
         if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
         return markEagerRelaySseResponse(
           markNativePassthroughSseResponse(new Response(eagerBody, {
@@ -2029,15 +2207,13 @@ async function handleResponsesInner(
         );
       }
       if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
-      // win32 must keep the pure native relay (Bun#32111 JS-sink segfault); elsewhere a JS pull
-      // relay is established practice (relayWithAbort, relaySseWithHeartbeat) and lets a
-      // mid-stream reset end with a clean response.failed terminal instead of a raw socket error.
-      const rewrittenBody = payloadRewrites.length > 0
-        ? relaySseWithPayloadRewrite(nativeBody, composeSsePayloadRewrites(...payloadRewrites), translatorBudget)
+      // Windows was handled by the eager terminal-aware branch above. Remaining
+      // tee traffic can use the JS relay to close on a protocol terminal and to
+      // convert a mid-stream reset into a clean response.failed event.
+      const rewrittenBody = clientBlockRewrite !== undefined || payloadRewrites.length > 0
+        ? relaySseWithBlockRewrite(nativeBody, clientBlockRewrite ?? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)), translatorBudget)
         : nativeBody;
-      const clientBody = process.platform === "win32" && !needsClientRewrite
-        ? nativeBody
-        : relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
+      const clientBody = relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
       return markNativePassthroughSseResponse(new Response(clientBody, {
         status: upstreamResponse.status,
         headers,
@@ -2068,7 +2244,65 @@ async function handleResponsesInner(
           rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
         } catch { /* non-JSON despite content-type; recording is best-effort */ }
       }
-      return new Response(restoreImageGenCallsInJson(text, imageGenCallAliases), {
+      const clientJson = (() => {
+        const restored = restoreImageGenCallsInJson(text, imageGenCallAliases);
+        if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
+        let outbound: unknown;
+        try {
+          outbound = JSON.parse(request.body);
+        } catch {
+          outbound = undefined;
+        }
+        return repairResponsesSnapshotJson(restored, outbound);
+      })();
+      // #875: the transport-neutral reliability policy forced a bounded JSON
+      // upstream for a client that asked for SSE. Reframe the completed JSON
+      // as the canonical terminal SSE sequence (created → output_item.done →
+      // terminal → [DONE]) so Codex commits the turn instead of hanging on a
+      // stream that never closes. Non-streaming clients keep the plain JSON.
+      if (clientRequestedStream === true
+        && options.inboundTransport !== "websocket"
+        && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
+        && route.provider.adapter === "openai-responses") {
+        try {
+          let completed = JSON.parse(clientJson) as Record<string, unknown>;
+          // The bounded-JSON answer bypasses the SSE relay, so it also bypasses
+          // the SSE item-id rewrite. Apply the same client-facing normalization
+          // here or this policy would silently disable id repair for the very
+          // providers that need it (raw record already happened above).
+          if (hasResponsesItemIdRepair(route.provider.responsesItemIdRepair)) {
+            completed = repairResponsesJsonItemIds(completed, route.provider.responsesItemIdRepair!, translatorBudget);
+          }
+          const sseHeaders = sanitizePassthroughHeaders(headers);
+          sseHeaders.set("content-type", "text/event-stream");
+          sseHeaders.set("cache-control", "no-store");
+          return new Response(responsesJsonToSseBody(completed), {
+            status: upstreamResponse.status,
+            statusText: upstreamResponse.statusText,
+            headers: sseHeaders,
+          });
+        } catch {
+          // Non-JSON despite content-type: fall through to the plain relay.
+        }
+      }
+      // WS turns reframe this JSON into events in the bridge, which is the
+      // other relay-free path — normalize ids so both bounded-JSON paths agree.
+      const outboundJson = options.inboundTransport === "websocket"
+        && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
+        && hasResponsesItemIdRepair(route.provider.responsesItemIdRepair)
+        ? (() => {
+          try {
+            return JSON.stringify(repairResponsesJsonItemIds(
+              JSON.parse(clientJson) as Record<string, unknown>,
+              route.provider.responsesItemIdRepair!,
+              translatorBudget,
+            ));
+          } catch {
+            return clientJson;
+          }
+        })()
+        : clientJson;
+      return new Response(outboundJson, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
         headers,
@@ -2154,7 +2388,8 @@ async function handleResponsesInner(
       ...(imgPlan ? { plan: imgPlan } : {}),
       ...(vidPlan ? { videoPlan: vidPlan } : {}),
       forwardHeaders: selectedForwardHeaders,
-      onAttemptSend: () => noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens),
+      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery),
       abortSignal: options.abortSignal,
       maxRounds: imgPlan && vidPlan
         ? clampImageMaxRounds(Math.min(config.images?.maxRounds ?? 3, config.images?.videoMaxRounds ?? 2))
@@ -2193,6 +2428,7 @@ async function handleResponsesInner(
           config.cacheRetention,
         );
       },
+      retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) =>
@@ -2221,7 +2457,6 @@ async function handleResponsesInner(
   // through web-search instead of being swallowed. runTurn adapters never enter this branch.
   if (canRunWebSearch && wsPlan) {
     parsed.context.tools = [...(parsed.context.tools ?? []), buildWebSearchTool()];
-    noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
     const wsResponse = await runWithWebSearch({
       parsed, adapter,
       incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
@@ -2236,6 +2471,8 @@ async function handleResponsesInner(
       abortSignal: options.abortSignal,
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onAttemptSend: (recovery?: AttemptRecoveryKind) =>
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery),
       onUsage: usage => {
         logCtx.usageFromBridge = true;
         if (usage) {
@@ -2261,6 +2498,7 @@ async function handleResponsesInner(
           config.cacheRetention,
         );
       },
+      retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.
@@ -2401,19 +2639,58 @@ async function handleResponsesInner(
   const upstream = new AbortController();
   const cleanupUpstreamAbort = linkAbortSignal(upstream, options.abortSignal);
   const connectMs = config.connectTimeoutMs ?? 200_000;
+  // Bridge stall budget (seconds of silence before upstream_stall_timeout); the retry backoff
+  // heartbeat interval is derived from it so the watchdog is always fed during deliberate waits.
+  const stallTimeoutMs = typeof config.stallTimeoutSec === "number" && Number.isFinite(config.stallTimeoutSec) && config.stallTimeoutSec > 0
+    ? Math.floor(config.stallTimeoutSec * 1000)
+    : 300_000;
   let activeAdapter = adapter;
 
-  const request = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
-  recordAdapterReasoning(logCtx, request);
-  const inputTokenEstimate = typeof request.usageLog?.inputTokens === "number"
-    ? request.usageLog.inputTokens
-    : undefined;
-  if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
+  // One immutable, body-safe outbound request per same-target sequence (URL, serialized body,
+  // auth headers, generated compat headers). Same-target 429 replays reuse it verbatim; the
+  // builder runs again only after a key/account/adapter rotation, an oauth refresh, or an
+  // image-tier bias change (transportToken bump). `body` is always a serialized string, so
+  // reuse is safe, and releaseBodyObservation is idempotent per build.
+  let initialRequest: AdapterRequest | undefined;
+  let inputTokenEstimate: number | undefined;
+  try {
+    initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
+    recordAdapterReasoning(logCtx, initialRequest);
+    inputTokenEstimate = typeof initialRequest.usageLog?.inputTokens === "number"
+      ? initialRequest.usageLog.inputTokens
+      : undefined;
+    if (inputTokenEstimate !== undefined) logCtx.usageLogInputTokens = inputTokenEstimate;
+  } catch (err) {
+    // A throwing buildRequest never returned a request; if a post-build step threw, release
+    // the serialized-body observation (idempotent) so the translator budget is not leaked.
+    // The build runs after linkAbortSignal, so a failure must also tear the link down and
+    // abort the upstream controller instead of escaping handleResponses unmapped.
+    initialRequest?.releaseBodyObservation?.();
+    cleanupUpstreamAbort();
+    upstream.abort();
+    if (options.abortSignal?.aborted) return clientCancelledResponse();
+    const msg = err instanceof Error ? err.message : String(err);
+    return formatErrorResponse(400, "invalid_request_error", redactSecretString(msg));
+  }
+  // The catch path above always returns, so the request is definitely assigned here.
+  // Capture it in a const so the fetch callbacks read a narrowed, immutable value
+  // (TypeScript drops narrowing for a `let` captured by a nested function).
+  const builtInitialRequest = initialRequest;
+  let sameTargetRequest: AdapterRequest | undefined = builtInitialRequest;
+  let sameTargetParsed: OcxParsedRequest | undefined = parsed;
+  let sameTargetToken = 0;
+  let transportToken = 0;
+  /**
+   * Invalidate the same-target request cache. Every credential/adapter/parsed mutation MUST
+   * go through here: the cache keys on `parsed` REFERENCE identity, so an in-place mutation
+   * is invisible to it and a missed bump would replay a request built with a stale key.
+   */
+  const invalidateSameTargetRequest = (): void => { transportToken += 1; };
   let upstreamResponse: Response;
   try {
     if (activeAdapter.fetchResponse) {
       noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
-      upstreamResponse = await activeAdapter.fetchResponse(request, {
+      upstreamResponse = await activeAdapter.fetchResponse(builtInitialRequest, {
         abortSignal: upstream.signal,
         timeoutMs: connectMs,
         stream: parsed.stream,
@@ -2422,13 +2699,13 @@ async function handleResponsesInner(
       upstreamResponse = await fetchWithResetRetry(
         recovery => {
           noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
-          return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
-            method: request.method,
-            headers: request.headers,
-            body: request.body,
+          return fetchWithHeaderTimeout(builtInitialRequest.url, applyUpstreamRecoveryInit({
+            method: builtInitialRequest.method,
+            headers: builtInitialRequest.headers,
+            body: builtInitialRequest.body,
           }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
         },
-        { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
       );
     }
   } catch (err) {
@@ -2438,27 +2715,60 @@ async function handleResponsesInner(
     const msg = describeUpstreamConnectFailure(err, connectMs);
     return formatErrorResponse(502, "upstream_error", msg);
   } finally {
-    request.releaseBodyObservation?.();
+    builtInitialRequest.releaseBodyObservation?.();
   }
 
+  // Same-target 429 retry budget is per REQUEST: it lives OUTSIDE the recovery loop (so a 413/401
+  // replay that comes back 429 cannot silently re-arm a fresh budget) and is SHARED with the
+  // terminal-guard continuation below, so the main loop + one continuation can never exceed
+  // `attempts` same-key replays in total (bounded per request).
+  const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+  let rateLimitRetries = 0;
+  // Shared with the terminal-guard continuation below: an image-tier reduction that let the
+  // main request clear a 413 must not be forgotten on the very next continuation build.
+  let imageTierBias = 0;
   if (!upstreamResponse.ok) {
     // Recovery loop: multi-key 429 failover + at most ONE anthropic 413 tightened retry
     // (devlog/260714_image_normalization_pipeline/030). One mutable activeAdapter serves
     // both paths so a 429→413 sequence never rebuilds against a stale pre-rotation
     // adapter, and imageTierBias — once armed — rides EVERY subsequent rebuild so a
     // 413→429 rotation cannot silently undo the tightening.
-    let imageTierBias = 0;
     let imageRetryAttempted = false;
     let oauth401ReplayAttempted = false;
+    /**
+     * Rebuild the request from the current parsed input (and any image-tier bias) and refetch
+     * it once, tagging the attempt with the given recovery kind. Rebuilds are deterministic
+     * for the same parsed request, so same-target replays stay byte-identical.
+     */
     const rebuildAndRefetch = async (
       recovery: AttemptRecoveryKind,
     ): Promise<Response | { failed: Response }> => {
-      const retryRequest = await activeAdapter.buildRequest(parsed, {
-        headers: selectedForwardHeaders,
-        translatorBudget,
-        ...(imageTierBias > 0 ? { imageTierBias } : {}),
-      });
-      recordAdapterReasoning(logCtx, retryRequest);
+      let retryRequest: AdapterRequest;
+      if (sameTargetRequest !== undefined && sameTargetParsed === parsed && sameTargetToken === transportToken) {
+        // Same target (key/adapter/parsed/tier unchanged): replay the exact cached request.
+        retryRequest = sameTargetRequest;
+      } else {
+        try {
+          retryRequest = await activeAdapter.buildRequest(parsed, {
+            headers: selectedForwardHeaders,
+            translatorBudget,
+            ...(imageTierBias > 0 ? { imageTierBias } : {}),
+          });
+          recordAdapterReasoning(logCtx, retryRequest);
+        } catch (err) {
+          // A rotated/rebuilt adapter build failure is a request-shaping error, not an
+          // upstream connect failure: tear the abort link down and map it as 400 (no 413
+          // translator-budget mapping here — that stays with parseRequest/buildToolBridgeMaps).
+          cleanupUpstreamAbort();
+          upstream.abort();
+          if (options.abortSignal?.aborted) return { failed: clientCancelledResponse() };
+          const msg = err instanceof Error ? err.message : String(err);
+          return { failed: formatErrorResponse(400, "invalid_request_error", redactSecretString(msg)) };
+        }
+        sameTargetRequest = retryRequest;
+        sameTargetParsed = parsed;
+        sameTargetToken = transportToken;
+      }
       const retryEstimate = typeof retryRequest.usageLog?.inputTokens === "number"
         ? retryRequest.usageLog.inputTokens
         : undefined;
@@ -2513,6 +2823,7 @@ async function handleResponsesInner(
           route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
         );
         route.provider = refreshedProvider;
+        invalidateSameTargetRequest();
         activeAdapter = resolveAdapter(
           resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire),
           config.cacheRetention,
@@ -2521,6 +2832,45 @@ async function handleResponsesInner(
         if ("failed" in result) return result.failed;
         upstreamResponse = result;
         continue recovery;
+      }
+
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`, issue #487). Codex never retries
+      // 429 itself (it retries 5xx only), and single-key pools cannot use the failover below,
+      // so wait (Retry-After or the fixed interval) and replay the IDENTICAL request on the
+      // same key first. Pre-stream only: a 429 arrives before any bytes are relayed, so the
+      // replay is lossless. Runs before key failover so "primary-first" setups keep the same
+      // key on rate-limit blips; only after the attempts are exhausted does failover run.
+      while (
+        upstreamResponse.status === 429
+        && rateLimitPolicy !== null
+        && rateLimitRetries < rateLimitPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        // Release unread body + deliberate wait via the shared same-target helper.
+        const retryAfterHeader = upstreamResponse.headers.get("retry-after");
+        try {
+          for await (const _ of prepareSameTarget429Wait({
+            body: upstreamResponse.body,
+            signal: options.abortSignal,
+            delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+          })) {
+            // pre-stream: no stall watchdog to feed
+          }
+        } catch {
+          cleanupUpstreamAbort();
+          upstream.abort();
+          return clientCancelledResponse();
+        }
+        // Client cancellation wins over any stale timer edge: re-check before dispatching the
+        // replay so an adapter never starts work for a request the client already abandoned.
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
+          cleanupUpstreamAbort();
+          upstream.abort();
+          return clientCancelledResponse();
+        }
+        const result = await rebuildAndRefetch("rate-limit-429");
+        if ("failed" in result) return result.failed;
+        upstreamResponse = result;
       }
 
       // Multi-key 429 failover: rotate to the next pool key (cooldown-aware) and retry the
@@ -2538,6 +2888,7 @@ async function handleResponsesInner(
         // until runtime cleanup (one per rotated key under a rate-limit storm).
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         route.provider = rotated;
+        invalidateSameTargetRequest();
         activeAdapter = resolveAdapter(
           resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
           config.cacheRetention,
@@ -2568,6 +2919,7 @@ async function handleResponsesInner(
           anthropicPoolAccountId = nextAccountId;
           anthropicPoolFailovers += 1;
           route.provider = { ...route.provider, apiKey: accessToken };
+          invalidateSameTargetRequest();
           promoteAnthropicActiveAccount(nextAccountId);
           logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
           activeAdapter = resolveAdapter(
@@ -2592,6 +2944,7 @@ async function handleResponsesInner(
       })) {
         imageRetryAttempted = true;
         imageTierBias = 1;
+        invalidateSameTargetRequest();
         try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
         const result = await rebuildAndRefetch("image-413");
         if ("failed" in result) return result.failed;
@@ -2636,64 +2989,149 @@ async function handleResponsesInner(
 
   cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
-  // Claude can return a clean end_turn after announcing an edit without emitting any tool call.
-  // Keep the normal request/recovery path above intact, and use this bounded callback only for the
-  // one internal continuation pass. A continuation failure becomes an in-stream adapter error so
-  // the client never sees a second hidden HTTP response or an unbounded retry loop.
+  // Anthropic-only: one bounded internal continuation re-ask for clean end_turn turns that
+  // announced an edit without emitting a tool call.
   const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
+  /**
+   * One bounded internal re-ask for Anthropic end_turn-without-tool-call turns. Replays the
+   * continuation on a 429 with the same-key retry budget (hoisted per request), then falls
+   * back to key/account failover; a failure becomes an in-stream adapter error so the client
+   * never sees a second hidden HTTP response or an unbounded retry loop.
+   */
   const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
-    let imageTierBias = 0;
     let response: Response | undefined;
+    // One-shot recovery label for the next top-of-loop continuation send after a failover rotation.
+    let nextContinuationRecoveryKind: AttemptRecoveryKind | undefined;
+    /**
+     * Build and fetch one terminal-guard continuation. `recoveryKind` tags same-target and
+     * failover sends (`rate-limit-429`, `key-429`, `anthropic-oauth-429`, `image-413`); the
+     * adapter rebuild is deterministic for the same parsed request (tests assert byte-identical
+     * replays).
+     */
+    const fetchContinuation = async (recoveryKind?: AttemptRecoveryKind): Promise<Response> => {
+      let continuationRequest: AdapterRequest | undefined;
+      if (sameTargetRequest !== undefined && sameTargetParsed === nextParsed && sameTargetToken === transportToken) {
+        // Same target (key/adapter/parsed/tier unchanged): replay the exact cached request.
+        continuationRequest = sameTargetRequest;
+      } else {
+        try {
+          continuationRequest = await activeAdapter.buildRequest(nextParsed, {
+            headers: selectedForwardHeaders,
+            translatorBudget,
+            ...(imageTierBias > 0 ? { imageTierBias } : {}),
+          });
+          recordAdapterReasoning(logCtx, continuationRequest);
+        } catch (err) {
+          // The main body is already streaming, so there is no HTTP error surface: release
+          // any partial body observation and surface the failure as an in-stream error via
+          // the outer catch (no upstream.abort() — that would kill the live body stream).
+          continuationRequest?.releaseBodyObservation?.();
+          throw err;
+        }
+        sameTargetRequest = continuationRequest;
+        sameTargetParsed = nextParsed;
+        sameTargetToken = transportToken;
+      }
+      // Both branches assign the request (the build catch rethrows), so capture it in a
+      // const for the fetch callback and finally below — a `let` read inside a nested
+      // function keeps its undefined half, which would break the byte-identical replay.
+      const builtContinuationRequest = continuationRequest;
+      const continuationEstimate = typeof builtContinuationRequest.usageLog?.inputTokens === "number"
+        ? builtContinuationRequest.usageLog.inputTokens
+        : undefined;
+      if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
+      // Optional recovery label for same-target / failover continuation sends.
+      const replayKind: AttemptRecoveryKind | undefined = recoveryKind;
+      try {
+        if (activeAdapter.fetchResponse) {
+          noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replayKind);
+          return await activeAdapter.fetchResponse(builtContinuationRequest, {
+            abortSignal: upstream.signal,
+            timeoutMs: connectMs,
+            stream: nextParsed.stream,
+          });
+        }
+        return await fetchWithResetRetry(
+          recovery => {
+            noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? replayKind);
+            return fetchWithHeaderTimeout(
+              builtContinuationRequest.url,
+              applyUpstreamRecoveryInit({
+                method: builtContinuationRequest.method,
+                headers: builtContinuationRequest.headers,
+                body: builtContinuationRequest.body,
+              }, recovery),
+              upstream.signal,
+              connectMs,
+              nextParsed.stream,
+              providerFetch(route.provider),
+            );
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },
+          );
+      } finally {
+        builtContinuationRequest.releaseBodyObservation?.();
+      }
+    };
     while (true) {
       try {
-        const continuationRequest = await activeAdapter.buildRequest(nextParsed, {
-          headers: selectedForwardHeaders,
-          translatorBudget,
-          ...(imageTierBias > 0 ? { imageTierBias } : {}),
-        });
-        recordAdapterReasoning(logCtx, continuationRequest);
-        const continuationEstimate = typeof continuationRequest.usageLog?.inputTokens === "number"
-          ? continuationRequest.usageLog.inputTokens
-          : undefined;
-        if (continuationEstimate !== undefined) logCtx.usageLogInputTokens = continuationEstimate;
-        try {
-          if (activeAdapter.fetchResponse) {
-            noteAttemptSend(logCtx.activeAttempt, continuationEstimate);
-            response = await activeAdapter.fetchResponse(continuationRequest, {
-              abortSignal: upstream.signal,
-              timeoutMs: connectMs,
-              stream: nextParsed.stream,
-            });
-          } else {
-            response = await fetchWithResetRetry(
-              recovery => {
-                noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery);
-                return fetchWithHeaderTimeout(
-                  continuationRequest.url,
-                  applyUpstreamRecoveryInit({
-                    method: continuationRequest.method,
-                    headers: continuationRequest.headers,
-                    body: continuationRequest.body,
-                  }, recovery),
-                  upstream.signal,
-                  connectMs,
-                  nextParsed.stream,
-                  providerFetch(route.provider),
-                );
-              },
-              { abortSignal: upstream.signal, label: safeHostLabel(continuationRequest.url) },
-              );
-          }
-        } finally {
-          continuationRequest.releaseBodyObservation?.();
-        }
+        const recoveryKind = nextContinuationRecoveryKind;
+        nextContinuationRecoveryKind = undefined;
+        response = await fetchContinuation(recoveryKind);
       } catch (error) {
-        if (options.abortSignal?.aborted) {
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
           yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
         } else {
-          yield { type: "error", message: `Provider continuation failed: ${error instanceof Error ? error.message : String(error)}` };
+          yield { type: "error", message: `Provider continuation failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
         }
         return;
+      }
+
+      // Same-target 429 wait-and-retry (opt-in `retryOn429`) before key/account failover:
+      // a primary-key rate-limit blip replays on the SAME key, matching the main recovery
+      // loop; only after the attempts are exhausted does the continuation fail over.
+      while (
+        response.status === 429
+        && rateLimitPolicy !== null
+        && rateLimitRetries < rateLimitPolicy.attempts
+      ) {
+        rateLimitRetries += 1;
+        // Release unread body + heartbeat-fed wait via the shared same-target helper.
+        const retryAfterHeader = response.headers.get("retry-after");
+        try {
+          yield* prepareSameTarget429Wait({
+            body: response.body,
+            // Listen on the upstream signal: once the SSE body is being streamed, a client
+            // cancel aborts `upstream` through the bridge, and upstream is also linked from
+            // options.abortSignal — so this covers both cancellation paths.
+            signal: upstream.signal,
+            delayMs: rateLimitRetryDelayMs(rateLimitPolicy, retryAfterHeader, Date.now()),
+            heartbeatIntervalMs: Math.min(10_000, Math.max(250, stallTimeoutMs / 2)),
+          });
+        } catch {
+          if (options.abortSignal?.aborted || upstream.signal.aborted) {
+            yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+          } else {
+            yield { type: "error", message: "Provider continuation failed: retry wait interrupted" };
+          }
+          return;
+        }
+        // Client cancellation wins over any stale timer edge: re-check before dispatching the
+        // replay so the continuation never starts work for a request the client abandoned.
+        if (options.abortSignal?.aborted || upstream.signal.aborted) {
+          yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+          return;
+        }
+        try {
+          response = await fetchContinuation("rate-limit-429");
+        } catch (error) {
+          if (options.abortSignal?.aborted || upstream.signal.aborted) {
+            yield { type: "error", message: "client closed request during terminal continuation", status: 499 };
+          } else {
+            yield { type: "error", message: `Provider continuation failed: ${redactSecretString(error instanceof Error ? error.message : String(error))}` };
+          }
+          return;
+        }
       }
 
       if (response.status === 429 && hasKeyPoolFailover(route.provider)) {
@@ -2706,10 +3144,12 @@ async function handleResponsesInner(
         if (rotated) {
           try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
           route.provider = rotated;
+          invalidateSameTargetRequest();
           activeAdapter = resolveAdapter(
             resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
+          nextContinuationRecoveryKind = "key-429";
           continue;
         }
       }
@@ -2732,6 +3172,7 @@ async function handleResponsesInner(
             anthropicPoolAccountId = nextAccountId;
             anthropicPoolFailovers += 1;
             route.provider = { ...route.provider, apiKey: accessToken };
+            invalidateSameTargetRequest();
             promoteAnthropicActiveAccount(nextAccountId);
             logCtx.provider = formatAnthropicProviderForLog("anthropic", nextAccountId, config);
             activeAdapter = resolveAdapter(
@@ -2739,6 +3180,7 @@ async function handleResponsesInner(
               config.cacheRetention,
             );
             sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+            nextContinuationRecoveryKind = "anthropic-oauth-429";
             continue;
           } catch {
             // fall through to emit continuation error below
@@ -2752,7 +3194,9 @@ async function handleResponsesInner(
         alreadyAttempted: imageTierBias > 0,
       })) {
         imageTierBias = 1;
+        invalidateSameTargetRequest();
         try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+        nextContinuationRecoveryKind = "image-413";
         continue;
       }
       break;

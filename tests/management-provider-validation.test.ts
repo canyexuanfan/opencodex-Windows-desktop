@@ -193,6 +193,71 @@ describe("provider management validation", () => {
     })).toContain("not supported on forward-auth");
   });
 
+  test("provider management permits snapshot repair only on canonical OpenAI forward seeds", () => {
+    for (const mode of ["pool", "direct"] as const) {
+      expect(providerManagementConfigError("openai", {
+        ...canonicalDirect,
+        codexAccountMode: mode,
+        responsesSnapshotRepair: true,
+      })).toBeNull();
+    }
+
+    expect(providerManagementConfigError("openai", {
+      ...canonicalDirect,
+      responsesSnapshotRepair: { enabled: true },
+    })).toBe("provider openai responsesSnapshotRepair must be a boolean");
+
+    expect(providerManagementConfigError("openai", {
+      ...canonicalDirect,
+      responsesSnapshotRepair: true,
+      noVisionModels: ["gpt-5.6"],
+    })).toContain("canonical built-in provider seed");
+  });
+
+  test("provider management validates retryOn429 bounds and unknown keys", () => {
+    const base = { adapter: "openai-chat", baseUrl: "https://api.openai.com/v1" };
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { enabled: true, attempts: 3, intervalMs: 1_000, maxIntervalMs: 5_000, respectRetryAfter: false },
+    })).toBeNull();
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 21 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { intervalMs: "fast" },
+    })).toContain("retryOn429.intervalMs is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempt: 3 },
+    })).toContain("retryOn429 has unrecognized field");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: "enabled",
+    })).toContain("retryOn429 is invalid");
+    // A secret-shaped unknown field name must be redacted in the error, never echoed.
+    const secretError = providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { "sk-super-secret-9876": true },
+    })!;
+    expect(secretError).toContain("retryOn429 has unrecognized field");
+    expect(secretError).not.toContain("sk-super-secret-9876");
+    expect(secretError).toContain("[REDACTED]");
+    // A secret-shaped PROVIDER name must not be echoed by the retryOn429 error path either.
+    const secretNameError = providerManagementConfigError("sk-super-secret-9876", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })!;
+    expect(secretNameError).toContain("retryOn429.attempts is invalid");
+    expect(secretNameError).not.toContain("sk-super-secret-9876");
+    expect(secretNameError).toContain("[REDACTED]");
+  });
+
   test("provider discovery status is additive and omitted before an attempt", async () => {
     markProviderDiscoveryFailed("auth-broken", { reason: "http", httpStatus: 401 });
     try {
@@ -1907,6 +1972,211 @@ describe("provider management validation", () => {
 
     // Unknown-only bodies are rejected.
     expect((await patch("extra", { bogus: 1 }))?.status).toBe(400);
+  });
+  test("provider PATCH manages custom headers with merge and clear semantics", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        agw: { adapter: "openai-chat", baseUrl: "https://agw.example.test/v1", apiKey: "sk-agw" },
+      },
+    };
+    saveConfig(liveConfig);
+    let catalogRefreshes = 0;
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+      });
+    };
+
+    // Set a fresh headers block.
+    const set = await patch("agw", { headers: { "X-Custom": "v1", "anthropic-version": "2023-06-01" } });
+    expect(set?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toEqual({ "X-Custom": "v1", "anthropic-version": "2023-06-01" });
+
+    // Later patches merge, so adding one fingerprint header never drops the rest.
+    const merge = await patch("agw", { headers: { "x-app": "cli" } });
+    expect(merge?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toEqual({
+      "X-Custom": "v1",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+    });
+
+    // null and empty object both clear the whole block.
+    expect((await patch("agw", { headers: null }))?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+    expect((await patch("agw", { headers: { "X-A": "b" } }))?.status).toBe(200);
+    expect((await patch("agw", { headers: {} }))?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+
+    // Invalid shapes, sensitive headers, CRLF values, and non-string values are rejected.
+    for (const invalid of [
+      "nope",
+      [],
+      { Authorization: "Bearer sk" },
+      { "X-Bad": "a\r\nb" },
+      { "bad name": "v" },
+      { "X-N": 42 },
+    ]) {
+      const rejected = await patch("agw", { headers: invalid });
+      expect(rejected?.status).toBe(400);
+    }
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+    expect(catalogRefreshes).toBeGreaterThan(0);
+  });
+
+  test("GET /api/providers exposes hasHeaders but never header names or values (#959)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const sentinelName = "x-fingerprint-sentinel";
+    const sentinelValue = "sentinel-secret-header-value";
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:9/v1",
+          allowPrivateNetwork: true,
+          headers: { [sentinelName]: sentinelValue },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const req = new Request("http://127.0.0.1/api/providers", { method: "GET" });
+    const res = await handleManagementAPI(req, new URL(req.url), liveConfig, {});
+    expect(res?.status).toBe(200);
+    const raw = await res!.text();
+    const rows = JSON.parse(raw) as { name: string; hasHeaders?: boolean }[];
+    expect(rows.find(row => row.name === "hdr")?.hasHeaders).toBe(true);
+    expect(rows.find(row => row.name === "openai")?.hasHeaders).toBe(false);
+    expect(raw).not.toContain(sentinelName);
+    expect(raw).not.toContain(sentinelValue);
+  });
+  test("provider PATCH merges headers case-insensitively", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:9/v1", allowPrivateNetwork: true },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    expect((await patch("hdr", { headers: { "X-Foo": "old" } }))?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "X-Foo": "old" });
+    // A casing-only update must replace the existing key, not leave both behind for
+    // Headers normalization to combine into "x-foo: old, new".
+    expect((await patch("hdr", { headers: { "x-foo": "new" } }))?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "x-foo": "new" });
+    expect(Object.keys(liveConfig.providers.hdr.headers!)).toHaveLength(1);
+  });
+  test("provider PATCH clear keeps registry static headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        "opencode-free": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/v1",
+          authMode: "key",
+          allowPrivateNetwork: true,
+          headers: { "x-opencode-client": "desktop", "X-User": "v1" },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    // Clearing user-managed headers must not delete the registry-owned static
+    // metadata (opencode-free's x-opencode-client marker) the transport relies on.
+    expect((await patch("opencode-free", { headers: null }))?.status).toBe(200);
+    expect(liveConfig.providers["opencode-free"].headers).toEqual({ "x-opencode-client": "desktop" });
+    const saved = JSON.parse(readFileSync(join(TEST_DIR, "config.json"), "utf8")) as OcxConfig;
+    expect(saved.providers["opencode-free"]?.headers).toEqual({ "x-opencode-client": "desktop" });
+  });
+  test("concurrent provider PATCHes merge different headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:9/v1", allowPrivateNetwork: true },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    // Both requests snapshot the same provider before either saves; the lock-scoped
+    // re-apply must merge them instead of letting the later save erase the first.
+    const [first, second] = await Promise.all([
+      patch("hdr", { headers: { "X-A": "a" } }),
+      patch("hdr", { headers: { "X-B": "b" } }),
+    ]);
+    expect(first?.status).toBe(200);
+    expect(second?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "X-A": "a", "X-B": "b" });
   });
   test("provider context-cap API persists toggles and annotates model rows", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });

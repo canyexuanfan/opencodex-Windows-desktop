@@ -176,7 +176,7 @@ Codex의 로컬 모델 선택기 캐시를 무효화하여, 활성 opencodex 카
 
 ## 백그라운드 서비스
 
-### `ocx service [install|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|start|stop|status|uninstall|remove]`
 
 로그인 관리형 백그라운드 서비스로 opencodex를 실행합니다(macOS **launchd**, Linux **systemd** 사용자
 유닛, Windows **Task Scheduler**). 로그인 시 자동 시작하고 충돌 시 자동 재시작합니다. 서비스 실행은
@@ -186,6 +186,7 @@ Codex의 로컬 모델 선택기 캐시를 무효화하여, 활성 opencodex 카
 | --- | --- |
 | 없음 | 서비스를 생성/업데이트하고 시작합니다. |
 | `install` | 서비스를 생성하고 시작합니다. |
+| `repair` | 설치된 서비스를 다시 등록하지 않고 제자리에서 새로 고친 뒤 재시작합니다. |
 | `start` | 설치된 서비스를 시작합니다. |
 | `stop` | 서비스를 중지하고 기본 Codex를 복원합니다. |
 | `status` | 서비스와 프록시 진단, 로그 경로를 보고합니다. |
@@ -195,6 +196,7 @@ Codex의 로컬 모델 선택기 캐시를 무효화하여, 활성 opencodex 카
 ```bash
 ocx service
 ocx service install
+ocx service repair
 ocx service status
 ocx service uninstall
 ```

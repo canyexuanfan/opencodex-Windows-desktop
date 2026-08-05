@@ -22,6 +22,13 @@ export type RecordedCall = { method: string; args: unknown };
 
 export type HarnessResult = {
   calls: RecordedCall[];
+  /**
+   * Paths the script read through its `node:fs` stub. Kept separate from
+   * `calls` so exact method-sequence assertions stay stable while the fs
+   * capability stays recorded (round: the harness must not hand a write-capable
+   * process module to a script that holds a write token).
+   */
+  fsReads: string[];
   logs: string[];
   warnings: string[];
   /**
@@ -64,6 +71,12 @@ export type RunOptions = {
    */
   eventPayload?: PullRequestState;
   /**
+   * Webhook `action` delivered on the event (opened/edited/synchronize/...).
+   * Defaults to `"opened"`. Pass `"synchronize"` to exercise push-path
+   * completion provenance rules.
+   */
+  eventAction?: string;
+  /**
    * Comments as `listComments` returns them, PAGE BY PAGE. Pass more than one
    * page to prove the script paginates: an audit round replaced `paginate` with
    * a single `listComments` call, which loses a bot comment that has scrolled
@@ -85,6 +98,11 @@ export type RunOptions = {
   failStatus?: number;
   /** Collaborator permission returned by `getCollaboratorPermissionLevel`. */
   authorPermission?: string;
+  /**
+   * Fixture content for `MAINTAINERS.md`, so readiness-ping scenarios do not
+   * depend on the live repository file. Defaults to reading the real file.
+   */
+  maintainersFile?: string;
   /** When true, permission lookup rejects like a transient API failure. */
   failPermissionLookup?: boolean;
   /** Overrides for `compareCommitsWithBasehead` keyed by `basehead`. */
@@ -97,6 +115,12 @@ export type RunOptions = {
   openPulls?: unknown[];
   /** Page-keyed open PR fixtures for `pulls.list` (1-based via array index). */
   openPullPages?: unknown[][];
+  /**
+   * Check-runs `checks.listForRef` reports for the head. Defaults to a green
+   * `ci` check so completed-checklist scenarios pass the claim check.
+   * Pass a red/pending/missing set to exercise the claim-check reset paths.
+   */
+  checkRuns?: Array<{ name: string; status: string; conclusion: string | null }>;
 };
 
 /**
@@ -117,6 +141,11 @@ const DEFAULT_BODY = [
   "- [x] Run `bun test tests/ci-workflows.test.ts`",
   "- [x] Confirm enforce-pr-target behaviour locally",
 ].join("\n");
+
+/** The repo's documented "CI passed" check, green by default. */
+const DEFAULT_GREEN_CHECKS = [
+  { name: "ci", status: "completed", conclusion: "success" },
+];
 
 const DEFAULT_PR = {
   number: 42,
@@ -411,6 +440,7 @@ export async function runEnforcePrTarget(
   options: RunOptions,
 ): Promise<HarnessResult> {
   const calls: RecordedCall[] = [];
+  const fsReads: string[] = [];
   const logs: string[] = [];
   const warnings: string[] = [];
   const outputs: { name: string; value: unknown }[] = [];
@@ -526,7 +556,7 @@ export async function runEnforcePrTarget(
   const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
   const scriptsRoot = path.resolve(process.cwd(), ".github", "scripts");
   /** Bare modules the workflow script may load (see enforce-pr-target.yml). */
-  const ALLOWED_MODULES = new Set(["path", "node:path"]);
+  const ALLOWED_MODULES = new Set(["path", "node:path", "node:fs"]);
 
   function scopedRequire(id: string) {
     calls.push({ method: "require", args: [id] });
@@ -534,6 +564,26 @@ export async function runEnforcePrTarget(
     if (!isPathLike) {
       if (!ALLOWED_MODULES.has(id)) {
         throw new Error(`the script must not require ${id}`);
+      }
+      if (id === "node:fs") {
+        // The script may read exactly one file: the trusted default-branch
+        // MAINTAINERS.md. Everything else about `fs` (writes, directory
+        // listing, arbitrary reads) is a capability the harness must not hand
+        // over, and the read itself has to be recorded like every other call.
+        const nodeFs = nodeRequire("node:fs");
+        return {
+          readFileSync: (pathLike: unknown) => {
+            const resolved = path.resolve(String(pathLike));
+            fsReads.push(resolved);
+            if (resolved !== path.resolve(process.cwd(), "MAINTAINERS.md")) {
+              throw new Error(`the script must not read ${pathLike}`);
+            }
+            return (
+              options.maintainersFile ??
+              nodeFs.readFileSync(resolved, "utf8")
+            );
+          },
+        };
       }
       return nodeRequire(id);
     }
@@ -573,6 +623,13 @@ export async function runEnforcePrTarget(
       },
       createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
       updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
+    },
+    checks: {
+      listForRef: (args: unknown) =>
+        respond("checks.listForRef", args, {
+          total_count: (options.checkRuns ?? DEFAULT_GREEN_CHECKS).length,
+          check_runs: options.checkRuns ?? DEFAULT_GREEN_CHECKS,
+        }),
     },
     repos: {
       getCollaboratorPermissionLevel: (args: unknown) =>
@@ -689,7 +746,7 @@ export async function runEnforcePrTarget(
      * runner and absent here is another `if (payload.x) return;`.
      */
     payload = {
-      action: "opened",
+      action: options.eventAction ?? "opened",
       number: eventPr.number,
       pull_request: eventPr,
       repository: {
@@ -864,7 +921,14 @@ export async function runEnforcePrTarget(
     await callback();
   }
 
-  return { calls, logs, warnings, returnValue, coreSurface: Object.keys(core).sort() };
+  return {
+    calls,
+    fsReads,
+    logs,
+    warnings,
+    returnValue,
+    coreSurface: Object.keys(core).sort(),
+  };
 }
 
 /** Just the method names, in order — the usual thing to assert on. */

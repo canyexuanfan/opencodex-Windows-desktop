@@ -24,6 +24,7 @@ import {
   resolveCodexAuthContext,
 } from "../src/codex/auth-context";
 import { supportsNativeResponsesCompactEndpoint } from "../src/providers/openai-tiers";
+import type { RequestLogContext } from "../src/server/request-log";
 import { acquireNativeMainProfileDrain, tryAdmitTurn } from "../src/server/lifecycle";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
@@ -163,6 +164,33 @@ describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
       ...officialApi,
       baseUrl: "https://gateway.example/v1",
     })).toBe(false);
+  });
+});
+
+describe("native compact usage reporting", () => {
+  test("the buffered upstream body fills the request log usage and stays intact for the client", async () => {
+    const config = {
+      defaultProvider: "openai-apikey",
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+        },
+      },
+    } as unknown as OcxConfig;
+    globalThis.fetch = (async () => jsonResponse(completedPayload("native summary"))) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+    const response = await handleResponsesCompact(
+      compactionRequest(baseCompactionBody({ model: "openai-apikey/gpt-5.5" })),
+      config,
+      logCtx,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { usage?: Record<string, unknown> };
+    expect(body.usage).toMatchObject({ input_tokens: 10, output_tokens: 5, total_tokens: 15 });
+    expect(logCtx.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
   });
 });
 
@@ -901,4 +929,29 @@ describe("compact alternate-account attempt (#913)", () => {
       expect(statuses).toEqual([402, 429]);
     });
   });
+});
+
+test("a no-eligible policy compact request persists the evaluation trace", async () => {
+  const config = {
+    ...keyProviderConfig(),
+    routingProfiles: {
+      strict: {
+        candidates: [{ provider: "gw", model: "gpt-5.5" }],
+        require: { minContextWindow: 128000 },
+      },
+    },
+  } as unknown as OcxConfig;
+  globalThis.fetch = (async () => {
+    throw new Error("compact must not send upstream when policy evaluation has no eligible candidate");
+  }) as typeof fetch;
+  const logCtx: RequestLogContext = { model: "", provider: "" };
+  const response = await handleResponsesCompact(
+    compactionRequest(baseCompactionBody({ model: "policy/strict" })),
+    config,
+    logCtx,
+  );
+  expect(response.status).toBe(404);
+  expect(logCtx.routeDecision).toBeDefined();
+  expect(logCtx.routeDecision!.selected.reason).toBe("no-eligible-candidate");
+  expect(logCtx.routeDecision!.candidates).toHaveLength(1);
 });

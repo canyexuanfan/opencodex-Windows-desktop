@@ -22,6 +22,7 @@ import type { OcxConfig } from "../types";
 import { captureConfigGeneration, type GenerationContext } from "../lib/state-store-sweeper";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { retainedUtf8Bytes } from "../lib/admission";
+import { recordUpstreamHostFailure } from "./upstream-host-health";
 
 type ThreadAffinityEntry = {
   accountId: string;
@@ -122,8 +123,8 @@ const quotaScopedHealth = new Map<string, Map<CodexQuotaScope, CodexUpstreamHeal
 let lastReconciledGeneration = 0;
 let liveHealthAccountIds = new Set<string>();
 
-export type CodexUpstreamOutcome = number | "connect_error" | "timeout";
-export type CodexUpstreamOutcomeClass = "success" | "credential" | "quota" | "transient" | "caller" | "unknown";
+export type CodexUpstreamOutcome = number | "connect_error" | "timeout" | "connect_neutral";
+export type CodexUpstreamOutcomeClass = "success" | "credential" | "quota" | "transient" | "caller" | "neutral" | "unknown";
 export type CodexCooldownSource = "retry-after" | "reset-derived" | "default";
 /**
  * Native Codex quota groups known to be independent upstream. Keep the mapping
@@ -132,6 +133,20 @@ export type CodexCooldownSource = "retry-after" | "reset-derived" | "default";
  * confirmed, so shared limits never receive cross-model bypasses.
  */
 export type CodexQuotaScope = "shared" | "spark";
+
+export type CodexQuotaRecoveryProbeClaim = {
+  accountId: string;
+  scope?: CodexQuotaScope;
+  leaseId: string;
+  cooldownGeneration: number;
+  credentialGeneration: number;
+  /** Claim-time `replacedAt`; unchanged after a probe-owned refresh, stamped on external replacement. */
+  credentialReplacedAt?: number;
+};
+
+export type CodexQuotaRecoveryProbeProof = {
+  credentialGeneration?: number;
+};
 
 /**
  * Requests without a resolved native model retain the historic one-account-per-
@@ -173,6 +188,10 @@ export type CodexUpstreamOutcomeMeta = {
   retryAfter?: string | null;
   resetAt?: unknown | unknown[];
   now?: number;
+  /** (provider, host) ledger key for account-neutral reachability failures (#914). */
+  hostKey?: string;
+  /** Stable transport code recorded alongside a neutral host failure. */
+  lastFailureCode?: string;
   /** Native model selected for this request; used only for confirmed scoped quotas. */
   modelId?: string;
   /** When set, clears affinity for this thread immediately on transient failure. */
@@ -307,9 +326,15 @@ export function computeCodexUsageScore(quota: {
 }
 
 export function classifyCodexUpstreamOutcome(outcome: CodexUpstreamOutcome): CodexUpstreamOutcomeClass {
+  if (outcome === "connect_neutral") return "neutral";
   if (outcome === "connect_error" || outcome === "timeout") return "transient";
   if (!Number.isFinite(outcome)) return "unknown";
   if (outcome >= 200 && outcome < 300) return "success";
+  // Explicit 3xx policy (#914): a redirect response is relayed as-is and is
+  // never account or host health evidence — it proves the host is reachable
+  // and says nothing about the credential. Relayed as the neutral class so a
+  // stray 3xx cannot increment an account's transient streak.
+  if (outcome >= 300 && outcome < 400) return "neutral";
   if (outcome === 401 || outcome === 403) return "credential";
   // 402 Payment Required is treated as quota exhaustion for pool cooldown/failover
   // (same-request alternate retry records this outcome for the depleted account).
@@ -415,6 +440,135 @@ function canAcquireQuotaProbeLease(health: CodexUpstreamHealth | undefined, now:
   if (health.probeLeaseId !== undefined) return false;
   const origin = health.lastProbeAt ?? health.cooldownSince ?? cooldownUntil;
   return now - origin >= CODEX_QUOTA_PROBE_INTERVAL_MS;
+}
+
+/**
+ * Claim due reset-derived cooldown probes without consulting account selection.
+ * Pool credentials only: the main account has no quota-refresh single-flight.
+ */
+export function claimDueCodexQuotaRecoveryProbes(
+  config: OcxConfig,
+  limit: number,
+  now = Date.now(),
+): CodexQuotaRecoveryProbeClaim[] {
+  const boundedLimit = Math.max(0, Math.floor(limit));
+  if (boundedLimit === 0) return [];
+  const candidates: Array<{
+    accountId: string;
+    scope?: CodexQuotaScope;
+    health: CodexUpstreamHealth;
+    credentialGeneration: number;
+    credentialReplacedAt?: number;
+    order: number;
+  }> = [];
+  for (const [order, account] of (config.codexAccounts ?? []).entries()) {
+    if (!isSelectableCodexPoolAccount(account)
+      || isCodexAccountPaused(config, account.id)
+      || isAccountNeedsReauth(account.id)) continue;
+    const record = readCodexAccountRecord(account.id);
+    if (!record?.credential || record.deletedAt != null) continue;
+    const due = [
+      { scope: undefined, health: upstreamHealth.get(account.id) },
+      ...[...(quotaScopedHealth.get(account.id) ?? [])].map(([scope, health]) => ({ scope, health })),
+    ].filter((entry): entry is { scope?: CodexQuotaScope; health: CodexUpstreamHealth } =>
+      // `spark` is deliberately never claimed. `GET /backend-api/wham/usage` takes no scope
+      // parameter and returns generic weekly/monthly windows, so its result can never prove a
+      // spark recovery — a claim here would spend an upstream call to settle `false` every
+      // time, and (with one claim per account per pass) delay the shared scope that CAN recover.
+      entry.scope !== "spark"
+      && entry.health?.cooldownSource === "reset-derived"
+      && canAcquireQuotaProbeLease(entry.health, now))
+      .sort((a, b) =>
+        (a.health.lastProbeAt ?? a.health.cooldownSince ?? 0)
+        - (b.health.lastProbeAt ?? b.health.cooldownSince ?? 0));
+    const candidate = due[0];
+    if (candidate) candidates.push({
+      accountId: account.id,
+      ...(candidate.scope ? { scope: candidate.scope } : {}),
+      health: candidate.health,
+      credentialGeneration: record.generation,
+      ...(record.replacedAt !== undefined ? { credentialReplacedAt: record.replacedAt } : {}),
+      order,
+    });
+  }
+  candidates.sort((a, b) => {
+    const age = (a.health.lastProbeAt ?? a.health.cooldownSince ?? 0)
+      - (b.health.lastProbeAt ?? b.health.cooldownSince ?? 0);
+    return age || a.order - b.order;
+  });
+  return candidates.slice(0, boundedLimit).map(candidate => {
+    const leaseId = randomUUID();
+    const next = {
+      ...candidate.health,
+      probeLeaseId: leaseId,
+      probeLeaseGeneration: candidate.health.cooldownGeneration ?? 0,
+      lastProbeAt: now,
+    };
+    if (candidate.scope) setScopedHealth(candidate.accountId, candidate.scope, next);
+    else upstreamHealth.set(candidate.accountId, next);
+    return {
+      accountId: candidate.accountId,
+      ...(candidate.scope ? { scope: candidate.scope } : {}),
+      leaseId,
+      cooldownGeneration: candidate.health.cooldownGeneration ?? 0,
+      credentialGeneration: candidate.credentialGeneration,
+      ...(candidate.credentialReplacedAt !== undefined
+        ? { credentialReplacedAt: candidate.credentialReplacedAt }
+        : {}),
+    };
+  });
+}
+
+/** Settle one background recovery claim without mutating account-wide outcome state. */
+export function settleCodexQuotaRecoveryProbe(
+  claim: CodexQuotaRecoveryProbeClaim,
+  recovered: boolean,
+  proof: CodexQuotaRecoveryProbeProof,
+  now = Date.now(),
+): boolean {
+  const health = claim.scope
+    ? scopedHealthFor(claim.accountId, claim.scope)
+    : upstreamHealth.get(claim.accountId);
+  if (!health || health.probeLeaseId !== claim.leaseId) return false;
+  const currentRecord = readCodexAccountRecord(claim.accountId);
+  const proofGeneration = proof.credentialGeneration;
+  // A probe-owned token refresh (getValidCodexToken) advances the credential generation by
+  // exactly one while preserving `replacedAt`; an external credential replacement bumps the
+  // generation too but stamps a fresh `replacedAt`. Accept the +1 transition only when the
+  // claim-time lineage is intact AND the generation the fresh quota was proven under is live.
+  const generationFenced = proofGeneration !== undefined
+    && (proofGeneration === claim.credentialGeneration
+      ? isCodexAccountGenerationLive(claim.accountId, proofGeneration)
+      : proofGeneration === claim.credentialGeneration + 1
+        && currentRecord?.replacedAt === claim.credentialReplacedAt
+        && isCodexAccountGenerationLive(claim.accountId, proofGeneration));
+  const fenced = (health.cooldownGeneration ?? 0) === claim.cooldownGeneration
+    && (health.probeLeaseGeneration ?? 0) === claim.cooldownGeneration
+    && generationFenced;
+  if (!recovered || !fenced) {
+    const released = withProbeLeaseReleased(health, now);
+    if (claim.scope) setScopedHealth(claim.accountId, claim.scope, released);
+    else upstreamHealth.set(claim.accountId, released);
+    return false;
+  }
+  if (claim.scope) {
+    deleteScopedHealth(claim.accountId, claim.scope);
+  } else {
+    const {
+      cooldownUntil: _until,
+      cooldownSince: _since,
+      cooldownSource: _source,
+      probeLeaseId: _leaseId,
+      probeLeaseGeneration: _leaseGeneration,
+      ...rest
+    } = health;
+    upstreamHealth.set(claim.accountId, {
+      ...rest,
+      cooldownGeneration: claim.cooldownGeneration + 1,
+      lastProbeAt: now,
+    });
+  }
+  return true;
 }
 
 /** Acquire the recovery probe for one confirmed model-specific quota group. */
@@ -1299,6 +1453,13 @@ export function recordCodexUpstreamOutcome(
   outcome: CodexUpstreamOutcome,
   meta: CodexUpstreamOutcomeMeta = {},
 ): void {
+  // Host-level evidence is account-independent (#914): a pre-connection
+  // reachability failure is recorded in the (provider, host) ledger even when
+  // there is no account to attribute, or the account's writer generation is
+  // stale — the early returns below must not gate it.
+  if (outcome === "connect_neutral" && meta.hostKey) {
+    recordUpstreamHostFailure(meta.hostKey, { code: meta.lastFailureCode, now: meta.now ?? Date.now() });
+  }
   if (!accountId) return;
   const writerGeneration = meta.writerGeneration ?? captureConfigGeneration();
   if (writerGeneration < lastReconciledGeneration && !liveHealthAccountIds.has(accountId)) return;
@@ -1350,6 +1511,25 @@ export function recordCodexUpstreamOutcome(
   if (outcomeClass === "caller") {
     // A 4xx does not change account health, but it does conclude an in-flight
     // probe — otherwise the lease would never be handed back.
+    const current = upstreamHealth.get(accountId);
+    const scopedProbe = meta.probeQuotaScope
+      ? scopedHealthFor(accountId, meta.probeQuotaScope)
+      : undefined;
+    if (scopedProbe && meta.probeQuotaScope && ownsProbeLease(scopedProbe, meta)) {
+      setScopedHealth(accountId, meta.probeQuotaScope, withProbeLeaseReleased(scopedProbe, now));
+    }
+    if (ownsProbeLease(current, meta)) {
+      upstreamHealth.set(accountId, withProbeLeaseReleased(current!, now));
+    }
+    return;
+  }
+
+  if (outcomeClass === "neutral") {
+    // A proven pre-connection reachability failure (DNS / TCP refusal) or a
+    // relayed 3xx is host-level, not account evidence: rotation cannot repair
+    // it and must not happen (#914). Conclude any owned probe lease, record the
+    // failure under the (provider, host) ledger when one is named, and leave
+    // account health, thread affinity, and the active account untouched.
     const current = upstreamHealth.get(accountId);
     const scopedProbe = meta.probeQuotaScope
       ? scopedHealthFor(accountId, meta.probeQuotaScope)

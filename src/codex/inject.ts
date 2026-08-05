@@ -521,11 +521,19 @@ function normalizeServiceTier(content: string): string {
   );
 }
 
-function ensureFastModeFeature(content: string): string {
+function ensureFastModeFeature(content: string, fastMode?: boolean): string {
+  // Tri-state fast mode (see OcxConfig.fastMode): true forces `fast_mode = true`,
+  // false forces `fast_mode = false`, and undefined leaves the user's config
+  // untouched (no [features] table is added and an existing fast_mode line is
+  // preserved as-is). Table and key matching accept the valid TOML spellings
+  // `[features] # comment`, `["features"]` / `['features']`, and quoted keys.
   const lines = content.split("\n");
-  const featuresStart = lines.findIndex((line) => line.trim() === "[features]");
+  const featuresHeader = /^\s*\[(["']?)\s*features\s*\1\]\s*(?:#.*)?$/;
+  const fastModeKey = /^\s*(?:"fast_mode"|'fast_mode'|fast_mode)\s*=/;
+  const featuresStart = lines.findIndex(line => featuresHeader.test(line));
   if (featuresStart === -1) {
-    return content.trimEnd() + "\n\n[features]\nfast_mode = true\n";
+    if (fastMode === undefined) return content;
+    return content.trimEnd() + "\n\n[features]\nfast_mode = " + (fastMode ? "true" : "false") + "\n";
   }
 
   const nextTable = lines.findIndex(
@@ -533,19 +541,17 @@ function ensureFastModeFeature(content: string): string {
   );
   const featuresEnd = nextTable === -1 ? lines.length : nextTable;
   for (let i = featuresStart + 1; i < featuresEnd; i++) {
-    if (/^\s*fast_mode\s*=/.test(lines[i])) {
-      lines[i] = lines[i].replace(
-        /^(\s*)fast_mode\s*=.*$/,
-        "$1fast_mode = true",
-      );
+    if (fastModeKey.test(lines[i])) {
+      if (fastMode === undefined) return lines.join("\n");
+      lines[i] = lines[i].replace(/^(\s*)(?:"fast_mode"|'fast_mode'|fast_mode)\s*=.*$/, `$1fast_mode = ${fastMode ? "true" : "false"}`);
       return lines.join("\n");
     }
   }
 
+  if (fastMode === undefined) return lines.join("\n");
   let insertAt = featuresEnd;
-  while (insertAt > featuresStart + 1 && lines[insertAt - 1].trim() === "")
-    insertAt--;
-  lines.splice(insertAt, 0, "fast_mode = true");
+  while (insertAt > featuresStart + 1 && lines[insertAt - 1].trim() === "") insertAt--;
+  lines.splice(insertAt, 0, `fast_mode = ${fastMode ? "true" : "false"}`);
   return lines.join("\n");
 }
 
@@ -565,13 +571,7 @@ function stripOpencodexCatalogPath(content: string): string {
     .join("\n");
 }
 
-export function buildProfileFile(
-  port: number,
-  catalogPath?: string | null,
-  supportsWebsockets = false,
-  includeApiAuthHeader = false,
-  hostname?: string,
-): string {
+export function buildProfileFile(port: number, catalogPath?: string | null, supportsWebsockets = false, includeApiAuthHeader = false, hostname?: string, fastMode?: boolean): string {
   const host = providerBaseHost(hostname);
   // Design B (loopback): the reference/fallback file documents the root override form.
   // Non-loopback keeps the legacy provider-table shape (built-in provider cannot carry
@@ -583,9 +583,8 @@ export function buildProfileFile(
       "# Merge these root keys into ~/.codex/config.toml manually if auto-injection was removed.",
       buildOpenaiBaseUrlLine(port, hostname),
     ];
-    if (catalogPath)
-      lines.push(`model_catalog_json = ${tomlString(catalogPath)}`);
-    lines.push("", "[features]", "fast_mode = true", "");
+    if (catalogPath) lines.push(`model_catalog_json = ${tomlString(catalogPath)}`);
+    if (fastMode !== undefined) lines.push("", "[features]", `fast_mode = ${fastMode ? "true" : "false"}`, "");
     return lines.join("\n");
   }
   const lines = [
@@ -593,18 +592,9 @@ export function buildProfileFile(
     `# Routes all model requests through the opencodex proxy at ${host}:${port}`,
     'model_provider = "opencodex"',
   ];
-  if (catalogPath)
-    lines.push(`model_catalog_json = ${tomlString(catalogPath)}`);
-  lines.push("", "[features]", "fast_mode = true");
-  lines.push(
-    buildProviderTableBlock(
-      port,
-      supportsWebsockets,
-      includeApiAuthHeader,
-      hostname,
-    ).trimEnd(),
-    "",
-  );
+  if (catalogPath) lines.push(`model_catalog_json = ${tomlString(catalogPath)}`);
+  if (fastMode !== undefined) lines.push("", "[features]", `fast_mode = ${fastMode ? "true" : "false"}`);
+  lines.push(buildProviderTableBlock(port, supportsWebsockets, includeApiAuthHeader, hostname).trimEnd(), "");
   return lines.join("\n");
 }
 
@@ -720,7 +710,7 @@ export async function injectCodexConfig(
   content = stripExistingModelProvider(content);
   content = stripRootContextWindowOverrides(content);
   content = normalizeServiceTier(content);
-  content = ensureFastModeFeature(content);
+  content = ensureFastModeFeature(content, config?.fastMode);
 
   const catalogPath = chooseCatalogPathForInjection(
     content,
@@ -787,13 +777,7 @@ export async function injectCodexConfig(
     managedDefaultsMessage = `  ⚠️ ${nativeSubagentDefaultsWarning}\n`;
   }
 
-  const profileContent = buildProfileFile(
-    port,
-    catalogPath,
-    websocketsEnabled(config ?? {}),
-    legacyMode,
-    config?.hostname,
-  );
+  const profileContent = buildProfileFile(port, catalogPath, websocketsEnabled(config ?? {}), legacyMode, config?.hostname, config?.fastMode);
   content = applyEol(content, eol);
 
   /*
