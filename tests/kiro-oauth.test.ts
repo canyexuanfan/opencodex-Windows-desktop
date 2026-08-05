@@ -499,6 +499,57 @@ describe("kiro oauth — import-first", () => {
     expect(cred.kiro?.profileArn).toBeUndefined();
   });
 
+  test("the discarded whoami identity takes the email with it, not just the ARN (#993)", async () => {
+    // Review finding: asserting only that the ARN is absent also passes against
+    // pre-fix code, which ignored whoami's ARN entirely. The email is the part
+    // that pre-fix code WOULD have kept, so it is the assertion that actually
+    // proves the mismatch path clears the whole identity.
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA", refresh_token: "rt-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB", refresh_token: "rt-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.email).toBeUndefined();
+    expect(cred.kiro?.profileArn).toBeUndefined();
+  });
+
+  test("with no refresh token the access token is the revalidation key (#993)", async () => {
+    // The implementation falls back to the access token when refresh is absent.
+    // Without this case that branch is unexercised in either direction.
+    const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/BUILDER";
+    seedKiroCliDb({ access_token: "aoa-only" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ email: "a@example.com", profileArn: arn }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.kiro?.profileArn).toBe(arn);
+  });
+
+  test("an access-token-only session that changes under whoami is rejected (#993)", async () => {
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.kiro?.profileArn).toBeUndefined();
+    expect(cred.email).toBeUndefined();
+  });
+
   test("invalid recovery data names the file the operator must remove", async () => {
     seedKiroCliDb({ access_token: "aoa-prior", refresh_token: "rt-prior" });
     writeFileSync(kiroCliRecoveryPath(), "not a recovery database", { mode: 0o600 });
