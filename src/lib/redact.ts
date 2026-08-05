@@ -2,8 +2,43 @@ export const REDACTED_SECRET = "[REDACTED]";
 
 const SENSITIVE_KEY_PATTERN = /^(?:authorization|proxy-authorization|cookie|set-cookie|set-cookie2|api[-_]?key|x-api-key|x-goog-api-key|x-amz-security-token|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|client[-_]?secret|password|profile[-_]?arn)$/i;
 
+/**
+ * Colon-labelled credential headers echoed back inside an error body
+ * (`x-api-key: <value>`), which the `key=value` rules never match.
+ *
+ * This is one pass with an explicit decision rather than a stack of regexes
+ * that have to reason about each other's output. Three earlier attempts failed
+ * exactly there: exempting `Bearer` let anything the Bearer rule could not
+ * parse escape both rules; trusting the public `[REDACTED]` marker let a
+ * suffix ride along behind it; and splitting into two ordered patterns had the
+ * second eat the first one's result.
+ *
+ * The rule: the value after the colon is a credential and gets masked whole.
+ * `Bearer` is the single exception — an auth scheme is diagnostically useful,
+ * and its token is one opaque word — so the scheme is kept and exactly that
+ * word is consumed, leaving trailing prose (`… at /path/file.json`) readable.
+ * `[REDACTED]` is a PUBLIC string an upstream can emit too, so its presence
+ * never grants trust.
+ */
+const CREDENTIAL_HEADER_LABEL = "x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token";
+
+const COLON_LABELLED_CREDENTIAL = new RegExp(
+  `\\b((?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:[^\\S\\r\\n]*)([^\\r\\n]+)`,
+  "gi",
+);
+
+function maskColonLabelledCredential(_match: string, label: string, value: string): string {
+  const bearer = /^(Bearer[^\S\r\n]+)(\S+)([^\r\n]*)$/i.exec(value);
+  // Keep the scheme word and mask only its token; the remainder is prose.
+  if (bearer) return `${label}${bearer[1]}${REDACTED_SECRET}${bearer[3]}`;
+  return `${label}${REDACTED_SECRET}`;
+}
+
 const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
-  [/\b(Bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}\b/gi, `$1$2${REDACTED_SECRET}`],
+  // A Bearer token outside a labelled header (prose, JSON fragments, logs).
+  // Horizontal whitespace only: `\s+` crossed line boundaries and masked the
+  // first word of the NEXT line when a header was quoted with a trailing break.
+  [/\b(Bearer)([^\S\r\n]+)[A-Za-z0-9._~+/=-]{8,}\b/gi, `$1$2${REDACTED_SECRET}`],
   [/\b(sk-[A-Za-z0-9][A-Za-z0-9._-]{6,})\b/g, REDACTED_SECRET],
   // GitHub tokens (classic + fine-grained + OAuth/refresh): ghp_/gho_/ghu_/ghs_/ghr_/github_pat_.
   [/\b(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{20,})\b/g, REDACTED_SECRET],
@@ -12,34 +47,6 @@ const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
   // a Bearer-prefix rule alone leaves the suffix intact.
   [/\btid=[A-Za-z0-9-]+(?:;[A-Za-z0-9_.-]+=[^;\s"']*)+(?::[A-Za-z0-9+/=_-]+)?/g, REDACTED_SECRET],
   [/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)=)([^&\s"',;]+)/gi, `$1${REDACTED_SECRET}`],
-  // Colon-labelled credentials. Upstream error bodies quote the offending header
-  // or field back at us ("x-api-key: abc…"), and the `=` rules never fire for
-  // that shape, so the credential survived into client-visible error text.
-  //
-  // The value class deliberately runs to end-of-line rather than stopping at a
-  // quote, space, or semicolon. A first attempt tokenized on those characters
-  // and leaked every delimiter-bearing variant: `x-api-key: "quoted…"` kept the
-  // whole quoted secret, `Authorization: Basic dXNlcjpwYXNz` kept the payload
-  // after the scheme, and `Cookie: a=1; b=2` kept everything after the first
-  // `;`. A credential header's value IS the rest of the line, so that is what
-  // gets masked.
-  //
-  // `Bearer` is the one readable exception, and it is handled by the dedicated
-  // Bearer rule ABOVE rather than here: an auth scheme is diagnostically useful,
-  // and its token is a single opaque word, so consuming the rest of the line
-  // there would swallow trailing diagnostics that follow a quoted header in
-  // prose (`… Authorization: Bearer <tok> at /path/file.json`). Every other
-  // scheme (Basic, Digest, …) carries its credential as the payload, so those
-  // are masked whole by this rule.
-  //
-  // The exemption is for the SANITIZED result only — `Bearer [REDACTED]` —
-  // never a raw `Bearer …` value. Exempting the bare scheme word let a
-  // credential be smuggled past this rule simply by prefixing it: the Bearer
-  // rule above only matches an opaque `[A-Za-z0-9._~+/=-]{8,}` token, so
-  // `x-api-key: Bearer "quoted…"`, `Authorization: Bearer custom:cred…`, and
-  // a short token all slipped through untouched. Anything the Bearer rule
-  // could not sanitize is therefore masked whole here.
-  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:)(?![^\S\r\n]*(?:Bearer[^\S\r\n]+\[REDACTED\]|\[REDACTED\])(?![^\s.,;)\]]))(?![^\S\r\n]*(?:\r?\n|$))([^\S\r\n]*)[^\r\n]+/gi, `$1$2${REDACTED_SECRET}`],
   [/((?:"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$3`],
   // Raw JSON "token" field values (Copilot token exchange bodies echo the credential here).
   [/(("token"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$4`],
@@ -59,7 +66,7 @@ function isSensitiveKey(key: string): boolean {
 }
 
 export function redactSecretString(value: string): string {
-  let redacted = value;
+  let redacted = value.replace(COLON_LABELLED_CREDENTIAL, maskColonLabelledCredential);
   for (const [pattern, replacement] of SECRET_VALUE_PATTERNS) {
     redacted = redacted.replace(pattern, replacement);
   }

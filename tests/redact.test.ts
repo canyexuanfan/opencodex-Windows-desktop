@@ -79,17 +79,44 @@ describe("redactSecretString", () => {
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
   });
 
-  test("the Bearer carve-out cannot be used to smuggle a credential", () => {
-    // Re-review: exempting the bare scheme word meant anything the Bearer rule
-    // could not parse (quoted, punctuation-bearing, or under 8 chars) passed
-    // through untouched — a credential just had to be prefixed with "Bearer".
-    // Only the SANITIZED result is exempt now.
+  test("a Bearer-prefixed value cannot smuggle a credential past the header rule", () => {
+    // Re-review history: the colon rule first EXEMPTED `Bearer` and left it to
+    // a separate rule, so anything that rule could not parse escaped both — a
+    // quoted value, one containing punctuation, or one under the length floor.
+    // The scheme is now handled in the same pass, so the token after it is
+    // always consumed whatever its shape.
     expect(redactSecretString('x-api-key: Bearer "smuggledcredential123456"'))
-      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
     expect(redactSecretString("Authorization: Bearer custom:credential123456"))
-      .toBe(`Authorization: ${REDACTED_SECRET}`);
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
     expect(redactSecretString("x-api-key: Bearer short"))
+      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
+  });
+
+  test("a suffix appended after the public marker is not trusted", () => {
+    // `[REDACTED]` is a PUBLIC string: an upstream can emit it too. Treating it
+    // as proof that a prefix was already sanitized let a credential ride along
+    // behind it. Nothing in the value grants trust now.
+    expect(redactSecretString("x-api-key: Bearer [REDACTED].smuggledcredential123456"))
+      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-key: [REDACTED],smuggledcredential123456"))
       .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("Authorization: Bearer abcdefgh12345678,smuggledcredential123456"))
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
+  });
+
+  test("trailing prose after a quoted Bearer header stays readable", () => {
+    // Error text quotes a header inside a sentence; eating the rest of the line
+    // would take the diagnostic with it (this broke a Vertex path marker once).
+    expect(redactSecretString("failed with Authorization: Bearer secret-abc123 at /Users/example/secret.json"))
+      .toBe(`failed with Authorization: Bearer ${REDACTED_SECRET} at /Users/example/secret.json`);
+  });
+
+  test("a Bearer token never masks across a line break", () => {
+    // `\s+` included newlines, so a header quoted with a trailing break masked
+    // the first word of the NEXT line as if it were the token.
+    expect(redactSecretString("Authorization: Bearer\nrequestidentifier123456 diagnostic"))
+      .toBe(`Authorization: ${REDACTED_SECRET}\nrequestidentifier123456 diagnostic`);
   });
 
   test("masks each credential line independently without eating the next", () => {
