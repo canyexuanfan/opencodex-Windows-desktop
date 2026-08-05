@@ -1020,8 +1020,9 @@ and the ones that did were rewritten rather than kept.
   chmod failure is swallowed again; (n) the claim-site call to it is deleted; (o) the owner-site default is
   replaced by a no-op; (p) the claim-site platform threading is removed; (q) the
   owner-site platform threading is removed; (r) the claim site swallows a required
-  hardening failure; (s) the owner site swallows it.
-  (h) through (s) are not redundant — each survived every other check. (h) and (i)
+  hardening failure; (s) the owner site swallows it; (t) the claim reclassifies a
+  denied ACL as busy; (u) the owner reclassifies it as contended.
+  (h) through (u) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1052,6 +1053,16 @@ and the ones that did were rewritten rather than kept.
   the ACL is the only thing keeping other accounts out of a coordinator database, so
   one whose ACL could not be applied must not go on to be used. A claim must never
   run its operation and an owner must never report `held`.
+  (t) and (u) are the fourth claim about those same sites, and the one that
+  "it rejected" cannot see: a denied ACL must be a **non-retryable refusal**.
+  Broadening `isBusy()` to match the ACL message left 95 tests green, because the
+  claim test accepted any rejection — including `NATIVE_MAIN_CLAIM_BUSY` — and the
+  owner test accepted any state except `held`, including `contended`, which
+  schedules a retry (`src/codex/native-main-owner.ts:194`). A permanent denial that
+  enters the retry scheduler is an endless reacquire loop wearing the costume of
+  contention. The claim must reject with `NATIVE_MAIN_CLAIM_UNAVAILABLE`; the owner
+  must settle at `{ status: "unavailable", reason: "lock-unavailable" }` and stay
+  there.
 
   **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
   `observe()` treats a zero inode as unobservable, so if Bun returns zero there,

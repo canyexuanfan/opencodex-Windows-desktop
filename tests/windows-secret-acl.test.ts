@@ -1227,16 +1227,27 @@ describe("a required hardening failure stops the operation it protects", () => {
     resetHardenedStateForTests();
     let operationRan = false;
     await forcedWindowsFailure(async codexHome => {
-      await expect(withNativeMainSharedClaim(
-        { codexHome } as never,
-        async () => { operationRan = true; },
-        { platform: "win32" },
-      )).rejects.toThrow();
+      // The exact code matters, not merely that it threw. A denied ACL is a
+      // permanent refusal; classifying it as BUSY would send a caller back to
+      // retry something that will fail identically forever. Broadening isBusy()
+      // to match the ACL message passed a test that only asserted "rejects".
+      let code: string | undefined;
+      try {
+        await withNativeMainSharedClaim(
+          { codexHome } as never,
+          async () => { operationRan = true; },
+          { platform: "win32" },
+        );
+        throw new Error("expected the claim to refuse");
+      } catch (error) {
+        code = (error as { code?: string }).code;
+      }
+      expect(code).toBe("NATIVE_MAIN_CLAIM_UNAVAILABLE");
     });
     expect(operationRan).toBe(false);
   });
 
-  test("an owner whose ACL cannot be applied never reports held", async () => {
+  test("an owner whose ACL cannot be applied settles unavailable, and does not retry", async () => {
     resetHardenedStateForTests();
     await forcedWindowsFailure(async codexHome => {
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
@@ -1245,7 +1256,16 @@ describe("a required hardening failure stops the operation it protects", () => {
         while (owner.snapshot().status === "acquiring" && Date.now() < deadline) {
           await Bun.sleep(10);
         }
-        expect(owner.snapshot().status).not.toBe("held");
+        // `contended` would be wrong in a way `not.toBe("held")` cannot see: it
+        // schedules a retry, so a permanently denied ACL becomes an endless
+        // reacquire loop instead of a settled refusal.
+        expect(owner.snapshot()).toMatchObject({
+          status: "unavailable",
+          reason: "lock-unavailable",
+        });
+        // And it stays settled: a retry would move it off `unavailable`.
+        await Bun.sleep(60);
+        expect(owner.snapshot().status).toBe("unavailable");
       } finally {
         await owner.release();
       }
