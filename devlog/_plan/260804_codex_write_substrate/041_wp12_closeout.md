@@ -1042,39 +1042,39 @@ forever" defect wearing a different name:
 |---|---|
 | `updated` | terminal recorded |
 | `conflict` | a newer transition won; do not overwrite it |
-| `unavailable / busy` | bounded retry; when it exhausts, the row records `status:"blocked", reason:"db-busy"` |
+| `unavailable / busy` | bounded retry; a busy terminal CAS cannot record itself, so on exhaustion the previously persisted `pending` schedule is preserved and the failure is reported observationally (`record-write-failed`), per `005_contract.md:277` |
 | `unavailable / database or unsafe-path` | surfaced as a failure, not retried into a wall |
 
-The third row is the one a previous version of this document gestured at with
-the words "durable retry handoff" while naming neither the artifact nor its
-consumer. There is no separate artifact and no separate consumer, because none
-is needed: the exhausted retry is ITSELF a terminal observation, recorded on
-the same row through the same CAS as `blocked` with `db-busy`, so nothing is
-left `pending` waiting for a handoff that does not exist. A later convergence
-reads that state and can retry from it; that read is the consumer.
+An earlier version of this section proposed recording the exhausted retry as
+`blocked` with `db-busy`. That cannot work — the terminal update itself takes
+`BEGIN IMMEDIATE` (`transition-state.ts:570`), which is the resource that was
+busy — and it contradicted the contract this unit already audited in WP8b. The
+preserved-`pending` rule is the existing answer, and this phase adopts it
+rather than inventing a second one.
 
-### The outcome-to-state mapping, in full
+### The outcome-to-state mapping
 
-The two unions name different things — `CodexHistoryJobOutcome`
-(`history-job.ts:68-74`) against `CodexHistoryState`
-(`convergence-types.ts:36-52`) — so the mapping is written out rather than left
-to a cast that compiles because the words overlap:
+The mapping is not reinvented here. It is the one
+`020_history_isolation.md:564-572` already defines, applied rather than
+restated, because an earlier attempt to restate it produced several wrong rows
+at once:
 
-| Job outcome | Recorded state |
-|---|---|
-| `converged` | `status:"converged"`, `attempts` incremented, `nextRetryAt:null`, real `pendingRows`/`backupEntries` |
-| `skipped` | `status:"converged"`, `reason:undefined` — the user opted out, which is a completed decision, not a failure; it is NOT `blocked` |
-| `blocked / busy` | `status:"blocked"`, `reason:"db-busy"`, `nextRetryAt` set |
-| `blocked / database` | `status:"blocked"`, `reason:"unreadable"` |
-| `blocked / unsafe-path` | `status:"blocked"`, `reason:"permission"` |
-| `failed / timeout` | `status:"blocked"`, `reason:"timeout"` |
-| `failed / worker-died` | `status:"blocked"`, `reason:"worker-died"` |
-| `failed / worker-error` | `status:"blocked"`, `reason:"record-write-failed"` |
+- busy → `pending / db-busy` with a next retry, not `blocked`
+- permission/refusal → `blocked / permission`
+- unreadable DB/manifest → `unknown / unreadable`, null counts
+- unsupported schema/shape → `unknown / schema`, null counts
+- watchdog → `unknown / timeout`
+- graceful cancellation → `unknown / shutdown-cancelled`
+- terminal-CAS failure → `record-write-failed` observationally, with the
+  `pending` schedule preserved — a Worker error is not the same event
 
-`skipped` is the row to watch. It maps to `converged` with no reason, because
-the user opting out of history resume is a completed decision — marking it
-`blocked` would tell a later reader something went wrong and prompt a retry of
-a thing the user asked not to happen.
+Two facts that stay true regardless of which row applies:
+
+- `converged.rows`/`files` are mutation counts (`history-worker.ts:140-146`),
+  not the durable counts — `pendingRows`/`backupEntries` come from the final
+  probe (`history-provider.ts:756`);
+- a `skip` deliberately performs no probe, so it stores NULL counts rather
+  than manufacturing a zero-looking one (`005_contract.md:272-275`).
 
 Two correctness rules follow from the same round:
 
