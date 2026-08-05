@@ -3,7 +3,7 @@ export const REDACTED_SECRET = "[REDACTED]";
 const SENSITIVE_KEY_PATTERN = /^(?:authorization|proxy-authorization|cookie|set-cookie|set-cookie2|api[-_]?key|x-api-key|x-goog-api-key|x-amz-security-token|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|client[-_]?secret|password|profile[-_]?arn)$/i;
 
 const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
-  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, `Bearer ${REDACTED_SECRET}`],
+  [/\b(Bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}\b/gi, `$1$2${REDACTED_SECRET}`],
   [/\b(sk-[A-Za-z0-9][A-Za-z0-9._-]{6,})\b/g, REDACTED_SECRET],
   // GitHub tokens (classic + fine-grained + OAuth/refresh): ghp_/gho_/ghu_/ghs_/ghr_/github_pat_.
   [/\b(gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{20,})\b/g, REDACTED_SECRET],
@@ -24,11 +24,19 @@ const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
   // `;`. A credential header's value IS the rest of the line, so that is what
   // gets masked.
   //
-  // `Bearer` is the one readable exception: an auth scheme is diagnostically
-  // useful and the dedicated rule above already masks its token, so the scheme
-  // word is preserved and only what follows is consumed here. Other schemes
-  // (Basic, Digest, …) are masked whole, since their payload is the credential.
-  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:\s*(?:Bearer\s+)?)(?!\s*$)[^\r\n]+/gi, `$1${REDACTED_SECRET}`],
+  // `Bearer` is the one readable exception, and it is handled by the dedicated
+  // Bearer rule ABOVE rather than here: an auth scheme is diagnostically useful,
+  // and its token is a single opaque word, so consuming the rest of the line
+  // there would swallow trailing diagnostics that follow a quoted header in
+  // prose (`… Authorization: Bearer <tok> at /path/file.json`). Every other
+  // scheme (Basic, Digest, …) carries its credential as the payload, so those
+  // are masked whole by this rule.
+  //
+  // The rules run in order, so by the time this one fires the Bearer rule has
+  // already replaced `Bearer <tok>` with `Bearer [REDACTED]`. Skipping a value
+  // that is already redacted keeps this rule from eating that result — and from
+  // eating the trailing diagnostics after it.
+  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:)(?![^\S\r\n]*(?:Bearer\b|\[REDACTED\]|\r?\n|$))([^\S\r\n]*)[^\r\n]+/gi, `$1$2${REDACTED_SECRET}`],
   [/((?:"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$3`],
   // Raw JSON "token" field values (Copilot token exchange bodies echo the credential here).
   [/(("token"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$4`],
