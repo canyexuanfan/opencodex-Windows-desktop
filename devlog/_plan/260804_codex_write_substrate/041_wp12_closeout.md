@@ -1313,6 +1313,20 @@ different things, and forcing them equal would be tidiness, not correctness.
 
 ## Deferred, with issues rather than silence
 
+Three things leave this unit as issues rather than as silence:
+
+| Issue | What it covers |
+|---|---|
+| [#1048](https://github.com/lidge-jun/opencodex/issues/1048) | WP13 composed acceptance — every production entry point funnelling through the substrate, not each helper passing its own test |
+| [#1049](https://github.com/lidge-jun/opencodex/issues/1049) | Adopting pre-substrate routed homes into the coordinator |
+| PR #998 | WP14 itself; the PR is the deliverable, so a separate issue would only duplicate it |
+
+The middle one was not planned. Implementation found it: `assertInitialStateCanBeCreated`
+cannot seed a coordinator row over routed bytes, which describes every install
+predating this substrate, so gating injection on the lock would have broken
+re-injection for all of them. Its design already exists at `005_contract.md:709-779`.
+
+
 WP13 (the composed acceptance suite, `050_composed_acceptance.md`) and WP14 do
 not land here. They become GitHub issues so that `dev` carries an honest record
 of what is proven and what is not: the lock's production edge is demonstrated by
