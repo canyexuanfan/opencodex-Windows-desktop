@@ -1036,8 +1036,10 @@ and the ones that did were rewritten rather than kept.
   allowed to trust a pathname-only memo; (ai) an optional caller trusts it when the
   identity is UNOBSERVABLE; (aj) observed absence retires the memo only for required
   callers; (ak) an optional caller compares the object but ignores freshness;
-  (al) an optional caller accepts an unobservable identity when the cause is a
-  zero inode rather than a thrown stat.
+  (al) an optional caller accepts an unobservable identity. Reported precisely: the
+  optional-only form reddens the four optional entry points; a broader form that
+  also bypasses required callers reddens eight. Counting the wider one against the
+  narrower description overstated the evidence, so both are named.
   (h) through (al) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
@@ -1215,6 +1217,12 @@ and the ones that did were rewritten rather than kept.
   every REQUIRED Windows harden fails closed and this whole surface is inert in the
   one place it exists for. A pinned-Bun probe on real Windows/NTFS must confirm a
   nonzero, stable file index before F4 is called complete (goalplan `wp12t0c2`).
+  A file index alone is not enough, because three other production assumptions ride
+  on that platform and none of them is observable from here: `dev:ino` must survive
+  a real `icacls` edit (the before/after comparison assumes it), post-ACL `ctimeNs`
+  must be readable and stable for an immediate memo hit (the memo stores it), and an
+  ordinary unlink/recreate must move at least one memo component. Exact-identity ABA
+  during hardening stays the documented residual.
   This is recorded here as well as in the goalplan so this document cannot be read
   as complete on its own.
 
