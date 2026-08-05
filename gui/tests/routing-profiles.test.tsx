@@ -37,7 +37,7 @@ const PROFILE_B = {
 const PROFILE_REFRESHED = {
   ...PROFILE,
   revision: "rev-def",
-  require: { tools: true, image: true },
+  require: { tools: true, imageInput: true },
 };
 
 const ANALYTICS = {
@@ -272,7 +272,7 @@ test("routing refreshes the selected profile after reload", async () => {
     await act(async () => { retry!.click(); });
     await tick(3);
     expect(container.textContent).toContain("rev-def");
-    expect(container.textContent).toContain("\"image\": true");
+    expect(container.textContent).toContain("\"imageInput\": true");
   } finally {
     await act(async () => { root.unmount(); });
   }
