@@ -25,6 +25,7 @@ import {
 import {
   formatProviderDisplayName,
   isCatalogProviderId,
+  providerIconSrc,
 } from "../gui/src/provider-icons";
 import { en } from "../gui/src/i18n/en";
 import { interpolate, type TFn } from "../gui/src/i18n/shared";
@@ -452,6 +453,8 @@ describe("provider-icons", () => {
     expect(formatProviderDisplayName("commandcode", englishT)).toBe("Command Code - API");
     expect(isCatalogProviderId("command-code")).toBe(true);
     expect(isCatalogProviderId("commandcode")).toBe(true);
+    expect(providerIconSrc("command-code")).toBe("/provider-icons/commandcode-color.svg");
+    expect(providerIconSrc("commandcode")).toBe("/provider-icons/commandcode-color.svg");
   });
 
   test("unknown simple ids are title-cased; mixedCase custom names pass through", () => {

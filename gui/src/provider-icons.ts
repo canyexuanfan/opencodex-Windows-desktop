@@ -9,6 +9,8 @@ const PROVIDER_ICON_ALIASES: Record<string, string> = {
   "cloudflare-workers-ai": "cloudflare-ai-gateway-color.svg",
   cline: "cline-color.svg",
   "cline-pass": "cline-color.svg",
+  "command-code": "commandcode-color.svg",
+  commandcode: "commandcode-color.svg",
   cursor: "cursor-color.svg",
   deepseek: "deepseek-color.svg",
   firepass: "firepass-color.svg",
