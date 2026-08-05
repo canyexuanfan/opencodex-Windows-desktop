@@ -450,6 +450,11 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
         txId: randomUUID(),
       };
     },
+    version() {
+      requireOpen();
+      const state = readState(db);
+      return { nativeGeneration: state.nativeGeneration, currentTxId: state.currentTxId };
+    },
     assertPublished(expectation) {
       requireOpen();
       if (lastResult?.kind !== "updated") {

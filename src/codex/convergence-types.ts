@@ -335,6 +335,15 @@ export interface CodexCoordinatorTransaction {
 export interface CodexCoordinatorTransactionController {
   readonly capability: CodexCoordinatorTransaction;
   expectation(): CommitExpectation;
+  /**
+   * The pair the row holds right now, read on the ALREADY-OPEN transaction.
+   *
+   * A holder needs `currentTxId` to build the conditional update, and
+   * `CommitExpectation` carries only the generation pair plus the new txId.
+   * Opening a second connection to read it would contend with this
+   * transaction's own `BEGIN IMMEDIATE`.
+   */
+  version(): CodexTransitionVersion;
   assertPublished(expectation: CommitExpectation): void;
   assertStablePath(): void;
   commit(): void;
