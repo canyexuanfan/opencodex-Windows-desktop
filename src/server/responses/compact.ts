@@ -9,7 +9,7 @@ import { parseRequest } from "../../responses/parser";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
-import { routeModel } from "../../router";
+import { NoEligiblePolicyCandidateError, routeModel } from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
@@ -275,6 +275,12 @@ export async function handleResponsesCompact(
     // evaluation too - not only the later handleResponses dispatch.
     route = routeModel(config, raw.model, evidenceFromBody(raw));
   } catch (err) {
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      // Persist the evaluation trace (per-candidate exclusions + the
+      // no-eligible reason) so a failed compact policy request stays
+      // auditable, matching the other request handlers.
+      logCtx.routeDecision = err.trace;
+    }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
   const selectedModelId = route.modelId;
