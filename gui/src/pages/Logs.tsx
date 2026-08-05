@@ -958,9 +958,20 @@ function LogDetailDialog({
               )}
               <span className="muted">{t("logs.detail.route.candidates")}</span>
               <span className="mono">
-                {(detail.routeDecision.candidates ?? []).map(candidate =>
-                  `${candidate.provider}/${candidate.model}${candidate.eligible === false ? " ✗" : " ✓"}`,
-                ).join("  ") || "–"}
+                {(detail.routeDecision.candidates ?? []).map(candidate => {
+                  const provider = typeof candidate.provider === "string" && candidate.provider.length > 0
+                    ? candidate.provider
+                    : "–";
+                  const model = typeof candidate.model === "string" && candidate.model.length > 0
+                    ? candidate.model
+                    : "–";
+                  const mark = candidate.eligible === true
+                    ? " ✓"
+                    : candidate.eligible === false
+                      ? " ✗"
+                      : " ?";
+                  return `${provider}/${model}${mark}`;
+                }).join("  ") || "–"}
               </span>
             </div>
           ) : (
