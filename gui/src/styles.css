@@ -687,6 +687,30 @@ a.btn, a.btn:hover { text-decoration: none; }
   overflow: hidden;
 }
 .maintenance-notice { margin: 14px 0 0; align-items: flex-start; }
+/*
+  Transient action feedback (sync result, model-apply confirmation, …) as a fixed toast.
+  It is out of the layout flow, so appearing or dismissing it can never shift the page the
+  way an inline notice did (that box pushed every panel below it down by its full height on
+  each action). It sits bottom-right of the viewport, clear of the content column, and
+  reuses the notice tones.
+*/
+.action-toast {
+  position: fixed;
+  right: var(--space-6);
+  bottom: var(--space-6);
+  z-index: var(--z-modal);
+  margin: 0;
+  max-width: min(480px, calc(100vw - 48px));
+  box-shadow: var(--shadow);
+  align-items: flex-start;
+  animation: sync-toast-in var(--motion-normal) ease-out;
+}
+@keyframes sync-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* Refresh icon spins while a sync is in flight (the `.spin` keyframes already exist). */
+.spin-icon { animation: spin 0.9s linear infinite; }
 .update-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .update-row .field-label { margin: 0; }
 .update-empty { padding: 18px; margin-bottom: 14px; }
@@ -1325,7 +1349,8 @@ dialog.modal-overlay::backdrop {
   transition: transform var(--motion-normal);
 }
 .bar-green { background: var(--green); }
-.bar-amber { background: linear-gradient(90deg, var(--green), var(--amber)); }
+/* Flat, matching .bar-warn: no gradients on data bars (FE-GRADIENT-02 / AI-tell audit). */
+.bar-amber { background: var(--amber); }
 .quota-row--skeleton { min-height: 18px; }
 .quota-skel {
   display: inline-block;

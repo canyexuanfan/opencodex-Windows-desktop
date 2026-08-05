@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
-import { IconChevron, IconBoxes, IconInfo, IconShuffle } from "../icons";
+import { IconChevron, IconBoxes, IconInfo, IconShuffle, IconCheck, IconAlert } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
@@ -81,6 +81,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const needsDefaultCollapseRef = useRef(initialCollapsed === null);
   const [status, setStatus] = useState("");
   const [ok, setOk] = useState(false);
+  // Transient action feedback as a fixed toast: appearing or auto-clearing it never shifts
+  // the workspace below (the old inline Notice pushed the whole model grid down by its
+  // height on every apply). Every mutation already clears `status` first, so a new action
+  // re-arms the hold timer; the timer itself just clears the status again.
+  useEffect(() => {
+    if (!status) return;
+    const holdMs = ok ? 6000 : 8000;
+    const timer = setTimeout(() => setStatus(""), holdMs);
+    return () => clearTimeout(timer);
+  }, [status, ok]);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const loadGenerationRef = useRef(0);
@@ -1343,7 +1353,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
         </div>
       </div>
       <p className="page-sub">{t("models.subtitle")}</p>
-      {status && <Notice tone={ok ? "ok" : "err"}>{status}</Notice>}
+      {status && (
+        <div className={`action-toast notice ${ok ? "notice-ok" : "notice-err"}`} role="status" aria-live="polite">
+          {ok ? <IconCheck /> : <IconAlert />}
+          <span>{status}</span>
+        </div>
+      )}
       {/* Keep the last-good catalog interactive but make a failed revalidation explicit. */}
       {catalogState.showError && <Notice tone="err">{t("models.loadFail")}</Notice>}
       <div className="models-workspace-root" aria-busy={catalogState.refreshing || undefined}>

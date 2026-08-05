@@ -1,4 +1,5 @@
-import { IconAlert, IconInfo, IconRefresh } from "../icons";
+import { useEffect, useRef, useState } from "react";
+import { IconAlert, IconCheck, IconInfo, IconRefresh } from "../icons";
 import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
 import { navigateHash } from "../hash-routing";
@@ -147,42 +148,85 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
     syncResult, syncError, updateJob, reconnecting,
   } = d;
 
+  // Sync feedback is a transient fixed toast instead of an inline notice: the toast sits
+  // outside the layout flow, so the result can appear without pushing the panels below
+  // this card down by a full box height (the old notice shifted the whole dashboard on
+  // every sync click). It auto-dismisses; a new sync clears and re-arms it.
+  const [syncToastDismissed, setSyncToastDismissed] = useState(false);
+  const syncToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (syncToastTimerRef.current) {
+      clearTimeout(syncToastTimerRef.current);
+      syncToastTimerRef.current = null;
+    }
+    if (syncResult || syncError) {
+      const holdMs = syncError ? 8000 : 6000;
+      syncToastTimerRef.current = setTimeout(() => {
+        syncToastTimerRef.current = null;
+        setSyncToastDismissed(true);
+      }, holdMs);
+    }
+    return () => {
+      if (syncToastTimerRef.current) clearTimeout(syncToastTimerRef.current);
+    };
+  }, [syncResult, syncError]);
+
+  // A fresh click re-arms the toast even if the previous one was already auto-dismissed.
+  const handleRunSync = () => {
+    setSyncToastDismissed(false);
+    void runSync();
+  };
+
   return (
-    <div className="panel maintenance-panel">
-      {/* Same one-row chrome as Sub-agent delegation: copy left, action right. */}
-      <div className="dash-sync-summary">
-        <div className="dash-sync-copy">
-          <div className="font-semibold">{t("dash.syncModels")}</div>
-          <div className="muted text-control dash-sync-hint">{t("dash.syncModelsHint")}</div>
+    <>
+      <div className="panel maintenance-panel">
+        {/* Same one-row chrome as Sub-agent delegation: copy left, action right. */}
+        <div className="dash-sync-summary">
+          <div className="dash-sync-copy">
+            <div className="font-semibold">{t("dash.syncModels")}</div>
+            <div className="muted text-control dash-sync-hint">{t("dash.syncModelsHint")}</div>
+          </div>
+          <div className="maintenance-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={handleRunSync} disabled={syncing}>
+              <IconRefresh className={syncing ? "spin-icon" : undefined} /> {syncing ? t("dash.syncing") : t("dash.syncRun")}
+            </button>
+            {/*
+              The update flow lives in the sidebar footer, which reports whether one is waiting
+              and is reachable from every page. A second button here duplicated it without
+              adding that signal. The trigger stays as a zero-size anchor so the deep link
+              (`#dashboard/update`) still has something to open against and the dialog has a
+              focus target to return to on close.
+            */}
+            <button
+              ref={updateTriggerRef}
+              type="button"
+              className="maintenance-update-anchor"
+              onClick={openUpdateDialog}
+              disabled={updateLoading}
+              aria-haspopup="dialog"
+              aria-controls="dashboard-update-dialog"
+              aria-expanded={updateOpen}
+              aria-label={t("dash.checkUpdate")}
+              tabIndex={-1}
+            />
+          </div>
         </div>
-        <div className="maintenance-actions">
-          <button type="button" className="btn btn-ghost btn-sm" onClick={runSync} disabled={syncing}>
-            <IconRefresh /> {syncing ? t("dash.syncing") : t("dash.syncRun")}
-          </button>
-          {/*
-            The update flow lives in the sidebar footer, which reports whether one is waiting
-            and is reachable from every page. A second button here duplicated it without
-            adding that signal. The trigger stays as a zero-size anchor so the deep link
-            (`#dashboard/update`) still has something to open against and the dialog has a
-            focus target to return to on close.
-          */}
-          <button
-            ref={updateTriggerRef}
-            type="button"
-            className="maintenance-update-anchor"
-            onClick={openUpdateDialog}
-            disabled={updateLoading}
-            aria-haspopup="dialog"
-            aria-controls="dashboard-update-dialog"
-            aria-expanded={updateOpen}
-            aria-label={t("dash.checkUpdate")}
-            tabIndex={-1}
-          />
-        </div>
+        {updateJob && (
+          <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
+            {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
+            <span>
+              {updateJobLabel(updateJob.status, t)}
+              {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
+              {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
+              {updateJob.error ? ` ${updateJob.error}` : ""}
+            </span>
+          </div>
+        )}
       </div>
-      {syncResult && (
-        <div className={`notice ${syncResult.nativeSubagentDefaultsWarning ? "notice-warn" : "notice-ok"} maintenance-notice`} role="status">
-          {syncResult.nativeSubagentDefaultsWarning ? <IconAlert /> : <IconRefresh />}
+      {!syncToastDismissed && syncResult && (
+        <div className={`action-toast notice ${syncResult.nativeSubagentDefaultsWarning ? "notice-warn" : "notice-ok"}`} role="status" aria-live="polite">
+          {syncResult.nativeSubagentDefaultsWarning ? <IconAlert /> : <IconCheck />}
           <span>
             {t("dash.syncOk", { count: syncResult.added })}
             {syncResult.warning ? ` ${syncResult.warning}` : ""}
@@ -191,23 +235,12 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
           </span>
         </div>
       )}
-      {syncError && (
-        <div className="notice notice-err maintenance-notice" role="status">
+      {!syncToastDismissed && syncError && (
+        <div className="action-toast notice notice-err" role="status" aria-live="polite">
           <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
         </div>
       )}
-      {updateJob && (
-        <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
-          {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
-          <span>
-            {updateJobLabel(updateJob.status, t)}
-            {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
-            {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
-            {updateJob.error ? ` ${updateJob.error}` : ""}
-          </span>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
