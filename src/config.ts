@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -16,6 +16,7 @@ import {
 } from "./codex/generation";
 import type {
   BumpConfigGeneration,
+  ConfigGeneration,
   ReadConfigGeneration,
   WithExpectedConfigGenerationSync,
 } from "./codex/convergence-types";
@@ -1744,6 +1745,54 @@ export function readConfigDiagnostics(): ConfigDiagnostics {
   return readConfigFileSnapshot().diagnostics;
 }
 
+/**
+ * The persisted config, plus a digest of the EXACT bytes it was parsed from.
+ *
+ * A union rather than a nullable digest, because `{ kind: "read" }` with no
+ * digest is a state that cannot occur — and a state that cannot occur should
+ * not be a state that can be written down. Refusing it at runtime is a check
+ * somebody eventually forgets; making it unrepresentable is not.
+ *
+ * Why a byte digest at all: the Codex write lock compares an authority snapshot
+ * taken before the lock against one taken while holding it, and its config
+ * component used to hash the PARSED object. Two files that differ only in
+ * whitespace or key order parse identically, so a non-cooperating writer could
+ * rewrite the file between admission and commit and the comparison would see
+ * nothing. Hashing what was actually read closes that.
+ *
+ * `readConfigFileSnapshot` stays private on purpose. Its `raw` carries provider
+ * API keys and admission tokens, and `privacy:scan` reads tracked source text,
+ * not runtime values — so it would not catch a caller that logged or serialized
+ * that string. The digest travels; the bytes do not.
+ */
+export type ConfigAdmissionSnapshot =
+  | Readonly<{ kind: "read"; diagnostics: ConfigDiagnostics; contentSha256: string }>
+  | Readonly<{ kind: "unreadable"; diagnostics: ConfigDiagnostics; contentSha256: null }>;
+
+export function readConfigAdmissionSnapshot(): ConfigAdmissionSnapshot {
+  let bytes: Buffer;
+  try {
+    // ONE read. Hashing the file and then reading it again to parse would leave
+    // a window for the two to disagree, which is the exact hazard this exists
+    // to detect — the check would become a second chance to be wrong.
+    bytes = readFileSync(getConfigPath());
+  } catch (error) {
+    return {
+      kind: "unreadable",
+      diagnostics: isMissingPathError(error)
+        ? { config: getDefaultConfig(), source: "default", error: null }
+        : { config: getDefaultConfig(), source: "fallback", error: "invalid_json" },
+      contentSha256: null,
+    };
+  }
+  return {
+    kind: "read",
+    // Decoded from the same buffer that was hashed, not re-read from disk.
+    diagnostics: configDiagnosticsFromRaw(bytes.toString("utf-8")),
+    contentSha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
 const CONFIG_MUTATION_DB_FILENAME = "config-mutation.sqlite";
 const CONFIG_MUTATION_DB_SIDECARS = ["-journal", "-wal", "-shm"] as const;
 let warnedConfigMutationDirectoryAcl = false;
@@ -1871,6 +1920,29 @@ export const readConfigGeneration: ReadConfigGeneration = () => {
 
 export function observeConfigGeneration(): ConfigGenerationObservation {
   return observeConfigGenerationAtPath(join(getConfigDir(), CONFIG_MUTATION_DB_FILENAME));
+}
+
+/**
+ * Read the generation from the transaction that is open RIGHT NOW.
+ *
+ * The observer cannot do this job. On the very first acquisition the
+ * `BEGIN IMMEDIATE` that creates the table has not committed yet, so a separate
+ * read-only connection cannot read a generation from it — measured, not
+ * assumed. A caller that compared a pre-lock observation against an observer
+ * re-read would therefore refuse every first write as stale.
+ *
+ * Throwing when no transaction is open is deliberate. Being called outside the
+ * lock is broken plumbing, and returning a typed "unavailable" would let that
+ * bug arrive disguised as an environmental failure — retried forever, on a
+ * machine where nothing is wrong.
+ */
+export function readConfigGenerationInCurrentMutationTransaction(): ConfigGeneration {
+  if (configMutationLockDepth < 1 || !configMutationDatabase) {
+    throw new Error(
+      "readConfigGenerationInCurrentMutationTransaction requires an open config mutation transaction.",
+    );
+  }
+  return readConfigGenerationInTransaction(configMutationDatabase);
 }
 
 export const bumpConfigGeneration: BumpConfigGeneration = expected => {

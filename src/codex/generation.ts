@@ -44,17 +44,30 @@ interface SchemaVersionRow {
 }
 
 /**
- * Observation reuses `ConfigGenerationRead` exactly; there is deliberately no
- * extra `absent` variant.
+ * Observation adds exactly one variant to `ConfigGenerationRead`: `absent`.
  *
- * A missing database and an unreadable one mean the same thing to a caller that
- * is only allowed to LOOK: no generation is available to admit against. Adding
- * `absent` would tempt a caller to treat "no file" as a known-good baseline —
- * which is the same absence-as-guarantee mistake that produced five wrong-clean
- * verdicts in the residue classifier. Only cooperating config writes may create
- * and initialize the singleton (`010_catalog_seam.md:273-276`).
+ * This used to be deliberately absent itself, on the reasoning that a caller
+ * who may only LOOK must not be handed something it could mistake for a
+ * known-good baseline of zero. That reasoning still holds, and `absent` does
+ * not violate it — because `absent` is not a baseline. It authorizes nothing on
+ * its own. A caller may only promote it after taking the config transaction and
+ * reading a real zero THERE (`readConfigGenerationInCurrentMutationTransaction`),
+ * at which point the zero is observed rather than assumed. A caller with no
+ * transaction to open, such as catalog gather, must keep refusing it.
+ *
+ * What forced the distinction: refusing on absence meant refusing every Codex
+ * write on any home whose config predates this database — a permanent refusal
+ * for existing users, not a fixture problem.
+ *
+ * `absent` is returned ONLY for ENOENT on the initial `statSync`. A file that
+ * exists but cannot be read, a directory in its place, a bad schema version, or
+ * corrupt SQLite all stay `unavailable`, because those are reasons to stop, and
+ * collapsing them into absence is how a corrupt coordinator would become a
+ * licence to write.
  */
-export type ConfigGenerationObservation = ConfigGenerationRead;
+export type ConfigGenerationObservation =
+  | ConfigGenerationRead
+  | { kind: "absent" };
 
 function errorCode(error: unknown): string {
   return error && typeof error === "object" && "code" in error
@@ -152,7 +165,9 @@ export function observeConfigGenerationAtPath(
   try {
     statSync(databasePath);
   } catch (error) {
-    return unavailable(error);
+    // ENOENT alone means absent. Everything else — EACCES, ENOTDIR, EIO — is a
+    // reason the question could not be answered, which is not the same answer.
+    return errorCode(error) === "ENOENT" ? { kind: "absent" } : unavailable(error);
   }
 
   let database: Database | undefined;

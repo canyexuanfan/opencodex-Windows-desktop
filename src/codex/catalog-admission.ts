@@ -139,6 +139,17 @@ export function captureCatalogAdmissionSnapshot(
   config: Readonly<OcxConfig>,
 ): CatalogAdmissionSnapshot {
   const generation = observeConfigGeneration();
+  if (generation.kind === "absent") {
+    /*
+     * Absence is refused HERE and admitted elsewhere, and the difference is the
+     * lock. Codex write admission may carry an absent generation because it goes
+     * on to take the config transaction and read a real zero inside it. Catalog
+     * gather has no such transaction — by contract it holds no lock and writes
+     * nothing — so it has no way to turn absence into an observation. Refusing
+     * is the only honest answer available to it.
+     */
+    throw new Error("Cannot capture Codex catalog admission: no config generation exists to admit against.");
+  }
   if (generation.kind !== "ready") {
     throw new Error(`Cannot capture Codex catalog admission: config generation is ${generation.reason}.`);
   }

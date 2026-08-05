@@ -505,7 +505,12 @@ export interface AdmissionSnapshot {
   config: Readonly<OcxConfig>;
   configDigest: string;
   intent: "on" | "off";
-  generation: number;
+  /**
+   * `present:false` means the coordinator database did not exist when this was
+   * captured. It is not a baseline: it authorizes a write only when the read
+   * taken inside the config transaction returns exactly 0.
+   */
+  generation: Readonly<{ present: boolean; value: number }>;
   ownership: "owned" | "foreign" | "unknown";
   externalProvider: string | null;
   canonicalTargets: Readonly<{
