@@ -206,3 +206,48 @@ describe("the snapshot describes one decision", () => {
     expect(hashAuthority({ ...base })).toBe(hashAuthority(base));
   });
 });
+
+describe("ownership is an authority, not a formality", () => {
+  /*
+   * The mutation that exposed the gap: flipping admission's ownership guard to
+   * `if (false)` left every test green, because the fixtures pin ownership to
+   * `owned` and nothing exercised the refusal. A guard with no test is a guard
+   * someone can delete.
+   */
+  test("foreign ownership refuses on the service-home authority", () => {
+    seed();
+    const result = admitRaw({
+      inspectOwnership: () => ({ ownership: "foreign", reason: "installed for /elsewhere" }),
+    });
+    expect(result.kind).toBe("refused");
+    expect(result.kind === "refused" && result.authority).toBe("service-home");
+    expect(result.kind === "refused" && result.message).toContain("/elsewhere");
+  });
+
+  test("unknown ownership refuses too, and says the proof is missing", () => {
+    seed();
+    const result = admitRaw({
+      inspectOwnership: () => ({ ownership: "unknown", reason: "the plist could not be read" }),
+    });
+    expect(result.kind).toBe("refused");
+    expect(result.kind === "refused" && result.authority).toBe("service-home");
+    // The two refusals must not read alike: one is someone else's home, the
+    // other is a question nobody could answer, and they need different actions.
+    expect(result.kind === "refused" && result.message).toContain("could not be proven");
+  });
+
+  test("neither refusal creates anything", () => {
+    seed();
+    const before = [...readdirSync(codexHome), ...readdirSync(opencodexHome)].sort();
+    for (const ownership of ["foreign", "unknown"] as const) {
+      expect(admitRaw({ inspectOwnership: () => ({ ownership, reason: "x" }) }).kind).toBe("refused");
+    }
+    expect([...readdirSync(codexHome), ...readdirSync(opencodexHome)].sort()).toEqual(before);
+  });
+
+  test("the admitted snapshot carries the observed value, not a constant", () => {
+    seed();
+    const result = admitRaw({ inspectOwnership: () => ({ ownership: "owned", reason: "probe" }) });
+    expect(result.kind === "admitted" && result.snapshot.ownership).toBe("owned");
+  });
+});
