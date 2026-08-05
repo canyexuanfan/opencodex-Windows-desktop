@@ -66,15 +66,27 @@ export function codexWriteCoordinationEligibility(deps: {
 
   const residue = deps.residue();
   if (residue.kind === "clean") return { kind: "coordinated" };
-  if (residue.kind === "residue") {
-    return {
-      kind: "legacy-uncoordinated",
-      reason: "this home was routed before write coordination existed and has not been adopted yet",
-    };
-  }
-  // Indeterminate is eligible for neither: we could not classify what is there,
-  // and both coordinating and bypassing would be acting on a guess.
-  return { kind: "refused", reason: "the existing native Codex state could not be classified" };
+  /*
+   * Everything else keeps the path it has always had.
+   *
+   * `residue` is a pre-substrate routed home; `indeterminate` means the
+   * classifier could not read what is there — a profile it cannot parse, for
+   * instance, which is an ordinary re-injection over an older file rather than
+   * a hazard.
+   *
+   * Neither may CREATE a coordinator row: doing that over unclassified or
+   * routed bytes would erase the evidence an interrupted transition needs. But
+   * refusing the injection outright, which an earlier draft of this function
+   * did for `indeterminate`, breaks re-injection on homes that work today —
+   * caught by the shipped restore tests rather than by review. Declining to
+   * coordinate is the correct scope of the refusal; declining to write is not.
+   */
+  return {
+    kind: "legacy-uncoordinated",
+    reason: residue.kind === "residue"
+      ? "this home was routed before write coordination existed and has not been adopted yet"
+      : "the existing native Codex state could not be classified, so it cannot seed a coordinator row",
+  };
 }
 
 /** The transition row rejected this publication; a conflict, not an exception. */

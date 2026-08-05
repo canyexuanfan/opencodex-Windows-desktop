@@ -1220,10 +1220,7 @@ export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): {
         preserveProfile: journal.profileRestored || journal.profileChanged,
       });
   const owningCodexHome = getCodexHome();
-  const restoredCatalog = withCatalogWriteSerialization(
-    owningCodexHome,
-    (permit) => restoreCodexCatalogWithPermit(permit, owningCodexHome),
-  );
+  const restoredCatalog = withCatalogWriteSerialization(owningCodexHome, permit => restoreCodexCatalogWithPermit(permit, owningCodexHome));
   const cat =
     restoredCatalog.kind === "completed"
       ? restoredCatalog.value
