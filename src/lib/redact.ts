@@ -32,11 +32,14 @@ const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
   // scheme (Basic, Digest, …) carries its credential as the payload, so those
   // are masked whole by this rule.
   //
-  // The rules run in order, so by the time this one fires the Bearer rule has
-  // already replaced `Bearer <tok>` with `Bearer [REDACTED]`. Skipping a value
-  // that is already redacted keeps this rule from eating that result — and from
-  // eating the trailing diagnostics after it.
-  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:)(?![^\S\r\n]*(?:Bearer\b|\[REDACTED\]|\r?\n|$))([^\S\r\n]*)[^\r\n]+/gi, `$1$2${REDACTED_SECRET}`],
+  // The exemption is for the SANITIZED result only — `Bearer [REDACTED]` —
+  // never a raw `Bearer …` value. Exempting the bare scheme word let a
+  // credential be smuggled past this rule simply by prefixing it: the Bearer
+  // rule above only matches an opaque `[A-Za-z0-9._~+/=-]{8,}` token, so
+  // `x-api-key: Bearer "quoted…"`, `Authorization: Bearer custom:cred…`, and
+  // a short token all slipped through untouched. Anything the Bearer rule
+  // could not sanitize is therefore masked whole here.
+  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:)(?![^\S\r\n]*(?:Bearer[^\S\r\n]+\[REDACTED\]|\[REDACTED\])(?![^\s.,;)\]]))(?![^\S\r\n]*(?:\r?\n|$))([^\S\r\n]*)[^\r\n]+/gi, `$1$2${REDACTED_SECRET}`],
   [/((?:"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$3`],
   // Raw JSON "token" field values (Copilot token exchange bodies echo the credential here).
   [/(("token"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$4`],

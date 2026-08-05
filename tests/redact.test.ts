@@ -79,6 +79,19 @@ describe("redactSecretString", () => {
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
   });
 
+  test("the Bearer carve-out cannot be used to smuggle a credential", () => {
+    // Re-review: exempting the bare scheme word meant anything the Bearer rule
+    // could not parse (quoted, punctuation-bearing, or under 8 chars) passed
+    // through untouched — a credential just had to be prefixed with "Bearer".
+    // Only the SANITIZED result is exempt now.
+    expect(redactSecretString('x-api-key: Bearer "smuggledcredential123456"'))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("Authorization: Bearer custom:credential123456"))
+      .toBe(`Authorization: ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-key: Bearer short"))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+  });
+
   test("masks each credential line independently without eating the next", () => {
     // End-of-line, not end-of-string: a multi-line error body must not collapse.
     expect(redactSecretString("x-api-key: one-secret\nmodel: gpt-5.5\ncookie: two=secret"))
