@@ -204,8 +204,9 @@ identical and unrelated to each other: both sit 201 and 331 commits behind.
 #572 is a program to promote a verified batch of OpenAI-compatible providers;
 each PR adds a different pair (Nscale+Vultr, DigitalOcean+Scaleway,
 SambaNova+Nebius, Apertis). Closing three of them as duplicates of the fourth
-would destroy the batch. Recorded here explicitly because the shared issue link
-makes them *look* like duplicates in any tooling that keys on `#572`.
+would destroy the batch. Recorded here explicitly because three literal `#572`
+links plus one inferred association (#812) make them *look* like duplicates to
+any tooling that keys on the issue number.
 
 **#947's conflict target is already closed.** Prior art said #947 conflicts with
 #942 and the author must resolve it
