@@ -26,6 +26,20 @@ const PROFILE = {
   unknownEvidence: { capability: "exclude", health: "penalize" },
 };
 
+const PROFILE_B = {
+  ...PROFILE,
+  id: "cheap",
+  model: "policy/cheap",
+  revision: "rev-cheap",
+  candidates: [{ provider: "openai", model: "gpt-5-mini" }],
+};
+
+const PROFILE_REFRESHED = {
+  ...PROFILE,
+  revision: "rev-def",
+  require: { tools: true, image: true },
+};
+
 const ANALYTICS = {
   totalRequests: 12,
   successRate: 0.75,
@@ -194,6 +208,71 @@ test("routing dry-run checks response status before treating the body as success
     await tick(3);
     expect(container.textContent).toContain("profile missing");
     expect(container.textContent).not.toContain("0.910");
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("routing clears stale dry-run results when switching profiles", async () => {
+  installFetch((url, init) => {
+    if (url.endsWith("/api/routing-profiles") && (init?.method ?? "GET") === "GET") {
+      return Response.json({ profiles: [PROFILE, PROFILE_B] });
+    }
+    if (url.endsWith("/api/routing-analytics")) {
+      return Response.json(ANALYTICS);
+    }
+    if (url.endsWith("/api/routing-profiles/dry-run") && init?.method === "POST") {
+      return Response.json(DRY_RUN_OK);
+    }
+    return new Response("missing", { status: 404 });
+  });
+
+  const { container, root } = await mountPage();
+  try {
+    const evaluate = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("Evaluate candidates"));
+    expect(evaluate).toBeTruthy();
+    await act(async () => { evaluate!.click(); });
+    await tick(3);
+    expect(container.textContent).toContain("0.910");
+
+    const cheap = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("cheap"));
+    expect(cheap).toBeTruthy();
+    await act(async () => { cheap!.click(); });
+    await tick(2);
+
+    expect(container.textContent).toContain("policy/cheap");
+    expect(container.textContent).not.toContain("0.910");
+    expect(container.textContent).not.toContain("unknown-capability");
+  } finally {
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("routing refreshes the selected profile after reload", async () => {
+  let profilesPayload: unknown[] = [PROFILE];
+  installFetch((url, init) => {
+    if (url.endsWith("/api/routing-profiles") && (init?.method ?? "GET") === "GET") {
+      return Response.json({ profiles: profilesPayload });
+    }
+    if (url.endsWith("/api/routing-analytics")) {
+      return Response.json(ANALYTICS);
+    }
+    return new Response("missing", { status: 404 });
+  });
+
+  const { container, root } = await mountPage();
+  try {
+    expect(container.textContent).toContain("rev-abc");
+    profilesPayload = [PROFILE_REFRESHED];
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+    await act(async () => { retry!.click(); });
+    await tick(3);
+    expect(container.textContent).toContain("rev-def");
+    expect(container.textContent).toContain("\"image\": true");
   } finally {
     await act(async () => { root.unmount(); });
   }

@@ -33,12 +33,26 @@ type Analytics = {
   breakdown: Array<{ provider: string; model: string; requests: number; successRate: number | null; p50DurationMs?: number }>;
 };
 
+type DryRunResult = {
+  candidates: DryRunCandidate[];
+  selectedIndex: number | null;
+  trace?: { profile?: { revision?: string } };
+};
+
 function fmtMs(value: number | undefined): string {
   return value === undefined ? "–" : `${Math.round(value)}ms`;
 }
 
 function fmtRate(value: number | null | undefined): string {
   return value === null || value === undefined ? "–" : `${Math.round(value * 100)}%`;
+}
+
+function pickSelectedProfile(next: ProfileDto[], current: ProfileDto | null): ProfileDto | null {
+  if (current) {
+    const refreshed = next.find(profile => profile.id === current.id);
+    if (refreshed) return refreshed;
+  }
+  return next[0] ?? null;
 }
 
 export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
@@ -51,9 +65,19 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [tools, setTools] = useState(false);
   const [image, setImage] = useState(false);
   const [structured, setStructured] = useState(false);
-  const [dryRunResult, setDryRunResult] = useState<{ candidates: DryRunCandidate[]; selectedIndex: number | null; trace?: { profile?: { revision?: string } } } | null>(null);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState("");
   const [running, setRunning] = useState(false);
+
+  const clearDryRun = useCallback(() => {
+    setDryRunResult(null);
+    setDryRunError("");
+  }, []);
+
+  const selectProfile = useCallback((profile: ProfileDto | null) => {
+    setSelected(profile);
+    clearDryRun();
+  }, [clearDryRun]);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -66,7 +90,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
       const next = profilesJson.profiles ?? [];
       setProfiles(next);
-      setSelected(current => current ?? next[0] ?? null);
+      setSelected(current => {
+        const refreshed = pickSelectedProfile(next, current);
+        if (current && refreshed && current.revision !== refreshed.revision) {
+          clearDryRun();
+        }
+        if (current && !refreshed) clearDryRun();
+        return refreshed;
+      });
       if (analyticsRes.ok) {
         const analyticsJson = await analyticsRes.json() as Analytics;
         setAnalytics(analyticsJson);
@@ -74,7 +105,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
     }
-  }, [apiBase]);
+  }, [apiBase, clearDryRun]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -84,8 +115,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const runDryRun = async () => {
     if (!selected) return;
     setRunning(true);
-    setDryRunError("");
-    setDryRunResult(null);
+    clearDryRun();
     try {
       const response = await fetch(`${apiBase}/api/routing-profiles/dry-run`, {
         method: "POST",
@@ -111,7 +141,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         setDryRunError(message);
         return;
       }
-      setDryRunResult(await response.json() as typeof dryRunResult);
+      setDryRunResult(await response.json() as DryRunResult);
     } catch (error) {
       setDryRunError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -139,7 +169,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
               type="button"
               className="model-card"
               style={{ textAlign: "left", cursor: "pointer" }}
-              onClick={() => setSelected(profile)}
+              onClick={() => selectProfile(profile)}
               aria-pressed={selected?.id === profile.id}
             >
               <div className="card-badges">
@@ -165,30 +195,21 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
               ))}
             </div>
           </div>
-          <div>
-            <span className="field-label">{t("routing.require")}</span>
-            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {Object.keys(selected.require).length ? JSON.stringify(selected.require, null, 2) : t("routing.none")}
-            </pre>
-          </div>
-          <div>
-            <span className="field-label">{t("routing.optimize")}</span>
-            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {JSON.stringify(selected.optimize, null, 2)}
-            </pre>
-          </div>
-          <div>
-            <span className="field-label">{t("routing.limits")}</span>
-            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {Object.keys(selected.limits).length ? JSON.stringify(selected.limits, null, 2) : t("routing.none")}
-            </pre>
-          </div>
-          <div>
-            <span className="field-label">{t("routing.unknownEvidence")}</span>
-            <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-              {JSON.stringify(selected.unknownEvidence, null, 2)}
-            </pre>
-          </div>
+          {([
+            ["routing.require", selected.require, true],
+            ["routing.optimize", selected.optimize, false],
+            ["routing.limits", selected.limits, true],
+            ["routing.unknownEvidence", selected.unknownEvidence, false],
+          ] as const).map(([labelKey, value, allowEmpty]) => (
+            <div key={labelKey}>
+              <span className="field-label">{t(labelKey)}</span>
+              <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                {allowEmpty && Object.keys(value).length === 0
+                  ? t("routing.none")
+                  : JSON.stringify(value, null, 2)}
+              </pre>
+            </div>
+          ))}
         </div>
       ) : null}
 
@@ -202,19 +223,43 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
             type="number"
             min={1}
             value={context}
-            onChange={event => setContext(event.target.value)}
+            onChange={event => {
+              setContext(event.target.value);
+              clearDryRun();
+            }}
           />
         </label>
         <label className="checkbox">
-          <input type="checkbox" checked={tools} onChange={event => setTools(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={tools}
+            onChange={event => {
+              setTools(event.target.checked);
+              clearDryRun();
+            }}
+          />
           {t("routing.dryRunTools")}
         </label>
         <label className="checkbox">
-          <input type="checkbox" checked={image} onChange={event => setImage(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={image}
+            onChange={event => {
+              setImage(event.target.checked);
+              clearDryRun();
+            }}
+          />
           {t("routing.dryRunImage")}
         </label>
         <label className="checkbox">
-          <input type="checkbox" checked={structured} onChange={event => setStructured(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={structured}
+            onChange={event => {
+              setStructured(event.target.checked);
+              clearDryRun();
+            }}
+          />
           {t("routing.dryRunStructured")}
         </label>
         <button type="button" className="btn btn-primary" disabled={!selected || running} onClick={() => void runDryRun()}>
