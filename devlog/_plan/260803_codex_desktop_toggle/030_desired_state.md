@@ -32,19 +32,21 @@ Already present:
 
 - `mutatePersistedConfig` clones and rebases a callback under the config mutation
   lock, then returns `committed | unchanged | unavailable`; callers do not need a
-  second persistence mechanism (`src/config.ts:1825-1906`).
+  second persistence mechanism (`src/config.ts:1957`).
 - `syncModelsToCodex` owns the normal catalog-plus-injection path
   (`src/codex/sync.ts:49-129`), while provider/model/combo routes bypass it through
   `refreshCodexCatalogBestEffort` (`src/server/management-api.ts:105-112`).
 - `restoreNativeCodex` is the idempotent Codex remover
-  (`src/codex/inject.ts:759-795`), and `assertNativeTeardownOwned` is the shipped
+  (`src/codex/inject.ts:820`), and `assertNativeTeardownOwned` is the shipped
   foreign-home preflight (`src/integrations/native/ownership-preflight.ts:19-35`).
 - crash-journal reconciliation already repairs an abandoned injection
   (`src/codex/journal.ts:148-162`).
 
-WP4 adds one persisted Codex flag and one per-`CODEX_HOME` linearization lock that
-covers both desired-state commits and bounded native commit sections. Provider
-model gathering stays outside the lock. Ownership is tri-state and is resolved
+WP4 adds one persisted Codex flag and takes its per-`CODEX_HOME` linearization from
+WP12's public N acquisition API (`src/codex/codex-write-lock.ts`), which covers both
+desired-state commits and bounded native commit sections. **It does not build a
+second lock** — see the supersession note below. Provider model gathering stays
+outside the lock. Ownership is tri-state and is resolved
 before journal repair or lock creation, then rechecked inside the lock. OFF
 reconciliation restores config, profile, catalog, cache, and history at start and
 ensure. WP5 adds the management route and GUI switch that call the writer; WP4
@@ -56,7 +58,7 @@ defines the writer failures WP5 must map but not WP5's full response schema.
 |---|---|---|
 | `src/types.ts` | MODIFY | Adds a one-key `OcxClientIntegrationsConfig` and its optional `OcxConfig.clientIntegrations` home. |
 | `src/config.ts` | MODIFY | Parses the Codex key, resolves absent as ON, and mutates only that field through `mutatePersistedConfig`; documents its thrown lock branch. |
-| `src/codex/desired-state.ts` | NEW | Owns the external per-home linearization lock, test seams, tri-state ownership gate, owned restore wrapper, observed-state inspection, and OFF reconciliation. |
+| `src/codex/desired-state.ts` | NEW | Owns test seams, the tri-state ownership gate, the owned restore wrapper, observed-state inspection, and OFF reconciliation. **Not** the linearization lock: that is WP12's public N API. |
 | `src/codex/sync.ts` | MODIFY | Separates model gathering from the bounded apply commit and returns `ok:false` plus `skippedReason` for every no-write result. |
 | `src/codex/refresh.ts` | MODIFY | Splits gathered catalog data from the bounded catalog/cache commit used outside `syncModelsToCodex`. |
 | `src/codex/catalog/sync.ts` | MODIFY | Commits catalog/cache only while holding the shared linearization lock; restores or invalidates `models_cache.json` during native removal. |
@@ -385,11 +387,11 @@ before every irreversible write below, while the same lock is still held:
 | bundled fallback | `materializeBundledCodexCatalog` at `src/codex/catalog/bundled.ts:213-219` | candidate resolution outside; materialization inside lock |
 | pristine backup | `copyFileSync` / `atomicWriteFile` at `src/codex/catalog/parsing.ts:428-444` | each target-hashed backup write inside lock |
 | catalog | `atomicWriteFile(catalogPath, ...)` at `src/codex/catalog/sync.ts:568` | gathered candidate committed inside lock |
-| models cache | `atomicWriteFile(activeCodexModelsCachePath(), ...)` at `src/codex/catalog/sync.ts:600-613` | replacement/restoration inside lock |
+| models cache | `atomicWriteFile(activeCodexModelsCachePath(), ...)` at `src/codex/catalog/sync.ts:832` | replacement/restoration inside lock |
 | injection journal | `writeJournal(...)` at `src/codex/inject.ts:521-527` | inside lock |
 | config/profile/marker | writes at `src/codex/inject.ts:593-597` | all inside the same lock |
 | history mutation | callback at `src/codex/inject.ts:598-603` | the complete callback, including its hidden writes, inside lock |
-| native remove | `restoreNativeCodex` body at `src/codex/inject.ts:764-795` | ownership and OFF rechecked, then complete remove inside lock |
+| native remove | `restoreNativeCodex` body at `src/codex/inject.ts:820` | ownership and OFF rechecked, then complete remove inside lock |
 
 At the deterministic seam, start an OFF setter in a second process and prove its
 intent commit cannot complete until the held apply write exits. Then release the
@@ -574,8 +576,8 @@ the prior startup ordering could not support.
 ### The remover owns `models_cache.json` too
 
 `restoreNativeCodex` currently restores journal/config, catalog, and history at
-`src/codex/inject.ts:764-795`, but apply writes routed models into
-`models_cache.json` at `src/codex/catalog/sync.ts:600-613`. Reporting OFF while
+`src/codex/inject.ts:820`, but apply writes routed models into
+`models_cache.json` at `src/codex/catalog/sync.ts:832`. Reporting OFF while
 that cache still advertises routed slugs repeats the WP2 incident: the test sees
 only artifacts it already knew to assert.
 
