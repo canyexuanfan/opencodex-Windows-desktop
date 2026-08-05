@@ -219,4 +219,51 @@ describe("health-aware scoring (RI-06)", () => {
     expect(route.routeKind).toBe("policy");
     expect(route.routeDecision!.candidates[0]!.health).toBeDefined();
   });
+
+  test("combo attempt failures contribute samples to the failed target", async () => {
+    for (let index = 0; index < 10; index++) appendUsageEntry(row(`ok-${index}`, 200, 800));
+    // Combo request: a/m1 failed as the non-final attempt, b/m2 succeeded.
+    appendUsageEntry({
+      ...row("combo-1", 200, 1500, { provider: "b", model: "m2" }),
+      attempts: [
+        { ordinal: 1, provider: "a", model: "m1", adapter: "openai-chat", status: 503, durationMs: 4000, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
+        { ordinal: 2, provider: "b", model: "m2", adapter: "openai-chat", status: 200, durationMs: 1500, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
+      ],
+    });
+    const failedTarget = healthEvidenceForCandidate({ provider: "a", model: "m1" });
+    expect(failedTarget.sampleCount).toBe(11);
+    expect(failedTarget.failures).toBe(1);
+    const finalTarget = healthEvidenceForCandidate({ provider: "b", model: "m2" });
+    expect(finalTarget.sampleCount).toBe(1);
+    expect(finalTarget.failures).toBeUndefined();
+    expect(finalTarget.successRate).toBe(1);
+  });
+
+  test("execution path applies live codex account cooldown to openai candidates", async () => {
+    const { clearCodexUpstreamHealth, recordCodexUpstreamOutcome } = await import("../src/codex/routing");
+    clearCodexUpstreamHealth();
+    const now = Date.now();
+    const cfg = config({
+      providers: {
+        ...config().providers,
+        openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" },
+      },
+      codexAccounts: [{ id: "pool-a", email: "pool-a@example.test", isMain: false }],
+      activeCodexAccountId: "pool-a",
+      routingProfiles: {
+        mixed: {
+          candidates: [
+            { provider: "openai", model: "gpt-5.6" },
+            { provider: "b", model: "m2" },
+          ],
+        },
+      },
+    });
+    recordCodexUpstreamOutcome(cfg, "pool-a", 429, { retryAfter: "3600", now });
+    const route = routeModel(cfg, "policy/mixed");
+    expect(route.routeDecision!.candidates[0]!.health?.cooldownUntilMs).toBeDefined();
+    expect(route.routeDecision!.candidates[0]!.exclusions.some(exclusion => exclusion.code === "cooldown")).toBe(true);
+    expect(route.providerName).toBe("b");
+    expect(route.modelId).toBe("m2");
+  });
 });

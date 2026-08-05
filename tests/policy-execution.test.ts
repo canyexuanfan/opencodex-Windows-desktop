@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
 import { getRoutingProfile } from "../src/routing/profile";
+import { evidenceFromBody } from "../src/routing/request-evidence";
 import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
 import type { OcxConfig } from "../src/types";
 
@@ -44,6 +45,16 @@ function baseConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
         models: ["m2"],
         modelContextWindows: { m2: 64_000 },
         modelInputModalities: { m2: ["text"] },
+      },
+      // Non-tool-capable adapter: keeps the "tools unknown" scenario testable
+      // now that `openai-chat` infers tool support from the adapter.
+      c: {
+        adapter: "bare",
+        baseUrl: "https://c.example/v1",
+        apiKey: "kc",
+        models: ["m3"],
+        modelContextWindows: { m3: 128_000 },
+        modelInputModalities: { m3: ["text"] },
       },
       openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" },
     },
@@ -122,11 +133,11 @@ describe("policy execution (RI-05)", () => {
   });
 
   test("unknown capability follows the profile unknownEvidence (exclude default)", () => {
-    // Provider "b" has no parallelToolCalls and no catalog row: tools unknown.
+    // Provider "c" uses a non-tool-capable adapter and no catalog row: tools unknown.
     const config = baseConfig({
       routingProfiles: {
         toolsOnly: {
-          candidates: [{ provider: "b", model: "m2" }],
+          candidates: [{ provider: "c", model: "m3" }],
           require: { tools: true },
         },
       },
@@ -136,15 +147,29 @@ describe("policy execution (RI-05)", () => {
     const permissive = baseConfig({
       routingProfiles: {
         toolsOnly: {
-          candidates: [{ provider: "b", model: "m2" }],
+          candidates: [{ provider: "c", model: "m3" }],
           require: { tools: true },
           unknownEvidence: { capability: "allow", health: "penalize", quota: "penalize", cost: "penalize" },
         },
       },
     });
     const route = routeModel(permissive, "policy/toolsOnly");
+    expect(route.providerName).toBe("c");
+    expect(route.modelId).toBe("m3");
+  });
+
+  test("openai-chat without the parallel-call opt-in still infers tool support", () => {
+    // Provider "b" is `openai-chat` with no `parallelToolCalls` and no catalog
+    // row: the adapter protocol itself is the tool-capability signal.
+    const config = baseConfig({
+      routingProfiles: {
+        tools: { candidates: [{ provider: "b", model: "m2" }], require: { tools: true } },
+      },
+    });
+    const route = routeModel(config, "policy/tools");
     expect(route.providerName).toBe("b");
     expect(route.modelId).toBe("m2");
+    expect(route.routeDecision!.candidates[0]!.capability?.tools).toBe(true);
   });
 
   test("request evidence constrains candidates: image input excludes non-image models", () => {
@@ -163,12 +188,45 @@ describe("policy execution (RI-05)", () => {
   test("request tools requirement is enforced when provably needed", () => {
     const config = baseConfig({
       routingProfiles: {
-        tools: { candidates: [{ provider: "b", model: "m2" }] },
+        tools: { candidates: [{ provider: "c", model: "m3" }] },
       },
     });
-    expect(routeModel(config, "policy/tools")).toMatchObject({ providerName: "b", modelId: "m2" });
-    // b's tools support is unknown -> request requiring tools excludes it.
+    expect(routeModel(config, "policy/tools")).toMatchObject({ providerName: "c", modelId: "m3" });
+    // c's tools support is unknown -> request requiring tools excludes it.
     expect(() => routeModel(config, "policy/tools", { toolsRequired: true })).toThrow(NoEligiblePolicyCandidateError);
+  });
+
+  test("request evidence walks nested message content for images", () => {
+    const responses = evidenceFromBody({
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_image", image_url: "https://example.test/x.png" }],
+      }],
+    });
+    expect(responses.imageInputRequired).toBe(true);
+
+    const chat = evidenceFromBody({
+      messages: [{
+        role: "user",
+        content: [{ type: "image_url", image_url: { url: "https://example.test/y.png" } }],
+      }],
+    });
+    expect(chat.imageInputRequired).toBe(true);
+
+    const plain = evidenceFromBody({
+      input: [{ type: "message", role: "user", content: "just text" }],
+    });
+    expect(plain.imageInputRequired).toBeUndefined();
+  });
+
+  test("unresolved policy/<id> falls through to normal resolution", () => {
+    const config = baseConfig();
+    // No profile named "nope": the reserved-looking id must not throw and not
+    // shadow provider/default resolution.
+    const route = routeModel(config, "policy/nope");
+    expect(route.routeKind).toBe("default-provider");
+    expect(route.providerName).toBe("a");
   });
 
   test("policy selection is deterministic across calls", () => {

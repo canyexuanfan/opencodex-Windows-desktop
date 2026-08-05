@@ -105,6 +105,23 @@ describe("request-history index (RI-02)", () => {
     expect(after.meta.indexedRows).toBe(6);
   });
 
+  test("appended rows are ingested as a tail, never a full rebuild", async () => {
+    for (const row of seedRows(5)) appendUsageEntry(row);
+    const first = await queryRequestHistory({}, undefined, 10);
+    expect(first.meta.indexedRows).toBe(5);
+    // The initial build reports a rebuild; a subsequent append must be
+    // ingested from the indexed offset without rebuilding (routing-time
+    // health reads depend on this not re-parsing the whole ledger).
+    appendUsageEntry(entry("late-1", 7000));
+    const second = await queryRequestHistory({}, undefined, 10);
+    expect(second.meta.indexedRows).toBe(6);
+    expect(second.meta.lastError).toBe("");
+    appendUsageEntry(entry("late-2", 8000));
+    const third = await queryRequestHistory({}, undefined, 10);
+    expect(third.meta.indexedRows).toBe(7);
+    expect(third.meta.lastError).toBe("");
+  });
+
   test("large history indexes fully and paginates without duplicates or misses", async () => {
     const rows = seedRows(1500, 10_000);
     for (const row of rows) appendUsageEntry(row);

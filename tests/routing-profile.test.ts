@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { validateConfigCandidate } from "../src/config";
 import { handleManagementAPI } from "../src/server/management-api";
 import { ManagementRequest } from "./helpers/management-auth";
+import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
 import {
   getRoutingProfile,
   listRoutingProfileIds,
@@ -27,6 +28,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeRequestHistoryIndex();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
@@ -116,6 +118,12 @@ describe("routing profiles (RI-04)", () => {
       alias: "a",
     }, config);
     expect(providerCollision.some(issue => issue.message.includes("provider name"))).toBe(true);
+
+    const providerNamespaceCollision = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      alias: "a/m1",
+    }, config);
+    expect(providerNamespaceCollision.some(issue => issue.message.includes("provider namespace"))).toBe(true);
 
     const comboCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
@@ -285,5 +293,38 @@ describe("routing profiles (RI-04)", () => {
     });
     const badResponse = await handleManagementAPI(badReq, new URL(badReq.url), config, { refreshCodexCatalog: async () => {} });
     expect(badResponse!.status).toBe(400);
+  });
+
+  test("API dry-run without explicit candidates fills the same evidence as execution", async () => {
+    const config = baseConfig({
+      providers: {
+        a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1"], modelContextWindows: { m1: 200_000 }, parallelToolCalls: true },
+        b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", apiKey: "kb", models: ["m2"], modelContextWindows: { m2: 64_000 } },
+      },
+      routingProfiles: {
+        fast: {
+          alias: "ocx/fast",
+          candidates: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          require: { tools: true, minContextWindow: 128000 },
+        },
+      },
+    });
+    const req = new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: "fast", evidence: {} }),
+    });
+    const response = await handleManagementAPI(req, new URL(req.url), config, { refreshCodexCatalog: async () => {} });
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    const body = await response!.json() as { selectedIndex?: number | null; candidates?: Array<{ provider?: string; eligible?: boolean }> };
+    // a: 200k context + openai-chat tools => eligible; b: 64k below the hard
+    // minimum => excluded, exactly like real routing would report.
+    expect(body.selectedIndex).toBe(0);
+    expect(body.candidates?.[0]).toMatchObject({ provider: "a", eligible: true });
+    expect(body.candidates?.[1]).toMatchObject({ provider: "b", eligible: false });
   });
 });

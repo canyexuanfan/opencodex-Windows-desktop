@@ -207,6 +207,37 @@ other; closing one is a maintainer decision and neither is stale.
   - `bun run privacy:scan`: passed
 - Remaining Low findings: none
 
+### RI-06 review round (full-review #1013 + simplify)
+
+- Base SHA: `56f17f45c` (RI-05 head); PR head `909ce21d4` before fixes.
+- Simplify (approved): duplicate `health` spread removed in the evaluator;
+  dead `consecutiveFailures` initializer removed in `health.ts`.
+- Bot-thread + own findings fixed in this PR:
+  1. indexer: appends no longer trigger a full synchronous rebuild - identity
+     is dev/ino, growth is a tail (`sourceIdentityMatches`);
+  2. router: policy candidates now carry live Codex pool account
+     cooldown/soft-avoid evidence for `openai` targets
+     (`codexPoolHealthEvidence` + active account);
+  3. health: combo/failover `attempts[]` expand into per-target samples;
+  4. request evidence: nested message `content` arrays (Responses/Chat/Claude)
+     are walked for images;
+  5. evaluator: request-side `contextWindow`, `structuredOutputRequired`,
+     `encryptedCodexTask` are enforced like tools/image;
+  6. dry-run API: omitted `candidates` now populate the same evidence as
+     execution (capability + health) instead of evaluating against none;
+  7. alias validation rejects slashed aliases whose first segment is a
+     configured provider;
+  8. `policy/<id>` without a configured profile falls through to normal
+     resolution instead of throwing;
+  9. capability: adapter-level tool support inferred for tool-capable
+     adapters when no catalog row exists.
+- Verification: `tsc --noEmit` 0 errors; focused suites green (74/74 in the
+  routing set, 330/336 incl. config - the 6 failures are Windows symlink
+  `EPERM` environment failures, present on the baseline); `privacy:scan`
+  passed.
+- Base sync deferred: waiting for RI-05 (#1012) to merge before updating
+  these branches from `dev` (PR heads currently conflict with `dev`).
+
 ## Baseline note
 
 The full-suite baseline on this Windows machine did not complete within the
