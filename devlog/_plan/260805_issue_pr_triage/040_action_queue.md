@@ -135,35 +135,38 @@ Any discrepancy is a bug in this unit, not a rounding difference.
 
 # Queue (executed)
 
-Ordered by dependency. Nothing here has been executed against GitHub — this unit
-holds no close, comment, merge, or label authority, and every `needs-user` row
-waits on an explicit instruction.
+Nothing here has been executed against GitHub — this unit holds no close,
+comment, merge, or label authority, and every `needs-user` row waits on an
+explicit instruction.
 
-| # | action | source row | blocking predecessor | authority |
-|--:|---|---|---|---|
-| 1 | Close #1045 as fixed, citing `4177345021` (ancestor) and `bun test tests/system-restart.test.ts` → 24 pass | `010` #1045 | no blocker | needs-user |
-| 2 | Fix #1061's harness: bound the `restart.exited` await with a deadline + kill fallback, and make `waitFor()` prove parseable JSON rather than file existence | `010` #1061 | no blocker | autonomous |
-| 3 | Triage #1059 into its five failure families as separate work items; correct the "~207" figure to "at least 113, count aborted by a Bun panic" | `010` #1059 | entry 2 — a hanging macOS leg makes the platform matrix unreadable while it stands | autonomous |
-| 4 | Classify `opencode-zen` models in the registry — one change closing #1043 and the reproducible half of #1024 | `030` #1043/#1024 | no blocker | autonomous |
-| 5 | Correct the DeepSeek effort ladder (`src/providers/registry.ts:349,353,1185`) and the two tests that currently lock the wrong ladder | `010` #1057 | no blocker | autonomous |
-| 6 | Call `afterCatalogWriteHandleAppServers()` on the startup sync path for #1046 | `010` #1046 | no blocker | autonomous |
-| 7 | Review #1018 — the only PR that is green, mergeable, and inside the freshness gate | `020` #1018 | no blocker | needs-user |
-| 8 | Ask the four reporters for the captures that unblock #904, #796, #994, #418 — and for #1017, the malformed payload that would confirm or refute it | `010` ×5 | no blocker (parallel to everything) | needs-user |
-| 9 | Route #936 and #557 to the second-maintainer security review they have been waiting on since 07-27 | `020` #936, #557 | no blocker; it has never been a technical blocker | needs-second-maintainer |
-| 10 | Give the 21 out-of-gate PRs a single honest rebase-or-close message; for #715 specifically, decide between re-authoring and closing rather than asking for a fifth rebase | `020` ×21 | no blocker | needs-user |
+A predecessor appears only when the action is **impossible** without it. Judgment
+about what to do first lives in the advisory column, where it cannot masquerade as
+a constraint.
 
-### The one real dependency, and the preferences that are not dependencies
+| # | action | source row | blocking predecessor | priority (advisory) | authority |
+|--:|---|---|---|---|---|
+| 1 | Close #1045 as fixed, citing `4177345021` (ancestor) and `bun test tests/system-restart.test.ts` → 24 pass | `010` #1045 | no blocker | high — free, fully proven | needs-user |
+| 2 | Fix #1061's harness: bound the `restart.exited` await with a deadline + kill fallback, and make `waitFor()` prove parseable JSON rather than file existence | `010` #1061 | no blocker | high — a 30-minute hang blocks release trains | autonomous |
+| 3 | Triage #1059 into its five failure families as separate work items; correct the "~207" figure to "at least 113, count aborted by a Bun panic" | `010` #1059 | no blocker | medium — easier to read once entry 2 lands, but not gated on it | autonomous, needs a Windows runner |
+| 4 | Classify `opencode-zen` models in the registry — one change closing #1043 and the reproducible half of #1024 | `030` #1043/#1024 | no blocker | high — one change, two issues | autonomous |
+| 5 | Correct the DeepSeek effort ladder (`src/providers/registry.ts:349,353,1185`) and the two tests that currently lock the wrong ladder | `010` #1057 | no blocker | high | autonomous |
+| 6 | Call `afterCatalogWriteHandleAppServers()` on the startup sync path for #1046 | `010` #1046 | no blocker | high | autonomous |
+| 7 | Review #1018 — the only PR that is green, mergeable, and inside the freshness gate | `020` #1018 | no blocker | high — the only reviewable PR on the board | needs-user |
+| 8 | Ask the five reporters for the captures that unblock #904, #796, #994, #418, #1017 | `010` ×5 | no blocker | high — five verdicts move on reporter evidence alone | needs-user |
+| 9 | Route #936 and #557 to the second-maintainer security review they have been waiting on since 07-27 | `020` #936, #557 | no blocker | high — never a technical blocker, only an unassigned one | needs-second-maintainer |
+| 10 | Give the 21 out-of-gate PRs a single honest rebase-or-close message; for #715 specifically, decide between re-authoring and closing rather than asking for a fifth rebase | `020` ×21 | no blocker | medium | needs-user |
 
-Only entry 3 has a technical predecessor: triaging the Windows failure families
-means reading a platform matrix, and entry 2's hanging macOS leg makes that matrix
-unreadable while it stands. Entry 3 consumes entry 2's concrete output.
+### No entry has a hard predecessor, and saying so took three audit rounds
 
-Entries 7 and 10 previously listed predecessors and should not have. The audit was
-right to call that a `PHASE-SPLIT-01` violation: "review the mergeable PR before
-asking twenty authors to rebase" is a sequencing *preference* about review
-throughput, not a statement that entry 10 cannot run first. Both are now
-`no blocker`. The reasoning survives as advice below, where it belongs, instead of
-masquerading as a constraint.
+Earlier drafts blocked entry 3 on entry 2, entry 7 on platform work, and entry 10
+on review capacity. The audit rejected all three, correctly. Windows triage does
+not become *impossible* while the macOS leg hangs — it becomes harder to read, and
+"harder to read" is a priority, not a dependency. The same applies to the others.
+
+`PHASE-SPLIT-01` forbids ordering by effort or payoff, and the subtler version of
+that violation is what happened here: a real judgment about sequencing got written
+into the dependency column because that column carries more authority. The column
+split is the fix, and the judgment survives intact below.
 
 **Advisory, not blocking.** Asking twenty-one contributors to rebase into a queue
 where one PR is currently reviewable produces twenty-one rebased PRs and the same

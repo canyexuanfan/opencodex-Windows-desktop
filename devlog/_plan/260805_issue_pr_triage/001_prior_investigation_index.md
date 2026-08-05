@@ -67,10 +67,10 @@ bucket; #820 is a larger architecture epic — deferred to its own unit").
 | #1002 | 1 | "includes ignored-CLI-setting defect" | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:33` |
 | #999 | 1 | "docs-only, draft" | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:31` |
 | #997, #985, #983, #978 | 1 | "These stay open; the campaign does not close contributor work that merely needs the author." | `devlog/_plan/260805_bug_stack_campaign/130_dispositions.md:43-45` |
-| #947 | 2 | not carried because it conflicts with #942; author must resolve | `devlog/_plan/260803_bug_backlog_stack/070_outcome.md:100-103` |
+| #947 | 2 | not carried because it conflicts with #942; author must resolve | `devlog/_fin/260803_bug_backlog_stack/070_outcome.md:100-103` |
 | #936 | 2 | conflicting; requires explicit security review per MAINTAINERS | `devlog/_plan/260805_bug_stack_campaign/130_dispositions.md:42-45` |
 | #937, #872, #870, #812, #811 | 1 | "Feature programs — out of scope" | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:35-37` |
-| #715 | 5 | out of scope here; earlier: "land after #671, rebase, add combined-selector regression, and pass credential-selection review" | `devlog/_plan/260802_issue_pr_triage/000_research.md:124-125` |
+| #715 | 5 | out of scope here; earlier: "land after #671, rebase, add combined-selector regression, and pass credential-selection review" | `devlog/_fin/260802_issue_pr_triage/000_research.md:124-125` |
 | #581 | 5 | `NEEDS-CHANGES`; missing parity/picker tests, extraneous script | `devlog/_plan/260731_pr_issue_triage_round/010_pr_triage_matrix.md:105` |
 | #569 | 5 | draft, CI pass but conflicting/dirty; leave open | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:32` |
 | #557 | 9 | `NEEDS_HUMAN` for second-maintainer review | `devlog/_fin/260728_bug_bundle_resolution/050_pr557_boundary.md:65-69` |

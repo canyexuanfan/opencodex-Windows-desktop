@@ -195,7 +195,7 @@ makes them *look* like duplicates in any tooling that keys on `#572`.
 
 **#947's conflict target is already closed.** Prior art said #947 conflicts with
 #942 and the author must resolve it
-(`devlog/_plan/260803_bug_backlog_stack/070_outcome.md:100-103`). #942 is now
+(`devlog/_fin/260803_bug_backlog_stack/070_outcome.md:100-103`). #942 is now
 `PR closed`, so the coordination blocker is gone and only the mechanical rebase
 remains.
 
