@@ -348,7 +348,7 @@ re-deriving the path by hand.
 | A6c | External provider wins even when ownership is UNKNOWN | With service evidence unavailable, the refusal is still `external-provider` — the message the user can act on — and every artifact EXCEPT the unmarked journal is preserved — A6b requires that one deleted, and "every artifact" contradicted it. A6 cannot catch this, because it proves ownership `owned` first |
 | A7 | The lock has a live production caller | `rg` reachability PLUS a test that observes the lock being taken on the real `injectCodexConfig` path |
 | A8 | The edge is exclusive across processes | A barrier held inside the acquired lock; the loser reports `busy` and its PROCESS-UNIQUE candidate bytes are absent from the final file, so the winner is provable rather than assumed |
-| A9 | The ADMITTED APPLY SECTION is inside, history is outside — not the whole native surface, since the external branch's journal deletion still races it | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
+| A9 | The apply section is inside, history is outside — scoped to what R1c actually locks, which is `writeJournal` through `markJournalInjectedState`; the external branch's journal deletion is a different surface and gets its own contract | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
 | A10 | `journalIdentity` tracks the real journal | The identity changes when `journal.ts` writes, asserted against an EXPORTED constant from `journal.ts` — `JOURNAL_PATH` is private today (`src/codex/journal.ts:8`), and a re-derived test path is how the current mismatch stayed invisible |
 
 A1 additionally asserts the transition was **published**, not merely that the
@@ -796,10 +796,13 @@ localize or revert.
 |---|---|---|
 | WP-R1a admission substrate | single-read byte digest, `absent` observation, transactional generation read, canonical hash, catalog consumer branch, real journal path | config read path, WP9 catalog admission |
 | WP-R1b ownership evidence | detailed service-state reads, the new tri-state manager probe on three platforms, projection to `owned/foreign/unknown` | service diagnostics on every platform |
-| WP-R1c production activation | the `injectCodexConfig` lock boundary, external-provider compatibility, ordered history handoff, the two-process race | `ocx start`, `ocx sync`, `ocx init`, `/api/sync` |
+| WP-R1c production activation | the `injectCodexConfig` lock boundary and the two-process race. NOT the admission gate | the caller surface stays as it is |
 
 Only WP-R1c can claim the lock has a production caller, and it depends on both
-of the others. That dependency order is the phase order.
+of the others. That dependency order was stated before the call-edge audit
+found that wiring admission into production would refuse every Windows
+injection — see the scope split below. WP-R1c needs WP-R1a's witness
+primitives, not WP-R1b's ownership projection, which gates nothing here.
 
 ## WP-R1c, after its own audit: wiring admission is a separate decision from taking the lock
 
@@ -835,11 +838,13 @@ Three reasons, each fatal on its own:
    underneath the callback (`:18`). On macOS that is up to two 2-second probes
    holding both locks.
 
-So the evidence splits by cost and stability: the expensive manager probe runs
-**before** N, and only cheap, stable evidence is revalidated under the lock.
-That is a narrowing of "authoritative re-read", and it is honest only because
-service installation is not something config bytes can change mid-operation —
-it is a different subject, not a cheaper look at the same one.
+That argument was written before the scope split, and the split makes it
+irrelevant: WP-R1c does not gather manager evidence at all. Ownership is not
+observed in this phase, so nothing is gathered before N and nothing of the kind
+is revalidated under it. The split applies only to the WP-R1d gate, where the
+expensive manager probe runs before N and only cheap, stable evidence is
+revalidated under the lock — honest there because service installation is not
+something config bytes can change mid-operation.
 
 ### Wiring admission into `injectCodexConfig` NOW would break Windows and some Linux
 
