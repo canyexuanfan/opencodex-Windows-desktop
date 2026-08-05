@@ -153,6 +153,75 @@ function configuredPriorityScore(index: number, total: number): number {
 }
 
 /**
+ * Requirements derived from the request evidence supplied to a dry-run. A
+ * candidate must satisfy both the profile `require` block and the request
+ * needs (context window, tools, image input, structured output, reasoning
+ * effort, service tier, encrypted Codex tasks) to be eligible.
+ */
+function requestRequirementFor(
+  request: PolicyRequestEvidence,
+  capability: RouteCapabilityEvidence | undefined,
+): RouteRequirementEvidence[] {
+  const requirements: RouteRequirementEvidence[] = [];
+  if (request.contextWindow !== undefined) {
+    const actual = capability?.contextWindow;
+    if (typeof actual === "number") {
+      requirements.push({
+        id: "request-context-window",
+        expected: request.contextWindow,
+        actual,
+        outcome: actual >= request.contextWindow ? "satisfied" : "unsatisfied",
+      });
+    } else {
+      requirements.push({ id: "request-context-window", expected: request.contextWindow, outcome: "unknown" });
+    }
+  }
+  const tools = booleanRequirement("request-tools", request.toolsRequired, capability?.tools);
+  if (tools) requirements.push(tools);
+  const image = booleanRequirement("request-image-input", request.imageInputRequired, capability?.image);
+  if (image) requirements.push(image);
+  const structured = booleanRequirement(
+    "request-structured-output",
+    request.structuredOutputRequired,
+    capability?.structuredOutput,
+  );
+  if (structured) requirements.push(structured);
+  if (request.reasoningEffort !== undefined) {
+    const ladder = capability?.reasoningEfforts;
+    if (Array.isArray(ladder)) {
+      requirements.push({
+        id: "request-reasoning-effort",
+        expected: request.reasoningEffort,
+        actual: ladder.join(","),
+        outcome: ladder.includes(request.reasoningEffort) ? "satisfied" : "unsatisfied",
+      });
+    } else {
+      requirements.push({ id: "request-reasoning-effort", expected: request.reasoningEffort, outcome: "unknown" });
+    }
+  }
+  if (request.serviceTier !== undefined) {
+    const actual = capability?.serviceTier;
+    if (actual === undefined || actual === "unknown") {
+      requirements.push({ id: "request-service-tier", expected: request.serviceTier, outcome: "unknown" });
+    } else {
+      requirements.push({
+        id: "request-service-tier",
+        expected: request.serviceTier,
+        actual: String(actual),
+        outcome: actual === request.serviceTier ? "satisfied" : "unsatisfied",
+      });
+    }
+  }
+  const encrypted = booleanRequirement(
+    "request-encrypted-codex-tasks",
+    request.encryptedCodexTask,
+    capability?.encryptedCodexTasks,
+  );
+  if (encrypted) requirements.push(encrypted);
+  return requirements;
+}
+
+/**
  * Evaluate a profile against request + candidate evidence. Deterministic:
  * candidates are scored in declaration order, ties break by earlier index.
  */
@@ -173,7 +242,10 @@ export function evaluatePolicyProfile(
     const evidence = candidateEvidence.find(
       candidate => candidate.provider === declared.provider && candidate.model === declared.model,
     ) ?? { provider: declared.provider, model: declared.model };
-    const requirements = requirementFor(profile.require, evidence.capability);
+    const requirements = [
+      ...requirementFor(profile.require, evidence.capability),
+      ...requestRequirementFor(requestEvidence, evidence.capability),
+    ];
     const exclusions: RouteExclusionReason[] = [];
     const bad = unsatisfiedOrUnknown(requirements);
     for (const requirement of bad) {
@@ -191,9 +263,10 @@ export function evaluatePolicyProfile(
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
     const eligible = !unsatisfied && !excludedByUnknown;
 
+    const priorityScore = configuredPriorityScore(index, profile.candidates.length);
     const score: RouteScoreEvidence = {
-      total: configuredPriorityScore(index, profile.candidates.length),
-      components: { configuredPriority: configuredPriorityScore(index, profile.candidates.length) },
+      total: priorityScore,
+      components: { configuredPriority: priorityScore },
     };
     const evaluated: PolicyEvaluationCandidate = {
       provider: evidence.provider,

@@ -129,6 +129,12 @@ describe("routing profiles (RI-04)", () => {
     }, config);
     expect(nativeCollision.some(issue => issue.message.includes("native family"))).toBe(true);
 
+    const providerNamespaceCollision = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      alias: "a/m1",
+    }, config);
+    expect(providerNamespaceCollision.some(issue => issue.message.includes("provider routing namespace"))).toBe(true);
+
     const siblingCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
       alias: "ocx/fast",
@@ -220,6 +226,20 @@ describe("routing profiles (RI-04)", () => {
     ]);
     expect(allowed.candidates[0]!.eligible).toBe(true);
     expect(allowed.selectedIndex).toBe(0);
+  });
+
+  test("dry-run evaluator: request evidence joins profile requirements", () => {
+    const config = baseConfig();
+    // Profile `fast` requires tools + 128k context; the request also needs 256k.
+    const result = evaluatePolicyProfile(config, "fast", { contextWindow: 256000, toolsRequired: true }, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000, tools: true } },
+      { provider: "b", model: "m2", capability: { contextWindow: 300000, tools: true } },
+    ]);
+    expect(result.candidates[0]!.eligible).toBe(false);
+    expect(result.candidates[0]!.exclusions.some(exclusion => exclusion.detail === "request-context-window")).toBe(true);
+    expect(result.candidates[1]!.eligible).toBe(true);
+    expect(result.selectedIndex).toBe(1);
+    expect(result.trace.selected.model).toBe("m2");
   });
 
   test("dry-run evaluator: deterministic tie-break picks the earlier candidate", () => {
