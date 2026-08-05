@@ -3,7 +3,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { readdir } from "node:fs/promises";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
-import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice, toolChoiceAliases } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice, toolChoiceAliases } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { readBoundedResponseBody } from "../lib/bounded-body";
@@ -86,7 +86,10 @@ function toolChoiceInstruction(parsed: OcxParsedRequest): string | undefined {
     return "Tool choice is required for this turn. Make at least one call from the advertised tool catalog before answering.";
   }
   if (choice && typeof choice !== "string" && !isAllowedToolChoice(choice)) {
-    return `Tool choice is required for this turn. Call the advertised tool named ${namespacedToolName(undefined, choice.name)} before answering.`;
+    // Resolve the forced name (bare, namespace__name, or namespace.name) to the advertised
+    // wire name so the instruction names a tool that is actually in the catalog.
+    const wireName = resolveToolChoiceWireName(parsed.context.tools, choice.name);
+    return `Tool choice is required for this turn. Call the advertised tool named ${wireName} before answering.`;
   }
   return undefined;
 }
@@ -311,7 +314,9 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
           tools: wireTools(tools),
           system,
           max_tokens: parsed.options.maxOutputTokens ?? provider.defaultMaxOutputTokens ?? 64_000,
-          stream: parsed.stream,
+          // The proprietary /alpha/generate endpoint is NDJSON-stream-only; the proxy converts
+          // the buffered/streamed events to the client's requested shape (parsed.stream).
+          stream: true,
           ...(parsed.options.temperature !== undefined ? { temperature: parsed.options.temperature } : {}),
           ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         },

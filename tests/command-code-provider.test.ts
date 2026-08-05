@@ -288,8 +288,8 @@ describe("Command Code provider", () => {
     ]);
   });
 
-  test("sends parsed.stream as the wire stream field", async () => {
+  test("always requests streaming upstream so non-stream clients still get NDJSON", async () => {
     const built = await builtRequest({ ...parsed(), stream: false });
-    expect(JSON.parse(built.body).params.stream).toBe(false);
+    expect(JSON.parse(built.body).params.stream).toBe(true);
   });
 });

@@ -42,21 +42,27 @@ async function importLocalCommandCodeAuth(signal?: AbortSignal): Promise<OAuthCr
     return undefined;
   }
   if (typeof parsed.apiKey !== "string" || parsed.apiKey.length === 0) return undefined;
+  let accountId: string | undefined;
   try {
     const response = await fetch("https://api.commandcode.ai/alpha/whoami", {
       headers: { Authorization: `Bearer ${parsed.apiKey}`, Accept: "application/json" },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     });
     if (!response.ok) return undefined;
+    // Carry the validated whoami identity so an imported credential keeps multi-account
+    // semantics even when the local auth.json omits userId.
+    const body = (await response.json()) as { user?: { id?: unknown } };
+    if (typeof body.user?.id === "string" && body.user.id.length > 0) accountId = body.user.id;
   } catch (error) {
     if (signal?.aborted) throw signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
     return undefined;
   }
+  if (!accountId && typeof parsed.userId === "string" && parsed.userId.length > 0) accountId = parsed.userId;
   return {
     access: parsed.apiKey,
     refresh: parsed.apiKey,
     expires: Number.MAX_SAFE_INTEGER,
-    ...(typeof parsed.userId === "string" && parsed.userId.length > 0 ? { accountId: parsed.userId } : {}),
+    ...(accountId ? { accountId } : {}),
     source: "local-cli",
   };
 }
@@ -164,6 +170,10 @@ function parsePastedCommandCodeInput(input: string, expectedState: string): Comm
   const parsed = parseCallbackInput(trimmed);
   const apiKey = parsed.code?.trim();
   if (!apiKey) return undefined;
+  // A URL/query-shaped paste is an authorization response and must carry a matching state,
+  // mirroring the shared OAuth callback flow; a stale or attacker-supplied URL from another
+  // session must not be accepted. Raw in-session keys are exempt (no state to compare).
+  if (parsed.kind !== "raw" && parsed.state !== expectedState) return undefined;
   return { apiKey, state: expectedState, userId: "", userName: "", keyName: "manual" };
 }
 
