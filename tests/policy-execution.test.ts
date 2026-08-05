@@ -263,9 +263,11 @@ describe("policy execution (RI-05)", () => {
     expect(caught!.trace!.candidates![0]!.exclusions[0]!.code).toBe("capability-unsatisfied");
   });
 
-  test("policy and combo provider names are reserved routing namespaces", () => {
+  test("policy provider name is a reserved routing namespace (combo stays usable)", () => {
     expect(isValidProviderName("policy")).toBe(false);
-    expect(isValidProviderName("combo")).toBe(false);
+    // A physical provider named `combo` is a supported pattern (combo aliases
+    // hosted on the combo provider); only the policy namespace is reserved.
+    expect(isValidProviderName("combo")).toBe(true);
     expect(isValidProviderName("openai")).toBe(true);
     expect(isValidProviderName("my-provider_2")).toBe(true);
   });
