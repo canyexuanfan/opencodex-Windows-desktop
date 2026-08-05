@@ -650,7 +650,7 @@ Walk components one at a time; never recursive-mkdir across an unvalidated paren
   **four** public entry points are covered — file and directory, sync and async —
   because the suite was twice found to be proving the wrong half: removing the async
   attribution alone left every test green while async is the path
-  `hardenStableLockFile` actually takes (`src/codex/native-main-lock-file.ts:130`),
+  `hardenStableLockFile` actually takes (`src/codex/native-main-lock-file.ts:148`),
   and a pathname-only memo applied to directories ALONE also left every test green
   while `hardenSecretDir` backs config, management-auth, tray, spill-store, and
   `native-profile-manager.ts:153`.
@@ -834,15 +834,36 @@ is not enough.
 optional stricter timeout for Windows hardening:
 
 ```diff
--export async function hardenStableLockFile(path: string): Promise<void> {
-+export async function hardenStableLockFile(path: string, timeoutMs?: number): Promise<void> {
-   try { chmodSync(path, 0o600); } catch {}
-   if (process.platform === "win32") {
--    await hardenSecretPathAsync(path, { required: true, timeoutMemoKey: path });
-+    await hardenSecretPathAsync(path, { required: true, timeoutMemoKey: path, timeoutMs });
+ export async function hardenStableLockFile(
+   path: string,
+   platform: NodeJS.Platform = process.platform,
++  timeoutMs?: number,
+ ): Promise<void> {
+   if (platform === "win32") {
+     try { chmodSync(path, 0o600); } catch { /* ACL below is authoritative. */ }
+-    await hardenSecretPathAsync(path, { required: true });
++    await hardenSecretPathAsync(path, { required: true, timeoutMs });
+     return;
    }
+   chmodSync(path, 0o600);
  }
 ```
+
+Written against the CURRENT signature, which differs from this section's original
+sketch in three ways that later rounds forced and that the timeout addition must
+preserve:
+
+- **`platform` is a parameter.** A direct `process.platform` read made the Windows
+  branch unreachable from a test on any other host, which is how an audit deleted
+  the whole delegation with 89 tests still green.
+- **The `chmod` is no longer unconditional-and-swallowed.** On Windows it is
+  best-effort because the required ACL decides; on POSIX the mode IS the mechanism,
+  there is no fallback, and a failure must propagate. Swallowing it told the caller
+  that a pre-existing permissive coordinator database had been hardened when nothing
+  had changed — creation mode `0600` does not repair an existing file.
+- **`timeoutMemoKey: path` was removed.** `timeoutMemoKey()` already falls back to
+  `targetPath`, so it was redundant and unobservable; a test pinning it would have
+  passed with the mechanism gone.
 
 `windows-secret-acl.ts` clamps the caller value to the existing configured budget;
 it may shorten but never enlarge it. Existing callers that omit `timeoutMs` retain
@@ -995,8 +1016,9 @@ and the ones that did were rewritten rather than kept.
   the Windows-breaking form, since icacls moves ctime; (h) the async attribution
   alone is removed; (i) a pathname-only memo is applied to directories alone.
   (j) `hardenStableLockFile`'s Windows delegation is deleted; (k) its `required:
-  true` is weakened to `false`.
-  (h) through (k) are not redundant — each survived every other check. (h) and (i)
+  true` is weakened to `false`; (l) its POSIX `chmodSync` is deleted; (m) that
+  chmod failure is swallowed again; (n) the claim-site call to it is deleted.
+  (h) through (n) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1005,6 +1027,13 @@ and the ones that did were rewritten rather than kept.
   called it. `hardenStableLockFile` takes its platform as a parameter for exactly
   that reason — a direct `process.platform` read made the Windows branch unreachable
   from a test.
+  (l) and (m) are the POSIX side of the same wrapper, where the mode is the whole
+  mechanism: deleting `chmodSync` left 89 tests green because the only POSIX test
+  asserted that no ACL command ran, which was true of the working and the broken
+  version alike. (n) is one layer further out again — nearly every claim test injects
+  `hardenPath`, so the production default was never exercised, and the resolved
+  platform is now threaded into it so a forced-Windows claim reaches the real
+  delegation.
 
   Deliberately NOT asserted: the `timeoutMemoKey: path` argument at that call site.
   `timeoutMemoKey()` already falls back to `targetPath` and this caller passes the

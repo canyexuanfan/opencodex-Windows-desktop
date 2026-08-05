@@ -141,8 +141,18 @@ export async function hardenStableLockFile(
   path: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  try { chmodSync(path, 0o600); } catch { /* Windows ACL below is authoritative there. */ }
   if (platform === "win32") {
-    await hardenSecretPathAsync(path, { required: true, timeoutMemoKey: path });
+    // Best-effort here: POSIX modes are not authoritative on NTFS, and the
+    // required ACL hardening below is what actually decides.
+    try { chmodSync(path, 0o600); } catch { /* ACL below is authoritative. */ }
+    await hardenSecretPathAsync(path, { required: true });
+    return;
   }
+  // On POSIX the mode IS the mechanism, so a failure may not be swallowed.
+  //
+  // The previous unconditional catch was a real fail-open: a coordinator
+  // database that already existed with permissive bits stayed permissive, and
+  // the caller was told the lock file had been hardened. Creation mode 0600 does
+  // not repair an existing file, and there is no ACL fallback outside Windows.
+  chmodSync(path, 0o600);
 }

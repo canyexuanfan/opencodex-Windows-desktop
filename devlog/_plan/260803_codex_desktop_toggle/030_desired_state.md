@@ -319,8 +319,11 @@ export function inspectNativeCodexOwnership(): NativeCodexOwnership;
 // SUPERSEDED — WP4 does not declare this. Linearization comes from WP12's public
 // N acquisition API in `src/codex/codex-write-lock.ts`, whose callback is already
 // synchronous and already holds N -> C. Declaring a second per-home lock here
-// would key on sha256(home) without the uid/SID and split one home across two OS
-// users, which is the failure `005_contract.md` §7 exists to prevent.
+// would key on sha256(home) without the uid/SID, so the lock path would carry no
+// proof of which account it belongs to and the failure would be environment-
+// dependent: a shared temp root collides, a per-user one splits one home across
+// two locks that serialize with nothing. `005_contract.md` §7 exists to remove
+// exactly that ambiguity.
 // export function withCodexHomeLinearizationLockSync<T>(operation: () => T): T;
 export function setCodexDesiredEnabled(enabled: boolean): CodexDesiredMutationResult;
 export function setCodexBeforeNativeWriteForTests(

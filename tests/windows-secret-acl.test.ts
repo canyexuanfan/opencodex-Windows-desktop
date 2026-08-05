@@ -706,7 +706,7 @@ describe("ephemeral ACL memo release (#840 refinement)", () => {
  * async attribution entirely: all 46 tests stayed green. That is the worse half
  * to leave uncovered — `hardenStableLockFile`, which hardens the coordinator
  * database, calls `hardenSecretPathAsync`
- * (`src/codex/native-main-lock-file.ts:130`), as do `config.ts:292` and
+ * (`src/codex/native-main-lock-file.ts:148`), as do `config.ts:292` and
  * `native-profile-manager.ts:153-154`. Covering only the synchronous twin proved
  * the path production does not take.
  */
@@ -1023,7 +1023,7 @@ describe("hardenStableLockFile — the production call edge, not just the primit
    * with the pathname as its timeout memo key, and its failure propagates rather
    * than leaving a coordinator database other accounts can read.
    */
-  test("on win32 it delegates to the required async hardener, keyed by the path", async () => {
+  test("on win32 it delegates to the required async hardener for that exact path", async () => {
     resetHardenedStateForTests();
     const lockPath = join(testDir, "coordinator-claim.sqlite");
     writeFileSync(lockPath, "x", "utf8");
@@ -1042,12 +1042,12 @@ describe("hardenStableLockFile — the production call edge, not just the primit
       expect(seen.length).toBeGreaterThan(0);
       expect(seen.every(args => args[0] === lockPath)).toBe(true);
       expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
-      // NOT asserted here: the `timeoutMemoKey: path` argument. It cannot be,
-      // because it is redundant — `timeoutMemoKey()` falls back to `targetPath`,
-      // and this caller passes the target path itself. Changing it in production
-      // is unobservable, so a test claiming to pin it would be vacuous. The
-      // option exists for atomic writers that mint a fresh temp per write and
-      // need the STABLE destination as the key (#612); this caller has no temp.
+      // The redundant `timeoutMemoKey: path` argument was REMOVED from this call
+      // site rather than asserted. `timeoutMemoKey()` already falls back to
+      // `targetPath`, so passing the target path had no observable effect and any
+      // test pinning it would have passed with the mechanism gone. The option
+      // exists for atomic writers that mint a fresh temp per write and need the
+      // stable destination as the key (#612); this caller has no temp.
     } finally {
       if (previousUsername === undefined) delete process.env.USERNAME;
       else process.env.USERNAME = previousUsername;
@@ -1077,10 +1077,21 @@ describe("hardenStableLockFile — the production call edge, not just the primit
     }
   });
 
-  test("on posix it hardens by mode alone and runs no ACL command", async () => {
+  /**
+   * On POSIX the mode IS the mechanism — there is no ACL fallback — so this
+   * asserts the resulting bits, not merely that no ACL command ran.
+   *
+   * Asserting absence alone is what let an audit delete `chmodSync` outright
+   * with 89 tests still green. An existing permissive database is not repaired
+   * by reopening it with creation mode 0600, so "no ACL command ran" was true of
+   * both the working and the broken implementation.
+   */
+  test("on posix it narrows an existing permissive file to 0600 and runs no ACL command", async () => {
     resetHardenedStateForTests();
     const lockPath = join(testDir, "coordinator-posix.sqlite");
     writeFileSync(lockPath, "x", "utf8");
+    chmodSync(lockPath, 0o644);
+    expect(statSync(lockPath).mode & 0o777).toBe(0o644);
 
     let calls = 0;
     setAsyncIcaclsRunnerForTests(async () => {
@@ -1089,9 +1100,21 @@ describe("hardenStableLockFile — the production call edge, not just the primit
     });
     try {
       await hardenStableLockFile(lockPath, "linux");
+      expect(statSync(lockPath).mode & 0o777).toBe(0o600);
       expect(calls).toBe(0);
     } finally {
       setAsyncIcaclsRunnerForTests(null);
     }
+  });
+
+  /**
+   * And a POSIX chmod failure may not be swallowed. It was, unconditionally,
+   * which told the caller a coordinator database had been hardened when its
+   * permissive bits were untouched and no ACL fallback exists off Windows.
+   */
+  test("on posix a chmod failure propagates rather than reporting success", async () => {
+    resetHardenedStateForTests();
+    const missing = join(testDir, "never-created.sqlite");
+    await expect(hardenStableLockFile(missing, "linux")).rejects.toThrow();
   });
 });
