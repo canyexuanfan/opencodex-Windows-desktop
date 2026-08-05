@@ -288,6 +288,35 @@ describe("Command Code provider", () => {
     ]);
   });
 
+  test("strips SSE data: framing if the gateway ever switches stream shapes", async () => {
+    const response = new Response([
+      "data: " + JSON.stringify({ type: "text-delta", text: "a" }),
+      "data: " + JSON.stringify({ type: "text-delta", text: "b" }),
+      "data: [DONE]",
+    ].join("\n"));
+    const events = [];
+    for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "a" },
+      { type: "text_delta", text: "b" },
+      { type: "done", usage: undefined, stopReason: undefined },
+    ]);
+  });
+
+  test("treats finish-step as a terminal event and emits only one done", async () => {
+    const response = new Response([
+      JSON.stringify({ type: "text-delta", text: "hi" }),
+      JSON.stringify({ type: "finish-step", finishReason: "stop", usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } }),
+      JSON.stringify({ type: "finish", rawFinishReason: "stop", totalUsage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } }),
+    ].join("\n"));
+    const events = [];
+    for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "hi" },
+      { type: "done", usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 }, stopReason: "stop" },
+    ]);
+  });
+
   test("always requests streaming upstream so non-stream clients still get NDJSON", async () => {
     const built = await builtRequest({ ...parsed(), stream: false });
     expect(JSON.parse(built.body).params.stream).toBe(true);

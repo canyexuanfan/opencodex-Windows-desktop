@@ -228,7 +228,7 @@ async function*ndjson(response: Response, budget: TranslatorBudget): AsyncGenera
       let newline = buffer.indexOf("\n");
       while (newline >= 0) {
         const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
-        if (line) { try { yield JSON.parse(line) as Record<string, unknown>; } catch { /* ignore non-events */ } }
+        if (line) { try { yield JSON.parse(stripEventFrame(line)) as Record<string, unknown>; } catch { /* ignore non-events */ } }
         newline = buffer.indexOf("\n");
       }
       const residualBytes = encoder.encode(buffer).byteLength;
@@ -239,12 +239,17 @@ async function*ndjson(response: Response, budget: TranslatorBudget): AsyncGenera
       if (done) break;
     }
     const final = buffer.trim();
-    if (final) { try { yield JSON.parse(final) as Record<string, unknown>; } catch { /* ignore */ } }
+    if (final) { try { yield JSON.parse(stripEventFrame(final)) as Record<string, unknown>; } catch { /* ignore */ } }
   } finally {
     budget.releaseRetained(bufferBytes, { kind: "live_transient" });
     try { await reader.cancel(); } catch { /* already closed */ }
     reader.releaseLock();
   }
+}
+
+/** The endpoint is newline-delimited JSON; defensively strip an SSE `data:` frame if the gateway ever switches shapes. */
+function stripEventFrame(line: string): string {
+  return line.startsWith("data:") ? line.slice("data:".length).trim() : line;
 }
 
 function isReasoningEffortRejection(status: number, payload: string): boolean {
@@ -306,7 +311,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
       ].join("\n\n"), parsed.modelId);
       const reasoningEffort = supportedCommandCodeEffort(provider, parsed.modelId, parsed.options.reasoning);
       const body = {
-        config: await commandCodeConfig(cwd), memory: null, taste: null, skills: null,
+        config: await commandCodeConfig(cwd), memory: "", taste: null, skills: null,
         permissionMode: "standard", mode: "agent",
         params: {
           model: COMMAND_CODE_MODEL_ALIASES[parsed.modelId] ?? parsed.modelId,
@@ -325,7 +330,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
         Authorization: `Bearer ${provider.apiKey}`,
         "Content-Type": "application/json",
         "User-Agent": "cli",
-        "x-command-code-version": "1.12.0",
+        "x-command-code-version": provider.commandCodeVersion ?? "0.52.1",
         "x-cli-environment": "production",
         "x-taste-learning": "false",
         "x-co-flag": "false",
@@ -387,10 +392,18 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
             }
             break;
           }
-          case "finish":
+          case "finish-step":
+          case "finish": {
+            // Both events are terminal on the current wire; streams commonly carry both, so
+            // only the first one emits the done. finish-step carries `usage`; finish may carry
+            // `totalUsage` (current flows) or `usage`.
+            if (sawFinish) break;
             sawFinish = true;
-            yield { type: "done", usage: usage(event.totalUsage), stopReason: typeof event.rawFinishReason === "string" ? event.rawFinishReason : undefined };
+            const usageValue = event.totalUsage ?? event.usage;
+            const stopReason = typeof event.rawFinishReason === "string" ? event.rawFinishReason : typeof event.finishReason === "string" ? event.finishReason : undefined;
+            yield { type: "done", usage: usage(usageValue), stopReason };
             break;
+          }
           case "error": yield { type: "error", message: eventError(event.error), status: 502 }; break;
         }
       }
