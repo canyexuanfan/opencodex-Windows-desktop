@@ -26,6 +26,7 @@ export const de: Record<TKey, string> = {
   "routing.limits": "Grenzen",
   "routing.unknownEvidence": "Richtlinie für unbekannte Evidenz",
   "routing.none": "keine",
+  "routing.unavailable": "–",
   "routing.dryRun": "Trockenlauf-Bewertung",
   "routing.dryRunContext": "Kontextfenster der Anfrage (Tokens)",
   "routing.dryRunTools": "Anfrage benötigt Tools",

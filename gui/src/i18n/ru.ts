@@ -26,6 +26,7 @@ export const ru: Record<TKey, string> = {
   "routing.limits": "Лимиты",
   "routing.unknownEvidence": "Политика неизвестных данных",
   "routing.none": "нет",
+  "routing.unavailable": "–",
   "routing.dryRun": "Пробная оценка",
   "routing.dryRunContext": "Контекстное окно запроса (токены)",
   "routing.dryRunTools": "Запрос требует инструменты",

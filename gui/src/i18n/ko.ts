@@ -26,6 +26,7 @@ export const ko: Record<TKey, string> = {
   "routing.limits": "제한",
   "routing.unknownEvidence": "알 수 없는 증거 정책",
   "routing.none": "없음",
+  "routing.unavailable": "–",
   "routing.dryRun": "드라이런 평가",
   "routing.dryRunContext": "요청 컨텍스트 창(토큰)",
   "routing.dryRunTools": "요청에 도구 필요",

@@ -26,6 +26,7 @@ export const ja: Record<TKey, string> = {
   "routing.limits": "制限",
   "routing.unknownEvidence": "不明なエビデンスのポリシー",
   "routing.none": "なし",
+  "routing.unavailable": "–",
   "routing.dryRun": "ドライラン評価",
   "routing.dryRunContext": "リクエストのコンテキストウィンドウ（トークン）",
   "routing.dryRunTools": "リクエストにツールが必要",

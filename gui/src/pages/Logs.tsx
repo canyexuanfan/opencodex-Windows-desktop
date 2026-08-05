@@ -149,6 +149,17 @@ export interface LogEntry {
 }
 
 /** Session-cache entries are arbitrary JSON — reject shapes that would crash the table. */
+function validCachedRouteDecision(routeDecision: LogEntry["routeDecision"]): boolean {
+  if (routeDecision === undefined) return true;
+  if (!routeDecision || typeof routeDecision !== "object") return false;
+  if (routeDecision.candidates === undefined) return true;
+  if (!Array.isArray(routeDecision.candidates)) return false;
+  for (const candidate of routeDecision.candidates) {
+    if (!candidate || typeof candidate !== "object") return false;
+  }
+  return true;
+}
+
 function validCachedLogs(cached: LogEntry[] | null): LogEntry[] | null {
   if (!Array.isArray(cached)) return null;
   for (const entry of cached) {
@@ -160,6 +171,7 @@ function validCachedLogs(cached: LogEntry[] | null): LogEntry[] | null {
       || typeof entry.provider !== "string"
       || typeof entry.status !== "number"
       || typeof entry.durationMs !== "number"
+      || !validCachedRouteDecision(entry.routeDecision)
     ) {
       return null;
     }

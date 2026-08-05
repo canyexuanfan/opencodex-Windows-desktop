@@ -39,12 +39,12 @@ type DryRunResult = {
   trace?: { profile?: { revision?: string } };
 };
 
-function fmtMs(value: number | undefined): string {
-  return value === undefined ? "–" : `${Math.round(value)}ms`;
+function fmtMs(value: number | undefined, unavailable: string): string {
+  return value === undefined ? unavailable : `${Math.round(value)}ms`;
 }
 
-function fmtRate(value: number | null | undefined): string {
-  return value === null || value === undefined ? "–" : `${Math.round(value * 100)}%`;
+function fmtRate(value: number | null | undefined, unavailable: string): string {
+  return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
 }
 
 function pickSelectedProfile(next: ProfileDto[], current: ProfileDto | null): ProfileDto | null {
@@ -66,6 +66,7 @@ function shouldClearDryRunOnSelectionChange(
 
 export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const t = useT();
+  const unavailable = t("routing.unavailable");
   const [profiles, setProfiles] = useState<ProfileDto[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -90,13 +91,17 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     clearDryRun();
   }, [clearDryRun]);
 
+  const loadGenerationRef = useRef(0);
+
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     setLoadError("");
     try {
       const [profilesRes, analyticsRes] = await Promise.all([
         fetch(`${apiBase}/api/routing-profiles`),
         fetch(`${apiBase}/api/routing-analytics`),
       ]);
+      if (generation !== loadGenerationRef.current) return;
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
       const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
       const next = profilesJson.profiles ?? [];
@@ -111,8 +116,11 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       if (analyticsRes.ok) {
         const analyticsJson = await analyticsRes.json() as Analytics;
         setAnalytics(analyticsJson);
+      } else {
+        setAnalytics(null);
       }
     } catch (error) {
+      if (generation !== loadGenerationRef.current) return;
       setLoadError(error instanceof Error ? error.message : String(error));
     }
   }, [apiBase, clearDryRun]);
@@ -280,7 +288,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         </button>
         {dryRunError ? <Notice tone="err">{dryRunError}</Notice> : null}
         {dryRunResult ? (
-          <table className="table">
+          <table className="tbl">
             <thead>
               <tr>
                 <th>{t("routing.candidate")}</th>
@@ -298,7 +306,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                   </td>
                   <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
                   <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
-                  <td>{candidate.score ? candidate.score.total.toFixed(3) : "–"}</td>
+                  <td>{candidate.score ? candidate.score.total.toFixed(3) : unavailable}</td>
                 </tr>
               ))}
             </tbody>
@@ -312,16 +320,16 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
           <>
             <div className="card-badges">
               <span className="badge badge-muted">{t("routing.analyticsTotal")}: {analytics.totalRequests}</span>
-              <span className="badge badge-muted">{t("routing.analyticsSuccessRate")}: {fmtRate(analytics.successRate)}</span>
-              <span className="badge badge-muted">{t("routing.analyticsFallbackRate")}: {fmtRate(analytics.fallbackRate)}</span>
-              <span className="badge badge-muted">{t("routing.analyticsP50")}: {fmtMs(analytics.durationMs.p50)}</span>
-              <span className="badge badge-muted">{t("routing.analyticsP95")}: {fmtMs(analytics.durationMs.p95)}</span>
-              <span className="badge badge-muted">{t("routing.analyticsP99")}: {fmtMs(analytics.durationMs.p99)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsSuccessRate")}: {fmtRate(analytics.successRate, unavailable)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsFallbackRate")}: {fmtRate(analytics.fallbackRate, unavailable)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP50")}: {fmtMs(analytics.durationMs.p50, unavailable)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP95")}: {fmtMs(analytics.durationMs.p95, unavailable)}</span>
+              <span className="badge badge-muted">{t("routing.analyticsP99")}: {fmtMs(analytics.durationMs.p99, unavailable)}</span>
               <span className="badge badge-muted">{t("routing.analyticsCooldown")}: {analytics.cooldownTriggeringFailures}</span>
-              <span className="badge badge-muted">{t("routing.analyticsConfidence")}: {analytics.confidence ?? "–"}</span>
+              <span className="badge badge-muted">{t("routing.analyticsConfidence")}: {analytics.confidence ?? unavailable}</span>
               {analytics.historyTruncated ? <span className="badge badge-muted">{t("routing.analyticsTruncated")}</span> : null}
             </div>
-            <table className="table">
+            <table className="tbl">
               <thead>
                 <tr>
                   <th>{t("routing.candidate")}</th>
@@ -335,8 +343,8 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                   <tr key={`${row.provider}/${row.model}`}>
                     <td>{row.provider}/{row.model}</td>
                     <td>{row.requests}</td>
-                    <td>{fmtRate(row.successRate)}</td>
-                    <td>{fmtMs(row.p50DurationMs)}</td>
+                    <td>{fmtRate(row.successRate, unavailable)}</td>
+                    <td>{fmtMs(row.p50DurationMs, unavailable)}</td>
                   </tr>
                 ))}
               </tbody>

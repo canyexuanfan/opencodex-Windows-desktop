@@ -26,6 +26,7 @@ export const zh: Record<TKey, string> = {
   "routing.limits": "限制",
   "routing.unknownEvidence": "未知证据策略",
   "routing.none": "无",
+  "routing.unavailable": "–",
   "routing.dryRun": "试运行评估",
   "routing.dryRunContext": "请求上下文窗口（令牌）",
   "routing.dryRunTools": "请求需要工具",

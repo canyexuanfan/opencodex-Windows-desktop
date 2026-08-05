@@ -66,6 +66,7 @@ export const en = {
   "routing.limits": "Limits",
   "routing.unknownEvidence": "Unknown evidence policy",
   "routing.none": "none",
+  "routing.unavailable": "–",
   "routing.dryRun": "Dry-run evaluation",
   "routing.dryRunContext": "Request context window (tokens)",
   "routing.dryRunTools": "Request requires tools",
