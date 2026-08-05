@@ -976,19 +976,30 @@ message (`history-job.ts:178`) and the Worker executes that value
 (`convergence-types.ts:293`), so it cannot reconstruct which of `skip`,
 `apply-opencodex` or `migrate-openai` was scheduled.
 
-That is a real gap and it is NOT closed by wording. Two honest options, and
-WP-R1c takes the second:
+That is a real gap and it is NOT closed by wording. Two honest options were
+offered here, and the audit rejected the second as unimplementable —
+`beginTransition` unconditionally writes the schedule fields
+(`transition-state.ts:111-120`), a positive row without a complete schedule is
+rejected (`:210-219`), and `BeginCodexTransitionNext` requires `nextRetryAt`
+(`convergence-types.ts:308`). "Publish the transition and defer the schedule"
+is a sentence the API does not permit.
 
-1. widen the row to carry the operation — a schema change to a table other
-   phases already depend on;
-2. schedule nothing durable in WP-R1c. The row records the direction, which is
-   what it can hold truthfully, and the history job continues to be dispatched
-   by the caller exactly as it is today, outside the lock and outside the row.
+So WP-R1c records the operation it actually dispatches, and it CAN, because the
+operation is derived deterministically from the caller's own intent:
+`deriveCodexHistoryOperation({ direction, resumeHistory, legacyMode })`
+(`history-job.ts:84-92`). The caller has all three inputs when it builds the
+witness, so the exact operation is known at publish time — it is not a value
+that only exists later. The row stores what the caller already decided, not a
+direction with a guessed operation beside it.
 
-The second keeps this phase to what it claims — the lock gets a production
-caller — and leaves the durable-schedule question to whichever phase actually
-needs a crash to resume history. Recording a direction and calling it a
-schedule would be the same overclaim this document has now corrected twice.
+That is the resolution of the durable-schedule question: not "defer it" (the
+API forbids it) and not "widen the row" (nothing needs widening — the operation
+is derivable from the inputs already present). It is recorded as the schedule
+the transition actually launched.
+
+The failure mode a test must not satisfy: asserting `native_generation` and
+`direction` while ignoring `history_status`, `nextRetryAt` and the schedule,
+which would pass on a row that claims nothing real.
 
 #### A failed write between the two files
 
