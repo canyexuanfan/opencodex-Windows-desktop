@@ -327,13 +327,20 @@ result:
 
 | Evidence | Ownership |
 |---|---|
-| Every known state path is ENOENT, **and the service manager shows no installation** | `owned` — an uncontested home |
-| Every known state path is ENOENT, but the service manager shows an installation, a conflict, or cannot be read | `unknown` |
-| Readable, valid, both homes match | `owned` |
+| Every known state path is ENOENT, **and no manager definition exists on disk, and no registration is loaded** | `owned` — an uncontested home |
+| Every known state path is ENOENT, but a manager definition exists, a registration is loaded, or either cannot be asked | `unknown` |
+| Readable, valid, both homes match, **and any manager definition names the same homes** | `owned` |
 | Readable, valid, homes differ | `foreign` |
+| Readable and valid, but a manager definition names DIFFERENT homes | `unknown` — an interrupted reinstall, not a decision to make unattended |
 | Present but unreadable, malformed, or schema-invalid | `unknown` |
 | Two valid states that disagree | `unknown` |
 | A valid state beside an unreadable one | `unknown` |
+| Two managers both proven present (Windows scheduler + WinSW) | `unknown` (`conflict` at the probe) |
+
+`readServiceInstallState` cannot answer this: it returns the FIRST valid state
+and discards every later path (`src/service.ts:165-175`), so a valid mirror
+beside a corrupt one reads as clean. The projection needs an all-paths evidence
+API that reports what each path said, not the first thing that parsed.
 
 Known paths and the current home pair come from `src/service.ts:82-107`, and
 normalization from `:109-112`. The detailed inspection belongs in `service.ts`;
@@ -368,11 +375,186 @@ export type ServiceManagerInstallation =
 export function inspectServiceManagerInstallation(): ServiceManagerInstallation;
 ```
 
-On Linux, `systemctl --user show -p LoadState --value opencodex-proxy` gives the
-three-way answer directly: a known load state is present, an explicit
-`not-found` is absent, and a bus or parse failure is unknown. Every probe is
-read-only — the user's proxy is live, and nothing here may start, stop, or
-reload it.
+### Registration is not the question; the definition is
+
+A fifth round rejected that sketch, and the reason reframes the whole probe.
+**Asking whether a job is currently loaded answers the wrong question.**
+
+Installation writes the definition FIRST and the state file after
+(`src/service.ts:1610-1625` on macOS, `:2017-2021` on Linux), and the definition
+itself embeds `CODEX_HOME` and `OPENCODEX_HOME` (`:276-284`, `:1948`). So an
+interrupted reinstall leaves a valid state file for home A beside an installed
+plist for home B — and a probe that only asks "is a job loaded?" calls that
+`owned`. Worse on macOS: a logged-out user has the plist on disk with no GUI
+domain at all, so the registration probe reports nothing loaded while a foreign
+definition sits right there.
+
+The probe therefore reads the **definition**, and compares the homes inside it:
+
+| Platform | Definition | Registration |
+|---|---|---|
+| macOS | `~/Library/LaunchAgents/com.opencodex.proxy.plist` (`:56-59`) | `launchctl print` |
+| Linux | `~/.config/systemd/user/opencodex-proxy.service` (`:1935-1941`) | `systemctl --user show` |
+| Windows | Task Scheduler XML / WinSW config | `schtasks /query`, `sc query` |
+
+Absence requires BOTH: no definition on disk AND no registration. Either one
+present, or either one unaskable, is not absence.
+
+### Measured exit codes, and the one that is not a code at all
+
+macOS distinguishes the two cases, verified against nonexistent targets rather
+than assumed:
+
+```text
+launchctl print gui/<uid>/<no-such-label>  -> exit 113  "Could not find service ... in domain"
+launchctl print gui/999999/<label>         -> exit 112  "Could not find domain for user"
+```
+
+113 is "definitely not registered"; 112 and everything else is "could not ask".
+`runLaunchctl` currently discards the numeric status and keeps only a boolean
+(`src/service.ts:551-565`), so the probe needs a variant that preserves it —
+classifying on stderr text alone would rest on output Apple does not treat as a
+stable interface.
+
+Linux does NOT signal through the exit code, which is the trap a code-based
+design would have fallen into:
+
+```text
+systemctl --user show -p LoadState --value opencodex-proxy  ->  "not-found", exit 0
+```
+
+A missing unit exits **zero**. The value carries the answer and the exit code
+carries only whether the question reached the bus. `LoadState` alone is also
+insufficient — it is orthogonal to `ActiveState`, so the probe asks for
+`LoadState`, `ActiveState` and `FragmentPath` together and calls absence only
+when the unit is inactive AND has no fragment.
+
+### Every probe is bounded and read-only
+
+`spawnSync`/`execSync`/`execFileSync` in this module carry no timeout
+(`src/service.ts:533,551,631`), so a wedged service manager would block the
+event loop. Each probe gets a short timeout, and a timeout maps to `unknown`
+like any other unanswered question.
+
+The allowlist is enforced by an injected runner that records executable and
+argv: `print`, `show`, `/query`, `sc query` and nothing else. The user's proxy
+is live under launchd, so a probe that could start, stop or reload anything is
+not a probe. Asserting this from the source text is not enough — this unit has
+already shipped a "fix" that was only a comment — so the test drives each verb
+to a mutating one and requires the assertion to fail.
+
+### `conflict` is reachable
+
+It is not decorative: Windows can have both a Task Scheduler registration and a
+WinSW service proven present at once, a combination the existing code already
+names (`src/service.ts:829`). The combinator states it rather than picking a
+winner.
+
+### Windows already wrote this down
+
+`probeWindowsSchedulerTask` (`src/service.ts:766-788`) is the pattern, and its
+own comment states the reason: "if both fail, returns `unknown` so callers can
+fail closed instead of releasing locks." It tries the specific query, falls back
+to a CSV listing, and only concludes absence when a listing succeeded without
+the task in it. WinSW is equally careful — only error 1060 proves absence
+(`src/lib/winsw.ts:209-266`).
+
+So this phase does not invent a convention. It brings two platforms up to one
+that already ships:
+
+| Platform | Today | Why it is wrong |
+|---|---|---|
+| launchd | every failed `launchctl print` becomes `loaded:false` (`src/service.ts:594`) | permission denial, a bad domain, and a missing `launchctl` all read as "not installed" |
+| systemd | `sh()` failures are swallowed by `catch` (`src/service.ts:2036-2043`) | no user bus reads as "nothing here" |
+| Windows | `present \| absent \| unknown` | — |
+
+`runLaunchctl` already returns `{ ok, stdout, stderr }` (`src/service.ts:551-565`),
+so the evidence exists and is being discarded one layer up. The new probe keeps
+it. `launchdJobMatchesPlist` itself is left alone: its callers want a boolean for
+staleness diagnostics, and widening it would change behavior this phase has no
+business changing.
+
+### The probes may not touch the running service
+
+`launchctl print`, `systemctl show`, `schtasks /query` and `sc.exe query` are all
+read-only, and that is not incidental. This machine has a live proxy on port
+10100 under launchd. A probe that started, stopped or reloaded anything to
+determine installation would take down the user's running proxy to answer a
+question about whether it exists.
+
+### "Cannot ask" is not one state — the correction that saves fresh machines
+
+A second reviewer found the flaw that would have made this change worse than the
+bug it fixes. If every unanswerable probe returns `unknown`, and `unknown`
+refuses, then **a fresh machine with no service manager reachable refuses every
+Codex write** — headless macOS with no GUI domain, a container with no user bus,
+a Linux box with no systemd at all. Those are ordinary environments, not
+contested ones.
+
+The escape is that not all silence is equal. Some failures prove the backend
+*cannot exist here*, and that is positive evidence of absence rather than a hole:
+
+| Observation | Verdict | Why |
+|---|---|---|
+| `systemctl` is not on PATH | `absent` | a systemd unit cannot be installed where systemd is not |
+| `/run/systemd/system` missing | `absent` | systemd is not the init system on this host |
+| `systemctl --user show` exits 0 with `not-found` | `absent` | the manager answered: no unit file |
+| `systemctl --user show` exits nonzero (bus unreachable) | `unknown` | a user manager may exist and hold a unit we cannot see |
+| `launchctl print` exits 113 | `absent` | measured on macOS 27.0: "Could not find service ... in domain" |
+| `launchctl print` exits 112 | `unknown` | measured: "Could not find domain for user" — we could not ask |
+| not macOS / not Windows / not Linux | `absent` | that backend has no installer on this platform |
+
+Measured directly rather than assumed. On macOS 27.0 the three cases return 0,
+113 and 112, and on Linux `systemctl --user show -p LoadState --value` exits 0
+printing `not-found` for a missing unit but exits 1 with "Failed to connect to
+bus" when the bus is gone. Both platforms separate "answered no" from "could not
+ask" by exit status, so neither needs message parsing as its primary signal.
+
+### The plist outlives the job
+
+A second launchd hazard: the installer writes the plist BEFORE loading it and
+writes service state only AFTER a successful load (`src/service.ts:1613-1629`).
+An interrupted install therefore leaves a plist on disk, no loaded job, and no
+state file — and a job-only probe calls that uncontested, while the plist will
+load with foreign homes baked in at next login.
+
+So the launchd probe reads BOTH: `~/Library/LaunchAgents/com.opencodex.proxy.plist`
+on disk, and the loaded job. A plist present with no job is `present`, not
+`absent`.
+
+### `conflict` is reachable, and it is Windows
+
+`conflict` is not decorative. The scheduler task and the WinSW registration can
+both exist — the code already names that state (`src/service.ts:829`) and already
+queries both because a failed backend switch can leave both installed
+(`src/service.ts:2211`). Manager conflict overrides to `unknown` for admission:
+two managers claiming one home is exactly the case where writing is unsafe.
+
+Three more rows the first draft missed, all evidence loss rather than ownership:
+
+| Case | Verdict |
+|---|---|
+| a valid state file beside a MISSING mirror | `unknown` — installs write every mirror (`src/service.ts:155`), so one missing is loss |
+| manager backend disagrees with `state.backend` | `unknown` |
+| scheduler and WinSW both present | `unknown` |
+
+### External provider must be read first
+
+Ownership currently runs before external-provider detection
+(`src/codex/admission.ts:98-116`). Making ownership stricter would hand an
+external-provider user an opaque `service-home` refusal instead of the actionable
+"you pointed Codex somewhere else" message. Both reads are read-only and neither
+depends on the other, so the external-provider check moves FIRST. Acceptance A6
+as originally written could not have caught this, because it proves ownership
+`owned` before testing the provider veto.
+
+### The systemd probe may not edit the process environment
+
+`ensureUserBusEnv()` repairs `XDG_RUNTIME_DIR` by mutating `process.env`
+(`src/service.ts:1994`). Admission documents itself as read-only, and while an
+environment variable is not a file, "reads only" that quietly rewrites its own
+process is the kind of almost-true this unit keeps finding. The probe passes a
+derived environment to the `systemctl` child instead.
 
 ## This is three work-phases, not one
 
