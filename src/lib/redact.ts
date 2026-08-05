@@ -106,26 +106,30 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
     new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=[^&;\\r\\n]*`, "gi"),
     "=",
   ],
-  // XML/HTML. A tag qualifies when its NAME is a credential, or when a
-  // `name`/`key`/`id` attribute names one — `data-name` and other prefixed
-  // attributes do not count, or `<field data-name="authorization">` loses
-  // harmless status text. Once a tag qualifies, EVERY quoted attribute value on
-  // it and its ENTIRE element content are masked: masking only the first
-  // attribute left `<authorization type="Basic" value="<secret>">` leaking, and
-  // masking only direct text left `<authorization><value><secret></value>` untouched.
+  // XML/HTML. A tag qualifies when its NAME is a credential (optionally
+  // namespace-qualified), or when a whole `name`/`key`/`id` attribute names one
+  // — `data-name` does not count, or `<field data-name="authorization">` loses
+  // harmless status text.
+  //
+  // Once a tag qualifies, the mask keeps only the tag name and runs to END OF
+  // LINE. Using the CLOSING TAG as the stopping point was the same mistake as
+  // every other early termination: same-name nesting ended the mask at the
+  // inner `</authorization>` and exposed the outer element's remaining content,
+  // and a self-closing tag had no closing tag to find at all. The closing tag
+  // is attacker-controlled text like everything else.
   [
     new RegExp(
-      `(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*>)([\\s\\S]*?)(</[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})[^>]*>)`,
+      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>]))[^\\r\\n]*`,
       "gi",
     ),
     "element",
   ],
   [
     new RegExp(
-      `(<([A-Za-z_:][\\w:.-]*)[^>]*?(?<![\\w:.-])(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>])[^>]*>)([\\s\\S]*?)(</\\2[^>]*>)`,
+      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?[A-Za-z_][\\w:.-]*)(?=[^>]*?(?<![\\w:.-])(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>]))[^\\r\\n]*`,
       "gi",
     ),
-    "named-element",
+    "element",
   ],
   // Multipart part: everything from a credential-named part header to the end
   // of the input. Part-based, not line-based — a body can span lines and the
@@ -154,15 +158,10 @@ function maskOtherFramings(value: string): string {
       });
       continue;
     }
-    if (kind === "element" || kind === "named-element") {
-      out = out.replace(pattern, (whole: string) => {
-        const open = /^<[^>]*>/.exec(whole)?.[0] ?? "";
-        const close = /<\/[^>]*>$/.exec(whole)?.[0] ?? "";
-        // Every quoted attribute on a qualifying tag is masked, not just the
-        // first, and the whole element content goes with it.
-        const safeOpen = open.replace(/=[^\S\r\n]*(?:"[^"]*"|'[^']*')/g, `=${REDACTED_SECRET}`);
-        return `${safeOpen}${REDACTED_SECRET}${close}`;
-      });
+    if (kind === "element") {
+      // Keep the tag name so the diagnostic still says WHICH element carried a
+      // credential, and mask everything after it.
+      out = out.replace(pattern, (_m, head: string) => `${head}${REDACTED_SECRET}`);
       continue;
     }
     out = out.replace(pattern, (_m, head: string, body: string) => {

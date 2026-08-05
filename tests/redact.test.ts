@@ -270,16 +270,18 @@ describe("redactSecretString", () => {
     expect(redactSecretString("authorization=Basic%20dXNlcjpwYXNz&model=gpt-5.5"))
       .toBe(`authorization=${REDACTED_SECRET}&model=gpt-5.5`);
     expect(redactSecretString("<x-api-key>secret123456</x-api-key>"))
-      .toBe(`<x-api-key>${REDACTED_SECRET}</x-api-key>`);
+      .toBe(`<x-api-key${REDACTED_SECRET}`);
     const multipart = redactSecretString('Content-Disposition: form-data; name="authorization"\r\n\r\nBasic dXNlcjpwYXNz\r\n--boundary');
     expect(multipart).toContain(REDACTED_SECRET);
     expect(multipart).not.toContain("dXNlcjpwYXNz");
   });
 
   test("XML credentials are covered by tag name, identifying attribute, and attribute value", () => {
-    // A qualifying tag masks EVERY quoted attribute and its whole content:
-    // masking only the first attribute left `type="Basic" value="<secret>"`
-    // leaking, and masking only direct text left a nested `<value>` untouched.
+    // A qualifying tag keeps only its NAME and masks to end of line. Using the
+    // closing tag as the stopping point was the same early-termination mistake
+    // as everywhere else: same-name nesting ended the mask at the INNER
+    // `</authorization>` and exposed the outer element's remaining content, and
+    // a self-closing tag had no closing tag to find at all.
     for (const input of [
       '<header name="authorization">Basic dXNlcjpwYXNz</header>',
       '<field key="x-api-key">secret123456</field>',
@@ -287,11 +289,17 @@ describe("redactSecretString", () => {
       '<authorization type="Basic" value="dXNlcjpwYXNz">public</authorization>',
       '<header name="authorization" value="Basic dXNlcjpwYXNz">public</header>',
       '<authorization><value>Basic dXNlcjpwYXNz</value></authorization>',
+      // Self-closing, namespace-qualified, and same-name nesting.
+      '<authorization value="Basic dXNlcjpwYXNz"/>',
+      '<header name="authorization" value="Basic dXNlcjpwYXNz"/>',
+      "<ns:authorization>Basic dXNlcjpwYXNz</ns:authorization>",
+      "<authorization><authorization>decoy</authorization>credential-suffix-123456</authorization>",
     ]) {
       const redacted = redactSecretString(input);
       expect(redacted).toContain(REDACTED_SECRET);
       expect(redacted).not.toContain("dXNlcjpwYXNz");
       expect(redacted).not.toContain("secret123456");
+      expect(redacted).not.toContain("credential-suffix-123456");
     }
   });
 
