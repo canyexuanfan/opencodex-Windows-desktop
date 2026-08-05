@@ -994,10 +994,23 @@ and the ones that did were rewritten rather than kept.
   an identity; (g) the FULL identity is compared across the ACL call — this one is
   the Windows-breaking form, since icacls moves ctime; (h) the async attribution
   alone is removed; (i) a pathname-only memo is applied to directories alone.
-  (h) and (i) are not redundant — each survived every other check, and each covers a
-  real production caller: `hardenStableLockFile` takes the async path, and
-  `hardenSecretDir` backs config, management-auth, tray, spill-store, and
-  `native-profile-manager.ts:153`.
+  (j) `hardenStableLockFile`'s Windows delegation is deleted; (k) its `required:
+  true` is weakened to `false`.
+  (h) through (k) are not redundant — each survived every other check. (h) and (i)
+  cover production callers the primitive tests missed: `hardenStableLockFile` takes
+  the async path, and `hardenSecretDir` backs config, management-auth, tray,
+  spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
+  layer entirely: deleting the whole ACL delegation left 86 tests green across three
+  files, because every test proved the primitive and none proved production still
+  called it. `hardenStableLockFile` takes its platform as a parameter for exactly
+  that reason — a direct `process.platform` read made the Windows branch unreachable
+  from a test.
+
+  Deliberately NOT asserted: the `timeoutMemoKey: path` argument at that call site.
+  `timeoutMemoKey()` already falls back to `targetPath` and this caller passes the
+  target path, so changing it is unobservable and a test pinning it would be
+  vacuous. The option exists for atomic writers that mint a fresh temp per write
+  and need the stable destination as the key (#612); this caller has no temp.
   Replacement is driven through the stat seam rather than a real unlink/recreate:
   ext4 recycles an inode immediately and APFS did not once in 200 cycles, so a
   real-file version asserts different things on different machines — which is how a

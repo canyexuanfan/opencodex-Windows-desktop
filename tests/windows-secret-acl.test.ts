@@ -33,6 +33,7 @@ import {
   type IcaclsResult,
 } from "../src/lib/windows-secret-acl";
 import { atomicWriteFile } from "../src/config";
+import { hardenStableLockFile } from "../src/codex/native-main-lock-file";
 
 let testDir = "";
 
@@ -1008,3 +1009,89 @@ for (const { label, harden, create } of ENTRY_POINTS) {
     });
   });
 }
+
+describe("hardenStableLockFile — the production call edge, not just the primitive", () => {
+  /**
+   * The gap this closes was invisible for three audit rounds.
+   *
+   * `hardenStableLockFile` is what actually hardens the coordinator database, via
+   * `native-main-claim.ts:81` and `native-main-owner.ts:147`. Deleting its entire
+   * Windows ACL delegation left 86 tests green across three files — because every
+   * test proved the primitive, and nothing proved production still called it.
+   *
+   * So this asserts the edge itself: on win32 the required async hardener runs
+   * with the pathname as its timeout memo key, and its failure propagates rather
+   * than leaving a coordinator database other accounts can read.
+   */
+  test("on win32 it delegates to the required async hardener, keyed by the path", async () => {
+    resetHardenedStateForTests();
+    const lockPath = join(testDir, "coordinator-claim.sqlite");
+    writeFileSync(lockPath, "x", "utf8");
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    const seen: string[][] = [];
+    setAsyncIcaclsRunnerForTests(async args => {
+      seen.push(args);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      await hardenStableLockFile(lockPath, "win32");
+      // The ACL sequence ran against this exact path.
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every(args => args[0] === lockPath)).toBe(true);
+      expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
+      // NOT asserted here: the `timeoutMemoKey: path` argument. It cannot be,
+      // because it is redundant — `timeoutMemoKey()` falls back to `targetPath`,
+      // and this caller passes the target path itself. Changing it in production
+      // is unobservable, so a test claiming to pin it would be vacuous. The
+      // option exists for atomic writers that mint a fresh temp per write and
+      // need the STABLE destination as the key (#612); this caller has no temp.
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+    }
+  });
+
+  test("a required ACL failure propagates instead of leaving the file unhardened", async () => {
+    resetHardenedStateForTests();
+    const lockPath = join(testDir, "coordinator-fails.sqlite");
+    writeFileSync(lockPath, "x", "utf8");
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    setAsyncIcaclsRunnerForTests(async () => ({
+      success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "",
+    }));
+    try {
+      await expect(hardenStableLockFile(lockPath, "win32")).rejects.toThrow();
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+    }
+  });
+
+  test("on posix it hardens by mode alone and runs no ACL command", async () => {
+    resetHardenedStateForTests();
+    const lockPath = join(testDir, "coordinator-posix.sqlite");
+    writeFileSync(lockPath, "x", "utf8");
+
+    let calls = 0;
+    setAsyncIcaclsRunnerForTests(async () => {
+      calls += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      await hardenStableLockFile(lockPath, "linux");
+      expect(calls).toBe(0);
+    } finally {
+      setAsyncIcaclsRunnerForTests(null);
+    }
+  });
+});

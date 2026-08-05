@@ -261,9 +261,14 @@ real migration after OFF and ON mutations and asserts: no `claudeCode` block,
 > | `inspectNativeCodexOwnership()` here | `AdmissionSnapshot.ownership`, owned by WP12's admission producer |
 >
 > Hashing the home ALONE is the specific defect `005_contract.md` §7 exists to
-> prevent: a service and a CLI running as different OS users would share one lock
-> file for one home, and `os.homedir()` is environment-controlled under Bun 1.3.14
-> either way. Building this would ship that bug knowingly.
+> prevent, and the honest statement of it is that the outcome is **undetermined**,
+> not that it splits or that it collides. The lock path would carry no proof of
+> effective-user authority, so what actually happens depends on the temp root: a
+> shared `/tmp` puts two OS users on one lock file (collision, or an access failure
+> on the other's mode-0600 database), while a per-user or environment-controlled
+> temp root splits one home across two lock files (no exclusion at all, silently).
+> `os.homedir()` is environment-controlled under Bun 1.3.14 besides. WP12's
+> resolver removes the ambiguity by encoding uid/SID directly.
 >
 > **Consequence for sequencing:** WP4 depends on WP12's lock, so it runs after it,
 > not beside it. WP4 keeps everything below that is genuinely its own — the
@@ -330,10 +335,12 @@ export function reconcileCodexDesiredState(
 > **SUPERSEDED — do not implement this paragraph.** It read: canonicalize the
 > effective `CODEX_HOME`, hash it with SHA-256, and store the SQLite lock at
 > `join(tmpdir(), "opencodex-native-locks", <hash> + ".sqlite")`. Keying on the home
-> alone omits the effective uid/SID, so a service and a CLI running as different OS
-> users would take *different* lock files for one home and serialize with nothing —
-> the precise split `005_contract.md` §7 exists to prevent, and `os.homedir()` is
-> environment-controlled under Bun 1.3.14 besides.
+> alone omits the effective uid/SID, so the lock path carries no proof of which
+> account it belongs to. The failure it produces is **environment-dependent**, which
+> is worse than a fixed one: a shared temp root puts two OS users on one lock file,
+> while a per-user or environment-controlled temp root splits one home across two
+> and they serialize with nothing. `os.homedir()` is environment-controlled under
+> Bun 1.3.14 besides. `005_contract.md` §7 exists to remove exactly this ambiguity.
 >
 > WP4 calls WP12's public N acquisition API instead. The path resolution belongs to
 > `resolveCodexCoordinatorDatabasePath` (`src/codex/user-identity.ts:165`), which
