@@ -4,6 +4,7 @@ import { IconChevron, IconBoxes, IconInfo, IconShuffle, IconCheck, IconAlert } f
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
+import { formatProviderDisplayName } from "../provider-icons";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
@@ -723,7 +724,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
             style={{ flex: 1, border: 0, background: "transparent", padding: 0, color: "inherit", cursor: "pointer", textAlign: "left" }}
           >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
-          <span className="text-body font-semibold">{provider}</span>
+          <span className="text-body font-semibold">{formatProviderDisplayName(provider, t)}</span>
           {isNative && <span className="models-chip muted mono text-caption">{t("models.nativeGroupLabel")}</span>}
          {discoveryFailure && (
            <span
@@ -832,7 +833,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                          )}
                          <div className="model-tip-grid">
                            <span className="model-tip-key">{t("models.tipProvider")}</span>
-                           <span className="model-tip-val">{m.provider}</span>
+                           <span className="model-tip-val">{formatProviderDisplayName(m.provider, t)}</span>
                            {(m.contextWindow || m.contextCap) && (
                              <>
                                <span className="model-tip-key">{t("models.tipContext")}</span>
