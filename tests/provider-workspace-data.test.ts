@@ -466,6 +466,11 @@ describe("provider-icons", () => {
     expect(isCatalogProviderId("openai-multi")).toBe(false);
     expect(isCatalogProviderId("my-proxy")).toBe(false);
   });
+
+  test("commandcode maps to its own brand mark and display name", () => {
+    expect(providerIconSrc("commandcode")).toBe("/provider-icons/commandcode-color.svg");
+    expect(formatProviderDisplayName("commandcode", englishT)).toBe("Command Code - API");
+  });
 });
 
 describe("add-provider catalog presets (WP050a)", () => {
