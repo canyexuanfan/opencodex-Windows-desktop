@@ -59,11 +59,19 @@ const INVISIBLE_FORMAT = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Mn}\p{Me}]/u
  * homoglyphs NFKD deliberately leaves alone.
  */
 const LETTER_CONFUSABLES = new Map<string, string>([
+  // Cyrillic
   ["\u0430", "a"], ["\u0435", "e"], ["\u043E", "o"], ["\u0440", "p"], ["\u0441", "c"],
   ["\u0445", "x"], ["\u0443", "y"], ["\u04BB", "h"], ["\u0455", "s"], ["\u0456", "i"],
   ["\u0458", "j"], ["\u043A", "k"], ["\u0442", "t"], ["\u0432", "b"], ["\u043C", "m"],
+  ["\u043D", "h"], ["\u0501", "d"], ["\u0503", "g"], ["\u051B", "q"], ["\u051D", "w"],
+  ["\u04CF", "l"], ["\u0261", "g"], ["\u04AB", "c"], ["\u04BD", "e"], ["\u0459", "k"],
+  // Greek
   ["\u03B1", "a"], ["\u03BF", "o"], ["\u03C1", "p"], ["\u03BD", "v"], ["\u03BA", "k"],
-  ["\u0261", "g"], ["\u0131", "i"], ["\u2044", "/"],
+  ["\u03B5", "e"], ["\u03C4", "t"], ["\u03B9", "i"], ["\u03C5", "u"], ["\u03C7", "x"],
+  ["\u03B7", "n"], ["\u03BC", "u"], ["\u03C3", "o"], ["\u03B2", "b"], ["\u03B3", "y"],
+  // Latin extended / other
+  ["\u0131", "i"], ["\u0269", "i"], ["\u1D0F", "o"], ["\u0280", "r"], ["\u01BF", "p"],
+  ["\u0578", "n"], ["\u057D", "u"], ["\u0585", "o"], ["\u0581", "g"], ["\u2044", "/"],
 ]);
 
 // `\b` is the wrong left boundary for a header name: it matches after a `-` or
@@ -83,27 +91,30 @@ const COLON_LABELLED_CREDENTIAL = new RegExp(
 function foldForMatching(value: string): { folded: string; map: number[] } {
   let folded = "";
   const map: number[] = [];
-  for (let i = 0; i < value.length; i += 1) {
-    const ch = value[i]!;
-    if (INVISIBLE_FORMAT.test(ch)) continue;
-    if (COLON_CONFUSABLES.has(ch)) {
-      folded += ":";
-      map.push(i);
+  // Iterate by CODE POINT, not UTF-16 code unit: a supplementary character
+  // (mathematical letters, variation selectors above the BMP) is two units, so
+  // a per-unit loop hands each half to the property tests separately and
+  // neither half matches anything. `𝕩-api-key` and a U+E0100 inside a label
+  // both walked straight past the fold that way.
+  let i = 0;
+  while (i < value.length) {
+    const ch = String.fromCodePoint(value.codePointAt(i)!);
+    const width = ch.length;
+    if (INVISIBLE_FORMAT.test(ch)) {
+      i += width;
       continue;
     }
-    const lower = ch.toLowerCase();
-    const homoglyph = LETTER_CONFUSABLES.get(lower);
-    if (homoglyph) {
-      folded += homoglyph;
-      map.push(i);
-      continue;
-    }
-    // NFKD collapses fullwidth, circled, and mathematical letter variants onto
-    // their ASCII base. Only single-unit results are used so the offset map
-    // stays one-to-one.
-    const compat = ch.normalize("NFKD");
-    folded += compat.length === 1 ? compat : ch;
-    map.push(i);
+    const mapped = COLON_CONFUSABLES.has(ch)
+      ? ":"
+      : LETTER_CONFUSABLES.get(ch.toLowerCase())
+        // NFKD collapses fullwidth, circled, and mathematical letter variants
+        // onto their ASCII base.
+        ?? (ch.normalize("NFKD").length === 1 ? ch.normalize("NFKD") : ch);
+    // One folded unit per source code point keeps the offset map aligned; a
+    // multi-unit fold would desynchronize it, so those keep the original.
+    folded += mapped.length === 1 ? mapped : ch;
+    for (let k = 0; k < (mapped.length === 1 ? 1 : width); k += 1) map.push(i);
+    i += width;
   }
   map.push(value.length);
   return { folded, map };

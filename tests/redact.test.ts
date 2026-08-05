@@ -173,6 +173,32 @@ describe("redactSecretString", () => {
       .toBe("internal_token: public-diagnostic-value");
   });
 
+  test("supplementary-plane characters are canonicalized, not split", () => {
+    // The fold iterated UTF-16 code UNITS, so a supplementary character arrived
+    // as two halves and neither half matched any property test. Mathematical
+    // letters and high variation selectors walked straight past.
+    expect(redactSecretString("\u{1D569}-api-key: credentialvalue123456"))
+      .toBe(`\u{1D569}-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("\u{1D431}-api-key: credentialvalue123456"))
+      .toBe(`\u{1D431}-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-ke\u{E0100}y: credentialvalue123456"))
+      .toBe(`x-api-ke\u{E0100}y: ${REDACTED_SECRET}`);
+  });
+
+  test("cross-script homoglyphs NFKD leaves alone are still folded", () => {
+    expect(redactSecretString("passwor\u0501: credentialvalue123456"))
+      .toBe(`passwor\u0501: ${REDACTED_SECRET}`);
+    expect(redactSecretString("s\u03B5cret: credentialvalue123456"))
+      .toBe(`s\u03B5cret: ${REDACTED_SECRET}`);
+    expect(redactSecretString("\u03C4oken: credentialvalue123456"))
+      .toBe(`\u03C4oken: ${REDACTED_SECRET}`);
+  });
+
+  test("ordinary supplementary text survives the fold unchanged", () => {
+    expect(redactSecretString("emoji \u{1F600} and text stay intact"))
+      .toBe("emoji \u{1F600} and text stay intact");
+  });
+
   test("a pathological repeated-header line neither overflows nor leaks", () => {
     // The first rescan attempt recursed per match and blew the stack here.
     const line = "Authorization: Bearer tok ".repeat(3000);
