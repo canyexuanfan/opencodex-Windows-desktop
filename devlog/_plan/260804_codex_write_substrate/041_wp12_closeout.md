@@ -327,11 +327,12 @@ result:
 
 | Evidence | Ownership |
 |---|---|
-| Every known state path is ENOENT, **and no manager definition exists on disk, and no registration is loaded** | `owned` — an uncontested home |
+| Every known state path is ENOENT, **and no manager definition exists on disk, and no registration is loaded** | `owned` — no persistent service claim observed |
 | Every known state path is ENOENT, but a manager definition exists, a registration is loaded, or either cannot be asked | `unknown` |
-| Readable, valid, both homes match, **and any manager definition names the same homes** | `owned` |
+| Readable, valid, both homes match, **and any manager definition names the same homes, and the loaded registration matches that definition** | `owned` |
 | Readable, valid, homes differ | `foreign` |
 | Readable and valid, but a manager definition names DIFFERENT homes | `unknown` — an interrupted reinstall, not a decision to make unattended |
+| Definition and state agree, but launchd/systemd is running an OLDER definition, or the registration cannot be read | `unknown` |
 | Present but unreadable, malformed, or schema-invalid | `unknown` |
 | Two valid states that disagree | `unknown` |
 | A valid state beside an unreadable one | `unknown` |
@@ -341,6 +342,32 @@ result:
 and discards every later path (`src/service.ts:165-175`), so a valid mirror
 beside a corrupt one reads as clean. The projection needs an all-paths evidence
 API that reports what each path said, not the first thing that parsed.
+
+The "older definition" row is not hypothetical: `startLaunchd` already
+distinguishes it and tells the user to `bootout` and reinstall
+(`src/service.ts:1655-1667`). Disk and live can disagree, so reading the disk
+definition alone leaves the same hole one layer in.
+
+### What this table does NOT prove
+
+`owned` here means **no persistent service claim was observed**. It does not
+mean this process is the only writer: two foreground `ocx start` processes on
+one home both read `owned`, correctly, because neither installs a service.
+Exclusion between them is the write lock's job (WP-R1c), and deciding a
+sequential takeover between different `OPENCODEX_HOME`s is provenance's job
+under that lock. Reading this row as exclusivity would be borrowing a guarantee
+from a phase that has not run.
+
+### The race this cannot close
+
+Admission re-reads under the lock, but `writeServiceInstallState` and the
+definition writes (`src/service.ts:1610-1625`, `:2017-2021`) do not take that
+lock, so a definition can appear immediately after the probe looked. Reading the
+definition bytes twice around the registration check narrows the window and
+detects an A-B-A, but detection is not prevention: closing it requires
+install/uninstall/repair to take the same authority lock. That is a real
+follow-up, recorded rather than papered over — the probe reports what it saw,
+and does not claim the world held still while it looked.
 
 Known paths and the current home pair come from `src/service.ts:82-107`, and
 normalization from `:109-112`. The detailed inspection belongs in `service.ts`;
@@ -374,6 +401,31 @@ export type ServiceManagerInstallation =
   | { kind: "unknown"; reason: string };
 export function inspectServiceManagerInstallation(): ServiceManagerInstallation;
 ```
+
+A sixth round replaced that shape too. `{ backend }` tells a caller which manager
+answered, which is not the question either — the caller needs the homes the
+definition names, so that comparing them is the projection's job rather than a
+verdict the probe hands down:
+
+```ts
+type ServiceManagerClaim = {
+  backend: "launchd" | "systemd" | "scheduler" | "winsw";
+  definitionPath: string;
+  homes: { codexHome: string; opencodexHome: string };
+  registration: "present" | "absent";
+};
+
+type ServiceManagerInstallation =
+  | { kind: "absent" }
+  | { kind: "present"; claims: readonly [ServiceManagerClaim, ...ServiceManagerClaim[]] }
+  | { kind: "conflict"; claims: readonly ServiceManagerClaim[] }
+  | { kind: "unknown"; reason: string };
+```
+
+On Windows the "definition" is a chain, not a file. The task XML names only the
+launcher (`src/service.ts:1450-1458`); the homes live in the batch wrapper it
+eventually runs (`:1358-1366`). A probe that parsed the XML and stopped would
+read a definition that mentions neither home and conclude they match by default.
 
 ### Registration is not the question; the definition is
 
@@ -443,6 +495,17 @@ not a probe. Asserting this from the source text is not enough — this unit has
 already shipped a "fix" that was only a comment — so the test drives each verb
 to a mutating one and requires the assertion to fail.
 
+### Three ways this could pass while broken
+
+Named by the audit, and each answered by a specific assertion rather than by
+care:
+
+| False pass | What the test must do instead |
+|---|---|
+| Inspect only disk definitions and miss a stale LOADED one | Assert the older-definition row: disk and live disagree, result is `unknown` |
+| Parse the Task Scheduler XML and stop, never following it to the batch wrapper where the homes actually are | Assert the parsed `homes` against a fixture whose XML and wrapper name DIFFERENT homes |
+| Mutation-test the fake argv the harness supplies rather than the argv production emits | The recorder observes the PRODUCTION probe's emitted argv; mutating the fixture must not be able to satisfy it |
+
 ### `conflict` is reachable
 
 It is not decorative: Windows can have both a Task Scheduler registration and a
@@ -494,21 +557,68 @@ contested ones.
 The escape is that not all silence is equal. Some failures prove the backend
 *cannot exist here*, and that is positive evidence of absence rather than a hole:
 
+**The disk artifact is consulted FIRST, on every platform, and it can only ever
+raise the verdict.** A second audit round caught me applying that rule to
+launchd and then reasoning about Linux as though a systemd unit were not also a
+file. It is: `~/.config/systemd/user/opencodex-proxy.service`, written BEFORE
+`daemon-reload`, `enable`, `restart` and the state file (`src/service.ts:1936,2017-2022`)
+— the same ordering that makes the launchd plist outlive a failed install.
+
+So "backend impossible" never overrides a residue on disk:
+
 | Observation | Verdict | Why |
 |---|---|---|
-| `systemctl` is not on PATH | `absent` | a systemd unit cannot be installed where systemd is not |
-| `/run/systemd/system` missing | `absent` | systemd is not the init system on this host |
-| `systemctl --user show` exits 0 with `not-found` | `absent` | the manager answered: no unit file |
-| `systemctl --user show` exits nonzero (bus unreachable) | `unknown` | a user manager may exist and hold a unit we cannot see |
+| unit file or plist present (or `lstat` fails for any reason other than ENOENT) | at least `present` | an interrupted install leaves it, and it activates on the next login or boot |
+| `systemctl` not invocable AND no unit file | `absent` | no unit to load, and nothing here can load one |
+| `/run/systemd/system` missing AND no unit file | `absent` | systemd is not the init here and left nothing behind |
+| `systemctl --user show` exits 0 with `not-found` | `absent` | the manager answered |
+| `systemctl --user show` exits nonzero (bus unreachable) | `unknown` | a user manager may hold a unit we cannot see |
 | `launchctl print` exits 113 | `absent` | measured on macOS 27.0: "Could not find service ... in domain" |
-| `launchctl print` exits 112 | `unknown` | measured: "Could not find domain for user" — we could not ask |
-| not macOS / not Windows / not Linux | `absent` | that backend has no installer on this platform |
+| `launchctl print` exits 112 AND no plist | `absent` | the GUI domain itself does not exist, and nothing is staged to load |
+| `launchctl print` exits 112 AND a plist exists | `unknown` | something is staged and we cannot see whether it is loaded |
+| `/bin/launchctl` cannot be spawned AND no plist | `absent` | not macOS, or no launchd to hold a job |
+| not this platform's backend, no artifact | `absent` | that backend has no installer here |
 
-Measured directly rather than assumed. On macOS 27.0 the three cases return 0,
-113 and 112, and on Linux `systemctl --user show -p LoadState --value` exits 0
-printing `not-found` for a missing unit but exits 1 with "Failed to connect to
+The `112 + no plist` row is the one that decides whether a fresh headless Mac
+works at all. The earlier draft said 112 was always `unknown` while also
+claiming headless machines were saved; both could not be true. 112 means the GUI
+domain does not exist — there is no domain that could be holding a job — so with
+nothing staged on disk that is absence, not silence.
+
+`existsSync` is not sufficient for the artifact check. A dangling symlink or an
+unreadable path answers "no" to it while still being residue, so the probe uses
+`lstat` and treats every error EXCEPT `ENOENT` as `present`.
+
+Measured rather than assumed. On macOS 27.0 the three launchd cases return 0,
+113 and 112; on Linux `systemctl --user show -p LoadState --value` exits 0
+printing `not-found` for a missing unit and exits 1 with "Failed to connect to
 bus" when the bus is gone. Both platforms separate "answered no" from "could not
-ask" by exit status, so neither needs message parsing as its primary signal.
+ask" by exit status, so neither depends on message parsing.
+
+### `runLaunchctl` discards the number this needs
+
+I wrote that the evidence "already exists and is being discarded one layer up".
+That was wrong about launchd. `runLaunchctl` collapses `result.status` into
+`ok: result.status === 0` (`src/service.ts:560-564`), so 113 and 112 arrive
+indistinguishable. Depending on stderr text instead would mean parsing
+undocumented, localizable output — exactly what this design says it avoids.
+
+The result type gains `status: number | null`. Existing callers read `ok` and are
+unaffected; `launchdJobMatchesPlist` keeps its boolean shape.
+
+### Windows fails closed, and that is the honest answer
+
+There is no backend-impossible escape on Windows: `schtasks` and `sc.exe` are
+always present. On a locked-down host where the SCM query is denied and the
+scheduler query cannot prove absence, ownership is `unknown` and automatic
+convergence refuses.
+
+That is accepted rather than worked around. The local scheduler XML is written
+before registration (`src/service.ts:1700,1727`) and WinSW assets can outlive an
+SCM registration that still exists (`src/lib/winsw.ts:219`), so neither is
+authoritative — inferring absence from a generated file we wrote ourselves is
+precisely the mistake this table exists to prevent. The refusal carries the
+probe's reason so the user can act on it.
 
 ### The plist outlives the job
 
