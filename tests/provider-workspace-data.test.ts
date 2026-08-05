@@ -447,6 +447,13 @@ describe("provider-icons", () => {
     expect(formatProviderDisplayName("chatgpt", englishT)).toBe("ChatGPT");
   });
 
+  test("Command Code account and API-key presets share the catalog display name", () => {
+    expect(formatProviderDisplayName("command-code", englishT)).toBe("Command Code");
+    expect(formatProviderDisplayName("commandcode", englishT)).toBe("Command Code");
+    expect(isCatalogProviderId("command-code")).toBe(true);
+    expect(isCatalogProviderId("commandcode")).toBe(true);
+  });
+
   test("unknown simple ids are title-cased; mixedCase custom names pass through", () => {
     expect(formatProviderDisplayName("my-proxy", englishT)).toBe("My Proxy");
     expect(formatProviderDisplayName("MyProxy", englishT)).toBe("MyProxy");

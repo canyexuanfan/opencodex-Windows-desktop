@@ -800,6 +800,29 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noVisionModels: ["grok-build-0.1", "grok-composer-2.5-fast"],
   },
   {
+    id: "command-code",
+    label: "Command Code",
+    adapter: "command-code",
+    baseUrl: "https://api.commandcode.ai",
+    authKind: "oauth",
+    oauthId: "command-code",
+    featured: true,
+    note: "Log in with your Command Code account",
+    // OAuth needs one initial selection, but the exposed catalog is always discovered from the
+    // signed-in account. Do not add a static model list here.
+    defaultModel: "deepseek/deepseek-v4-flash",
+    liveModels: true,
+    modelDiscovery: {
+      url: "https://api.commandcode.ai/provider/v1/models",
+      maxResponseBytes: 262_144,
+      maxModels: 256,
+    },
+    // Command Code documents effort support as model-dependent. Do not synthesize a ladder.
+    reasoningEfforts: [],
+    defaultMaxOutputTokens: 64_000,
+    parallelToolCalls: true,
+  },
+  {
     id: "anthropic",
     label: "Anthropic Claude",
     adapter: "anthropic",
