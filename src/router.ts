@@ -7,6 +7,7 @@ import {
   tryPickComboModel,
   type ComboPick,
 } from "./combos";
+import type { NormalizedComboConfig } from "./combos/types";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
@@ -34,9 +35,13 @@ import { candidateCapabilityEvidence } from "./routing/capability";
 import { codexPoolHealthEvidence, healthEvidenceForCandidate } from "./routing/health";
 
 export class NoEligiblePolicyCandidateError extends Error {
-  constructor(readonly profileId: string) {
+  /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
+  readonly trace?: RouteDecisionTraceV1;
+
+  constructor(readonly profileId: string, trace?: RouteDecisionTraceV1) {
     super(`No eligible candidates for policy profile: ${profileId}`);
     this.name = "NoEligiblePolicyCandidateError";
+    this.trace = trace;
   }
 }
 
@@ -307,6 +312,23 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
       ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
       : {}),
+    // Registry-only client-facing repair policy (#938): fill only when the
+    // saved provider has no explicit policy; clone so runtime never aliases
+    // the registry constant.
+    ...(provider.responsesItemIdRepair === undefined && registryEntry.responsesItemIdRepair
+      ? {
+        responsesItemIdRepair: {
+          ...(registryEntry.responsesItemIdRepair.message ? { message: [...registryEntry.responsesItemIdRepair.message] } : {}),
+          ...(registryEntry.responsesItemIdRepair.reasoning ? { reasoning: [...registryEntry.responsesItemIdRepair.reasoning] } : {}),
+          ...(registryEntry.responsesItemIdRepair.repairMissingTerminalIds !== undefined
+            ? { repairMissingTerminalIds: registryEntry.responsesItemIdRepair.repairMissingTerminalIds }
+            : {}),
+          ...(registryEntry.responsesItemIdRepair.repairInvalidIds !== undefined
+            ? { repairInvalidIds: registryEntry.responsesItemIdRepair.repairInvalidIds }
+            : {}),
+        },
+      }
+      : {}),
     authMode: canonicalAuthMode,
     apiKey: resolvedApiKey,
     // Backfill the Google wire mode + Vertex project/location from the registry when the user
@@ -366,6 +388,34 @@ export class NoEnabledOpenAiProviderError extends Error {
   }
 }
 
+/**
+ * One immutable selection trace for a combo request: built once from the
+ * initial pick, before any child dispatch. Fallback execution stays in the
+ * usage entry's `attempts[]`; the trace never changes after selection.
+ */
+export function comboRouteDecisionTrace(
+  config: OcxConfig,
+  comboId: string,
+  pick: ComboPick,
+  requestedModel: string,
+): RouteDecisionTraceV1 {
+  const combo = getCombo(config, comboId);
+  return buildRouteDecisionTrace({
+    requestedModel,
+    routeKind: "combo",
+    selected: {
+      provider: pick.target.provider,
+      model: pick.target.model,
+      reason: "combo-pick",
+      candidateIndex: pick.targetIndex,
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        : {}),
+    },
+    candidates: combo ? comboRouteCandidates(config, pick, combo) : undefined,
+  });
+}
+
 // Codex uses a small number of control-plane model ids that are not part of the public GPT/o
 // naming families. Keep this exact: a broad `codex-*` rule could capture a third-party model.
 const CODEX_INTERNAL_OPENAI_MODELS = new Set(["codex-auto-review"]);
@@ -398,22 +448,22 @@ function routeResult(
  * selection-time eligibility and exclusion reasons. Purely observational; the
  * pick already happened and this never re-selects.
  */
-function comboRouteCandidates(config: OcxConfig, route: RouteResult): TraceCandidateInput[] | undefined {
-  const combo = route.combo;
-  if (!combo) return undefined;
-  const normalized = getCombo(config, combo.comboId);
-  if (!normalized) return undefined;
+function comboRouteCandidates(
+  config: OcxConfig,
+  pick: NonNullable<RouteResult["combo"]>,
+  combo: NormalizedComboConfig,
+): TraceCandidateInput[] {
   const now = Date.now();
-  return normalized.targets.map((target, index) => {
+  return combo.targets.map((target, index) => {
     const key = targetKey(target);
     const provider = config.providers[target.provider];
     const configured = provider !== undefined;
     const enabled = configured && provider.disabled !== true;
-    const inCooldown = isComboTargetInCooldown(combo.comboId, target, now);
-    const isSelected = index === combo.targetIndex;
+    const inCooldown = isComboTargetInCooldown(pick.comboId, target, now);
+    const isSelected = index === pick.targetIndex;
     // The pick's `attempted` list includes the winner itself; only non-selected
     // targets can be "already-attempted" (fallback picks exclude earlier tries).
-    const alreadyAttempted = !isSelected && combo.attempted.includes(key);
+    const alreadyAttempted = !isSelected && pick.attempted.includes(key);
     const exclusions: TraceCandidateInput["exclusions"] = [];
     if (!configured) exclusions.push({ code: "unconfigured" });
     if (configured && !enabled) exclusions.push({ code: "disabled" });
@@ -470,11 +520,11 @@ function routeModelInternal(
     }));
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
     if (evaluation.selectedIndex === null) {
-      throw new NoEligiblePolicyCandidateError(policyId);
+      throw new NoEligiblePolicyCandidateError(policyId, evaluation.trace);
     }
     const selected = evaluation.candidates[evaluation.selectedIndex]!;
     const concrete = `${selected.provider}/${selected.model}`;
-    const routed = routeModelInternal(config, concrete, true, undefined);
+    const routed = routeModelInternal(config, concrete, true);
     return {
       ...routed,
       routeKind: "policy" as const,
@@ -604,6 +654,7 @@ export function routeModel(
   // Policy routes carry a full evaluation trace already; never rebuild it.
   if (route.routeDecision) return route;
   const accountRef = route.codexAccountNamespace;
+  const combo = route.combo ? getCombo(config, route.combo.comboId) : undefined;
   route.routeDecision = buildRouteDecisionTrace({
     requestedModel: modelId,
     routeKind: route.routeKind,
@@ -613,11 +664,13 @@ export function routeModel(
       ...(accountRef ? { accountRef } : {}),
       reason: route.routeReason,
       ...(route.combo ? { candidateIndex: route.combo.targetIndex } : {}),
-      ...(route.combo
-        ? { tieBreak: getCombo(config, route.combo.comboId)?.strategy === "round-robin" ? "round-robin" : "failover" }
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
         : {}),
     },
-    candidates: route.routeKind === "combo" ? comboRouteCandidates(config, route) : undefined,
+    candidates: route.routeKind === "combo" && route.combo && combo
+      ? comboRouteCandidates(config, route.combo, combo)
+      : undefined,
   });
   return route;
 }

@@ -9,6 +9,7 @@
 import type { OcxConfig } from "../types";
 import {
   buildRouteDecisionTrace,
+  MAX_REQUIREMENTS,
   type RouteCapabilityEvidence,
   type RouteCostEvidence,
   type RouteDecisionTraceV1,
@@ -19,7 +20,7 @@ import {
   type RouteScoreEvidence,
   type Unknownable,
 } from "./trace";
-import { getRoutingProfile, type NormalizedRoutingProfile } from "./profile";
+import { getRoutingProfile, policyModelId, type NormalizedRoutingProfile } from "./profile";
 import { healthScore } from "./health";
 
 /** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
@@ -74,6 +75,8 @@ function booleanRequirement(
   actual: Unknownable | undefined,
 ): RouteRequirementEvidence | null {
   if (required === undefined) return null;
+  // Note: `required === false` is a negative assertion ("must NOT have X"),
+  // not "don't care"; an absent field is the only "no requirement" form.
   if (actual === undefined || actual === "unknown") {
     return { id, expected: required, outcome: "unknown" };
   }
@@ -148,58 +151,86 @@ function requirementFor(
   return requirements;
 }
 
-/**
- * Request-side capability constraints (RI-05): a request that provably needs
- * tools or image input imposes the same requirement on candidates as the
- * profile's hard requirements. Undefined request evidence adds nothing.
- */
-function requestRequirements(
-  requestEvidence: PolicyRequestEvidence,
-  capability: RouteCapabilityEvidence | undefined,
-): RouteRequirementEvidence[] {
-  const requirements: RouteRequirementEvidence[] = [];
-  if (requestEvidence.toolsRequired === true) {
-    const tools = booleanRequirement("request-tools", true, capability?.tools);
-    if (tools) requirements.push(tools);
-  }
-  if (requestEvidence.imageInputRequired === true) {
-    const image = booleanRequirement("request-image-input", true, capability?.image);
-    if (image) requirements.push(image);
-  }
-  if (requestEvidence.contextWindow !== undefined) {
-    const actual = capability?.contextWindow;
-    if (typeof actual === "number") {
-      requirements.push({
-        id: "request-context-window",
-        expected: requestEvidence.contextWindow,
-        actual,
-        outcome: actual >= requestEvidence.contextWindow ? "satisfied" : "unsatisfied",
-      });
-    } else {
-      requirements.push({
-        id: "request-context-window",
-        expected: requestEvidence.contextWindow,
-        outcome: "unknown",
-      });
-    }
-  }
-  if (requestEvidence.structuredOutputRequired === true) {
-    const structured = booleanRequirement("request-structured-output", true, capability?.structuredOutput);
-    if (structured) requirements.push(structured);
-  }
-  if (requestEvidence.encryptedCodexTask === true) {
-    const encrypted = booleanRequirement("request-encrypted-codex-task", true, capability?.encryptedCodexTasks);
-    if (encrypted) requirements.push(encrypted);
-  }
-  return requirements;
-}
-
 function unsatisfiedOrUnknown(requirements: RouteRequirementEvidence[]): RouteRequirementEvidence[] {
   return requirements.filter(requirement => requirement.outcome !== "satisfied");
 }
 
 function configuredPriorityScore(index: number, total: number): number {
   return total > 1 ? (total - index) / total : 1;
+}
+
+/**
+ * Requirements derived from the request evidence supplied to a dry-run. A
+ * candidate must satisfy both the profile `require` block and the request
+ * needs (context window, tools, image input, structured output, reasoning
+ * effort, service tier, encrypted Codex tasks) to be eligible.
+ */
+function requestRequirementFor(
+  request: PolicyRequestEvidence,
+  capability: RouteCapabilityEvidence | undefined,
+): RouteRequirementEvidence[] {
+  const requirements: RouteRequirementEvidence[] = [];
+  if (request.contextWindow !== undefined) {
+    const actual = capability?.contextWindow;
+    if (typeof actual === "number") {
+      requirements.push({
+        id: "request-context-window",
+        expected: request.contextWindow,
+        actual,
+        outcome: actual >= request.contextWindow ? "satisfied" : "unsatisfied",
+      });
+    } else {
+      requirements.push({ id: "request-context-window", expected: request.contextWindow, outcome: "unknown" });
+    }
+  }
+  // Absent flags mean "no requirement": only a positive request need adds a row.
+  if (request.toolsRequired === true) {
+    const tools = booleanRequirement("request-tools", true, capability?.tools);
+    if (tools) requirements.push(tools);
+  }
+  if (request.imageInputRequired === true) {
+    const image = booleanRequirement("request-image-input", true, capability?.image);
+    if (image) requirements.push(image);
+  }
+  if (request.structuredOutputRequired === true) {
+    const structured = booleanRequirement("request-structured-output", true, capability?.structuredOutput);
+    if (structured) requirements.push(structured);
+  }
+  if (request.reasoningEffort !== undefined) {
+    const ladder = capability?.reasoningEfforts;
+    if (Array.isArray(ladder)) {
+      requirements.push({
+        id: "request-reasoning-effort",
+        expected: request.reasoningEffort,
+        actual: ladder.join(","),
+        outcome: ladder.includes(request.reasoningEffort) ? "satisfied" : "unsatisfied",
+      });
+    } else {
+      requirements.push({ id: "request-reasoning-effort", expected: request.reasoningEffort, outcome: "unknown" });
+    }
+  }
+  if (request.serviceTier !== undefined) {
+    const actual = capability?.serviceTier;
+    if (actual === undefined || actual === "unknown") {
+      requirements.push({ id: "request-service-tier", expected: request.serviceTier, outcome: "unknown" });
+    } else {
+      requirements.push({
+        id: "request-service-tier",
+        expected: request.serviceTier,
+        actual: String(actual),
+        outcome: actual === request.serviceTier ? "satisfied" : "unsatisfied",
+      });
+    }
+  }
+  if (request.encryptedCodexTask === true) {
+    const encrypted = booleanRequirement(
+      "request-encrypted-codex-tasks",
+      true,
+      capability?.encryptedCodexTasks,
+    );
+    if (encrypted) requirements.push(encrypted);
+  }
+  return requirements;
 }
 
 /**
@@ -225,7 +256,7 @@ export function evaluatePolicyProfile(
     ) ?? { provider: declared.provider, model: declared.model };
     const requirements = [
       ...requirementFor(profile.require, evidence.capability),
-      ...requestRequirements(requestEvidence, evidence.capability),
+      ...requestRequirementFor(requestEvidence, evidence.capability),
     ];
     const exclusions: RouteExclusionReason[] = [];
     const bad = unsatisfiedOrUnknown(requirements);
@@ -239,10 +270,20 @@ export function evaluatePolicyProfile(
     const unsatisfied = bad.some(requirement => requirement.outcome === "unsatisfied");
     const unknown = bad.some(requirement => requirement.outcome === "unknown");
     // Unknown capability handling per profile: exclude (default), penalize,
-    // or allow. "penalize" currently cannot move the score because RI-04 has
-    // no capability component yet - the capability score arrives with RI-05.
+    // or allow. "penalize" cannot move the score while configuredPriorityScore
+    // is the only component; the capability score dimension is still future
+    // (RI-06+), so "penalize" behaves identically to "allow" in this release.
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
-    let eligible = !unsatisfied && !excludedByUnknown;
+    const costLimit = profile.limits.maxEstimatedCostUsd;
+    const estimatedCost = evidence.cost?.estimatedUsd;
+    const overCostLimit = costLimit !== undefined
+      && typeof estimatedCost === "number"
+      && Number.isFinite(estimatedCost)
+      && estimatedCost > costLimit;
+    if (overCostLimit) {
+      exclusions.push({ code: "cost-limit", detail: "maxEstimatedCostUsd" });
+    }
+    let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit;
 
     // Health scoring (RI-06): live hard cooldown is authoritative and
     // excludes; unknown health follows the profile's unknownEvidence policy;
@@ -259,18 +300,15 @@ export function evaluatePolicyProfile(
       healthValue = HEALTH_UNKNOWN_PENALTY_SCORE;
     }
 
-    const score: RouteScoreEvidence = {
-      total: configuredPriorityScore(index, profile.candidates.length),
-      components: { configuredPriority: configuredPriorityScore(index, profile.candidates.length) },
-    };
+    const priorityScore = configuredPriorityScore(index, profile.candidates.length);
     const healthWeight = profile.optimize.health;
+    const components: RouteScoreEvidence["components"] = { configuredPriority: priorityScore };
+    let total = priorityScore;
     if (healthWeight > 0 && healthValue !== null) {
-      const priority = configuredPriorityScore(index, profile.candidates.length);
-      const total = priority * (1 - healthWeight) + healthValue * healthWeight;
-      score.total = total;
-      score.components.health = healthValue;
-      score.components.configuredPriority = priority;
+      total = priorityScore * (1 - healthWeight) + healthValue * healthWeight;
+      components.health = healthValue;
     }
+    const score: RouteScoreEvidence = { total, components };
     const evaluated: PolicyEvaluationCandidate = {
       provider: evidence.provider,
       model: evidence.model,
@@ -293,10 +331,12 @@ export function evaluatePolicyProfile(
   });
 
   const trace = buildRouteDecisionTrace({
-    requestedModel: `policy/${profileId}`,
+    requestedModel: policyModelId(profileId),
     routeKind: "policy",
     profile: { id: profile.id, revision: profile.revision },
-    requirements: candidates.flatMap(candidate => candidate.requirements).slice(0, 16),
+    // Flat, capped summary (truncation is flagged by the builder); per-candidate
+    // attribution lives in each candidate's `requirements`/`exclusions`.
+    requirements: candidates.flatMap(candidate => candidate.requirements).slice(0, MAX_REQUIREMENTS),
     candidates: candidates.map(candidate => ({
       provider: candidate.provider,
       model: candidate.model,

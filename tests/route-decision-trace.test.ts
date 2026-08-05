@@ -7,6 +7,7 @@ import { requestLogEntryFromPersistedUsage } from "../src/server/request-log";
 import {
   appendUsageEntry,
   normalizeUsageEntryForTest,
+  readRecentUsageEntries,
   readUsageEntries,
   resetUsageReadCacheForTests,
   type PersistedUsageEntry,
@@ -14,12 +15,36 @@ import {
 import {
   MAX_EXCLUSIONS_PER_CANDIDATE,
   MAX_TRACE_CANDIDATES,
+  MAX_TRACE_BYTES,
   MAX_TRACE_STRING,
+  MAX_REQUIREMENTS,
   buildRouteDecisionTrace,
   normalizeRouteDecisionTrace,
   type RouteDecisionTraceV1,
 } from "../src/routing/trace";
 import type { OcxConfig } from "../src/types";
+
+/** Near-budget trace: 8 candidates x 16 exclusions with max-length strings. */
+function oversizedTrace(): RouteDecisionTraceV1 {
+  const longCode = "x".repeat(MAX_TRACE_STRING);
+  const candidates = Array.from({ length: MAX_TRACE_CANDIDATES }, (_, index) => ({
+    provider: "p".repeat(MAX_TRACE_STRING),
+    model: `m${index}`.padEnd(MAX_TRACE_STRING, "y"),
+    eligible: index === MAX_TRACE_CANDIDATES - 1,
+    exclusions: Array.from({ length: 16 }, () => ({ code: longCode, detail: "z".repeat(MAX_TRACE_STRING) })),
+  }));
+  return buildRouteDecisionTrace({
+    requestedModel: "combo/big",
+    routeKind: "combo",
+    selected: {
+      provider: candidates[MAX_TRACE_CANDIDATES - 1]!.provider,
+      model: candidates[MAX_TRACE_CANDIDATES - 1]!.model,
+      reason: "combo-pick",
+      candidateIndex: MAX_TRACE_CANDIDATES - 1,
+    },
+    candidates,
+  });
+}
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -128,8 +153,6 @@ describe("route decision traces (RI-01)", () => {
       model: `m${index}`,
     }));
     const config = baseConfig({ combos: { big: { strategy: "failover", targets } } });
-    // Failover picks the first eligible target (index 0), so to exercise the
-    // selected-past-the-slice path we must force an early exclusion.
     const route = routeModel(config, "combo/big");
     const trace = route.routeDecision!;
     expect(trace.candidates.length).toBeLessThanOrEqual(MAX_TRACE_CANDIDATES);
@@ -138,6 +161,85 @@ describe("route decision traces (RI-01)", () => {
       provider: "a",
       model: "m0",
     });
+  });
+
+  test("a selected candidate beyond the cap survives truncation at the last slot", () => {
+    const candidates = Array.from({ length: 12 }, (_, index) => ({
+      provider: "a",
+      model: `m${index}`,
+      eligible: index === 11,
+      exclusions: index === 11 ? [] : [{ code: "not-selected" }],
+    }));
+    const trace = buildRouteDecisionTrace({
+      requestedModel: "combo/big",
+      routeKind: "combo",
+      selected: { provider: "a", model: "m11", reason: "combo-pick", candidateIndex: 11 },
+      candidates,
+    });
+    expect(trace.candidates.length).toBe(MAX_TRACE_CANDIDATES);
+    expect(trace.truncated?.candidates).toBe(true);
+    expect(trace.selected.candidateIndex).toBe(MAX_TRACE_CANDIDATES - 1);
+    expect(trace.candidates[trace.selected.candidateIndex]).toMatchObject({ model: "m11" });
+  });
+
+  test("the byte-budget fallback keeps the selected candidate and re-points the index", () => {
+    const trace = oversizedTrace();
+    expect(trace.truncated?.candidates).toBe(true);
+    expect(trace.selected.candidateIndex).toBe(MAX_TRACE_CANDIDATES / 2 - 1);
+    expect(trace.candidates[trace.selected.candidateIndex]?.model)
+      .toBe(`m${MAX_TRACE_CANDIDATES - 1}`.padEnd(MAX_TRACE_STRING, "y"));
+    // The serialized trace respects the byte budget.
+    expect(Buffer.byteLength(JSON.stringify(trace), "utf8")).toBeLessThanOrEqual(MAX_TRACE_BYTES);
+  });
+
+  test("normalization marks truncation applied to oversized persisted rows", () => {
+    const raw = {
+      version: 1,
+      decisionId: "abcdef012345",
+      createdAt: 1,
+      requestedModel: "y".repeat(300),
+      routeKind: "combo",
+      requirements: Array.from({ length: 20 }, (_, index) => ({
+        id: `req-${index}`,
+        outcome: "satisfied",
+      })),
+      candidates: Array.from({ length: 12 }, (_, index) => ({
+        provider: "a",
+        model: `m${index}`,
+        eligible: true,
+        exclusions: Array.from({ length: 20 }, () => ({ code: "x" })),
+      })),
+      selected: { candidateIndex: 0, provider: "a", model: "m0", reason: "r" },
+    };
+    const trace = normalizeRouteDecisionTrace(raw)!;
+    expect(trace.truncated).toMatchObject({
+      candidates: true,
+      exclusions: true,
+      requirements: true,
+      strings: true,
+    });
+    expect(trace.candidates).toHaveLength(MAX_TRACE_CANDIDATES);
+    expect(trace.requirements).toHaveLength(MAX_REQUIREMENTS);
+    expect(trace.candidates.every(candidate => candidate.exclusions.length === MAX_EXCLUSIONS_PER_CANDIDATE)).toBe(true);
+  });
+
+  test("startup hydration reads trace-sized usage rows", () => {
+    const trace = oversizedTrace();
+    for (let index = 0; index < 20; index++) {
+      appendUsageEntry({
+        requestId: `big-${index}`,
+        timestamp: 1_700_000_000_000 + index,
+        provider: "a",
+        model: "m1",
+        status: 200,
+        durationMs: 1,
+        usageStatus: "reported",
+        routeDecision: trace,
+      });
+    }
+    const entries = readRecentUsageEntries(20);
+    expect(entries.length).toBe(20);
+    expect(entries.every(entry => entry.routeDecision?.routeKind === "combo")).toBe(true);
   });
 
   test("oversized candidate exclusions are capped with a truncation flag", () => {
@@ -181,6 +283,11 @@ describe("route decision traces (RI-01)", () => {
     const route = routeModel(config, "a/m1");
     const serialized = JSON.stringify(route.routeDecision);
     expect(serialized).not.toContain(secretKey);
+    // The trace carries only provider/model identifiers and stable wire codes:
+    // the provider config's credential-carrying fields never reach it.
+    expect(serialized).not.toContain("apiKey");
+    expect(serialized).not.toContain("baseUrl");
+    expect(serialized).not.toContain("https://a.example/v1");
     expect(serialized).not.toContain("prompt");
   });
 
@@ -239,10 +346,30 @@ describe("route decision traces (RI-01)", () => {
     expect(normalizeRouteDecisionTrace(null)).toBeNull();
   });
 
+  test("request-log hydration drops a corrupt persisted trace", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-corrupt-hydration",
+      timestamp: 1700000000000,
+      provider: "a",
+      model: "m1",
+      status: 200,
+      durationMs: 7,
+      usageStatus: "reported",
+      // Empty candidates: normalizeRouteDecisionTrace rejects this row.
+      routeDecision: {
+        version: 1, decisionId: "d", createdAt: 1, requestedModel: "x",
+        routeKind: "native", requirements: [], candidates: [],
+        selected: { candidateIndex: 0, provider: "a", model: "m1", reason: "r" },
+      } as RouteDecisionTraceV1,
+    };
+    const hydrated = requestLogEntryFromPersistedUsage(entry);
+    expect(hydrated.routeDecision).toBeUndefined();
+  });
+
   test("normalizer bounds hand-edited oversized rows", () => {
-    const raw = {
-      version: 1,
-      decisionId: "abc",
+      const raw = {
+        version: 1,
+        decisionId: "0123456789ab",
       createdAt: 1,
       requestedModel: "y".repeat(400),
       routeKind: "native",

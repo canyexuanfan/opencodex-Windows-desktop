@@ -109,6 +109,18 @@ describe("routing profiles (RI-04)", () => {
     const sum = normalized.optimize.latency + normalized.optimize.health
       + normalized.optimize.cost + normalized.optimize.quota;
     expect(sum).toBeCloseTo(1);
+
+    const allZero = routingProfileIssues("z", {
+      candidates: [{ provider: "a", model: "m1" }],
+      optimize: { latency: 0, health: 0, cost: 0, quota: 0 },
+    }, config);
+    expect(allZero.some(issue => issue.path.join(".") === "optimize")).toBe(true);
+    // A partial zero is fine: unspecified weights keep their positive defaults.
+    const partialZero = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      optimize: { latency: 0 },
+    }, config);
+    expect(partialZero.some(issue => issue.path.join(".") === "optimize")).toBe(false);
   });
 
   test("alias collision validation covers providers, combos, account namespaces, native families", () => {
@@ -119,23 +131,32 @@ describe("routing profiles (RI-04)", () => {
     }, config);
     expect(providerCollision.some(issue => issue.message.includes("provider name"))).toBe(true);
 
-    const providerNamespaceCollision = routingProfileIssues("p", {
-      candidates: [{ provider: "a", model: "m1" }],
-      alias: "a/m1",
-    }, config);
-    expect(providerNamespaceCollision.some(issue => issue.message.includes("provider namespace"))).toBe(true);
-
     const comboCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
       alias: "combo/free",
     }, config);
     expect(comboCollision.some(issue => issue.message.includes("reserved"))).toBe(true);
 
+    const comboAliasCollision = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      alias: "faster",
+    }, {
+      ...config,
+      combos: { ...config.combos, free: { strategy: "failover", targets: [{ provider: "a", model: "m1" }], alias: "faster" } },
+    });
+    expect(comboAliasCollision.some(issue => issue.message.includes("combo selector"))).toBe(true);
+
     const nativeCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
       alias: "gpt-5.6",
     }, config);
     expect(nativeCollision.some(issue => issue.message.includes("native family"))).toBe(true);
+
+    const providerNamespaceCollision = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      alias: "a/m1",
+    }, config);
+    expect(providerNamespaceCollision.some(issue => issue.message.includes("provider routing namespace"))).toBe(true);
 
     const siblingCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
@@ -164,6 +185,15 @@ describe("routing profiles (RI-04)", () => {
       ],
     }, config);
     expect(duplicates.some(issue => issue.message.includes("duplicate"))).toBe(true);
+  });
+
+  test("require rejects the reserved unknown service tier", () => {
+    const config = baseConfig();
+    const reservedTier = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      require: { serviceTier: "unknown" },
+    }, config);
+    expect(reservedTier.some(issue => issue.path.join(".") === "require.serviceTier")).toBe(true);
   });
 
   test("config load accepts valid profiles and rejects broken ones", () => {
@@ -230,7 +260,44 @@ describe("routing profiles (RI-04)", () => {
     expect(allowed.selectedIndex).toBe(0);
   });
 
-  test("dry-run evaluator: deterministic tie-break picks the earlier candidate", () => {
+  test("dry-run evaluator: request evidence joins profile requirements", () => {
+    const config = baseConfig();
+    // Profile `fast` requires tools + 128k context; the request also needs 256k.
+    const result = evaluatePolicyProfile(config, "fast", { contextWindow: 256000, toolsRequired: true }, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000, tools: true } },
+      { provider: "b", model: "m2", capability: { contextWindow: 300000, tools: true } },
+    ]);
+    expect(result.candidates[0]!.eligible).toBe(false);
+    expect(result.candidates[0]!.exclusions.some(exclusion => exclusion.detail === "request-context-window")).toBe(true);
+    expect(result.candidates[1]!.eligible).toBe(true);
+    expect(result.selectedIndex).toBe(1);
+    expect(result.trace.selected.model).toBe("m2");
+  });
+
+  test("dry-run evaluator: absent request flags add no requirements", () => {
+    const config = baseConfig();
+    const result = evaluatePolicyProfile(config, "fast", { toolsRequired: false }, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000, tools: true } },
+    ]);
+    expect(result.candidates[0]!.requirements.some(requirement => requirement.id === "request-tools")).toBe(false);
+    // Profile `fast` still requires tools; the candidate satisfies it.
+    expect(result.candidates[0]!.eligible).toBe(true);
+    expect(result.selectedIndex).toBe(0);
+  });
+
+  test("dry-run evaluator: cost limit excludes over-limit candidates", () => {
+    const config = baseConfig();
+    const result = evaluatePolicyProfile(config, "fast", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000, tools: true }, cost: { estimatedUsd: 1.2 } },
+      { provider: "b", model: "m2", capability: { contextWindow: 200000, tools: true }, cost: { estimatedUsd: 0.2 } },
+    ]);
+    expect(result.candidates[0]!.eligible).toBe(false);
+    expect(result.candidates[0]!.exclusions.some(exclusion => exclusion.code === "cost-limit")).toBe(true);
+    expect(result.candidates[1]!.eligible).toBe(true);
+    expect(result.selectedIndex).toBe(1);
+  });
+
+  test("dry-run evaluator: deterministic priority picks the earlier candidate", () => {
     const config = baseConfig({
       routingProfiles: { tie: { candidates: [
         { provider: "a", model: "m1" },
@@ -242,7 +309,10 @@ describe("routing profiles (RI-04)", () => {
       { provider: "b", model: "m2", capability: { contextWindow: 5000 } },
     ]);
     expect(result.selectedIndex).toBe(0);
+    // RI-06: unknown health under the default "penalize" policy folds a
+    // penalized health floor into the score.
     expect(result.trace.candidates[0]!.score).toMatchObject({
+      total: 0.825,
       components: { configuredPriority: 1, health: 0.3 },
     });
   });
@@ -255,7 +325,11 @@ describe("routing profiles (RI-04)", () => {
     expect(listResponse!.status).toBe(200);
     const listBody = await listResponse!.json() as { profiles?: Array<{ id?: string; revision?: string }> };
     expect(listBody.profiles?.length).toBe(1);
-    expect(listBody.profiles![0]).toMatchObject({ id: "fast", revision: getRoutingProfile(config, "fast")!.revision });
+    expect(listBody.profiles![0]).toMatchObject({
+      id: "fast",
+      model: "ocx/fast",
+      revision: getRoutingProfile(config, "fast")!.revision,
+    });
 
     const dryReq = new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
       method: "POST",

@@ -156,20 +156,23 @@ function aliasIssues(
   // A slashed alias whose first segment is a configured provider shadows that
   // provider's routes (e.g. `a/m1` resolves as the alias before the provider
   // namespace). Reject those aliases to preserve existing routing.
-  if (alias.includes("/")) {
-    const firstSegment = alias.split("/")[0]!;
-    if (hasOwnProvider(config.providers, firstSegment)) {
-      issues.push({
-        path: ["alias"],
-        message: `alias "${alias}" collides with configured provider namespace "${firstSegment}"`,
-      });
-    }
+  if (alias.includes("/") && hasOwnProvider(config.providers, alias.split("/")[0])) {
+    issues.push({
+      path: ["alias"],
+      message: `alias "${alias}" collides with configured provider namespace "${alias.split("/")[0]}"`,
+    });
   }
   if (resolveComboId({ combos: config.combos }, alias)) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with a configured combo selector` });
   }
   if (alias.includes("/") && codexAccountNamespaceEntries(config).some(([namespace]) => namespace === alias.split("/")[0])) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with a configured codex account namespace` });
+  }
+  if (alias.includes("/") && hasOwnProvider(config.providers, alias.split("/")[0])) {
+    issues.push({
+      path: ["alias"],
+      message: `alias "${alias}" collides with the provider routing namespace "${alias.split("/")[0]}"`,
+    });
   }
   for (const [otherId, other] of Object.entries(config.routingProfiles ?? {})) {
     if (otherId === id || otherId === options.excludeProfileId) continue;
@@ -269,6 +272,11 @@ export function routingProfileIssues(
       }
       if (require.serviceTier !== undefined && typeof require.serviceTier !== "string") {
         issues.push({ path: ["require", "serviceTier"], message: "serviceTier must be a string" });
+      } else if (require.serviceTier === "unknown") {
+        issues.push({
+          path: ["require", "serviceTier"],
+          message: "serviceTier must not use the reserved \"unknown\" value (it encodes missing evidence)",
+        });
       }
     }
   }
@@ -278,13 +286,20 @@ export function routingProfileIssues(
       issues.push({ path: ["optimize"], message: "optimize must be an object" });
     } else {
       const optimize = body.optimize as Record<string, unknown>;
+      const effective: Record<"latency" | "health" | "cost" | "quota", number> = { ...DEFAULT_PROFILE_WEIGHTS };
       for (const key of ["latency", "health", "cost", "quota"] as const) {
-        if (optimize[key] !== undefined
-          && (typeof optimize[key] !== "number"
+        if (optimize[key] !== undefined) {
+          if (typeof optimize[key] !== "number"
             || !Number.isFinite(optimize[key])
-            || optimize[key] < 0)) {
-          issues.push({ path: ["optimize", key], message: `${key} must be a non-negative number` });
+            || optimize[key] < 0) {
+            issues.push({ path: ["optimize", key], message: `${key} must be a non-negative number` });
+          } else {
+            effective[key] = optimize[key];
+          }
         }
+      }
+      if (Object.values(effective).every(weight => weight === 0)) {
+        issues.push({ path: ["optimize"], message: "at least one optimize weight must be positive" });
       }
     }
   }
@@ -319,16 +334,6 @@ export function routingProfileIssues(
     }
   }
 
-  return issues;
-}
-
-export function routingProfileIssuesForConfig(
-  config: Pick<OcxConfig, "providers" | "combos" | "routingProfiles" | "codexAccountNamespaces">,
-): RoutingProfileValidationIssue[] {
-  const issues: RoutingProfileValidationIssue[] = [];
-  for (const [id, raw] of Object.entries(config.routingProfiles ?? {})) {
-    issues.push(...routingProfileIssues(id, raw, config));
-  }
   return issues;
 }
 
@@ -411,5 +416,7 @@ export function getRoutingProfile(
 }
 
 export function listRoutingProfileIds(config: { routingProfiles?: Record<string, OcxRoutingProfileConfig> }): string[] {
-  return Object.keys(config.routingProfiles ?? {}).sort((a, b) => a.localeCompare(b));
+  // Code-unit comparison: deterministic across ICU versions/platforms, which
+  // matters for the API/CLI list contract (ids may contain ".", "_", "-").
+  return Object.keys(config.routingProfiles ?? {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }

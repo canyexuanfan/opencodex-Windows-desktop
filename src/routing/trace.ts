@@ -46,6 +46,7 @@ export interface RouteCapabilityEvidence {
   image?: Unknownable;
   structuredOutput?: Unknownable;
   reasoningEfforts?: string[];
+  /** `"unknown"` is reserved: it encodes missing evidence, never a real tier. */
   serviceTier?: string | "unknown";
   localOnly?: Unknownable;
   remoteAllowed?: Unknownable;
@@ -128,6 +129,7 @@ export interface RouteDecisionTraceV1 {
   truncated?: {
     candidates?: true;
     exclusions?: true;
+    requirements?: true;
     strings?: true;
   };
 }
@@ -149,15 +151,11 @@ const ROUTE_KINDS = new Set<RouteDecisionKind>([
 
 const REQUIREMENT_OUTCOMES = new Set(["satisfied", "unsatisfied", "unknown"]);
 
+/** Cap a string at MAX_TRACE_STRING and record the truncation flag. */
 function capString(value: string, budget: { strings?: true }): string {
   if (value.length <= MAX_TRACE_STRING) return value;
   budget.strings = true;
   return value.slice(0, MAX_TRACE_STRING);
-}
-
-function capOptionalString(value: string | undefined, budget: { strings?: true }): string | undefined {
-  if (value === undefined) return undefined;
-  return capString(value, budget);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -206,6 +204,7 @@ export interface TraceBuildInput {
   now?: number;
 }
 
+/** Bounded candidate copy: strings capped, exclusions sliced, score/evidence kept. */
 function buildCandidate(input: TraceCandidateInput, budget: { strings?: true; exclusions?: true }): RouteCandidateTrace {
   const exclusions = input.exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE);
   if (exclusions.length < input.exclusions.length) budget.exclusions = true;
@@ -230,6 +229,7 @@ function buildCandidate(input: TraceCandidateInput, budget: { strings?: true; ex
   };
 }
 
+/** Bounded requirement copy with capped strings. */
 function buildRequirement(requirement: RouteRequirementEvidence, budget: { strings?: true }): RouteRequirementEvidence {
   return {
     id: capString(requirement.id, budget),
@@ -285,7 +285,7 @@ export function buildRouteDecisionTrace(input: TraceBuildInput): RouteDecisionTr
   let requirements = (input.requirements ?? []).map(requirement => buildRequirement(requirement, budget));
   if (requirements.length > MAX_REQUIREMENTS) {
     requirements = requirements.slice(0, MAX_REQUIREMENTS);
-    truncated.candidates = true;
+    truncated.requirements = true;
   }
 
   if (selectedIndex < 0 || selectedIndex >= candidates.length) selectedIndex = 0;
@@ -328,62 +328,125 @@ export function buildRouteDecisionTrace(input: TraceBuildInput): RouteDecisionTr
   return enforceByteBudget(trace);
 }
 
+/** Serialized UTF-8 length of a value (JSON is measured in bytes, not code units). */
+function serializedByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
 /** Deterministic byte-budget enforcement: drop details, then shrink candidates. */
 function enforceByteBudget(trace: RouteDecisionTraceV1): RouteDecisionTraceV1 {
-  let serialized = JSON.stringify(trace);
-  if (serialized.length <= MAX_TRACE_BYTES) return trace;
+  if (serializedByteLength(trace) <= MAX_TRACE_BYTES) return trace;
   const truncated = { ...trace.truncated, strings: true as const };
   const candidates = trace.candidates.map(candidate => ({
     ...candidate,
     exclusions: candidate.exclusions.map(exclusion => ({ code: exclusion.code })),
   }));
   const slimmed: RouteDecisionTraceV1 = { ...trace, truncated, candidates };
-  serialized = JSON.stringify(slimmed);
-  if (serialized.length <= MAX_TRACE_BYTES) return slimmed;
-  return {
+  if (serializedByteLength(slimmed) <= MAX_TRACE_BYTES) return slimmed;
+  // Second stage: shrink candidates. The selected candidate must survive and
+  // `selected.candidateIndex` must keep pointing at it (same invariant as the
+  // candidate-cap branch above).
+  const half = Math.max(1, Math.floor(MAX_TRACE_CANDIDATES / 2));
+  const selectedIndex = trace.selected.candidateIndex;
+  const kept = selectedIndex < half
+    ? slimmed.candidates.slice(0, half)
+    : [...slimmed.candidates.slice(0, half - 1), slimmed.candidates[selectedIndex]!];
+  let result: RouteDecisionTraceV1 = {
     ...slimmed,
     truncated: { ...truncated, candidates: true as const },
-    candidates: slimmed.candidates.slice(0, Math.max(1, Math.floor(MAX_TRACE_CANDIDATES / 2))),
+    candidates: kept,
+    selected: { ...slimmed.selected, candidateIndex: Math.min(selectedIndex, kept.length - 1) },
   };
+  // Last resort: keep shrinking deterministically until the byte budget holds.
+  // Each stage reduces a bounded dimension, and a single candidate with no
+  // exclusions is provably below MAX_TRACE_BYTES given the string cap, so the
+  // loop terminates.
+  for (let stage = 0; stage < 4 && serializedByteLength(result) > MAX_TRACE_BYTES; stage++) {
+    if (stage === 0) {
+      result = {
+        ...result,
+        truncated: { ...result.truncated, exclusions: true as const },
+        candidates: result.candidates.map(candidate => ({
+          ...candidate,
+          exclusions: candidate.exclusions.slice(0, 8),
+        })),
+      };
+    } else if (stage === 1) {
+      result = {
+        ...result,
+        truncated: { ...result.truncated, exclusions: true as const },
+        candidates: result.candidates.map(candidate => ({ ...candidate, exclusions: [] })),
+      };
+    } else {
+      const half = Math.max(1, Math.ceil(result.candidates.length / 2));
+      const index = result.selected.candidateIndex;
+      const shrinkKept = index < half
+        ? result.candidates.slice(0, half)
+        : [...result.candidates.slice(0, half - 1), result.candidates[index]!];
+      result = {
+        ...result,
+        truncated: { ...result.truncated, candidates: true as const },
+        candidates: shrinkKept,
+        selected: { ...result.selected, candidateIndex: Math.min(index, shrinkKept.length - 1) },
+      };
+    }
+  }
+  return result;
 }
 
 // ---- defensive parsing of persisted rows --------------------------------------
 
-function parseExclusion(raw: unknown): RouteExclusionReason | null {
+/** Caps applied by the normalizer; unioned into `truncated` on the result. */
+interface ParseCaps {
+  candidates?: true;
+  exclusions?: true;
+  requirements?: true;
+  strings?: true;
+}
+
+/** Defensive parse of one persisted exclusion reason. */
+function parseExclusion(raw: unknown, caps: ParseCaps): RouteExclusionReason | null {
   if (!isPlainRecord(raw)) return null;
   const code = raw.code;
   if (typeof code !== "string" || code.length === 0) return null;
-  return {
-    code: code.slice(0, MAX_TRACE_STRING),
-    ...(typeof raw.detail === "string"
-      ? { detail: raw.detail.slice(0, MAX_TRACE_STRING) }
-      : {}),
-  };
+  if (code.length > MAX_TRACE_STRING) caps.strings = true;
+  const out: RouteExclusionReason = { code: code.slice(0, MAX_TRACE_STRING) };
+  if (typeof raw.detail === "string") {
+    if (raw.detail.length > MAX_TRACE_STRING) caps.strings = true;
+    out.detail = raw.detail.slice(0, MAX_TRACE_STRING);
+  }
+  return out;
 }
 
-function parseRequirement(raw: unknown): RouteRequirementEvidence | null {
+/** Defensive parse of one persisted requirement; rejects unknown outcomes. */
+function parseRequirement(raw: unknown, caps: ParseCaps): RouteRequirementEvidence | null {
   if (!isPlainRecord(raw)) return null;
   const id = raw.id;
   const outcome = raw.outcome;
   if (typeof id !== "string" || id.length === 0) return null;
   if (typeof outcome !== "string" || !REQUIREMENT_OUTCOMES.has(outcome)) return null;
-  return {
+  if (id.length > MAX_TRACE_STRING) caps.strings = true;
+  const out: RouteRequirementEvidence = {
     id: id.slice(0, MAX_TRACE_STRING),
-    ...(typeof raw.expected === "string"
-      ? { expected: raw.expected.slice(0, MAX_TRACE_STRING) }
-      : typeof raw.expected === "number" || typeof raw.expected === "boolean"
-        ? { expected: raw.expected }
-        : {}),
-    ...(typeof raw.actual === "string"
-      ? { actual: raw.actual.slice(0, MAX_TRACE_STRING) }
-      : unknownable(raw.actual) !== undefined
-        ? { actual: unknownable(raw.actual) }
-        : {}),
     outcome: outcome as RouteRequirementEvidence["outcome"],
   };
+  if (typeof raw.expected === "string") {
+    if (raw.expected.length > MAX_TRACE_STRING) caps.strings = true;
+    out.expected = raw.expected.slice(0, MAX_TRACE_STRING);
+  } else if (typeof raw.expected === "number" || typeof raw.expected === "boolean") {
+    out.expected = raw.expected;
+  }
+  if (typeof raw.actual === "string") {
+    if (raw.actual.length > MAX_TRACE_STRING) caps.strings = true;
+    out.actual = raw.actual.slice(0, MAX_TRACE_STRING);
+  } else if (unknownable(raw.actual) !== undefined) {
+    out.actual = unknownable(raw.actual);
+  }
+  return out;
 }
 
-function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
+/** Whitelisted capability-evidence parse; unknown fields are dropped. */
+function parseCapability(raw: unknown, caps: ParseCaps): RouteCapabilityEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteCapabilityEvidence = {};
   if (finiteNumber(raw.contextWindow)) out.contextWindow = raw.contextWindow;
@@ -394,7 +457,9 @@ function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
   const structuredOutput = unknownable(raw.structuredOutput);
   if (structuredOutput !== undefined) out.structuredOutput = structuredOutput;
   if (Array.isArray(raw.reasoningEfforts)
-    && raw.reasoningEfforts.every((value): value is string => typeof value === "string")) {
+    && raw.reasoningEfforts.slice(0, 8).every((value): value is string => typeof value === "string")) {
+    if (raw.reasoningEfforts.some((value: unknown) => typeof value === "string"
+      && value.length > MAX_TRACE_STRING)) caps.strings = true;
     out.reasoningEfforts = raw.reasoningEfforts
       .slice(0, 8)
       .map(value => value.slice(0, MAX_TRACE_STRING));
@@ -402,6 +467,7 @@ function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
   if (raw.serviceTier === "unknown") {
     out.serviceTier = "unknown";
   } else if (typeof raw.serviceTier === "string" && raw.serviceTier) {
+    if (raw.serviceTier.length > MAX_TRACE_STRING) caps.strings = true;
     out.serviceTier = raw.serviceTier.slice(0, MAX_TRACE_STRING);
   }
   const localOnly = unknownable(raw.localOnly);
@@ -413,6 +479,7 @@ function parseCapability(raw: unknown): RouteCapabilityEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Whitelisted health-evidence parse; non-numeric fields are dropped. */
 function parseHealth(raw: unknown): RouteHealthEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteHealthEvidence = {};
@@ -427,7 +494,8 @@ function parseHealth(raw: unknown): RouteHealthEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function parseQuota(raw: unknown): RouteQuotaEvidence | undefined {
+/** Whitelisted quota-evidence parse; requires a boolean `known`. */
+function parseQuota(raw: unknown, caps: ParseCaps): RouteQuotaEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   if (typeof raw.known !== "boolean") return undefined;
   const out: RouteQuotaEvidence = { known: raw.known };
@@ -437,16 +505,19 @@ function parseQuota(raw: unknown): RouteQuotaEvidence | undefined {
   if (typeof raw.reauthOrCooling === "boolean") out.reauthOrCooling = raw.reauthOrCooling;
   if (finiteNumber(raw.reservedHeadroomTokens)) out.reservedHeadroomTokens = raw.reservedHeadroomTokens;
   if (typeof raw.source === "string" && raw.source) {
+    if (raw.source.length > MAX_TRACE_STRING) caps.strings = true;
     out.source = raw.source.slice(0, MAX_TRACE_STRING);
   }
   return out;
 }
 
-function parseCost(raw: unknown): RouteCostEvidence | undefined {
+/** Whitelisted cost-evidence parse. */
+function parseCost(raw: unknown, caps: ParseCaps): RouteCostEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   const out: RouteCostEvidence = {};
   if (finiteNumber(raw.estimatedUsd)) out.estimatedUsd = raw.estimatedUsd;
   if (typeof raw.priceSource === "string" && raw.priceSource) {
+    if (raw.priceSource.length > MAX_TRACE_STRING) caps.strings = true;
     out.priceSource = raw.priceSource.slice(0, MAX_TRACE_STRING);
   }
   if (typeof raw.incomplete === "boolean") out.incomplete = raw.incomplete;
@@ -455,6 +526,7 @@ function parseCost(raw: unknown): RouteCostEvidence | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** Whitelisted score parse; requires a finite `total` and bounded components. */
 function parseScore(raw: unknown): RouteScoreEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
   if (!finiteNumber(raw.total)) return undefined;
@@ -466,16 +538,28 @@ function parseScore(raw: unknown): RouteScoreEvidence | undefined {
   return { total: raw.total, components: parsedComponents };
 }
 
-function parseCandidate(raw: unknown): RouteCandidateTrace | null {
+/** Defensive parse of one persisted candidate with bounded evidence blocks. */
+function parseCandidate(raw: unknown, caps: ParseCaps): RouteCandidateTrace | null {
   if (!isPlainRecord(raw)) return null;
   const provider = raw.provider;
   const model = raw.model;
   if (typeof provider !== "string" || provider.length === 0) return null;
   if (typeof model !== "string" || model.length === 0) return null;
+  if (provider.length > MAX_TRACE_STRING) caps.strings = true;
+  if (model.length > MAX_TRACE_STRING) caps.strings = true;
+  if (typeof raw.accountRef === "string" && raw.accountRef.length > MAX_TRACE_STRING) caps.strings = true;
   if (typeof raw.eligible !== "boolean") return null;
+  if (Array.isArray(raw.exclusions) && raw.exclusions.length > MAX_EXCLUSIONS_PER_CANDIDATE) caps.exclusions = true;
   const exclusions = Array.isArray(raw.exclusions)
-    ? raw.exclusions.map(parseExclusion).filter((value): value is RouteExclusionReason => value !== null)
+    ? raw.exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE)
+      .map(value => parseExclusion(value, caps))
+      .filter((value): value is RouteExclusionReason => value !== null)
     : [];
+  const capability = parseCapability(raw.capability, caps);
+  const health = parseHealth(raw.health);
+  const quota = parseQuota(raw.quota, caps);
+  const cost = parseCost(raw.cost, caps);
+  const score = parseScore(raw.score);
   return {
     provider: provider.slice(0, MAX_TRACE_STRING),
     model: model.slice(0, MAX_TRACE_STRING),
@@ -484,11 +568,11 @@ function parseCandidate(raw: unknown): RouteCandidateTrace | null {
       : {}),
     eligible: raw.eligible,
     exclusions: exclusions.slice(0, MAX_EXCLUSIONS_PER_CANDIDATE),
-    ...(parseCapability(raw.capability) ? { capability: parseCapability(raw.capability) } : {}),
-    ...(parseHealth(raw.health) ? { health: parseHealth(raw.health) } : {}),
-    ...(parseQuota(raw.quota) ? { quota: parseQuota(raw.quota) } : {}),
-    ...(parseCost(raw.cost) ? { cost: parseCost(raw.cost) } : {}),
-    ...(parseScore(raw.score) ? { score: parseScore(raw.score) } : {}),
+    ...(capability ? { capability } : {}),
+    ...(health ? { health } : {}),
+    ...(quota ? { quota } : {}),
+    ...(cost ? { cost } : {}),
+    ...(score ? { score } : {}),
   };
 }
 
@@ -500,18 +584,24 @@ function parseCandidate(raw: unknown): RouteCandidateTrace | null {
 export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 | null {
   if (!isPlainRecord(raw)) return null;
   if (raw.version !== 1) return null;
+  const caps: ParseCaps = {};
   const decisionId = raw.decisionId;
   const createdAt = raw.createdAt;
   const requestedModel = raw.requestedModel;
   const routeKind = raw.routeKind;
   if (typeof decisionId !== "string" || decisionId.length === 0) return null;
+  if (!/^[0-9a-f]{12}$/.test(decisionId)) return null;
+  if (decisionId.length > MAX_TRACE_STRING) caps.strings = true;
   if (!finiteNumber(createdAt)) return null;
   if (typeof requestedModel !== "string" || requestedModel.length === 0) return null;
+  if (requestedModel.length > MAX_TRACE_STRING) caps.strings = true;
   if (typeof routeKind !== "string" || !ROUTE_KINDS.has(routeKind as RouteDecisionKind)) return null;
   if (!Array.isArray(raw.candidates) || raw.candidates.length === 0) return null;
+  if (raw.candidates.length > MAX_TRACE_CANDIDATES) caps.candidates = true;
 
   const candidates = raw.candidates
-    .map(parseCandidate)
+    .slice(0, MAX_TRACE_CANDIDATES)
+    .map(value => parseCandidate(value, caps))
     .filter((value): value is RouteCandidateTrace => value !== null)
     .slice(0, MAX_TRACE_CANDIDATES);
   if (candidates.length === 0) return null;
@@ -523,33 +613,43 @@ export function normalizeRouteDecisionTrace(raw: unknown): RouteDecisionTraceV1 
   const selectedReason = selected.reason;
   if (typeof selectedProvider !== "string" || typeof selectedModel !== "string") return null;
   if (typeof selectedReason !== "string") return null;
+  if (selectedProvider.length > MAX_TRACE_STRING) caps.strings = true;
+  if (selectedModel.length > MAX_TRACE_STRING) caps.strings = true;
+  if (selectedReason.length > MAX_TRACE_STRING) caps.strings = true;
+  if (typeof selected.accountRef === "string" && selected.accountRef.length > MAX_TRACE_STRING) caps.strings = true;
+  if (typeof selected.tieBreak === "string" && selected.tieBreak.length > MAX_TRACE_STRING) caps.strings = true;
   const candidateIndex = Number.isInteger(selected.candidateIndex)
     ? selected.candidateIndex as number
     : 0;
   if (candidateIndex < 0 || candidateIndex >= candidates.length) return null;
 
-  const requirements = Array.isArray(raw.requirements)
-    ? raw.requirements.map(parseRequirement)
-      .filter((value): value is RouteRequirementEvidence => value !== null)
-      .slice(0, MAX_REQUIREMENTS)
-    : [];
+  const rawRequirements = Array.isArray(raw.requirements) ? raw.requirements : [];
+  if (rawRequirements.length > MAX_REQUIREMENTS) caps.requirements = true;
+  const requirements = rawRequirements
+    .slice(0, MAX_REQUIREMENTS)
+    .map(value => parseRequirement(value, caps))
+    .filter((value): value is RouteRequirementEvidence => value !== null)
+    .slice(0, MAX_REQUIREMENTS);
 
   const profile = isPlainRecord(raw.profile)
     && typeof raw.profile.id === "string"
     && typeof raw.profile.revision === "string"
-    ? {
-      id: raw.profile.id.slice(0, MAX_TRACE_STRING),
-      revision: raw.profile.revision.slice(0, MAX_TRACE_STRING),
-    }
+    ? (() => {
+      if (raw.profile.id.length > MAX_TRACE_STRING) caps.strings = true;
+      if (raw.profile.revision.length > MAX_TRACE_STRING) caps.strings = true;
+      return {
+        id: raw.profile.id.slice(0, MAX_TRACE_STRING),
+        revision: raw.profile.revision.slice(0, MAX_TRACE_STRING),
+      };
+    })()
     : undefined;
 
-  const truncated = isPlainRecord(raw.truncated)
-    ? {
-      ...(raw.truncated.candidates === true ? { candidates: true as const } : {}),
-      ...(raw.truncated.exclusions === true ? { exclusions: true as const } : {}),
-      ...(raw.truncated.strings === true ? { strings: true as const } : {}),
-    }
-    : undefined;
+  const incoming = isPlainRecord(raw.truncated) ? raw.truncated : {};
+  const truncated: RouteDecisionTraceV1["truncated"] = {};
+  if (incoming.candidates === true || caps.candidates) truncated.candidates = true;
+  if (incoming.exclusions === true || caps.exclusions) truncated.exclusions = true;
+  if (incoming.requirements === true || caps.requirements) truncated.requirements = true;
+  if (incoming.strings === true || caps.strings) truncated.strings = true;
 
   return {
     version: 1,

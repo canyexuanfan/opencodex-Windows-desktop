@@ -105,7 +105,7 @@ Related in-flight work (checked 2026-08-04; no blocking overlap):
 | Cost scoring | `src/usage/cost.ts`, `expected-prices.ts` | Cost limits, provenance, incomplete-estimate flags (`src/routing/cost.ts`) |
 | Explainability | `requestLogDto`/management API patterns, `handleLogsUsageRoutes` | `GET .../route-decision`, profile endpoints, `ocx logs explain`, `ocx route policy evaluate` |
 | GUI | `Logs.tsx` detail modal grammar, `Combos.tsx` card grammar, i18n key discipline | Profiles list/detail/dry-run view, why-this-route view, analytics chips |
-| Docs | `routing.md`, `combos.md` structure, five locales | Policy profiles guide, history API, explainability, migration notes |
+| Docs | `routing.md`, `combos.md` structure, five locales (en/ja/ko/ru/zh-cn) | Policy profiles guide, history API, explainability, migration notes |
 
 ## 3. Architecture decision records
 
@@ -165,7 +165,7 @@ interface RouteDecisionTraceV1 {
   version: 1;
   decisionId: string;            // 12-hex, random per decision
   createdAt: number;             // epoch ms
-  requestedModel: string;        // capped 256
+  requestedModel: string;        // capped 128 (MAX_TRACE_STRING)
   routeKind: "explicit-account" | "explicit-provider" | "native"
            | "combo" | "policy" | "default-provider";
   profile?: { id: string; revision: string };   // policy routes only
@@ -394,8 +394,10 @@ target `lidge-jun/opencodex:dev`. **Never merged by this programme.**
   weights/unknown-evidence/dry-run; why-this-route with exclusions, scores,
   fallback timeline; analytics) with existing grammar, no invented green
   health for unknown evidence, accessible + keyboard-operable, all locale
-  keys present, responsive; docs (config, CLI, API, migration, combo-vs-
-  profile distinction) in all five locales.
+  keys present in all six GUI locales (en/de/ja/ko/ru/zh), responsive; docs
+  (config, CLI, API, migration, combo-vs-profile distinction) in all five
+  docs-site locales (en/ja/ko/ru/zh-cn - the docs site intentionally ships
+  no German edition; the GUI does).
 
 ## 10. Test strategy
 

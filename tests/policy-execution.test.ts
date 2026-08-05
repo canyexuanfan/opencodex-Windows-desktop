@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
+import { isValidProviderName } from "../src/config";
 import { getRoutingProfile } from "../src/routing/profile";
-import { evidenceFromBody } from "../src/routing/request-evidence";
 import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
+import { evidenceFromBody } from "../src/routing/request-evidence";
 import type { OcxConfig } from "../src/types";
 
 let testDir = "";
@@ -101,6 +102,7 @@ describe("policy execution (RI-05)", () => {
     // RI-06: unknown health under the default "penalize" policy folds a
     // penalized health floor into the score.
     expect(trace.candidates[0]!.score).toMatchObject({
+      total: 0.825,
       components: { configuredPriority: 1, health: 0.3 },
     });
   });
@@ -196,30 +198,6 @@ describe("policy execution (RI-05)", () => {
     expect(() => routeModel(config, "policy/tools", { toolsRequired: true })).toThrow(NoEligiblePolicyCandidateError);
   });
 
-  test("request evidence walks nested message content for images", () => {
-    const responses = evidenceFromBody({
-      input: [{
-        type: "message",
-        role: "user",
-        content: [{ type: "input_image", image_url: "https://example.test/x.png" }],
-      }],
-    });
-    expect(responses.imageInputRequired).toBe(true);
-
-    const chat = evidenceFromBody({
-      messages: [{
-        role: "user",
-        content: [{ type: "image_url", image_url: { url: "https://example.test/y.png" } }],
-      }],
-    });
-    expect(chat.imageInputRequired).toBe(true);
-
-    const plain = evidenceFromBody({
-      input: [{ type: "message", role: "user", content: "just text" }],
-    });
-    expect(plain.imageInputRequired).toBeUndefined();
-  });
-
   test("unresolved policy/<id> falls through to normal resolution", () => {
     const config = baseConfig();
     // No profile named "nope": the reserved-looking id must not throw and not
@@ -236,5 +214,101 @@ describe("policy execution (RI-05)", () => {
     expect(first.providerName).toBe(second.providerName);
     expect(first.modelId).toBe(second.modelId);
     expect(first.routeDecision!.selected).toEqual(second.routeDecision!.selected);
+  });
+
+  test("evidenceFromBody detects nested image parts in real request shapes", () => {
+    // Responses-shaped body: image block nested under input[].content[].
+    const responses = {
+      model: "policy/image",
+      input: [
+        {
+          role: "user",
+          type: "message",
+          content: [
+            { type: "input_text", text: "look" },
+            { type: "input_image", image_url: "https://example.test/x.png" },
+          ],
+        },
+      ],
+    };
+    expect(evidenceFromBody(responses)).toEqual({ imageInputRequired: true });
+
+    // Chat-shaped body: image block nested under messages[].content[].
+    const chat = {
+      model: "policy/image",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "look" },
+            { type: "image_url", image_url: { url: "https://example.test/x.png" } },
+          ],
+        },
+      ],
+    };
+    expect(evidenceFromBody(chat)).toEqual({ imageInputRequired: true });
+
+    // Tools remain a top-level signal.
+    expect(evidenceFromBody({ model: "policy/t", tools: [{ type: "function", function: { name: "f" } }] }))
+      .toEqual({ toolsRequired: true });
+
+    // Plain text-only bodies produce no evidence.
+    expect(evidenceFromBody({
+      model: "policy/x",
+      input: [{ role: "user", type: "message", content: [{ type: "input_text", text: "hi" }] }],
+    })).toEqual({});
+  });
+
+  test("compact-style policy dispatch applies request evidence", () => {
+    const config = baseConfig({
+      routingProfiles: {
+        image: { candidates: [{ provider: "b", model: "m2" }] },
+      },
+    });
+    // Mirrors src/server/responses/compact.ts: routeModel(config, raw.model, evidenceFromBody(raw)).
+    const compactBody = {
+      model: "policy/image",
+      input: [{
+        role: "user",
+        type: "message",
+        content: [{ type: "input_image", image_url: "https://example.test/x.png" }],
+      }],
+    };
+    // b/m2 is text-only, so a provably-image request must be excluded - the
+    // evidence has to reach the first policy evaluation.
+    expect(() => routeModel(config, compactBody.model as string, evidenceFromBody(compactBody)))
+      .toThrow(NoEligiblePolicyCandidateError);
+  });
+
+  test("no-eligible policy error carries the evaluation trace", () => {
+    const config = baseConfig({
+      routingProfiles: {
+        strict: {
+          candidates: [{ provider: "b", model: "m2" }],
+          require: { minContextWindow: 128000 },
+        },
+      },
+    });
+    let caught: NoEligiblePolicyCandidateError | undefined;
+    try {
+      routeModel(config, "policy/strict");
+    } catch (err) {
+      caught = err as NoEligiblePolicyCandidateError;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.profileId).toBe("strict");
+    expect(caught!.trace).toBeDefined();
+    expect(caught!.trace!.selected.reason).toBe("no-eligible-candidate");
+    expect(caught!.trace!.candidates).toHaveLength(1);
+    expect(caught!.trace!.candidates![0]!.exclusions[0]!.code).toBe("capability-unsatisfied");
+  });
+
+  test("policy provider name is a reserved routing namespace (combo stays usable)", () => {
+    expect(isValidProviderName("policy")).toBe(false);
+    // A physical provider named `combo` is a supported pattern (combo aliases
+    // hosted on the combo provider); only the policy namespace is reserved.
+    expect(isValidProviderName("combo")).toBe(true);
+    expect(isValidProviderName("openai")).toBe(true);
+    expect(isValidProviderName("my-provider_2")).toBe(true);
   });
 });

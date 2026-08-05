@@ -20,14 +20,37 @@ import {
   nativeReasoningEfforts,
 } from "../codex/catalog/metadata";
 import { readCatalog, readCodexCatalogPath } from "../codex/catalog/parsing";
+import { statSync } from "node:fs";
 import type { RouteCapabilityEvidence } from "./trace";
 
-function cachedCatalogModels(): Array<{ provider: string; id: string; contextWindow?: number; inputModalities?: string[]; reasoningEfforts?: string[]; capabilities?: string[] }> {
+type CatalogModelRow = {
+  provider: string;
+  id: string;
+  contextWindow?: number;
+  inputModalities?: string[];
+  reasoningEfforts?: string[];
+  capabilities?: string[];
+};
+
+/**
+ * Catalog rows memoized by path + mtime: the cached Codex catalog is stable
+ * between refreshes, and re-reading/parsing the whole file per candidate on
+ * the request path would multiply a synchronous disk + JSON cost by the
+ * profile candidate count for every policy-routed request.
+ */
+let catalogCache: { path: string; mtimeMs: number; rows: CatalogModelRow[] } | null = null;
+
+function cachedCatalogModels(): CatalogModelRow[] {
   try {
-    const catalog = readCatalog(readCodexCatalogPath());
+    const path = readCodexCatalogPath();
+    const mtimeMs = statSync(path).mtimeMs;
+    if (catalogCache && catalogCache.path === path && catalogCache.mtimeMs === mtimeMs) {
+      return catalogCache.rows;
+    }
+    const catalog = readCatalog(path);
     const models = catalog?.models;
     if (!Array.isArray(models)) return [];
-    return models
+    const rows = models
       .filter((model): model is Record<string, unknown> & { id: string; provider: string } =>
         typeof model === "object" && model !== null && typeof model.id === "string" && typeof model.provider === "string")
       .map(model => ({
@@ -44,21 +67,33 @@ function cachedCatalogModels(): Array<{ provider: string; id: string; contextWin
           ? { capabilities: model.capabilities.filter((value): value is string => typeof value === "string") }
           : {}),
       }));
+    catalogCache = { path, mtimeMs, rows };
+    return rows;
   } catch {
     return [];
   }
 }
 
-function isLocalHostname(hostname: string): boolean {
-  const normalized = hostname.trim().toLowerCase().replace(/\.$/, "");
-  return normalized === "localhost" || normalized === "127.0.0.1"
-    || normalized === "::1" || normalized === "[::1]"
-    || normalized.endsWith(".localhost");
-}
-
-function isPrivateHostname(hostname: string): boolean {
-  return hostname.startsWith("10.") || hostname.startsWith("192.168.")
-    || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+/**
+ * Classify a hostname for locality evidence. `URL.hostname` keeps IPv6
+ * literals bracketed (`[::1]`), so strip the brackets before matching.
+ * Anything not positively local or private stays unknown: "unknown is not
+ * zero", so an unrecognized host must never assert `remoteAllowed`.
+ */
+function classifyHostname(hostname: string): "local" | "private" | null {
+  const host = hostname.trim().toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return "local";
+  if (host === "::1" || /^127\./.test(host)) return "local";
+  if (/^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^169\.254\./.test(host)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    || /^f[cd][0-9a-f]{2}:/.test(host)
+    || /^fe80:/.test(host)
+    || /^::ffff:(?:10\.|127\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(host)) {
+    return "private";
+  }
+  return null;
 }
 
 /** Adapters whose upstream protocol supports function/tool calling. */
@@ -76,8 +111,14 @@ function localRemoteEvidence(baseUrl: string | undefined): Pick<RouteCapabilityE
   try {
     const hostname = new URL(baseUrl).hostname;
     if (!hostname) return {};
-    if (isLocalHostname(hostname) || isPrivateHostname(hostname)) return { localOnly: true };
-    return { remoteAllowed: true };
+    const kind = classifyHostname(hostname);
+    if (kind === null) return {};
+    // Both booleans are emitted once classified: definitive negative evidence,
+    // so a local host cannot satisfy `require.remoteAllowed` (or vice versa)
+    // under `unknownEvidence.capability: "allow"`/`"penalize"`.
+    return kind === "local" || kind === "private"
+      ? { localOnly: true, remoteAllowed: false }
+      : { remoteAllowed: true, localOnly: false };
   } catch {
     return {};
   }
@@ -116,6 +157,7 @@ export function candidateCapabilityEvidence(
   // The catalog capability is the per-model authority. Without a catalog row,
   // the adapter protocol itself is the signal: `openai-chat` and friends run
   // single tool calls even when the parallel-call opt-in is unset or false.
+  // `parallelToolCalls` stays a positive provider-level override.
   const tools = capabilities.includes("tools")
     || (isNative ? true : false)
     || (catalogRow === undefined && provider !== undefined && TOOL_CAPABLE_ADAPTERS.has(provider.adapter))

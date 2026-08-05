@@ -98,20 +98,24 @@ describe("request-history index (RI-02)", () => {
     const page = await queryRequestHistory({}, undefined, 10);
     expect(page.rows.length).toBe(5);
     expect(page.meta.indexedRows).toBe(5);
+    const offsetAfterInitial = page.meta.indexedOffset;
+    expect(page.meta.lastError).not.toMatch(/identity changed/i);
     // New appends are picked up without a rebuild.
     appendUsageEntry(entry("req-late", 9000));
     const after = await queryRequestHistory({}, undefined, 10);
     expect(after.rows.length).toBe(6);
     expect(after.meta.indexedRows).toBe(6);
+    expect(after.meta.indexedOffset).toBeGreaterThan(offsetAfterInitial);
+    expect(after.meta.lastError).not.toMatch(/identity changed/i);
   });
 
   test("appended rows are ingested as a tail, never a full rebuild", async () => {
     for (const row of seedRows(5)) appendUsageEntry(row);
     const first = await queryRequestHistory({}, undefined, 10);
     expect(first.meta.indexedRows).toBe(5);
-    // The initial build reports a rebuild; a subsequent append must be
-    // ingested from the indexed offset without rebuilding (routing-time
-    // health reads depend on this not re-parsing the whole ledger).
+    // A subsequent append is ingested from the indexed offset and clears the
+    // rebuild marker (routing-time health reads depend on this not re-parsing
+    // the whole ledger synchronously).
     appendUsageEntry(entry("late-1", 7000));
     const second = await queryRequestHistory({}, undefined, 10);
     expect(second.meta.indexedRows).toBe(6);
@@ -242,6 +246,9 @@ describe("request-history index (RI-02)", () => {
 
     const missing = await apiGet("/api/request-history/missing");
     expect(missing.status).toBe(404);
+
+    const malformed = await apiGet("/api/request-history/%");
+    expect(malformed.status).toBe(404);
   });
 
   test("API list endpoint returns entries, cursor, hasMore and index status", async () => {
@@ -270,9 +277,23 @@ describe("request-history index (RI-02)", () => {
 
     const badLimit = await apiGet("/api/request-history?limit=9999");
     expect(badLimit.status).toBe(400);
+    const badLimitBody = await badLimit.json() as { error?: { code?: string } };
+    expect(badLimitBody.error?.code).toBe("invalid_limit");
 
     const badStatus = await apiGet("/api/request-history?status=42");
     expect(badStatus.status).toBe(400);
+    const badStatusText = await apiGet("/api/request-history?status=abc");
+    expect(badStatusText.status).toBe(400);
+    const badStatusTextBody = await badStatusText.json() as { error?: { code?: string } };
+    expect(badStatusTextBody.error?.code).toBe("invalid_status");
+
+    const badFrom = await apiGet("/api/request-history?from=abc");
+    expect(badFrom.status).toBe(400);
+
+    const badRange = await apiGet("/api/request-history?from=2000&to=1000");
+    expect(badRange.status).toBe(400);
+    const badRangeBody = await badRange.json() as { error?: { code?: string } };
+    expect(badRangeBody.error?.code).toBe("invalid_range");
 
     await expect(queryRequestHistory({}, "garbage-cursor", 10)).rejects.toBeInstanceOf(InvalidCursorError);
   });
@@ -285,15 +306,14 @@ describe("request-history index (RI-02)", () => {
   });
 
   test("index rebuild equivalence: rebuilt rows match the ledger exactly", async () => {
-    for (const row of seedRows(25, 42)) appendUsageEntry(row);
+    const rows = seedRows(25, 42);
+    for (const row of rows) appendUsageEntry(row);
     await queryRequestHistory({}, undefined, 10);
-    const first = await rebuildRequestHistoryIndex();
-    const second = await rebuildRequestHistoryIndex();
-    const firstPage = await queryRequestHistory({}, undefined, 100);
-    const secondPage = await queryRequestHistory({}, undefined, 100);
-    expect(first.indexedRows).toBe(25);
-    expect(second.indexedRows).toBe(25);
-    expect(firstPage.rows.map(row => row.requestId)).toEqual(secondPage.rows.map(row => row.requestId));
+    const canonicalIds = rows.map(row => row.requestId).sort();
+    const rebuilt = await rebuildRequestHistoryIndex();
+    expect(rebuilt.indexedRows).toBe(25);
+    const page = await queryRequestHistory({}, undefined, 100);
+    expect(page.rows.map(row => row.requestId).sort()).toEqual(canonicalIds);
   });
 
   test("cursor stays stable while appends arrive between pages", async () => {
