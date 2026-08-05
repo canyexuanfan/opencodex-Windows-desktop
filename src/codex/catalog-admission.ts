@@ -147,8 +147,15 @@ export function captureCatalogAdmissionSnapshot(
      * gather has no such transaction — by contract it holds no lock and writes
      * nothing — so it has no way to turn absence into an observation. Refusing
      * is the only honest answer available to it.
+     *
+     * The wording matters beyond this line: `admissionFailure` in
+     * management-convergence.ts classifies this throw by matching its MESSAGE,
+     * and an unrecognized one becomes a non-retryable `failed/disk` instead of
+     * the retryable skip a missing coordinator has always produced. Keeping the
+     * "config generation is database" phrasing preserves that projection — a
+     * caller that could simply try again should still be told to.
      */
-    throw new Error("Cannot capture Codex catalog admission: no config generation exists to admit against.");
+    throw new Error("Cannot capture Codex catalog admission: config generation is database (absent).");
   }
   if (generation.kind !== "ready") {
     throw new Error(`Cannot capture Codex catalog admission: config generation is ${generation.reason}.`);

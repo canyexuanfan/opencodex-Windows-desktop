@@ -21,6 +21,7 @@ import {
   withConfigMutationLockSync,
 } from "../src/config";
 import { hashAuthority } from "../src/codex/admission";
+import { captureCatalogAdmissionSnapshot } from "../src/codex/catalog-admission";
 import { JOURNAL_PATH } from "../src/codex/journal";
 import type { AdmissionSnapshot } from "../src/codex/convergence-types";
 import type { OcxConfig } from "../src/types";
@@ -270,6 +271,29 @@ describe("absent and present-zero are one authority", () => {
     for (const variant of variants) {
       expect(hashAuthority({ ...base, ...variant })).not.toBe(hashAuthority(base));
     }
+  });
+});
+
+describe("absence keeps the projection it always had", () => {
+  /*
+   * management-convergence.ts classifies this failure by MATCHING THE MESSAGE
+   * (`admissionFailure`, ~:62). A missing coordinator has always produced a
+   * retryable skip; a message the classifier does not recognize silently
+   * becomes a non-retryable failed/disk. Adding the `absent` branch broke
+   * exactly that, and only a full-suite run caught it — this is the local guard.
+   */
+  test("catalog admission still reads as retryable when the coordinator is absent", () => {
+    let thrown: unknown;
+    try {
+      captureCatalogAdmissionSnapshot(config());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(
+      message.includes("config generation is busy") || message.includes("config generation is database"),
+    ).toBeTrue();
   });
 });
 

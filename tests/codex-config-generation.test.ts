@@ -110,10 +110,14 @@ test("observe-only generation reports a missing database without creating or chm
   expect(existsSync(join(absentHome, "config-mutation.sqlite"))).toBeFalse();
   expect(existsSync(absentHome)).toBeFalse();
   expect(existsSync(absentParent)).toBeFalse();
-  // Missing storage reports the ordinary typed unavailable rather than a
-  // distinct `absent`: a caller that may only observe must not be handed
-  // something it could mistake for a known-good baseline of zero.
-  expect(absentObservation).toEqual({ kind: "unavailable", reason: "database" });
+  // Missing storage is now its own state. The original concern behind folding it
+  // into `unavailable` — that a look-only caller must not receive something it
+  // could mistake for a known-good zero — is unchanged and still honored:
+  // `absent` authorizes nothing by itself. Only a caller holding the config
+  // transaction may promote it, and only by reading a real zero in there.
+  // Refusing outright was not neutral either: it meant refusing every Codex
+  // write on any home whose config predates this database.
+  expect(absentObservation).toEqual({ kind: "absent" });
   const rootAfter = statSync(testRoot, { bigint: true });
   expect(rootAfter.mode).toBe(rootBefore.mode);
 
@@ -127,7 +131,7 @@ test("observe-only generation reports a missing database without creating or chm
   const existingObservation = observeConfigGeneration();
   expect(existsSync(join(existingHome, "config-mutation.sqlite"))).toBeFalse();
   expect(statSync(existingHome).mode & 0o777).toBe(existingMode);
-  expect(existingObservation).toEqual({ kind: "unavailable", reason: "database" });
+  expect(existingObservation).toEqual({ kind: "absent" });
 });
 
 test("observe-only generation reads an existing value without modifying its database", () => {
