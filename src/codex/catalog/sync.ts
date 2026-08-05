@@ -11,7 +11,6 @@ import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
 import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
-import { getProviderRegistryEntry } from "../../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
 import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
 import { identifyRoutedModel } from "../../adapters/identity";
@@ -201,19 +200,19 @@ export function isExactComboCatalogModel(
 }
 
 /**
- * Friendly Codex-picker label for a routed `provider/model` slug. Only Command Code
- * needs it: its OAuth and API presets differ by a single dash (command-code vs commandcode),
- * so rewrite that provider prefix to its registry label. All other providers keep the raw
- * slug exactly as before.
+ * Friendly Codex-picker label for a routed `provider/model` slug. Command Code's two config
+ * ids differ by a single dash (`command-code` vs `commandcode`), so relabel them to the
+ * lowercase-dash style the opencode presets use: `commandcode-auth/x` and `commandcode-api/x`.
+ * All other providers keep the raw slug exactly as before.
  */
 function routedDisplayName(slug: string): string {
   const slash = slug.indexOf("/");
   if (slash <= 0) return slug;
   const provider = slug.slice(0, slash);
-  if (provider !== "command-code" && provider !== "commandcode") return slug;
-  const label = getProviderRegistryEntry(provider)?.label;
-  if (!label) return slug;
-  return `${label}/${slug.slice(slash + 1)}`;
+  const model = slug.slice(slash + 1);
+  if (provider === "command-code") return `commandcode-auth/${model}`;
+  if (provider === "commandcode") return `commandcode-api/${model}`;
+  return slug;
 }
 
 export function deriveEntry(

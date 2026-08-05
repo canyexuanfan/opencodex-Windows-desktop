@@ -151,15 +151,18 @@ export function isCatalogProviderId(provider: string): boolean {
 }
 
 /**
- * Rewrite a `provider/model` route to show the provider display name in front of the
- * model, so near-identical config ids (command-code vs commandcode) stay distinguishable
- * to users. `command-code/deepseek-v4-flash` -> `Command Code - Auth/deepseek-v4-flash`.
- * Non-catalog providers keep the raw route.
+ * Rewrite a `provider/model` route to a clearly distinguishable slug. Command Code's two
+ * config ids differ by a single dash (`command-code` vs `commandcode`), so relabel them to
+ * `commandcode-auth/...` and `commandcode-api/...` — the same lowercase-dash style the
+ * opencode presets use (`opencode-free/mimo-v2.5`, `opencode-go/hy3`). Other providers
+ * keep the raw route.
  */
 export function formatNamespacedModelId(namespaced: string, t: TFn): string {
   const slash = namespaced.indexOf("/");
   if (slash <= 0) return namespaced;
   const provider = namespaced.slice(0, slash);
   const model = namespaced.slice(slash + 1);
+  if (provider === "command-code") return `commandcode-auth/${model}`;
+  if (provider === "commandcode") return `commandcode-api/${model}`;
   return `${formatProviderDisplayName(provider, t)}/${model}`;
 }
