@@ -1024,8 +1024,10 @@ and the ones that did were rewritten rather than kept.
   denied ACL as busy; (u) the owner reclassifies it as contended; (v) the owner publishes a transient
   `held` before settling `unavailable`; (w) the owner schedules a retry from that
   permanent refusal, republishing `unavailable` each time; (x) the owner hardens a
-  different existing file; (y) the claim hardens a different existing file.
-  (h) through (y) are not redundant — each survived every other check. (h) and (i)
+  different existing file; (y) the claim hardens a different existing file; (z) the owner hardens correctly and
+  then fails to acquire; (aa) the owner never publishes `held`; (ab) the claim
+  hardens and then silently skips its protected operation.
+  (h) through (ab) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1112,6 +1114,22 @@ and the ones that did were rewritten rather than kept.
   at both call edges: `expect(seen.every(args => args[0] === expected)).toBe(true)`
   against `nativeMainClaimPath(context)` and `join(codexHome, NATIVE_MAIN_OWNER_DB)`,
   in the success and the failure test alike.
+
+  **The row that stayed empty longest was the successful one.** Every test here
+  proved a failure path or an invocation; none required the operation to actually
+  succeed. So (z), (aa) and (ab): an owner that hardens correctly and then fails to
+  acquire, an owner that never publishes `held` at all, and a claim that hardens and
+  then silently skips its protected operation, all passed. The success tests now
+  require the claim's operation to run, to return its value, and to run **after**
+  the ACL — and the owner to reach `held`, with a deferred ACL runner proving the
+  trace is exactly `["acquiring"]` while hardening is still in flight and exactly
+  `["acquiring", "held"]` once it completes.
+
+  The matrix, enumerated, is: exact target · default binding · platform provenance ·
+  **successful completion** · **ordering relative to the ACL** · failure propagation ·
+  refusal taxonomy · raw observable trace · attempt count · protected operation
+  absent on failure. Any row unasserted at either edge is a hole, and each of these
+  rows was found by someone deleting the production code behind it.
 
   **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
   `observe()` treats a zero inode as unobservable, so if Bun returns zero there,

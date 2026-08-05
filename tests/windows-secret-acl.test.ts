@@ -1139,6 +1139,8 @@ describe("the production default hardener is reached, with the resolved platform
    */
   const forcedWindows = async (
     run: (codexHome: string) => Promise<void>,
+    onGrant: () => void = () => {},
+    gate?: Promise<void>,
   ): Promise<string[][]> => {
     const seen: string[][] = [];
     setPlatformForTests("win32");
@@ -1146,6 +1148,10 @@ describe("the production default hardener is reached, with the resolved platform
     process.env.USERNAME = "ocx-test-user";
     setAsyncIcaclsRunnerForTests(async args => {
       seen.push(args);
+      if (args.includes("/grant:r")) onGrant();
+      // A deferred runner lets a test observe the window WHILE hardening is in
+      // flight, which is the only way to assert nothing was published early.
+      if (gate) await gate;
       return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-default-harden-"));
@@ -1164,15 +1170,23 @@ describe("the production default hardener is reached, with the resolved platform
   test("a claim with no hardenPath runs the real ACL sequence under a forced win32", async () => {
     resetHardenedStateForTests();
     let expected = "";
+    const order: string[] = [];
+    let result: unknown;
     const seen = await forcedWindows(async codexHome => {
       expected = nativeMainClaimPath({ codexHome } as never);
-      await withNativeMainSharedClaim(
+      result = await withNativeMainSharedClaim(
         { codexHome } as never,
-        async () => undefined,
+        async () => { order.push("operation"); return "operation-ran"; },
         { platform: "win32" },
       );
-    });
+    }, () => { order.push("acl"); });
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
+    // The SUCCESS path, which "some ACL ran" cannot see: the protected operation
+    // actually ran, its value came back, and it ran AFTER the hardening rather
+    // than beside it. A claim that hardens and then silently skips its operation
+    // passed every other assertion here.
+    expect(result).toBe("operation-ran");
+    expect(order).toEqual(["acl", "operation"]);
     // The EXACT target, not merely that some ACL ran. Redirecting the caller at
     // an unrelated existing file passed every other dimension of this test.
     expect(seen.every(args => args[0] === expected)).toBe(true);
@@ -1181,18 +1195,35 @@ describe("the production default hardener is reached, with the resolved platform
   test("an owner with no hardenPath runs the real ACL sequence under a forced win32", async () => {
     resetHardenedStateForTests();
     let expected = "";
+    const trace: string[] = [];
+    let releaseAcl!: () => void;
+    const aclBlocked = new Promise<void>(done => { releaseAcl = done; });
     const seen = await forcedWindows(async codexHome => {
       expected = join(codexHome, NATIVE_MAIN_OWNER_DB);
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
+      const unsubscribe = owner.subscribe(snapshot => { trace.push(snapshot.status); });
       try {
+        // While the ACL is still in flight the owner may NOT report held: that
+        // would be a caller believing it owns a database whose hardening has not
+        // finished. Ordering is the claim, and no terminal snapshot can make it.
+        await Bun.sleep(30);
+        expect(trace).toEqual(["acquiring"]);
+        releaseAcl();
+
         const deadline = Date.now() + 5_000;
         while (owner.snapshot().status === "acquiring" && Date.now() < deadline) {
           await Bun.sleep(10);
         }
+        // And it must actually SUCCEED. Every earlier version accepted any
+        // non-acquiring state, so an owner that hardened correctly and then
+        // failed to acquire passed.
+        expect(owner.snapshot()).toMatchObject({ status: "held" });
+        expect(trace).toEqual(["acquiring", "held"]);
       } finally {
+        unsubscribe();
         await owner.release();
       }
-    });
+    }, () => {}, aclBlocked);
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
     expect(seen.every(args => args[0] === expected)).toBe(true);
   });
