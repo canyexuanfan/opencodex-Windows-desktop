@@ -224,7 +224,7 @@ describe("health-aware scoring (RI-06)", () => {
     for (let index = 0; index < 10; index++) appendUsageEntry(row(`ok-${index}`, 200, 800));
     // Combo request: a/m1 failed as the non-final attempt, b/m2 succeeded.
     appendUsageEntry({
-      ...row("combo-1", 200, 1500, { provider: "b", model: "m2" }),
+      ...row("combo-1", 200, 1500, { provider: "b", model: "m2", timestamp: Date.now() - 1_000 }),
       attempts: [
         { ordinal: 1, provider: "a", model: "m1", adapter: "openai-chat", status: 503, durationMs: 4000, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
         { ordinal: 2, provider: "b", model: "m2", adapter: "openai-chat", status: 200, durationMs: 1500, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
