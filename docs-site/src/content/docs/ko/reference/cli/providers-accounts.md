@@ -35,6 +35,23 @@ ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
 
+:::caution[커스텀 헤더는 자격증명 통로가 아닙니다]
+`--headers`는 비밀이 아닌 요청 메타데이터용입니다 — 라우팅 힌트, 테넌트나 프로젝트
+선택자, 추적 id 같은 것들이요. 인증 정보를 넣는 자리가 아니고, 검증기는 표준 자격증명
+헤더 이름(`Authorization`, `X-Api-Key`, `Cookie` 등)을 `apiKey` / `authMode`를
+쓰라는 안내와 함께 거부합니다.
+
+다만 `X-My-Token` 같은 임의 이름까지 알아볼 수는 없으니 그 경계는 사용자가 지켜야
+합니다. 이유는 두 가지입니다.
+
+- JSON이 명령줄 인자라서, 비밀이 들어가면 셸 히스토리와 프로세스 목록에 남습니다.
+  CLI가 무엇을 가리기도 전에 같은 머신의 다른 프로세스가 읽을 수 있습니다.
+- 헤더 값은 `config.json`에 평문으로 저장됩니다. 별도 저장·마스킹 경로가 있는
+  API 키와 다릅니다.
+
+비밀에 해당하는 값은 `--api-key`나 OAuth 로그인을 쓰세요.
+:::
+
 ## 인증
 
 ### `ocx login <provider>`

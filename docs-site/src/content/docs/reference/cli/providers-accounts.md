@@ -36,6 +36,25 @@ ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
 
+:::caution[Custom headers are not a credential channel]
+`--headers` is for non-secret request metadata — routing hints, tenant or
+project selectors, tracing ids. It is **not** a place to put authentication
+material, and the validator rejects the standard credential header names
+(`Authorization`, `X-Api-Key`, `Cookie`, and the rest) with a pointer to
+`apiKey` / `authMode`.
+
+The validator cannot recognize an arbitrary name such as `X-My-Token`, so the
+boundary is yours to respect. Two reasons it matters:
+
+- The JSON is a command-line argument, so a secret in it lands in shell history
+  and in the process list, where any other process on the machine can read it
+  before the CLI ever redacts anything.
+- Header values are persisted in `config.json` in cleartext, unlike API keys,
+  which have their own storage and masking path.
+
+Use `--api-key` or an OAuth login for anything secret.
+:::
+
 ## Authentication
 
 ### `ocx login <provider>`

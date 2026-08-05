@@ -128,8 +128,10 @@ export function csv(value: string | undefined): string[] | undefined {
 
 /**
  * Options whose VALUE is a credential (or can carry one), listed here so a parse
- * error never prints one. `--headers` belongs on the list because custom header
- * values may contain tokens or account identifiers.
+ * error never prints one. `--headers` belongs on the list defensively: custom
+ * headers are documented as non-secret metadata and the validator rejects the
+ * standard credential names, but it cannot recognize an arbitrary one such as
+ * `X-My-Token`, so a parse error must not echo the value back either way.
  *
  * `takeOption` only understands `--flag value`. `--flag=value` therefore falls
  * through to `rejectArgs`, which reports the offending argument verbatim — for

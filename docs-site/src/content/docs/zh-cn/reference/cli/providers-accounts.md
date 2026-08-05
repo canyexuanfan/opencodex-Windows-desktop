@@ -36,6 +36,20 @@ ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
 
+:::caution[自定义请求头不是凭据通道]
+`--headers` 用于非机密的请求元数据 —— 路由提示、租户或项目选择器、追踪 ID 等。它不是
+存放认证信息的地方，校验器会拒绝标准凭据请求头名称（`Authorization`、`X-Api-Key`、
+`Cookie` 等），并提示改用 `apiKey` / `authMode`。
+
+但校验器无法识别 `X-My-Token` 这类任意名称，因此这条边界需要你自己遵守。原因有两点：
+
+- 该 JSON 是命令行参数，机密会留在 shell 历史和进程列表中；在 CLI 做任何脱敏之前，
+  同一台机器上的其他进程就能读到。
+- 请求头的值以明文保存在 `config.json` 中，这与拥有独立存储和脱敏路径的 API 密钥不同。
+
+任何机密内容请使用 `--api-key` 或 OAuth 登录。
+:::
+
 ## 认证
 
 ### `ocx login <provider>`
