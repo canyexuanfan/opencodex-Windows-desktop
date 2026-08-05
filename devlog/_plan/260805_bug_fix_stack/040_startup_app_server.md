@@ -123,8 +123,41 @@ The audit rejected that, correctly: this path invalidates `models_cache.json` on
 integration disabled, or when the sync writes nothing, startup still leaves a
 running app-server stale and this layer would have shipped silence.
 
-Both writes route through the same post-write, stale-only decision, deduplicated
-so a startup that hits both paths warns once.
+### Who owns the warning, and how it warns once
+
+The audit's last blocker: "both writes route through one decision" is a
+requirement, not a design. Two independent helper calls would warn twice.
+
+The two write sites are ordered and both live in the same process on the CLI
+start path:
+
+1. `src/server/index.ts:406-412` — `invalidateCodexModelsCacheWithPermit`, inside
+   `startServer()`, wrapped in `try/catch` because `getCodexHome()` throws when
+   there is no Codex home.
+2. `src/cli/index.ts:320` — `await syncCodexOnStartIfEnabled(port, config)`, after
+   the server is already bound.
+
+**`handleStart` owns the single warning.** Neither write site warns on its own:
+
+- `startServer()` returns whether its cache invalidation actually wrote
+  (currently the `try` block discards that). It stays silent.
+- `syncCodexOnStartIfEnabled` returns the typed sync result (the seam fix above).
+  It stays silent.
+- `handleStart` ORs the two write flags and calls
+  `warnIfStaleCodexAppServersAfterStartupWrite()` at most once, after both.
+
+That ordering matters for correctness, not just tidiness: warning after the
+*first* write would read a catalog mtime that the *second* write is about to
+move, so the one call has to come last.
+
+`startServer()` is also reachable without `handleStart` (tests, embedded use). In
+that path nothing warns — deliberate. A caller that does not own a startup
+lifecycle should not emit lifecycle diagnostics, and the alternative is a module
+global that a test can leak across cases.
+
+**Test:** `tests/codex-desired-state.test.ts` — a startup where both the cache
+invalidation and the sync report a write emits exactly one warning; asserted on
+the injected `log.error` call count, not on the message.
 
 ## Tests
 
@@ -148,6 +181,7 @@ new injection point is invented:
    can reach `restartCodexAppServers()`;
 5. discovery throwing still resolves startup successfully;
 6. a startup hitting both write paths warns exactly once.
+   Asserted through `handleStart`'s injected log, per the ownership rule above.
 
 For (4), inject `io.kill` and fail the test if it is ever called. The seam exists
 at `src/codex/app-server-processes.ts:84`.
