@@ -303,9 +303,10 @@ are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
 
 **Command Code discovery.** The preset reads Command Code's public `/provider/v1/models` list from
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
-rows. The model catalog is unauthenticated, so the CLI login flow reports the key as unverifiable
-instead of a false positive. Chat requests use the configured Bearer key; API access requires the
-Provider plan, and CLI auth bridging for Go/Pro subscriptions is not yet available. Create keys at
+rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
+import from `~/.commandcode/auth.json` for existing Command Code CLI users); the model catalog is
+account-scoped and comes from the authenticated discovery endpoint after login. Chat requests use the
+configured Bearer key. Create keys at
 [Command Code Studio](https://commandcode.ai/studio/).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)

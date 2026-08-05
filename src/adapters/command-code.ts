@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
-import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
+import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import type { TranslatorBudget } from "../lib/translator-budget";
@@ -9,6 +9,7 @@ import { configuredReasoningEfforts } from "../reasoning-effort";
 import { commandCodeReasoningEfforts, refreshCommandCodeReasoningEfforts } from "../providers/command-code-efforts";
 import { identifyRoutedModel } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
+import { contentPartsToText } from "./image";
 
 // Retain the short ids emitted by the first local integration. New requests use the live catalog's
 // provider-native IDs directly; this map is compatibility-only and is not a model fallback list.
@@ -17,10 +18,6 @@ const COMMAND_CODE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "kimi-k3": "moonshotai/Kimi-K3",
   "glm-5.2": "zai-org/GLM-5.2",
 };
-
-function textContent(content: string | OcxContentPart[]): string {
-  return typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("");
-}
 
 function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
@@ -40,7 +37,7 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
         type: "tool-result",
         toolCallId: message.toolCallId,
         toolName: namespacedToolName(message.toolNamespace, message.toolName),
-        output: { type: message.isError ? "error-text" : "text", value: textContent(message.content) },
+        output: { type: message.isError ? "error-text" : "text", value: contentPartsToText(message.content) },
       }] });
       continue;
     }
@@ -92,21 +89,26 @@ function currentWorkingDirectory(): string | undefined {
   try { return process.cwd(); } catch { return undefined; }
 }
 
+/** Cap the workspace listing so a large directory does not ship every entry name upstream. */
+const MAX_WORKSPACE_STRUCTURE_ENTRIES = 64;
+
+/** Derive a bounded project slug from the working directory for the `x-project-slug` header. */
+function projectSlug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 64) || "workspace";
+}
+
 function commandCodeConfig(cwd: string | undefined): Record<string, unknown> {
   let structure: string[] = [];
   if (cwd) {
-    try { structure = readdirSync(cwd).filter(name => !name.startsWith(".")); } catch { /* workspace metadata is optional */ }
+    try {
+      structure = readdirSync(cwd).filter(name => !name.startsWith(".")).slice(0, MAX_WORKSPACE_STRUCTURE_ENTRIES);
+    } catch { /* workspace metadata is optional */ }
   }
   return {
     ...(cwd ? { workingDir: cwd } : {}),
     date: new Date().toISOString().slice(0, 10),
     environment: process.platform,
     structure,
-    isGitRepo: false,
-    currentBranch: "",
-    mainBranch: "",
-    gitStatus: "",
-    recentCommits: [],
   };
 }
 
@@ -255,7 +257,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
         "x-co-flag": "false",
         "x-session-id": randomUUID(),
       };
-      if (cwd) headers["x-project-slug"] = cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+      if (cwd) headers["x-project-slug"] = projectSlug(cwd);
       return {
         url: `${provider.baseUrl.replace(/\/$/, "")}/alpha/generate`, method: "POST",
         headers,

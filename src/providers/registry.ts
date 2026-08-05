@@ -1305,7 +1305,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     // Verified 2026-08-03: public /provider/v1/models returns 51 rows; /chat/completions returns
     // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
-    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. CLI auth bridging for Go/Pro subscriptions is not yet available. Docs: https://commandcode.ai/docs/provider.",
+    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. Use `ocx login command-code` for OAuth account login (imports an existing local Command Code CLI credential when present). Docs: https://commandcode.ai/docs/provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },

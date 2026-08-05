@@ -223,10 +223,10 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 
 **Command Code 검색:** 프리셋은 Command Code의 공개 `/provider/v1/models` 목록을 고정된 Provider API
 호스트에서 읽고, 슬래시가 포함된 네이티브 모델 ID를 보존하며 live discovery를 256 KiB와 raw 행
-256개로 제한합니다. 모델 카탈로그는 인증이 없으므로 CLI 로그인 흐름은 키를 유효하다고 잘못 보고하지
-않고 검증 불가로 보고합니다. 채팅 요청은 설정된 bearer 키를 사용하며, API 액세스에는 Provider 플랜이
-필요하고 Go/Pro 구독자용 CLI 인증 브리지는 아직 제공되지 않습니다. 키는
-[Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
+256개로 제한합니다. `ocx login command-code`는 브라우저 OAuth 로그인을 지원하며(기존 Command Code
+CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가져올 수 있음), 모델 카탈로그는
+계정 단위이며 로그인 후 인증된 discovery 엔드포인트에서 가져옵니다. 채팅 요청은 설정된 bearer
+키를 사용합니다. 키는 [Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션

@@ -67,6 +67,30 @@ describe("Command Code provider", () => {
     await expect(loginCommandCode({ signal: controller.signal }, { importLocal: "off" })).rejects.toThrow("cancelled before login");
   });
 
+  test("accepts a manually pasted API key when the browser callback cannot reach the loopback server", async () => {
+    const controller = new AbortController();
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const href = String(input);
+      calls.push(href);
+      if (href.includes("whoami")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      throw new Error(`unexpected fetch: ${href}`);
+    }) as typeof globalThis.fetch;
+    try {
+      const credentials = await loginCommandCode({
+        onAuth: () => {},
+        onProgress: () => {},
+        onManualCodeInput: async () => "sk-pasted-key",
+        signal: controller.signal,
+      }, { importLocal: "off" });
+      expect(credentials).toMatchObject({ access: "sk-pasted-key", source: "oauth" });
+      expect(calls.some(href => href.includes("whoami"))).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("uses live account discovery and only imports local CLI auth for the first account", () => {
     const request = buildModelsRequest(provider, "secret-command-key", "command-code");
     expect(request).toEqual({
@@ -94,6 +118,44 @@ describe("Command Code provider", () => {
     expect(request).not.toBeInstanceOf(Promise);
     const built = request as Exclude<typeof request, Promise<unknown>>;
     expect(JSON.parse(built.body).params.model).toBe("xai/grok-4.5");
+  });
+
+  test("preserves tool-result text and marks image parts instead of dropping them", () => {
+    const image = "data:image/png;base64,AAAA";
+    const request = createCommandCodeAdapter(provider).buildRequest({
+      ...parsed(),
+      context: {
+        ...parsed().context,
+        messages: [{
+          role: "toolResult",
+          toolCallId: "call_1",
+          toolName: "view_image",
+          content: [{ type: "text", text: "screenshot:" }, { type: "image", imageUrl: image }],
+          isError: false,
+          timestamp: 1,
+        }],
+      },
+    });
+    expect(request).not.toBeInstanceOf(Promise);
+    const built = request as Exclude<typeof request, Promise<unknown>>;
+    const body = JSON.parse(built.body);
+    expect(body.params.messages[0]).toMatchObject({
+      role: "tool",
+      content: [{ type: "tool-result", output: { type: "text", value: "screenshot:[image]" } }],
+    });
+    expect(built.body).not.toContain(image);
+  });
+
+  test("keeps the generate config to workspace metadata and bounds the project slug", () => {
+    const request = createCommandCodeAdapter(provider).buildRequest(parsed());
+    expect(request).not.toBeInstanceOf(Promise);
+    const built = request as Exclude<typeof request, Promise<unknown>>;
+    const body = JSON.parse(built.body);
+    expect(body.config).not.toHaveProperty("isGitRepo");
+    expect(body.config).not.toHaveProperty("recentCommits");
+    expect(body.config.structure).toBeInstanceOf(Array);
+    expect(typeof body.config.workingDir).toBe("string");
+    expect(built.headers["x-project-slug"]?.length ?? 0).toBeLessThanOrEqual(64);
   });
 
   test("does not advertise an unverified effort for models absent from the official table", () => {

@@ -1,10 +1,13 @@
 import type { OAuthController, OAuthCredentials } from "./types";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isAddrInUse } from "../server/ports";
+import { parseCallbackInput } from "./callback-server";
 
 const COMMAND_CODE_STUDIO_URL = "https://commandcode.ai";
 const COMMAND_CODE_CALLBACK_PORT = 5959;
 const LOGIN_TIMEOUT_MS = 120_000;
+const CALLBACK_PATH = "/callback";
 
 interface CommandCodeCallback {
   apiKey: string;
@@ -75,7 +78,7 @@ export function parseCommandCodeCallback(value: unknown, expectedState: string):
 }
 
 function createCallbackServer(state: string): {
-  server: ReturnType<typeof Bun.serve>;
+  servers: Array<ReturnType<typeof Bun.serve>>;
   callback: Promise<CommandCodeCallback>;
 } {
   let resolve!: (value: CommandCodeCallback) => void;
@@ -90,7 +93,7 @@ function createCallbackServer(state: string): {
       "Access-Control-Allow-Headers": "Content-Type",
     });
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
-    if (url.pathname !== "/callback") return Response.json({ success: false, error: "Not found" }, { status: 404, headers });
+    if (url.pathname !== CALLBACK_PATH) return Response.json({ success: false, error: "Not found" }, { status: 404, headers });
     if (request.method !== "POST") return Response.json({ success: false, error: "Method not allowed" }, { status: 405, headers });
     try {
       const body = await request.json();
@@ -102,11 +105,56 @@ function createCallbackServer(state: string): {
       return Response.json({ success: false, error: message }, { status: 400, headers });
     }
   };
+  const create = (port: number): Array<ReturnType<typeof Bun.serve>> => {
+    // The advertised callback host is `127.0.0.1`; on Windows `localhost` commonly resolves to `::1`
+    // first, so also bind the IPv6 loopback best-effort (mirrors the shared OAuthCallbackFlow).
+    const servers = [Bun.serve({ hostname: "127.0.0.1", port, fetch })];
+    try {
+      servers.push(Bun.serve({ hostname: "::1", port: servers[0].port, fetch }));
+    } catch (error) {
+      if (isAddrInUse(error)) {
+        for (const server of servers) server.stop(true);
+        throw error;
+      }
+      // IPv6 unsupported (EAFNOSUPPORT etc.) degrades to the IPv4-only listener.
+    }
+    return servers;
+  };
   try {
-    return { server: Bun.serve({ hostname: "127.0.0.1", port: COMMAND_CODE_CALLBACK_PORT, fetch }), callback };
+    return { servers: create(COMMAND_CODE_CALLBACK_PORT), callback };
   } catch {
-    return { server: Bun.serve({ hostname: "127.0.0.1", port: 0, fetch }), callback };
+    return { servers: create(0), callback };
   }
+}
+
+/** Validate a raw pasted Command Code API key against the fixed Provider API host. */
+async function validatePastedApiKey(apiKey: string): Promise<boolean> {
+  try {
+    const response = await fetch("https://api.commandcode.ai/alpha/whoami", {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Manual-paste fallback: a raw API key, or a pasted callback JSON/URL that carries `apiKey`. */
+function parsePastedCommandCodeInput(input: string, expectedState: string): CommandCodeCallback | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("{")) {
+    try {
+      return parseCommandCodeCallback(JSON.parse(trimmed) as unknown, expectedState);
+    } catch {
+      return undefined;
+    }
+  }
+  const parsed = parseCallbackInput(trimmed);
+  const apiKey = parsed.code?.trim();
+  if (!apiKey) return undefined;
+  return { apiKey, state: expectedState, userId: "", userName: "", keyName: "manual" };
 }
 
 export async function loginCommandCode(ctrl: OAuthController, options: CommandCodeLoginOptions = {}): Promise<OAuthCredentials> {
@@ -121,8 +169,8 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
     }
   }
   const state = randomState();
-  const { server, callback } = createCallbackServer(state);
-  const callbackUrl = `http://127.0.0.1:${server.port}/callback`;
+  const { servers, callback } = createCallbackServer(state);
+  const callbackUrl = `http://127.0.0.1:${servers[0].port}${CALLBACK_PATH}`;
   const authUrl = `${COMMAND_CODE_STUDIO_URL}/studio/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}`;
   ctrl.onAuth?.({ url: authUrl, instructions: "Sign in with Command Code in the browser." });
   ctrl.onProgress?.("Waiting for Command Code authentication...");
@@ -132,7 +180,20 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
       timeoutId = setTimeout(() => reject(new Error("Command Code OAuth callback timed out")), LOGIN_TIMEOUT_MS);
       ctrl.signal?.addEventListener("abort", () => { if (timeoutId) clearTimeout(timeoutId); reject(ctrl.signal?.reason); }, { once: true });
     });
-    const result = await Promise.race([callback, timeout]);
+    const manual = ctrl.onManualCodeInput
+      ? (async (): Promise<CommandCodeCallback> => {
+          while (true) {
+            // The loop keeps waiting until a valid paste arrives; invalid pastes re-prompt.
+            // `callback`/`timeout` are the only paths that settle the outer race first.
+            const input = await ctrl.onManualCodeInput?.(state);
+            if (input === undefined) continue;
+            const pasted = parsePastedCommandCodeInput(input, state);
+            if (pasted && (await validatePastedApiKey(pasted.apiKey))) return pasted;
+          }
+        })()
+      : undefined;
+    const result = await Promise.race([callback, timeout, ...(manual ? [manual] : [])]);
+    if (result === undefined) throw new Error("Command Code OAuth callback cancelled");
     return {
       access: result.apiKey,
       refresh: result.apiKey,
@@ -142,7 +203,7 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
     };
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
-    server.stop(true);
+    for (const server of servers) server.stop(true);
   }
 }
 

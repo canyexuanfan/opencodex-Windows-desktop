@@ -236,10 +236,11 @@ endpoint в него не входят. Ключи создаются в [Hyperb
 
 **Discovery для Command Code.** Пресет читает публичный список `/provider/v1/models` с фиксированного
 хоста Provider API, сохраняет нативные id моделей со знаком `/` и ограничивает live discovery размером
-256 KiB и 256 исходными строками. Каталог моделей не требует аутентификации, поэтому CLI-флоу входа
-сообщает ключ как непроверенный, а не как ложноположительно действительный. Запросы чата используют
-настроенный bearer-ключ; для доступа к API требуется план Provider, а CLI-мост аутентификации для
-подписок Go/Pro пока недоступен. Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
+256 KiB и 256 исходными строками. `ocx login command-code` поддерживает вход через OAuth в браузере
+(с возможностью импорта локальных учётных данных CLI из `~/.commandcode/auth.json` для существующих
+пользователей CLI Command Code); каталог моделей привязан к учётной записи и берётся из
+аутентифицированного discovery endpoint после входа. Запросы чата используют настроенный bearer-ключ.
+Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),
