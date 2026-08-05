@@ -347,6 +347,14 @@ export function hardenedSecretPathCountForTests(): number {
   return hardenedPaths.size;
 }
 
+/**
+ * Directory counterpart. It had no seam, and that absence hid a real gap: a
+ * directory-only pathname memo passed every file-based test in this suite.
+ */
+export function hardenedSecretDirCountForTests(): number {
+  return hardenedDirectories.size;
+}
+
 function effectivePlatform(): string {
   return platformOverride ?? platform;
 }

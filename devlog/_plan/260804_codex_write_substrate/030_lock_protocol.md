@@ -646,10 +646,14 @@ Walk components one at a time; never recursive-mkdir across an unvalidated paren
 
   Ephemeral temps already invalidated through `forgetEphemeralSecretPath`
   (`src/config.ts:214,241,309,336,480,501-510`); the stable destination memo that
-  `hardenStableLockFile` uses never did, and observed absence now retires it. Both the
-  sync and async entry points are covered — an audit removed the async attribution
-  alone and every test stayed green, while async is the path
-  `hardenStableLockFile` actually takes (`src/codex/native-main-lock-file.ts:130`).
+  `hardenStableLockFile` uses never did, and observed absence now retires it. All
+  **four** public entry points are covered — file and directory, sync and async —
+  because the suite was twice found to be proving the wrong half: removing the async
+  attribution alone left every test green while async is the path
+  `hardenStableLockFile` actually takes (`src/codex/native-main-lock-file.ts:130`),
+  and a pathname-only memo applied to directories ALONE also left every test green
+  while `hardenSecretDir` backs config, management-auth, tray, spill-store, and
+  `native-profile-manager.ts:153`.
 - Existing DB or `-journal` must be regular, same-user private entries. Existing
   `-wal`/`-shm` refuses. The lock **verifies** rollback journal mode rather than
   forcing it: a pinned-Bun probe shows `bun:sqlite` already opens `delete` and leaves
@@ -981,16 +985,19 @@ and the ones that did were rewritten rather than kept.
   the `busy` SQLite alone produces.
   *Red when:* ALS is removed — the reason must degrade to `busy`. Asserting only
   "does not hang" is vacuous, because `busy_timeout = 0` already guarantees that.
-- **F4** — a harden is credited only to the file it was performed on, through BOTH
-  the sync and async entry points.
-  *Red when (each separately, and each in both parameterizations):* (a) `dev` is
+- **F4** — a harden is credited only to the object it was performed on, through all
+  **four** public entry points: file/sync, file/async, dir/sync, dir/async.
+  *Red when (each separately, and each across all four parameterizations):* (a) `dev` is
   dropped from the object; (b) `freshness` is dropped from the memo value; (c) the
   before/after object comparison is removed; (d) observed absence keeps the memo;
   (e) an unreadable observation satisfies the memo; (f) a zero inode is accepted as
   an identity; (g) the FULL identity is compared across the ACL call — this one is
   the Windows-breaking form, since icacls moves ctime; (h) the async attribution
-  alone is removed. (h) is not redundant: it survived every other check while
-  `hardenStableLockFile` takes exactly that path.
+  alone is removed; (i) a pathname-only memo is applied to directories alone.
+  (h) and (i) are not redundant — each survived every other check, and each covers a
+  real production caller: `hardenStableLockFile` takes the async path, and
+  `hardenSecretDir` backs config, management-auth, tray, spill-store, and
+  `native-profile-manager.ts:153`.
   Replacement is driven through the stat seam rather than a real unlink/recreate:
   ext4 recycles an inode immediately and APFS did not once in 200 cycles, so a
   real-file version asserts different things on different machines — which is how a

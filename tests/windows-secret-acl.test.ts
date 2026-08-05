@@ -10,15 +10,17 @@
  *  - hardenSecretDir mirrors the same contract for directories.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   forgetEphemeralSecretPath,
   hardenSecretDir,
+  hardenSecretDirAsync,
   forgetHardenedSecretPath,
   hardenSecretPath,
   hardenSecretPathAsync,
+  hardenedSecretDirCountForTests,
   hardenedSecretPathCountForTests,
   resetHardenedStateForTests,
   setAsyncIcaclsRunnerForTests,
@@ -709,9 +711,45 @@ describe("ephemeral ACL memo release (#840 refinement)", () => {
  */
 type HardenFn = (path: string, opts: { required: boolean }) => Promise<HardenResult>;
 
-const ENTRY_POINTS: readonly { readonly label: string; readonly harden: HardenFn }[] = [
-  { label: "sync", harden: async (path, opts) => hardenSecretPath(path, opts) },
-  { label: "async", harden: (path, opts) => hardenSecretPathAsync(path, opts) },
+/**
+ * All FOUR public entry points, not two.
+ *
+ * `hardenSecretDir`/`hardenSecretDirAsync` share the same memo machinery through
+ * `hardenedDirectories`, and an audit proved the gap: inserting
+ * `if (directory && cache.has(targetPath)) return { ok: true }` — pathname-only
+ * satisfaction for directories alone — left all 55 file-only tests green. That
+ * reaches real callers: config (`src/config.ts:1292,1760`), management-auth,
+ * tray, spill-store, and `native-profile-manager.ts:153`.
+ *
+ * Each entry carries its own `create`, so a directory case makes a directory.
+ */
+interface EntryPoint {
+  readonly label: string;
+  readonly harden: HardenFn;
+  readonly create: (path: string) => void;
+}
+
+const ENTRY_POINTS: readonly EntryPoint[] = [
+  {
+    label: "file-sync",
+    harden: async (path, opts) => hardenSecretPath(path, opts),
+    create: path => writeFileSync(path, "x", "utf8"),
+  },
+  {
+    label: "file-async",
+    harden: (path, opts) => hardenSecretPathAsync(path, opts),
+    create: path => writeFileSync(path, "x", "utf8"),
+  },
+  {
+    label: "dir-sync",
+    harden: async (path, opts) => hardenSecretDir(path, opts),
+    create: path => mkdirSync(path, { recursive: true }),
+  },
+  {
+    label: "dir-async",
+    harden: (path, opts) => hardenSecretDirAsync(path, opts),
+    create: path => mkdirSync(path, { recursive: true }),
+  },
 ];
 
 /**
@@ -744,7 +782,12 @@ function runner(onCall: (args: string[]) => void): void {
   setAsyncIcaclsRunnerForTests(async args => { onCall(args); return result; });
 }
 
-for (const { label, harden } of ENTRY_POINTS) {
+for (const { label, harden, create } of ENTRY_POINTS) {
+  // Files and directories keep separate memos; a case must read its own.
+  const memoCount = label.startsWith("dir")
+    ? hardenedSecretDirCountForTests
+    : hardenedSecretPathCountForTests;
+
   describe(`F4 memo attribution — ${label} entry point`, () => {
     /**
      * The original defect. The memo was a Set of PATH STRINGS, so unlinking a
@@ -758,7 +801,7 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("a file replaced at an already-hardened stable path is hardened again", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `replaced-${label}.sqlite`);
-      writeFileSync(stable, "first", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         let grants = 0;
@@ -788,7 +831,7 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("a file replaced DURING hardening is not credited, and required fails closed", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `raced-${label}.sqlite`);
-      writeFileSync(stable, "original", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         let grants = 0;
@@ -805,7 +848,7 @@ for (const { label, harden } of ENTRY_POINTS) {
         );
         expect(grants).toBe(1);
         // No memo was left for the replacement, so a later harden still runs.
-        expect(hardenedSecretPathCountForTests()).toBe(0);
+        expect(memoCount()).toBe(0);
 
         // An optional caller hitting the same race soft-fails with the same
         // honest diagnostic. The runner keeps swapping the file, so this second
@@ -828,7 +871,7 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("ctime moving during hardening is the ACL's own doing, not a substitution", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `acl-ctime-${label}.sqlite`);
-      writeFileSync(stable, "x", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         let grants = 0;
@@ -866,7 +909,7 @@ for (const { label, harden } of ENTRY_POINTS) {
       test(`a change in ${name} alone forces a re-harden`, async () => {
         resetHardenedStateForTests();
         const stable = join(testDir, `component-${name}-${label}.sqlite`);
-        writeFileSync(stable, "x", "utf8");
+        create(stable);
 
         await withWin32(async () => {
           let grants = 0;
@@ -894,7 +937,7 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("a stat failure after a successful harden forces the harden to run again", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `unreadable-${label}.sqlite`);
-      writeFileSync(stable, "x", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         let grants = 0;
@@ -913,7 +956,7 @@ for (const { label, harden } of ENTRY_POINTS) {
           /changed during hardening/,
         );
         expect(grants).toBe(2);
-        expect(hardenedSecretPathCountForTests()).toBe(0);
+        expect(memoCount()).toBe(0);
       });
     });
 
@@ -925,7 +968,7 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("a zero inode is unobservable, not an identity", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `zero-ino-${label}.sqlite`);
-      writeFileSync(stable, "x", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         let grants = 0;
@@ -936,7 +979,7 @@ for (const { label, harden } of ENTRY_POINTS) {
           /changed during hardening/,
         );
         expect(grants).toBe(1);
-        expect(hardenedSecretPathCountForTests()).toBe(0);
+        expect(memoCount()).toBe(0);
       });
     });
 
@@ -949,18 +992,18 @@ for (const { label, harden } of ENTRY_POINTS) {
     test("observing the path absent retires its success memo", async () => {
       resetHardenedStateForTests();
       const stable = join(testDir, `vanishes-${label}.sqlite`);
-      writeFileSync(stable, "first", "utf8");
+      create(stable);
 
       await withWin32(async () => {
         runner(() => {});
         setStatForTests(() => ({ dev: 1n, ino: 10n, ctimeNs: 100n }));
 
         expect(await harden(stable, { required: true })).toEqual({ ok: true });
-        expect(hardenedSecretPathCountForTests()).toBe(1);
+        expect(memoCount()).toBe(1);
 
-        unlinkSync(stable);
+        rmSync(stable, { recursive: true, force: true });
         expect(await harden(stable, { required: true })).toEqual({ ok: true });
-        expect(hardenedSecretPathCountForTests()).toBe(0);
+        expect(memoCount()).toBe(0);
       });
     });
   });

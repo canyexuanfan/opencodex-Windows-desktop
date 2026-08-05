@@ -279,7 +279,11 @@ separate config mutation transaction before the apply reaches
 `atomicWriteFile`. The several config/profile/journal/history writes at
 `src/codex/inject.ts:524-603` have the same defect.
 
-NEW `src/codex/desired-state.ts` owns one linearization boundary:
+NEW `src/codex/desired-state.ts` owns the desired-state surface below. It does NOT
+own the linearization boundary — that comes from WP12's public N acquisition API in
+`src/codex/codex-write-lock.ts`, whose callback is already synchronous and already
+holds `N -> C`. Everything from here to the end of this section is the ORIGINAL
+2026-08-04 design, retained for its diagnosis; read the lock parts as history:
 
 ```ts
 export type NativeCodexOwnership =
@@ -323,14 +327,20 @@ export function reconcileCodexDesiredState(
 ): CodexReconcileResult;
 ```
 
-**INFERRED design choice:** canonicalize the effective `CODEX_HOME`, hash that
-canonical path with SHA-256, and store the SQLite lock at
-`join(tmpdir(), "opencodex-native-locks", <hash> + ".sqlite")`, mode `0600` in a
-mode-`0700` directory. It is outside `CODEX_HOME` and independent of
-`OPENCODEX_HOME`, so two OpenCodex homes targeting one native home serialize on
-one lock without writing a lock artifact into the target. Process exit releases
-the SQLite transaction. The callback is synchronous and bounded: there is no
-provider fetch, model discovery, sleep, or other `await` while it is held.
+> **SUPERSEDED — do not implement this paragraph.** It read: canonicalize the
+> effective `CODEX_HOME`, hash it with SHA-256, and store the SQLite lock at
+> `join(tmpdir(), "opencodex-native-locks", <hash> + ".sqlite")`. Keying on the home
+> alone omits the effective uid/SID, so a service and a CLI running as different OS
+> users would take *different* lock files for one home and serialize with nothing —
+> the precise split `005_contract.md` §7 exists to prevent, and `os.homedir()` is
+> environment-controlled under Bun 1.3.14 besides.
+>
+> WP4 calls WP12's public N acquisition API instead. The path resolution belongs to
+> `resolveCodexCoordinatorDatabasePath` (`src/codex/user-identity.ts:165`), which
+> keys on uid/SID **and** the canonical home. What the withdrawn paragraph got right
+> is retained by N anyway: the lock lives outside `CODEX_HOME`, process exit
+> releases the transaction, and the callback is synchronous and bounded — no
+> provider fetch, model discovery, sleep, or other `await` while it is held.
 
 The ordering invariant is:
 
