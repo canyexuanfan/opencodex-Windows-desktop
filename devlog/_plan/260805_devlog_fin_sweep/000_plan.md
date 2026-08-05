@@ -120,7 +120,7 @@ spare the next reader from having to repeat.
 
 ## Scope
 
-IN: `git mv` of the 12 adjudicated units; the reference edits `020` names; this
+IN: `git mv` of the 11 adjudicated units; the reference edits `020` names; this
 unit's own docs; a local commit on `dev`.
 
 OUT: no push, no PR or issue mutation, no `_chase/` changes, no rewriting of

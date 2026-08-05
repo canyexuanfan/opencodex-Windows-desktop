@@ -43,26 +43,40 @@ from closed. A PR absent from this table asserted no issue link.
 | 936 | #917 | PR | explicitly-not-superseded-by |
 | 936 | #899 | PR | related-prior-work |
 | 557 | #533 | PR | supersedes |
-| 937, 872, 870, 812 | #572 | ISSUE open | sibling-of-batch |
+| 937, 872, 870 | #572 | ISSUE open | sibling-of-batch |
 | 870 | #923 | PR closed | sibling-of-batch |
 | 872 | #870 | PR open | sibling-of-batch |
 | 937 | #870, #872 | PR open | sibling-of-batch |
 | 947 | #942 | PR closed | conflicts-with |
 | 947 | #953 | PR closed | related-prior-work |
-| 1047, 1002 | #1024 | ISSUE open | overlap-to-check |
-| 1056 | *(none)* | — | asserts no issue link |
+| 1056, 812, 1047, 1002 | *(none)* | — | asserts-no-issue-link |
 
 ### Inference, kept separate from extraction
 
 | PR | inferred target | basis | confidence |
 |---:|---|---|---|
-| 1056 | #241 | the title "preserve routed models in desktop picker" restates #241's subject; the body contains **no** `#241` | inference only — the PR does not claim the link |
+| 1056 | #241 | title "preserve routed models in desktop picker" restates #241's subject; body contains **no** `#241` | inference only |
+| 812 | #572 | adds the Apertis provider preset, which is what the #572 batch program collects; body contains **no** `#572` | inference only |
+| 1047 | #1024 | edits the vision sidecar caption path that #1024 reports gaps in; body contains **no** `#1024` | inference only |
+| 1002 | #1024 | makes sidecar reasoning configurable in the same subsystem; body contains **no** `#1024` | inference only |
 
-That separation was forced by the audit. An earlier draft listed #1056 → #241 as
-"via title" inside the extraction table, which reads as though the PR asserted the
-link. It does not. A PR silently addressing an issue is real and common, but
-recording an inference as an extraction is how a triage document acquires facts
-nobody ever wrote down.
+That separation was forced by the audit, twice. An earlier draft listed
+#1056 → #241 as "via title" inside the extraction table; the next round still had
+#812 → #572 and #1047/#1002 → #1024 sitting in the literal table, where they read
+as claims the authors made. They did not: those three PR bodies contain no `#NNN`
+at all.
+
+```console
+$ for pr in 812 1047 1002; do gh pr view $pr --json title,body \
+    --jq '[.title,.body]|join("\n")' | grep -oE '#[0-9]{2,4}' | sort -u; done
+(no output)
+```
+
+The associations are still probably right — #812 really does add an Apertis
+preset, #1047 and #1002 really do edit the vision sidecar. But "probably right"
+belongs in the inference table. Recording an inference as an extraction is how a
+triage document acquires facts nobody ever wrote down, and a maintainer acting on
+this ledger has to be able to tell which is which.
 
 ### What the untruncated pass recovered
 

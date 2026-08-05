@@ -111,13 +111,20 @@ their citations are correct as written and must NOT be touched.
 | `devlog/_plan/260805_issue_pr_triage/030_cross_links.md:193` | `260803_bug_backlog_stack` (audit r4; the reviewer cited `:171`, the actual line is `:193`) |
 | `devlog/_plan/260731_pr_landing_round/000_plan.md:34` | `260730_devlog_publication_feasibility` — a live diagnosis pointer, repointed (audit r3 blocker 4) |
 | `devlog/_plan/260730_prerelease_blockers/000_plan.md:4` | `260730_issue_triage_dev_head` (audit r4) |
-| `devlog/_plan/260802_client_toggle_api/000_plan.md:7` | `260731_client_config_export` (audit r4) |
 | `devlog/_plan/260804_stack7_service_vision/000_scope.md:7` | `260804_overnight_triage` (audit r4) |
 
-The last three exist because their citing units were themselves demoted in
-round 3: once a unit stops moving, its outbound links to units that DO move
-become inbound links needing a repoint. Each demotion round therefore required
-re-running the inventory, which is how these surfaced only in round 4.
+These exist because their citing units were themselves demoted in round 3: once
+a unit stops moving, its outbound links to units that DO move become inbound
+links needing a repoint. Each demotion round therefore required re-running the
+inventory, which is how they surfaced only in round 4.
+
+One row was dropped from this table in round 5 after
+`260731_client_config_export` was itself demoted:
+`260802_client_toggle_api/000_plan.md:7` cites it, but both units now stay in
+`_plan/`, so that link resolves untouched. Repointing it would have created a
+broken `_fin/` reference to a unit that never moved — the precise failure the
+ledger exists to prevent, and a good argument for regenerating the inventory
+after every demotion rather than editing it in place.
 
 Rows that dropped out when their targets stopped moving:
 `260802_codex_set_prompt_composer/040:121` ->
@@ -138,7 +145,8 @@ for u in $(cat move-list); do
 done
 ```
 
-18 hits, in four groups:
+18 hits at generation time, in four groups. In a concurrently edited tree line
+numbers drift, so the file path is authoritative and the line is a hint:
 
 **Gates (2) — hand-edited:** `scripts/privacy-scan.ts:46`,
 `tests/repo-hygiene.test.ts:156`.
@@ -146,14 +154,13 @@ done
 **Source (2) — mechanical:** `src/providers/registry.ts:415`,
 `src/cli/export-command.ts` (bare-name form, no edit — see below).
 
-**Live devlog pointers (12) — mechanical:**
+**Live devlog pointers (11) — mechanical:**
 `260731_pr_landing_round/000_plan.md:34`,
 `260730_prerelease_blockers/000_plan.md:4`,
 `260804_router_intelligence/000_master_plan.md:89`,
-`260802_client_toggle_api/000_plan.md:7`,
 `260802_triage_execution/000_research.md:4` (+ the `../` link at `:9`),
 `260805_issue_pr_triage/001_prior_investigation_index.md:70,73`,
-`260805_issue_pr_triage/030_cross_links.md:193`,
+`260805_issue_pr_triage/030_cross_links.md`,
 `260803_pr_issue_sweep/000_plan.md:100`,
 `260803_pr_issue_sweep/040_phase4_backlog_disposition.md:122`,
 `260804_stack7_service_vision/000_scope.md:7`.
@@ -166,8 +173,6 @@ Bare-name references (`devlog 260731_client_config_export/020`, and the
 `src/cli/export-command.ts` / `gui/` / `tests/` comment headers that name the
 unit without a `_plan/` prefix) need no edit: the directory name does not change,
 only its parent. These were enumerated and checked, not assumed.
-| `devlog/_plan/260731_pr_landing_round/000_plan.md:34` | `260730_devlog_publication_feasibility` |
-
 Two of these are historical statements rather than live pointers — the
 selective-staging exclusion list in `260801_zero_leak_state_stores/070` and the
 staging note in `260731_macos_rss_retention/110` describe what a past run
