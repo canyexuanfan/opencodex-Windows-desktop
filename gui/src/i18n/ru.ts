@@ -10,11 +10,11 @@ export const ru: Record<TKey, string> = {
   "nav.providers": "Провайдеры",
   "nav.models": "Модели",
   "nav.combos": "Комбо",
-  "nav.routing": "Маршрутизация",
+  "nav.routing": "Маршрутизация (beta)",
   "nav.subagents": "Подагенты",
 
   // routing intelligence
-  "routing.title": "Интеллект маршрутизации",
+  "routing.title": "Интеллект маршрутизации (beta)",
   "routing.subtitle": "Политики маршрутизации, пробная оценка и аналитика на основе источников.",
   "routing.loadFailed": "Не удалось загрузить данные маршрутизации",
   "routing.empty": "Профили маршрутизации не настроены. Добавьте `routingProfiles` в config.json.",

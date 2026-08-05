@@ -10,11 +10,11 @@ export const ja: Record<TKey, string> = {
   "nav.providers": "プロバイダー",
   "nav.models": "モデル",
   "nav.combos": "コンボ",
-  "nav.routing": "ルーティング",
+  "nav.routing": "ルーティング (beta)",
   "nav.subagents": "サブエージェント",
 
   // routing intelligence
-  "routing.title": "ルーティングインテリジェンス",
+  "routing.title": "ルーティングインテリジェンス (beta)",
   "routing.subtitle": "ポリシープロファイル、ドライラン評価、ソース連携のルーティング分析。",
   "routing.loadFailed": "ルーティングデータを読み込めませんでした",
   "routing.empty": "ルーティングプロファイルが設定されていません。config.json に `routingProfiles` を追加してください。",

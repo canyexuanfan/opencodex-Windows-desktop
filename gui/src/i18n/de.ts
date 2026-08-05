@@ -10,11 +10,11 @@ export const de: Record<TKey, string> = {
   "nav.providers": "Anbieter",
   "nav.models": "Modelle",
   "nav.combos": "Combos",
-  "nav.routing": "Routing",
+  "nav.routing": "Routing (beta)",
   "nav.subagents": "Sub-Agenten",
 
   // routing intelligence
-  "routing.title": "Routing-Intelligenz",
+  "routing.title": "Routing-Intelligenz (beta)",
   "routing.subtitle": "Policy-Profile, Trockenlauf-Bewertung und routinggestützte Analysen.",
   "routing.loadFailed": "Routing-Daten konnten nicht geladen werden",
   "routing.empty": "Keine Routing-Profile konfiguriert. Fügen Sie `routingProfiles` zur config.json hinzu.",

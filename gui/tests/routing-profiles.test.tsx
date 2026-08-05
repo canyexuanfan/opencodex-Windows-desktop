@@ -147,7 +147,7 @@ test("routing page loads profiles, analytics, and marks the dry-run selection", 
   const { container, root } = await mountPage();
   try {
     expect(container.querySelector('[data-page="routing"]')).toBeTruthy();
-    expect(container.textContent).toContain("Routing Intelligence");
+    expect(container.textContent).toContain("Routing Intelligence (beta)");
     expect(container.textContent).toContain("balanced");
     expect(container.textContent).toContain("policy/balanced");
     expect(container.textContent).toContain("rev-abc");

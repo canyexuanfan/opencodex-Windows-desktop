@@ -12,7 +12,7 @@ export const en = {
   "nav.providers": "Providers",
   "nav.models": "Models",
   "nav.combos": "Combos",
-  "nav.routing": "Routing",
+  "nav.routing": "Routing (beta)",
   "nav.subagents": "Subagents",
   "nav.logs": "Logs & Debug",
   "nav.usage": "Usage",
@@ -54,7 +54,7 @@ export const en = {
   "errorBoundary.reload": "Reload",
 
   // routing intelligence
-  "routing.title": "Routing Intelligence",
+  "routing.title": "Routing Intelligence (beta)",
   "routing.subtitle": "Policy profiles, dry-run evaluation, and source-backed routing analytics.",
   "routing.loadFailed": "Could not load routing data",
   "routing.empty": "No routing profiles configured. Add `routingProfiles` to config.json.",

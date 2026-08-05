@@ -10,11 +10,11 @@ export const ko: Record<TKey, string> = {
   "nav.providers": "프로바이더",
   "nav.models": "모델",
   "nav.combos": "콤보",
-  "nav.routing": "라우팅",
+  "nav.routing": "라우팅 (beta)",
   "nav.subagents": "서브에이전트",
 
   // routing intelligence
-  "routing.title": "라우팅 인텔리전스",
+  "routing.title": "라우팅 인텔리전스 (beta)",
   "routing.subtitle": "정책 프로필, 드라이런 평가, 소스 기반 라우팅 분석.",
   "routing.loadFailed": "라우팅 데이터를 불러오지 못했습니다",
   "routing.empty": "라우팅 프로필이 구성되지 않았습니다. config.json에 `routingProfiles`를 추가하세요.",
