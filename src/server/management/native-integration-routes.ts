@@ -28,7 +28,7 @@ import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 
-export type NativeIntegrationClientId = "claude" | "grok";
+export type NativeIntegrationClientId = "claude" | "grok" | "codex";
 
 /** Every reason this module can decline, in one place (audit r3 #6). */
 export type NativeRefusalReason =
@@ -190,6 +190,98 @@ const ORPHANED_MARKER_MESSAGE =
 
 const NOT_INSTALLED_MESSAGE =
   "Grok home was not found, so there is nothing to change. Install Grok Build first.";
+
+/**
+ * One Codex change at a time, for the same reason Grok has this: the guard
+ * stands BEFORE the first await, or two concurrent PUTs both pass it while their
+ * bodies are still parsing.
+ */
+let codexToggleFlight: Promise<Response> | null = null;
+
+/**
+ * Turn native Codex routing on or off.
+ *
+ * THE PROXY STAYS UP. Turning Codex off is not `ocx stop`: other clients keep
+ * routing through this process, `/healthz` keeps answering, and only Codex goes
+ * back to its own path. That is the entire point of having a per-client switch
+ * rather than a kill switch, and it is why this route restores rather than
+ * stopping anything.
+ *
+ * Two writes, in this order:
+ *   1. persist the desired state, so the decision survives the next `ocx start`;
+ *   2. converge the artifacts to match it.
+ *
+ * Intent first is deliberate. If the process dies between them, the next start
+ * reads the persisted intent and converges — whereas converging first and dying
+ * would leave artifacts the next start silently undoes.
+ */
+async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
+  const { req } = ctx;
+  if (codexToggleFlight) {
+    return refusal(409, "codex", "config_busy",
+      "Another Codex change is already in flight. Nothing was written — try again in a moment.");
+  }
+  codexToggleFlight = (async (): Promise<Response> => {
+    let body: { enabled?: unknown };
+    try {
+      body = await readManagementJsonBody(req);
+    } catch (error) {
+      rethrowManagementBodyTooLarge(error);
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (typeof body.enabled !== "boolean") {
+      return jsonResponse({ error: "enabled must be a boolean" }, 400);
+    }
+    const enabled = body.enabled;
+
+    const { setCodexIntegrationEnabled } = await import("../../codex/desired-state");
+    const persisted = setCodexIntegrationEnabled(enabled);
+    if (!persisted.ok) {
+      const status = persisted.retryable ? 409 : persisted.reason === "missing" ? 409 : 500;
+      return refusal(
+        status,
+        "codex",
+        persisted.retryable ? "config_busy" : "write_failed",
+        persisted.message,
+      );
+    }
+
+    if (enabled) {
+      // The port this process actually BOUND, not what config.json last recorded.
+      // A stale config port would inject a base_url pointing at nothing — the
+      // same trap `runGrokApplyFlight` documents below.
+      const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
+      const port = runtime?.port ?? ctx.config.port;
+      const { syncModelsToCodex } = await import("../../codex/sync");
+      const applied = await syncModelsToCodex(port);
+      return jsonResponse({
+        ok: true, clientId: "codex", changed: persisted.status === "committed",
+        state: applied.ok ? "current" : "absent",
+        message: applied.ok
+          ? "Codex now routes through opencodex"
+          : `Codex intent saved, but applying it did not complete: ${applied.message}`,
+        ...(applied.ok ? {} : { reason: "apply_incomplete" }),
+      } satisfies NativeToggleEnvelope);
+    }
+
+    // OFF. Restore the native path; the proxy keeps serving every other client.
+    const { restoreNativeCodexAsync } = await import("../../codex/inject");
+    const restored = await restoreNativeCodexAsync();
+    return jsonResponse({
+      ok: true, clientId: "codex", changed: persisted.status === "committed",
+      state: restored.success ? "absent" : "unsafe",
+      message: restored.success
+        ? "Codex restored to its native path; the proxy is still serving other clients"
+        : `Codex intent saved, but restoring the native path did not complete: ${restored.message}`,
+      ...(restored.success ? {} : { reason: "restore_incomplete" }),
+    } satisfies NativeToggleEnvelope);
+  })();
+  try {
+    return await codexToggleFlight;
+  } finally {
+    codexToggleFlight = null;
+  }
+}
 
 async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
   const { req, config, deps } = ctx;
@@ -440,6 +532,10 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
 
   if (url.pathname === "/api/native-integrations/grok" && req.method === "PUT") {
     return handleGrokToggle(ctx);
+  }
+
+  if (url.pathname === "/api/native-integrations/codex" && req.method === "PUT") {
+    return handleCodexToggle(ctx);
   }
 
   return null;

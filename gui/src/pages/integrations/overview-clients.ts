@@ -152,7 +152,7 @@ function codexRow(payload: CodexRoutingPayload | null): OverviewRow {
     id: "codex" as const,
     hash: "integrations/codex",
     labelKey: "integrations.tab.codex" as TKey,
-    toggle: null,
+    toggle: "codex" as const,
     toggleBlocked: null,
     togglePath: null,
     status: null,

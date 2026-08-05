@@ -410,7 +410,7 @@ export default function IntegrationsOverview({
       if (row.status) {
         await toggleIntegration(apiBase, row.status.clientId, next);
         refresh();
-      } else if (row.toggle === "claude" || row.toggle === "grok") {
+      } else if (row.toggle === "claude" || row.toggle === "grok" || row.toggle === "codex") {
         const result = await toggleNativeIntegration(apiBase, row.toggle, next);
         if (result.reason === "non_loopback_removed") {
           setCardResult(row.id, {
@@ -429,7 +429,7 @@ export default function IntegrationsOverview({
         tone: "err",
         text: describeRefusal(t, error, undefined, row.togglePath ?? undefined),
       });
-      if (row.toggle === "claude" || row.toggle === "grok") refreshNativeDetails();
+      if (row.toggle === "claude" || row.toggle === "grok" || row.toggle === "codex") refreshNativeDetails();
     } finally {
       setCardPending(null);
     }
