@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
@@ -101,10 +102,44 @@ function currentWorkingDirectory(): string | undefined {
 
 /** Cap the workspace listing so a large directory does not ship every entry name upstream. */
 const MAX_WORKSPACE_STRUCTURE_ENTRIES = 64;
+/** Cap how many recent commit subjects the config carries. */
+const MAX_RECENT_COMMITS = 8;
+/** Cap the git status text sent upstream. */
+const MAX_GIT_STATUS_LENGTH = 2048;
 
 /** Derive a bounded project slug from the working directory for the `x-project-slug` header. */
 function projectSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 64) || "workspace";
+}
+
+interface GitWorkspaceInfo {
+  isGitRepo: boolean;
+  currentBranch: string;
+  mainBranch: string;
+  gitStatus: string;
+  recentCommits: string[];
+}
+
+/** Best-effort git metadata for the upstream config contract; every read fails safe. */
+function gitWorkspaceInfo(cwd: string | undefined): GitWorkspaceInfo {
+  const fallback: GitWorkspaceInfo = { isGitRepo: false, currentBranch: "", mainBranch: "", gitStatus: "", recentCommits: [] };
+  if (!cwd) return fallback;
+  const run = (args: string[]): string => {
+    try {
+      return execFileSync("git", args, { cwd, encoding: "utf8", timeout: 2000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return "";
+    }
+  };
+  const root = run(["rev-parse", "--show-toplevel"]);
+  if (!root) return fallback;
+  return {
+    isGitRepo: true,
+    currentBranch: run(["rev-parse", "--abbrev-ref", "HEAD"]) || "HEAD",
+    mainBranch: run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?.replace(/^origin\//, "") || run(["rev-parse", "--abbrev-ref", "HEAD"]) || "",
+    gitStatus: run(["status", "--porcelain"]).slice(0, MAX_GIT_STATUS_LENGTH),
+    recentCommits: run(["log", "--oneline", `-${MAX_RECENT_COMMITS}`]).split("\n").filter(Boolean).slice(0, MAX_RECENT_COMMITS),
+  };
 }
 
 function commandCodeConfig(cwd: string | undefined): Record<string, unknown> {
@@ -114,11 +149,13 @@ function commandCodeConfig(cwd: string | undefined): Record<string, unknown> {
       structure = readdirSync(cwd).filter(name => !name.startsWith(".")).slice(0, MAX_WORKSPACE_STRUCTURE_ENTRIES);
     } catch { /* workspace metadata is optional */ }
   }
+  const git = gitWorkspaceInfo(cwd);
   return {
     ...(cwd ? { workingDir: cwd } : {}),
     date: new Date().toISOString().slice(0, 10),
     environment: process.platform,
     structure,
+    ...git,
   };
 }
 

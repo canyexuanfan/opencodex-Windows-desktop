@@ -152,13 +152,17 @@ describe("Command Code provider", () => {
     ]);
   });
 
-  test("keeps the generate config to workspace metadata and bounds the project slug", () => {
+  test("keeps the generate config to bounded workspace and git metadata", () => {
     const request = createCommandCodeAdapter(provider).buildRequest(parsed());
     expect(request).not.toBeInstanceOf(Promise);
     const built = request as Exclude<typeof request, Promise<unknown>>;
     const body = JSON.parse(built.body);
-    expect(body.config).not.toHaveProperty("isGitRepo");
-    expect(body.config).not.toHaveProperty("recentCommits");
+    expect(body.config).toHaveProperty("isGitRepo");
+    expect(body.config).toHaveProperty("currentBranch");
+    expect(body.config).toHaveProperty("mainBranch");
+    expect(body.config).toHaveProperty("gitStatus");
+    expect(body.config).toHaveProperty("recentCommits");
+    expect(Array.isArray(body.config.recentCommits)).toBe(true);
     expect(body.config.structure).toBeInstanceOf(Array);
     expect(typeof body.config.workingDir).toBe("string");
     expect(built.headers["x-project-slug"]?.length ?? 0).toBeLessThanOrEqual(64);
