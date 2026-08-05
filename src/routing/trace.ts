@@ -458,6 +458,7 @@ function parseCapability(raw: unknown, caps: ParseCaps): RouteCapabilityEvidence
   if (raw.serviceTier === "unknown") {
     out.serviceTier = "unknown";
   } else if (typeof raw.serviceTier === "string" && raw.serviceTier) {
+    if (raw.serviceTier.length > MAX_TRACE_STRING) caps.strings = true;
     out.serviceTier = raw.serviceTier.slice(0, MAX_TRACE_STRING);
   }
   const localOnly = unknownable(raw.localOnly);

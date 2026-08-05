@@ -272,13 +272,20 @@ export function routingProfileIssues(
       issues.push({ path: ["optimize"], message: "optimize must be an object" });
     } else {
       const optimize = body.optimize as Record<string, unknown>;
+      const effective: Record<"latency" | "health" | "cost" | "quota", number> = { ...DEFAULT_PROFILE_WEIGHTS };
       for (const key of ["latency", "health", "cost", "quota"] as const) {
-        if (optimize[key] !== undefined
-          && (typeof optimize[key] !== "number"
+        if (optimize[key] !== undefined) {
+          if (typeof optimize[key] !== "number"
             || !Number.isFinite(optimize[key])
-            || optimize[key] < 0)) {
-          issues.push({ path: ["optimize", key], message: `${key} must be a non-negative number` });
+            || optimize[key] < 0) {
+            issues.push({ path: ["optimize", key], message: `${key} must be a non-negative number` });
+          } else {
+            effective[key] = optimize[key];
+          }
         }
+      }
+      if (Object.values(effective).every(weight => weight === 0)) {
+        issues.push({ path: ["optimize"], message: "at least one optimize weight must be positive" });
       }
     }
   }
@@ -395,5 +402,7 @@ export function getRoutingProfile(
 }
 
 export function listRoutingProfileIds(config: { routingProfiles?: Record<string, OcxRoutingProfileConfig> }): string[] {
-  return Object.keys(config.routingProfiles ?? {}).sort((a, b) => a.localeCompare(b));
+  // Code-unit comparison: deterministic across ICU versions/platforms, which
+  // matters for the API/CLI list contract (ids may contain ".", "_", "-").
+  return Object.keys(config.routingProfiles ?? {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }

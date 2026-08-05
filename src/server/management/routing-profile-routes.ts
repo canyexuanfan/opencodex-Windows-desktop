@@ -29,6 +29,8 @@ function profileDto(config: Parameters<typeof getRoutingProfile>[0], id: string)
 }
 
 function parseEvidence(raw: unknown): { evidence: PolicyRequestEvidence; ok: boolean } {
+  // Absent evidence is empty evidence, mirroring the absent-candidates case.
+  if (raw === undefined) return { evidence: {}, ok: true };
   if (!isPlainRecord(raw)) return { evidence: {}, ok: false };
   const record = raw as Record<string, unknown>;
   const evidence: PolicyRequestEvidence = {};
@@ -55,8 +57,9 @@ function parseCandidateEvidence(raw: unknown): PolicyCandidateEvidence[] | null 
       provider,
       model,
       ...(typeof item.accountRef === "string" ? { accountRef: item.accountRef } : {}),
-      // Dry-run evidence is caller-supplied and re-bounded by the trace
-      // normalizer; structural casts keep the API surface permissive.
+      // Dry-run evidence is caller-supplied and echoed back in the result as
+      // given; the trace's candidate rows carry only score/exclusions, which
+      // the trace builder bounds. Structural casts keep the API permissive.
       ...(isPlainRecord(item.capability) ? { capability: item.capability as unknown as PolicyCandidateEvidence["capability"] } : {}),
       ...(isPlainRecord(item.health) ? { health: item.health as unknown as PolicyCandidateEvidence["health"] } : {}),
       ...(isPlainRecord(item.quota) ? { quota: item.quota as unknown as PolicyCandidateEvidence["quota"] } : {}),
@@ -73,7 +76,7 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     const profiles = listRoutingProfileIds(config).map(id => profileDto(config, id)).filter(
       (profile): profile is Record<string, unknown> => profile !== null,
     );
-    return jsonResponse({ profiles });
+    return jsonResponse({ profiles }, 200, req, config);
   }
 
   if (url.pathname === "/api/routing-profiles/dry-run" && req.method === "POST") {
@@ -104,7 +107,7 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
       return jsonResponse({ error: { code: "invalid_candidates", message: "candidates must be an array of evidence objects" } }, 400, req, config);
     }
     const result = evaluatePolicyProfile(config, profile, evidence, candidateEvidence);
-    return jsonResponse(result);
+    return jsonResponse(result, 200, req, config);
   }
 
   return null;

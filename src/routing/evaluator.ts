@@ -19,7 +19,7 @@ import {
   type RouteScoreEvidence,
   type Unknownable,
 } from "./trace";
-import { getRoutingProfile, type NormalizedRoutingProfile } from "./profile";
+import { getRoutingProfile, policyModelId, type NormalizedRoutingProfile } from "./profile";
 
 export interface PolicyRequestEvidence {
   /** Required context window for this request (tokens). */
@@ -70,6 +70,8 @@ function booleanRequirement(
   actual: Unknownable | undefined,
 ): RouteRequirementEvidence | null {
   if (required === undefined) return null;
+  // Note: `required === false` is a negative assertion ("must NOT have X"),
+  // not "don't care"; an absent field is the only "no requirement" form.
   if (actual === undefined || actual === "unknown") {
     return { id, expected: required, outcome: "unknown" };
   }
@@ -266,7 +268,16 @@ export function evaluatePolicyProfile(
     // or allow. "penalize" currently cannot move the score because RI-04 has
     // no capability component yet - the capability score arrives with RI-05.
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
-    const eligible = !unsatisfied && !excludedByUnknown;
+    const costLimit = profile.limits.maxEstimatedCostUsd;
+    const estimatedCost = evidence.cost?.estimatedUsd;
+    const overCostLimit = costLimit !== undefined
+      && typeof estimatedCost === "number"
+      && Number.isFinite(estimatedCost)
+      && estimatedCost > costLimit;
+    if (overCostLimit) {
+      exclusions.push({ code: "cost-limit", detail: "maxEstimatedCostUsd" });
+    }
+    const eligible = !unsatisfied && !excludedByUnknown && !overCostLimit;
 
     const priorityScore = configuredPriorityScore(index, profile.candidates.length);
     const score: RouteScoreEvidence = {
@@ -295,9 +306,11 @@ export function evaluatePolicyProfile(
   });
 
   const trace = buildRouteDecisionTrace({
-    requestedModel: `policy/${profileId}`,
+    requestedModel: policyModelId(profileId),
     routeKind: "policy",
     profile: { id: profile.id, revision: profile.revision },
+    // Flat, capped summary (truncation is flagged by the builder); per-candidate
+    // attribution lives in each candidate's `requirements`/`exclusions`.
     requirements: candidates.flatMap(candidate => candidate.requirements).slice(0, 16),
     candidates: candidates.map(candidate => ({
       provider: candidate.provider,
