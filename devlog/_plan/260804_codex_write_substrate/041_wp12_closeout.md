@@ -1065,8 +1065,23 @@ at once:
 - unsupported schema/shape → `unknown / schema`, null counts
 - watchdog → `unknown / timeout`
 - graceful cancellation → `unknown / shutdown-cancelled`
-- terminal-CAS failure → `record-write-failed` observationally, with the
-  `pending` schedule preserved — a Worker error is not the same event
+- Worker error, malformed terminal IPC, or early close → reread durable state,
+  then `unknown / worker-died`
+- superseded identity or a terminal-CAS conflict → a typed `overtaken` result,
+  with no self-retry by the loser
+- terminal N update failure → `unknown / record-write-failed`, pending work
+  preserved — a Worker error is not the same event
+
+#### A boundary this phase has to widen
+
+The third-from-bottom row is not free. Malformed terminal IPC is today
+**ignored** until the watchdog reports `timeout` (`history-job.ts:153`), so the
+parent cannot tell a dead Worker from a slow one and would classify both as
+`unknown/timeout`. Classifying it as `worker-died` — a different reason with a
+different operator action — requires the parent to treat an unrecognised
+terminal message as a death signal rather than as silence. That is a small
+change to one switch, owned here because the durability claim depends on it,
+and recorded rather than smuggled.
 
 Two facts that stay true regardless of which row applies:
 
