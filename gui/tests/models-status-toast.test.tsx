@@ -9,6 +9,7 @@ import Models from "../src/pages/Models";
 const globals = [
   "document", "window", "navigator", "localStorage", "sessionStorage",
   "IS_REACT_ACT_ENVIRONMENT", "setInterval", "clearInterval",
+  "setTimeout", "clearTimeout", "fetch",
 ] as const;
 let previousGlobals: Record<(typeof globals)[number], PropertyDescriptor | undefined>;
 let testWindow: Window;
@@ -82,6 +83,25 @@ afterEach(async () => {
   }
 });
 
+// Controlled global timers: the toast hold timer runs through the real global setTimeout
+// (the component calls it bare), so tests can advance time deterministically instead of
+// waiting 6-8 real seconds. clearTimeout is a no-op here — stale timers are filtered out
+// by the hold duration when fired.
+let scheduledTimers: Array<{ fn: () => void; ms: number }> = [];
+function installFakeTimers() {
+  scheduledTimers = [];
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    scheduledTimers.push({ fn, ms: ms ?? 0 });
+    return scheduledTimers.length;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+}
+async function fireTimers(ms: number) {
+  const due = scheduledTimers.filter(t => t.ms === ms);
+  scheduledTimers = scheduledTimers.filter(t => t.ms !== ms);
+  await act(async () => { for (const t of due) t.fn(); });
+}
+
 test("apply feedback renders as a fixed toast, not an inline notice before the workspace", async () => {
   const { createRoot } = await import("react-dom/client");
   await act(async () => {
@@ -113,4 +133,45 @@ test("apply feedback renders as a fixed toast, not an inline notice before the w
   // No inline notice sits in the flow before the workspace anymore.
   const workspace = container.querySelector<HTMLElement>(".models-workspace-root");
   expect(workspace?.previousElementSibling?.classList.contains("action-toast")).toBe(true);
+});
+
+test("success toast expires after 6s and a repeated action re-arms it", async () => {
+  installFakeTimers();
+  const { createRoot } = await import("react-dom/client");
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <Models apiBase="http://localhost" />
+      </LanguageProvider>,
+    );
+  });
+  await act(async () => {
+    await new Promise(resolve => testWindow.setTimeout(resolve, 0));
+    await Promise.resolve();
+  });
+
+  const offButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "All off")!;
+  const clickOff = async () => {
+    await act(async () => {
+      offButton().click();
+      await new Promise(resolve => testWindow.setTimeout(resolve, 0));
+      await Promise.resolve();
+    });
+  };
+
+  // First action: toast appears with a 6s hold timer.
+  await clickOff();
+  expect(container.querySelector(".action-toast")).not.toBeNull();
+
+  // 6s elapse: auto-dismissed even though no new action happened.
+  await fireTimers(6000);
+  expect(container.querySelector(".action-toast")).toBeNull();
+
+  // The exact same action again: the toast re-arms (fresh 6s hold) instead of
+  // staying dismissed because the message value did not change.
+  await clickOff();
+  expect(container.querySelector(".action-toast")).not.toBeNull();
+  await fireTimers(6000);
+  expect(container.querySelector(".action-toast")).toBeNull();
 });
