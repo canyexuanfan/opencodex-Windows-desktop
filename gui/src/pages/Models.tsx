@@ -4,7 +4,7 @@ import { IconChevron, IconBoxes, IconInfo, IconShuffle, IconCheck, IconAlert } f
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
-import { formatProviderDisplayName } from "../provider-icons";
+import { formatNamespacedModelId, formatProviderDisplayName } from "../provider-icons";
 import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
@@ -798,7 +798,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                  >
                    <div className="row models-model-row">
                      <Switch on={!off} onClick={() => void applyVisibility("models", provider, [{ id: m.id, native: m.native === true }], off)} disabled={busy} label={m.native ? m.id : m.namespaced} />
-                     <code className="mono text-control" style={{ color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{m.native ? modelLabel(m.id) : m.namespaced}</code>
+                      <code className="mono text-control" style={{ color: off ? "var(--faint)" : "var(--text)", textDecoration: off ? "line-through" : "none" }}>{m.native ? modelLabel(m.id) : formatNamespacedModelId(m.namespaced, t)}</code>
                      {m.custom && (
                        <span className="models-chip muted mono text-caption">
                          {t("models.customBadge")}
@@ -824,7 +824,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                          onMouseEnter={keepRowTipOpen}
                          onMouseLeave={onRowLeave}
                        >
-                         <div className="model-tip-id">{m.native ? m.id : m.namespaced}</div>
+                          <div className="model-tip-id">{m.native ? m.id : formatNamespacedModelId(m.namespaced, t)}</div>
                          {m.displayName && <div className="model-tip-display">{m.displayName}</div>}
                          {m.custom && (
                            <span className="models-chip models-chip--tip muted mono text-caption">

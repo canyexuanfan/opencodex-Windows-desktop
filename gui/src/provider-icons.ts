@@ -149,3 +149,17 @@ export function formatProviderDisplayName(provider: string, t: TFn): string {
 export function isCatalogProviderId(provider: string): boolean {
   return CATALOG_PROVIDER_IDS.has(provider.toLowerCase());
 }
+
+/**
+ * Rewrite a `provider/model` route to show the provider display name in front of the
+ * model, so near-identical config ids (command-code vs commandcode) stay distinguishable
+ * to users. `command-code/deepseek-v4-flash` -> `Command Code - Auth/deepseek-v4-flash`.
+ * Non-catalog providers keep the raw route.
+ */
+export function formatNamespacedModelId(namespaced: string, t: TFn): string {
+  const slash = namespaced.indexOf("/");
+  if (slash <= 0) return namespaced;
+  const provider = namespaced.slice(0, slash);
+  const model = namespaced.slice(slash + 1);
+  return `${formatProviderDisplayName(provider, t)}/${model}`;
+}
