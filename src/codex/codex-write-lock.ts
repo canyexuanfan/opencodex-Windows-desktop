@@ -36,7 +36,6 @@ import { homedir } from "node:os";
 
 import { withConfigMutationLockSync } from "../config";
 import type {
-  AdmissionSnapshot,
   CodexCoordinatorTransaction,
   CommitExpectation,
 } from "./convergence-types";
@@ -80,16 +79,36 @@ export interface CodexWriteLockOptions {
   codexHome?: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  /** Read-only snapshot obtained before any namespace creation. */
-  admitted: AdmissionSnapshot;
+  /**
+   * Read-only witness obtained before any namespace creation.
+   *
+   * Typed by what the lock actually uses — one comparable id — rather than by
+   * `AdmissionSnapshot`, so a caller that coordinates a write WITHOUT gating on
+   * admission can hold the lock honestly. `AdmissionSnapshot` satisfies this
+   * structurally through its `authoritySnapshotId`, so existing callers are
+   * unchanged; see `write-coordination.ts` for why the two are not the same
+   * claim.
+   */
+  admitted: CodexWriteWitness;
   /** Authoritative synchronous re-read while N and C are both held. */
-  readAdmissionUnderLock(): AdmissionSnapshot;
+  readAdmissionUnderLock(): CodexWriteWitness;
+}
+
+/**
+ * The only thing the lock compares.
+ *
+ * Kept deliberately minimal: widening it would let the lock depend on evidence
+ * a caller cannot re-read under N and C, which is how a comparison starts
+ * matching itself instead of detecting drift.
+ */
+export interface CodexWriteWitness {
+  readonly authoritySnapshotId: string;
 }
 
 export interface CodexWriteCommitContext {
   readonly canonicalCodexHome: string;
   readonly lockId: string;
-  readonly admission: AdmissionSnapshot;
+  readonly admission: CodexWriteWitness;
   readonly expectation: CommitExpectation;
   /**
    * The `currentTxId` the coordinator row holds RIGHT NOW.
