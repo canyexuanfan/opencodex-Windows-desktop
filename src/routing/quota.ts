@@ -54,10 +54,15 @@ export function quotaEvidenceForCandidate(input: QuotaEvidenceInput): RouteQuota
   if (input.provider === "anthropic" && input.accountRef) {
     const quota = getCachedProviderAccountQuota("anthropic", input.accountRef);
     if (quota) {
-      const percents = [quota.fiveHourPercent, quota.weeklyPercent, quota.monthlyPercent]
+      // Anthropic per-family buckets (e.g. Opus / Sonnet) are stricter than the
+      // broad account windows: fold the candidate model's matching bucket into
+      // headroom and exhaustion so a model-specific overage is not hidden by
+      // a healthy aggregate window.
+      const family = anthropicFamilyWindow(input.model, quota.customWindows ?? []);
+      const percents = [quota.fiveHourPercent, quota.weeklyPercent, quota.monthlyPercent, family?.percent]
         .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
       const maxPercent = percents.length > 0 ? Math.max(...percents) : undefined;
-      const resets = [quota.fiveHourResetAt, quota.weeklyResetAt, quota.monthlyResetAt]
+      const resets = [quota.fiveHourResetAt, quota.weeklyResetAt, quota.monthlyResetAt, family?.resetAt]
         .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
         .filter(value => value > Date.now());
       return {
@@ -73,6 +78,26 @@ export function quotaEvidenceForCandidate(input: QuotaEvidenceInput): RouteQuota
   }
 
   return { known: false };
+}
+
+/**
+ * Match the candidate model to an Anthropic per-family quota window. Window
+ * labels from the provider probe are "Opus" / "Sonnet"; model ids carry the
+ * family as a segment (e.g. `claude-opus-...`, `claude-sonnet-...`). Returns
+ * undefined when no family window is cached or no label matches.
+ */
+function anthropicFamilyWindow(
+  model: string,
+  windows: Array<{ label: string; percent?: number; resetAt?: number }>,
+): { percent?: number; resetAt?: number } | undefined {
+  const normalized = model.toLowerCase();
+  for (const window of windows) {
+    const family = window.label.trim().toLowerCase();
+    if (family && normalized.includes(family)) {
+      return window;
+    }
+  }
+  return undefined;
 }
 
 /**

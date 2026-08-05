@@ -512,6 +512,10 @@ function routeModelInternal(
         provider: candidate.provider,
         model: candidate.model,
         codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+          && providerCodexAccountMode(
+            OPENAI_CODEX_PROVIDER_ID,
+            config.providers[OPENAI_CODEX_PROVIDER_ID],
+          ) === "pool"
           ? getEffectiveActiveCodexAccountId(config)
           : undefined,
       }),

@@ -11,6 +11,9 @@ import { evaluatePolicyProfile, type PolicyCandidateEvidence, type PolicyRequest
 import { candidateCapabilityEvidence } from "../../routing/capability";
 import { policyCandidateHealthEvidence } from "../../routing/health";
 import { quotaEvidenceForCandidate } from "../../routing/quota";
+import { providerCodexAccountMode } from "../../providers/registry";
+import { getEffectiveActiveCodexAccountId } from "../../codex/routing";
+import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { isPlainRecord } from "./shared";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import { jsonResponse } from "../auth-cors";
@@ -60,6 +63,7 @@ function parseCandidateEvidence(raw: unknown): PolicyCandidateEvidence[] | null 
       provider,
       model,
       ...(typeof item.accountRef === "string" ? { accountRef: item.accountRef } : {}),
+      ...(typeof item.codexAccountId === "string" ? { codexAccountId: item.codexAccountId } : {}),
       // Dry-run evidence is caller-supplied and echoed back in the result as
       // given; the trace's candidate rows carry only score/exclusions, which
       // the trace builder bounds. Structural casts keep the API permissive.
@@ -67,6 +71,15 @@ function parseCandidateEvidence(raw: unknown): PolicyCandidateEvidence[] | null 
       ...(isPlainRecord(item.health) ? { health: item.health as unknown as PolicyCandidateEvidence["health"] } : {}),
       ...(isPlainRecord(item.quota) ? { quota: item.quota as unknown as PolicyCandidateEvidence["quota"] } : {}),
       ...(isPlainRecord(item.cost) ? { cost: item.cost as unknown as PolicyCandidateEvidence["cost"] } : {}),
+      // Derive account-scoped quota evidence from the documented refs when the
+      // caller does not supply an explicit quota object, so a dry-run following
+      // the documented shape reports the same cached account quota as routing.
+      ...(item.quota === undefined && typeof item.codexAccountId === "string"
+        ? { quota: quotaEvidenceForCandidate({ provider, model, codexAccountId: item.codexAccountId }) }
+        : {}),
+      ...(item.quota === undefined && typeof item.accountRef === "string" && typeof item.codexAccountId !== "string"
+        ? { quota: quotaEvidenceForCandidate({ provider, model, accountRef: item.accountRef }) }
+        : {}),
     });
   }
   return out;
@@ -116,6 +129,13 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
           quota: quotaEvidenceForCandidate({
             provider: candidate.provider,
             model: candidate.model,
+            codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+              && providerCodexAccountMode(
+                OPENAI_CODEX_PROVIDER_ID,
+                config.providers[OPENAI_CODEX_PROVIDER_ID],
+              ) === "pool"
+              ? getEffectiveActiveCodexAccountId(config)
+              : undefined,
           }),
         }))
       : parseCandidateEvidence(body.candidates);

@@ -46,6 +46,8 @@ export interface PolicyCandidateEvidence {
   provider: string;
   model: string;
   accountRef?: string;
+  /** Codex pool account id (provider "openai"); used to derive account-scoped quota evidence. */
+  codexAccountId?: string;
   capability?: RouteCapabilityEvidence;
   health?: RouteHealthEvidence;
   quota?: RouteQuotaEvidence;
@@ -338,8 +340,14 @@ export function evaluatePolicyProfile(
     const priorityScore = configuredPriorityScore(index, profile.candidates.length);
     const healthWeight = profile.optimize.health;
     const quotaWeight = profile.optimize.quota;
-    const implementedWeight = healthWeight + quotaWeight;
-    const priorityWeight = Math.max(0, 1 - implementedWeight);
+    // Only spend a dimension's weight when a value is actually present:
+    // "allow" leaves missing health/quota components null, so subtracting
+    // their weights would shrink the priority share for evidence the profile
+    // explicitly permits to be absent. Renormalize those weights back into
+    // priority instead of silently changing the ranking semantics.
+    const spentHealth = healthValue !== null ? healthWeight : 0;
+    const spentQuota = quotaValue !== null ? quotaWeight : 0;
+    const priorityWeight = Math.max(0, 1 - spentHealth - spentQuota);
     const components: RouteScoreEvidence["components"] = { configuredPriority: priorityScore };
     let total = priorityWeight * priorityScore;
     if (healthWeight > 0 && healthValue !== null) {

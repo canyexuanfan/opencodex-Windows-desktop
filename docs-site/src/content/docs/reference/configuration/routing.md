@@ -155,8 +155,10 @@ Dry-run evaluates candidates without sending any upstream request.
 Quota evidence (`optimize.quota`, `require.minQuotaHeadroom`, `unknownEvidence.quota`) comes from
 the local Codex pool and Anthropic account quota caches, which are keyed by account. Runtime policy
 candidates carry no account reference, so their quota evidence is honestly unknown (`penalize` is
-the default). To see quota-aware behavior, supply account-scoped evidence or account refs through
-the dry-run/API candidate evidence (`candidates[].accountRef` / `candidates[].codexAccountId`).
+the default). To see quota-aware behavior in a dry-run, supply account refs through the dry-run/API
+candidate evidence: `candidates[].codexAccountId` (Codex pool, provider `openai`) or
+`candidates[].accountRef` (Anthropic) derives the matching cached account quota; an explicit
+`candidates[].quota` object is echoed as given.
 
 ### Combos vs policy profiles
 
