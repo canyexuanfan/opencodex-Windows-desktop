@@ -277,3 +277,71 @@ test("routing refreshes the selected profile after reload", async () => {
     await act(async () => { root.unmount(); });
   }
 });
+
+
+test("routing ignores a stale load body that finishes after a newer retry", async () => {
+  let profilesWave = 0;
+  let releaseStale!: () => void;
+  const staleGate = new Promise<void>(resolve => {
+    releaseStale = resolve;
+  });
+
+  installFetch((url, init) => {
+    if (url.endsWith("/api/routing-profiles") && (init?.method ?? "GET") === "GET") {
+      profilesWave += 1;
+      const wave = profilesWave;
+      if (wave === 1) return Response.json({ profiles: [PROFILE] });
+      if (wave === 2) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            await staleGate;
+            return { profiles: [PROFILE_B] };
+          },
+        } as unknown as Response;
+      }
+      return Response.json({ profiles: [PROFILE_REFRESHED] });
+    }
+    if (url.endsWith("/api/routing-analytics")) {
+      return Response.json(ANALYTICS);
+    }
+    return new Response("missing", { status: 404 });
+  });
+
+  const { container, root } = await mountPage();
+  try {
+    expect(container.textContent).toContain("rev-abc");
+
+    const retry = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+
+    // Start a load whose body stays pending, then complete a newer load first.
+    await act(async () => { retry!.click(); });
+    await tick(2);
+    await act(async () => { retry!.click(); });
+    await tick(4);
+
+    expect(container.textContent).toContain("rev-def");
+    expect(container.textContent).toContain("\"imageInput\": true");
+
+    await act(async () => {
+      releaseStale();
+      await Promise.resolve();
+    });
+    await tick(3);
+
+    // The delayed older response must not replace the fresher profiles/selection.
+    expect(container.textContent).toContain("rev-def");
+    expect(container.textContent).toContain("balanced");
+    expect(container.textContent).not.toContain("policy/cheap");
+    expect(container.textContent).not.toContain("rev-cheap");
+  } finally {
+    await act(async () => {
+      releaseStale();
+      root.unmount();
+    });
+  }
+});
+

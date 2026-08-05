@@ -106,6 +106,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       if (generation !== loadGenerationRef.current) return;
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
       const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
+      if (generation !== loadGenerationRef.current) return;
+      let analyticsJson: Analytics | null = null;
+      if (analyticsRes.ok) {
+        analyticsJson = await analyticsRes.json() as Analytics;
+        if (generation !== loadGenerationRef.current) return;
+      }
+      // Apply state only after every body await, and only while this load is still current.
+      if (generation !== loadGenerationRef.current) return;
       const next = profilesJson.profiles ?? [];
       const current = selectedRef.current;
       const refreshed = pickSelectedProfile(next, current);
@@ -115,12 +123,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       if (shouldClearDryRunOnSelectionChange(current, refreshed)) {
         clearDryRun();
       }
-      if (analyticsRes.ok) {
-        const analyticsJson = await analyticsRes.json() as Analytics;
-        setAnalytics(analyticsJson);
-      } else {
-        setAnalytics(null);
-      }
+      setAnalytics(analyticsJson);
     } catch (error) {
       if (generation !== loadGenerationRef.current) return;
       setLoadError(error instanceof Error ? error.message : String(error));
