@@ -413,6 +413,17 @@ export function createResponsesSnapshotBlockRewrite(
     if (type === "response.output_text.done") {
       if (outputIndex !== undefined) {
         const open = openItems.get(outputIndex);
+        // Identity correlation, same contract as output_item.done above: a
+        // text-done carrying a DIFFERENT item_id for a tracked index is a
+        // contradictory stream. Silently ignoring it used to leave the item
+        // open, so the terminal then synthesized a second output_text.done and
+        // output_item.done — a double close built on a stream we do not
+        // understand (#1025 review blocker 2). Go fail-closed instead: forward
+        // the block untouched and stop injecting for the rest of the stream.
+        if (open && itemId !== undefined && itemId !== open.itemId) {
+          taintAndRelease();
+          return [changed ? jsonBlock(nextEvent) : block];
+        }
         if (open && (itemId === undefined || itemId === open.itemId)) {
           open.textDone = true;
           if (typeof event.text === "string") {

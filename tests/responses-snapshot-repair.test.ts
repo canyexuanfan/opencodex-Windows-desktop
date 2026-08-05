@@ -207,16 +207,24 @@ describe("createResponsesSnapshotBlockRewrite", () => {
     expect(Object.hasOwn(terminal.response as Record<string, unknown>, "output")).toBe(false);
   });
 
-  test("a mismatched item_id does not mutate or suppress the tracked item's injections", () => {
+  test("a mismatched item_id on output_text.done goes fail-closed instead of double-closing", () => {
+    // #1025 review blocker 2: this used to ignore the foreign done, leave the
+    // item open, and let the terminal synthesize a SECOND output_text.done +
+    // output_item.done — a double close on a stream whose identity model we
+    // just proved wrong. A contradictory item_id now taints, exactly like a
+    // mismatched output_item.done.
     const rewrite = createResponsesSnapshotBlockRewrite();
     rewrite(dataBlock(ISSUE_FIXTURE.itemAdded));
-    // A foreign item's done event on the same index must not close our item.
-    rewrite(dataBlock({ type: "response.output_text.done", item_id: "msg_OTHER", output_index: 0, text: "foreign" }));
+    const foreign = rewrite(dataBlock({ type: "response.output_text.done", item_id: "msg_OTHER", output_index: 0, text: "foreign" }));
+    // The contradictory block itself is forwarded untouched, not swallowed.
+    expect(eventsOf(foreign).some(event => event.item_id === "msg_OTHER")).toBe(true);
     rewrite(dataBlock(ISSUE_FIXTURE.delta));
     const out = rewrite(dataBlock(ISSUE_FIXTURE.completed));
-    expect(typesOf(out)).toContain("response.output_text.done");
-    const injectedText = eventsOf(out).filter(event => event.type === "response.output_text.done");
-    expect(injectedText.some(event => event.text === "hello")).toBe(true);
+    // No synthetic closure and no reconstruction after the taint.
+    expect(typesOf(out)).not.toContain("response.output_text.done");
+    expect(typesOf(out)).not.toContain("response.output_item.done");
+    const terminal = eventsOf(out).find(event => event.type === "response.completed")!;
+    expect(Object.hasOwn(terminal.response as Record<string, unknown>, "output")).toBe(false);
   });
 
   test("a completed terminal with absent output and zero items gets the canonical empty list", () => {
