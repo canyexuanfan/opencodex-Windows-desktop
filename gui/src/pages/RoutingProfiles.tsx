@@ -100,12 +100,18 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
           },
         }),
       });
-      const body = await response.json();
       if (!response.ok) {
-        setDryRunError((body as { error?: { message?: string } }).error?.message ?? `dry-run ${response.status}`);
+        let message = `dry-run ${response.status}`;
+        try {
+          const body = await response.json() as { error?: { message?: string } };
+          message = body.error?.message ?? message;
+        } catch {
+          // Keep the status fallback when the error body is not JSON.
+        }
+        setDryRunError(message);
         return;
       }
-      setDryRunResult(body as typeof dryRunResult);
+      setDryRunResult(await response.json() as typeof dryRunResult);
     } catch (error) {
       setDryRunError(error instanceof Error ? error.message : String(error));
     } finally {

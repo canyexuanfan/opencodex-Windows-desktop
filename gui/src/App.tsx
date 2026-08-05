@@ -340,8 +340,8 @@ export default function App() {
             {page === "combos" && <Combos key={API_BASE} apiBase={API_BASE} />}
             {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
-{page === "usage" && <Usage apiBase={API_BASE} />}
-{page === "routing" && <RoutingProfiles key={API_BASE} apiBase={API_BASE} />}
+            {page === "usage" && <Usage apiBase={API_BASE} />}
+            {page === "routing" && <RoutingProfiles key={API_BASE} apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "integrations" && <Integrations apiBase={API_BASE} />}
