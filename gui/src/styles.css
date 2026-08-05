@@ -718,6 +718,10 @@ a.btn, a.btn:hover { text-decoration: none; }
   align-items: center;
   justify-content: center;
   align-self: flex-start;
+  /* 13px icon + 4px padding = 21px: too small to hit comfortably. Floor the hit
+     target at 24px while keeping the icon size and visual padding. */
+  min-width: 24px;
+  min-height: 24px;
   margin: -4px -6px 0 2px;
   padding: 4px;
   border: none;

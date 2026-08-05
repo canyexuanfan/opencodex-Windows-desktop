@@ -148,10 +148,15 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
     syncResult, syncError, updateJob, reconnecting, clearSyncFeedback,
   } = d;
 
-  // A sync result that carries actionable guidance (native subagent defaults override or
-  // the stale app-server hint) is the ONLY place that warning is visible, so it must not
-  // vanish on a timer: it stays until the next sync or an explicit dismiss.
-  const syncHoldsWarning = !!syncResult && (!!syncResult.nativeSubagentDefaultsWarning || !!syncResult.staleAppServerHint);
+  // A sync result that carries actionable guidance (generic warning, native subagent
+  // defaults override, or the stale app-server hint) is the ONLY place that warning is
+  // visible, so it must not vanish on a timer: it stays until the next sync or an
+  // explicit dismiss.
+  const syncHoldsWarning = !!syncResult && (
+    !!syncResult.warning
+    || !!syncResult.nativeSubagentDefaultsWarning
+    || !!syncResult.staleAppServerHint
+  );
 
   // Sync feedback is a transient fixed toast instead of an inline notice: the toast sits
   // outside the layout flow, so the result can appear without pushing the panels below

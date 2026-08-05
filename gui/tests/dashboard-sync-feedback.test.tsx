@@ -76,21 +76,33 @@ async function mount(d: Dash) {
 }
 
 // Controlled global timers: the toast hold timer runs through the real global setTimeout
-// (the component calls it bare), so tests can advance time deterministically instead of
-// waiting 6-8 real seconds. clearTimeout is a no-op here — stale timers are filtered out
-// by the hold duration when fired.
-let scheduledTimers: Array<{ fn: () => void; ms: number }> = [];
+// (the component calls it bare), so tests advance a monotonic virtual clock instead of
+// waiting 6-8 real seconds. Unlike a duration-matching stub, this models real timer
+// semantics: clearTimeout cancels a scheduled callback, so a stale hold timer from an
+// earlier result can never dismiss a newer toast.
+let virtualClockMs = 0;
+let nextTimerId = 1;
+let scheduledTimers: Array<{ id: number; fn: () => void; at: number }> = [];
 function installFakeTimers() {
+  virtualClockMs = 0;
+  nextTimerId = 1;
   scheduledTimers = [];
   globalThis.setTimeout = ((fn: () => void, ms?: number) => {
-    scheduledTimers.push({ fn, ms: ms ?? 0 });
-    return scheduledTimers.length;
+    const id = nextTimerId++;
+    scheduledTimers.push({ id, fn, at: virtualClockMs + (ms ?? 0) });
+    return id;
   }) as typeof setTimeout;
-  globalThis.clearTimeout = (() => {}) as typeof clearTimeout;
+  globalThis.clearTimeout = ((id?: number) => {
+    if (id === undefined) return;
+    scheduledTimers = scheduledTimers.filter(t => t.id !== id);
+  }) as typeof clearTimeout;
 }
-async function fireTimers(ms: number) {
-  const due = scheduledTimers.filter(t => t.ms === ms);
-  scheduledTimers = scheduledTimers.filter(t => t.ms !== ms);
+async function advanceTime(ms: number) {
+  virtualClockMs += ms;
+  const due = scheduledTimers
+    .filter(t => t.at <= virtualClockMs)
+    .sort((a, b) => a.at - b.at);
+  scheduledTimers = scheduledTimers.filter(t => t.at > virtualClockMs);
   await act(async () => { for (const t of due) t.fn(); });
 }
 
@@ -143,7 +155,7 @@ test("success toast auto-dismisses after 6s; error toast holds for 8s", async ()
     },
   }));
   expect(host.querySelector(".action-toast")).not.toBeNull();
-  await fireTimers(6000);
+  await advanceTime(6000);
   expect(host.querySelector(".action-toast")).toBeNull();
 
   // Fresh mount so the success dismissal state cannot suppress the error toast.
@@ -151,10 +163,34 @@ test("success toast auto-dismisses after 6s; error toast holds for 8s", async ()
   // Error tone: still visible at the 6s success boundary, dismissed only at 8s.
   await mount(dash({ syncError: "boom" }));
   expect(host.querySelector(".action-toast")).not.toBeNull();
-  await fireTimers(6000);
+  await advanceTime(6000);
   expect(host.querySelector(".action-toast")).not.toBeNull();
-  await fireTimers(8000);
+  await advanceTime(8000);
   expect(host.querySelector(".action-toast")).toBeNull();
+});
+
+test("a result with only a generic warning holds like other warnings", async () => {
+  installFakeTimers();
+
+  await mount(dash({
+    syncResult: {
+      ok: true,
+      added: 3,
+      catalogPath: null,
+      catalogExists: false,
+      cacheSynced: true,
+      message: "ok",
+      warning: "some generic warning",
+    },
+  }));
+
+  const toast = host.querySelector<HTMLElement>(".action-toast");
+  expect(toast).not.toBeNull();
+  expect(toast!.className).toContain("notice-warn");
+  // Does not vanish on the plain 6s hold.
+  await advanceTime(6000);
+  await advanceTime(8000);
+  expect(host.querySelector(".action-toast")).not.toBeNull();
 });
 
 test("warning-bearing results never auto-dismiss and offer an explicit dismiss", async () => {
@@ -179,8 +215,8 @@ test("warning-bearing results never auto-dismiss and offer an explicit dismiss",
   // The stale-app-server hint and warning stay in the message.
   expect(toast!.textContent).toContain("ocx sync --restart-codex");
   // Still visible well past the plain success 6s / error 8s hold times.
-  await fireTimers(6000);
-  await fireTimers(8000);
+  await advanceTime(6000);
+  await advanceTime(8000);
   expect(host.querySelector(".action-toast")).not.toBeNull();
 
   // The dismiss button closes it and calls clearSyncFeedback (the parent-level clear).
@@ -235,7 +271,7 @@ test("a timer-dismissed result does not remount as a fresh toast after the panel
   expect(host.querySelector(".action-toast")).not.toBeNull();
 
   // Auto-dismiss fires the timer, which clears the dashboard-level result.
-  await fireTimers(6000);
+  await advanceTime(6000);
   expect(host.querySelector(".action-toast")).toBeNull();
   expect(state.result).toBeNull();
 
@@ -266,7 +302,7 @@ test("a new sync re-arms a dismissed toast", async () => {
   });
   await mount(d);
   expect(host.querySelector(".action-toast")).not.toBeNull();
-  await fireTimers(6000);
+  await advanceTime(6000);
   expect(host.querySelector(".action-toast")).toBeNull();
 
   // A fresh sync click (re-arms dismissed=false) with a new result re-shows the
@@ -286,6 +322,39 @@ test("a new sync re-arms a dismissed toast", async () => {
   });
   await mount(d);
   expect(host.querySelector(".action-toast")).not.toBeNull();
-  await fireTimers(6000);
+  await advanceTime(6000);
+  expect(host.querySelector(".action-toast")).toBeNull();
+});
+
+test("a newer success toast re-arms: the first result's stale timer cannot dismiss it", async () => {
+  installFakeTimers();
+
+  const result = (added: number) => dash({
+    syncResult: {
+      ok: true,
+      added,
+      catalogPath: null,
+      catalogExists: false,
+      cacheSynced: true,
+      message: "ok",
+    },
+  });
+
+  await mount(result(3));
+  expect(host.querySelector(".action-toast")).not.toBeNull();
+
+  // A second sync lands 1s in: the effect clears the first hold timer and starts a
+  // fresh 6s hold from now (deadline at t=7s, not the first result's t=6s).
+  await advanceTime(1000);
+  await mount(result(5));
+  expect(host.querySelector(".action-toast")).not.toBeNull();
+
+  // t=6s: the stale first timer WOULD have fired here had clearTimeout not cancelled
+  // it. The newer toast must still be up.
+  await advanceTime(5000);
+  expect(host.querySelector(".action-toast")).not.toBeNull();
+
+  // t=7s: the fresh 6s hold expires and dismisses the newer toast.
+  await advanceTime(1000);
   expect(host.querySelector(".action-toast")).toBeNull();
 });
