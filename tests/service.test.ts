@@ -982,7 +982,9 @@ describe("launchctl load verification", () => {
       const out = runLaunchctl(["print", "gui/501/x"], {
         run: (() => ({ status: 0, stdout: "  ok  ", stderr: "" })) as never,
       });
-      expect(out).toEqual({ ok: true, stdout: "ok", stderr: "" });
+      // `status` is carried through now: a boolean cannot tell "no such service"
+      // (113) from "no such domain" (112), and only the first is an answer.
+      expect(out).toEqual({ ok: true, stdout: "ok", stderr: "", status: 0 });
     });
 
     /**

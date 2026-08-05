@@ -8,7 +8,7 @@
  *   - mutation-test the fixture's argv instead of the argv production emits
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -200,6 +200,28 @@ describe("could not ask is not an answer", () => {
     const result = inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
     // Something is staged to load and we could not see whether it did.
     expect(result.kind).not.toBe("absent");
+  });
+
+  /**
+   * A dangling symlink at the plist path must not read as a clean machine.
+   *
+   * Worth stating plainly: this test does NOT distinguish `lstat` from
+   * `existsSync`, and a mutation check proved it. Either way the probe ends at
+   * `unknown` — with `lstat` because the entry exists and cannot be read, with
+   * `existsSync` because the later `readFileSync` throws. The refusal is what
+   * the caller depends on and the refusal is what is pinned here; which of the
+   * two produced it is not observable from outside, so claiming to test it
+   * would be claiming more than this proves.
+   */
+  test("a dangling plist symlink does not read as a clean machine", () => {
+    const agents = join(home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    symlinkSync(join(home, "nothing-here.plist"), join(agents, "com.opencodex.proxy.plist"));
+    expect(existsSync(join(agents, "com.opencodex.proxy.plist"))).toBeFalse();
+
+    const { run } = recorder(() => ({ status: 113 }));
+    const result = inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
+    expect(result.kind).toBe("unknown");
   });
 
   test("a launchctl timeout is unknown", () => {
