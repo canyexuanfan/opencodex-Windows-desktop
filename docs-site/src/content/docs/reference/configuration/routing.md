@@ -104,7 +104,7 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `candidates` | `{ provider: string; model: string }[]` | required | Explicit allowlist of `provider/model` refs. No implicit expansion. |
 | `alias?` | `string` | — | Optional public model id in place of `policy/<id>`. |
 | `require?` | object | `{}` | Hard capability requirements evaluated before scoring (see below). |
-| `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights; normalized deterministically. |
+| `optimize?` | object | latency 0.55, health 0.25, quota 0.10 | Scoring weights; normalized deterministically. `cost` is accepted for schema compatibility but does not affect scoring — cost is enforced only through `limits.maxEstimatedCostUsd`. |
 | `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd` (enforced by the dry-run evaluator when candidate cost evidence is known). |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
@@ -135,7 +135,7 @@ candidate evidence is provided through the API (`POST /api/routing-profiles/dry-
         { "provider": "openai", "model": "gpt-5.6-sol" }
       ],
       "require": { "tools": true, "minContextWindow": 128000 },
-      "optimize": { "latency": 0.55, "health": 0.25, "cost": 0.10, "quota": 0.10 },
+      "optimize": { "latency": 0.55, "health": 0.25, "quota": 0.10 },
       "limits": { "maxEstimatedCostUsd": 0.50 },
       "unknownEvidence": {
         "capability": "exclude",
