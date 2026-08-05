@@ -1559,72 +1559,168 @@ for (const { label, harden, create } of ENTRY_POINTS) {
   });
 }
 
+/**
+ * Memo attribution across the FULL cross-product: four entry points x both
+ * requiredness modes.
+ *
+ * Requiredness was invisible for a long time because every identity and
+ * retirement scenario called with `required: true` while the optional-policy
+ * tests used fresh paths with no memo — so neither could see an optional-only
+ * shortcut. Three separate shortcuts were then found, one per memo property:
+ *
+ *   if (!opts.required && cache.has(path)) return { ok: true };
+ *   if (!opts.required && cache.has(path) && observe(path) === null) ...
+ *   if (!opts.required && !existsSync(path) && cache.has(path)) ...
+ *
+ * All three left the whole suite green. Optional means a failure is REPORTED
+ * rather than thrown; it never means the memo may describe a different file, an
+ * unobservable one, or one that is gone.
+ */
 for (const { label, harden, create } of ENTRY_POINTS) {
   const memoCount = label.startsWith("dir")
     ? hardenedSecretDirCountForTests
     : hardenedSecretPathCountForTests;
 
-  describe(`memo attribution holds for OPTIONAL callers too — ${label}`, () => {
-    /**
-     * The requiredness axis, which every other memo test left uncovered.
-     *
-     * Each identity and retirement scenario calls with `required: true`, and the
-     * optional-policy tests use fresh paths with no memo, so neither can see an
-     * optional-only bypass. Inserting
-     * `if (!opts.required && cache.has(targetPath)) return { ok: true }` before
-     * the lookup left all 119 tests green: an optional caller would then accept
-     * ANY object at a previously hardened pathname without observing identity,
-     * retiring the memo, or running icacls.
-     *
-     * Optional does not mean unattributed. It means a failure is reported rather
-     * than thrown — the memo still has to describe what is actually there.
-     */
-    test("a stale memo does not satisfy an optional caller, and a failed re-harden still retires it", async () => {
-      resetHardenedStateForTests();
-      const target = join(testDir, `optional-${label}.sqlite`);
-      create(target);
+  for (const required of [true, false]) {
+    const mode = required ? "required" : "optional";
+    // A required caller throws; an optional one reports. Same attribution either way.
+    const expectRefused = async (target: string): Promise<void> => {
+      if (required) {
+        await expect(harden(target, { required })).rejects.toThrow();
+        return;
+      }
+      const result = await harden(target, { required });
+      expect(result.ok).toBe(false);
+      expect(result.diagnostics).toBeTruthy();
+    };
 
-      await withWin32(async () => {
-        let grants = 0;
-        let aclSucceeds = true;
-        const result = () => (aclSucceeds
-          ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
-          : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
-        setIcaclsRunnerForTests(args => {
-          if (args.includes("/grant:r")) grants += 1;
-          return result();
+    describe(`memo attribution — ${label} / ${mode}`, () => {
+      test("a stale memo does not answer, and a failed re-harden retires it", async () => {
+        resetHardenedStateForTests();
+        const target = join(testDir, `attr-${label}-${mode}.sqlite`);
+        create(target);
+
+        await withWin32(async () => {
+          let grants = 0;
+          let aclSucceeds = true;
+          const result = () => (aclSucceeds
+            ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+            : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
+          setIcaclsRunnerForTests(args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return result();
+          });
+          setAsyncIcaclsRunnerForTests(async args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return result();
+          });
+
+          const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
+          let current = original;
+          setStatForTests(() => current);
+
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+          expect(memoCount()).toBe(1);
+
+          // A different object at the same path. The re-harden FAILS, because a
+          // successful one would overwrite the memo and hide whether the miss
+          // retired it.
+          current = { dev: 1n, ino: 11n, ctimeNs: 500n };
+          aclSucceeds = false;
+          await expectRefused(target);
+          expect(grants).toBe(2);
+          expect(memoCount()).toBe(0);
+
+          // Restoring the original identity is not silently re-satisfied.
+          current = original;
+          aclSucceeds = true;
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(3);
         });
-        setAsyncIcaclsRunnerForTests(async args => {
-          if (args.includes("/grant:r")) grants += 1;
-          return result();
+      });
+
+      test("an unobservable identity does not answer, and the lookup is what retires it", async () => {
+        resetHardenedStateForTests();
+        const target = join(testDir, `attr-unreadable-${label}-${mode}.sqlite`);
+        create(target);
+
+        await withWin32(async () => {
+          let grants = 0;
+          let aclSucceeds = true;
+          const result = () => (aclSucceeds
+            ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+            : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
+          setIcaclsRunnerForTests(args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return result();
+          });
+          setAsyncIcaclsRunnerForTests(async args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return result();
+          });
+
+          const identity = { dev: 1n, ino: 10n, ctimeNs: 100n };
+          let readable = true;
+          setStatForTests(() => {
+            if (!readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+            return identity;
+          });
+
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+          expect(memoCount()).toBe(1);
+
+          // Unreadable AND the ACL fails, so recordHarden never reaches its own
+          // deletion: whatever retires the entry here is the lookup.
+          readable = false;
+          aclSucceeds = false;
+          await expectRefused(target);
+          expect(grants).toBe(2);
+          expect(memoCount()).toBe(0);
+
+          readable = true;
+          aclSucceeds = true;
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(3);
         });
+      });
 
-        const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
-        let current = original;
-        setStatForTests(() => current);
+      test("observed absence retires the memo", async () => {
+        resetHardenedStateForTests();
+        const target = join(testDir, `attr-absent-${label}-${mode}.sqlite`);
+        create(target);
 
-        expect(await harden(target, { required: false })).toEqual({ ok: true });
-        expect(grants).toBe(1);
-        expect(memoCount()).toBe(1);
+        await withWin32(async () => {
+          let grants = 0;
+          setIcaclsRunnerForTests(args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+          });
+          setAsyncIcaclsRunnerForTests(async args => {
+            if (args.includes("/grant:r")) grants += 1;
+            return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+          });
+          const identity = { dev: 1n, ino: 10n, ctimeNs: 100n };
+          setStatForTests(() => identity);
 
-        // A different object at the same path: the memo must not answer, even
-        // for an optional caller.
-        current = { dev: 1n, ino: 11n, ctimeNs: 500n };
-        aclSucceeds = false;
-        const failed = await harden(target, { required: false });
-        // Optional soft-fails rather than throwing — but it soft-fails HONESTLY,
-        // having actually attempted, rather than reporting a cached success.
-        expect(failed.ok).toBe(false);
-        expect(failed.diagnostics).toBeTruthy();
-        expect(grants).toBe(2);
-        expect(memoCount()).toBe(0);
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+          expect(memoCount()).toBe(1);
 
-        // And the original identity coming back is not silently re-satisfied.
-        current = original;
-        aclSucceeds = true;
-        expect(await harden(target, { required: false })).toEqual({ ok: true });
-        expect(grants).toBe(3);
+          // Gone. A harden of an absent path is a no-op that must still forget it.
+          rmSync(target, { recursive: true, force: true });
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+          expect(memoCount()).toBe(0);
+
+          // Back at the SAME identity: it must harden again rather than be
+          // satisfied by an entry that outlived the file it described.
+          create(target);
+          expect(await harden(target, { required })).toEqual({ ok: true });
+          expect(grants).toBe(2);
+        });
       });
     });
-  });
+  }
 }

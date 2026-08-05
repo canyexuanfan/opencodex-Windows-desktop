@@ -1033,8 +1033,10 @@ and the ones that did were rewritten rather than kept.
   proven wrong is kept instead of retired; (af) directory memos alone are exempted
   from that retirement; (ag) an unreadable observation keeps its memo while a
   successful re-harden masks which mechanism deleted it; (ah) an OPTIONAL caller is
-  allowed to trust a pathname-only memo.
-  (h) through (ah) are not redundant — each survived every other check. (h) and (i)
+  allowed to trust a pathname-only memo; (ai) an optional caller trusts it when the
+  identity is UNOBSERVABLE; (aj) observed absence retires the memo only for required
+  callers.
+  (h) through (aj) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1176,8 +1178,21 @@ and the ones that did were rewritten rather than kept.
   all 119 tests green, letting an optional caller accept any object at a
   previously hardened pathname without observing identity, retiring the memo, or
   running icacls. Optional means a failure is REPORTED rather than thrown; it does
-  not mean unattributed. Every memo property is now parameterized over
-  `required: true | false` as well as the four entry points.
+  not mean unattributed.
+
+  And closing the broad shortcut was not the same as closing the axis — writing
+  "every memo property is now parameterized over requiredness" while only the
+  observable-mismatch property was, is the projection mistake at the level of a
+  claim about coverage. (ai) and (aj) are the other two memo properties with the
+  same bypass: an optional caller trusting a memo whose identity cannot be
+  observed, and observed absence retiring the memo for required callers only.
+  Both left every test green. The suite is now the full cross-product — four entry
+  points x {required, optional} x {stale identity, unobservable identity, observed
+  absence} — with a shared `expectRefused` that throws for required and asserts
+  `{ok:false, diagnostics}` for optional, so the same attribution is proven either
+  way. Note that a bypass placed AFTER the absence handling is dead code and
+  reddens nothing; the reachable form has to precede it, which is worth knowing
+  before concluding that a mutation "survives".
 
   The matrix, enumerated, is: exact target · default binding · platform provenance ·
   **successful completion** · **ordering relative to the ACL** · failure propagation ·
