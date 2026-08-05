@@ -885,16 +885,61 @@ hashes unchanged proves nothing and makes them look load-bearing.
 
 So WP-R1c gets its own witness, over the inputs that determine THIS mutation:
 
+Enumerating the inputs was the wrong shape and a third round showed why: the
+list was already incomplete. `InjectCodexOptions` carries `catalogPath`
+(`inject.ts:72`), whose `undefined` case triggers filesystem-dependent
+resolution (`:469`), and the emitted bytes also depend on the passed `config` —
+`hostname`, websockets, subagent defaults, injection model and effort
+(`:556`, `:574`) — which may differ from the persisted `config.json` entirely.
+Any such list invites the next omission.
+
+So the witness hashes the **computed candidate bytes** rather than the inputs
+that produced them:
+
 | Field | Source |
 |---|---|
-| native config identity | sha256 of the exact `config.toml` bytes read at `:492` |
-| persisted config identity | `contentSha256` + generation, as today |
-| candidate inputs | `port`, and the options that change the emitted bytes |
+| candidate config bytes | the exact string about to be written to `config.toml` |
+| candidate profile bytes | the exact string about to be written to the profile |
+| native input identity | sha256 of the `config.toml` bytes read at `:492` |
+| persisted identity | `contentSha256` + generation |
+| effective catalog path | the RESOLVED value, not the raw option |
 | canonical targets | config, profile, journal paths |
 | journal identity | as today |
 
+Hashing the output closes the class instead of the instance: an input that
+changes the bytes changes the hash whether or not anyone remembered it.
+
 `hashAuthority` keeps `ownership` and stays as it is — WP-R1d needs it. This is
 a second, narrower hash for a narrower claim, not a weakening of the first.
+
+### The transforms move above the journal write
+
+Hashing the candidate bytes and opening the lock before `writeJournal` are in
+tension as written: `content` and `profileContent` are not final until `:599-600`,
+seventy lines AFTER the journal write the span is supposed to contain. At
+acquisition time the witness would have nothing to hash.
+
+The resolution is to hoist, not to shrink the span. Everything between `:534` and
+`:600` is string transformation — verified, no `writeFileSync`, `mkdirSync`,
+`unlinkSync` or rename anywhere in it. The one filesystem touch is
+`chooseCatalogPathForInjection`, which calls `existsSync` on the catalog paths
+(`:469-478`): a read, of files `writeJournal` does not touch. And `writeJournal`
+is called with `configContent` supplied (`:530-533`), so it never rereads
+`config.toml` — it snapshots the baseline it was handed plus the current profile
+(`journal.ts:69-82`).
+
+So nothing in the hoisted region depends on the journal write having happened,
+and the journal write does not depend on anything the region produces. Order
+becomes:
+
+1. compute the candidate bytes,
+2. hash the witness over them,
+3. acquire N (and C),
+4. recompute the witness under the lock and compare,
+5. publish, then `writeJournal` through `markJournalInjectedState`.
+
+Shrinking the span to `:600` instead would put the journal write back outside the
+lock, which earlier rounds established as the hole this phase exists to close.
 
 ### What the callback publishes
 
@@ -909,16 +954,50 @@ beginTransition(
 Every expected value comes from what the lock already read — `ctx.currentTxId`
 exists precisely because guessing `null` passes on a fresh machine and fails on
 a real one. The call goes BEFORE the filesystem writes so a rejected transition
-costs nothing; it is not durable until `commit()` one line after
-`assertPublished`.
+costs nothing, and **its result is checked immediately**: `beginTransition`
+returns a `conflict` rather than throwing (`transition-state.ts:339`), so
+ignoring the return would write every file and only then have `assertPublished`
+reject.
 
-`direction` is `"apply"`: the external-provider branch returns long before this
-point. The durable row records only `apply|remove`
-(`convergence-types.ts:292`), while the history operation this schedules can be
-`skip`, `apply-opencodex` or `migrate-openai` (`history-job.ts:84`) — so the row
-records the DIRECTION and the Worker derives its operation from admitted intent,
-as it already does. WP-R1c does not widen the row; it states which of the two
-values it writes and why the finer distinction lives elsewhere.
+`direction` is `"apply"`; the external-provider branch returns long before this
+point.
+
+#### The history operation the row cannot hold
+
+I wrote here that the Worker "derives its operation from admitted intent". That
+is false, and the audit caught it. The parent sends `request.operation` in the
+message (`history-job.ts:178`) and the Worker executes that value
+(`history-worker.ts:104-110`). The durable row stores only `apply|remove`
+(`convergence-types.ts:293`), so it cannot reconstruct which of `skip`,
+`apply-opencodex` or `migrate-openai` was scheduled.
+
+That is a real gap and it is NOT closed by wording. Two honest options, and
+WP-R1c takes the second:
+
+1. widen the row to carry the operation — a schema change to a table other
+   phases already depend on;
+2. schedule nothing durable in WP-R1c. The row records the direction, which is
+   what it can hold truthfully, and the history job continues to be dispatched
+   by the caller exactly as it is today, outside the lock and outside the row.
+
+The second keeps this phase to what it claims — the lock gets a production
+caller — and leaves the durable-schedule question to whichever phase actually
+needs a crash to resume history. Recording a direction and calling it a
+schedule would be the same overclaim this document has now corrected twice.
+
+#### A failed write between the two files
+
+If the profile write throws after the config write landed, the exception leaves
+the callback, C unwinds, and N rolls back (`codex-write-lock.ts:327`). The row
+is clean — and the first file is already replaced. SQLite does not roll back a
+filesystem.
+
+This is not fixed by moving `beginTransition`. It is what the journal is for:
+the journal is written FIRST, inside the same section, precisely so a partial
+apply is recoverable. The callback compensates before rethrowing, and the test
+that proves it injects a fault between the two writes — including on a
+re-injection where the journal is already marked, which is the case a
+fresh-journal fixture would miss.
 
 ### The minimum a race child must seed
 
