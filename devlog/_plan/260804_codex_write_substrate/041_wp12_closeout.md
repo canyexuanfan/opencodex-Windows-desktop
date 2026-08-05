@@ -348,7 +348,7 @@ re-deriving the path by hand.
 | A6c | External provider wins even when ownership is UNKNOWN | With service evidence unavailable, the refusal is still `external-provider` — the message the user can act on — and every artifact EXCEPT the unmarked journal is preserved — A6b requires that one deleted, and "every artifact" contradicted it. A6 cannot catch this, because it proves ownership `owned` first |
 | A7 | The lock has a live production caller | `rg` reachability PLUS a test that observes the lock being taken on the real `injectCodexConfig` path |
 | A8 | The edge is exclusive across processes | A barrier held inside the acquired lock; the loser reports `busy` and its PROCESS-UNIQUE candidate bytes are absent from the final file, so the winner is provable rather than assumed |
-| A9 | The whole native section is inside, history is outside | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
+| A9 | The ADMITTED APPLY SECTION is inside, history is outside — not the whole native surface, since the external branch's journal deletion still races it | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
 | A10 | `journalIdentity` tracks the real journal | The identity changes when `journal.ts` writes, asserted against an EXPORTED constant from `journal.ts` — `JOURNAL_PATH` is private today (`src/codex/journal.ts:8`), and a re-derived test path is how the current mismatch stayed invisible |
 
 A1 additionally asserts the transition was **published**, not merely that the
@@ -990,6 +990,77 @@ whole native surface, and this race is recorded as an open safety residual. Fixi
 it needs a reduced journal-cleanup authority that can contend with native writes
 without pretending an external provider admitted a transition — its own phase,
 not a line in this one.
+
+### The snapshot this needs is not an `AdmissionSnapshot`
+
+"Use the snapshot without gating on it" reads well and does not typecheck as a
+design. `admitCodexWrite` refuses before it ever constructs a snapshot unless
+ownership is `owned` (`src/codex/admission.ts:131-140`), so every snapshot it
+produces carries `ownership: "owned"` — the field cannot hold `unknown` at all.
+Bypassing the producer leaves no way to build one; not bypassing it makes the
+call gated. There is no third path through the current types.
+
+And copying the value would not help. Ownership is in the authority hash
+(`admission.ts:237-248`) and the lock compares only that hash
+(`codex-write-lock.ts:303-307`), so a pre-lock `unknown` copied verbatim into the
+under-lock read matches itself and detects nothing. Re-observing it properly
+means running the service-manager subprocess while N and C are held, which is
+exactly the cost this phase set out to avoid.
+
+So the coordination this phase needs is a DIFFERENT type with a different
+producer:
+
+- name it for what it is — a write-coordination observation, not an admission —
+  and do not call its field `admitted`;
+- its comparison id contains only evidence that can be independently re-read
+  under N and C: config bytes, generation, journal and profile identities;
+- ownership travels as recorded context, not as a hashed verdict, unless it is
+  genuinely re-observed;
+- `CodexAdmission` stays what it is, the later fail-closed policy, and the gate
+  phase projects observation into admitted or refused.
+
+Reusing `AdmissionSnapshot` and `readAdmissionUnderLock` while skipping admission
+would move the untruth from the control flow into the names.
+
+### Compensation cannot just call `restoreJournalState()`
+
+Calling it under N is lock-order safe — it takes neither N nor C, only writes
+files (`src/codex/journal.ts:118-150`) — but it restores whatever journal
+currently occupies the shared path, and that need not be the one this operation
+wrote. A failed journal write leaves the older journal; a re-injection legitimately
+leaves an existing one. Compensation would then "succeed" while restoring a
+baseline from some earlier day.
+
+Two acceptable shapes: bind the journal to `ctx.expectation.txId` so compensation
+only acts when the current journal is still ours, or capture exact pre-images of
+config, profile and journal before mutating and restore those. A blind call is
+neither.
+
+### Failed compensation must THROW
+
+If the callback returns a partial-state result normally, the lock proceeds to
+`assertPublished` and commits (`codex-write-lock.ts:324-326`) — recording a
+completed apply over incomplete artifacts, which is the precise outcome this
+phase exists to prevent.
+
+So: compensation succeeded, rethrow the original failure. Compensation failed,
+throw a typed partial-write error carrying content-free surface status. Either
+way N rolls back, and `injectCodexConfig` maps the error to a structural outcome
+OUTSIDE the lock. No path returns normally after an artifact write failed.
+
+### Publishing `apply` while intent is OFF contradicts the contract
+
+`ConvergeRequest` states it outright: the caller says when, never which way, and
+direction derives from persisted intent (`convergence-types.ts:179-200`). But
+`injectCodexConfig` is imperative apply, and explicit `ocx sync` and `/api/sync`
+reach it with no desired-state gate — only startup has one
+(`desired-state.ts:148-160`). Hashing `intent: "off"` and then publishing
+`direction: "apply"` claims conformity this does not have.
+
+The honest resolution for this phase: WP-R1c coordinates a LEGACY IMPERATIVE
+APPLY, and its observation excludes convergence intent rather than carrying a
+field it then contradicts. Making injection obey persisted intent is the gate
+phase's job, and it is a user-visible behavior change that needs its own audit.
 
 ### Outcomes stay structural
 
