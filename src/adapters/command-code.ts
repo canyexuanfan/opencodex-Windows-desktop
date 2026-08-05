@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { readdir } from "node:fs/promises";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice, toolChoiceAliases } from "../types";
@@ -128,6 +129,8 @@ interface GitWorkspaceInfo {
 
 const workspaceMetadataCache = new Map<string, { collectedAt: number; value: GitWorkspaceInfo }>();
 
+const execFile = promisify(execFileCallback);
+
 /** Best-effort git metadata for the upstream config contract; every read fails safe and stays off the event loop. */
 async function gitWorkspaceInfo(cwd: string | undefined): Promise<GitWorkspaceInfo> {
   const fallback: GitWorkspaceInfo = { isGitRepo: false, currentBranch: "", mainBranch: "", gitStatus: "", recentCommits: [] };
@@ -136,8 +139,8 @@ async function gitWorkspaceInfo(cwd: string | undefined): Promise<GitWorkspaceIn
   if (cached && Date.now() - cached.collectedAt < WORKSPACE_METADATA_TTL_MS) return cached.value;
   const run = async (args: string[]): Promise<string> => {
     try {
-      const result = await execFile("git", args, { cwd, encoding: "utf8", timeout: 2000, windowsHide: true });
-      return (result.stdout as unknown as string | null)?.trim() ?? "";
+      const { stdout } = await execFile("git", args, { cwd, encoding: "utf8", timeout: 2000, windowsHide: true });
+      return stdout.trim();
     } catch {
       return "";
     }

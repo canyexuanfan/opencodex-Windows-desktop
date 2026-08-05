@@ -102,6 +102,34 @@ describe("Command Code provider", () => {
     }
   });
 
+  test("rejects a pasted API key whose whoami identity is incomplete", async () => {
+    const controller = new AbortController();
+    const originalFetch = globalThis.fetch;
+    let whoamiCalls = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const href = String(input);
+      if (href.includes("whoami")) {
+        whoamiCalls += 1;
+        return new Response(JSON.stringify({ ok: true, user: { id: "", userName: "" } }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${href}`);
+    }) as typeof globalThis.fetch;
+    try {
+      // With an incomplete identity, the manual loop keeps re-prompting; abort to stop it.
+      const login = loginCommandCode({
+        onAuth: () => {},
+        onProgress: () => {},
+        onManualCodeInput: async () => "sk-incomplete-key",
+        signal: controller.signal,
+      }, { importLocal: "off" });
+      controller.abort(new Error("cancelled"));
+      await expect(login).rejects.toThrow("cancelled");
+      expect(whoamiCalls).toBeGreaterThan(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("uses live account discovery and only imports local CLI auth for the first account", () => {
     const request = buildModelsRequest(provider, "secret-command-key", "command-code");
     expect(request).toEqual({
@@ -165,6 +193,10 @@ describe("Command Code provider", () => {
     expect(body.config.structure).toBeInstanceOf(Array);
     expect(typeof body.config.workingDir).toBe("string");
     expect(built.headers["x-project-slug"]?.length ?? 0).toBeLessThanOrEqual(64);
+    // This test runs inside a git worktree, so the real (non-fallback) metadata path
+    // must populate the repo/branch instead of returning the empty fallback.
+    expect(body.config.isGitRepo).toBe(true);
+    expect(body.config.currentBranch).not.toBe("");
   });
 
   test("does not advertise an unverified effort for models absent from the official table", async () => {

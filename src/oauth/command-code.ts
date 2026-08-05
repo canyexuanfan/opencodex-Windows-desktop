@@ -142,10 +142,9 @@ async function validatePastedApiKey(apiKey: string): Promise<{ userId: string; u
     const body = (await response.json()) as { user?: { id?: unknown; userName?: unknown } };
     const userId = body.user?.id;
     const userName = body.user?.userName;
-    return {
-      userId: typeof userId === "string" ? userId : "",
-      userName: typeof userName === "string" ? userName : "",
-    };
+    if (typeof userId !== "string" || typeof userName !== "string") return undefined;
+    if (!userId.trim() || !userName.trim()) return undefined;
+    return { userId, userName };
   } catch {
     return undefined;
   }
@@ -197,13 +196,15 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
       ? (async (): Promise<CommandCodeCallback> => {
           while (true) {
             // The loop keeps waiting until a valid paste arrives; invalid pastes re-prompt.
-            // `callback`/`timeout` are the only paths that settle the outer race first.
+            // Yield between iterations so an abort signal can interrupt a fast re-prompt loop.
+            if (ctrl.signal?.aborted) throw ctrl.signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
             const input = await ctrl.onManualCodeInput?.(state);
             if (input === undefined) continue;
             const pasted = parsePastedCommandCodeInput(input, state);
             if (!pasted) continue;
             const identity = await validatePastedApiKey(pasted.apiKey);
             if (identity) return { ...pasted, ...identity };
+            await new Promise(resolve => setTimeout(resolve, 0));
           }
         })()
       : undefined;
