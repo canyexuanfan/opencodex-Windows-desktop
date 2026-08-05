@@ -1205,8 +1205,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
             <div className="modal-head">
               <h3>
                 {customModalMode === "add"
-                  ? t("models.customAddTitle", { provider: customModalProvider })
-                  : t("models.customEditTitle", { provider: customModalProvider })}
+                  ? t("models.customAddTitle", { provider: formatProviderDisplayName(customModalProvider, t) })
+                  : t("models.customEditTitle", { provider: formatProviderDisplayName(customModalProvider, t) })}
               </h3>
               <button
                 type="button"
@@ -1400,7 +1400,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                   onClick={() => setSelectedProvider(provider)}
                   aria-current={selectedProvider === provider ? "true" : undefined}
                 >
-                  <span className="models-workspace-rail-name">{provider}</span>
+                  <span className="models-workspace-rail-name">{formatProviderDisplayName(provider, t)}</span>
                   <span className="models-workspace-rail-meta">{t("models.active", { active: activeCount, total: rows.length })}</span>
                 </button>
               );
