@@ -167,6 +167,14 @@ describe("routing profiles (RI-04)", () => {
     expect(namespaceIssues.length).toBe(1);
     expect(providerNamespaceCollision.length).toBe(1);
 
+    const accountNamespaceCollision = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      alias: "work/anything",
+    }, config);
+    expect(accountNamespaceCollision.some(
+      issue => issue.message.includes("codex account namespace"),
+    )).toBe(true);
+
     const siblingCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
       alias: "ocx/fast",

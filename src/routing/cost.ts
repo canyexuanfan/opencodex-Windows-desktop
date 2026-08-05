@@ -72,7 +72,7 @@ export function costEvidenceForCandidate(input: CostEvidenceInput): RouteCostEvi
  * estimates return null so the profile's unknownEvidence policy applies.
  */
 export function costScore(evidence: RouteCostEvidence | undefined): number | null {
-  if (!evidence?.estimatedUsd || !Number.isFinite(evidence.estimatedUsd)) return null;
+  if (evidence?.estimatedUsd === undefined || !Number.isFinite(evidence.estimatedUsd)) return null;
   const reference = typeof evidence.limitUsd === "number" && evidence.limitUsd > 0
     ? evidence.limitUsd
     : COST_SCORE_REFERENCE_USD;

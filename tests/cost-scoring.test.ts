@@ -130,6 +130,23 @@ describe("cost-aware scoring (RI-08)", () => {
     ]);
     expect(penalized.candidates[0]!.eligible).toBe(true);
     expect(penalized.candidates[0]!.score!.components.cost).toBe(COST_UNKNOWN_PENALTY_SCORE);
+
+    const allowing = config({
+      routingProfiles: {
+        c: {
+          candidates: [{ provider: "a", model: "m1" }],
+          unknownEvidence: { capability: "allow", health: "penalize", quota: "penalize", cost: "allow" },
+        },
+      },
+    });
+    const allowed = evaluatePolicyProfile(allowing, "c", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+    ]);
+    expect(allowed.candidates[0]!.eligible).toBe(true);
+    // Allowed-unknown cost: no cost component, and the unspent cost weight
+    // folds back into priority instead of scoring unknown as zero.
+    expect(allowed.candidates[0]!.score!.components.cost).toBeUndefined();
+    expect(allowed.candidates[0]!.score!.total).toBeGreaterThan(0);
   });
 
   test("cheaper candidates win when cost is weighted", async () => {
