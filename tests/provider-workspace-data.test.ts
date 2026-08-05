@@ -465,8 +465,9 @@ describe("provider-icons", () => {
     expect(formatNamespacedModelId("command-code/deepseek-deepseek-v4-flash", englishT)).toBe("commandcode-auth/deepseek-v4-flash");
     expect(formatNamespacedModelId("commandcode/deepseek-deepseek-v4-pro", englishT)).toBe("commandcode-api/deepseek-v4-pro");
     expect(formatNamespacedModelId("command-code/claude-fable-5", englishT)).toBe("commandcode-auth/claude-fable-5");
-    expect(formatNamespacedModelId("openai/gpt-5.5", englishT)).toBe("OpenAI (Codex login)/gpt-5.5");
-    expect(formatNamespacedModelId("my-custom/thing", englishT)).toBe("My Custom/thing");
+    // Other providers keep the raw route untouched.
+    expect(formatNamespacedModelId("openai/gpt-5.5", englishT)).toBe("openai/gpt-5.5");
+    expect(formatNamespacedModelId("my-custom/thing", englishT)).toBe("my-custom/thing");
     expect(formatNamespacedModelId("no-slash", englishT)).toBe("no-slash");
   });
 

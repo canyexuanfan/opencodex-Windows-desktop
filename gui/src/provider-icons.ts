@@ -164,9 +164,9 @@ export function providerDisplaySlug(provider: string): string {
  * opencode presets use (`opencode-free/mimo-v2.5`, `opencode-go/hy3`). Also collapse a
  * redundant `<provider>-<model>` prefix when the model id itself repeats the family
  * (`command-code/deepseek-deepseek-v4-flash` -> `commandcode-auth/deepseek-v4-flash`).
- * Other providers keep the raw route.
+ * Every other provider keeps the raw route exactly as before.
  */
-export function formatNamespacedModelId(namespaced: string, t: TFn): string {
+export function formatNamespacedModelId(namespaced: string, _t: TFn): string {
   const slash = namespaced.indexOf("/");
   if (slash <= 0) return namespaced;
   const provider = namespaced.slice(0, slash);
@@ -178,5 +178,5 @@ export function formatNamespacedModelId(namespaced: string, t: TFn): string {
     if (m && model.startsWith(`${m[1]}-${m[1]}-`)) model = model.slice(m[1]!.length + 1);
     return `${provider === "command-code" ? "commandcode-auth" : "commandcode-api"}/${model}`;
   }
-  return `${formatProviderDisplayName(provider, t)}/${model}`;
+  return namespaced;
 }
