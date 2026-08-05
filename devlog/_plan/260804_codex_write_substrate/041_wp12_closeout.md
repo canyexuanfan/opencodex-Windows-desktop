@@ -481,6 +481,21 @@ insufficient — it is orthogonal to `ActiveState`, so the probe asks for
 `LoadState`, `ActiveState` and `FragmentPath` together and calls absence only
 when the unit is inactive AND has no fragment.
 
+Those three still cannot tell whether the LOADED bytes match the file, which is
+the systemd form of the stale-plist case. `NeedDaemonReload` is exactly that
+signal, and this repository already documents it as "the systemd analogue of
+launchd's stale-plist case" (`src/service.ts:2023-2031`) — writing the unit file
+does not change what systemd has loaded until `daemon-reload`. So the query
+includes it, and `yes` — or a value that cannot be read — is `unknown`.
+
+### An unreadable definition is not a present one
+
+`present` carries parsed `homes`, so an artifact that cannot supply them cannot
+be `present`. A definition that exists but is unreadable, truncated, or dangling
+maps to `unknown`, not `present` with the homes left blank or guessed. Blank
+homes would compare equal to nothing and the projection would read them as
+agreement.
+
 ### Every probe is bounded and read-only
 
 `spawnSync`/`execSync`/`execFileSync` in this module carry no timeout
@@ -584,6 +599,26 @@ works at all. The earlier draft said 112 was always `unknown` while also
 claiming headless machines were saved; both could not be true. 112 means the GUI
 domain does not exist — there is no domain that could be holding a job — so with
 nothing staged on disk that is absence, not silence.
+
+That reading was challenged on the grounds that a job loaded from a
+since-deleted plist could survive, and it was settled by measurement rather than
+argument. On macOS 27.0:
+
+```text
+launchctl print gui/<uid>/com.opencodex.proxy      -> 0    (live job)
+launchctl print gui/<uid>/com.nonexistent.whatever -> 113  (domain answered: no such service)
+launchctl print gui/999999/com.opencodex.proxy     -> 112
+launchctl print gui/999999/com.nonexistent.whatever-> 112
+launchctl print gui/999999                         -> 112  (no label at all)
+launchctl print gui/<uid>                          -> 0
+```
+
+112 is an answer about the DOMAIN and does not depend on the label — querying
+the domain with no service name at all still returns it. 113 is service-scoped
+within a domain that answered. So the orphan-job case (a job still loaded after
+its plist was removed) lands in the exit-0 quadrant, where the manager reports
+it; it cannot hide behind a 112, because a domain that cannot be reached is not
+running anything on our behalf.
 
 `existsSync` is not sufficient for the artifact check. A dangling symlink or an
 unreadable path answers "no" to it while still being residue, so the probe uses
