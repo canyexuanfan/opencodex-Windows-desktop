@@ -1558,3 +1558,73 @@ for (const { label, harden, create } of ENTRY_POINTS) {
     });
   });
 }
+
+for (const { label, harden, create } of ENTRY_POINTS) {
+  const memoCount = label.startsWith("dir")
+    ? hardenedSecretDirCountForTests
+    : hardenedSecretPathCountForTests;
+
+  describe(`memo attribution holds for OPTIONAL callers too — ${label}`, () => {
+    /**
+     * The requiredness axis, which every other memo test left uncovered.
+     *
+     * Each identity and retirement scenario calls with `required: true`, and the
+     * optional-policy tests use fresh paths with no memo, so neither can see an
+     * optional-only bypass. Inserting
+     * `if (!opts.required && cache.has(targetPath)) return { ok: true }` before
+     * the lookup left all 119 tests green: an optional caller would then accept
+     * ANY object at a previously hardened pathname without observing identity,
+     * retiring the memo, or running icacls.
+     *
+     * Optional does not mean unattributed. It means a failure is reported rather
+     * than thrown — the memo still has to describe what is actually there.
+     */
+    test("a stale memo does not satisfy an optional caller, and a failed re-harden still retires it", async () => {
+      resetHardenedStateForTests();
+      const target = join(testDir, `optional-${label}.sqlite`);
+      create(target);
+
+      await withWin32(async () => {
+        let grants = 0;
+        let aclSucceeds = true;
+        const result = () => (aclSucceeds
+          ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+          : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
+        setIcaclsRunnerForTests(args => {
+          if (args.includes("/grant:r")) grants += 1;
+          return result();
+        });
+        setAsyncIcaclsRunnerForTests(async args => {
+          if (args.includes("/grant:r")) grants += 1;
+          return result();
+        });
+
+        const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
+        let current = original;
+        setStatForTests(() => current);
+
+        expect(await harden(target, { required: false })).toEqual({ ok: true });
+        expect(grants).toBe(1);
+        expect(memoCount()).toBe(1);
+
+        // A different object at the same path: the memo must not answer, even
+        // for an optional caller.
+        current = { dev: 1n, ino: 11n, ctimeNs: 500n };
+        aclSucceeds = false;
+        const failed = await harden(target, { required: false });
+        // Optional soft-fails rather than throwing — but it soft-fails HONESTLY,
+        // having actually attempted, rather than reporting a cached success.
+        expect(failed.ok).toBe(false);
+        expect(failed.diagnostics).toBeTruthy();
+        expect(grants).toBe(2);
+        expect(memoCount()).toBe(0);
+
+        // And the original identity coming back is not silently re-satisfied.
+        current = original;
+        aclSucceeds = true;
+        expect(await harden(target, { required: false })).toEqual({ ok: true });
+        expect(grants).toBe(3);
+      });
+    });
+  });
+}

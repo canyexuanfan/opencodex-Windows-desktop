@@ -1032,8 +1032,9 @@ and the ones that did were rewritten rather than kept.
   ordinary failure or a timeout, or optional throwing on either; (ae) a memo entry
   proven wrong is kept instead of retired; (af) directory memos alone are exempted
   from that retirement; (ag) an unreadable observation keeps its memo while a
-  successful re-harden masks which mechanism deleted it.
-  (h) through (ag) are not redundant — each survived every other check. (h) and (i)
+  successful re-harden masks which mechanism deleted it; (ah) an OPTIONAL caller is
+  allowed to trust a pathname-only memo.
+  (h) through (ah) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1167,6 +1168,16 @@ and the ones that did were rewritten rather than kept.
   `recordHarden` deleted the entry for its own reasons and a terminal count of zero
   could not say which mechanism retired it. The ACL now fails BEFORE `recordHarden`
   runs, and the re-satisfaction check is what proves the lookup did it.
+
+  **Requiredness is an axis, not a policy footnote.** (ah): every identity and
+  retirement scenario called with `required: true`, and the optional-policy tests
+  use fresh paths with no memo, so neither could see an optional-only bypass.
+  Adding `if (!opts.required && cache.has(targetPath)) return { ok: true }` left
+  all 119 tests green, letting an optional caller accept any object at a
+  previously hardened pathname without observing identity, retiring the memo, or
+  running icacls. Optional means a failure is REPORTED rather than thrown; it does
+  not mean unattributed. Every memo property is now parameterized over
+  `required: true | false` as well as the four entry points.
 
   The matrix, enumerated, is: exact target · default binding · platform provenance ·
   **successful completion** · **ordering relative to the ACL** · failure propagation ·
