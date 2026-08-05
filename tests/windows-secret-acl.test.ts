@@ -695,346 +695,273 @@ describe("ephemeral ACL memo release (#840 refinement)", () => {
   });
 });
 
-describe("stable-path harden memo is bound to file identity, not pathname", () => {
-  /**
-   * The memo is a Set<string> of PATHNAMES. Ephemeral temps escape the
-   * consequence because atomic writers call forgetEphemeralSecretPath after the
-   * temp is gone (src/config.ts:214,241,309,336,480,501-510). A STABLE
-   * destination never does — and hardenStableLockFile
-   * (src/codex/native-main-lock-file.ts:127) hardens exactly such a path.
-   *
-   * So: harden a stable path, then replace the FILE at that same name. The
-   * replacement is a different inode that has never been through icacls, but
-   * the memo answers for the name and reports it hardened.
-   *
-   * This is the release -> replace -> REACQUIRE shape. Substituting the file
-   * while a single acquisition still holds it never consults the memo again and
-   * would pass with the fix removed.
-   */
-  test("a file replaced at an already-hardened stable path is hardened again", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "coordinator.sqlite");
-    writeFileSync(stable, "first", "utf8");
-    // Identity here must match what the memo records, NOT just the inode.
-    // ext4 reuses the inode of an unlinked file immediately — 100 of 100 cycles
-    // on Linux CI — so an inode-only guard asserts something false and this test
-    // failed there while passing on macOS.
-    const identityOf = (path: string): string => {
-      const s = statSync(path, { bigint: true });
-      return `${s.dev}:${s.ino}:${s.ctimeNs}`;
-    };
-    const firstIdentity = identityOf(stable);
 
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    let grants = 0;
-    setIcaclsRunnerForTests(args => {
-      if (args.includes("/grant:r")) grants += 1;
-      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-    });
-    try {
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(grants).toBe(1);
+/**
+ * F4 — the ACL success memo, run against BOTH entry points.
+ *
+ * These were written for `hardenSecretPath` alone, and an audit then removed the
+ * async attribution entirely: all 46 tests stayed green. That is the worse half
+ * to leave uncovered — `hardenStableLockFile`, which hardens the coordinator
+ * database, calls `hardenSecretPathAsync`
+ * (`src/codex/native-main-lock-file.ts:130`), as do `config.ts:292` and
+ * `native-profile-manager.ts:153-154`. Covering only the synchronous twin proved
+ * the path production does not take.
+ */
+type HardenFn = (path: string, opts: { required: boolean }) => Promise<HardenResult>;
 
-      // Release, then replace the file at the SAME pathname.
-      unlinkSync(stable);
-      writeFileSync(stable, "second", "utf8");
-      const secondIdentity = identityOf(stable);
-      // Guard the guard: if the filesystem handed back an identical identity,
-      // the replacement is indistinguishable and this test proves nothing.
-      expect(secondIdentity).not.toBe(firstIdentity);
+const ENTRY_POINTS: readonly { readonly label: string; readonly harden: HardenFn }[] = [
+  { label: "sync", harden: async (path, opts) => hardenSecretPath(path, opts) },
+  { label: "async", harden: (path, opts) => hardenSecretPathAsync(path, opts) },
+];
 
-      // Reacquire. The replacement has never been hardened.
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(grants).toBe(2);
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-    }
-  });
+/**
+ * Async on purpose. A synchronous version's `finally` runs the moment the body
+ * returns its promise — before a single `await` inside it — so every seam is torn
+ * down while the test is still running. The symptom is subtle: the stat seam
+ * reverts to the real filesystem and identity checks silently start comparing
+ * real inodes, so a test asserting a re-harden sees one that never happened.
+ */
+async function withWin32(body: () => Promise<void>): Promise<void> {
+  setPlatformForTests("win32");
+  const previousUsername = process.env.USERNAME;
+  process.env.USERNAME = "ocx-test-user";
+  try {
+    await body();
+  } finally {
+    if (previousUsername === undefined) delete process.env.USERNAME;
+    else process.env.USERNAME = previousUsername;
+    setIcaclsRunnerForTests(null);
+    setAsyncIcaclsRunnerForTests(null);
+    setPlatformForTests(null);
+    setStatForTests(null);
+  }
+}
 
-  /**
-   * The hole the identity memo did NOT close on its own, and the reason the memo
-   * is written from a before/after comparison rather than a post-call read.
-   *
-   * Reading identity after icacls returns answers "what is at this path now",
-   * which is a different question from "what did icacls operate on". Swap the
-   * file during the final `/remove:g` — a real race, reachable through the
-   * production runner seam — and the post-call read records the REPLACEMENT as
-   * hardened. The next acquisition then skips ACL work on a file that has never
-   * seen it:
-   *
-   *   {identityChangedDuringHarden: true, callsForOriginal: 3, totalCalls: 3,
-   *    replacementWasHardened: false}
-   *
-   * A required caller must fail closed here. "We hardened something, and
-   * something is at that path" is not attribution.
-   */
-  test("a file replaced DURING hardening is not credited, and required fails closed", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "raced.sqlite");
-    writeFileSync(stable, "original", "utf8");
+/** Install the same behavior on both runner seams so one body drives either path. */
+function runner(onCall: (args: string[]) => void): void {
+  const result = { success: true, exitCode: 0, timedOut: false, stdout: "" };
+  setIcaclsRunnerForTests(args => { onCall(args); return result; });
+  setAsyncIcaclsRunnerForTests(async args => { onCall(args); return result; });
+}
 
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    let grants = 0;
-    setIcaclsRunnerForTests(args => {
-      if (args.includes("/grant:r")) grants += 1;
-      // Replace the file before the sequence returns.
-      if (args.includes("/remove:g")) {
-        unlinkSync(stable);
-        writeFileSync(stable, "replacement", "utf8");
-      }
-      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-    });
-    try {
-      expect(() => hardenSecretPath(stable, { required: true })).toThrow(
-        /changed during hardening/,
-      );
-      expect(grants).toBe(1);
-      // No memo was left behind for the replacement, so a later harden runs.
-      expect(hardenedSecretPathCountForTests()).toBe(0);
-
-      // An optional caller soft-fails with the same honest diagnostic.
-      const optional = hardenSecretPath(stable, { required: false });
-      expect(optional.ok).toBe(false);
-      expect(optional.diagnostics).toMatch(/changed during hardening/);
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-    }
-  });
-
-  /**
-   * Observed absence retires the memo.
-   *
-   * Otherwise a success entry outlives the file it describes, and any later file
-   * whose identity happens to match satisfies the cache. I could not reproduce
-   * identity recycling on APFS in 200k recreations — which is a non-observation,
-   * not a guarantee, and ext4 already proved that intuition about one filesystem
-   * does not transfer.
-   */
-  test("observing the path absent retires its success memo", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "vanishes.sqlite");
-    writeFileSync(stable, "first", "utf8");
-
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
-    try {
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(hardenedSecretPathCountForTests()).toBe(1);
-
-      unlinkSync(stable);
-      // A harden of the now-absent path is a no-op that must also forget it.
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(hardenedSecretPathCountForTests()).toBe(0);
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-    }
-  });
-});
-
-describe("identity components are proven individually, not mirrored from setup", () => {
-  /**
-   * An audit removed `dev` from the production identity and all forty tests
-   * still passed, because the existing tests build the expected identity string
-   * the same way the implementation does. Mirroring an implementation in test
-   * setup is not coverage of it.
-   *
-   * So these drive a stat seam and vary ONE component at a time. Each case fails
-   * if production stops consulting that component.
-   */
-  const win32 = <T>(body: () => T): T => {
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    try {
-      return body();
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-      setStatForTests(null);
-    }
-  };
-
-  const cases: { name: string; first: [bigint, bigint, bigint]; second: [bigint, bigint, bigint] }[] = [
-    // The path now resolves to another device: a different object entirely.
-    { name: "dev", first: [1n, 10n, 100n], second: [2n, 10n, 100n] },
-    // Ordinary replacement on a filesystem that does not recycle inodes.
-    { name: "ino", first: [1n, 10n, 100n], second: [1n, 11n, 100n] },
-    // The ext4 case: same inode handed straight back, only ctime moved.
-    { name: "ctimeNs", first: [1n, 10n, 100n], second: [1n, 10n, 200n] },
-  ];
-
-  for (const { name, first, second } of cases) {
-    test(`a change in ${name} alone forces a re-harden`, () => {
+for (const { label, harden } of ENTRY_POINTS) {
+  describe(`F4 memo attribution — ${label} entry point`, () => {
+    /**
+     * The original defect. The memo was a Set of PATH STRINGS, so unlinking a
+     * hardened path and recreating a different file at the same name left the
+     * replacement reported as hardened while it had never seen icacls.
+     *
+     * Ephemeral temps escaped this only because atomic writers call
+     * forgetEphemeralSecretPath once the temp is gone (`src/config.ts:214` and
+     * friends). Nothing does that for a stable path.
+     */
+    test("a file replaced at an already-hardened stable path is hardened again", async () => {
       resetHardenedStateForTests();
-      const stable = join(testDir, `component-${name}.sqlite`);
-      writeFileSync(stable, "x", "utf8");
+      const stable = join(testDir, `replaced-${label}.sqlite`);
+      writeFileSync(stable, "first", "utf8");
 
-      win32(() => {
+      await withWin32(async () => {
         let grants = 0;
-        setIcaclsRunnerForTests(args => {
-          if (args.includes("/grant:r")) grants += 1;
-          return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-        });
+        runner(args => { if (args.includes("/grant:r")) grants += 1; });
+        // Driven through the seam rather than the real filesystem: ext4 recycles
+        // an unlinked inode immediately (100/100 cycles) while APFS recycled none
+        // in 200, so a real-file version of this test asserts different things on
+        // different platforms — it passed on macOS with a fix broken on Linux.
+        let current = { dev: 1n, ino: 10n, ctimeNs: 100n };
+        setStatForTests(() => current);
 
-        let current = first;
-        setStatForTests(() => ({ dev: current[0], ino: current[1], ctimeNs: current[2] }));
-
-        expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-        expect(grants).toBe(1);
-        // Same observation: the memo answers and no ACL work runs.
-        expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
         expect(grants).toBe(1);
 
-        // One component moves. Production must notice.
-        current = second;
-        expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
+        current = { dev: 1n, ino: 11n, ctimeNs: 300n };
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
         expect(grants).toBe(2);
       });
     });
-  }
 
-  /**
-   * The bug the object/freshness split exists to prevent.
-   *
-   * icacls changes permissions, and a permission change moves ctime — probed
-   * directly: `{ctimeChangedByChmod: true}`. An implementation that requires the
-   * FULL identity to be unchanged across the ACL call rejects its own successful
-   * work, so on Windows every first harden of every path would fail closed.
-   *
-   * Here ctime moves during hardening exactly as real icacls would move it,
-   * while the object stays the same. That must succeed.
-   */
-  test("ctime moving during hardening is the ACL's own doing, not a substitution", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "acl-bumps-ctime.sqlite");
-    writeFileSync(stable, "x", "utf8");
+    /**
+     * "What is at this path now" is not "what did icacls operate on". Swapping
+     * the file during the final /remove:g made a post-call read record the
+     * REPLACEMENT as hardened, so the next acquisition skipped ACL work on a file
+     * that had never seen it.
+     */
+    test("a file replaced DURING hardening is not credited, and required fails closed", async () => {
+      resetHardenedStateForTests();
+      const stable = join(testDir, `raced-${label}.sqlite`);
+      writeFileSync(stable, "original", "utf8");
 
-    win32(() => {
-      let grants = 0;
-      let ctime = 100n;
-      setStatForTests(() => ({ dev: 1n, ino: 10n, ctimeNs: ctime }));
-      setIcaclsRunnerForTests(args => {
-        if (args.includes("/grant:r")) grants += 1;
-        // icacls edits the DACL; ctime moves. The file is the same file.
-        ctime += 1n;
-        return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+      await withWin32(async () => {
+        let grants = 0;
+        let current = { dev: 1n, ino: 10n, ctimeNs: 100n };
+        setStatForTests(() => current);
+        runner(args => {
+          if (args.includes("/grant:r")) grants += 1;
+          // Another process replaces the file before the sequence returns.
+          if (args.includes("/remove:g")) current = { dev: 1n, ino: 99n, ctimeNs: 500n };
+        });
+
+        await expect(harden(stable, { required: true })).rejects.toThrow(
+          /changed during hardening/,
+        );
+        expect(grants).toBe(1);
+        // No memo was left for the replacement, so a later harden still runs.
+        expect(hardenedSecretPathCountForTests()).toBe(0);
+
+        // An optional caller hitting the same race soft-fails with the same
+        // honest diagnostic. The runner keeps swapping the file, so this second
+        // attempt races too rather than settling on the replacement.
+        current = { dev: 1n, ino: 10n, ctimeNs: 100n };
+        const optional = await harden(stable, { required: false });
+        expect(optional.ok).toBe(false);
+        expect(optional.diagnostics).toMatch(/changed during hardening/);
       });
-
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(grants).toBe(1);
-      // And the memo recorded the POST-harden freshness, so an immediate second
-      // call is still a no-op rather than an endless re-harden.
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(grants).toBe(1);
     });
-  });
-});
 
-describe("an unreadable observation is not a passing memo", () => {
-  /**
-   * The memo lookup must fail when it cannot see what is at the path NOW.
-   *
-   * A mutation that turned "cannot observe" into "satisfied" survived four other
-   * broken-change checks, because every one of them could still observe the file.
-   * The condition only arises when the stat itself fails — a vanished file, a
-   * permission change on the parent, or NTFS returning a zero inode, which is
-   * precisely the platform this module exists for.
-   *
-   * Treating an unreadable observation as proof of an unchanged file is the same
-   * absence-as-guarantee move that produced the original pathname memo.
-   */
-  test("a stat failure after a successful harden forces the harden to run again", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "unreadable.sqlite");
-    writeFileSync(stable, "x", "utf8");
+    /**
+     * The bug the object/freshness split exists to prevent.
+     *
+     * icacls changes permissions and a permission change moves ctime — probed
+     * directly, {ctimeChangedByChmod: true}. Requiring the FULL identity to be
+     * unchanged across the ACL call rejects its own successful work, so on
+     * Windows every first harden of every path would have failed closed.
+     */
+    test("ctime moving during hardening is the ACL's own doing, not a substitution", async () => {
+      resetHardenedStateForTests();
+      const stable = join(testDir, `acl-ctime-${label}.sqlite`);
+      writeFileSync(stable, "x", "utf8");
 
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    let grants = 0;
-    setIcaclsRunnerForTests(args => {
-      if (args.includes("/grant:r")) grants += 1;
-      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-    });
-    try {
-      let readable = true;
-      setStatForTests(() => {
-        if (!readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
-        return { dev: 1n, ino: 10n, ctimeNs: 100n };
+      await withWin32(async () => {
+        let grants = 0;
+        let ctime = 100n;
+        setStatForTests(() => ({ dev: 1n, ino: 10n, ctimeNs: ctime }));
+        runner(args => {
+          if (args.includes("/grant:r")) grants += 1;
+          ctime += 1n; // editing the DACL moves ctime; same file throughout
+        });
+
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
+        expect(grants).toBe(1);
+        // The memo kept the POST-harden freshness, so this is a no-op rather
+        // than an endless re-harden.
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
+        expect(grants).toBe(1);
       });
-
-      expect(hardenSecretPath(stable, { required: true })).toEqual({ ok: true });
-      expect(grants).toBe(1);
-
-      // The memo holds a value, but the path can no longer be observed.
-      readable = false;
-      // It must NOT answer from the memo. It re-runs, cannot attribute the run
-      // either, and a required caller therefore fails closed rather than
-      // reporting a harden it cannot vouch for.
-      expect(() => hardenSecretPath(stable, { required: true })).toThrow(
-        /changed during hardening/,
-      );
-      expect(grants).toBe(2);
-      expect(hardenedSecretPathCountForTests()).toBe(0);
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-      setStatForTests(null);
-    }
-  });
-
-  /**
-   * NTFS is reported to return a zero inode from the non-bigint stat, and the
-   * production guard treats a zero inode as unobservable. That guard had no test:
-   * removing it left all forty-four green, because no case ever produced one.
-   */
-  test("a zero inode is unobservable, not an identity", () => {
-    resetHardenedStateForTests();
-    const stable = join(testDir, "zero-ino.sqlite");
-    writeFileSync(stable, "x", "utf8");
-
-    setPlatformForTests("win32");
-    const previousUsername = process.env.USERNAME;
-    process.env.USERNAME = "ocx-test-user";
-    let grants = 0;
-    setIcaclsRunnerForTests(args => {
-      if (args.includes("/grant:r")) grants += 1;
-      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
     });
-    try {
-      setStatForTests(() => ({ dev: 1n, ino: 0n, ctimeNs: 100n }));
 
-      // Required callers fail closed: nothing can be attributed.
-      expect(() => hardenSecretPath(stable, { required: true })).toThrow(
-        /changed during hardening/,
-      );
-      expect(grants).toBe(1);
-      expect(hardenedSecretPathCountForTests()).toBe(0);
-    } finally {
-      if (previousUsername === undefined) delete process.env.USERNAME;
-      else process.env.USERNAME = previousUsername;
-      setIcaclsRunnerForTests(null);
-      setPlatformForTests(null);
-      setStatForTests(null);
+    /**
+     * Each identity component is proven on its own. Earlier tests mirrored the
+     * implementation's identity string in their setup, which is not coverage of
+     * it: removing `dev` from production left all forty tests green.
+     */
+    const components: { name: string; second: { dev: bigint; ino: bigint; ctimeNs: bigint } }[] = [
+      // The path resolves to another device: a different object entirely.
+      { name: "dev", second: { dev: 2n, ino: 10n, ctimeNs: 100n } },
+      // Ordinary replacement where the filesystem does not recycle inodes.
+      { name: "ino", second: { dev: 1n, ino: 11n, ctimeNs: 100n } },
+      // The ext4 case: the same inode handed straight back, only ctime moved.
+      { name: "ctimeNs", second: { dev: 1n, ino: 10n, ctimeNs: 200n } },
+    ];
+
+    for (const { name, second } of components) {
+      test(`a change in ${name} alone forces a re-harden`, async () => {
+        resetHardenedStateForTests();
+        const stable = join(testDir, `component-${name}-${label}.sqlite`);
+        writeFileSync(stable, "x", "utf8");
+
+        await withWin32(async () => {
+          let grants = 0;
+          runner(args => { if (args.includes("/grant:r")) grants += 1; });
+          let current = { dev: 1n, ino: 10n, ctimeNs: 100n };
+          setStatForTests(() => current);
+
+          expect(await harden(stable, { required: true })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+          expect(await harden(stable, { required: true })).toEqual({ ok: true });
+          expect(grants).toBe(1);
+
+          current = second;
+          expect(await harden(stable, { required: true })).toEqual({ ok: true });
+          expect(grants).toBe(2);
+        });
+      });
     }
+
+    /**
+     * A memo lookup that cannot see what is at the path NOW must not answer.
+     * A mutation turning "cannot observe" into "satisfied" survived every other
+     * broken-change check, because all of them could still observe the file.
+     */
+    test("a stat failure after a successful harden forces the harden to run again", async () => {
+      resetHardenedStateForTests();
+      const stable = join(testDir, `unreadable-${label}.sqlite`);
+      writeFileSync(stable, "x", "utf8");
+
+      await withWin32(async () => {
+        let grants = 0;
+        runner(args => { if (args.includes("/grant:r")) grants += 1; });
+        let readable = true;
+        setStatForTests(() => {
+          if (!readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+          return { dev: 1n, ino: 10n, ctimeNs: 100n };
+        });
+
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
+        expect(grants).toBe(1);
+
+        readable = false;
+        await expect(harden(stable, { required: true })).rejects.toThrow(
+          /changed during hardening/,
+        );
+        expect(grants).toBe(2);
+        expect(hardenedSecretPathCountForTests()).toBe(0);
+      });
+    });
+
+    /**
+     * NTFS is reported to return a zero inode from the non-bigint stat, and the
+     * guard treats zero as unobservable. That guard had no test at all: removing
+     * it left every case green, because none ever produced one.
+     */
+    test("a zero inode is unobservable, not an identity", async () => {
+      resetHardenedStateForTests();
+      const stable = join(testDir, `zero-ino-${label}.sqlite`);
+      writeFileSync(stable, "x", "utf8");
+
+      await withWin32(async () => {
+        let grants = 0;
+        runner(args => { if (args.includes("/grant:r")) grants += 1; });
+        setStatForTests(() => ({ dev: 1n, ino: 0n, ctimeNs: 100n }));
+
+        await expect(harden(stable, { required: true })).rejects.toThrow(
+          /changed during hardening/,
+        );
+        expect(grants).toBe(1);
+        expect(hardenedSecretPathCountForTests()).toBe(0);
+      });
+    });
+
+    /**
+     * Observed absence retires the memo. Otherwise a success entry outlives the
+     * file it describes, and any later file whose identity happens to match
+     * satisfies the cache. Microsoft documents that Windows file IDs may be
+     * reused over time, so this is not a hypothetical on the target platform.
+     */
+    test("observing the path absent retires its success memo", async () => {
+      resetHardenedStateForTests();
+      const stable = join(testDir, `vanishes-${label}.sqlite`);
+      writeFileSync(stable, "first", "utf8");
+
+      await withWin32(async () => {
+        runner(() => {});
+        setStatForTests(() => ({ dev: 1n, ino: 10n, ctimeNs: 100n }));
+
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
+        expect(hardenedSecretPathCountForTests()).toBe(1);
+
+        unlinkSync(stable);
+        expect(await harden(stable, { required: true })).toEqual({ ok: true });
+        expect(hardenedSecretPathCountForTests()).toBe(0);
+      });
+    });
   });
-});
+}
