@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 
@@ -55,6 +55,15 @@ function pickSelectedProfile(next: ProfileDto[], current: ProfileDto | null): Pr
   return next[0] ?? null;
 }
 
+function shouldClearDryRunOnSelectionChange(
+  current: ProfileDto | null,
+  next: ProfileDto | null,
+): boolean {
+  if (!current) return false;
+  if (!next) return true;
+  return current.id !== next.id || current.revision !== next.revision;
+}
+
 export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [profiles, setProfiles] = useState<ProfileDto[]>([]);
@@ -68,6 +77,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState("");
   const [running, setRunning] = useState(false);
+  const selectedRef = useRef<ProfileDto | null>(null);
 
   const clearDryRun = useCallback(() => {
     setDryRunResult(null);
@@ -75,6 +85,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   }, []);
 
   const selectProfile = useCallback((profile: ProfileDto | null) => {
+    selectedRef.current = profile;
     setSelected(profile);
     clearDryRun();
   }, [clearDryRun]);
@@ -89,15 +100,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
       const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
       const next = profilesJson.profiles ?? [];
+      const current = selectedRef.current;
+      const refreshed = pickSelectedProfile(next, current);
+      selectedRef.current = refreshed;
       setProfiles(next);
-      setSelected(current => {
-        const refreshed = pickSelectedProfile(next, current);
-        if (current && refreshed && current.revision !== refreshed.revision) {
-          clearDryRun();
-        }
-        if (current && !refreshed) clearDryRun();
-        return refreshed;
-      });
+      setSelected(refreshed);
+      if (shouldClearDryRunOnSelectionChange(current, refreshed)) {
+        clearDryRun();
+      }
       if (analyticsRes.ok) {
         const analyticsJson = await analyticsRes.json() as Analytics;
         setAnalytics(analyticsJson);
@@ -117,17 +127,20 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     setRunning(true);
     clearDryRun();
     try {
+      const evidence: Record<string, number | boolean> = {};
+      const contextTokens = context.trim() ? Number(context.trim()) : NaN;
+      if (Number.isFinite(contextTokens) && contextTokens > 0) {
+        evidence.contextWindow = contextTokens;
+      }
+      if (tools) evidence.toolsRequired = true;
+      if (image) evidence.imageInputRequired = true;
+      if (structured) evidence.structuredOutputRequired = true;
       const response = await fetch(`${apiBase}/api/routing-profiles/dry-run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           profile: selected.id,
-          evidence: {
-            ...(context.trim() ? { contextWindow: Number(context.trim()) } : {}),
-            ...(tools ? { toolsRequired: true } : {}),
-            ...(image ? { imageInputRequired: true } : {}),
-            ...(structured ? { structuredOutputRequired: true } : {}),
-          },
+          evidence,
         }),
       });
       if (!response.ok) {
