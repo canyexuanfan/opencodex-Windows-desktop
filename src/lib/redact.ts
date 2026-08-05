@@ -152,28 +152,46 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
   ],
 ];
 
+/**
+ * These run over the FOLDED view too, then map back to the original string.
+ *
+ * Matching the raw text meant a percent-encoded form key (`author%69zation=`)
+ * and an XML character reference (`name="author&#105;zation"`) were invisible,
+ * even though both spell the credential name to anything that parses the body.
+ * The fold already decodes those, so the grammars are applied there and the
+ * mask is written back at the corresponding original offsets.
+ */
 function maskOtherFramings(value: string): string {
-  let out = value;
+  let current = value;
   for (const [pattern, kind] of OTHER_FRAMED_CREDENTIALS) {
-    if (kind === "=") {
-      out = out.replace(pattern, match => {
-        const eq = match.indexOf("=");
-        return `${match.slice(0, eq + 1)}${REDACTED_SECRET}`;
-      });
-      continue;
+    const { folded, map } = foldForMatching(current);
+    pattern.lastIndex = 0;
+    let out = "";
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(folded)) !== null) {
+      const start = map[match.index] ?? current.length;
+      const end = map[match.index + match[0].length] ?? current.length;
+      if (start < cursor) continue;
+      const head = (() => {
+        if (kind === "=") {
+          const eq = match[0].indexOf("=");
+          const headEnd = map[match.index + eq + 1] ?? end;
+          return current.slice(start, headEnd);
+        }
+        const captured = match[1] ?? "";
+        const headEnd = map[match.index + captured.length] ?? end;
+        return current.slice(start, headEnd);
+      })();
+      const body = current.slice(start + head.length, end);
+      if (kind === "multipart" && !body.trim()) continue;
+      out += current.slice(cursor, start) + head + REDACTED_SECRET;
+      cursor = end;
+      if (pattern.lastIndex === match.index) pattern.lastIndex += 1;
     }
-    if (kind === "element") {
-      // Keep the tag name so the diagnostic still says WHICH element carried a
-      // credential, and mask everything after it.
-      out = out.replace(pattern, (_m, head: string) => `${head}${REDACTED_SECRET}`);
-      continue;
-    }
-    out = out.replace(pattern, (_m, head: string, body: string) => {
-      if (!body.trim()) return `${head}${body}`;
-      return `${head}${REDACTED_SECRET}`;
-    });
+    current = out + current.slice(cursor);
   }
-  return out;
+  return current;
 }
 
 /**
@@ -184,6 +202,30 @@ function maskOtherFramings(value: string): string {
 function foldForMatching(value: string): { folded: string; map: number[] } {
   let folded = "";
   const map: number[] = [];
+  // Serialization escapes are ALIASES for the label, not decoration: a JSON
+  // `\u0069`, a percent-encoded `%69`, and an XML `&#105;` all spell the same
+  // field name to whatever parses the body, while spelling something else to a
+  // literal matcher. Decode them into the matching view (one folded character
+  // per escape, with the whole escape mapped back to its start) so
+  // `author\u0069zation`, `author%69zation`, and `author&#105;zation` are the
+  // label they claim to be.
+  const decodeEscape = (at: number): { ch: string; width: number } | null => {
+    const json = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(at, at + 6));
+    if (json) return { ch: String.fromCharCode(parseInt(json[1]!, 16)), width: 6 };
+    const pct = /^%([0-9a-fA-F]{2})/.exec(value.slice(at, at + 3));
+    if (pct) return { ch: String.fromCharCode(parseInt(pct[1]!, 16)), width: 3 };
+    const xml = /^&#(x[0-9a-fA-F]{1,6}|[0-9]{1,7});/.exec(value.slice(at, at + 11));
+    if (xml) {
+      const raw = xml[1]!;
+      const code = raw[0] === "x" || raw[0] === "X"
+        ? parseInt(raw.slice(1), 16)
+        : parseInt(raw, 10);
+      if (Number.isFinite(code) && code > 0 && code <= 0x10ffff) {
+        return { ch: String.fromCodePoint(code), width: xml[0].length };
+      }
+    }
+    return null;
+  };
   // Iterate by CODE POINT, not UTF-16 code unit: a supplementary character
   // (mathematical letters, variation selectors above the BMP) is two units, so
   // a per-unit loop hands each half to the property tests separately and
@@ -191,8 +233,9 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
   // both walked straight past the fold that way.
   let i = 0;
   while (i < value.length) {
-    const ch = String.fromCodePoint(value.codePointAt(i)!);
-    const width = ch.length;
+    const escaped = decodeEscape(i);
+    const ch = escaped ? escaped.ch : String.fromCodePoint(value.codePointAt(i)!);
+    const width = escaped ? escaped.width : ch.length;
     if (INVISIBLE_FORMAT.test(ch)) {
       i += width;
       continue;
@@ -206,7 +249,8 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
     // One folded unit per source code point keeps the offset map aligned; a
     // multi-unit fold would desynchronize it, so those keep the original.
     folded += mapped.length === 1 ? mapped : ch;
-    for (let k = 0; k < (mapped.length === 1 ? 1 : width); k += 1) map.push(i);
+    const emitted = mapped.length === 1 ? 1 : (escaped ? 1 : width);
+    for (let k = 0; k < emitted; k += 1) map.push(i);
     i += width;
   }
   map.push(value.length);

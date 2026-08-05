@@ -345,6 +345,24 @@ describe("redactSecretString", () => {
       .toBe(`authorization=${REDACTED_SECRET}&model=gpt-5.5`);
   });
 
+  test("serialization escapes are aliases for the label, not a disguise", () => {
+    // A JSON `\u0069`, a percent-encoded `%69`, and an XML `&#105;` all spell
+    // the credential name to whatever parses the body, while spelling
+    // something else to a literal matcher. The matching view decodes them.
+    for (const input of [
+      '{"author\\u0069zation":"opaquecredential123456"}',
+      "author%69zation=opaquecredential123456&model=gpt-5.5",
+      '<header name="author&#105;zation">opaquecredential123456</header>',
+      '{"x-api-\\u006bey":"opaquecredential123456"}',
+      "x%2Dapi%2Dkey=opaquecredential123456&model=gpt-5.5",
+      '<header name="x-api-&#x6b;ey">opaquecredential123456</header>',
+    ]) {
+      const redacted = redactSecretString(input);
+      expect(redacted).toContain(REDACTED_SECRET);
+      expect(redacted).not.toContain("opaquecredential123456");
+    }
+  });
+
   test("non-credential fields in those framings are untouched", () => {
     expect(redactSecretString("model=gpt-5.5&status=429")).toBe("model=gpt-5.5&status=429");
     expect(redactSecretString("<model>gpt-5.5</model>")).toBe("<model>gpt-5.5</model>");
