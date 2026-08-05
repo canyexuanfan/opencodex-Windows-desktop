@@ -163,6 +163,7 @@ import { cancelBodyOnAbort } from "../../lib/abort";
 import {
   createResponsesItemIdPayloadRewrite,
   hasResponsesItemIdRepair,
+  repairResponsesJsonItemIds,
 } from "../responses-item-id-repair";
 import {
   createImageGenCallRestoreRewrite,
@@ -2255,7 +2256,14 @@ async function handleResponsesInner(
         && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
         && route.provider.adapter === "openai-responses") {
         try {
-          const completed = JSON.parse(clientJson) as Record<string, unknown>;
+          let completed = JSON.parse(clientJson) as Record<string, unknown>;
+          // The bounded-JSON answer bypasses the SSE relay, so it also bypasses
+          // the SSE item-id rewrite. Apply the same client-facing normalization
+          // here or this policy would silently disable id repair for the very
+          // providers that need it (raw record already happened above).
+          if (hasResponsesItemIdRepair(route.provider.responsesItemIdRepair)) {
+            completed = repairResponsesJsonItemIds(completed, route.provider.responsesItemIdRepair!, translatorBudget);
+          }
           const sseHeaders = sanitizePassthroughHeaders(headers);
           sseHeaders.set("content-type", "text/event-stream");
           sseHeaders.set("cache-control", "no-store");
@@ -2268,7 +2276,24 @@ async function handleResponsesInner(
           // Non-JSON despite content-type: fall through to the plain relay.
         }
       }
-      return new Response(clientJson, {
+      // WS turns reframe this JSON into events in the bridge, which is the
+      // other relay-free path — normalize ids so both bounded-JSON paths agree.
+      const outboundJson = options.inboundTransport === "websocket"
+        && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
+        && hasResponsesItemIdRepair(route.provider.responsesItemIdRepair)
+        ? (() => {
+          try {
+            return JSON.stringify(repairResponsesJsonItemIds(
+              JSON.parse(clientJson) as Record<string, unknown>,
+              route.provider.responsesItemIdRepair!,
+              translatorBudget,
+            ));
+          } catch {
+            return clientJson;
+          }
+        })()
+        : clientJson;
+      return new Response(outboundJson, {
         status: upstreamResponse.status,
         statusText: upstreamResponse.statusText,
         headers,
