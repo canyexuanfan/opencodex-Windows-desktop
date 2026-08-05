@@ -102,8 +102,8 @@ describe("policy execution (RI-05)", () => {
     // RI-06: unknown health under the default "penalize" policy folds a
     // penalized health floor into the score.
     expect(trace.candidates[0]!.score).toMatchObject({
-      total: 0.825,
-      components: { configuredPriority: 1, health: 0.3 },
+      total: 0.755,
+      components: { configuredPriority: 1, health: 0.3, quota: 0.3 },
     });
   });
 
