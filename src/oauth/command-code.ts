@@ -131,16 +131,23 @@ function createCallbackServer(state: string): {
   }
 }
 
-/** Validate a raw pasted Command Code API key against the fixed Provider API host. */
-async function validatePastedApiKey(apiKey: string): Promise<boolean> {
+/** Validate a raw pasted Command Code API key and return the validated identity. */
+async function validatePastedApiKey(apiKey: string): Promise<{ userId: string; userName: string } | undefined> {
   try {
     const response = await fetch("https://api.commandcode.ai/alpha/whoami", {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       signal: AbortSignal.timeout(10_000),
     });
-    return response.ok;
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { user?: { id?: unknown; userName?: unknown } };
+    const userId = body.user?.id;
+    const userName = body.user?.userName;
+    return {
+      userId: typeof userId === "string" ? userId : "",
+      userName: typeof userName === "string" ? userName : "",
+    };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -194,7 +201,9 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
             const input = await ctrl.onManualCodeInput?.(state);
             if (input === undefined) continue;
             const pasted = parsePastedCommandCodeInput(input, state);
-            if (pasted && (await validatePastedApiKey(pasted.apiKey))) return pasted;
+            if (!pasted) continue;
+            const identity = await validatePastedApiKey(pasted.apiKey);
+            if (identity) return { ...pasted, ...identity };
           }
         })()
       : undefined;

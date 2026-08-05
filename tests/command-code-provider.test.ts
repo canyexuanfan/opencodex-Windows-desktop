@@ -180,6 +180,21 @@ describe("Command Code provider", () => {
     expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.tools).toEqual([]);
   });
 
+  test("matches a forced namespaced tool choice by dot alias", () => {
+    const namespacedParsed = {
+      ...parsed(),
+      context: {
+        ...parsed().context,
+        tools: [{ name: "exec_command", namespace: "functions", description: "exec", parameters: { type: "object" } }],
+      },
+      options: { toolChoice: { name: "functions.exec_command" } },
+    };
+    const request = createCommandCodeAdapter(provider).buildRequest(namespacedParsed);
+    expect(request).not.toBeInstanceOf(Promise);
+    const tools = JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.tools;
+    expect(tools).toEqual([{ name: "functions__exec_command", description: "exec", input_schema: { type: "object" } }]);
+  });
+
   test("refreshes a stale official effort record only after a reasoning rejection and retries without it", async () => {
     const requests: Array<{ url: string; body?: string }> = [];
     const fetch = (async (url: string | URL | Request, init?: RequestInit) => {

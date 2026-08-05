@@ -783,7 +783,10 @@ export function reconcileOAuthProviders(config: OcxConfig): boolean {
       changed = true;
     }
     // Heal a defaultModel that no longer exists in the refreshed list (e.g. a deprecated snapshot).
-    if (prov.defaultModel && preset.defaultModel && !(prov.models ?? []).includes(prov.defaultModel)) {
+    // Skip providers without a static preset `models` list: for live-discovery providers
+    // (e.g. command-code OAuth) the account-scoped catalog is not enumerable here, so any
+    // persisted defaultModel is a user selection and must not be overwritten by the seed.
+    if (prov.defaultModel && preset.defaultModel && preset.models && preset.models.length > 0 && !(prov.models ?? []).includes(prov.defaultModel)) {
       prov.defaultModel = preset.defaultModel;
       changed = true;
     }

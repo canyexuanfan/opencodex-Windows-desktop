@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
-import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice, toolChoiceAliases } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { readBoundedResponseBody } from "../lib/bounded-body";
@@ -74,7 +74,7 @@ function visibleTools(parsed: OcxParsedRequest): OcxTool[] {
     return tools.filter(tool => toolAllowedByChoice(tool, allowed));
   }
   if (choice && typeof choice !== "string") {
-    return tools.filter(tool => tool.name === choice.name || namespacedToolName(tool.namespace, tool.name) === choice.name);
+    return tools.filter(tool => toolChoiceAliases(tool).includes(choice.name));
   }
   return tools;
 }
