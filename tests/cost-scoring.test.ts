@@ -57,7 +57,6 @@ describe("cost-aware scoring (RI-08)", () => {
     // is the fallback. Both carry a stable source code.
     expect(["jawcode", "expected"]).toContain(evidence.priceSource);
     expect(evidence.incomplete).toBe(evidence.priceSource === "expected");
-    expect(evidence.excludedByLimit).toBeUndefined();
     expect(costScore(evidence)).not.toBeNull();
   });
 
@@ -92,7 +91,6 @@ describe("cost-aware scoring (RI-08)", () => {
       limitUsd: 0.000001,
     });
     expect(evidence.limitUsd).toBe(0.000001);
-    expect(evidence.excludedByLimit).toBe(true);
 
     const result = evaluatePolicyProfile(limited, "cost", {}, [
       { provider: "anthropic", model: "claude-opus-5", capability: { contextWindow: 200000 }, cost: evidence },

@@ -60,9 +60,6 @@ export function costEvidenceForCandidate(input: CostEvidenceInput): RouteCostEvi
     priceSource,
     incomplete: estimate.estimated || priceSource === "expected",
     ...(limitUsd !== undefined ? { limitUsd } : {}),
-    ...(limitUsd !== undefined
-      ? { excludedByLimit: estimate.cost.total > limitUsd }
-      : {}),
   };
 }
 
