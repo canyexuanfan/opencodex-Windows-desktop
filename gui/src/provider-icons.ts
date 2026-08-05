@@ -63,8 +63,6 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   "cloudflare-workers-ai": "Cloudflare Workers AI",
   cline: "Cline",
   "cline-pass": "ClinePass",
-  "command-code": "Command Code",
-  commandcode: "Command Code",
   nvidia: "NVIDIA NIM",
   ollama: "Ollama",
   "ollama-cloud": "Ollama Cloud",
@@ -101,6 +99,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 };
 
 const PROVIDER_DISPLAY_NAME_KEYS: Record<string, TKey> = {
+  "command-code": "provider.name.commandCode",
+  commandcode: "provider.name.commandCode",
   volcengine: "provider.name.volcengine",
   "volcengine-coding-plan": "provider.name.volcengineCodingPlan",
   "volcengine-agent-plan": "provider.name.volcengineAgentPlan",

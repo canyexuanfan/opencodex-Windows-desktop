@@ -42,6 +42,7 @@ export const ja: Record<TKey, string> = {
   "theme.dark": "ダーク",
   "theme.system": "システム",
   "lang.label": "言語",
+  "provider.name.commandCode": "Command Code",
   "provider.name.volcengine": "Volcengine Ark",
   "provider.name.volcengineCodingPlan": "Volcengine Ark コーディングプラン",
   "provider.name.volcengineAgentPlan": "Volcengine Ark エージェントプラン",

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createCommandCodeAdapter } from "../src/adapters/command-code";
-import { parseCommandCodeCallback, shouldImportLocalCommandCodeAuth } from "../src/oauth/command-code";
+import { loginCommandCode, parseCommandCodeCallback, shouldImportLocalCommandCodeAuth } from "../src/oauth/command-code";
 import { buildModelsRequest, OAUTH_PROVIDERS } from "../src/oauth";
+import { commandCodeReasoningEfforts, resetCommandCodeReasoningEffortsForTest } from "../src/providers/command-code-efforts";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
@@ -14,7 +15,7 @@ const provider: OcxProviderConfig = {
   defaultMaxOutputTokens: 64_000,
 };
 
-function parsed(modelId = "kimi-k3"): OcxParsedRequest {
+function parsed(modelId = "deepseek/deepseek-v4-flash"): OcxParsedRequest {
   return {
     modelId,
     stream: true,
@@ -26,6 +27,8 @@ function parsed(modelId = "kimi-k3"): OcxParsedRequest {
     options: { reasoning: "high", maxOutputTokens: 100 },
   };
 }
+
+afterEach(() => resetCommandCodeReasoningEffortsForTest());
 
 describe("Command Code provider", () => {
   test("registry and OAuth surfaces stay in parity", () => {
@@ -42,6 +45,10 @@ describe("Command Code provider", () => {
       },
     });
     expect(registry?.models).toBeUndefined();
+    expect(registry?.modelReasoningEfforts).toMatchObject({
+      "deepseek/deepseek-v4-flash": ["high", "max"],
+      "zai-org/glm-5.2": ["high", "max"],
+    });
     expect(OAUTH_PROVIDERS["command-code"]?.providerConfig).toMatchObject({
       adapter: "command-code",
       baseUrl: "https://api.commandcode.ai",
@@ -54,6 +61,12 @@ describe("Command Code provider", () => {
     expect(() => parseCommandCodeCallback({ apiKey: "key", state: "wrong", userId: "u", userName: "name", keyName: "cli" }, "state")).toThrow("state mismatch");
   });
 
+  test("rejects an already-aborted login before it creates a callback server", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before login"));
+    await expect(loginCommandCode({ signal: controller.signal }, { importLocal: "off" })).rejects.toThrow("cancelled before login");
+  });
+
   test("uses live account discovery and only imports local CLI auth for the first account", () => {
     const request = buildModelsRequest(provider, "secret-command-key", "command-code");
     expect(request).toEqual({
@@ -64,14 +77,14 @@ describe("Command Code provider", () => {
     expect(shouldImportLocalCommandCodeAuth({ importLocal: "off" })).toBe(false);
   });
 
-  test("builds the proprietary generate request with canonical model and bearer auth", () => {
+  test("builds the proprietary generate request with an officially supported effort and bearer auth", () => {
     const request = createCommandCodeAdapter(provider).buildRequest(parsed());
     expect(request).not.toBeInstanceOf(Promise);
     const built = request as Exclude<typeof request, Promise<unknown>>;
     const body = JSON.parse(built.body);
     expect(built.url).toBe("https://api.commandcode.ai/alpha/generate");
     expect(built.headers.Authorization).toBe("Bearer secret-command-key");
-    expect(body.params).toMatchObject({ model: "moonshotai/Kimi-K3", reasoning_effort: "high", max_tokens: 100, stream: true });
+    expect(body.params).toMatchObject({ model: "deepseek/deepseek-v4-flash", reasoning_effort: "high", max_tokens: 100, stream: true });
     expect(body.params.tools[0]).toMatchObject({ name: "lookup" });
     expect(built.body).not.toContain("secret-command-key");
   });
@@ -81,6 +94,40 @@ describe("Command Code provider", () => {
     expect(request).not.toBeInstanceOf(Promise);
     const built = request as Exclude<typeof request, Promise<unknown>>;
     expect(JSON.parse(built.body).params.model).toBe("xai/grok-4.5");
+  });
+
+  test("does not advertise an unverified effort for models absent from the official table", () => {
+    const request = createCommandCodeAdapter(provider).buildRequest(parsed("moonshotai/Kimi-K3"));
+    expect(request).not.toBeInstanceOf(Promise);
+    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("filters tool declarations when tool_choice disables tools", () => {
+    const request = createCommandCodeAdapter(provider).buildRequest({ ...parsed(), options: { toolChoice: "none" } });
+    expect(request).not.toBeInstanceOf(Promise);
+    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.tools).toEqual([]);
+  });
+
+  test("refreshes a stale official effort record only after a reasoning rejection and retries without it", async () => {
+    const requests: Array<{ url: string; body?: string }> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      requests.push({ url: href, body: typeof init?.body === "string" ? init.body : undefined });
+      if (href.includes("commandcode.ai/models/")) {
+        return new Response("Reasoning efforts high are supported; no other reasoning settings.");
+      }
+      return requests.filter(request => request.url.endsWith("/alpha/generate")).length === 1
+        ? new Response(JSON.stringify({ error: "unsupported reasoning_effort" }), { status: 400 })
+        : new Response("{}", { status: 200 });
+    }) as typeof globalThis.fetch;
+    const adapter = createCommandCodeAdapter({ ...provider, fetch } as OcxProviderConfig);
+    const request = adapter.buildRequest({ ...parsed(), options: { reasoning: "max" } });
+    expect(request).not.toBeInstanceOf(Promise);
+    const response = await adapter.fetchResponse!(request as Exclude<typeof request, Promise<unknown>>);
+    expect(response.ok).toBe(true);
+    expect(commandCodeReasoningEfforts("deepseek/deepseek-v4-flash")).toEqual(["high"]);
+    const generated = requests.filter(request => request.url.endsWith("/alpha/generate"));
+    expect(JSON.parse(generated[1]!.body!).params).not.toHaveProperty("reasoning_effort");
   });
 
   test("omits effort when the caller did not choose one", () => {

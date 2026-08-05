@@ -14,6 +14,7 @@ import {
   cursorModelInputModalities,
   cursorModelReasoningEfforts,
 } from "../adapters/cursor/discovery";
+import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "./command-code-efforts";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -817,10 +818,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxResponseBytes: 262_144,
       maxModels: 256,
     },
-    // Command Code documents effort support as model-dependent. Do not synthesize a ladder.
+    // These are capability facts from official Command Code model profiles, not seeded models.
+    // Unknown/new live models deliberately do not advertise a reasoning picker.
     reasoningEfforts: [],
+    modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
     defaultMaxOutputTokens: 64_000,
-    parallelToolCalls: true,
+    // The proprietary generate wire has no verified per-request serialization flag.
+    parallelToolCalls: false,
   },
   {
     id: "anthropic",

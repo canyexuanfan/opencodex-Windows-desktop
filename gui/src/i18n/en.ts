@@ -44,6 +44,7 @@ export const en = {
   "theme.dark": "Dark",
   "theme.system": "System",
   "lang.label": "Language",
+  "provider.name.commandCode": "Command Code",
   "provider.name.volcengine": "Volcengine Ark",
   "provider.name.volcengineCodingPlan": "Volcengine Ark Coding Plan",
   "provider.name.volcengineAgentPlan": "Volcengine Ark Agent Plan",

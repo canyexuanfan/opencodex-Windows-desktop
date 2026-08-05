@@ -110,6 +110,9 @@ function createCallbackServer(state: string): {
 }
 
 export async function loginCommandCode(ctrl: OAuthController, options: CommandCodeLoginOptions = {}): Promise<OAuthCredentials> {
+  if (ctrl.signal?.aborted) {
+    throw ctrl.signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
+  }
   if (shouldImportLocalCommandCodeAuth(options)) {
     const local = await importLocalCommandCodeAuth();
     if (local) {
@@ -119,7 +122,7 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
   }
   const state = randomState();
   const { server, callback } = createCallbackServer(state);
-  const callbackUrl = `http://localhost:${server.port}/callback`;
+  const callbackUrl = `http://127.0.0.1:${server.port}/callback`;
   const authUrl = `${COMMAND_CODE_STUDIO_URL}/studio/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}`;
   ctrl.onAuth?.({ url: authUrl, instructions: "Sign in with Command Code in the browser." });
   ctrl.onProgress?.("Waiting for Command Code authentication...");
