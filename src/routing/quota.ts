@@ -12,7 +12,7 @@
  * carries an account reference (dry-run/evaluate), never invented.
  */
 
-import { getAccountQuota, isCodexQuotaExhausted } from "../codex/quota";
+import { codexQuotaWindowForPlan, getAccountQuota, isCodexQuotaExhausted } from "../codex/quota";
 import { getCachedProviderAccountQuota } from "../providers/quota";
 import type { RouteQuotaEvidence } from "./trace";
 
@@ -23,6 +23,8 @@ export interface QuotaEvidenceInput {
   accountRef?: string;
   /** Codex pool account id (provider "openai"). */
   codexAccountId?: string;
+  /** The account's plan (provider "openai"); selects the governing quota window. */
+  codexAccountPlan?: string;
 }
 
 /**
@@ -33,18 +35,27 @@ export function quotaEvidenceForCandidate(input: QuotaEvidenceInput): RouteQuota
   if (input.provider === "openai" && input.codexAccountId) {
     const quota = getAccountQuota(input.codexAccountId);
     if (quota) {
-      const percents = [quota.weeklyPercent, quota.monthlyPercent]
-        .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+      // Go/Free accounts report a 30-day window only; weekly windows gate
+      // everything else. `codexQuotaWindowForPlan` is the single shared rule
+      // (parser, exhaustion, recovery), so select the plan-specific bars here
+      // too instead of always combining weekly + monthly.
+      const monthly = codexQuotaWindowForPlan(input.codexAccountPlan) === "monthly";
+      const percents = [
+        ...(monthly ? [] : [quota.weeklyPercent]),
+        quota.monthlyPercent,
+      ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
       const maxPercent = percents.length > 0 ? Math.max(...percents) : undefined;
-      const resets = [quota.weeklyResetAt, quota.monthlyResetAt]
-        .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      const resets = [
+        ...(monthly ? [] : [quota.weeklyResetAt]),
+        quota.monthlyResetAt,
+      ].filter((value): value is number => typeof value === "number" && Number.isFinite(value))
         .filter(value => value > Date.now());
       return {
         known: true,
         ...(maxPercent !== undefined
           ? { headroom: Math.max(0, Math.min(1, 1 - maxPercent / 100)) }
           : {}),
-        exhausted: isCodexQuotaExhausted(quota),
+        exhausted: isCodexQuotaExhausted(quota, input.codexAccountPlan),
         ...(resets.length > 0 ? { resetAtMs: Math.min(...resets) } : {}),
         source: "codex-pool",
       };

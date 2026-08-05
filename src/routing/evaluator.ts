@@ -114,16 +114,21 @@ function requirementFor(
       requirements.push({ id: "min-context-window", expected: require.minContextWindow, outcome: "unknown" });
     }
   }
-  // minQuotaHeadroom gates only KNOWN headroom. Unknown quota is governed by
-  // the profile's `unknownEvidence.quota` policy (exclude / penalize / allow)
-  // via the quota score path - never by the capability unknown policy.
-  if (require.minQuotaHeadroom !== undefined && typeof quota?.headroom === "number") {
-    requirements.push({
-      id: "min-quota-headroom",
-      expected: require.minQuotaHeadroom,
-      actual: quota.headroom,
-      outcome: quota.headroom >= require.minQuotaHeadroom ? "satisfied" : "unsatisfied",
-    });
+  // minQuotaHeadroom gates only KNOWN quota via the normalized score, which
+  // maps exhaustion to zero and unknown/incomplete evidence to null. Unknown
+  // quota is governed by the profile's `unknownEvidence.quota` policy
+  // (exclude / penalize / allow) via the quota score path - never by the
+  // capability unknown policy.
+  if (require.minQuotaHeadroom !== undefined) {
+    const quotaHeadroom = quotaScore(quota);
+    if (quotaHeadroom !== null) {
+      requirements.push({
+        id: "min-quota-headroom",
+        expected: require.minQuotaHeadroom,
+        actual: quotaHeadroom,
+        outcome: quotaHeadroom >= require.minQuotaHeadroom ? "satisfied" : "unsatisfied",
+      });
+    }
   }
   const tools = booleanRequirement("tools", require.tools, capability?.tools);
   if (tools) requirements.push(tools);

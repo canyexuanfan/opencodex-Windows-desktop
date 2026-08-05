@@ -153,9 +153,12 @@ CLI: `ocx route policy list [--json]`, `ocx route policy show <id> [--json]`, an
 Dry-run evaluates candidates without sending any upstream request.
 
 Quota evidence (`optimize.quota`, `require.minQuotaHeadroom`, `unknownEvidence.quota`) comes from
-the local Codex pool and Anthropic account quota caches, which are keyed by account. Runtime policy
-candidates carry no account reference, so their quota evidence is honestly unknown (`penalize` is
-the default). To see quota-aware behavior in a dry-run, supply account refs through the dry-run/API
+the local Codex pool and Anthropic account quota caches, which are keyed by account. In **Pool** mode
+the canonical `openai` provider preserves its existing account selection, then reads quota for the
+selected account; **Direct** mode reads quota only from the current (caller/main) account. For other
+providers (e.g. Anthropic), runtime candidates use the provider's active account. Quota evidence
+never changes account selection, session affinity, cooldowns, or switching behavior — it only feeds
+policy scoring. To see quota-aware behavior in a dry-run, supply account refs through the dry-run/API
 candidate evidence: `candidates[].codexAccountId` (Codex pool, provider `openai`) or
 `candidates[].accountRef` (Anthropic) derives the matching cached account quota; an explicit
 `candidates[].quota` object is echoed as given.
@@ -168,8 +171,9 @@ candidate evidence: `candidates[].codexAccountId` (Codex pool, provider `openai`
   requirements filter first, then deterministic scoring ranks the survivors.
 
 Both are virtual namespaces with aliases and collision validation; they differ in *how* a candidate
-is chosen. Profile scoring currently uses the configured-priority component only; health (RI-06),
-quota (RI-07), and cost (RI-08) score dimensions are planned. Per-request route-decision traces are
+is chosen. Profile scoring combines the configured-priority component with the health (RI-06) and
+quota (RI-07) score dimensions where evidence is present; cost participates through the
+`limits.maxEstimatedCostUsd` cap rather than a score weight. Per-request route-decision traces are
 recorded when a policy profile executes.
 
 ### Catalog eligibility

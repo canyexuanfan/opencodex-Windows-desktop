@@ -13,6 +13,7 @@ import { policyCandidateHealthEvidence } from "../../routing/health";
 import { quotaEvidenceForCandidate } from "../../routing/quota";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { getEffectiveActiveCodexAccountId } from "../../codex/routing";
+import { getAccountSet } from "../../oauth/store";
 import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { isPlainRecord } from "./shared";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
@@ -129,12 +130,23 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
           quota: quotaEvidenceForCandidate({
             provider: candidate.provider,
             model: candidate.model,
-            codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+            ...(candidate.provider === OPENAI_CODEX_PROVIDER_ID
               && providerCodexAccountMode(
                 OPENAI_CODEX_PROVIDER_ID,
                 config.providers[OPENAI_CODEX_PROVIDER_ID],
               ) === "pool"
-              ? getEffectiveActiveCodexAccountId(config)
+              ? (() => {
+                  const codexAccountId = getEffectiveActiveCodexAccountId(config);
+                  return {
+                    codexAccountId,
+                    codexAccountPlan: codexAccountId
+                      ? config.codexAccounts?.find(account => account.id === codexAccountId)?.plan
+                      : undefined,
+                  };
+                })()
+              : {}),
+            accountRef: candidate.provider === "anthropic"
+              ? getAccountSet("anthropic")?.activeAccountId
               : undefined,
           }),
         }))

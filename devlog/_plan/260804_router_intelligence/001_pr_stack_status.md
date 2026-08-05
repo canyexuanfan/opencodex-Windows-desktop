@@ -223,14 +223,15 @@ other; closing one is a maintainer decision and neither is stale.
   missing from the schema REQUIRE_KEYS so normalization silently dropped it;
   (2) `minQuotaHeadroom` was missing from `OcxRoutingProfileRequirements`
   (types.ts) - typecheck caught it.
-- Final commit: pending (recorded after commit)
-- PR: pending
+- Final commit: `480f1578` (review-thread fixes; earlier commits `b562fdb9`,
+  `288dd8a9`, `e74a211a`, `7aebbd36`)
+- PR: #1014
 - Verification:
   - `bun x tsc --noEmit`: PASSED (0 errors)
-  - `bun run test tests/quota-scoring.test.ts`: 7/7 pass - codex-pool and
+  - `bun run test tests/quota-scoring.test.ts`: 9/9 pass - codex-pool and
     anthropic evidence, unknown-stays-unknown, unknown-quota policy
     (exclude/penalize/allow), headroom preference, minQuotaHeadroom gating,
-    account-selection boundary
+    account-selection boundary, plan-aware window selection
   - Focused regression suites: 203/203 pass across 9 files
   - `bun run privacy:scan`: passed
 - Remaining Low findings: none

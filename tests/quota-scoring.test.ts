@@ -112,6 +112,20 @@ describe("quota-aware scoring (RI-07)", () => {
     ]);
     expect(penalized.candidates[0]!.eligible).toBe(true);
     expect(penalized.candidates[0]!.score!.components.quota).toBe(QUOTA_UNKNOWN_PENALTY_SCORE);
+
+    const allowing = config({
+      routingProfiles: {
+        q: {
+          candidates: [{ provider: "a", model: "m1" }],
+          unknownEvidence: { capability: "allow", health: "penalize", quota: "allow", cost: "penalize" },
+        },
+      },
+    });
+    const allowed = evaluatePolicyProfile(allowing, "q", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+    ]);
+    expect(allowed.candidates[0]!.eligible).toBe(true);
+    expect(allowed.candidates[0]!.score!.components.quota).toBeUndefined();
   });
 
   test("larger headroom is preferred when quota scoring is weighted", () => {
