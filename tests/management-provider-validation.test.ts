@@ -1996,7 +1996,10 @@ describe("provider management validation", () => {
         body: JSON.stringify(body),
       });
       return handleManagementAPI(req, new URL(req.url), liveConfig, {
-        refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+        // This branch replaced the best-effort `refreshCodexCatalog` dep with the
+        // convergence entry point; every other test in this file already wires it
+        // that way, and this one arrived from dev still using the old shape.
+        createManagementConvergeCodex: catalogConvergenceFactory(() => { catalogRefreshes += 1; }),
       });
     };
 
