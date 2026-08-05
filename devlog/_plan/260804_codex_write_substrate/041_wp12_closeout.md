@@ -1094,6 +1094,17 @@ AND `jobId`, and the payload fields each type requires — and subscribes to
 three is a small change; the point is that they are three, and the durability
 claim needs all of them.
 
+The tests that hold it down are named, because the Worker always closes after
+posting its result (`history-worker.ts:160`) — so a `close` handler that
+overturned a valid success would turn every completed job into a reported
+death:
+
+- a malformed message with a RECOGNISED type is rejected, not cast;
+- an unrecognised type is a death signal, not silence;
+- `messageerror` and an early `close` classify as `worker-died`;
+- a terminal message followed by a normal `close` leaves the success intact —
+  the last case is the one that proves the new handler did not learn to lie.
+
 Two facts that stay true regardless of which row applies:
 
 - `converged.rows`/`files` are mutation counts (`history-worker.ts:140-146`),
