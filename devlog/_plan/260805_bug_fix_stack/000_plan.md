@@ -20,26 +20,37 @@ Windows runner this machine does not have, and stays out.
 
 ## Layer map
 
-Ordered by file independence, not by size. Three of the four layers touch
-disjoint files, so they are **independent branches off `dev`**, not a linear
-stack. Only #1057 and #1043 share a file (`src/providers/registry.ts`), and they
-touch lines ~1300 apart with no semantic overlap.
+| Layer | Issue | Files |
+|-------|-------|-------|
+| 010 | #1057 DeepSeek ladder | `src/providers/registry.ts:349-360` **and `:1668-1669`**, `src/config.ts`, 3 test files |
+| 020 | #1043 (+ live half of #1024) | `src/providers/registry.ts:1652` **and `:1671`**, `tests/vision-sidecar-e2e.test.ts` |
+| 030 | #1061 test harness | `tests/native-profile-crash-boundaries.test.ts`, `tests/helpers/native-profile-startup-child.ts` |
+| 040 | #1046 startup app-server | `src/codex/app-server-processes.ts`, `src/codex/desired-state.ts`, `src/server/index.ts` |
 
-| Layer | Issue | Files | Overlaps |
-|-------|-------|-------|----------|
-| 010 | #1057 DeepSeek ladder | `src/providers/registry.ts:349-360`, `src/config.ts`, 3 test files | shares registry.ts with 020 |
-| 020 | #1043 (+ live half of #1024) | `src/providers/registry.ts:1652`, `tests/vision-sidecar-e2e.test.ts` | shares registry.ts with 010 |
-| 030 | #1061 test harness | `tests/native-profile-crash-boundaries.test.ts`, `tests/helpers/native-profile-startup-child.ts` | none |
-| 040 | #1046 startup app-server | `src/codex/app-server-processes.ts`, `src/codex/desired-state.ts` | none |
+### Stack shape: 010→020 stacked, 030 and 040 independent
 
-**Stack shape decision: linear.** Even though only two layers share a file, a
-linear stack off one branch keeps the CI story simple and matches the repository's
-documented stacked-child workflow in `AGENTS.md`. Each child targets its parent's
-head; after the parent lands, the child retargets to `dev`.
+An earlier draft claimed 010 and 020 touch `registry.ts` "~1300 lines apart with
+no semantic overlap" and then made all four layers a linear chain. The audit
+found both halves wrong.
 
-Order: `010 → 020 → 030 → 040`. #1057 goes first because it is the most
-self-contained change to `registry.ts`; #1043 then edits a different region of the
-same file without conflict.
+**The overlap is adjacent, not distant.** 010 rewrites `opencode-free`'s
+reasoning maps at `:1668-1669`; 020 rewrites that same provider object's
+`noVisionModels` at `:1671`. Two lines apart, same literal. They genuinely need
+ordering — just not for the reason the draft gave.
+
+**030 and 040 share nothing with anything.** Chaining them behind 020 would buy
+nothing and cost two retargets after the parents land. They go straight to `dev`
+as independent PRs, which `AGENTS.md` permits alongside stacked children.
+
+```
+dev ──┬── 010 (#1057) ── 020 (#1043)      stacked: adjacent registry edits
+      ├── 030 (#1061)                     independent
+      └── 040 (#1046)                     independent
+```
+
+Order within the stack: 010 first, because 020's `noVisionModels` widening at
+`:1671` reads more clearly once 010 has already reshaped the same object's
+reasoning maps.
 
 ## What the design research changed
 

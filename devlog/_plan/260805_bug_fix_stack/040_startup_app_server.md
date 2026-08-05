@@ -67,18 +67,39 @@ It never reaches `restartCodexAppServers()`. That is the whole point.
 objects but reads only `.pid` (`:410-417`); widening its parameter to a
 PID-bearing shape avoids a needless cast.
 
-### `src/codex/desired-state.ts:148-160` — MODIFY
+### `src/codex/desired-state.ts:148-160` — MODIFY (two problems, both found at audit)
 
-Call it after a startup sync that actually wrote something (`catalogWritten ||
-cacheSynced`, flags from `src/codex/sync.ts:83-89`). Startup sync is explicitly
-best-effort (`:141-155`) and this must not change that.
+**The sync result is currently thrown away.** `defaultStartupSync` returns
+`syncModelsToCodex(port)` as `Promise<unknown>`, and `syncCodexOnStartIfEnabled`
+does `await sync(port).catch(() => {})` then returns a bare `boolean` meaning
+"the integration was enabled", not "a write happened". So the `catalogWritten ||
+cacheSynced` gate this layer depends on **cannot be evaluated** as the code
+stands.
 
-### Deliberately out of scope
+Fix the seam first: type `CodexStartupSync` to return the sync result, keep the
+`.catch` (startup must stay best-effort), and let the caller distinguish
+*skipped* / *ran and wrote* / *ran and failed*. Only then is the write gate real.
 
-`src/server/index.ts:403-412` is the second gap. It is left alone in this layer:
-the cache-only invalidation is a different write with a different lifecycle, and
-widening the blast radius of a first fix is how a small change becomes unmergeable.
-Recorded here so the next round does not think it was missed.
+**The catalog-state cache can mask the very staleness we are checking for.**
+`collectCodexAppServerCatalogState` memoizes for 5 s
+(`src/codex/app-server-processes.ts:557-585`, `CATALOG_STATE_TTL_MS`). Startup
+plausibly calls it before the write — some other guidance path already does — gets
+`fresh`, and the post-write call inside that window returns the cached `fresh`
+and stays silent. The helper must bypass or invalidate the cache after a
+confirmed write. The function already accepts a `CodexAppServerProcessIo` seam
+and only uses the cache when every field is defaulted, so an explicit bypass is
+available without new machinery.
+
+### `src/server/index.ts:403-412` — MODIFY (no longer out of scope)
+
+An earlier draft excluded this as "a different write with a different lifecycle".
+The audit rejected that, correctly: this path invalidates `models_cache.json` on
+**every** server startup, independently of the later optional sync. With Codex
+integration disabled, or when the sync writes nothing, startup still leaves a
+running app-server stale and this layer would have shipped silence.
+
+Both writes route through the same post-write, stale-only decision, deduplicated
+so a startup that hits both paths warns once.
 
 ## Tests
 
@@ -88,14 +109,24 @@ exhaustive read-only scan across `origin/dev`'s `tests/` for files mentioning bo
 `afterCatalogWriteHandleAppServers|collectCodexAppServerCatalogState`. Result:
 empty.
 
-**Add**, faking both boundaries:
+**Add**, faking both boundaries through the existing `CodexAppServerProcessIo`
+seam (`io.listSnapshots`, `io.readStartMs`, `io.catalogMtimeMs`, `io.now`) so no
+new injection point is invented:
 
-1. discovery runs only when `catalogWritten || cacheSynced`;
-2. stale warns, fresh and `not_running` do not;
-3. **an injected `kill` that fails the test if called** — this is the assertion
-   that matters, because it is the one that would catch a future refactor wiring
-   the `restart` branch into boot;
-4. discovery throwing still resolves startup successfully.
+1. the warning runs only when the sync reports a write — requires the typed
+   result from the seam fix above;
+2. stale warns; `fresh`, `not_running`, and `unknown` do not;
+3. **pre-write `fresh` then post-write `stale` still warns** — this is the
+   cache-masking regression, and it is the test that would have caught the bug the
+   audit found;
+4. **an injected `kill` that fails the test if called**, proving no startup path
+   can reach `restartCodexAppServers()`;
+5. discovery throwing still resolves startup successfully;
+6. a startup hitting both write paths warns exactly once.
+
+For (4), the helper must accept the process-I/O seam rather than closing over
+module state — the audit noted the earlier draft promised this assertion while
+proposing a helper with nothing to inject into.
 
 Existing coverage to leave intact: `tests/codex-app-server-processes.test.ts:19-106`
 (classification), `:309-338` (warn vs SIGTERM), `tests/codex-desired-state.test.ts:167-205`
@@ -104,12 +135,17 @@ Existing coverage to leave intact: `tests/codex-app-server-processes.test.ts:19-
 ## Red-green
 
 Test 2 fails on the pre-fix tree: startup emits no warning at all for a stale
-app-server. Test 3 passes before and after by construction — it is a guard, not a
-regression proof, and the doc says so rather than counting it twice.
+app-server. Test 3 fails against a naive implementation that reuses the cached
+state — it is the specific regression proof for this layer. Test 4 passes before
+and after by construction; it is a guard against future refactors, not a
+regression proof, and is not counted as one.
 
 ## Accept criteria
 
 - Startup warns only when the classifier says `stale`.
+- The startup sync seam returns a typed result, so "a write happened" is observable.
+- A pre-write `fresh` reading cannot suppress the post-write warning.
+- Both startup write paths are covered, warning once.
 - No code path from startup can reach `restartCodexAppServers()`, proven by an
   injected `kill` that fails the test if invoked.
 - Discovery failure never fails boot.

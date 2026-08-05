@@ -39,7 +39,10 @@ const DEEPSEEK_THINKING_REASONING_MAP: Record<string, string> = {
 // verified 2026-08-06). `xhigh` is a compatibility alias, not a native tier, and it
 // resolves DIFFERENTLY per model: xhigh->max on Pro, xhigh->high on Flash. `medium`
 // has no documented row; mapping it to `high` is our own compatibility choice.
-const DEEPSEEK_THINKING_EFFORTS = ["low", "high", "max"];
+// Flash honors low natively. Pro does not (low->high today), so Pro must not
+// advertise a tier the vendor silently upgrades.
+const DEEPSEEK_FLASH_EFFORTS = ["low", "high", "max"];
+const DEEPSEEK_PRO_EFFORTS = ["high", "max"];
 const DEEPSEEK_PRO_REASONING_MAP: Record<string, string> = {
   low: "high", medium: "high", high: "high", xhigh: "max", max: "max",
 };
@@ -48,10 +51,27 @@ const DEEPSEEK_FLASH_REASONING_MAP: Record<string, string> = {
 };
 ```
 
-Note what does *not* change: Pro's `low -> high` stays, because that is what
-DeepSeek does. The reporter asked for `low -> low` universally; that is correct
-for Flash and wrong for Pro. Advertising `low` is right for both — the ladder is
-what the picker shows — but the wire resolution differs, and we follow the vendor.
+### The advertised ladder is per model too, and this is the audit's finding
+
+An earlier draft advertised `["low","high","max"]` for both models. The reviewer
+rejected that, correctly: on Pro, DeepSeek resolves `low -> high`. Advertising
+`low` there would put a tier in the picker that the vendor silently upgrades — the
+user selects "low", pays for "high", and nothing tells them. That is not a smaller
+version of the reported defect, it is the same defect pointed at a different value.
+
+So Pro advertises `["high","max"]` — the two levels it actually distinguishes —
+and Flash advertises `["low","high","max"]`. The reporter asked for `low/high/max`
+everywhere; that is right for Flash and wrong for Pro, and following the vendor
+table beats following the request.
+
+`xhigh` disappears from both advertised ladders while staying in both wire maps.
+That is the issue's actual ask: aliases stay, they just stop pretending to be
+native tiers.
+
+**Re-verify before implementing.** The vendor page carries a footnote that Pro's
+mapping updates in early August 2026, which is now. If Pro starts honoring `low`
+natively, `DEEPSEEK_PRO_EFFORTS` gains it and the map entry changes with it. The
+layer's first action is to re-read the table, not to trust this document.
 
 ### The seven consumers — MODIFY each to pick the right map
 
@@ -71,9 +91,20 @@ becomes a per-model selection instead of one shared object:
 A small helper keeps this from becoming seven hand-written objects:
 
 ```ts
+const isDeepseekFlash = (modelId: string): boolean =>
+  modelId.toLowerCase().includes("flash");
+const deepseekEffortsFor = (modelId: string): string[] =>
+  isDeepseekFlash(modelId) ? DEEPSEEK_FLASH_EFFORTS : DEEPSEEK_PRO_EFFORTS;
 const deepseekReasoningMapFor = (modelId: string): Record<string, string> =>
-  modelId.includes("flash") ? DEEPSEEK_FLASH_REASONING_MAP : DEEPSEEK_PRO_REASONING_MAP;
+  isDeepseekFlash(modelId) ? DEEPSEEK_FLASH_REASONING_MAP : DEEPSEEK_PRO_REASONING_MAP;
 ```
+
+The audit verified this substring test against every ID in the seven entries,
+including the prefixed `deepseek/deepseek-v4-pro` and the suffixed
+`deepseek-v4-flash-free`, and found it correct today. It is still a substring
+test, so the layer adds an assertion enumerating the exact IDs and their expected
+classification — a future `deepseek-v5-flashlite-pro` would otherwise misroute
+silently.
 
 ### `src/config.ts` — MODIFY (saved-config migration)
 
@@ -96,6 +127,8 @@ Narrow in-memory normalizer during `loadConfig`, no write from the read path
 
 - `tests/provider-registry-parity.test.ts:110-113` — advertised ladder.
 - `tests/volcengine-providers.test.ts:71-78` — advertised ladder + `low` mapping.
+
+Both now expect **different** values per model, not one shared array.
 
 **Do not touch (these lock compatibility aliases, not the defect):**
 

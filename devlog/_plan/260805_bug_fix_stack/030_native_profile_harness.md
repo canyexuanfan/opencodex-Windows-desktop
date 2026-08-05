@@ -65,15 +65,44 @@ async function waitForJson<T>(path: string, timeout = 10_000): Promise<T> {
 
 Bound the teardown following the pattern the sibling test already uses
 (`tests/native-profile-startup.test.ts:259-269`), with the shared
-`INTERNAL_DEADLINE_MS` from `tests/helpers/test-budget.ts:49-57`:
+`INTERNAL_DEADLINE_MS` from `tests/helpers/test-budget.ts:49-57`.
+
+The audit caught two defects in the earlier sketch: it referenced an undefined
+`timeoutMs`, and it left an unbounded `await child.exited` *after* the kill while
+claiming no unbounded waits remained. A SIGTERM that the child ignores would hang
+in exactly the same way as the bug being fixed. Both are corrected here:
 
 ```ts
-const exit = await Promise.race([child.exited, Bun.sleep(timeoutMs).then(() => null)]);
-if (exit === null) { child.kill(); await child.exited; throw new Error("startup child did not stop"); }
+import { INTERNAL_DEADLINE_MS } from "./helpers/test-budget";
+
+const KILL_GRACE_MS = 2_000;
+
+async function stopStartup(
+  child: ReturnType<typeof spawnStartup>,
+  paths: ReturnType<typeof startupPaths>,
+  timeoutMs: number = INTERNAL_DEADLINE_MS,
+): Promise<void> {
+  writeFileSync(paths.release, "recover");
+  writeFileSync(paths.stop, "stop");
+  const exit = await Promise.race([child.exited, Bun.sleep(timeoutMs).then(() => null)]);
+  if (exit === null) {
+    child.kill();
+    // bounded here too: an ignored SIGTERM must not reproduce the original hang
+    const killed = await Promise.race([
+      child.exited,
+      Bun.sleep(KILL_GRACE_MS).then(() => null),
+    ]);
+    if (killed === null) child.kill("SIGKILL");
+    throw new Error("startup child did not stop");
+  }
+  if (exit !== 0) throw new Error(await new Response(child.stderr).text());
+}
 ```
 
-Both halves are fixed with mechanisms already in the tree. Neither is new
-machinery.
+Call `await stopStartup(restart, p)` from `finally`, replacing
+`expect(await restart.exited).toBe(0)` at `:194-198`.
+
+Both halves reuse mechanisms already in the tree. Neither is new machinery.
 
 ## Red-green, and where it is honest about its limits
 
@@ -82,16 +111,26 @@ machinery.
 instead of throwing `Unexpected EOF`. That test fails against the old
 existence-only `waitFor` by construction.
 
-**The hang is not deterministically testable without injection.** Proving the
-timeout branch fires needs a child that deliberately stalls — a test-only env flag
-parking before `server.stop(true)`, a short deadline, and an assertion that the
-child was killed and the error raised. That is the honest way to satisfy
-C-ACTIVATION-GROUNDING-01 here; without it, the bounded wait is present but never
-shown firing, and "it no longer hangs" is unfalsifiable in a passing run.
+**The hang needs injection to be provable.** Exact shape, since the audit asked
+for it rather than a description:
 
-If the injection proves too invasive for a test helper, the fallback is to state
-plainly in the PR that the timeout path is unexercised — not to claim the fix is
-verified because the suite is green.
+- In `tests/helpers/native-profile-startup-child.ts`, immediately after the stop
+  marker is observed and **before** `server.stop(true)` at `:84`:
+  ```ts
+  if (process.env.OCX_TEST_STALL_ON_STOP === "1") { await new Promise(() => {}); }
+  ```
+  Test-only, opt-in, and inert unless the variable is set. The audit judged this
+  acceptable in `tests/helpers/`.
+- A new case in `tests/native-profile-crash-boundaries.test.ts` spawns the child
+  with that variable, calls `stopStartup(child, paths, 1_000)`, and asserts the
+  rejection message is `startup child did not stop` **and** that
+  `child.exitCode !== null` afterwards — proving cleanup happened, not merely that
+  a timeout was detected.
+- Deadline values: `1_000` ms in the injected test (fast), `INTERNAL_DEADLINE_MS`
+  in production teardown.
+
+Without that case the bounded wait would be present but never shown firing, and
+"it no longer hangs" would be unfalsifiable in a green run.
 
 ## Accept criteria
 

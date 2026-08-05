@@ -73,3 +73,40 @@ list easy to amend, not claim permanence.
 
 `#1024`'s remaining `TR` / `moonshotai/kimi-k3-free` half is untouched by this —
 `TR` is not a built-in registry provider and depends on reporter configuration.
+
+## Follow-up: does this evidence transfer to the key-auth provider?
+
+The audit raised a real objection: the probe used `x-opencode-client: desktop`,
+which is the *free* tier's header, while layer 020 modifies the **key-auth**
+`opencode-zen` entry. Evidence from one access tier applied to another is exactly
+the kind of reasoning that silently destroys a user's image.
+
+Re-probed 2026-08-05 with the header removed entirely:
+
+| request | result |
+|---|---|
+| `big-pickle` text, no header | `200`, completion returned |
+| `big-pickle` + image, no header | `invalid_request_error … unknown variant 'image_url', expected 'text'` |
+| `mimo-v2.5-free` + image, no header | `200`, reasoning begins *"The user has provided an image and…"* |
+| `big-pickle` text, `authorization: Bearer sk-invalid-probe` | `AuthError: Invalid API key.` |
+
+Three things follow.
+
+**The desktop header was never what made the probe work.** The same models answer
+with no header at all, so the modality behavior is a property of the model
+routing, not of the free tier's client identity.
+
+**Model capability is enforced upstream of authentication.** `big-pickle` rejects
+`image_url` identically with and without the header, and the rejection text names
+the upstream provider's deserializer. A key does not change which content types a
+text-only model accepts.
+
+**`mimo-v2.5-free` is now doubly confirmed as vision-capable** — it does not merely
+return 200, it narrates the image. The reviewer's own spot-check hit a transient
+502 on this model and recorded it as inconclusive rather than contrary; this run
+resolves it.
+
+What remains genuinely unproven is whether an *authenticated* Zen account is
+served a different roster or different routing for the same IDs. That cannot be
+settled without a key. The layer handles it by scope rather than by assumption:
+see `020`.

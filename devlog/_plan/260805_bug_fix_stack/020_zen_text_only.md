@@ -63,12 +63,56 @@ Then attach it to the `opencode-zen` entry at `:1652`, which currently has no
 { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1",
   adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth",
   noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS },
+
+// and widen the sibling free entry from the DeepSeek-only list
+//   :1671  noVisionModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+// to
+//   :1671  noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
 ```
 
 The sibling `opencode-free` entry at `:1655-1671` already does exactly this
 against the same base URL, so this is the established shape for this vendor, not
-a new mechanism. It should also widen from `OPENCODE_FREE_DEEPSEEK_MODELS` to the
-full measured list, since it serves the same free roster.
+a new mechanism.
+
+### Does free-tier evidence justify touching the key-auth entry?
+
+The audit's sharpest objection: the probe ran unauthenticated, and `opencode-zen`
+is `authKind: "key"`. Applying one tier's evidence to another is how a user's
+image gets silently destroyed.
+
+Re-probed with the desktop header removed entirely (`002`, follow-up section):
+`big-pickle` rejects `image_url` identically with no header, `mimo-v2.5-free`
+narrates the image with no header, and a bogus bearer token returns `AuthError`
+before any model logic runs. So capability is enforced upstream of authentication
+and the header was never load-bearing — the evidence does transfer for these IDs.
+
+What stays unproven is whether an authenticated account is served a *different
+roster* under the same names. Two things bound that risk. The list is
+fail-**closed** only for IDs measured to reject images, so a wrong entry costs a
+caption instead of a hard 400; and `#1024` already reports real users hitting the
+text-only failure through this provider, so the population being protected is not
+hypothetical.
+
+If a maintainer with a Zen key disagrees, the correct narrowing is to move the
+list to `opencode-free` alone. That is recorded as the fallback, not chosen,
+because it would leave the reporter's own provider unfixed.
+
+### Drift policy — the list is dated, not permanent
+
+Zen's roster is discovered live (`liveModels: true` on the sibling) while this
+list is static. Two failure directions, unequal in cost:
+
+| drift | consequence | severity |
+|---|---|---|
+| Zen adds a text-only model we do not list | user gets the loud upstream 400 — today's behavior | tolerable, visible |
+| A listed model gains vision | images silently replaced by a caption | **worse, invisible** |
+
+The second is why the constant carries its measurement date in a comment and why
+`mimo-v2.5-free` / `longcat-2.0-free` get an explicit *negative* assertion: the
+guard has to survive a future well-meaning "just classify all the free models"
+patch. This is a dated, measured exception list — not a capability model, and it
+should be replaced by one once live modality metadata becomes canonical (the
+follow-up named at the top of this doc).
 
 ### Tests
 
