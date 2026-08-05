@@ -1023,8 +1023,9 @@ and the ones that did were rewritten rather than kept.
   hardening failure; (s) the owner site swallows it; (t) the claim reclassifies a
   denied ACL as busy; (u) the owner reclassifies it as contended; (v) the owner publishes a transient
   `held` before settling `unavailable`; (w) the owner schedules a retry from that
-  permanent refusal, republishing `unavailable` each time.
-  (h) through (w) are not redundant — each survived every other check. (h) and (i)
+  permanent refusal, republishing `unavailable` each time; (x) the owner hardens a
+  different existing file; (y) the claim hardens a different existing file.
+  (h) through (y) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1102,6 +1103,15 @@ and the ones that did were rewritten rather than kept.
   rejection, the protected operation never running, and the hardener targeting the
   right database. Adding a subscribe API solely so a test could assert a trace would
   be machinery that strengthens no public contract.
+
+  **And the matrix has to be assertions, not prose.** (x) and (y) are the proof:
+  the rule above already said "assert the exact target", and both callers were then
+  redirected at an unrelated existing file with every test still green — because
+  each one asserted only that *some* `/grant:r` happened. Writing a matrix into a
+  plan does not execute it. Every dimension named here is now a concrete assertion
+  at both call edges: `expect(seen.every(args => args[0] === expected)).toBe(true)`
+  against `nativeMainClaimPath(context)` and `join(codexHome, NATIVE_MAIN_OWNER_DB)`,
+  in the success and the failure test alike.
 
   **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
   `observe()` treats a zero inode as unobservable, so if Bun returns zero there,

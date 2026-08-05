@@ -34,8 +34,8 @@ import {
 } from "../src/lib/windows-secret-acl";
 import { atomicWriteFile } from "../src/config";
 import { hardenStableLockFile } from "../src/codex/native-main-lock-file";
-import { withNativeMainSharedClaim } from "../src/codex/native-main-claim";
-import { retainNativeMainOwner } from "../src/codex/native-main-owner";
+import { nativeMainClaimPath, withNativeMainSharedClaim } from "../src/codex/native-main-claim";
+import { NATIVE_MAIN_OWNER_DB, retainNativeMainOwner } from "../src/codex/native-main-owner";
 
 let testDir = "";
 
@@ -1163,7 +1163,9 @@ describe("the production default hardener is reached, with the resolved platform
 
   test("a claim with no hardenPath runs the real ACL sequence under a forced win32", async () => {
     resetHardenedStateForTests();
+    let expected = "";
     const seen = await forcedWindows(async codexHome => {
+      expected = nativeMainClaimPath({ codexHome } as never);
       await withNativeMainSharedClaim(
         { codexHome } as never,
         async () => undefined,
@@ -1171,11 +1173,16 @@ describe("the production default hardener is reached, with the resolved platform
       );
     });
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
+    // The EXACT target, not merely that some ACL ran. Redirecting the caller at
+    // an unrelated existing file passed every other dimension of this test.
+    expect(seen.every(args => args[0] === expected)).toBe(true);
   });
 
   test("an owner with no hardenPath runs the real ACL sequence under a forced win32", async () => {
     resetHardenedStateForTests();
+    let expected = "";
     const seen = await forcedWindows(async codexHome => {
+      expected = join(codexHome, NATIVE_MAIN_OWNER_DB);
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
       try {
         const deadline = Date.now() + 5_000;
@@ -1187,6 +1194,7 @@ describe("the production default hardener is reached, with the resolved platform
       }
     });
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
+    expect(seen.every(args => args[0] === expected)).toBe(true);
   });
 });
 
@@ -1204,7 +1212,7 @@ describe("a required hardening failure stops the operation it protects", () => {
    */
   const forcedWindowsFailure = async (
     run: (codexHome: string) => Promise<void>,
-    onAttempt: () => void = () => {},
+    onAttempt: (args: string[]) => void = () => {},
   ): Promise<void> => {
     setPlatformForTests("win32");
     const previousUsername = process.env.USERNAME;
@@ -1212,7 +1220,7 @@ describe("a required hardening failure stops the operation it protects", () => {
     setAsyncIcaclsRunnerForTests(async args => {
       // Count only the first step of each sequence, so the counter is attempts
       // rather than icacls invocations.
-      if (args.includes("/grant:r")) onAttempt();
+      if (args.includes("/grant:r")) onAttempt(args);
       return { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" };
     });
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-harden-fail-"));
@@ -1230,7 +1238,10 @@ describe("a required hardening failure stops the operation it protects", () => {
   test("a claim whose ACL cannot be applied never runs its operation", async () => {
     resetHardenedStateForTests();
     let operationRan = false;
+    const targets: string[] = [];
+    let expected = "";
     await forcedWindowsFailure(async codexHome => {
+      expected = nativeMainClaimPath({ codexHome } as never);
       // The exact code matters, not merely that it threw. A denied ACL is a
       // permanent refusal; classifying it as BUSY would send a caller back to
       // retry something that will fail identically forever. Broadening isBusy()
@@ -1247,8 +1258,9 @@ describe("a required hardening failure stops the operation it protects", () => {
         code = (error as { code?: string }).code;
       }
       expect(code).toBe("NATIVE_MAIN_CLAIM_UNAVAILABLE");
-    });
+    }, args => { targets.push(args[0]!); });
     expect(operationRan).toBe(false);
+    expect(targets).toEqual([expected]);
   });
 
   /**
@@ -1266,7 +1278,10 @@ describe("a required hardening failure stops the operation it protects", () => {
   test("an owner whose ACL cannot be applied goes acquiring -> unavailable, with no held, contended, or retry", async () => {
     resetHardenedStateForTests();
     let hardenAttempts = 0;
+    const targets: string[] = [];
+    let expected = "";
     await forcedWindowsFailure(async codexHome => {
+      expected = join(codexHome, NATIVE_MAIN_OWNER_DB);
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
       const trace: string[] = [];
       const unsubscribe = owner.subscribe(snapshot => { trace.push(snapshot.status); });
@@ -1295,10 +1310,12 @@ describe("a required hardening failure stops the operation it protects", () => {
         expect(trace).toEqual(["acquiring", "unavailable"]);
         // And the ACL was attempted exactly once: a hidden retry would harden again.
         expect(hardenAttempts).toBe(1);
+        // Exactly one attempt, against exactly the owner's own database.
+        expect(targets).toEqual([expected]);
       } finally {
         unsubscribe();
         await owner.release();
       }
-    }, () => { hardenAttempts += 1; });
+    }, args => { hardenAttempts += 1; targets.push(args[0]!); });
   });
 });
