@@ -104,7 +104,7 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `candidates` | `{ provider: string; model: string }[]` | required | Explicit allowlist of `provider/model` refs. No implicit expansion. |
 | `alias?` | `string` | — | Optional public model id in place of `policy/<id>`. |
 | `require?` | object | `{}` | Hard capability requirements evaluated before scoring (see below). |
-| `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights, normalized deterministically. `health`, `quota`, and `cost` have score dimensions; the configured-priority share is `1 - health - quota - cost` (default 0.65), and `latency` folds into that priority share rather than scoring independently. |
+| `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights, normalized deterministically. `health`, `quota`, and `cost` have score dimensions; the configured-priority share is `1 - health - quota - cost` (default 0.55), and `latency` folds into that priority share rather than scoring independently. |
 | `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd` (enforced by the dry-run evaluator when candidate cost evidence is known). |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
