@@ -148,7 +148,7 @@ export function admitCodexWrite(): CodexAdmission {
     cache: CODEX_MODELS_CACHE_PATH,
     // The journal's own constant. Re-deriving it here is what made this field
     // watch a path nothing writes.
-    journal: join(opencodexHome, "codex-journal.json"),
+    journal: JOURNAL_PATH,
     integrationRecord,
     // Backups and rollouts are enumerated by their owners, not guessed here.
     catalogBackups: [] as readonly string[],
@@ -172,7 +172,7 @@ export function admitCodexWrite(): CodexAdmission {
     ownership: "owned",
     externalProvider: null,
     canonicalTargets,
-    journalIdentity: contentIdentity(join(opencodexHome, "codex-journal.json")),
+    journalIdentity: contentIdentity(JOURNAL_PATH),
     provenanceIdentity: contentIdentity(integrationRecord),
     authoritySnapshotId: "",
   };

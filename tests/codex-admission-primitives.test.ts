@@ -289,6 +289,23 @@ describe("the journal has one owner", () => {
     expect(dirname(JOURNAL_PATH).endsWith(".codex")).toBeTrue();
     expect(dirname(JOURNAL_PATH).endsWith(".opencodex")).toBeFalse();
   });
+
+  /**
+   * The constant existing is not the property. ADMISSION USING IT is.
+   *
+   * The first version of this suite asserted only the constant, and a commit
+   * landed in which the comment said "the journal's own constant" directly
+   * above a hand-derived path — the exact defect, restated as its own fix,
+   * with the tests still green. Reading the producer's source is blunt, but it
+   * is the thing that was actually wrong.
+   */
+  test("admission derives no journal path of its own", async () => {
+    const source = await Bun.file(
+      join(import.meta.dir, "..", "src", "codex", "admission.ts"),
+    ).text();
+    expect(source).toContain("JOURNAL_PATH");
+    expect(source).not.toContain("codex-journal.json");
+  });
 });
 
 function snapshotWith(overrides: Partial<AdmissionSnapshot>): AdmissionSnapshot {
