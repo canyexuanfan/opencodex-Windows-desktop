@@ -1,4 +1,5 @@
 /** @jsxImportSource react */
+// CI path-filter retrigger for RI-10 bot gates.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
