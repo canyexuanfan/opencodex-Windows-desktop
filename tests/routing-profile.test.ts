@@ -185,6 +185,15 @@ describe("routing profiles (RI-04)", () => {
     expect(duplicates.some(issue => issue.message.includes("duplicate"))).toBe(true);
   });
 
+  test("require rejects the reserved unknown service tier", () => {
+    const config = baseConfig();
+    const reservedTier = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m1" }],
+      require: { serviceTier: "unknown" },
+    }, config);
+    expect(reservedTier.some(issue => issue.path.join(".") === "require.serviceTier")).toBe(true);
+  });
+
   test("config load accepts valid profiles and rejects broken ones", () => {
     const valid = validateConfigCandidate(baseConfig());
     expect(valid.ok).toBe(true);

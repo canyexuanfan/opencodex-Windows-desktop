@@ -46,6 +46,7 @@ export interface RouteCapabilityEvidence {
   image?: Unknownable;
   structuredOutput?: Unknownable;
   reasoningEfforts?: string[];
+  /** `"unknown"` is reserved: it encodes missing evidence, never a real tier. */
   serviceTier?: string | "unknown";
   localOnly?: Unknownable;
   remoteAllowed?: Unknownable;

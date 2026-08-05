@@ -263,6 +263,11 @@ export function routingProfileIssues(
       }
       if (require.serviceTier !== undefined && typeof require.serviceTier !== "string") {
         issues.push({ path: ["require", "serviceTier"], message: "serviceTier must be a string" });
+      } else if (require.serviceTier === "unknown") {
+        issues.push({
+          path: ["require", "serviceTier"],
+          message: "serviceTier must not use the reserved \"unknown\" value (it encodes missing evidence)",
+        });
       }
     }
   }
