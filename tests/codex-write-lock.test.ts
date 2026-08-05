@@ -288,6 +288,20 @@ describe("two real processes contend for one lock", () => {
     });
   }
 
+  /** Same child, but with the home-shaped environment variables under test. */
+  function spawnChildWithEnv(payload: Record<string, unknown>, env: Record<string, string>) {
+    return Bun.spawn(["bun", childPath], {
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        ...env,
+        OCX_LOCK_CHILD_PAYLOAD: JSON.stringify(payload),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+
   async function childResult(child: ReturnType<typeof Bun.spawn>) {
     const [stdout] = await Promise.all([new Response(child.stdout).text(), child.exited]);
     const line = stdout.trim().split("\n").filter(Boolean).at(-1) ?? "{}";
@@ -352,4 +366,85 @@ describe("two real processes contend for one lock", () => {
     expect(waited.status).toBe("acquired");
     expect(waited.status === "acquired" && waited.waitedMs).toBeGreaterThan(0);
   }, 30_000);
+
+  /**
+   * C7/C18 — the namespace keys on the OS user, not on any home accessor.
+   *
+   * This is defect #7 of this unit, and it had no test until now: the lock module
+   * shipped with real two-process contention proven, while the property that makes
+   * that contention MEAN anything was unasserted. Bun 1.3.14 returns an
+   * environment-controlled home from both `os.homedir()` and
+   * `os.userInfo().homedir`, so a namespace derived from either splits one OS user
+   * across two lock files whenever a service and a CLI see different HOME values —
+   * and two processes that should exclude each other quietly stop doing so.
+   *
+   * The plan is explicit that setting HOME and USERPROFILE to the SAME fake value
+   * in both children is insufficient, because that cannot catch the original split.
+   * So each case varies one variable while holding the other equal, and the last
+   * varies both in opposite directions at once.
+   */
+  /*
+   * Built INSIDE each test, not at module scope.
+   *
+   * `root` is assigned in beforeEach, so evaluating these paths while the module
+   * loads produced `join("", "fake-home-a")` — a RELATIVE path — and the children
+   * dutifully created `fake-home-a/` and friends in the repository root. The test
+   * still "passed" its exclusion assertion, which is the tell: a fixture that
+   * silently writes to the wrong place looks identical to one that works.
+   */
+  const homeEnvironments = () => [
+    {
+      name: "HOME differs, USERPROFILE shared",
+      a: { HOME: join(root, "fake-home-a"), USERPROFILE: join(root, "fake-common") },
+      b: { HOME: join(root, "fake-home-b"), USERPROFILE: join(root, "fake-common") },
+    },
+    {
+      name: "USERPROFILE differs, HOME shared",
+      a: { HOME: join(root, "fake-common"), USERPROFILE: join(root, "fake-profile-a") },
+      b: { HOME: join(root, "fake-common"), USERPROFILE: join(root, "fake-profile-b") },
+    },
+    {
+      name: "both differ, in opposite directions",
+      a: { HOME: join(root, "fake-home-a"), USERPROFILE: join(root, "fake-profile-b") },
+      b: { HOME: join(root, "fake-home-b"), USERPROFILE: join(root, "fake-profile-a") },
+    },
+  ] as const;
+
+  for (const index of [0, 1, 2] as const) {
+    test(`one OS user and one home take ONE lock, case ${index}`, async () => {
+      const { name, a, b } = homeEnvironments()[index];
+      // Same OS user, same CODEX_HOME, different home-shaped environment. They
+      // must exclude each other, which can only happen if they resolved the same
+      // namespace.
+      //
+      // Every fake home is created under the per-test temp root first, so a
+      // child that resolves one still writes inside the fixture.
+      for (const dir of [a.HOME, a.USERPROFILE, b.HOME, b.USERPROFILE]) {
+        mkdirSync(dir, { recursive: true });
+      }
+      const holdMarker = join(root, `held-env-${name.replace(/[^a-z]+/gi, "-")}`);
+      const releaseMarker = join(root, `release-env-${name.replace(/[^a-z]+/gi, "-")}`);
+
+      const holder = spawnChildWithEnv({ holdMarker, releaseMarker, timeoutMs: 0 }, { ...a });
+      await waitFor(holdMarker);
+
+      // Fail-fast: if the two environments produced different lock files this
+      // would acquire instead of reporting contention.
+      const contender = await childResult(
+        spawnChildWithEnv({ timeoutMs: 0 }, { ...b }),
+      );
+      expect(contender.status).toBe("busy");
+
+      writeFileSync(releaseMarker, "go");
+      const held = await childResult(holder);
+      expect(held.status).toBe("acquired");
+
+      // And the identity is literally the same value, not merely a shared outcome.
+      const after = await childResult(
+        spawnChildWithEnv({ timeoutMs: 5_000 }, { ...b }),
+      );
+      expect(after.status).toBe("acquired");
+      expect(after.lockId).toBe(held.lockId);
+    }, 30_000);
+  }
 });

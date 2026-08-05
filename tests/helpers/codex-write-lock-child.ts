@@ -16,7 +16,6 @@ const payload = JSON.parse(process.env.OCX_LOCK_CHILD_PAYLOAD ?? "{}") as {
   timeoutMs?: number;
   holdMarker?: string;
   releaseMarker?: string;
-  publish?: boolean;
 };
 
 const admitted = { authoritySnapshotId: "authority-child" } as AdmissionSnapshot;
@@ -38,7 +37,14 @@ const result = await withCodexWriteLock(
         if (payload.releaseMarker && Bun.file(payload.releaseMarker).size > 0) break;
       }
     }
-    if (payload.publish !== false) {
+    // ALWAYS publishes. The lock verifies the row before it will commit, so a
+    // callback that writes nothing is not a valid commit — a caller cannot take
+    // N, do something else, and have the coordinator record a transition it
+    // never made. An earlier version of this helper had a `publish: false`
+    // option, and every child that used it failed with "the coordinator
+    // transition was not published"; the option was describing a state the
+    // contract does not have.
+    {
       ctx.coordinator.beginTransition(
         { nativeGeneration: ctx.expectation.nativeBefore, currentTxId: ctx.currentTxId },
         {
