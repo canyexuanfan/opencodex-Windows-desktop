@@ -318,11 +318,11 @@ describe("routing profiles (RI-04)", () => {
       { provider: "b", model: "m2", capability: { contextWindow: 5000 } },
     ]);
     expect(result.selectedIndex).toBe(0);
-    // RI-06: unknown health under the default "penalize" policy folds a
-    // penalized health floor into the score.
+    // RI-06/07/08: unknown health/quota/cost under the default "penalize"
+    // policy folds penalized floors into the score.
     expect(result.trace.candidates[0]!.score).toMatchObject({
-      total: 0.755,
-      components: { configuredPriority: 1, health: 0.3, quota: 0.3 },
+      total: 0.685,
+      components: { configuredPriority: 1, health: 0.3, quota: 0.3, cost: 0.3 },
     });
   });
 
