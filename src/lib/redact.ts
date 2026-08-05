@@ -78,8 +78,15 @@ const LETTER_CONFUSABLES = new Map<string, string>([
 // `_`, so `not-authorization:` and `internal_token:` were treated as the
 // credential labels they merely end with. Requiring a non-identifier character
 // (or start of input) keeps the match to whole field names.
+//
+// The optional quotes around the label matter: a serialized headers object
+// (`{"x-api-key":"<secret>"}`) puts a closing quote between the name and the
+// colon, so a bare `label:` pattern never saw it. The pre-existing JSON rules
+// below only listed a few field names and did not share this label grammar,
+// which is how ordinary JSON serialization — no homoglyphs, no attacker
+// alphabet — walked a credential straight through.
 const COLON_LABELLED_CREDENTIAL = new RegExp(
-  `(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:`,
+  `(?<![A-Za-z0-9_-])["']?(?:${CREDENTIAL_HEADER_LABEL})["']?[^\\S\\r\\n]*:`,
   "gi",
 );
 
@@ -130,23 +137,33 @@ function maskCredentialHeaders(value: string): string {
     const start = map[match.index] ?? value.length;
     const afterLabel = map[match.index + match[0].length] ?? value.length;
     if (start < cursor) continue;
-    // Everything from the separator to end-of-line is the credential.
     const lineEnd = (() => {
       const nl = value.slice(afterLabel).search(/[\r\n]/);
       return nl === -1 ? value.length : afterLabel + nl;
     })();
-    const rawValue = value.slice(afterLabel, lineEnd);
+    // A QUOTED value ends at its closing quote; everything else runs to
+    // end-of-line. Consuming the rest of the line inside a serialized object
+    // would swallow the closing brace and the sibling fields, turning a
+    // diagnostic into unparseable soup — and those siblings are not the
+    // credential.
+    const rest = value.slice(afterLabel, lineEnd);
+    const quoted = /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2/.exec(rest);
+    const valueEnd = quoted ? afterLabel + quoted[0].length : lineEnd;
+    const rawValue = value.slice(afterLabel, valueEnd);
     if (!rawValue.trim()) continue;
     // Keep the original separator spacing so a diagnostic still reads as
     // `header: [REDACTED]` rather than `header:[REDACTED]`.
     const gap = /^[^\S\r\n]*/.exec(rawValue)?.[0] ?? "";
+    const quote = quoted ? quoted[2]! : "";
     // `Bearer` is a fixed prefix, reproduced from a literal — never copied from
     // the input — and only where an auth scheme is meaningful.
     const label = match[0].replace(/[^\S\r\n]*:$/, "").trim();
     const isAuthHeader = /^(?:proxy-)?authorization$/i.test(label);
-    const prefix = isAuthHeader && /^[^\S\r\n]*Bearer[^\S\r\n]/i.test(rawValue) ? "Bearer " : "";
-    out += value.slice(cursor, afterLabel) + gap + prefix + REDACTED_SECRET;
-    cursor = lineEnd;
+    const prefix = isAuthHeader && new RegExp(`^[^\\S\\r\\n]*${quote}?Bearer[^\\S\\r\\n]`, "i").test(rawValue)
+      ? "Bearer "
+      : "";
+    out += value.slice(cursor, afterLabel) + gap + quote + prefix + REDACTED_SECRET + quote;
+    cursor = valueEnd;
   }
   return out + value.slice(cursor);
 }

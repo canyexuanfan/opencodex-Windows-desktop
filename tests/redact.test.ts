@@ -65,8 +65,10 @@ describe("redactSecretString", () => {
     // Re-review of the first fix: tokenizing the value on quotes, spaces, and
     // semicolons leaked every variant that contains one. A credential header's
     // value is the rest of the line, so that is what must be masked.
+    // A quoted value keeps its quotes: the mask replaces the contents, so a
+    // serialized field stays syntactically intact.
     expect(redactSecretString('x-api-key: "quotedcredential123456"'))
-      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+      .toBe(`x-api-key: "${REDACTED_SECRET}"`);
     expect(redactSecretString("Authorization: Basic dXNlcjpwYXNz"))
       .toBe(`Authorization: ${REDACTED_SECRET}`);
     expect(redactSecretString("Cookie: session=secret-one; csrf=secret-two"))
@@ -197,6 +199,30 @@ describe("redactSecretString", () => {
   test("ordinary supplementary text survives the fold unchanged", () => {
     expect(redactSecretString("emoji \u{1F600} and text stay intact"))
       .toBe("emoji \u{1F600} and text stay intact");
+  });
+
+  test("a serialized headers object does not hide the credential", () => {
+    // Structural, not a confusable gap: ordinary JSON serialization puts a
+    // closing quote between the field name and the colon, so a bare `label:`
+    // pattern never saw it, and the older JSON rules listed only a few field
+    // names without sharing the credential-label grammar.
+    expect(redactSecretString('request headers: {"x-api-key":"credentialvalue123456"}'))
+      .toBe(`request headers: {"x-api-key":"${REDACTED_SECRET}"}`);
+    expect(redactSecretString('headers={"authorization":"Basic dXNlcjpwYXNz"}'))
+      .toBe(`headers={"authorization":"${REDACTED_SECRET}"}`);
+    expect(redactSecretString('headers={"cookie":"session=credentialvalue123456"}'))
+      .toBe(`headers={"cookie":"${REDACTED_SECRET}"}`);
+    expect(redactSecretString("{'x-api-key': 'credentialvalue123456'}"))
+      .toBe(`{'x-api-key': '${REDACTED_SECRET}'}`);
+    expect(redactSecretString('"x-goog-api-key" : "credentialvalue123456"'))
+      .toBe(`"x-goog-api-key" : "${REDACTED_SECRET}"`);
+  });
+
+  test("a quoted value stops at its closing quote, keeping the object parseable", () => {
+    // Running to end-of-line inside an object would swallow the closing brace
+    // and every sibling field — and those siblings are not the credential.
+    expect(redactSecretString('{"x-api-key":"secret123456","model":"gpt-5.5"}'))
+      .toBe(`{"x-api-key":"${REDACTED_SECRET}","model":"gpt-5.5"}`);
   });
 
   test("a pathological repeated-header line neither overflows nor leaks", () => {
