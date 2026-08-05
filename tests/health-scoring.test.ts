@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendUsageEntry, resetUsageReadCacheForTests, type PersistedUsageEntry } from "../src/usage/log";
 import { closeRequestHistoryIndex } from "../src/routing/history/indexer";
-import { healthEvidenceForCandidate, healthScore, HEALTH_SCORE_CONSTANTS } from "../src/routing/health";
+import {
+  clearHealthHistoryCacheForTests,
+  codexPoolHealthEvidence,
+  healthEvidenceForCandidate,
+  healthScore,
+  HEALTH_SCORE_CONSTANTS,
+} from "../src/routing/health";
 import { evaluatePolicyProfile } from "../src/routing/evaluator";
 import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
 import type { OcxConfig } from "../src/types";
@@ -35,6 +41,7 @@ beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-health-"));
   process.env.OPENCODEX_HOME = testDir;
   resetUsageReadCacheForTests();
+  clearHealthHistoryCacheForTests();
   closeRequestHistoryIndex();
 });
 
@@ -265,5 +272,55 @@ describe("health-aware scoring (RI-06)", () => {
     expect(route.routeDecision!.candidates[0]!.exclusions.some(exclusion => exclusion.code === "cooldown")).toBe(true);
     expect(route.providerName).toBe("b");
     expect(route.modelId).toBe("m2");
+  });
+
+  test("mixed pool cooldown/soft-avoid states degrade to soft-avoid", async () => {
+    const { clearCodexUpstreamHealth, recordCodexUpstreamOutcome } = await import("../src/codex/routing");
+    clearCodexUpstreamHealth();
+    const now = Date.now();
+    const cfg = config({
+      codexAccounts: [
+        { id: "pool-a", email: "pool-a@example.test", isMain: false },
+        { id: "pool-b", email: "pool-b@example.test", isMain: false },
+      ],
+    });
+    // pool-a hard-cooled (429); pool-b soft-avoided (transient 503s). No
+    // single account is usable, so the aggregate must degrade to soft-avoid.
+    recordCodexUpstreamOutcome(cfg, "pool-a", 429, { retryAfter: "3600", now });
+    recordCodexUpstreamOutcome(cfg, "pool-b", 503, { now });
+    recordCodexUpstreamOutcome(cfg, "pool-b", 503, { now: now + 1 });
+    recordCodexUpstreamOutcome(cfg, "pool-b", 503, { now: now + 2 });
+    const evidence = codexPoolHealthEvidence(cfg, now + 3);
+    expect(evidence?.softAvoidUntilMs).toBeDefined();
+    expect(evidence?.cooldownUntilMs).toBeUndefined();
+  });
+
+  test("unknown health under allow blends neutrally instead of outranking measured health", () => {
+    const cfg = config({
+      routingProfiles: {
+        ranking: {
+          candidates: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          optimize: { latency: 0, health: 0.8, cost: 0, quota: 0 },
+          unknownEvidence: { capability: "allow", health: "allow", quota: "penalize", cost: "penalize" },
+        },
+      },
+    });
+    const result = evaluatePolicyProfile(cfg, "ranking", {}, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000 } },
+      {
+        provider: "b",
+        model: "m2",
+        capability: { contextWindow: 200000 },
+        health: { sampleCount: 50, successRate: 1, recentLatencyMs: 100 },
+      },
+    ]);
+    // a (priority 1.0, unknown -> neutral 0.5) blends to 0.5; b (priority
+    // 0.5, near-perfect health) blends above it. Without the neutral blend the
+    // unknown candidate would outrank the measured one.
+    expect(result.selectedIndex).toBe(1);
+    expect(result.candidates[0]!.score!.components.health).toBe(0.5);
   });
 });

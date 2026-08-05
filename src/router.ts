@@ -22,7 +22,6 @@ import {
 import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
 import { getStaleCached } from "./codex/model-cache";
 import { codexAccountNamespaceEntries } from "./codex/account-namespaces";
-import { getEffectiveActiveCodexAccountId } from "./codex/routing";
 import {
   buildRouteDecisionTrace,
   type RouteDecisionKind,
@@ -32,7 +31,7 @@ import {
 import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
 import { candidateCapabilityEvidence } from "./routing/capability";
-import { codexPoolHealthEvidence, healthEvidenceForCandidate } from "./routing/health";
+import { policyCandidateHealthEvidence } from "./routing/health";
 
 export class NoEligiblePolicyCandidateError extends Error {
   /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
@@ -499,26 +498,16 @@ function routeModelInternal(
   const policyId = !bypassCombos ? resolvePolicyProfileId(config, modelId) : null;
   const profile = policyId ? getRoutingProfile(config, policyId) : undefined;
   if (profile && policyId) {
+    // One clock read per decision keeps candidate evidence, exclusions, and
+    // scores mutually consistent and reproducible.
+    const now = Date.now();
     const candidateEvidence = profile.candidates.map(candidate => ({
       provider: candidate.provider,
       model: candidate.model,
       capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
-      health: {
-        ...healthEvidenceForCandidate({
-          provider: candidate.provider,
-          model: candidate.model,
-          codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
-            ? getEffectiveActiveCodexAccountId(config)
-            : undefined,
-        }),
-        // Live pool state stays authoritative for `openai` targets even when
-        // no account reference exists in the candidate evidence.
-        ...(candidate.provider === OPENAI_CODEX_PROVIDER_ID
-          ? (codexPoolHealthEvidence(config) ?? {})
-          : {}),
-      },
+      health: policyCandidateHealthEvidence(config, candidate, now),
     }));
-    const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
+    const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence, now);
     if (evaluation.selectedIndex === null) {
       throw new NoEligiblePolicyCandidateError(policyId, evaluation.trace);
     }

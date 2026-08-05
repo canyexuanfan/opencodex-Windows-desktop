@@ -156,7 +156,13 @@ describe("routing profiles (RI-04)", () => {
       candidates: [{ provider: "a", model: "m1" }],
       alias: "a/m1",
     }, config);
-    expect(providerNamespaceCollision.some(issue => issue.message.includes("provider routing namespace"))).toBe(true);
+    // Exactly one issue: the first-segment provider collision must not be
+    // reported twice with different wordings.
+    const namespaceIssues = providerNamespaceCollision.filter(
+      issue => issue.message.includes("provider routing namespace"),
+    );
+    expect(namespaceIssues.length).toBe(1);
+    expect(providerNamespaceCollision.length).toBe(1);
 
     const siblingCollision = routingProfileIssues("p", {
       candidates: [{ provider: "a", model: "m1" }],
@@ -400,5 +406,34 @@ describe("routing profiles (RI-04)", () => {
     expect(body.selectedIndex).toBe(0);
     expect(body.candidates?.[0]).toMatchObject({ provider: "a", eligible: true });
     expect(body.candidates?.[1]).toMatchObject({ provider: "b", eligible: false });
+  });
+
+  test("API dry-run mirrors live codex cooldown for openai candidates", async () => {
+    const { clearCodexUpstreamHealth, recordCodexUpstreamOutcome } = await import("../src/codex/routing");
+    clearCodexUpstreamHealth();
+    const now = Date.now();
+    const config = baseConfig({
+      providers: {
+        a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1"], modelContextWindows: { m1: 200_000 }, parallelToolCalls: true },
+        openai: { adapter: "openai-responses", authMode: "forward", baseUrl: "https://chatgpt.com/backend-api/codex" },
+      },
+      codexAccounts: [{ id: "pool-a", email: "pool-a@example.test", isMain: false }],
+      activeCodexAccountId: "pool-a",
+      routingProfiles: {
+        only: { candidates: [{ provider: "openai", model: "gpt-5.6" }] },
+      },
+    });
+    recordCodexUpstreamOutcome(config, "pool-a", 429, { retryAfter: "3600", now });
+    const req = new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: "only", evidence: {} }),
+    });
+    const response = await handleManagementAPI(req, new URL(req.url), config, { refreshCodexCatalog: async () => {} });
+    expect(response).not.toBeNull();
+    expect(response!.status).toBe(200);
+    const body = await response!.json() as { candidates?: Array<{ eligible?: boolean; exclusions?: Array<{ code: string }> }> };
+    expect(body.candidates?.[0]?.eligible).toBe(false);
+    expect(body.candidates?.[0]?.exclusions?.some(exclusion => exclusion.code === "cooldown")).toBe(true);
   });
 });

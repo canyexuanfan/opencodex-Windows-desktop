@@ -96,7 +96,11 @@ function classifyHostname(hostname: string): "local" | "private" | null {
   return null;
 }
 
-/** Adapters whose upstream protocol supports function/tool calling. */
+/**
+ * Adapters whose upstream protocol supports function/tool calling. Mirrors
+ * the adapter ids the resolver accepts (including the `azure` alias for
+ * `azure-openai`); `kiro` and `mimo-free` send/delegate tool calls.
+ */
 const TOOL_CAPABLE_ADAPTERS = new Set([
   "openai-chat",
   "openai-responses",
@@ -104,6 +108,9 @@ const TOOL_CAPABLE_ADAPTERS = new Set([
   "cursor",
   "google",
   "azure-openai",
+  "azure",
+  "kiro",
+  "mimo-free",
 ]);
 
 function localRemoteEvidence(baseUrl: string | undefined): Pick<RouteCapabilityEvidence, "localOnly" | "remoteAllowed"> {
@@ -154,12 +161,14 @@ export function candidateCapabilityEvidence(
     : undefined;
 
   const capabilities = catalogRow?.capabilities ?? [];
-  // The catalog capability is the per-model authority. Without a catalog row,
-  // the adapter protocol itself is the signal: `openai-chat` and friends run
-  // single tool calls even when the parallel-call opt-in is unset or false.
-  // `parallelToolCalls` stays a positive provider-level override.
+  // The catalog `capabilities` list is a positive per-model signal; a row
+  // without "tools" is treated as unknown, never as a negative. Without a
+  // catalog row the adapter protocol itself is the signal: tool-capable
+  // adapters run single tool calls even when the parallel-call opt-in is
+  // unset or false. `parallelToolCalls` stays a positive provider-level
+  // override.
   const tools = capabilities.includes("tools")
-    || (isNative ? true : false)
+    || isNative
     || (catalogRow === undefined && provider !== undefined && TOOL_CAPABLE_ADAPTERS.has(provider.adapter))
     || provider?.parallelToolCalls === true
     || undefined;

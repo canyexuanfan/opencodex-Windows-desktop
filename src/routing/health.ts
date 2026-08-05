@@ -18,6 +18,7 @@
 
 import type { OcxConfig } from "../types";
 import { openRequestHistoryIndexSync, requestHistoryDb } from "./history/indexer";
+import { OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import {
   getCodexAccountCooldownUntil,
   getCodexAccountSoftAvoidUntil,
@@ -48,6 +49,32 @@ export const HEALTH_SCORE_CONSTANTS = {
 
 export const HEALTH_WINDOW_MS = 14 * 86_400_000;
 export const HEALTH_MAX_SAMPLES = 100;
+
+/**
+ * Historical health evidence is cached briefly across candidates within one
+ * routing decision (and rapid successive decisions). Live cooldown/soft-avoid
+ * state is always read fresh - it is never cached. The TTL bounds how stale
+ * the history index read may be; 1.5s keeps routing deterministic within a
+ * decision while bounding per-candidate SQLite work.
+ */
+const HEALTH_HISTORY_CACHE_TTL_MS = 1_500;
+const HEALTH_HISTORY_CACHE_MAX_ENTRIES = 64;
+
+type HistoricalHealthEvidence = Pick<
+  RouteHealthEvidence,
+  "sampleCount" | "successRate" | "failures" | "incompleteStreamRate" | "recentLatencyMs" | "recencyWeight"
+>;
+
+const healthHistoryCache = new Map<string, { at: number; value: HistoricalHealthEvidence }>();
+
+/** Test seam: routing tests append fresh rows and must not see cached history. */
+export function clearHealthHistoryCacheForTests(): void {
+  healthHistoryCache.clear();
+}
+
+function healthHistoryCacheKey(input: Pick<HealthEvidenceInput, "provider" | "model" | "accountRef">): string {
+  return `${input.provider}\u0000${input.model}\u0000${input.accountRef ?? ""}`;
+}
 
 export interface HealthEvidenceInput {
   provider: string;
@@ -139,8 +166,41 @@ export function codexPoolHealthEvidence(
     if (softUntil !== null && softUntil > now) softAvoids.push(softUntil);
   }
   if (cooldowns.length === live.length) return { cooldownUntilMs: Math.max(...cooldowns) };
-  if (softAvoids.length === live.length) return { softAvoidUntilMs: Math.max(...softAvoids) };
+  // Every account is unavailable, but not uniformly hard-cooled (e.g. some in
+  // cooldown, some soft-avoided): degrade to soft-avoid with the latest expiry
+  // so scoring still penalizes the pool.
+  if (cooldowns.length + softAvoids.length >= live.length && softAvoids.length > 0) {
+    return { softAvoidUntilMs: Math.max(...softAvoids, ...cooldowns) };
+  }
   return undefined;
+}
+
+/**
+ * Candidate health evidence assembled exactly like the router's policy path:
+ * historical evidence plus authoritative live Codex pool state for `openai`
+ * targets. Shared by the router and the dry-run management route so the two
+ * surfaces cannot drift apart.
+ */
+export function policyCandidateHealthEvidence(
+  config: Parameters<typeof getEffectiveActiveCodexAccountId>[0],
+  candidate: { provider: string; model: string },
+  now = Date.now(),
+): RouteHealthEvidence {
+  return {
+    ...healthEvidenceForCandidate({
+      provider: candidate.provider,
+      model: candidate.model,
+      codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+        ? getEffectiveActiveCodexAccountId(config)
+        : undefined,
+      now,
+    }),
+    // Live pool state stays authoritative for `openai` targets even when no
+    // account reference exists in the candidate evidence.
+    ...(candidate.provider === OPENAI_CODEX_PROVIDER_ID
+      ? (codexPoolHealthEvidence(config, now) ?? {})
+      : {}),
+  };
 }
 
 function classifySample(sample: HealthSample): "success" | "failure" | "neutral" {
@@ -168,21 +228,10 @@ function median(sorted: number[]): number | undefined {
  * Historical health evidence from the derived index (synchronous: called at
  * routing time). Never throws; an unopened/unreadable index yields unknown.
  */
-export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHealthEvidence {
-  const now = input.now ?? Date.now();
-  const evidence: RouteHealthEvidence = {};
-
-  // Live authoritative state: hard cooldown and soft-avoid for Codex pool
-  // accounts. Cooldown stays authoritative over any historical score.
-  if (input.codexAccountId && input.provider === "openai") {
-    if (isCodexAccountInCooldown(input.codexAccountId, now)) {
-      const until = getCodexAccountCooldownUntil(input.codexAccountId, now);
-      if (until !== null) evidence.cooldownUntilMs = until;
-    }
-    const softAvoidUntil = getCodexAccountSoftAvoidUntil(input.codexAccountId, now);
-    if (softAvoidUntil !== null && softAvoidUntil > now) evidence.softAvoidUntilMs = softAvoidUntil;
-  }
-
+function computeHistoricalHealthEvidence(
+  input: Pick<HealthEvidenceInput, "provider" | "model" | "accountRef">,
+  now: number,
+): HistoricalHealthEvidence {
   try {
     openRequestHistoryIndexSync();
     const handle = requestHistoryDb();
@@ -200,13 +249,25 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
        ORDER BY timestamp DESC LIMIT ?`,
     ).all(...values, HEALTH_MAX_SAMPLES) as HealthRow[];
     // Rows whose top-level target differs from this candidate may still carry
-    // candidate attempts (combo/failover): expand those too.
+    // candidate attempts (combo/failover): expand those too. The serialized
+    // provider/model LIKE prefilter keeps the LIMIT from being consumed by
+    // rows that cannot contribute samples for this candidate.
+    const escapeLike = (value: string): string => value.replace(/[\\%_]/g, match => `\\${match}`);
     const attemptRows = handle.query(
       `SELECT timestamp, attempt_count AS attemptCount, row_json AS rowJson
        FROM requests WHERE timestamp >= ? AND attempt_count > 1
+         AND row_json LIKE ? ESCAPE '\\'
+         AND row_json LIKE ? ESCAPE '\\'
          AND NOT (provider = ? AND model = ?)
        ORDER BY timestamp DESC LIMIT ?`,
-    ).all(now - HEALTH_WINDOW_MS, input.provider, input.model, HEALTH_MAX_SAMPLES) as Array<
+    ).all(
+      now - HEALTH_WINDOW_MS,
+      `%\"provider\":\"${escapeLike(input.provider)}\"%`,
+      `%\"model\":\"${escapeLike(input.model)}\"%`,
+      input.provider,
+      input.model,
+      HEALTH_MAX_SAMPLES,
+    ) as Array<
       Pick<HealthRow, "timestamp" | "attemptCount" | "rowJson">
     >;
 
@@ -253,18 +314,59 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
     }
 
     const sampleCount = successes + failures;
+    const out: HistoricalHealthEvidence = {};
     if (sampleCount > 0) {
-      evidence.sampleCount = sampleCount;
-      evidence.successRate = weightedTotal > 0 ? weightedSuccess / weightedTotal : 0;
-      if (consecutiveFailures > 0) evidence.failures = consecutiveFailures;
-      if (incompleteStreams > 0) evidence.incompleteStreamRate = incompleteStreams / sampleCount;
+      out.sampleCount = sampleCount;
+      out.successRate = weightedTotal > 0 ? weightedSuccess / weightedTotal : 0;
+      if (consecutiveFailures > 0) out.failures = consecutiveFailures;
+      if (incompleteStreams > 0) out.incompleteStreamRate = incompleteStreams / sampleCount;
       latencies.sort((a, b) => a - b);
       const p50 = median(latencies);
-      if (p50 !== undefined) evidence.recentLatencyMs = p50;
-      evidence.recencyWeight = decayWeight(samples[0]!.timestamp, now);
+      if (p50 !== undefined) out.recentLatencyMs = p50;
+      out.recencyWeight = decayWeight(samples[0]!.timestamp, now);
     }
+    return out;
   } catch {
     /* index unreadable: evidence stays unknown */
+    return {};
+  }
+}
+
+export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHealthEvidence {
+  const now = input.now ?? Date.now();
+  const evidence: RouteHealthEvidence = {};
+
+  // Live authoritative state: hard cooldown and soft-avoid for Codex pool
+  // accounts. Cooldown stays authoritative over any historical score. Always
+  // read fresh - never cached.
+  if (input.codexAccountId && input.provider === "openai") {
+    if (isCodexAccountInCooldown(input.codexAccountId, now)) {
+      const until = getCodexAccountCooldownUntil(input.codexAccountId, now);
+      if (until !== null) evidence.cooldownUntilMs = until;
+    }
+    const softAvoidUntil = getCodexAccountSoftAvoidUntil(input.codexAccountId, now);
+    if (softAvoidUntil !== null && softAvoidUntil > now) evidence.softAvoidUntilMs = softAvoidUntil;
+  }
+
+  const cacheKey = healthHistoryCacheKey(input);
+  const cached = healthHistoryCache.get(cacheKey);
+  if (cached && now - cached.at < HEALTH_HISTORY_CACHE_TTL_MS) {
+    Object.assign(evidence, cached.value);
+  } else {
+    const history = computeHistoricalHealthEvidence(input, now);
+    Object.assign(evidence, history);
+    if (healthHistoryCache.size >= HEALTH_HISTORY_CACHE_MAX_ENTRIES) {
+      let oldestKey: string | null = null;
+      let oldestAt = Number.POSITIVE_INFINITY;
+      for (const [key, entry] of healthHistoryCache) {
+        if (entry.at < oldestAt) {
+          oldestAt = entry.at;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey !== null) healthHistoryCache.delete(oldestKey);
+    }
+    healthHistoryCache.set(cacheKey, { at: now, value: history });
   }
 
   return evidence;

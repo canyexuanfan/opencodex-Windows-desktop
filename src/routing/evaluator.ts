@@ -25,6 +25,8 @@ import { healthScore } from "./health";
 
 /** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
 export const HEALTH_UNKNOWN_PENALTY_SCORE = 0.3;
+/** Unknown health under "allow": neutral midpoint of the [0,1] health scale. */
+export const HEALTH_UNKNOWN_NEUTRAL_SCORE = 0.5;
 
 export interface PolicyRequestEvidence {
   /** Required context window for this request (tokens). */
@@ -242,6 +244,7 @@ export function evaluatePolicyProfile(
   profileId: string,
   requestEvidence: PolicyRequestEvidence,
   candidateEvidence: PolicyCandidateEvidence[],
+  now = Date.now(),
 ): PolicyEvaluationResult {
   const profile = getRoutingProfile(config, profileId);
   if (!profile) throw new Error(`Unknown routing profile: ${profileId}`);
@@ -289,8 +292,8 @@ export function evaluatePolicyProfile(
     // excludes; unknown health follows the profile's unknownEvidence policy;
     // historical health never overrides explicit ineligibility.
     const health = evidence.health;
-    let healthValue = health ? healthScore(health) : null;
-    if (health?.cooldownUntilMs !== undefined && health.cooldownUntilMs > Date.now()) {
+    let healthValue = health ? healthScore(health, now) : null;
+    if (health?.cooldownUntilMs !== undefined && health.cooldownUntilMs > now) {
       exclusions.push({ code: "cooldown" });
       eligible = false;
     } else if (healthValue === null && profile.unknownEvidence.health === "exclude") {
@@ -298,6 +301,10 @@ export function evaluatePolicyProfile(
       eligible = false;
     } else if (healthValue === null && profile.unknownEvidence.health === "penalize") {
       healthValue = HEALTH_UNKNOWN_PENALTY_SCORE;
+    } else if (healthValue === null && profile.unknownEvidence.health === "allow") {
+      // Neutral midpoint: blending keeps an unknown candidate from outranking
+      // a measured one with the same configured priority.
+      healthValue = HEALTH_UNKNOWN_NEUTRAL_SCORE;
     }
 
     const priorityScore = configuredPriorityScore(index, profile.candidates.length);

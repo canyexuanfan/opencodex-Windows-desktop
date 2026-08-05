@@ -174,6 +174,22 @@ describe("policy execution (RI-05)", () => {
     expect(route.routeDecision!.candidates[0]!.capability?.tools).toBe(true);
   });
 
+  test("kiro and mimo-free adapters infer tool support", () => {
+    const config = baseConfig({
+      providers: {
+        ...baseConfig().providers,
+        k: { adapter: "kiro", baseUrl: "https://k.example/v1", apiKey: "kk", models: ["m9"] },
+        m: { adapter: "mimo-free", baseUrl: "https://m.example/v1", apiKey: "km", models: ["m8"] },
+      },
+      routingProfiles: {
+        ktools: { candidates: [{ provider: "k", model: "m9" }], require: { tools: true } },
+        mtools: { candidates: [{ provider: "m", model: "m8" }], require: { tools: true } },
+      },
+    });
+    expect(routeModel(config, "policy/ktools")).toMatchObject({ providerName: "k", modelId: "m9" });
+    expect(routeModel(config, "policy/mtools")).toMatchObject({ providerName: "m", modelId: "m8" });
+  });
+
   test("request evidence constrains candidates: image input excludes non-image models", () => {
     const config = baseConfig({
       routingProfiles: {
