@@ -79,16 +79,40 @@ describe("the probe only ever asks", () => {
    * that from the source text is not enough, because this unit has already
    * shipped a fix that was only a comment.
    */
-  test("macOS asks launchctl exactly once, with print", () => {
+  /**
+   * Two calls, not one: `gui/<uid>` and `user/<uid>` are independent launchd
+   * domains carrying separate service sets. Measured on macOS 27.0, the shipped
+   * agent answers 0 under `gui` and 113 under `user` — so asking only one leaves
+   * the other free to hold a job this probe would then report as absent.
+   *
+   * What the test is really pinning is that every call only ASKS.
+   */
+  test("macOS asks launchctl only with print, in both domains", () => {
     const { run, calls } = recorder(() => ({ status: 113 }));
     inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].file).toBe("/bin/launchctl");
-    expect(calls[0].args[0]).toBe("print");
-    for (const verb of ["load", "unload", "bootstrap", "bootout", "kickstart", "start", "stop", "enable", "disable"]) {
-      expect(calls[0].args).not.toContain(verb);
+    expect(calls).toHaveLength(2);
+    expect(calls.map(c => c.args[1])).toEqual([
+      "gui/501/com.opencodex.proxy",
+      "user/501/com.opencodex.proxy",
+    ]);
+    for (const call of calls) {
+      expect(call.file).toBe("/bin/launchctl");
+      expect(call.args[0]).toBe("print");
+      for (const verb of ["load", "unload", "bootstrap", "bootout", "kickstart", "start", "stop", "enable", "disable"]) {
+        expect(call.args).not.toContain(verb);
+      }
     }
+  });
+
+  test("a live job in the user domain is found even though gui answered first", () => {
+    const { run } = recorder((_file, args) => (
+      String(args[1]).startsWith("user/") ? { status: 0 } : { status: 113 }
+    ));
+    const result = inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
+    // The plist is absent in this fixture, so a loaded job with no file is the
+    // interrupted-uninstall case rather than a clean absence.
+    expect(result.kind).toBe("unknown");
   });
 
   test("Linux asks systemctl exactly once, with show", () => {
@@ -152,10 +176,30 @@ describe("could not ask is not an answer", () => {
    * Measured against real nonexistent targets: 113 is "no such service", 112 is
    * "no such domain". Only the first is an answer.
    */
-  test("exit 112 (no GUI domain) is unknown, not absent", () => {
+  /**
+   * 112 with nothing staged on disk is ABSENT, and this test asserted the
+   * opposite until a review round showed what that costs: a fresh headless Mac
+   * has no GUI domain and no installation either, so treating 112 as "could not
+   * ask" refused every Codex write on it.
+   *
+   * The measurement that settles it (macOS 27.0): 112 is an answer about the
+   * DOMAIN and is label-independent — `launchctl print gui/999999` with no
+   * service name at all returns it — so an unreachable domain cannot be hiding a
+   * job of ours. 113 stays service-scoped within a domain that answered.
+   */
+  test("exit 112 with no plist is absent — an unreachable domain holds nothing", () => {
     const { run } = recorder(() => ({ status: 112, stderr: "Could not find domain for user" }));
     const result = inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
-    expect(result.kind).toBe("unknown");
+    expect(result.kind).toBe("absent");
+  });
+
+  test("exit 112 WITH a plist staged is unknown", () => {
+    mkdirSync(join(home, "Library", "LaunchAgents"), { recursive: true });
+    writeFileSync(join(home, "Library", "LaunchAgents", "com.opencodex.proxy.plist"), "<plist/>");
+    const { run } = recorder(() => ({ status: 112, stderr: "Could not find domain for user" }));
+    const result = inspectServiceManagerInstallation({ run, platform: "darwin", uid: 501, home });
+    // Something is staged to load and we could not see whether it did.
+    expect(result.kind).not.toBe("absent");
   });
 
   test("a launchctl timeout is unknown", () => {
@@ -311,10 +355,28 @@ describe("ownership refuses what it cannot prove", () => {
     expect(result.reason).toContain("malformed");
   });
 
+  /**
+   * The property is "silence is not absence", and it needs a case that is
+   * genuinely silent. Exit 112 no longer qualifies: it is an answer about the
+   * domain, and with nothing staged on disk it proves absence — that is what
+   * keeps a fresh headless Mac usable. A launchctl that will not run at all is
+   * the real unaskable case, and it still refuses.
+   */
   test("an unaskable service manager is unknown even with clean state", () => {
     const { codexHome, opencodexHome } = useHomes();
     writeState(opencodexHome, codexHome, opencodexHome);
-    const { run } = recorder(() => ({ status: 112, stderr: "Could not find domain for user" }));
+    const { run } = recorder(() => ({ status: null, spawnFailed: true, stderr: "spawn EACCES" }));
     expect(inspectNativeCodexOwnership(own({ run })).ownership).toBe("unknown");
+  });
+
+  /**
+   * The counterpart, and the one a refuse-everything design gets wrong: no state
+   * file, no plist, and a domain that does not exist is a FRESH MACHINE. It has
+   * to be usable.
+   */
+  test("a fresh headless machine is owned, not refused", () => {
+    useHomes();
+    const { run } = recorder(() => ({ status: 112, stderr: "Could not find domain for user" }));
+    expect(inspectNativeCodexOwnership(own({ run })).ownership).toBe("owned");
   });
 });

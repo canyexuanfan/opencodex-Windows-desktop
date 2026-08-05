@@ -19,7 +19,7 @@
  * manager would hold the event loop.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -92,6 +92,30 @@ const TASK = "opencodex-proxy";
  * than assumed. Only 113 is an answer; everything else is a failure to ask.
  */
 const LAUNCHCTL_NO_SUCH_SERVICE = 113;
+/**
+ * 112 is an answer about the DOMAIN, not the label.
+ *
+ * Measured on macOS 27.0: querying a domain with no service name at all still
+ * returns it, and a domain that does not exist cannot be running one of our
+ * jobs. Treating it as "could not ask" would refuse every write on a fresh
+ * headless Mac — no GUI domain, and no installation either.
+ */
+const LAUNCHCTL_NO_SUCH_DOMAIN = 112;
+
+/**
+ * Residue on disk, distinguished from a path that could not be read.
+ *
+ * `existsSync` answers "no" for a dangling symlink and for a path whose parent
+ * denies traversal. Both are residue, not absence — only ENOENT is absence.
+ */
+function artifactPresence(path: string): "present" | "absent" | "unreadable" {
+  try {
+    lstatSync(path);
+    return "present";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "absent" : "unreadable";
+  }
+}
 
 function unknown(reason: string): ServiceManagerInstallation {
   return { kind: "unknown", reason };
@@ -117,21 +141,42 @@ function unitEnvValue(body: string, key: string): string | null {
 function inspectLaunchd(deps: Required<Pick<ProbeDeps, "run" | "uid" | "home">>): ServiceManagerInstallation {
   const definitionPath = join(deps.home, "Library", "LaunchAgents", `${LABEL}.plist`);
 
-  const printed = deps.run("/bin/launchctl", ["print", `gui/${deps.uid}/${LABEL}`]);
-  let registration: "present" | "absent";
-  if (printed.spawnFailed || printed.timedOut) {
-    return unknown(`launchctl could not be asked: ${printed.timedOut ? "timed out" : printed.stderr.trim()}`);
+  /*
+   * BOTH domains, because they are independent and hold separate service sets.
+   * Measured on macOS 27.0: the shipped agent answers 0 under `gui/<uid>` and
+   * 113 under `user/<uid>`. Asking only one leaves the other free to hold a job
+   * this probe would then call absent.
+   */
+  let registration: "present" | "absent" = "absent";
+  let unreachableDomains = 0;
+  for (const domain of [`gui/${deps.uid}`, `user/${deps.uid}`]) {
+    const printed = deps.run("/bin/launchctl", ["print", `${domain}/${LABEL}`]);
+    if (printed.spawnFailed || printed.timedOut) {
+      return unknown(`launchctl could not be asked: ${printed.timedOut ? "timed out" : printed.stderr.trim()}`);
+    }
+    if (printed.status === 0) { registration = "present"; break; }
+    if (printed.status === LAUNCHCTL_NO_SUCH_SERVICE) continue;
+    if (printed.status === LAUNCHCTL_NO_SUCH_DOMAIN) { unreachableDomains += 1; continue; }
+    return unknown(`launchctl print exited ${String(printed.status)}: ${printed.stderr.trim()}`);
   }
-  if (printed.status === 0) registration = "present";
-  else if (printed.status === LAUNCHCTL_NO_SUCH_SERVICE) registration = "absent";
-  else return unknown(`launchctl print exited ${String(printed.status)}: ${printed.stderr.trim()}`);
 
-  if (!existsSync(definitionPath)) {
+  const definition = artifactPresence(definitionPath);
+  if (definition === "absent") {
     // No file. A registration without one means launchd holds a definition whose
     // file is gone — real, and not something to resolve unattended.
-    return registration === "absent"
-      ? { kind: "absent" }
-      : unknown("launchd has a job loaded but its plist is missing");
+    if (registration === "present") {
+      return unknown("launchd has a job loaded but its plist is missing");
+    }
+    /*
+     * Nothing staged, and every domain either answered "no such service" or does
+     * not exist. 112 is an answer ABOUT THE DOMAIN and is label-independent —
+     * querying a domain with no service name at all returns it — so an
+     * unreachable domain cannot be hiding a job of ours. Calling this `unknown`
+     * instead would refuse every write on a fresh headless Mac, which has no
+     * GUI domain and no installation either.
+     */
+    void unreachableDomains;
+    return { kind: "absent" };
   }
 
   let body: string;
@@ -201,7 +246,7 @@ function inspectSystemd(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
   const registration: "present" | "absent" =
     loadState === "not-found" && activeState === "inactive" && !fragmentPath ? "absent" : "present";
 
-  if (!existsSync(definitionPath)) {
+  if (artifactPresence(definitionPath) === "absent") {
     return registration === "absent"
       ? { kind: "absent" }
       : unknown("systemd knows this unit but its file is missing");
