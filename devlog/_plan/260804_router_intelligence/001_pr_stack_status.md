@@ -132,8 +132,9 @@ other; closing one is a maintainer decision and neither is stale.
   (2) SQL column names are snake_case - analytics SELECT now aliases to
   camelCase; (3) cost field is `estimate.cost.total` (CostBreakdown), not
   `costUsd`; plus the row-cap is injectable for truncation tests.
-- Final commit: `5f464c730` (CodeRabbit: cooldown parse gate, API `limit` default 5k, devlog + tests)
-- PR: #1005 (OPEN) https://github.com/lidge-jun/opencodex/pull/1005
+- Final commit: `5f464c730` (CodeRabbit: cooldown parse gate, API `limit` default 5k, devlog + tests);
+  merged head on `dev`: `a594938c5`
+- PR: #1005 (MERGED) https://github.com/lidge-jun/opencodex/pull/1005
 - Verification:
   - `bun x tsc --noEmit`: PASSED (0 errors)
   - `bun run test tests/routing-analytics.test.ts`: 10/10 pass:
@@ -147,8 +148,13 @@ other; closing one is a maintainer decision and neither is stale.
 
 ### RI-04 - feat/ri-04-policy-profile-core
 
-- Base SHA: `2069e724ec27e176644a11ff55bef307f5ebe3bf` (RI-03 head)
-- Reviewed commit: same as final (author self-review before push)
+- Base SHA: `a594938c5` (`dev` after #1005 merge; rebased from the RI-03 head
+  when #1003/#1004/#1005 landed)
+- Reviewed commits: `63924495e` (RI-04 core) + review round `d478b393`
+  (request-evidence wiring), `8e1f1c3d` (provider-namespace alias check, dead
+  export removal), `aa9212fa` (CLI cleanup), `27511bf7` (absent-flag
+  semantics, cost-limit enforcement, deterministic id ordering, CodeRabbit
+  round)
 - Findings (self-review): 4 fixed pre-push - (1) `serviceTier` evidence type
   was `Unknownable` (number|boolean) but service tiers are strings - trace
   type narrowed to `string | "unknown"`; (2) alias validation missed the
@@ -156,16 +162,20 @@ other; closing one is a maintainer decision and neither is stale.
   `score` - added `score` to `TraceCandidateInput`/`buildCandidate`;
   (4) test expectation for weight normalization used wrong math (unspecified
   weights keep defaults; sum 4.35 not 4).
-- Final commit: pending (recorded after commit)
-- PR: pending
+- Final commit: `27511bf7` (see Reviewed commits)
+- PR: #1011 (OPEN, ready) https://github.com/lidge-jun/opencodex/pull/1011
 - Verification:
   - `bun x tsc --noEmit`: PASSED (0 errors)
-  - `bun run test tests/routing-profile.test.ts`: 12/12 pass (validation,
-    normalization, revision digest, collisions, config load, id/alias
-    resolution, dry-run eligibility/unknown/tie-break, API list+dry-run,
+  - `bun run test tests/routing-profile.test.ts`: 14/14 pass (validation,
+    normalization, revision digest, collisions incl. provider namespace,
+    config load, id/alias resolution, dry-run eligibility incl. request
+    evidence and cost limit, unknown/tie-break, API list+dry-run,
     API error codes)
-  - Focused regression suites: 176/176 pass across 8 files
+  - Focused regression suites: pass across route-decision-trace,
+    routing-analytics, request-history-index, combos, codex-routing,
+    internal-cli-dispatch
   - `bun run privacy:scan`: passed
   - `tests/config.test.ts`: 109/115 pass; the 6 symlink failures reproduce
     identically on the pristine base (Windows symlink EPERM, environmental)
-- Remaining Low findings: none
+- Remaining Low findings: none (B3/B5 residual: no-eligible trace names
+  candidate 0 as `selected`; API evidence fields are permissively dropped)

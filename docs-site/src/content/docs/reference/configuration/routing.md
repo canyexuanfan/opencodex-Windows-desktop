@@ -86,9 +86,11 @@ commands, see [Combos](/guides/combos/).
 ## Routing policy profiles (`config.routingProfiles`)
 
 Routing policy profiles are the Router Intelligence selection layer: an explicitly requested
-`policy/<id>` (or configured alias) chooses among a fixed candidate allowlist using hard capability
-requirements and deterministic, explainable scoring. Existing model ids are **never** routed through
-a profile implicitly - policy routing only activates when the client requests a policy model id.
+`policy/<id>` (or configured alias) selects among a fixed candidate allowlist using hard capability
+requirements and deterministic, explainable scoring. In this release profiles are configuration and
+dry-run evaluation only: production requests are not yet routed through them (execution wiring
+arrives with RI-05), and existing model ids are **never** routed through a profile implicitly.
+Policy ids do not participate in the model resolution order above until execution lands.
 
 Each key is an id matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, always addressable as `policy/<id>`,
 with one optional `alias`. Aliases must be unique and cannot collide with configured providers,
@@ -101,7 +103,7 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `alias?` | `string` | — | Optional public model id in place of `policy/<id>`. |
 | `require?` | object | `{}` | Hard capability requirements evaluated before scoring (see below). |
 | `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights; normalized deterministically. |
-| `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd`. |
+| `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd` (enforced by the dry-run evaluator when candidate cost evidence is known). |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
 `require` supports: `minContextWindow` (positive integer), and the booleans `tools`, `imageInput`,
@@ -111,6 +113,9 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 Request evidence supplied to a dry-run (context window, tools, image input, structured output,
 reasoning effort, service tier, encrypted Codex tasks) is evaluated against candidate capabilities
 together with the profile `require` block; a candidate must satisfy both to be eligible.
+
+The CLI dry-run accepts request-evidence flags but cannot supply candidate capability evidence yet;
+candidate evidence is provided through the API (`POST /api/routing-profiles/dry-run`).
 
 ```json
 {
@@ -147,8 +152,8 @@ without sending any upstream request.
   requirements filter first, then deterministic scoring ranks the survivors.
 
 Both are virtual namespaces with aliases and collision validation; they differ in *how* a candidate
-is chosen. Profile scoring expands in capability (RI-05), health (RI-06), quota (RI-07), and cost
-(RI-08) dimensions, each recorded in the per-request route-decision trace.
+is chosen. Profile scoring will expand with capability (RI-05), health (RI-06), quota (RI-07), and
+cost (RI-08) dimensions; per-request trace recording arrives with execution (RI-05).
 
 ### Catalog eligibility
 
