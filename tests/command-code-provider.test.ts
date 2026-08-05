@@ -147,7 +147,7 @@ describe("Command Code provider", () => {
     const built = request as Exclude<typeof request, Promise<unknown>>;
     const body = JSON.parse(built.body);
     expect(body.params.messages).toEqual([
-      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1", toolName: "view_image", output: { type: "text", value: "screenshot:" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1", toolName: "view_image", output: { type: "text", value: "screenshot:[image]" } }] },
       { role: "user", content: [{ type: "image", image }] },
     ]);
   });

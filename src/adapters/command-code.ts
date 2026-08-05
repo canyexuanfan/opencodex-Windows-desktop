@@ -19,8 +19,10 @@ const COMMAND_CODE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "glm-5.2": "zai-org/GLM-5.2",
 };
 
+/** Flatten tool-result content for the text-only wire output, keeping an `[image]` marker per image part in content order. */
 function toolResultText(content: string | OcxContentPart[]): string {
-  return typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("");
+  if (typeof content === "string") return content;
+  return content.map(part => (part.type === "text" ? part.text : "[image]")).join("");
 }
 
 function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
