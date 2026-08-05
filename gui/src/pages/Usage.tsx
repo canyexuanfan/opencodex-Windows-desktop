@@ -234,7 +234,7 @@ function UsageFilters({
                 <img className="usage-source-mark" src="/provider-icons/claude-color.svg" alt="" aria-hidden="true" />
               )}
               {choice === "grok" && (
-                <img className="usage-source-mark" src="/provider-icons/grok-color.svg" alt="" aria-hidden="true" />
+                <img className="usage-source-mark" src="/provider-icons/grok.svg" alt="" aria-hidden="true" />
               )}
               <span className={choice === "all" ? "usage-source-label" : "usage-source-label usage-source-label-collapsible"}>
                 {label}

@@ -11,7 +11,7 @@ test("the Usage filter includes grok with its icon", async () => {
   const page = await read("../src/pages/Usage.tsx");
   expect(page).toContain('"grok"');
   expect(page).toContain('(["all", "codex", "claude", "grok"]');
-  expect(page).toContain("/provider-icons/grok-color.svg");
+  expect(page).toContain("/provider-icons/grok.svg");
 });
 
 test("every locale carries the grok surface label", async () => {
