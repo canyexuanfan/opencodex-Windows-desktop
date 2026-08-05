@@ -171,8 +171,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   }, []);
 
   const shadowModelOptions = useMemo(
-    () => activeModelOptions(models, disabled, selectedModels ?? {}),
-    [models, disabled, selectedModels],
+    () => activeModelOptions(models, disabled, selectedModels ?? {}, t),
+    [models, disabled, selectedModels, t],
   );
 
   const loadShadowCall = useCallback(async () => {

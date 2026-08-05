@@ -200,6 +200,22 @@ export function isExactComboCatalogModel(
   return model !== undefined && exactComboSlugs.has(catalogModelSlug(model));
 }
 
+/**
+ * Friendly Codex-picker label for a routed `provider/model` slug. Only Command Code
+ * needs it: its OAuth and API presets differ by a single dash (command-code vs commandcode),
+ * so rewrite that provider prefix to its registry label. All other providers keep the raw
+ * slug exactly as before.
+ */
+function routedDisplayName(slug: string): string {
+  const slash = slug.indexOf("/");
+  if (slash <= 0) return slug;
+  const provider = slug.slice(0, slash);
+  if (provider !== "command-code" && provider !== "commandcode") return slug;
+  const label = getProviderRegistryEntry(provider)?.label;
+  if (!label) return slug;
+  return `${label}/${slug.slice(slash + 1)}`;
+}
+
 export function deriveEntry(
   template: RawEntry | null,
   slug: string,
@@ -220,7 +236,7 @@ export function deriveEntry(
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
     e.slug = slug;
-    e.display_name = slug;
+    e.display_name = routedDisplayName(slug);
     e.description = desc;
     e.priority = priority;
     e.visibility = "list";
@@ -271,7 +287,7 @@ export function deriveEntry(
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
   const entry: RawEntry = {
-    slug, display_name: slug, description: desc,
+    slug, display_name: routedDisplayName(slug), description: desc,
     shell_type: "shell_command", visibility: "list", supported_in_api: true,
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(isRouted ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),

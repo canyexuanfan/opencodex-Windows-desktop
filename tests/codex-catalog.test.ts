@@ -747,6 +747,21 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
     expect(row?.slug).toBe("anthropic/claude-sonnet-4-6");
   });
 
+  test("Command Code routed models relabel the picker row with the registry label", () => {
+    const entries = buildCatalogEntries(nativeTemplate(), [], [
+      { provider: "command-code", id: "deepseek-v4-flash", owned_by: "command-code" },
+      { provider: "commandcode", id: "deepseek-v4-flash", owned_by: "commandcode" },
+    ]);
+    const auth = entries.find(e => e.slug === "command-code/deepseek-v4-flash");
+    const api = entries.find(e => e.slug === "commandcode/deepseek-v4-flash");
+
+    // Display-only relabel: routing slugs stay untouched.
+    expect(auth?.display_name).toBe("Command Code - Auth/deepseek-v4-flash");
+    expect(auth?.slug).toBe("command-code/deepseek-v4-flash");
+    expect(api?.display_name).toBe("Command Code - API/deepseek-v4-flash");
+    expect(api?.slug).toBe("commandcode/deepseek-v4-flash");
+  });
+
   test("empty/whitespace displayName is ignored and falls back to the slug", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "deepseek", id: "deepseek-v4", displayName: "   ", owned_by: "deepseek" },
