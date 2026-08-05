@@ -178,20 +178,55 @@ fail-open behavior and its callers.
 is defect #10 of this unit and the reason WP11 was folded into WP12. A mechanism
 with no consumer cannot be exercised except through a fabricated object.
 
-`injectCodexConfig` (`src/codex/inject.ts:487`) is the edge. The naive reading —
-"wrap `:601-603`" — is wrong, and the audit caught it: **`writeJournal()` already
-runs at `:530`**, well before that block, and it performs an atomic write
-(`src/codex/journal.ts:60-82`). Wrapping only the tail would leave the first
-artifact-creating write outside the lock, which is not exclusivity; it is a
-shorter unprotected window.
+`injectCodexConfig` (`src/codex/inject.ts:491`) is the edge. The naive reading —
+"wrap the two `atomicWriteFile` calls" — is wrong, and the audit caught it:
+**`writeJournal()` already runs at `:534`**, seventy lines before them, and it
+performs an atomic write (`src/codex/journal.ts:69-90`). Wrapping only the tail
+would leave the first artifact-creating write outside the lock, which is not
+exclusivity; it is a shorter unprotected window.
 
-The lock therefore opens **before `writeJournal`** and closes after
-`markJournalInjectedState`, covering the journal write, both `atomicWriteFile`
-calls, and the injected-state marking as one section. Everything before that
-point in the function is classification and refusal, which creates nothing. The
-awaited history job at `:614` stays **outside**: it has its own cross-process
-lock (WP10) and the `N -> H` order is deliberate. Production reaches this
-function from `src/codex/sync.ts:58,110` and `src/cli/init.ts:197`.
+Line numbers here track `origin/dev` at `468587632`, after #1022 and #1000
+landed. They move; the anchors — `writeJournal`, the two `atomicWriteFile`
+calls, `markJournalInjectedState`, and `runCodexHistoryJob` — do not.
+
+The lock therefore opens **before `writeJournal`** (`:534`) and closes after
+`markJournalInjectedState` (`:607`), covering the journal write, both
+`atomicWriteFile` calls (`:605-606`), and the injected-state marking as one
+section. Everything before that point in the function is classification and
+refusal, which creates nothing. The awaited history job stays **outside**: it has
+its own cross-process lock (WP10) and the `N -> H` order is deliberate.
+Production reaches this function from `src/codex/sync.ts:58,110` and
+`src/cli/init.ts:197`.
+
+### What else lives inside that span
+
+The span is wider than the three writes, and an audit caught me claiming
+otherwise. PR #1022 (tri-state `fastMode`, now landed as `ebcfff44f`) changes two
+call sites — `ensureFastModeFeature` at `:555` and `buildProfileFile` at `:603` —
+and I argued they sat outside the lock because the first is "before the writes".
+They are not: `writeJournal` opens the span at `:534` and both changed lines fall
+after it.
+
+The order still holds, with a different reason. Landing #1022 first is right not
+because it avoids the section but because WP-R1c should be written against the
+function's final shape rather than against a version about to change underneath
+it. Both transforms are pure and bounded, so they compose inside the callback;
+what would have been wrong is discovering that during implementation instead of
+before it.
+
+A second reviewer caught the sentence that stood here, which claimed nothing in
+the span may be non-deterministic or IO-bearing. That is plainly false: the span
+*is* the IO — journal writes, two atomic file replacements, and the marking that
+follows them. The real constraint is narrower: nothing in the span may perform IO
+the journal does not account for, because the restore path replays only what the
+journal recorded.
+
+`buildProfileFile` with an unset `fastMode` now emits different bytes, and that
+stays safe because the journal captures the original profile before the write
+(`src/codex/journal.ts:69-90`) and records the exact new one after
+(`:93-107`); restore replays the captured original (`:128-141`). The comparison
+is against what was actually written, not against what the generator would
+produce today.
 
 ### The external-provider branch, and the fix that could not work
 
