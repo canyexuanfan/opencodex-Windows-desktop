@@ -52,6 +52,21 @@ const COLON_CONFUSABLES = new Set([
 const INVISIBLE_FORMAT = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Mn}\p{Me}]/u;
 
 /**
+ * HTML named entities that can spell a credential label or its separator.
+ * The Greek names decode to characters the homoglyph fold already handles, so
+ * decoding them here is what connects the two: `&iota;` is `ι` is `i`.
+ */
+const HTML_NAMED_ENTITIES = new Map<string, string>([
+  ["colon", ":"], ["semi", ";"], ["equals", "="], ["quot", '"'], ["apos", "'"],
+  ["lt", "<"], ["gt", ">"], ["amp", "&"], ["sol", "/"], ["lowbar", "_"],
+  ["hyphen", "-"], ["dash", "-"], ["ndash", "-"], ["period", "."], ["comma", ","],
+  ["iota", "\u03B9"], ["alpha", "\u03B1"], ["omicron", "\u03BF"], ["rho", "\u03C1"],
+  ["epsilon", "\u03B5"], ["tau", "\u03C4"], ["kappa", "\u03BA"], ["nu", "\u03BD"],
+  ["upsilon", "\u03C5"], ["chi", "\u03C7"], ["eta", "\u03B7"], ["mu", "\u03BC"],
+  ["beta", "\u03B2"], ["gamma", "\u03B3"], ["sigma", "\u03C3"],
+]);
+
+/**
  * Latin look-alikes for the ASCII letters that appear in credential labels.
  * Cyrillic `а`/`е`, Greek `ο`, fullwidth forms and the mathematical alphabets
  * all render as the label to a human, so the matching view folds them back.
@@ -162,9 +177,15 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
  * mask is written back at the corresponding original offsets.
  */
 function maskOtherFramings(value: string): string {
+  // Same union rule as the header pass: decoding may add coverage, never
+  // remove it.
+  return maskOtherFramingsOnce(maskOtherFramingsOnce(value, true), false);
+}
+
+function maskOtherFramingsOnce(value: string, decodeEscapes: boolean): string {
   let current = value;
   for (const [pattern, kind] of OTHER_FRAMED_CREDENTIALS) {
-    const { folded, map } = foldForMatching(current);
+    const { folded, map } = foldForMatching(current, decodeEscapes);
     pattern.lastIndex = 0;
     let out = "";
     let cursor = 0;
@@ -199,7 +220,7 @@ function maskOtherFramings(value: string): string {
  * match runs on normalized text while the output keeps every byte the match did
  * not cover.
  */
-function foldForMatching(value: string): { folded: string; map: number[] } {
+function foldForMatching(value: string, decodeEscapes = true): { folded: string; map: number[] } {
   let folded = "";
   const map: number[] = [];
   // Serialization escapes are ALIASES for the label, not decoration: a JSON
@@ -224,6 +245,14 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
         return { ch: String.fromCodePoint(code), width: xml[0].length };
       }
     }
+    // HTML named entities. Only the ones that can spell a credential label or
+    // its separator matter here — `&colon;` is the separator itself, and the
+    // Greek names decode to characters the homoglyph fold already covers.
+    const named = /^&([A-Za-z][A-Za-z0-9]{1,31});/.exec(value.slice(at, at + 34));
+    if (named) {
+      const decoded = HTML_NAMED_ENTITIES.get(named[1]!.toLowerCase());
+      if (decoded) return { ch: decoded, width: named[0].length };
+    }
     return null;
   };
   // Iterate by CODE POINT, not UTF-16 code unit: a supplementary character
@@ -233,7 +262,7 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
   // both walked straight past the fold that way.
   let i = 0;
   while (i < value.length) {
-    const escaped = decodeEscape(i);
+    const escaped = decodeEscapes ? decodeEscape(i) : null;
     const ch = escaped ? escaped.ch : String.fromCodePoint(value.codePointAt(i)!);
     const width = escaped ? escaped.width : ch.length;
     if (INVISIBLE_FORMAT.test(ch)) {
@@ -249,16 +278,34 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
     // One folded unit per source code point keeps the offset map aligned; a
     // multi-unit fold would desynchronize it, so those keep the original.
     folded += mapped.length === 1 ? mapped : ch;
-    const emitted = mapped.length === 1 ? 1 : (escaped ? 1 : width);
-    for (let k = 0; k < emitted; k += 1) map.push(i);
+    // One map entry per EMITTED UTF-16 unit. An escaped supplementary
+    // character emits two units, and giving it one entry desynchronized every
+    // later offset — the mask then landed mid-token and left part of the
+    // credential behind.
+    const emittedText = mapped.length === 1 ? mapped : ch;
+    for (let k = 0; k < emittedText.length; k += 1) map.push(i);
     i += width;
   }
   map.push(value.length);
   return { folded, map };
 }
 
+/**
+ * Run the header rule over BOTH matching views and take the union.
+ *
+ * Decoding may only ADD coverage. Applying it unconditionally removed some:
+ * `&#x1d569;x-api-key: <secret>` decoded to `𝕩x-api-key:`, which folds to
+ * `xx-api-key:` and no longer matches the label boundary — so a decode-only
+ * view masked LESS than the plain view did. Running both and masking whatever
+ * either one finds makes the direction of the change one-way.
+ */
 function maskCredentialHeaders(value: string): string {
-  const { folded, map } = foldForMatching(value);
+  const decoded = maskCredentialHeadersOnce(value, true);
+  return maskCredentialHeadersOnce(decoded, false);
+}
+
+function maskCredentialHeadersOnce(value: string, decodeEscapes: boolean): string {
+  const { folded, map } = foldForMatching(value, decodeEscapes);
   COLON_LABELLED_CREDENTIAL.lastIndex = 0;
   let out = "";
   let cursor = 0;

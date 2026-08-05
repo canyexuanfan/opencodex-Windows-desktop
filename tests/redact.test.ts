@@ -363,6 +363,29 @@ describe("redactSecretString", () => {
     }
   });
 
+  test("decoding may add coverage but never remove it", () => {
+    // Decoding `&#x1d569;` yields a mathematical letter that folds to `x`,
+    // which changed the FOLLOWING label's left boundary and suppressed a match
+    // the plain view made. The rule now runs over both views and masks what
+    // either one finds, so the change is one-way by construction.
+    expect(redactSecretString("&#x1d569;x-api-key: opaquecredential123456"))
+      .toBe(`&#x1d569;x-api-key: ${REDACTED_SECRET}`);
+    // An escaped supplementary character emits two UTF-16 units; giving it one
+    // offset entry desynchronized the map and left part of the credential.
+    expect(redactSecretString("&#x1F600;authorization=opaquecredential123456&model=gpt-5.5"))
+      .toBe(`&#x1F600;authorization=${REDACTED_SECRET}&model=gpt-5.5`);
+  });
+
+  test("HTML named entities are decoded too", () => {
+    // `&colon;` IS the separator, and `&iota;` decodes to a character the
+    // homoglyph fold already covers — decoding is what connects the two.
+    expect(redactSecretString("x-api-key&colon; opaquecredential123456"))
+      .toBe(`x-api-key&colon; ${REDACTED_SECRET}`);
+    const xml = redactSecretString('<header name="author&iota;zation">opaquecredential123456</header>');
+    expect(xml).toContain(REDACTED_SECRET);
+    expect(xml).not.toContain("opaquecredential123456");
+  });
+
   test("non-credential fields in those framings are untouched", () => {
     expect(redactSecretString("model=gpt-5.5&status=429")).toBe("model=gpt-5.5&status=429");
     expect(redactSecretString("<model>gpt-5.5</model>")).toBe("<model>gpt-5.5</model>");
