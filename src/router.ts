@@ -33,9 +33,13 @@ import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/eva
 import { candidateCapabilityEvidence } from "./routing/capability";
 
 export class NoEligiblePolicyCandidateError extends Error {
-  constructor(readonly profileId: string) {
+  /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
+  readonly trace?: RouteDecisionTraceV1;
+
+  constructor(readonly profileId: string, trace?: RouteDecisionTraceV1) {
     super(`No eligible candidates for policy profile: ${profileId}`);
     this.name = "NoEligiblePolicyCandidateError";
+    this.trace = trace;
   }
 }
 
@@ -497,11 +501,11 @@ function routeModelInternal(
     }));
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
     if (evaluation.selectedIndex === null) {
-      throw new NoEligiblePolicyCandidateError(policyId);
+      throw new NoEligiblePolicyCandidateError(policyId, evaluation.trace);
     }
     const selected = evaluation.candidates[evaluation.selectedIndex]!;
     const concrete = `${selected.provider}/${selected.model}`;
-    const routed = routeModelInternal(config, concrete, true, undefined);
+    const routed = routeModelInternal(config, concrete, true);
     return {
       ...routed,
       routeKind: "policy" as const,

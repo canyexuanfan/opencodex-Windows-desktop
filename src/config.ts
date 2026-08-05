@@ -603,7 +603,16 @@ const providerConfigSchema = z.object({
   responsesSnapshotRepair: z.boolean().optional(),
 }).passthrough();
 
-const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+const RESERVED_PROVIDER_NAMES = new Set([
+  // JavaScript prototype-pollution guards.
+  "__proto__",
+  "prototype",
+  "constructor",
+  // System-reserved routing namespaces (resolved before provider/account
+  // namespaces in routeModelInternal).
+  "policy",
+  "combo",
+]);
 const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const SENSITIVE_PROVIDER_HEADERS = new Set([
@@ -1062,7 +1071,7 @@ const configSchema = z.object({
       ctx.addIssue({
         code: "custom",
         path: ["providers", name],
-        message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys",
+        message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys or routing namespaces (policy, combo)",
       });
     }
     const provider = config.providers[name];

@@ -25,7 +25,7 @@ import {
 } from "../claude/outbound";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { estimateTokens } from "../lib/token-estimate";
-import { routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, routeModel } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
@@ -664,7 +664,14 @@ async function handleClaudeMessagesWithBudget(
       const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
-  } catch { /* unknown model: let handleResponses shape the 404 */ }
+  } catch (err) {
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      logCtx.routeDecision = err.trace;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return anthropicErrorResponse(404, err.message, "invalid_request_error");
+    }
+    /* unknown model: let handleResponses shape the 404 */
+  }
 
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of FORWARD_HEADERS) {

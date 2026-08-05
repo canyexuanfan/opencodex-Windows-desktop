@@ -10,6 +10,7 @@ import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractC
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
 import { expandPreviousResponseInput, previousResponseProviderState, rememberResponseState } from "../../responses/state";
 import { routeModel } from "../../router";
+import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -269,7 +270,10 @@ export async function handleResponsesCompact(
 
   let route;
   try {
-    route = routeModel(config, raw.model);
+    // Compact requests route through the same policy evaluation as normal
+    // turns, so body-derived evidence (tools/image) must reach the first
+    // evaluation too - not only the later handleResponses dispatch.
+    route = routeModel(config, raw.model, evidenceFromBody(raw));
   } catch (err) {
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }

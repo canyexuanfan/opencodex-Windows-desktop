@@ -18,7 +18,7 @@ import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../li
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
 import { estimateTokens } from "../lib/token-estimate";
-import { routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, routeModel } from "../router";
 import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
@@ -149,7 +149,12 @@ async function handleChatCompletionsWithBudget(
       const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      logCtx.routeDecision = err.trace;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return chatCompletionsErrorResponse(404, err.message, "invalid_request_error");
+    }
     /* unknown model: let handleResponses shape the 404 */
   }
   void nativeRoute;

@@ -16,7 +16,7 @@ import {
   previousResponseReplayFailure,
   rememberResponseState,
 } from "../../responses/state";
-import { comboRouteDecisionTrace, routeModel, type RouteResult } from "../../router";
+import { comboRouteDecisionTrace, NoEligiblePolicyCandidateError, routeModel, type RouteResult } from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
@@ -1407,6 +1407,11 @@ async function handleResponsesInner(
     if (err instanceof NoAvailableComboTargetsError) {
       return comboUnavailableResponse(err.message);
     }
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      // Persist the evaluation trace (per-candidate exclusions + the
+      // no-eligible reason) so failed policy requests stay auditable.
+      logCtx.routeDecision = err.trace;
+    }
     return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
 
@@ -1479,6 +1484,9 @@ async function handleResponsesInner(
       } catch (err) {
         if (err instanceof NoAvailableComboTargetsError) {
           return comboUnavailableResponse(err.message);
+        }
+        if (err instanceof NoEligiblePolicyCandidateError) {
+          logCtx.routeDecision = err.trace;
         }
         return formatErrorResponse(404, "invalid_request_error", err instanceof Error ? err.message : String(err));
       }
