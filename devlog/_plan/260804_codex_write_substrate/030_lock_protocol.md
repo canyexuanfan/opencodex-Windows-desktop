@@ -1017,8 +1017,10 @@ and the ones that did were rewritten rather than kept.
   alone is removed; (i) a pathname-only memo is applied to directories alone.
   (j) `hardenStableLockFile`'s Windows delegation is deleted; (k) its `required:
   true` is weakened to `false`; (l) its POSIX `chmodSync` is deleted; (m) that
-  chmod failure is swallowed again; (n) the claim-site call to it is deleted.
-  (h) through (n) are not redundant — each survived every other check. (h) and (i)
+  chmod failure is swallowed again; (n) the claim-site call to it is deleted; (o) the owner-site default is
+  replaced by a no-op; (p) the claim-site platform threading is removed; (q) the
+  owner-site platform threading is removed.
+  (h) through (q) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1034,12 +1036,19 @@ and the ones that did were rewritten rather than kept.
   `hardenPath`, so the production default was never exercised, and the resolved
   platform is now threaded into it so a forced-Windows claim reaches the real
   delegation.
+  (o) is the same hole on the owner side, found after the claim side was fixed:
+  replacing that default with a no-op left 91 tests green. (p) and (q) are the half
+  that threading alone does not prove — a test omitting `platform` cannot tell a
+  threaded platform from a wrapper re-reading `process.platform`, because on the
+  host they agree. Both are covered by forcing `platform: "win32"` from the outer
+  API with no `hardenPath` and requiring the real ACL runner to execute, which can
+  only happen if the default is called AND the platform reached it.
 
-  Deliberately NOT asserted: the `timeoutMemoKey: path` argument at that call site.
-  `timeoutMemoKey()` already falls back to `targetPath` and this caller passes the
-  target path, so changing it is unobservable and a test pinning it would be
-  vacuous. The option exists for atomic writers that mint a fresh temp per write
-  and need the stable destination as the key (#612); this caller has no temp.
+  The `timeoutMemoKey: path` argument was REMOVED from that call site rather than
+  asserted. `timeoutMemoKey()` already falls back to `targetPath` and the caller was
+  passing the target path, so it was unobservable and a test pinning it would have
+  been vacuous. The option remains for atomic writers that mint a fresh temp per
+  write and need the stable destination as the key (#612); this caller has no temp.
   Replacement is driven through the stat seam rather than a real unlink/recreate:
   ext4 recycles an inode immediately and APFS did not once in 200 cycles, so a
   real-file version asserts different things on different machines — which is how a

@@ -34,6 +34,8 @@ import {
 } from "../src/lib/windows-secret-acl";
 import { atomicWriteFile } from "../src/config";
 import { hardenStableLockFile } from "../src/codex/native-main-lock-file";
+import { withNativeMainSharedClaim } from "../src/codex/native-main-claim";
+import { retainNativeMainOwner } from "../src/codex/native-main-owner";
 
 let testDir = "";
 
@@ -1020,7 +1022,7 @@ describe("hardenStableLockFile — the production call edge, not just the primit
    * test proved the primitive, and nothing proved production still called it.
    *
    * So this asserts the edge itself: on win32 the required async hardener runs
-   * with the pathname as its timeout memo key, and its failure propagates rather
+   * against that exact path, and its failure propagates rather
    * than leaving a coordinator database other accounts can read.
    */
   test("on win32 it delegates to the required async hardener for that exact path", async () => {
@@ -1116,5 +1118,74 @@ describe("hardenStableLockFile — the production call edge, not just the primit
     resetHardenedStateForTests();
     const missing = join(testDir, "never-created.sqlite");
     await expect(hardenStableLockFile(missing, "linux")).rejects.toThrow();
+  });
+});
+
+describe("the production default hardener is reached, with the resolved platform", () => {
+  /**
+   * The symmetric hole, found twice.
+   *
+   * `native-main-claim.ts` and `native-main-owner.ts` both default to
+   * `hardenStableLockFile` when no `hardenPath` is injected, and nearly every
+   * test in their own files injects one. An audit replaced each default with a
+   * no-op and 91 tests stayed green.
+   *
+   * Threading the resolved `platform` into that default is the other half. A
+   * test that omits `platform` cannot tell a threaded platform from a wrapper
+   * re-reading `process.platform`, because on this host they agree. So these
+   * force `platform: "win32"` from the OUTER API, inject no `hardenPath`, and
+   * require the real ACL runner to execute — which can only happen if the
+   * default is called AND the platform reached it.
+   */
+  const forcedWindows = async (
+    run: (codexHome: string) => Promise<void>,
+  ): Promise<string[][]> => {
+    const seen: string[][] = [];
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    setAsyncIcaclsRunnerForTests(async args => {
+      seen.push(args);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-default-harden-"));
+    try {
+      await run(codexHome);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+    return seen;
+  };
+
+  test("a claim with no hardenPath runs the real ACL sequence under a forced win32", async () => {
+    resetHardenedStateForTests();
+    const seen = await forcedWindows(async codexHome => {
+      await withNativeMainSharedClaim(
+        { codexHome } as never,
+        async () => undefined,
+        { platform: "win32" },
+      );
+    });
+    expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
+  });
+
+  test("an owner with no hardenPath runs the real ACL sequence under a forced win32", async () => {
+    resetHardenedStateForTests();
+    const seen = await forcedWindows(async codexHome => {
+      const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
+      try {
+        const deadline = Date.now() + 5_000;
+        while (owner.snapshot().status === "acquiring" && Date.now() < deadline) {
+          await Bun.sleep(10);
+        }
+      } finally {
+        await owner.release();
+      }
+    });
+    expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
   });
 });
