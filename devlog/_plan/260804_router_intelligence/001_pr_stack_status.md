@@ -291,8 +291,8 @@ other; closing one is a maintainer decision and neither is stale.
      key-less status code;
   2. GUI lint: setState-in-effect for the initial load - deferred via
      setTimeout(0);
-  3. missing `.table`/`.checkbox` CSS classes - added to styles.css reusing
-     the `.tbl` grammar;
+  3. missing `.checkbox` CSS class - added to styles.css; dry-run/analytics
+     tables reuse the existing `.tbl` grammar;
   4. dev-mode GUI session bootstrap cannot authenticate through the Vite
      proxy - the screenshot is captured same-origin against the production
      GUI served by the backend instead.

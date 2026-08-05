@@ -105,6 +105,8 @@ CLI：`ocx route policy list`、`ocx route policy show <id>`、`ocx route policy
 - `GET /api/routing-analytics` - 成功/失败/取消/回退率、p50/p95/p99 耗时与 TTFT、不完整流率、冷却失败数、每次成功请求的估算成本、覆盖率、置信度、截断标志。
 - `GET /api/routing-profiles`、`POST /api/routing-profiles/dry-run` - 配置文件查看与试运行评估（不发送上游请求）。
 
+返回的历史记录与路由决策负载仅暴露已脱敏的请求元数据（例如不透明的 `apiKeyId` 标签）。不包含凭证、原始提示正文或提供商密钥。
+
 CLI：`ocx logs explain <request-id>`、`ocx logs rebuild-index`、`ocx logs index-status`。
 
 ## 迁移

@@ -98,6 +98,8 @@ CLI: `ocx route policy list`, `ocx route policy show <id>`, `ocx route policy dr
 - `GET /api/routing-analytics` - 성공/실패/취소/폴백 비율, p50/p95/p99 소요 시간 및 TTFT, 불완전 스트림 비율, 쿨다운 실패 수, 성공 요청당 추정 비용, 커버리지, 신뢰도, 잘림 플래그.
 - `GET /api/routing-profiles`, `POST /api/routing-profiles/dry-run` - 프로필 조회와 드라이런 평가(업스트림 전송 없음).
 
+반환되는 히스토리와 라우트 결정 페이로드는 마스킹된 요청 메타데이터만 노출합니다(예: 불투명한 `apiKeyId` 라벨). 자격 증명, 원본 프롬프트 본문, 공급자 시크릿은 포함하지 않습니다.
+
 CLI: `ocx logs explain <request-id>`, `ocx logs rebuild-index`, `ocx logs index-status`.
 
 ## 마이그레이션

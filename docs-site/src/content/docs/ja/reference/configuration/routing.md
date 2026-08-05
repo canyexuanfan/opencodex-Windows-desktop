@@ -100,6 +100,8 @@ CLI: `ocx route policy list`、`ocx route policy show <id>`、`ocx route policy 
 - `GET /api/routing-analytics` - 成功率・失敗率・フォールバック率、p50/p95/p99 の所要時間と TTFT、不完全ストリーム率、クールダウン失敗数、成功あたりの推定コスト、カバレッジ、信頼度、切り捨てフラグ。
 - `GET /api/routing-profiles`、`POST /api/routing-profiles/dry-run` - プロファイル参照とドライラン評価（上流への送信なし）。
 
+返される履歴とルート決定ペイロードは、マスク済みのリクエストメタデータのみを公開します（例: 不透明な `apiKeyId` ラベル）。資格情報、生のプロンプト本文、プロバイダのシークレットは含みません。
+
 CLI: `ocx logs explain <request-id>`、`ocx logs rebuild-index`、`ocx logs index-status`。
 
 ## 移行

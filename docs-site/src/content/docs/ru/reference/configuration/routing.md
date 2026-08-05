@@ -115,6 +115,8 @@ CLI: `ocx route policy list`, `ocx route policy show <id>`, `ocx route policy dr
 - `GET /api/routing-analytics` - доли успеха/отказа/отмены/фолбэка, p50/p95/p99 длительность и TTFT, доля неполных потоков, сбои кулдауна, оценка стоимости за успешный запрос, покрытие, доверие, флаг усечения.
 - `GET /api/routing-profiles`, `POST /api/routing-profiles/dry-run` - просмотр профилей и пробная оценка (без отправки запросов).
 
+Возвращаемые записи истории и решений маршрута содержат только маскированные метаданные запроса (например, непрозрачные метки `apiKeyId`). Учётные данные, сырые тела промптов и секреты провайдеров не включаются.
+
 CLI: `ocx logs explain <request-id>`, `ocx logs rebuild-index`, `ocx logs index-status`.
 
 ## Миграция

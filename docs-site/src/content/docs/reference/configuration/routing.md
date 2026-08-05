@@ -207,6 +207,10 @@ metadata, align modalities, or target models with discoverable compatible capabi
 - `GET /api/routing-profiles`, `POST /api/routing-profiles/dry-run` - profile
   inspection and dry-run evaluation (no upstream dispatch).
 
+Returned history and route-decision payloads expose only masked request metadata
+(for example opaque `apiKeyId` labels). They do not include credentials, raw
+prompt bodies, or provider secrets.
+
 CLI: `ocx logs explain <request-id>`, `ocx logs rebuild-index`,
 `ocx logs index-status`, `ocx route policy list | show | dry-run | evaluate`.
 

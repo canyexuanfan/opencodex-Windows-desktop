@@ -79,8 +79,10 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [dryRunError, setDryRunError] = useState("");
   const [running, setRunning] = useState(false);
   const selectedRef = useRef<ProfileDto | null>(null);
+  const dryRunGenerationRef = useRef(0);
 
   const clearDryRun = useCallback(() => {
+    dryRunGenerationRef.current += 1;
     setDryRunResult(null);
     setDryRunError("");
   }, []);
@@ -132,8 +134,10 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
 
   const runDryRun = async () => {
     if (!selected) return;
+    const generation = ++dryRunGenerationRef.current;
     setRunning(true);
-    clearDryRun();
+    setDryRunResult(null);
+    setDryRunError("");
     try {
       const evidence: Record<string, number | boolean> = {};
       const contextTokens = context.trim() ? Number(context.trim()) : NaN;
@@ -151,6 +155,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
           evidence,
         }),
       });
+      if (generation !== dryRunGenerationRef.current) return;
       if (!response.ok) {
         let message = `dry-run ${response.status}`;
         try {
@@ -159,14 +164,20 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         } catch {
           // Keep the status fallback when the error body is not JSON.
         }
+        if (generation !== dryRunGenerationRef.current) return;
         setDryRunError(message);
         return;
       }
-      setDryRunResult(await response.json() as DryRunResult);
+      const result = await response.json() as DryRunResult;
+      if (generation !== dryRunGenerationRef.current) return;
+      setDryRunResult(result);
     } catch (error) {
+      if (generation !== dryRunGenerationRef.current) return;
       setDryRunError(error instanceof Error ? error.message : String(error));
     } finally {
-      setRunning(false);
+      if (generation === dryRunGenerationRef.current) {
+        setRunning(false);
+      }
     }
   };
 
