@@ -12,7 +12,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { admitCodexWrite, hashAuthority } from "../src/codex/admission";
+import { admitCodexWrite as admitRaw, hashAuthority } from "../src/codex/admission";
+
+/*
+ * Ownership is proven by shelling out to the platform service manager, and a
+ * fixture that reached the real one would assert against whatever this developer
+ * has installed. These cases are about the OTHER authorities, so ownership is
+ * pinned; the tri-state itself has its own suite.
+ */
+const admitCodexWrite = (): ReturnType<typeof admitRaw> =>
+  admitRaw({ inspectOwnership: () => ({ ownership: "owned", reason: "pinned by fixture" }) });
 import { JOURNAL_PATH } from "../src/codex/journal";
 import type { OcxConfig } from "../src/types";
 

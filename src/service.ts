@@ -174,6 +174,58 @@ function readServiceInstallState(): ServiceInstallState | null {
   return null;
 }
 
+/** What ONE state path said. Absent, unreadable and invalid are different answers. */
+export type ServiceStateEvidence =
+  | { readonly path: string; readonly kind: "absent" }
+  | { readonly path: string; readonly kind: "unreadable"; readonly reason: string }
+  | { readonly path: string; readonly kind: "invalid" }
+  | { readonly path: string; readonly kind: "valid"; readonly state: ServiceInstallState };
+
+/**
+ * Every state path, with what each one said.
+ *
+ * `readServiceInstallState` returns the FIRST path that parsed and discards the
+ * rest, so a valid mirror beside a corrupt one reads as clean. That is the right
+ * behavior for callers that just need the install state; it is the wrong input
+ * for deciding ownership, where a disagreement between mirrors is exactly the
+ * evidence that matters.
+ */
+export function inspectServiceStateEvidence(
+  paths: readonly string[] = serviceStatePaths(),
+): readonly ServiceStateEvidence[] {
+  return paths.map((path): ServiceStateEvidence => {
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+      // ENOENT is an answer. EACCES, ENOTDIR and the rest are a failure to ask,
+      // and collapsing them into absence is how a locked-down state file would
+      // become permission to write.
+      if (code === "ENOENT") return { path, kind: "absent" };
+      return { path, kind: "unreadable", reason: code || String(error) };
+    }
+    let parsed: ServiceInstallState | null;
+    try {
+      parsed = parseServiceInstallState(JSON.parse(raw));
+    } catch {
+      return { path, kind: "invalid" };
+    }
+    return parsed ? { path, kind: "valid", state: parsed } : { path, kind: "invalid" };
+  });
+}
+
+/** The homes this process is actually using, for comparison against a claim. */
+export function currentServiceHomes(): { codexHome: string; opencodexHome: string } {
+  return { codexHome: currentCodexHome(), opencodexHome: currentOpenCodexHome() };
+}
+
+export function serviceHomeMatches(a: string, b: string): boolean {
+  return normalizePathForCompare(a) === normalizePathForCompare(b);
+}
+
 /** Single accessor for update/reinstall code — v1/legacy state maps to scheduler. */
 export function readServiceBackend(): ServiceBackend {
   return readServiceInstallState()?.backend === "native" ? "native" : "scheduler";
@@ -232,6 +284,192 @@ export function assertServiceEnvironmentMatchesInstall(): void {
         "Run the service command from the same OpenCodex home so service state and secrets match.",
     );
   }
+}
+
+/**
+ * Whether a service manager holds an OpenCodex registration on this host.
+ *
+ * Read-only by contract: `launchctl print`, `systemctl show`, `schtasks /query`
+ * and `sc.exe query` only ask. Nothing here starts, stops or reloads anything —
+ * a machine running the proxy under launchd would otherwise have it taken down
+ * to answer a question about whether it exists.
+ *
+ * The distinction the type exists to make: `absent` is a POSITIVE finding, and
+ * `unknown` means the question could not be answered. Collapsing the second
+ * into the first is how an ownership check licenses a write over a live
+ * installation; collapsing it into a refusal is how a fresh headless machine
+ * becomes unusable. Both mistakes were made in review before this shape settled.
+ */
+export type ServiceManagerInstallation =
+  | { kind: "absent" }
+  | { kind: "present"; backend: "launchd" | "systemd" | "scheduler" | "winsw" }
+  | { kind: "conflict"; backends: readonly ("scheduler" | "winsw")[]; detail: string }
+  | { kind: "unknown"; reason: string };
+
+/**
+ * Residue on disk, distinguished from a path that merely could not be read.
+ *
+ * `existsSync` answers "no" for a dangling symlink and for a path whose parent
+ * denies traversal, and both of those are residue rather than absence. Only
+ * ENOENT means nothing is there.
+ */
+function artifactPresence(path: string): "present" | "absent" | "unreadable" {
+  try {
+    lstatSync(path);
+    return "present";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "absent" : "unreadable";
+  }
+}
+
+/**
+ * launchd, across BOTH domains that can hold a user agent.
+ *
+ * `gui/<uid>` and `user/<uid>` are independent and carry separate service sets —
+ * measured: the shipped agent answers 0 in `gui` and 113 in `user`. Asking only
+ * one leaves the other free to hold an orphan.
+ *
+ * Exit codes, measured on macOS 27.0: 0 is a live job, 113 is "the domain
+ * answered and has no such service", 112 is "that domain does not exist". 112 is
+ * label-independent — querying a domain with no service name at all returns it —
+ * so it can never hide a job, because an unreachable domain is not running one.
+ */
+function probeLaunchd(
+  deps: { run?: typeof runLaunchctl; plist?: () => "present" | "absent" | "unreadable" } = {},
+): ServiceManagerInstallation {
+  const run = deps.run ?? runLaunchctl;
+  const plist = (deps.plist ?? (() => artifactPresence(plistPath())))();
+
+  // Disk first, and it can only RAISE the verdict. The installer writes the
+  // plist BEFORE loading it and the state file only after, so an interrupted
+  // install leaves exactly this: a plist that will load at the next login.
+  if (plist === "present" || plist === "unreadable") {
+    return { kind: "present", backend: "launchd" };
+  }
+
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid === null) return { kind: "unknown", reason: "The effective user id is unavailable." };
+
+  let sawUnreachableDomain = false;
+  for (const domain of [`gui/${uid}`, `user/${uid}`]) {
+    const printed = run(["print", `${domain}/${LABEL}`]);
+    if (printed.ok) return { kind: "present", backend: "launchd" };
+    if (printed.status === 113) continue;          // answered: no such service
+    if (printed.status === 112) { sawUnreachableDomain = true; continue; }
+    // Anything else — including a spawn failure on a Mac that certainly runs
+    // launchd — is silence, not absence.
+    return {
+      kind: "unknown",
+      reason: `launchctl print ${domain}/${LABEL} could not be classified (status ${String(printed.status)}).`,
+    };
+  }
+  // Every domain either answered "no such service" or does not exist, and
+  // nothing is staged on disk.
+  void sawUnreachableDomain;
+  return { kind: "absent" };
+}
+
+/**
+ * systemd, with the same artifact-first rule.
+ *
+ * A user unit is a file too — written before `daemon-reload`, `enable`,
+ * `restart` and the state file — so an interrupted install leaves it exactly the
+ * way an interrupted launchd install leaves a plist.
+ *
+ * The environment is DERIVED for the child rather than repaired in place:
+ * `ensureUserBusEnv()` mutates `process.env`, and a probe that documents itself
+ * as read-only should not rewrite its own process to take a measurement.
+ */
+function probeSystemd(
+  deps: {
+    unit?: () => "present" | "absent" | "unreadable";
+    systemdIsInit?: () => boolean;
+    show?: () => { status: number | null; stdout: string };
+  } = {},
+): ServiceManagerInstallation {
+  const unit = (deps.unit ?? (() => artifactPresence(unitPath())))();
+  if (unit === "present" || unit === "unreadable") {
+    return { kind: "present", backend: "systemd" };
+  }
+
+  const systemdIsInit = (deps.systemdIsInit ?? (() => existsSync("/run/systemd/system")))();
+  const show = deps.show ?? ((): { status: number | null; stdout: string } => {
+    const env = { ...process.env };
+    if (!env.XDG_RUNTIME_DIR && typeof process.getuid === "function") {
+      env.XDG_RUNTIME_DIR = `/run/user/${process.getuid()}`;
+    }
+    const result = spawnSync(
+      "systemctl",
+      ["--user", "show", "-p", "LoadState", "--value", TASK],
+      { encoding: "utf8", windowsHide: true, env },
+    );
+    if (result.error) return { status: null, stdout: "" };
+    return { status: result.status ?? null, stdout: String(result.stdout ?? "").trim() };
+  });
+
+  const answered = show();
+  if (answered.status === 0) {
+    // The manager answered. `not-found` means no unit file; anything else is a
+    // real load state, which means a definition exists.
+    return answered.stdout === "not-found"
+      ? { kind: "absent" }
+      : { kind: "present", backend: "systemd" };
+  }
+  // It could not answer. That only proves absence when systemd is demonstrably
+  // not the init here — otherwise a manager may hold a definition whose file was
+  // deleted, and we simply cannot see it.
+  if (!systemdIsInit) return { kind: "absent" };
+  return { kind: "unknown", reason: "systemctl --user could not be queried while systemd is the init system." };
+}
+
+/** Windows, reusing the two probes that already return a three-way answer. */
+function probeWindows(
+  deps: {
+    scheduler?: () => WindowsSchedulerTaskProbe;
+    winsw?: () => "present" | "absent" | "unknown";
+  } = {},
+): ServiceManagerInstallation {
+  const scheduler = (deps.scheduler ?? (() => probeWindowsSchedulerTask()))();
+  const winsw = (deps.winsw ?? (() => nativeServiceRegistrationPresence()))();
+
+  if (scheduler.status === "present" && winsw === "present") {
+    return {
+      kind: "conflict",
+      backends: ["scheduler", "winsw"],
+      detail: "Both a Task Scheduler task and a WinSW service registration exist for OpenCodex.",
+    };
+  }
+  if (scheduler.status === "present") return { kind: "present", backend: "scheduler" };
+  if (winsw === "present") return { kind: "present", backend: "winsw" };
+  if (scheduler.status === "unknown" || winsw === "unknown") {
+    // No backend-impossible escape exists here: schtasks and sc.exe are always
+    // present, so a denied query is silence. The generated scheduler XML and the
+    // WinSW assets are NOT consulted as evidence — we write them ourselves before
+    // registration, so inferring absence from them would be circular.
+    return {
+      kind: "unknown",
+      reason: scheduler.status === "unknown"
+        ? (scheduler.detail ?? "The Task Scheduler query could not prove absence.")
+        : "The WinSW service registration could not be queried.",
+    };
+  }
+  return { kind: "absent" };
+}
+
+export function inspectServiceManagerInstallation(
+  deps: {
+    launchd?: () => ServiceManagerInstallation;
+    systemd?: () => ServiceManagerInstallation;
+    windows?: () => ServiceManagerInstallation;
+    platform?: NodeJS.Platform;
+  } = {},
+): ServiceManagerInstallation {
+  const platform = deps.platform ?? process.platform;
+  if (platform === "darwin") return (deps.launchd ?? probeLaunchd)();
+  if (platform === "win32") return (deps.windows ?? probeWindows)();
+  if (platform === "linux") return (deps.systemd ?? probeSystemd)();
+  // A platform with no OpenCodex service installer cannot be holding one.
+  return { kind: "absent" };
 }
 
 function plistString(value: string): string {
@@ -551,16 +789,28 @@ function sh(cmd: string): string {
 export function runLaunchctl(
   args: string[],
   deps: { run?: typeof spawnSync } = {},
-): { ok: boolean; stdout: string; stderr: string } {
+): { ok: boolean; stdout: string; stderr: string; status: number | null } {
   const run = deps.run ?? spawnSync;
   const result = run("/bin/launchctl", args, { encoding: "utf8", windowsHide: true });
   // `error` is set when the spawn itself failed (ENOENT off macOS) and `status` is
   // null for a signalled child; neither may be reported as success.
-  if (result.error) return { ok: false, stdout: "", stderr: String(result.error.message ?? "") };
+  if (result.error) {
+    return { ok: false, stdout: "", stderr: String(result.error.message ?? ""), status: null };
+  }
   return {
     ok: result.status === 0,
     stdout: String(result.stdout ?? "").trim(),
     stderr: String(result.stderr ?? "").trim(),
+    /*
+     * The NUMBER, not just its zero-ness.
+     *
+     * `launchctl print` distinguishes "that domain does not exist" (112) from
+     * "the domain answered and has no such service" (113), and an ownership
+     * probe needs that difference: the second proves absence, the first only
+     * proves we could not look. Collapsing both into `ok: false` forced callers
+     * to parse stderr, which Apple does not treat as a stable interface.
+     */
+    status: result.status ?? null,
   };
 }
 

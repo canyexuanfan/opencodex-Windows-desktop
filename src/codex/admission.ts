@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getConfigDir, observeConfigGeneration, readConfigAdmissionSnapshot } from "../config";
-import { assertNativeTeardownOwned } from "../integrations/native/ownership-preflight";
+import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import type { AdmissionSnapshot } from "./convergence-types";
 import { codexIntegrationEnabled } from "./desired-state";
 import { externalCodexModelProvider } from "./inject";
@@ -42,6 +42,19 @@ export type CodexAdmission =
       readonly authority: "config" | "generation" | "service-home" | "external-provider";
       readonly message: string;
     };
+
+/**
+ * Seams, not conveniences.
+ *
+ * The ownership probe shells out to the platform service manager, and a test
+ * that reached the real one would be asserting against whatever the developer's
+ * machine happens to have installed. Injecting it is also what lets a test
+ * observe the EXACT argv the production probe emits, which is the only way to
+ * hold down "this never starts or stops anything".
+ */
+export interface AdmissionDeps {
+  readonly inspectOwnership?: typeof inspectNativeCodexOwnership;
+}
 
 /** Hash of a file's exact bytes, or a stable marker for absence. */
 function contentIdentity(path: string): string {
@@ -64,7 +77,7 @@ function contentIdentity(path: string): string {
  * home" and "the user pointed Codex somewhere else" need different messages
  * because they need different actions.
  */
-export function admitCodexWrite(): CodexAdmission {
+export function admitCodexWrite(deps: AdmissionDeps = {}): CodexAdmission {
   const persisted = readConfigAdmissionSnapshot();
   const diagnostics = persisted.diagnostics;
   if (diagnostics.source !== "file") {
@@ -109,9 +122,21 @@ export function admitCodexWrite(): CodexAdmission {
     ? { present: false, value: 0 }
     : { present: true, value: observed.generation.value };
 
-  const owned = assertNativeTeardownOwned();
-  if (!owned.ok) {
-    return { kind: "refused", authority: "service-home", message: owned.message };
+  /*
+   * Tri-state, and NOT `assertNativeTeardownOwned` — that one fails open, so a
+   * corrupt state file would arrive here as `owned`. Unattended writes refuse on
+   * both `foreign` and `unknown`: the first is someone else's home, the second
+   * is a question that could not be answered, and neither is permission.
+   */
+  const ownership = (deps.inspectOwnership ?? inspectNativeCodexOwnership)();
+  if (ownership.ownership !== "owned") {
+    return {
+      kind: "refused",
+      authority: "service-home",
+      message: ownership.ownership === "foreign"
+        ? `Refusing to write: ${ownership.reason}.`
+        : `Refusing to write because ownership could not be proven: ${ownership.reason}.`,
+    };
   }
 
   const codexHome = getCodexHome();
@@ -165,11 +190,9 @@ export function admitCodexWrite(): CodexAdmission {
     configDigest: persisted.contentSha256,
     intent: codexIntegrationEnabled(config) ? "on" : "off",
     generation,
-    // Ownership is tri-state by contract. This producer proves `owned` only;
-    // distinguishing `foreign` from `unknown` is WP12's tri-state work, and
-    // reporting a confident `owned` for an unproven case would be exactly the
-    // absence-as-guarantee this unit keeps finding.
-    ownership: "owned",
+    // Reached only when the projection above said `owned`; the other two states
+    // have already refused. This is the observed value, not a placeholder.
+    ownership: ownership.ownership,
     externalProvider: null,
     canonicalTargets,
     journalIdentity: contentIdentity(JOURNAL_PATH),
