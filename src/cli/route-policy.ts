@@ -45,7 +45,7 @@ async function show(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const result = await runtimeRequest<{ profiles?: ProfileRow[] }>("/api/routing-profiles", {}, deps);
   const profile = (result.profiles ?? []).find(candidate => candidate.id === id);
   if (!profile) throw new CliUsageError(`unknown routing profile: ${id}`, USAGE);
-  printData(profile, wantsJson, wantsJson ? undefined : [JSON.stringify(profile, null, 2)]);
+  printData(profile, wantsJson);
 }
 
 async function dryRun(argv: string[], deps: RuntimeApiDeps): Promise<void> {
@@ -75,7 +75,7 @@ async function dryRun(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     },
     deps,
   );
-  printData(result, wantsJson, wantsJson ? undefined : [JSON.stringify(result, null, 2)]);
+  printData(result, wantsJson);
 }
 
 export async function handleRoutePolicyCommand(argv: string[], deps: RuntimeApiDeps = {}): Promise<number> {
