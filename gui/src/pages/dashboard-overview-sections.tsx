@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconAlert, IconCheck, IconInfo, IconRefresh } from "../icons";
+import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
 import { navigateHash } from "../hash-routing";
@@ -145,13 +145,20 @@ export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
 export function DashboardMaintenancePanel({ d }: { d: Dash }) {
   const {
     t, runSync, syncing, updateTriggerRef, openUpdateDialog, updateLoading, updateOpen,
-    syncResult, syncError, updateJob, reconnecting,
+    syncResult, syncError, updateJob, reconnecting, clearSyncFeedback,
   } = d;
+
+  // A sync result that carries actionable guidance (native subagent defaults override or
+  // the stale app-server hint) is the ONLY place that warning is visible, so it must not
+  // vanish on a timer: it stays until the next sync or an explicit dismiss.
+  const syncHoldsWarning = !!syncResult && (!!syncResult.nativeSubagentDefaultsWarning || !!syncResult.staleAppServerHint);
 
   // Sync feedback is a transient fixed toast instead of an inline notice: the toast sits
   // outside the layout flow, so the result can appear without pushing the panels below
   // this card down by a full box height (the old notice shifted the whole dashboard on
-  // every sync click). It auto-dismisses; a new sync clears and re-arms it.
+  // every sync click). Plain results auto-dismiss; a new sync clears and re-arms it.
+  // Dismissal is published to the dashboard data (clearSyncFeedback), not just a local
+  // flag, so switching tabs and back cannot resurrect a stale result as a fresh toast.
   const [syncToastDismissed, setSyncToastDismissed] = useState(false);
   const syncToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -160,22 +167,30 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
       clearTimeout(syncToastTimerRef.current);
       syncToastTimerRef.current = null;
     }
-    if (syncResult || syncError) {
+    if ((syncResult || syncError) && !syncHoldsWarning) {
       const holdMs = syncError ? 8000 : 6000;
       syncToastTimerRef.current = setTimeout(() => {
         syncToastTimerRef.current = null;
         setSyncToastDismissed(true);
+        clearSyncFeedback();
       }, holdMs);
     }
     return () => {
       if (syncToastTimerRef.current) clearTimeout(syncToastTimerRef.current);
     };
-  }, [syncResult, syncError]);
+  }, [syncResult, syncError, syncHoldsWarning, clearSyncFeedback]);
 
   // A fresh click re-arms the toast even if the previous one was already auto-dismissed.
   const handleRunSync = () => {
     setSyncToastDismissed(false);
     void runSync();
+  };
+
+  // Shared dismiss affordance for the sync toast: closes it locally AND clears the
+  // dashboard-level result so it cannot remount as fresh on the next Overview visit.
+  const dismissSyncToast = () => {
+    setSyncToastDismissed(true);
+    clearSyncFeedback();
   };
 
   return (
@@ -217,7 +232,7 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
             {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
             <span>
               {updateJobLabel(updateJob.status, t)}
-              {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
+              {updateJob.latestVersion ? ` ${t("dash.updateVersionTransition", { currentVersion: updateJob.currentVersion, latestVersion: updateJob.latestVersion })}` : ""}
               {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
               {updateJob.error ? ` ${updateJob.error}` : ""}
             </span>
@@ -225,19 +240,25 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
         )}
       </div>
       {!syncToastDismissed && syncResult && (
-        <div className={`action-toast notice ${syncResult.nativeSubagentDefaultsWarning ? "notice-warn" : "notice-ok"}`} role="status" aria-live="polite">
-          {syncResult.nativeSubagentDefaultsWarning ? <IconAlert /> : <IconCheck />}
+        <div className={`action-toast notice ${syncHoldsWarning ? "notice-warn" : "notice-ok"}`} role="status" aria-live="polite">
+          {syncHoldsWarning ? <IconAlert /> : <IconCheck />}
           <span>
             {t("dash.syncOk", { count: syncResult.added })}
             {syncResult.warning ? ` ${syncResult.warning}` : ""}
             {syncResult.nativeSubagentDefaultsWarning ? ` ${syncResult.nativeSubagentDefaultsWarning}` : ""}
             {syncResult.staleAppServerHint ? <>{" "}<Trans k="dash.syncStaleHint" cmd="ocx sync --restart-codex" /></> : null}
           </span>
+          <button type="button" className="action-toast-dismiss" onClick={dismissSyncToast} aria-label={t("api.dismiss")}>
+            <IconX width={13} height={13} aria-hidden="true" />
+          </button>
         </div>
       )}
       {!syncToastDismissed && syncError && (
         <div className="action-toast notice notice-err" role="status" aria-live="polite">
           <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
+          <button type="button" className="action-toast-dismiss" onClick={dismissSyncToast} aria-label={t("api.dismiss")}>
+            <IconX width={13} height={13} aria-hidden="true" />
+          </button>
         </div>
       )}
     </>
