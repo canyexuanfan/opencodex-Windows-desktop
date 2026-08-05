@@ -147,9 +147,12 @@ run in the main session; Lane C carries forward from `001`.
 
 ## What the lanes actually found
 
-**Seven of the eight new issues are real defects.** Only #1045 was already fixed —
-`4177345021` made the drain-timer assertion deterministic by injecting a fixed
-`now`, and the suite passes 24/24 today. It can be closed.
+**Of the eight new issues: six are real defects, one is already fixed, one is
+reporter-blocked.** #1045 was fixed by `4177345021`, which made the drain-timer
+assertion deterministic by injecting a fixed `now`; the suite passes 24/24 today
+and the issue can be closed. #1017 was over-called by its lane and is downgraded
+below. The six that survive scrutiny are #1061, #1059, #1057, #1046, #1043, and
+#1024.
 
 **#1024 is half-fixed, and the half that remains is not the half the title
 names.** The NVIDIA member (`nemotron-3-ultra-550b-a55b`) is in the sidecar list

@@ -1,6 +1,8 @@
 # 030 — WP4: issue ↔ PR cross-links
 
-> Pre-written in WP1. Consumes the closed tables from `010` and `020`.
+> **Status: EXECUTED.** Sections above `# Matrix (executed)` are the phase spec as
+> it stood when WP4 ran, kept for auditability; the matrix at the bottom is the
+> result.
 
 ## What this phase must produce
 
@@ -25,28 +27,50 @@ in `020`, then each referent resolved through
 `gh api repos/lidge-jun/opencodex/issues/<n>` to separate issue from PR and open
 from closed. A PR absent from this table asserted no issue link.
 
+### Literal extraction (every `#NNN` in title + body, untruncated)
+
 | PR | referent | referent type/state | relation |
 |---:|---|---|---|
 | 1036 | #1017 | ISSUE open | fixes |
 | 999 | #241 | ISSUE open | documents-only |
-| 1056 | #241 (via title) | ISSUE open | partially-fixes |
 | 1010 | #1009 | ISSUE closed | closes-already-closed |
 | 1039 | #914 | ISSUE closed | descendant-of |
 | 1039 | #922, #1023, #1025, #1026 | PR | descendant-of |
 | 1019 | #671, #949 | PR | continuation-of |
 | 1018 | #1016 | PR merged | rebase-provenance |
 | 936 | #253 | ISSUE closed | motivating-report |
-| 936 | #899, #916, #917 | PR | rebase-of (#916); explicitly not superseded-by (#917) |
+| 936 | #916 | PR | rebase-of |
+| 936 | #917 | PR | explicitly-not-superseded-by |
+| 936 | #899 | PR | related-prior-work |
 | 557 | #533 | PR | supersedes |
 | 937, 872, 870, 812 | #572 | ISSUE open | sibling-of-batch |
+| 870 | #923 | PR closed | sibling-of-batch |
+| 872 | #870 | PR open | sibling-of-batch |
+| 937 | #870, #872 | PR open | sibling-of-batch |
 | 947 | #942 | PR closed | conflicts-with |
+| 947 | #953 | PR closed | related-prior-work |
 | 1047, 1002 | #1024 | ISSUE open | overlap-to-check |
+| 1056 | *(none)* | — | asserts no issue link |
 
-Two referents the first pass missed, both recovered by dropping the `.[0:3]`
-truncation: **#914** (from #1039 — closed issue, DNS/network reachability
-rotating Codex accounts) and **#253** (from #936 — closed issue, subscription-mode
-`ocx claude` losing authentication). Both are closed, so neither changes a
-disposition; a ledger that calls itself complete still has to contain them.
+### Inference, kept separate from extraction
+
+| PR | inferred target | basis | confidence |
+|---:|---|---|---|
+| 1056 | #241 | the title "preserve routed models in desktop picker" restates #241's subject; the body contains **no** `#241` | inference only — the PR does not claim the link |
+
+That separation was forced by the audit. An earlier draft listed #1056 → #241 as
+"via title" inside the extraction table, which reads as though the PR asserted the
+link. It does not. A PR silently addressing an issue is real and common, but
+recording an inference as an extraction is how a triage document acquires facts
+nobody ever wrote down.
+
+### What the untruncated pass recovered
+
+Seven referents the first pass missed, all from dropping the `.[0:3]` truncation:
+**#914** (#1039), **#253** (#936), **#923** (#870), **#870** (#872), **#870 and
+#872** (#937), and **#953** (#947). The provider-preset PRs cross-reference *each
+other*, which strengthens the sibling-of-batch reading below — they were authored
+as a set and say so in their own bodies.
 
 **#1010's `Closes #1009` points at an already-closed issue.** #1009 was closed
 while the PR stayed open, so the closing keyword will be a no-op at merge and the
@@ -56,7 +80,7 @@ PR has to justify itself on its own merits rather than inherit one from the link
 
 | File | Action | Content |
 |------|--------|---------|
-| `030_cross_links.md` | MODIFY | append `## Matrix` with one row per pair above plus every issue with `no open PR` |
+| `030_cross_links.md` | MODIFY (done) | appended `# Matrix (executed)` with one row per pair above plus every issue with `no open PR` |
 | any other file | — | none |
 
 ## Executable commands
@@ -65,7 +89,7 @@ Runnable as-is; `REFS` is the referent set from the ledger, no placeholders.
 
 ```bash
 cd /Users/jun/Developer/new/700_projects/opencodex
-REFS="1017 241 1009 914 922 1023 1025 1026 671 949 1016 253 899 916 917 533 572 942 1024"
+REFS="1017 241 1009 914 922 1023 1025 1026 671 949 1016 253 899 916 917 533 572 942 953 923 870 872 1024"
 for n in $REFS; do
   gh api "repos/lidge-jun/opencodex/issues/$n" \
     --jq '"\(.number) " + (if .pull_request then "PR" else "ISSUE" end) + " \(.state) \(.title[0:70])"'
@@ -107,7 +131,10 @@ The matrix runs both ways:
 `relation` ∈ {fixes, partially-fixes, documents-only, sibling-of-batch,
 conflicts-with, continuation-of, descendant-of, rebase-of, rebase-provenance,
 supersedes, motivating-report, closes-already-closed, overlap-to-check,
+related-prior-work, explicitly-not-superseded-by, asserts-no-issue-link,
 unrelated}. Every ledger row maps to exactly one of these.
+`explicitly-not-superseded-by` exists because #936's body makes that denial in so
+many words, and a negative claim is a relation too.
 
 ## Accept criteria
 

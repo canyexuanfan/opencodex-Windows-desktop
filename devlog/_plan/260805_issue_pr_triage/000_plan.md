@@ -17,8 +17,8 @@ is a drift signal worth surfacing on its own.
 
 | Fact | Value |
 |------|-------|
-| Snapshot taken | 2026-08-05T13:33:08Z |
-| `origin/dev` | `8949c4940` |
+| Snapshot taken | 2026-08-05T13:33:08Z, **superseded** by the re-freeze at 13:59:09Z |
+| `origin/dev` | `aaa71967a` (authoritative; the first freeze at `8949c4940` is superseded — see `002`) |
 | Working branch | `dev` (clean) |
 | Open issues | 39 |
 | Open issues, bug-class | 17 (16 from the `bug`/`provider-compatibility` label query + unlabeled defect-shaped #1045) |
@@ -43,7 +43,9 @@ Three evidence classes are admissible:
    `git merge-base --is-ancestor <sha> origin/dev`. A remembered "that landed" is
    not evidence — this rule exists because the 08-04 round found devlog claims of
    landed work that had only landed on a stack branch.
-2. **Source anchor.** `path:line` from the tree at `8949c4940`.
+2. **Source anchor.** `path:line`. Code anchors were read at `8949c4940`; the
+   five commits `aaa71967a` adds do not touch those paths, so the anchors hold at
+   the authoritative base. Distances and CI state are recorded at `aaa71967a`.
 3. **Live GitHub read.** `gh` read-only queries for CI conclusion, mergeable
    state, review decision, and head ancestry.
 
@@ -109,3 +111,15 @@ session owns every verdict; a subagent returns evidence, not dispositions.
 Bound: 40 dispatches, 5 work-phases (WP1–WP5 as mapped above). If a sixth unit is
 discovered mid-loop it is appended as a P-phase amendment with its own decade doc,
 not smuggled into an existing phase.
+
+## Base revisions during this unit
+
+| Time | base | why it moved |
+|------|------|--------------|
+| 13:33:08Z | `8949c4940` | initial freeze |
+| 13:49:12Z | `8949c4940` | #1010 pushed a new head; base unchanged |
+| 13:59:09Z | `aaa71967a` | `dev` advanced five commits; **all 25 PR distances recomputed atomically** |
+
+Recording this is not bookkeeping for its own sake. A triage table whose rows were
+measured against different bases is not internally comparable, and the failure is
+invisible unless the base is stated.

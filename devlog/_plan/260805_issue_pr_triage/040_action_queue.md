@@ -68,13 +68,16 @@ The queue is built from the closed verdict tables, not re-derived. Its source
 rows are:
 
 ```
-from 010 (real-open-defect):     1061 1059 1057 1046 1043 1024 1017
+from 010 (real-open-defect):     1061 1059 1057 1046 1043 1024
 from 010 (already-fixed-on-dev): 1045
-from 010 (needs-reporter-info):  904 796 994 418
+from 010 (needs-reporter-info):  1017 904 796 994 418
 from 010 (out-of-scope):         919 540 417 241 92
 from 020 (every disposition):    all 25 open PRs
 from 030 (pair resolutions):     1036/1017, 1056+999/241, 1047+1002/1024, 1043+1024
 ```
+
+#1017 sits in `needs-reporter-info`, not `real-open-defect`: its lane returned the
+stronger verdict and the audit gate rejected it. 6 + 1 + 5 + 5 = 17.
 
 Every queue entry names its source row. An entry with no source row in `010`,
 `020`, or `030` is a scope escape and must be removed.
@@ -144,25 +147,31 @@ waits on an explicit instruction.
 | 4 | Classify `opencode-zen` models in the registry — one change closing #1043 and the reproducible half of #1024 | `030` #1043/#1024 | no blocker | autonomous |
 | 5 | Correct the DeepSeek effort ladder (`src/providers/registry.ts:349,353,1185`) and the two tests that currently lock the wrong ladder | `010` #1057 | no blocker | autonomous |
 | 6 | Call `afterCatalogWriteHandleAppServers()` on the startup sync path for #1046 | `010` #1046 | no blocker | autonomous |
-| 7 | Review #1018 — the only PR that is green, mergeable, and inside the freshness gate | `020` #1018 | entries 2–3, since a red platform matrix makes "CI green" weak evidence for any merge | needs-user |
+| 7 | Review #1018 — the only PR that is green, mergeable, and inside the freshness gate | `020` #1018 | no blocker | needs-user |
 | 8 | Ask the four reporters for the captures that unblock #904, #796, #994, #418 — and for #1017, the malformed payload that would confirm or refute it | `010` ×5 | no blocker (parallel to everything) | needs-user |
 | 9 | Route #936 and #557 to the second-maintainer security review they have been waiting on since 07-27 | `020` #936, #557 | no blocker; it has never been a technical blocker | needs-second-maintainer |
-| 10 | Give the 21 out-of-gate PRs a single honest rebase-or-close message; for #715 specifically, decide between re-authoring and closing rather than asking for a fifth rebase | `020` ×21 | entry 7 — settle the reviewable one before asking twenty authors to rebase into a queue that is not moving | needs-user |
+| 10 | Give the 21 out-of-gate PRs a single honest rebase-or-close message; for #715 specifically, decide between re-authoring and closing rather than asking for a fifth rebase | `020` ×21 | no blocker | needs-user |
 
-### Why this order, and not the obvious one
+### The one real dependency, and the preferences that are not dependencies
 
-The obvious order starts with the five unowned defects, because they are the most
-satisfying to fix. The dependency order starts with CI, because entries 2 and 3
-decide whether "the tests pass" means anything for entries 4–7. A macOS leg that
-hangs for 30 minutes and a Windows leg that is dispatch-only are not background
-conditions — they are the reason every green check in this repository is weaker
-evidence than it looks.
+Only entry 3 has a technical predecessor: triaging the Windows failure families
+means reading a platform matrix, and entry 2's hanging macOS leg makes that matrix
+unreadable while it stands. Entry 3 consumes entry 2's concrete output.
 
-Entry 10 is last for a reason that has nothing to do with its size. Asking
-twenty-one contributors to rebase into a queue where only one PR is currently
-reviewable produces twenty-one rebased PRs and the same bottleneck. The
-behind-counts are a symptom of merge latency, and telling authors to fix a symptom
-they did not cause is the least useful thing on this list.
+Entries 7 and 10 previously listed predecessors and should not have. The audit was
+right to call that a `PHASE-SPLIT-01` violation: "review the mergeable PR before
+asking twenty authors to rebase" is a sequencing *preference* about review
+throughput, not a statement that entry 10 cannot run first. Both are now
+`no blocker`. The reasoning survives as advice below, where it belongs, instead of
+masquerading as a constraint.
+
+**Advisory, not blocking.** Asking twenty-one contributors to rebase into a queue
+where one PR is currently reviewable produces twenty-one rebased PRs and the same
+bottleneck. The behind-counts are a symptom of merge latency, not contributor
+neglect. And a repository whose macOS leg can hang for thirty minutes and whose
+Windows leg is dispatch-only should treat every green check as weaker evidence
+than it looks — which is why entries 2 and 3 are near the top even though nothing
+formally waits on them.
 
 ## Unverified ledger
 
@@ -183,57 +192,30 @@ point: a triage that reported seventeen confident verdicts would be less useful
 than one that reports eight solid ones and names what the other nine are waiting
 on.
 
+## Accounting
+
+```
+39 open issues (frozen 2026-08-05T13:33:08Z)
+ = 17 bug-class             -> 17 verdict rows in 010
+ +  2 other-unit work items -> #1048, #1049 (260804_codex_write_substrate)
+ + 20 enhancement/roadmap   -> #1060 #1058 #974 #823 #822 #821 #820 #809 #755
+                               #695 #657 #572 #561 #415 #414 #386 #201 #178
+                               #177 #95
+post-freeze arrivals: #1062, #1063 (recorded, not counted)
+
+25 open PRs -> 25 verdict rows in 020
+```
+
+Balances: 17 + 2 + 20 = 39. ✔
+
+Live drift observed during this unit, recorded rather than chased: `origin/dev`
+advanced `8949c4940` → `aaa71967a`; #1010's head moved once; #1019's head moved to
+`ea310c859` (0 behind / 50 ahead, `hygiene` still failing) during the final audit.
+The tables are anchored to declared base and head shas, so they stay auditable
+even as the surface moves.
+
 ## Terminal outcome
 
 `DONE` for the triage objective; the recommended actions are a queue, not a
 completed program. Every `needs-user` and `needs-second-maintainer` entry is
 blocked on authority this unit deliberately does not hold.
-
----
-
-# Queue (executed)
-
-Ordered by dependency. An entry sits below another only when it *cannot* run
-first — never because it is larger.
-
-| # | action | source | blocking predecessor | authority |
-|--:|---|---|---|---|
-| 1 | Bound the teardown in `tests/native-profile-crash-boundaries.test.ts:194-197` with a deadline and kill fallback; fix the `waitFor()`/parse race at :182-183 | 010 #1061 | no blocker | autonomous |
-| 2 | Close #1045 as fixed by `4177345021` | 010 #1045 | no blocker (ancestry proven, suite 24/24) | **needs-user** |
-| 3 | Classify `opencode-zen` vision capability at `src/providers/registry.ts:1652` | 010 #1043 + #1024 | no blocker | autonomous |
-| 4 | Correct the DeepSeek effort ladder at `src/providers/registry.ts:349,353,1185` and the tests locking the wrong ladder | 010 #1057 | no blocker | autonomous |
-| 5 | Call `afterCatalogWriteHandleAppServers()` on the startup sync path, not only on explicit CLI `sync` | 010 #1046 | no blocker | autonomous |
-| 6 | Triage the five Windows failure families separately | 010 #1059 | **entry 1** — a hanging macOS phase test corrupts release-train signal, and CI health gates the credibility of every "tests pass" claim below | autonomous, needs a Windows runner |
-| 7 | Review and land #1018 | 020 #1018 | no blocker — the one reviewable PR | **needs-user** (merge) |
-| 8 | Ask #1019 and #1010 to fix `hygiene`; ask #1056 to rebase back into the gate | 020 | entry 7 (same subsystem review capacity) | **needs-user** (comment) |
-| 9 | Route #936 and #557 to a second maintainer for security review | 020 | no blocker; it has waited since 07-27 | **needs-second-maintainer** |
-| 10 | Decide #715: re-author against current `dev`, or close with thanks | 020 #715 | entry 9 (same account-pool/credential area) | **needs-user** |
-| 11 | Tell the 13 behind-but-clean PR authors what specifically changed under them | 020 lane P3 | entries 3–5 (they touch the same paths those fixes move) | **needs-user** (comment) |
-| 12 | Ask reporters of #904, #796, #418, #994 for the specific captures named in 010 | 010 lane B/C | no blocker; runs in parallel with everything above | **needs-user** (comment) |
-
-Entries 1–5 are the only fully autonomous code work. Everything with a
-`needs-user` label is a GitHub write this unit deliberately did not perform.
-
-## Unverified ledger
-
-| item | what could not be verified | why | what would verify it |
-|---|---|---|---|
-| #1059 | the "~207 failures" figure | the cited run aborted on a Bun internal panic in shard 4; only 113 explicit failures are recoverable (30+41+35+7) | a completed Windows dispatch run across all four shards |
-| #1061 | that the hang reproduces | one local macOS run passed 2/2; the failure is load-dependent | a macOS release-train CI run with the current test |
-| #1017 | the malformed payload on the wire | needs a live Cursor credential and `cursor/grok-4.5` | a captured request/response pair from the reporter |
-| #1024 | the `TR` provider half | `TR` is not a built-in registry provider; behavior depends on reporter configuration | the reporter's provider config |
-| #796 | that the shipped fix resolves the reporter's case | needs a live Volcengine Ark credential | one authenticated Ark tool-turn request |
-| #904 | the U+FFFD reproduction | `eeef7a32a` fixed surrogate boundaries; the original capture was never supplied | the reporter's failing file capture |
-| #418 | V2 delegation failure | the latest same-run trace does not reproduce | the reporter's current trace on a current build |
-| #994 | which allowlist path fires | the report does not name the provider/model | reporter's provider/model + wire capture |
-| #92, #417, #241 | upstream behavior | the defect lives outside this repository | an upstream fix or a Desktop-client change |
-
-Nine of seventeen bug-class issues are blocked on evidence this session cannot
-produce. Naming that is the point: a triage that quietly upgrades "I read the code
-and it looks right" into "verified" is worse than one that admits the gap.
-
-## Terminal outcome
-
-`DONE` for the triage objective, with the caveat that no GitHub write was
-performed and none was authorized. The five autonomous fixes (entries 1, 3, 4, 5,
-and 6's investigation) are recommendations, not work this unit did.

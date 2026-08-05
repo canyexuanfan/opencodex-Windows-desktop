@@ -21,13 +21,32 @@ trivia.
 
 All distances below computed in one pass:
 
+Reproducibility loop, pinned to the declared base, no ref writes. Run with
+`bash`, not `zsh` — the scalar list relies on word splitting:
+
 ```bash
-BASE=$(git rev-parse origin/dev)   # aaa71967a
-for pr in <the 25 numbers>; do
-  git fetch origin +refs/pull/$pr/head:refs/remotes/prq/$pr --quiet
-  echo "$pr $(git rev-parse --short=9 prq/$pr) behind=$(git rev-list --count prq/$pr..$BASE) ahead=$(git rev-list --count $BASE..prq/$pr)"
+cd /Users/jun/Developer/new/700_projects/opencodex
+BASE=aaa71967a
+PRS="1019 1018 1010 1056 1047 1039 870 1036 1008 1002 947 812 985 983 978 569 999 997 937 936 872 557 581 811 715"
+for pr in $PRS; do
+  head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+  echo "$pr $(git rev-parse --short=9 "$head") behind=$(git rev-list --count "$head".."$BASE") ahead=$(git rev-list --count "$BASE".."$head")"
 done
 ```
+
+For a **live refresh** against a moved `dev` — a different question from
+reproducing this table — use the read-only compare API instead:
+
+```bash
+for pr in $PRS; do
+  head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+  gh api "repos/lidge-jun/opencodex/compare/dev...$head" \
+    --jq "\"$pr ahead=\(.ahead_by) behind=\(.behind_by)\""
+done
+```
+
+The two answer different questions and must not be conflated: the first
+reproduces this document, the second replaces it.
 
 | PR | draft | mergeable | checks | behind | ahead | files | author | head |
 |---:|---|---|---|---:|---:|---:|---|---|
@@ -142,11 +161,11 @@ another unit's plan, so they are excluded here and accounted for separately.
  + 20 enhancement/roadmap   (listed below, no defect verdict)
 ```
 
-The 20 enhancement/roadmap issues, named so the accounting is checkable rather
-than asserted: #1062, #1060, #1058, #974, #823, #822, #821, #820, #809, #755,
+The 20 frozen enhancement/roadmap issues, named so the accounting is checkable
+rather than asserted: #1060, #1058, #974, #823, #822, #821, #820, #809, #755,
 #695, #657, #572, #561, #415, #414, #386, #201, #178, #177, #95.
 
-That list is exactly 20. **Two issues arrived after the freeze** and are recorded
+**Two issues arrived after the freeze** and are recorded
 but not counted: **#1062** ("[Feature Request] Account Pooling, Auto-Failover &
 Aggregate", first seen 13:49Z) and **#1063** (account-pool enhancement, first seen
 13:59Z during the audit). Both are enhancements, so neither changes the bug-class
