@@ -13,12 +13,22 @@ const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [
   [/\btid=[A-Za-z0-9-]+(?:;[A-Za-z0-9_.-]+=[^;\s"']*)+(?::[A-Za-z0-9+/=_-]+)?/g, REDACTED_SECRET],
   [/\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)=)([^&\s"',;]+)/gi, `$1${REDACTED_SECRET}`],
   // Colon-labelled credentials. Upstream error bodies quote the offending header
-  // or field back at us ("x-api-key: abc…"), and the `=` rule above never fires
-  // for that shape, so the credential survived into client-visible error text.
-  // Header-style names are included because that is exactly what a provider
-  // echoes when it rejects a request. A `Bearer <token>` value is left to the
-  // dedicated rule above so its scheme prefix stays readable in diagnostics.
-  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|password|secret|token)\s*:\s*)(?!\s)(?!Bearer\b)([^\s"',;]+)/gi, `$1${REDACTED_SECRET}`],
+  // or field back at us ("x-api-key: abc…"), and the `=` rules never fire for
+  // that shape, so the credential survived into client-visible error text.
+  //
+  // The value class deliberately runs to end-of-line rather than stopping at a
+  // quote, space, or semicolon. A first attempt tokenized on those characters
+  // and leaked every delimiter-bearing variant: `x-api-key: "quoted…"` kept the
+  // whole quoted secret, `Authorization: Basic dXNlcjpwYXNz` kept the payload
+  // after the scheme, and `Cookie: a=1; b=2` kept everything after the first
+  // `;`. A credential header's value IS the rest of the line, so that is what
+  // gets masked.
+  //
+  // `Bearer` is the one readable exception: an auth scheme is diagnostically
+  // useful and the dedicated rule above already masks its token, so the scheme
+  // word is preserved and only what follows is consumed here. Other schemes
+  // (Basic, Digest, …) are masked whole, since their payload is the credential.
+  [/\b((?:x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token)\s*:\s*(?:Bearer\s+)?)(?!\s*$)[^\r\n]+/gi, `$1${REDACTED_SECRET}`],
   [/((?:"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|refreshToken|accessToken|clientSecret|apiKey)"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$3`],
   // Raw JSON "token" field values (Copilot token exchange bodies echo the credential here).
   [/(("token"\s*:\s*"))([^"]+)(")/gi, `$1${REDACTED_SECRET}$4`],
