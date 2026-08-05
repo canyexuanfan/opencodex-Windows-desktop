@@ -13,77 +13,89 @@ const SENSITIVE_KEY_PATTERN = /^(?:authorization|proxy-authorization|cookie|set-
  * suffix ride along behind it; and splitting into two ordered patterns had the
  * second eat the first one's result.
  *
- * The rule: the value after the colon is a credential and gets masked whole.
- * `Bearer` is the single exception — an auth scheme is diagnostically useful,
- * and its token is one opaque word — so the scheme is kept and exactly that
- * word is consumed, leaving trailing prose (`… at /path/file.json`) readable.
- * `[REDACTED]` is a PUBLIC string an upstream can emit too, so its presence
- * never grants trust.
+ * The rule: the value after the label is a credential and gets masked to
+ * end-of-line. There is no "keep the readable part" exception, because every
+ * round of review found another way to hide a credential inside whatever the
+ * previous round chose to preserve — a second label, a repeated `Bearer`
+ * scheme, a third token two levels deep. Preserving attacker-controlled text
+ * next to a credential is the bug; the scheme word is not worth it.
  *
- * The preserved remainder is RE-SCANNED, because "the rest is prose" is an
- * assumption the input controls: `Authorization: Bearer <tok> x-api-key: <tok2>`
- * and `Authorization: Bearer Bearer <tok>` both hid a second credential in what
- * the first pass treated as trailing text.
+ * `Bearer` survives only as a fixed prefix on `authorization` /
+ * `proxy-authorization`, where it says which scheme failed and carries nothing
+ * from the input. `[REDACTED]` is a PUBLIC string an upstream can emit too, so
+ * its presence never grants trust.
  *
- * Colon confusables are normalized for MATCHING only. A full-width `：` or a
- * small/vertical form reads as a colon to a human and to whatever produced the
- * error body, so accepting only ASCII `:` was a bypass, not a strictness.
+ * The label boundary is matched over a NORMALIZED VIEW: colon confusables and
+ * invisible format characters are folded for matching only, with offsets mapped
+ * back so unrelated text keeps its original bytes. Folding the string itself
+ * rewrote innocent diagnostics (`ratio∶1` became `ratio:1`).
  */
 const CREDENTIAL_HEADER_LABEL = "x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token";
 
-/** Colon confusables that render as a separator: full-width, small, vertical, modifier. */
-const COLON_CONFUSABLES = /[\uFF1A\uFE55\uFE13\uA789\u02D0\u2236]/g;
+/**
+ * Characters that render as a colon separator. Folded to `:` in the matching
+ * view so a look-alike cannot hide a header from the label pattern.
+ */
+const COLON_CONFUSABLES = new Set([
+  "\uFF1A", "\uFE55", "\uFE13", "\uA789", "\u02D0", "\u2236",
+  "\u205A", "\u0589", "\u1361", "\u16EC", "\u1803", "\u2982", "\u2AF6", "\uFE30",
+]);
+
+/** Zero-width and other invisible format characters, dropped from the matching view. */
+const INVISIBLE_FORMAT = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/;
 
 const COLON_LABELLED_CREDENTIAL = new RegExp(
-  `\\b((?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:[^\\S\\r\\n]*)([^\\r\\n]+)`,
+  `\\b(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:`,
   "gi",
 );
 
-function maskColonLabelledCredential(_match: string, label: string, value: string): string {
-  // The Bearer carve-out exists for `Authorization`-style headers, where the
-  // scheme is real and worth reading. On `x-api-key` or `cookie` the word
-  // carries no meaning, so honoring it there just hands an attacker a way to
-  // keep part of the line: `x-api-key: Bearer first <secret>` used to survive.
-  const bearer = /^authorization$/i.test(label.replace(/[^\S\r\n]*:[^\S\r\n]*$/, "").trim())
-    || /^proxy-authorization$/i.test(label.replace(/[^\S\r\n]*:[^\S\r\n]*$/, "").trim())
-    ? /^(Bearer[^\S\r\n]+)(\S+)([^\r\n]*)$/i.exec(value)
-    : null;
-  if (!bearer) return `${label}${REDACTED_SECRET}`;
-  // A repeated scheme word means the NEXT token is the credential, not this
-  // one: `Bearer Bearer <tok>` would otherwise mask the literal word "Bearer"
-  // and hand the real token back as prose.
-  if (/^Bearer$/i.test(bearer[2] ?? "")) return `${label}${bearer[1]}${REDACTED_SECRET}`;
-  // Keep the scheme word and mask its token, then scan the remainder ONE level
-  // for further labels. The outer match consumed the whole line, so nothing
-  // else will revisit this text. Depth is capped rather than recursive: a
-  // per-match recursion blew the stack on a line with thousands of repeated
-  // headers.
-  return `${label}${bearer[1]}${REDACTED_SECRET}${maskRemainder(bearer[3] ?? "")}`;
-}
-
-/** Single-level rescan of text a Bearer match preserved as "prose". */
-function maskRemainder(value: string): string {
-  if (!value) return value;
-  return value.replace(COLON_LABELLED_CREDENTIAL, (_m, label: string, rest: string) => {
-    const nested = /^(Bearer[^\S\r\n]+)(\S+)([^\r\n]*)$/i.exec(rest);
-    if (nested && /^authorization$/i.test(label.replace(/[^\S\r\n]*:[^\S\r\n]*$/, "").trim())) {
-      return `${label}${nested[1]}${REDACTED_SECRET}`;
-    }
-    return `${label}${REDACTED_SECRET}`;
-  });
+/**
+ * Build a folded copy plus an index map back to the original string, so the
+ * match runs on normalized text while the output keeps every byte the match did
+ * not cover.
+ */
+function foldForMatching(value: string): { folded: string; map: number[] } {
+  let folded = "";
+  const map: number[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (INVISIBLE_FORMAT.test(ch)) continue;
+    folded += COLON_CONFUSABLES.has(ch) ? ":" : ch;
+    map.push(i);
+  }
+  map.push(value.length);
+  return { folded, map };
 }
 
 function maskCredentialHeaders(value: string): string {
-  let current = value.replace(COLON_CONFUSABLES, ":");
-  // Bounded fixpoint over the whole string. Each pass masks at least one more
-  // credential; the bound keeps a pathological input from spinning, and the
-  // value patterns that run afterwards still cover anything left.
-  for (let pass = 0; pass < 8; pass += 1) {
-    const next = current.replace(COLON_LABELLED_CREDENTIAL, maskColonLabelledCredential);
-    if (next === current) return current;
-    current = next;
+  const { folded, map } = foldForMatching(value);
+  COLON_LABELLED_CREDENTIAL.lastIndex = 0;
+  let out = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = COLON_LABELLED_CREDENTIAL.exec(folded)) !== null) {
+    const start = map[match.index] ?? value.length;
+    const afterLabel = map[match.index + match[0].length] ?? value.length;
+    if (start < cursor) continue;
+    // Everything from the separator to end-of-line is the credential.
+    const lineEnd = (() => {
+      const nl = value.slice(afterLabel).search(/[\r\n]/);
+      return nl === -1 ? value.length : afterLabel + nl;
+    })();
+    const rawValue = value.slice(afterLabel, lineEnd);
+    if (!rawValue.trim()) continue;
+    // Keep the original separator spacing so a diagnostic still reads as
+    // `header: [REDACTED]` rather than `header:[REDACTED]`.
+    const gap = /^[^\S\r\n]*/.exec(rawValue)?.[0] ?? "";
+    // `Bearer` is a fixed prefix, reproduced from a literal — never copied from
+    // the input — and only where an auth scheme is meaningful.
+    const label = match[0].replace(/[^\S\r\n]*:$/, "").trim();
+    const isAuthHeader = /^(?:proxy-)?authorization$/i.test(label);
+    const prefix = isAuthHeader && /^[^\S\r\n]*Bearer[^\S\r\n]/i.test(rawValue) ? "Bearer " : "";
+    out += value.slice(cursor, afterLabel) + gap + prefix + REDACTED_SECRET;
+    cursor = lineEnd;
   }
-  return current;
+  return out + value.slice(cursor);
 }
 
 const SECRET_VALUE_PATTERNS: Array<[RegExp, string]> = [

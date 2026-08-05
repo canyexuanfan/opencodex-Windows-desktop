@@ -110,12 +110,16 @@ describe("redactSecretString", () => {
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
   });
 
-  test("the preserved Bearer remainder is re-scanned for further credentials", () => {
-    // "the rest is prose" is an assumption the INPUT controls. A second label
-    // or a repeated scheme word after the token is a credential, not text.
+  test("nothing after a credential label survives, at any nesting depth", () => {
+    // Four review rounds each found a new way to hide a credential inside
+    // whatever the previous round chose to preserve: a second label, a
+    // repeated scheme word, then a third token two levels deep. Preserving
+    // attacker-controlled text next to a credential was the bug itself.
     expect(redactSecretString("Authorization: Bearer firstsecret123456 x-api-key: secondsecret123456"))
-      .toBe(`Authorization: Bearer ${REDACTED_SECRET} x-api-key: ${REDACTED_SECRET}`);
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
     expect(redactSecretString("Authorization: Bearer Bearer nestedcredential123456"))
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
+    expect(redactSecretString("Authorization: Bearer a123456 Bearer b123456 c123456"))
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
   });
 
@@ -123,10 +127,22 @@ describe("redactSecretString", () => {
     // A full-width or small-form colon reads as a separator to a human and to
     // whatever produced the error body, so matching only ASCII ":" was a
     // bypass rather than strictness.
-    for (const colon of ["\uFF1A", "\uFE55", "\uFE13"]) {
+    // The fold is a MATCHING view: the original separator byte is preserved.
+    for (const colon of ["\uFF1A", "\uFE55", "\uFE13", "\u205A", "\u0589", "\u1361", "\u16EC", "\u1803"]) {
       expect(redactSecretString(`x-api-key${colon}unicodesecret123456`))
-        .toBe(`x-api-key:${REDACTED_SECRET}`);
+        .toBe(`x-api-key${colon}${REDACTED_SECRET}`);
     }
+    expect(redactSecretString("x-api-key\u200B: secretcredential123456"))
+      .toBe(`x-api-key\u200B: ${REDACTED_SECRET}`);
+    expect(redactSecretString("Authorization\u2060: Basic dXNlcjpwYXNz"))
+      .toBe(`Authorization\u2060: ${REDACTED_SECRET}`);
+  });
+
+  test("folding never rewrites an unrelated diagnostic", () => {
+    // Normalizing the string itself turned `ratio∶1` into `ratio:1`. Offsets
+    // map back to the original bytes so untouched text is byte-identical.
+    const diagnostic = "model\u2236gpt-5.5 status\u205A429 ratio\u2236 1";
+    expect(redactSecretString(diagnostic)).toBe(diagnostic);
   });
 
   test("a pathological repeated-header line neither overflows nor leaks", () => {
@@ -136,11 +152,12 @@ describe("redactSecretString", () => {
     expect(redacted).not.toContain("Bearer tok");
   });
 
-  test("trailing prose after a quoted Bearer header stays readable", () => {
-    // Error text quotes a header inside a sentence; eating the rest of the line
-    // would take the diagnostic with it (this broke a Vertex path marker once).
+  test("text before a quoted header is kept; everything after it is not", () => {
+    // The scheme word still says which auth failed. The trailing path is lost
+    // deliberately — keeping it meant keeping an attacker-controlled suffix,
+    // which is exactly what the earlier rounds kept getting wrong.
     expect(redactSecretString("failed with Authorization: Bearer secret-abc123 at /Users/example/secret.json"))
-      .toBe(`failed with Authorization: Bearer ${REDACTED_SECRET} at /Users/example/secret.json`);
+      .toBe(`failed with Authorization: Bearer ${REDACTED_SECRET}`);
   });
 
   test("a Bearer token never masks across a line break", () => {
