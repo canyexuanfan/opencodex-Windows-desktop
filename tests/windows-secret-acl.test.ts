@@ -1204,13 +1204,17 @@ describe("a required hardening failure stops the operation it protects", () => {
    */
   const forcedWindowsFailure = async (
     run: (codexHome: string) => Promise<void>,
+    onAttempt: () => void = () => {},
   ): Promise<void> => {
     setPlatformForTests("win32");
     const previousUsername = process.env.USERNAME;
     process.env.USERNAME = "ocx-test-user";
-    setAsyncIcaclsRunnerForTests(async () => ({
-      success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "",
-    }));
+    setAsyncIcaclsRunnerForTests(async args => {
+      // Count only the first step of each sequence, so the counter is attempts
+      // rather than icacls invocations.
+      if (args.includes("/grant:r")) onAttempt();
+      return { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" };
+    });
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-harden-fail-"));
     try {
       await run(codexHome);
@@ -1261,6 +1265,7 @@ describe("a required hardening failure stops the operation it protects", () => {
    */
   test("an owner whose ACL cannot be applied goes acquiring -> unavailable, with no held, contended, or retry", async () => {
     resetHardenedStateForTests();
+    let hardenAttempts = 0;
     await forcedWindowsFailure(async codexHome => {
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
       const trace: string[] = [];
@@ -1282,14 +1287,18 @@ describe("a required hardening failure stops the operation it protects", () => {
         // into an endless reacquire loop. Neither may appear at any point.
         expect(trace).not.toContain("held");
         expect(trace).not.toContain("contended");
-        // The whole observable history, in order, with no retry churn after it
-        // settles. `acquiring` is published to subscribers on attach.
-        expect(trace.filter((status, i) => status !== trace[i - 1]))
-          .toEqual(["acquiring", "unavailable"]);
+        // The RAW history, undeduplicated. Collapsing consecutive duplicates was
+        // itself the defect the previous version shipped: a retry loop
+        // republishing `unavailable` normalizes to the same two entries, so the
+        // test claimed "no retry churn" while discarding the churn. Never project
+        // an event trace unless the projection is part of the contract.
+        expect(trace).toEqual(["acquiring", "unavailable"]);
+        // And the ACL was attempted exactly once: a hidden retry would harden again.
+        expect(hardenAttempts).toBe(1);
       } finally {
         unsubscribe();
         await owner.release();
       }
-    });
+    }, () => { hardenAttempts += 1; });
   });
 });

@@ -1022,8 +1022,9 @@ and the ones that did were rewritten rather than kept.
   owner-site platform threading is removed; (r) the claim site swallows a required
   hardening failure; (s) the owner site swallows it; (t) the claim reclassifies a
   denied ACL as busy; (u) the owner reclassifies it as contended; (v) the owner publishes a transient
-  `held` before settling `unavailable`.
-  (h) through (v) are not redundant — each survived every other check. (h) and (i)
+  `held` before settling `unavailable`; (w) the owner schedules a retry from that
+  permanent refusal, republishing `unavailable` each time.
+  (h) through (w) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1085,6 +1086,22 @@ and the ones that did were rewritten rather than kept.
   the exact refusal taxonomy, the complete observable state trace, and the absence
   of retries or protected-operation execution. For an asynchronous state machine,
   assert an ordered trace and forbidden events — never only the eventual state.
+
+  **Corollary, learned by breaking the rule in the act of writing it.** The first
+  trace assertion collapsed consecutive duplicates before comparing. A retry loop
+  republishing `unavailable` normalizes to exactly the same two entries, so the test
+  claimed a complete trace and an absence of retries while discarding the evidence
+  of both — mutation (w). Never normalize, deduplicate, sort, or otherwise project
+  an event trace unless that normalization is itself part of the production
+  contract. And where a count is the claim, count it: the ACL attempt counter is
+  what makes "attempted exactly once" executable rather than asserted.
+
+  **Where a trace does not exist, say so rather than inventing one.**
+  `withNativeMainSharedClaim` publishes no intermediate ownership state, so its
+  observable failure contract is the exact `NATIVE_MAIN_CLAIM_UNAVAILABLE`
+  rejection, the protected operation never running, and the hardener targeting the
+  right database. Adding a subscribe API solely so a test could assert a trace would
+  be machinery that strengthens no public contract.
 
   **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
   `observe()` treats a zero inode as unobservable, so if Bun returns zero there,
