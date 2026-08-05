@@ -1914,7 +1914,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
     ),
     preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
-    noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
+    noVisionModels: [...OPENCODE_ZEN_TEXT_ONLY_MODELS, ...DEEPSEEK_THINKING_MODELS],
   },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
   {

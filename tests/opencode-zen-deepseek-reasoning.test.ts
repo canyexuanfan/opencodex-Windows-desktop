@@ -58,7 +58,8 @@ describe("opencode-zen DeepSeek thinking mode", () => {
     modelId => {
       const body = buildToolCallBody(modelId, "xhigh");
 
-      expect(body.reasoning_effort).toBe("max");
+      const expectedEffort = modelId.includes("flash") ? "high" : "max";
+      expect(body.reasoning_effort).toBe(expectedEffort);
       expect(body.messages[1].reasoning_content).toBe("I need to inspect files before answering.");
       expect(body.messages[1]).toMatchObject({
         role: "assistant",
@@ -77,5 +78,27 @@ describe("opencode-zen DeepSeek thinking mode", () => {
 
     expect(body.messages[1].reasoning_content).toBeUndefined();
     expect(body.messages[1]).toHaveProperty("tool_calls");
+  });
+
+  test.each(["deepseek-v4-flash-free", "deepseek-v4-flash", "deepseek-v4-pro"])(
+    "%s is listed in opencode-zen noVisionModels for the vision sidecar",
+    modelId => {
+      const route = routeModel(configFor(modelId), `opencode-zen/${modelId}`);
+
+      expect(route.provider.noVisionModels).toContain(modelId);
+    },
+  );
+
+  test("Zen text-only free models (measured #1043) stay in noVisionModels", () => {
+    const route = routeModel(configFor("big-pickle"), "opencode-zen/big-pickle");
+
+    expect(route.provider.noVisionModels).toContain("big-pickle");
+  });
+
+
+  test("non-DeepSeek opencode-zen models stay out of noVisionModels", () => {
+    const route = routeModel(configFor("minimax-m2.7"), "opencode-zen/minimax-m2.7");
+
+    expect(route.provider.noVisionModels).not.toContain("minimax-m2.7");
   });
 });
