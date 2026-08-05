@@ -176,16 +176,19 @@ function requestRequirementFor(
       requirements.push({ id: "request-context-window", expected: request.contextWindow, outcome: "unknown" });
     }
   }
-  const tools = booleanRequirement("request-tools", request.toolsRequired, capability?.tools);
-  if (tools) requirements.push(tools);
-  const image = booleanRequirement("request-image-input", request.imageInputRequired, capability?.image);
-  if (image) requirements.push(image);
-  const structured = booleanRequirement(
-    "request-structured-output",
-    request.structuredOutputRequired,
-    capability?.structuredOutput,
-  );
-  if (structured) requirements.push(structured);
+  // Absent flags mean "no requirement": only a positive request need adds a row.
+  if (request.toolsRequired === true) {
+    const tools = booleanRequirement("request-tools", true, capability?.tools);
+    if (tools) requirements.push(tools);
+  }
+  if (request.imageInputRequired === true) {
+    const image = booleanRequirement("request-image-input", true, capability?.image);
+    if (image) requirements.push(image);
+  }
+  if (request.structuredOutputRequired === true) {
+    const structured = booleanRequirement("request-structured-output", true, capability?.structuredOutput);
+    if (structured) requirements.push(structured);
+  }
   if (request.reasoningEffort !== undefined) {
     const ladder = capability?.reasoningEfforts;
     if (Array.isArray(ladder)) {
@@ -212,12 +215,14 @@ function requestRequirementFor(
       });
     }
   }
-  const encrypted = booleanRequirement(
-    "request-encrypted-codex-tasks",
-    request.encryptedCodexTask,
-    capability?.encryptedCodexTasks,
-  );
-  if (encrypted) requirements.push(encrypted);
+  if (request.encryptedCodexTask === true) {
+    const encrypted = booleanRequirement(
+      "request-encrypted-codex-tasks",
+      true,
+      capability?.encryptedCodexTasks,
+    );
+    if (encrypted) requirements.push(encrypted);
+  }
   return requirements;
 }
 

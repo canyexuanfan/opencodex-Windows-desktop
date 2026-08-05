@@ -242,6 +242,17 @@ describe("routing profiles (RI-04)", () => {
     expect(result.trace.selected.model).toBe("m2");
   });
 
+  test("dry-run evaluator: absent request flags add no requirements", () => {
+    const config = baseConfig();
+    const result = evaluatePolicyProfile(config, "fast", { toolsRequired: false }, [
+      { provider: "a", model: "m1", capability: { contextWindow: 200000, tools: true } },
+    ]);
+    expect(result.candidates[0]!.requirements.some(requirement => requirement.id === "request-tools")).toBe(false);
+    // Profile `fast` still requires tools; the candidate satisfies it.
+    expect(result.candidates[0]!.eligible).toBe(true);
+    expect(result.selectedIndex).toBe(0);
+  });
+
   test("dry-run evaluator: deterministic tie-break picks the earlier candidate", () => {
     const config = baseConfig({
       routingProfiles: { tie: { candidates: [
