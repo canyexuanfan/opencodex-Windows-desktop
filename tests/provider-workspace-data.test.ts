@@ -447,9 +447,9 @@ describe("provider-icons", () => {
     expect(formatProviderDisplayName("chatgpt", englishT)).toBe("ChatGPT");
   });
 
-  test("Command Code account and API-key presets share the catalog display name", () => {
-    expect(formatProviderDisplayName("command-code", englishT)).toBe("Command Code");
-    expect(formatProviderDisplayName("commandcode", englishT)).toBe("Command Code");
+  test("Command Code account and API-key presets use distinct display names", () => {
+    expect(formatProviderDisplayName("command-code", englishT)).toBe("Command Code - Auth");
+    expect(formatProviderDisplayName("commandcode", englishT)).toBe("Command Code - API");
     expect(isCatalogProviderId("command-code")).toBe(true);
     expect(isCatalogProviderId("commandcode")).toBe(true);
   });

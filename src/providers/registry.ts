@@ -802,7 +802,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "command-code",
-    label: "Command Code",
+    label: "Command Code - Auth",
     adapter: "command-code",
     baseUrl: "https://api.commandcode.ai",
     authKind: "oauth",
@@ -1283,7 +1283,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "commandcode",
-    label: "Command Code",
+    label: "Command Code - API",
     adapter: "openai-chat",
     baseUrl: "https://api.commandcode.ai/provider/v1",
     authKind: "key",
