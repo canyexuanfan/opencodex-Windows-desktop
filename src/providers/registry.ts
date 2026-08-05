@@ -162,6 +162,17 @@ export interface ProviderRegistryEntry {
    */
   modelResponsesUpstreamStreaming?: Record<string, boolean>;
   /**
+   * Registry-only client-facing item-id repair policy (#938), filled onto the
+   * runtime provider only when the user has no explicit policy (derive.ts);
+   * never seeded into saved config.
+   */
+  responsesItemIdRepair?: {
+    message?: string[];
+    reasoning?: string[];
+    repairMissingTerminalIds?: boolean;
+    repairInvalidIds?: boolean;
+  };
+  /**
    * Responses-API resource path for providers whose route is not `/v1/responses`.
    * Unlike `modelWireDefaults` above, this IS seeded into saved config: it describes
    * the provider's fixed endpoint rather than a default a user might want to override
@@ -1144,6 +1155,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // terminal event. Keep Codex on WebSocket, but use the provider's bounded JSON
     // response upstream so the bridge can synthesize a complete WS event sequence.
     modelResponsesUpstreamStreaming: { "deepseek-v4-flash": false },
+    // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
+    // clients stuck on an uncommitted turn (#938). Client-facing only — raw
+    // continuation snapshots keep the upstream ids.
+    responsesItemIdRepair: { repairInvalidIds: true, repairMissingTerminalIds: true },
     // DeepSeek's Responses route is `POST /responses` with no `/v1` segment. Without
     // this the passthrough adapter falls back to its legacy `/v1/responses`
     // construction and the wire above can never route.
