@@ -41,7 +41,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
-import { syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import { shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
@@ -337,7 +337,10 @@ async function handleStart(options: { block?: boolean } = {}) {
   // absent or the bind is non-loopback; removed again by stop/eject/uninstall/shutdown.
   // Deliberately a SIBLING of the Desktop-3P block above: nesting it there meant a catalog
   // failure skipped the fence entirely, even though syncGrokConfig handles that case itself.
-  try {
+  //
+  // Gated on the persisted switch: without this, turning Grok off lasted exactly
+  // one restart, because the toggle removed the fence and start wrote it back.
+  if (shouldSyncGrokOnStart(config)) try {
     const { syncGrokConfig } = await import("../grok/sync");
     const r = await syncGrokConfig(port, config, config.hostname ? { hostname: config.hostname } : {});
     if (r.changed) console.log("   + Grok Build config updated (~/.grok/config.toml)");

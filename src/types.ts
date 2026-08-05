@@ -542,6 +542,8 @@ export interface OcxApiKeyEntry {
 export interface OcxClientIntegrationsConfig {
   /** Durable desired state for native Codex. MISSING MEANS ON. */
   codex?: boolean;
+  /** Durable desired state for Grok Build. MISSING MEANS ON. */
+  grok?: boolean;
 }
 
 export interface OcxConfig {

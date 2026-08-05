@@ -947,6 +947,7 @@ const apiKeyEntrySchema = z.object({
  */
 const clientIntegrationsSchema = z.object({
   codex: z.boolean().optional().catch(undefined),
+  grok: z.boolean().optional().catch(undefined),
 }).passthrough();
 
 const configSchema = z.object({

@@ -17,6 +17,9 @@ import {
   codexIntegrationEnabled,
   codexIntegrationEnabledNow,
   setCodexIntegrationEnabled,
+  setGrokIntegrationEnabled,
+  grokIntegrationEnabled,
+  shouldSyncGrokOnStart,
   syncCodexOnStartIfEnabled,
 } from "../src/codex/desired-state";
 import type { OcxConfig } from "../src/types";
@@ -214,5 +217,62 @@ describe("the startup gate", () => {
       async () => { throw new Error("provider unreachable"); },
     );
     expect(ran).toBe(true);
+  });
+});
+
+describe("Grok has the same durability, because it shipped without it", () => {
+  /**
+   * Grok's toggle already existed and already worked — and lasted exactly one
+   * restart. It strips the fence from `~/.grok/config.toml` and recorded
+   * nothing, so `ocx start` called `syncGrokConfig` unconditionally and wrote
+   * the fence straight back. Identical defect to Codex, different file.
+   */
+  test("absence, empty, and explicit true all read as enabled; only false is off", () => {
+    expect(grokIntegrationEnabled(baseConfig())).toBe(true);
+    expect(grokIntegrationEnabled({ ...baseConfig(), clientIntegrations: {} })).toBe(true);
+    expect(grokIntegrationEnabled({ ...baseConfig(), clientIntegrations: { grok: true } })).toBe(true);
+    expect(grokIntegrationEnabled({ ...baseConfig(), clientIntegrations: { grok: false } })).toBe(false);
+  });
+
+  test("the startup sync is skipped only for an explicit off", () => {
+    expect(shouldSyncGrokOnStart(baseConfig())).toBe(true);
+    expect(shouldSyncGrokOnStart({ ...baseConfig(), clientIntegrations: { grok: true } })).toBe(true);
+    expect(shouldSyncGrokOnStart({ ...baseConfig(), clientIntegrations: { grok: false } })).toBe(false);
+  });
+
+  /**
+   * The two switches are independent. Turning Codex off must not take Grok with
+   * it — a shared key or a shared helper reading the wrong field would, and the
+   * ten-key union this design rejected is exactly how that happens.
+   */
+  test("the two clients do not affect each other", () => {
+    saveConfig(baseConfig());
+    setCodexIntegrationEnabled(false);
+
+    const after = loadConfig();
+    expect(codexIntegrationEnabled(after)).toBe(false);
+    expect(grokIntegrationEnabled(after)).toBe(true);
+
+    setGrokIntegrationEnabled(false);
+    const both = loadConfig();
+    expect(codexIntegrationEnabled(both)).toBe(false);
+    expect(grokIntegrationEnabled(both)).toBe(false);
+
+    // And re-enabling one leaves the other alone.
+    setCodexIntegrationEnabled(true);
+    const one = loadConfig();
+    expect(codexIntegrationEnabled(one)).toBe(true);
+    expect(grokIntegrationEnabled(one)).toBe(false);
+  });
+
+  test("the last client re-enabled removes the whole object, not an empty husk", () => {
+    saveConfig(baseConfig());
+    setCodexIntegrationEnabled(false);
+    setGrokIntegrationEnabled(false);
+    setCodexIntegrationEnabled(true);
+    setGrokIntegrationEnabled(true);
+
+    const raw = JSON.parse(readFileSync(join(testRoot, "config.json"), "utf8")) as Record<string, unknown>;
+    expect(raw.clientIntegrations).toBeUndefined();
   });
 });

@@ -21,7 +21,10 @@
  * Design record: devlog/_plan/260803_codex_desktop_toggle/030_desired_state.md.
  */
 import { loadConfig, mutatePersistedConfig } from "../config";
-import type { OcxConfig } from "../types";
+import type { OcxClientIntegrationsConfig, OcxConfig } from "../types";
+
+/** Clients whose durable intent this module owns. */
+export type DurableIntentClientId = keyof OcxClientIntegrationsConfig;
 
 /** Injectable for tests; production passes the real sync. */
 export type CodexStartupSync = (port: number) => Promise<unknown>;
@@ -42,8 +45,24 @@ export type CodexDesiredStateResult =
  * admitted snapshot cannot accidentally answer from a fresher one — the whole
  * point of admission is that one decision uses one set of bytes.
  */
+export function integrationEnabled(
+  config: Pick<OcxConfig, "clientIntegrations">,
+  client: DurableIntentClientId,
+): boolean {
+  return config.clientIntegrations?.[client] !== false;
+}
+
 export function codexIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrations">): boolean {
-  return config.clientIntegrations?.codex !== false;
+  return integrationEnabled(config, "codex");
+}
+
+/**
+ * Grok's toggle SHIPPED without this, which is the bug: it strips the fence in
+ * `~/.grok/config.toml` and records nothing, so the next `ocx start` calls
+ * `syncGrokConfig` unconditionally and writes the fence straight back.
+ */
+export function grokIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return integrationEnabled(config, "grok");
 }
 
 /** The same question when no snapshot is in hand. Reads the persisted config. */
@@ -58,18 +77,21 @@ export function codexIntegrationEnabledNow(): boolean {
  * the config coordinator, so a concurrent provider or model edit is preserved
  * instead of being clobbered by a whole-config write built from a stale read.
  */
-export function setCodexIntegrationEnabled(enabled: boolean): CodexDesiredStateResult {
+export function setIntegrationEnabled(
+  client: DurableIntentClientId,
+  enabled: boolean,
+): CodexDesiredStateResult {
   const outcome = mutatePersistedConfig(config => {
-    const current = codexIntegrationEnabled(config);
+    const current = integrationEnabled(config, client);
     if (current === enabled) return { changed: false, value: enabled };
     const integrations = { ...(config.clientIntegrations ?? {}) };
     if (enabled) {
       // ON is the absence, not a stored `true`: writing `true` would make an
       // untouched config and a re-enabled one differ in bytes for no reason, and
       // every later reader has to treat them identically anyway.
-      delete integrations.codex;
+      delete integrations[client];
     } else {
-      integrations.codex = false;
+      integrations[client] = false;
     }
     // Drop the key entirely once nothing is left in it, so enabling twice does
     // not leave `"clientIntegrations": {}` behind in the user's file.
@@ -96,6 +118,14 @@ export function setCodexIntegrationEnabled(enabled: boolean): CodexDesiredStateR
         ? "No config file exists to record the switch in."
         : "The config file is malformed; refusing to overwrite it.",
   };
+}
+
+export function setCodexIntegrationEnabled(enabled: boolean): CodexDesiredStateResult {
+  return setIntegrationEnabled("codex", enabled);
+}
+
+export function setGrokIntegrationEnabled(enabled: boolean): CodexDesiredStateResult {
+  return setIntegrationEnabled("grok", enabled);
 }
 
 /**
@@ -128,4 +158,20 @@ export async function syncCodexOnStartIfEnabled(
 async function defaultStartupSync(port: number): Promise<unknown> {
   const { syncModelsToCodex } = await import("./sync");
   return syncModelsToCodex(port);
+}
+
+/**
+ * The Grok startup gate.
+ *
+ * Grok's toggle shipped and then `ocx start` called `syncGrokConfig`
+ * unconditionally, so switching Grok off lasted exactly one restart — the fence
+ * came out of `~/.grok/config.toml` and the next start wrote it straight back.
+ * Same defect as Codex had, in a different file.
+ *
+ * The caller keeps its own try/catch, because a Grok failure must never block
+ * startup and its diagnostic is worth printing. This only answers whether to
+ * attempt the sync at all.
+ */
+export function shouldSyncGrokOnStart(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return grokIntegrationEnabled(config);
 }
