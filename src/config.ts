@@ -936,6 +936,19 @@ const apiKeyEntrySchema = z.object({
   createdAt: z.string().catch(""),
 }).passthrough();
 
+/**
+ * Durable per-client intent.
+ *
+ * `.passthrough()` is load-bearing: a binary that only knows `codex` must not
+ * erase a key a later version wrote during a field-scoped mutation. And each key
+ * degrades on its own — a hand edit of `{"codex": "false", "future": false}`
+ * drops `codex` to absent (which reads as ON) and keeps `future`, rather than
+ * invalidating the object or, worse, the whole config.
+ */
+const clientIntegrationsSchema = z.object({
+  codex: z.boolean().optional().catch(undefined),
+}).passthrough();
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
@@ -957,6 +970,7 @@ const configSchema = z.object({
   // Invalid hand edits must not discard an otherwise usable config. Treat them as
   // pre-migration so startup can safely re-run the one-time normalization.
   googleAntigravityStaticCatalogVersion: z.literal(1).optional().catch(undefined),
+  clientIntegrations: clientIntegrationsSchema.optional().catch(undefined),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
   multiAgentGuidanceEnabled: z.boolean().optional(),

@@ -41,6 +41,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
+import { syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
@@ -316,7 +317,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   installShellHook();
 
   await maybeShowStarPrompt(); // once-only Yes/No GitHub-star prompt on first interactive start
-  await syncModelsToCodex(port).catch(() => {});
+  await syncCodexOnStartIfEnabled(port, config);
   if (!currentExternalCodexModelProvider() && !shouldInjectApiAuthHeader(config) && config.syncResumeHistory !== false) {
     historyGuardian = startHistoryMigrationGuardian();
   }
