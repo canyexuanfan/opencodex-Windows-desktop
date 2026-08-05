@@ -150,3 +150,75 @@ describe("homes the coordinator cannot adopt keep working", () => {
     expect(readFileSync(join(codexHome, "config.toml"), "utf-8")).toContain("openai_base_url");
   });
 });
+
+describe("the transition is resolved, not left pending", () => {
+  /**
+   * `updateCodexHistoryTransition` had no production caller, so every completed
+   * or skipped job left the row permanently `pending` — a transition published
+   * and never resolved. The row must now show what the job actually did.
+   */
+  test("a completed apply leaves a converged row, not a pending one", () => {
+    seedNative();
+    expect(runInject(10100).success).toBeTrue();
+
+    const state = spawnSync(process.execPath, ["--eval", `
+      const { readCodexTransitionState } = require("./src/codex/transition-state");
+      console.log(JSON.stringify(readCodexTransitionState()));
+    `], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: opencodexHome },
+    });
+    const row = JSON.parse((state.stdout ?? "{}").trim().split("\n").pop() ?? "{}") as {
+      kind?: string;
+      state?: { history?: { status?: string } };
+    };
+    expect(row.kind).toBe("ready");
+    expect(row.state?.history?.status).not.toBe("pending");
+  });
+
+  test("an opted-out apply records the opt-out as converged, not blocked", () => {
+    seedNative();
+    writeFileSync(join(opencodexHome, "config.json"), JSON.stringify({
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      syncResumeHistory: false,
+    }, null, 2));
+
+    const result = spawnSync(process.execPath, [CHILD], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: opencodexHome,
+        OCX_INJECT_RACE_PAYLOAD: JSON.stringify({ port: 10100, lockTimeoutMs: 0 }),
+      },
+    });
+    expect(result.status).toBe(0);
+
+    const state = spawnSync(process.execPath, ["--eval", `
+      const { readCodexTransitionState } = require("./src/codex/transition-state");
+      console.log(JSON.stringify(readCodexTransitionState()));
+    `], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: opencodexHome },
+    });
+    const row = JSON.parse((state.stdout ?? "{}").trim().split("\n").pop() ?? "{}") as {
+      kind?: string;
+      state?: { history?: { status?: string; attempts?: number } };
+    };
+    expect(row.kind).toBe("ready");
+    // Opt-out is a completed decision, not a failure: converged, never blocked,
+    // and never left pending for a job that chose to do nothing.
+    expect(row.state?.history?.status).toBe("converged");
+  });
+});

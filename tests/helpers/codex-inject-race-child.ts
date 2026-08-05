@@ -10,13 +10,19 @@
  * than scraping logs.
  */
 import { injectCodexConfig } from "../../src/codex/inject";
+import { readConfigDiagnostics } from "../../src/config";
 
 const payload = JSON.parse(process.env.OCX_INJECT_RACE_PAYLOAD ?? "{}") as {
   port?: number;
   lockTimeoutMs?: number;
 };
 
-const result = await injectCodexConfig(payload.port ?? 10100, {}, {
+// The real caller passes the persisted config; a child that invented `{}` could
+// not exercise settings the parent seeded — syncResumeHistory among them.
+const persisted = readConfigDiagnostics();
+const config = persisted.source === "file" ? persisted.config : {};
+
+const result = await injectCodexConfig(payload.port ?? 10100, config, {
   lockTimeoutMs: payload.lockTimeoutMs ?? 0,
 });
 

@@ -81,6 +81,46 @@ export type CodexHistoryJobOutcome =
  * history TO opencodex; the ordinary apply migrates to native so a later restore
  * has nothing to undo.
  */
+/**
+ * Test seam: the boundary suite exercises the validator without standing up a
+ * Worker whose malformed message it cannot easily emit from inside a test.
+ */
+export function isPlausibleWorkerResultForTests(
+  message: Record<string, unknown>,
+  requestId: string,
+  jobId: string,
+): boolean {
+  return isPlausibleWorkerResult(message, requestId, jobId);
+}
+
+/**
+ * Reject a message that names a recognized type but lacks its payload.
+ *
+ * Without this, `{requestId, type:"done"}` reached an unchecked cast and read
+ * as `converged` with undefined fields — a success report for work that may not
+ * have happened. Each type is checked for the fields it actually carries, and
+ * the ids are matched against the request in flight, not merely present.
+ */
+function isPlausibleWorkerResult(
+  message: Record<string, unknown>,
+  requestId: string,
+  jobId: string,
+): boolean {
+  if (message.requestId !== requestId || message.jobId !== jobId) return false;
+  switch (message.type) {
+    case "done":
+      return (message.outcome === "converged" || message.outcome === "skipped")
+        && typeof message.rows === "number"
+        && typeof message.files === "number";
+    case "blocked":
+      return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path";
+    case "error":
+      return typeof message.message === "string";
+    default:
+      return false;
+  }
+}
+
 export function deriveCodexHistoryOperation(intent: {
   readonly direction: "apply" | "restore";
   readonly resumeHistory: boolean;
@@ -154,18 +194,43 @@ export async function runCodexHistoryJob(
       finish({ kind: "failed", reason: "timeout", message: "history_worker_timeout" });
     }, timeoutMs);
 
+    const died = (detail: string): void => {
+      finish({ kind: "failed", reason: "worker-died", message: detail });
+    };
+
     worker.onmessage = (event: MessageEvent<unknown>) => {
       const data = event.data;
-      if (!data || typeof data !== "object") return;
+      if (!data || typeof data !== "object") {
+        // Not the shape at all: this is a death signal, not silence. Ignoring it
+        // would let the watchdog call a dead Worker a timeout.
+        died("history_worker_malformed_message");
+        return;
+      }
       const message = data as Record<string, unknown>;
       // A reply for a different request is somebody else's; ignoring it is not
       // the same as accepting it.
       if (message.requestId !== requestId) return;
       if (message.type !== "done" && message.type !== "blocked" && message.type !== "error") {
+        died("history_worker_unknown_message_type");
+        return;
+      }
+      if (!isPlausibleWorkerResult(message, requestId, jobId)) {
+        // A recognized type with a missing payload read as `converged` with
+        // undefined fields once — success for work that may not have happened.
+        died("history_worker_malformed_payload");
         return;
       }
       finish(classifyWorkerResult(message as unknown as HistoryWorkerResult));
     };
+
+    /*
+     * A Worker that exits early — without erroring — is not an error event, so
+     * without these it surfaced as `timeout` after the full wait. Both are death
+     * signals. Neither can overturn a settled success: `finish` is idempotent,
+     * and the Worker always closes after posting its result.
+     */
+    worker.addEventListener("messageerror", () => died("history_worker_unserializable_message"));
+    worker.addEventListener("close", () => died("history_worker_closed_early"));
 
     worker.onerror = (event: ErrorEvent) => {
       finish({

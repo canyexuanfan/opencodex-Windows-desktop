@@ -8,6 +8,7 @@ import {
   websocketsEnabled,
 } from "../config";
 import { withCodexWriteLock } from "./codex-write-lock";
+import { resolveCodexHistoryTransition } from "./history-transition";
 import {
   buildInjectWitness,
   captureCodexPreImages,
@@ -854,6 +855,14 @@ export async function injectCodexConfig(
     markJournalInjectedState(content, profileContent);
   };
 
+  /*
+   * Set only on the coordinated path: the generation/txId the transition just
+   * committed. The terminal history update CASes against this, so a job that
+   * was overtaken cannot overwrite the winner. Stays undefined for a
+   * legacy-uncoordinated home, which publishes no transition to resolve.
+   */
+  let transitionReceipt: { nativeGeneration: number; currentTxId: string } | undefined;
+
   if (eligibility.kind === "legacy-uncoordinated") {
     // Unchanged behavior for homes the coordinator cannot yet adopt. Stated
     // rather than implied: this is the boundary, and adoption is its own phase.
@@ -923,13 +932,26 @@ export async function injectCodexConfig(
           }
           throw error;
         }
-        return "applied" as const;
+        return {
+          kind: "applied" as const,
+          /*
+           * The receipt the terminal update matches on. The transition commits
+           * when the callback returns, so this pair is what the post-job
+           * `updateCodexHistoryTransition` CASes against — an overtaken job
+           * cannot overwrite a winner.
+           */
+          receipt: {
+            nativeGeneration: ctx.expectation.nativeAfter,
+            currentTxId: ctx.expectation.txId,
+          },
+        };
       },
     );
 
     if (coordinated.status !== "acquired") {
       return codexInjectLockOutcome(coordinated);
     }
+    transitionReceipt = coordinated.value.receipt;
   }
   // Legacy mode still forward-tags history so re-tagged threads stay listable. Design B needs
   // the opposite: a one-time migration of previously re-tagged threads BACK to openai (restore
@@ -957,6 +979,19 @@ export async function injectCodexConfig(
       : historyOutcome.kind === "skipped"
         ? { rows: 0, files: 0 }
         : { rows: 0, files: 0, failed: true };
+
+  /*
+   * Resolve the transition this job belongs to, on the coordinated path only.
+   *
+   * `updateCodexHistoryTransition` had no production caller since it was
+   * written, so every completed or skipped job left the row permanently
+   * `pending` — the transition was published and never resolved. This is the
+   * first time the durable row reflects what actually happened. The CAS on the
+   * receipt means an overtaken job's late write loses and is not overwritten.
+   */
+  if (transitionReceipt) {
+    resolveCodexHistoryTransition(transitionReceipt, historyOutcome);
+  }
 
   const catalogMessage = catalogPath
     ? `  Codex model catalog: ${catalogPath}\n`
