@@ -92,7 +92,12 @@ async function stopStartup(
       child.exited,
       Bun.sleep(KILL_GRACE_MS).then(() => null),
     ]);
-    if (killed === null) child.kill("SIGKILL");
+    if (killed === null) {
+      child.kill("SIGKILL");
+      // and observe the escalation, so the child is reaped before we throw —
+      // otherwise the caller's `child.exitCode !== null` assertion races
+      await Promise.race([child.exited, Bun.sleep(KILL_GRACE_MS).then(() => null)]);
+    }
     throw new Error("startup child did not stop");
   }
   if (exit !== 0) throw new Error(await new Response(child.stderr).text());
@@ -126,6 +131,10 @@ for it rather than a description:
   rejection message is `startup child did not stop` **and** that
   `child.exitCode !== null` afterwards — proving cleanup happened, not merely that
   a timeout was detected.
+  The `exitCode` assertion is only sound because the SIGKILL escalation is now
+  awaited before the throw; the audit caught that race in the previous draft.
+  A child that ignores SIGKILL is not testable and not a real case — the escalation
+  branch itself stays unproven, and the PR should say so rather than imply otherwise.
 - Deadline values: `1_000` ms in the injected test (fast), `INTERNAL_DEADLINE_MS`
   in production teardown.
 

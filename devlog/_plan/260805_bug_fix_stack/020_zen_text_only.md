@@ -97,6 +97,20 @@ If a maintainer with a Zen key disagrees, the correct narrowing is to move the
 list to `opencode-free` alone. That is recorded as the fallback, not chosen,
 because it would leave the reporter's own provider unfixed.
 
+**Accepted residual risk, stated for the PR.** Two audit rounds narrowed this and
+neither closed it fully. Authenticated-tier equivalence is unproven for all eight
+IDs, and the reviewer's own spaced re-probes of `mimo-v2.5-free` returned a 400
+and a 502 where ours returned 200 twice — the free route is intermittently
+unstable, which is a reason to distrust any single measurement including our own.
+
+What survives that instability: `big-pickle`'s rejection reproduced identically
+across four attempts, with and without the header, and its error text matches the
+issue verbatim. The six listed IDs are the ones that failed consistently; the two
+excluded ones are the only two that ever returned a completion for an image.
+
+The PR must carry this residual in its description rather than presenting the
+list as settled. A maintainer with a key can close it in one command.
+
 ### Drift policy — the list is dated, not permanent
 
 Zen's roster is discovered live (`liveModels: true` on the sibling) while this
@@ -148,6 +162,8 @@ that is not in the registry, and stays open.
 ## Accept criteria
 
 - Six measured IDs listed; the two vision-capable ones explicitly not.
-- A test that would fail if someone later adds `mimo-v2.5-free` to the list.
+- A test in `tests/vision-sidecar-e2e.test.ts` that fails if someone later adds
+  `mimo-v2.5-free` or `longcat-2.0-free` to the list.
+- The registry assertion lives in `tests/provider-registry-parity.test.ts`.
 - The unlisted-model forwarding contract still green.
 - `bun run typecheck` clean; vision test files pass.

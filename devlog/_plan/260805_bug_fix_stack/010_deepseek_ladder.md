@@ -115,11 +115,22 @@ the registry ladder at routing (`src/router.ts:162-170`). An existing user keeps
 advertising `xhigh` and mapping `low -> high` forever.
 
 Narrow in-memory normalizer during `loadConfig`, no write from the read path
-(matching `src/config.ts:1509-1516`):
+(matching `src/config.ts:1509-1516`).
 
-- Replace the exact legacy ladder `["high","xhigh","max"]` with `["low","high","max"]`.
-- Replace the exact legacy map only; leave any non-exact user override untouched.
+**The migration is per model, exactly like the registry.** An earlier draft
+normalized every legacy ladder to `["low","high","max"]`, which would have handed
+Pro back the `low` tier the registry change just removed — the same defect,
+reintroduced through the upgrade path for existing users only. The audit caught it.
+
+- Legacy ladder `["high","xhigh","max"]` on a **Flash** model → `["low","high","max"]`.
+- Legacy ladder `["high","xhigh","max"]` on a **Pro** model → `["high","max"]`.
+- Legacy map: set `low` to `low` on Flash, leave `low: "high"` on Pro, and set
+  `xhigh` to `high` on Flash / `max` on Pro.
+- Replace the exact legacy shapes only; leave any non-exact user override untouched.
 - Apply only where provider name and transport match the registry entry.
+
+After migration a saved config and a fresh install must produce identical
+metadata for the same model. That equality is the migration test.
 
 ### Tests
 
@@ -138,8 +149,16 @@ Both now expect **different** values per model, not one shared array.
 - `tests/alibaba-intl-token-plan.test.ts:57-64` — Qwen 3.8, unrelated.
 - `tests/reasoning-effort.test.ts:723-734` — generic self-heal fixture.
 
-**Add:** a per-model assertion that Flash maps `xhigh -> high` while Pro maps
-`xhigh -> max`, and a config-migration test for the legacy ladder.
+**Add**, in `tests/provider-registry-parity.test.ts` (registry) and
+`tests/config.test.ts` (migration):
+
+- Flash maps `xhigh -> high`; Pro maps `xhigh -> max`.
+- Flash advertises `["low","high","max"]`; Pro advertises `["high","max"]`.
+- An enumerated ID-to-classification table covering all seven entries, so a future
+  id like `deepseek-v5-flashlite-pro` cannot misroute through the substring test.
+- Migration: a legacy Pro config normalizes to `["high","max"]` and a legacy Flash
+  config to `["low","high","max"]`; both then equal a fresh install.
+- Migration: a user-customized ladder is left untouched.
 
 ## Red-green
 
@@ -148,7 +167,10 @@ share one map. Ablating the Flash map alone flips that single assertion.
 
 ## Accept criteria
 
-- Advertised ladder is `["low","high","max"]` for every DeepSeek V4 entry.
-- Flash and Pro carry different wire maps, matching the vendor table.
-- A saved legacy config normalizes on load; a customized one does not.
-- `bun run typecheck` clean; the five affected test files pass.
+- Flash advertises `["low","high","max"]`; Pro advertises `["high","max"]`. No
+  entry advertises `xhigh`.
+- Flash and Pro carry different wire maps, matching the vendor table verified
+  2026-08-06 (`001`, re-confirmed immediately before implementation).
+- A migrated legacy config equals a fresh install for the same model, per model.
+- A user-customized ladder is not rewritten.
+- `bun run typecheck` clean; the affected test files pass.

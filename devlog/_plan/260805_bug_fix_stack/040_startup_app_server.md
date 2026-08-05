@@ -47,19 +47,44 @@ newer than the catalog and perfectly correct.
 A startup-safe helper beside the existing handler:
 
 ```ts
-export async function warnIfStaleCodexAppServersAfterStartupWrite(
-  opts: { log?: Pick<Console, "error"> } = {},
-): Promise<{ warned: boolean }> {
+export function warnIfStaleCodexAppServersAfterStartupWrite(
+  opts: {
+    log?: Pick<Console, "error">;
+    io?: CodexAppServerProcessIo;   // the real seam, src/codex/app-server-processes.ts:79-89
+  } = {},
+): { warned: boolean } {
   try {
-    const state = await collectCodexAppServerCatalogState();
-    if (state.state !== "stale") return { warned: false };
-    (opts.log ?? console).error(formatStaleCodexAppServerWarning(state.processes));
+    // Pass `io` through: tests inject listSnapshots/readStartMs/catalogMtimeMs/now,
+    // and supplying any field also bypasses the 5s memo (`fullyDefault` at :580),
+    // which is what stops a pre-write `fresh` reading from masking this check.
+    const status = collectCodexAppServerCatalogState(opts.io ?? {});
+    if (status.state !== "stale") return { warned: false };
+    (opts.log ?? console).error(formatStaleCodexAppServerWarning(status.processes));
     return { warned: true };
   } catch {
     return { warned: false };   // startup sync is best-effort; never fail boot
   }
 }
 ```
+
+Three corrections the audit forced, all verified against the real source:
+
+- `CodexAppServerProcessIo` (`:79-89`) already carries `listSnapshots`,
+  `readStartMs`, `catalogMtimeMs`, `now`, **and `kill`** — every seam the test list
+  below needs. The earlier draft promised injection while showing a helper with
+  nothing to inject into.
+- `collectCodexAppServerCatalogState` is **synchronous** and takes the io object
+  positionally; the earlier draft `await`ed a no-arg call.
+- Supplying any io field makes `fullyDefault` false, so the 5 s memo is skipped.
+  The cache bypass therefore needs no new mechanism — but production must pass a
+  non-empty io (or an explicit invalidation) after a confirmed write, or it
+  inherits the stale-masking bug.
+
+`CodexAppServerCatalogStatus` (`:540-544`) is
+`{ state: CodexAppServerCatalogState; processes: Array<{ pid: number; startedAtMs: number | null }>; catalogMtimeMs: number | null }`.
+The discriminant field is `state`, and `processes` is already a PID-bearing shape,
+so `formatStaleCodexAppServerWarning` needs only its parameter widened from the
+full `CodexAppServerProcess` to that shape — it reads `.pid` alone (`:410-417`).
 
 It never reaches `restartCodexAppServers()`. That is the whole point.
 
@@ -124,9 +149,8 @@ new injection point is invented:
 5. discovery throwing still resolves startup successfully;
 6. a startup hitting both write paths warns exactly once.
 
-For (4), the helper must accept the process-I/O seam rather than closing over
-module state — the audit noted the earlier draft promised this assertion while
-proposing a helper with nothing to inject into.
+For (4), inject `io.kill` and fail the test if it is ever called. The seam exists
+at `src/codex/app-server-processes.ts:84`.
 
 Existing coverage to leave intact: `tests/codex-app-server-processes.test.ts:19-106`
 (classification), `:309-338` (warn vs SIGTERM), `tests/codex-desired-state.test.ts:167-205`
