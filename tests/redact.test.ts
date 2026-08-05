@@ -294,6 +294,12 @@ describe("redactSecretString", () => {
       '<header name="authorization" value="Basic dXNlcjpwYXNz"/>',
       "<ns:authorization>Basic dXNlcjpwYXNz</ns:authorization>",
       "<authorization><authorization>decoy</authorization>credential-suffix-123456</authorization>",
+      // An opening tag may legally span lines, and XML allows whitespace
+      // around an attribute `=`. End-of-line was the second stopping point
+      // that leaked here, after the closing tag.
+      '<authorization\n value="Basic dXNlcjpwYXNz">\npublic-status\n</authorization>',
+      '<header name = "authorization">Basic dXNlcjpwYXNz</header>',
+      '<field key\t=\t"x-api-key">secret123456</field>',
     ]) {
       const redacted = redactSecretString(input);
       expect(redacted).toContain(REDACTED_SECRET);

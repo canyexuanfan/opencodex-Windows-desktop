@@ -112,21 +112,25 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
   // harmless status text.
   //
   // Once a tag qualifies, the mask keeps only the tag name and runs to END OF
-  // LINE. Using the CLOSING TAG as the stopping point was the same mistake as
-  // every other early termination: same-name nesting ended the mask at the
-  // inner `</authorization>` and exposed the outer element's remaining content,
-  // and a self-closing tag had no closing tag to find at all. The closing tag
-  // is attacker-controlled text like everything else.
+  // INPUT. Two stopping points were tried and both leaked: the CLOSING TAG
+  // (same-name nesting ended the mask at the inner `</authorization>`, and a
+  // self-closing tag had none), then END OF LINE (an opening tag may legally
+  // span lines, so `<authorization\n value="…">` left the credential on the
+  // next line). XML has no line discipline to borrow, so there is no boundary
+  // left worth trusting.
+  //
+  // Whitespace is allowed around an attribute `=`, which XML permits and an
+  // echo may well reproduce.
   [
     new RegExp(
-      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>]))[^\\r\\n]*`,
+      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>]))[\\s\\S]*`,
       "gi",
     ),
     "element",
   ],
   [
     new RegExp(
-      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?[A-Za-z_][\\w:.-]*)(?=[^>]*?(?<![\\w:.-])(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>]))[^\\r\\n]*`,
+      `(<[^\\S\\r\\n]*(?:[A-Za-z_][\\w.-]*:)?[A-Za-z_][\\w:.-]*)(?=[^>]*?(?<![\\w:.-])(?:name|key|id)[^\\S]*=[^\\S]*["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>]))[\\s\\S]*`,
       "gi",
     ),
     "element",
