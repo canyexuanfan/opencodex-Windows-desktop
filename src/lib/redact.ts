@@ -91,6 +91,45 @@ const COLON_LABELLED_CREDENTIAL = new RegExp(
 );
 
 /**
+ * Framings other than `label: value` that carry the same credential names.
+ *
+ * An upstream error body is not always a header dump. It can echo the request
+ * as a form-encoded string, an XML element, or a multipart part header, and a
+ * colon-only matcher sees none of those. Each entry masks the value with the
+ * terminator its own grammar defines, so the surrounding structure survives.
+ */
+const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
+  // URL query / form-encoded: `authorization=<value>` up to `&` or `;`.
+  [
+    new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=([^&;\\s"']+)`, "gi"),
+    "=",
+  ],
+  // XML/HTML element: `<x-api-key>value</x-api-key>`.
+  [
+    new RegExp(`(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})[^>]*>)([^<]+)`, "gi"),
+    "xml",
+  ],
+  // Multipart part: `name="authorization"` followed by the blank line and body.
+  [
+    new RegExp(
+      `(name=["'](?:${CREDENTIAL_HEADER_LABEL})["'][^\\r\\n]*\\r?\\n\\r?\\n)([^\\r\\n]+)`,
+      "gi",
+    ),
+    "multipart",
+  ],
+];
+
+function maskOtherFramings(value: string): string {
+  let out = value;
+  for (const [pattern, kind] of OTHER_FRAMED_CREDENTIALS) {
+    out = kind === "="
+      ? out.replace(pattern, match => `${match.slice(0, match.indexOf("=") + 1)}${REDACTED_SECRET}`)
+      : out.replace(pattern, (_m, head: string) => `${head}${REDACTED_SECRET}`);
+  }
+  return out;
+}
+
+/**
  * Build a folded copy plus an index map back to the original string, so the
  * match runs on normalized text while the output keeps every byte the match did
  * not cover.
@@ -146,8 +185,14 @@ function maskCredentialHeaders(value: string): string {
     // would swallow the closing brace and the sibling fields, turning a
     // diagnostic into unparseable soup — and those siblings are not the
     // credential.
+    //
+    // The quote only ends the value when a STRUCTURAL TERMINATOR follows it.
+    // Otherwise `x-api-key: "decoy"<secret>` would end the mask at the decoy's
+    // closing quote and hand the real credential back as a suffix — the same
+    // smuggling shape earlier rounds closed, reintroduced through a different
+    // door. Anything else falls back to masking the whole line.
     const rest = value.slice(afterLabel, lineEnd);
-    const quoted = /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2/.exec(rest);
+    const quoted = /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2(?=[^\S\r\n]*(?:[,;)\]}]|$))/.exec(rest);
     const valueEnd = quoted ? afterLabel + quoted[0].length : lineEnd;
     const rawValue = value.slice(afterLabel, valueEnd);
     if (!rawValue.trim()) continue;
@@ -200,7 +245,7 @@ function isSensitiveKey(key: string): boolean {
 }
 
 export function redactSecretString(value: string): string {
-  let redacted = maskCredentialHeaders(value);
+  let redacted = maskOtherFramings(maskCredentialHeaders(value));
   for (const [pattern, replacement] of SECRET_VALUE_PATTERNS) {
     redacted = redacted.replace(pattern, replacement);
   }

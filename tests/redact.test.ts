@@ -225,6 +225,36 @@ describe("redactSecretString", () => {
       .toBe(`{"x-api-key":"${REDACTED_SECRET}","model":"gpt-5.5"}`);
   });
 
+  test("a decoy quoted value does not end the mask early", () => {
+    // The closing quote only terminates the value when a structural terminator
+    // follows. Otherwise `label: "decoy"<secret>` ended the mask at the decoy
+    // and handed the real credential back as a suffix — the smuggling shape
+    // earlier rounds closed, walking back in through a different door.
+    expect(redactSecretString('x-api-key: "decoy"credential-suffix-123456'))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-key: 'decoy'credential-suffix-123456"))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString('Authorization: "decoy"Bearer realsecret123456'))
+      .toBe(`Authorization: ${REDACTED_SECRET}`);
+  });
+
+  test("credential names are recognized in non-colon framings", () => {
+    // An upstream error body is not always a header dump: it can echo the
+    // request form-encoded, as XML, or as a multipart part. A colon-only
+    // matcher sees none of those.
+    expect(redactSecretString("authorization=Basic%20dXNlcjpwYXNz&model=gpt-5.5"))
+      .toBe(`authorization=${REDACTED_SECRET}&model=gpt-5.5`);
+    expect(redactSecretString("<x-api-key>secret123456</x-api-key>"))
+      .toBe(`<x-api-key>${REDACTED_SECRET}</x-api-key>`);
+    expect(redactSecretString('Content-Disposition: form-data; name="authorization"\r\n\r\nBasic dXNlcjpwYXNz\r\n--boundary'))
+      .toBe(`Content-Disposition: form-data; name="authorization"\r\n\r\n${REDACTED_SECRET}\r\n--boundary`);
+  });
+
+  test("non-credential fields in those framings are untouched", () => {
+    expect(redactSecretString("model=gpt-5.5&status=429")).toBe("model=gpt-5.5&status=429");
+    expect(redactSecretString("<model>gpt-5.5</model>")).toBe("<model>gpt-5.5</model>");
+  });
+
   test("a pathological repeated-header line neither overflows nor leaks", () => {
     // The first rescan attempt recursed per match and blew the stack here.
     const line = "Authorization: Bearer tok ".repeat(3000);

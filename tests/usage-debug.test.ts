@@ -112,7 +112,12 @@ describe("appendUsageDebug", () => {
     const parsed = JSON.parse(lines[0]) as { bodySample: string };
     expect(parsed.bodySample).not.toContain("usage-debug-token");
     expect(parsed.bodySample).not.toContain("refresh-debug-token");
-    expect(parsed.bodySample).toContain("Bearer [REDACTED]");
+    // A quoted credential field is masked as a whole value now, scheme word
+    // included: inside a serialized object the scheme is part of what the
+    // upstream echoed back, not a diagnostic the redactor should reconstruct.
+    // The field NAME still survives, which is what makes the sample readable.
+    expect(parsed.bodySample).not.toContain("Bearer usage-debug-token");
+    expect(parsed.bodySample).toContain("authorization");
     expect(parsed.bodySample).toContain("refreshToken");
   });
 
