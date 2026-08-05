@@ -1074,14 +1074,25 @@ at once:
 
 #### A boundary this phase has to widen
 
-The third-from-bottom row is not free. Malformed terminal IPC is today
-**ignored** until the watchdog reports `timeout` (`history-job.ts:153`), so the
-parent cannot tell a dead Worker from a slow one and would classify both as
-`unknown/timeout`. Classifying it as `worker-died` — a different reason with a
-different operator action — requires the parent to treat an unrecognised
-terminal message as a death signal rather than as silence. That is a small
-change to one switch, owned here because the durability claim depends on it,
-and recorded rather than smuggled.
+Three gaps, not one, and the audit found the second and third after the first
+was written down. The parent today handles only `message` and `error`
+(`history-job.ts:157-172`).
+
+1. **An unrecognised message type is ignored** until the watchdog reports
+   `timeout` (`:153`), so a dead Worker and a slow one are classified alike.
+2. **An early Worker close is not listened for at all.** Bun exposes `close`
+   and `messageerror`; the parent subscribes to neither, so a Worker that dies
+   without erroring still surfaces as `timeout`.
+3. **A malformed message with a RECOGNISED type is not validated.**
+   `{requestId, type:"done"}` with nothing else reaches an unchecked cast and
+   reads as `converged` with undefined fields — the worst outcome, because it
+   reports success for work that may not have happened.
+
+So the parent validates `HistoryWorkerResult` fully — matching `requestId`
+AND `jobId`, and the payload fields each type requires — and subscribes to
+`close` and `messageerror` as death signals alongside `error`. Each of the
+three is a small change; the point is that they are three, and the durability
+claim needs all of them.
 
 Two facts that stay true regardless of which row applies:
 
