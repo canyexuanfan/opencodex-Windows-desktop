@@ -54,7 +54,7 @@ forward with its anchor and adds one line: what new evidence would change it. No
 re-derivation.
 
 #1048 and #1049 are **not** in this lane and not in this unit's scope. They are
-maintainer-filed work items of `devlog/_plan/260804_codex_write_substrate/`, not
+maintainer-filed work items of `devlog/_fin/260804_codex_write_substrate/`, not
 defect reports; `002` accounts for them separately.
 
 ## Exact item ledger (17 rows, no more, no fewer)
@@ -66,7 +66,7 @@ Lane C (7): 994 919 540 418 417 241 92
 ```
 
 `#1048` and `#1049` are deliberately absent: they are work items of
-`devlog/_plan/260804_codex_write_substrate/`, not defects (see `002`).
+`devlog/_fin/260804_codex_write_substrate/`, not defects (see `002`).
 
 ## Self-modification map
 

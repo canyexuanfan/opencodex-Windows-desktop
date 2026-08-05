@@ -91,7 +91,7 @@ conversation to have, not a step to take inside this unit.
 state, auth resolution, WHAM refresh concurrency, account generations, and
 quota scopes, and needs a generation-fenced background probe rather than
 ordinary account selection. Deferred to its own unit,
-`devlog/_plan/260803_cooldown_recovery_probe/`, named here so the deferral is a
+`devlog/_fin/260803_cooldown_recovery_probe/`, named here so the deferral is a
 scheduled unit rather than a comment on an issue that nobody reads again.
 
 #893 (sparse Responses snapshots) is real, but the closed PR #894 that

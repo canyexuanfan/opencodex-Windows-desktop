@@ -41,8 +41,8 @@ arrivals.
 | #1043 | 0 | — | `no prior investigation` |
 | #1024 | 0 | — | `no prior investigation` |
 | #1017 | 0 | — | `no prior investigation` |
-| #1049 | 1 | "Adopting pre-substrate routed homes into the coordinator" | `devlog/_plan/260804_codex_write_substrate/041_wp12_closeout.md:1321` |
-| #1048 | 1 | "WP13 composed acceptance — every production entry point funnelling through the substrate, not each helper passing its own test" | `devlog/_plan/260804_codex_write_substrate/041_wp12_closeout.md:1320` |
+| #1049 | 1 | "Adopting pre-substrate routed homes into the coordinator" | `devlog/_fin/260804_codex_write_substrate/041_wp12_closeout.md:1321` |
+| #1048 | 1 | "WP13 composed acceptance — every production entry point funnelling through the substrate, not each helper passing its own test" | `devlog/_fin/260804_codex_write_substrate/041_wp12_closeout.md:1320` |
 | #994 | 1 | "leave open; allowlist location identified, needs reporter's provider/model + wire capture" | `devlog/_plan/260805_bug_stack_campaign/130_dispositions.md:18` |
 | #919 | 4 | "Now embodied by #922/#966; we consume, not implement." | `devlog/_plan/260804_router_intelligence/000_master_plan.md:87` |
 | #904 | 3 | "leave open; `eeef7a32a` fixed surrogate boundaries but the original capture is still needed" | `devlog/_plan/260805_bug_stack_campaign/130_dispositions.md:19` |
@@ -71,7 +71,7 @@ bucket; #820 is a larger architecture epic — deferred to its own unit").
 | #936 | 2 | conflicting; requires explicit security review per MAINTAINERS | `devlog/_plan/260805_bug_stack_campaign/130_dispositions.md:42-45` |
 | #937, #872, #870, #812, #811 | 1 | "Feature programs — out of scope" | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:35-37` |
 | #715 | 5 | out of scope here; earlier: "land after #671, rebase, add combined-selector regression, and pass credential-selection review" | `devlog/_fin/260802_issue_pr_triage/000_research.md:124-125` |
-| #581 | 5 | `NEEDS-CHANGES`; missing parity/picker tests, extraneous script | `devlog/_plan/260731_pr_issue_triage_round/010_pr_triage_matrix.md:105` |
+| #581 | 5 | `NEEDS-CHANGES`; missing parity/picker tests, extraneous script | `devlog/_fin/260731_pr_issue_triage_round/010_pr_triage_matrix.md:105` |
 | #569 | 5 | draft, CI pass but conflicting/dirty; leave open | `devlog/_plan/260805_bug_stack_campaign/002_pr_triage.md:32` |
 | #557 | 9 | `NEEDS_HUMAN` for second-maintainer review | `devlog/_fin/260728_bug_bundle_resolution/050_pr557_boundary.md:65-69` |
 

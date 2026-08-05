@@ -537,7 +537,7 @@ const NVIDIA_NIM_KIMI_MODELS = [
  *
  * Two lists, both verified per-model against NVIDIA documentation on 2026-08-04
  * (build.nvidia.com model pages and docs.api.nvidia.com/nim/reference/*). Evidence and
- * the per-id audit: devlog/_plan/260804_stack7_service_vision/011_nim_id_audit.md.
+ * the per-id audit: devlog/_fin/260804_stack7_service_vision/011_nim_id_audit.md.
  *
  * Read `noVisionModels` carefully — it lists models that CANNOT see images, which is
  * what routes them through the proxy's vision sidecar (src/vision/index.ts) and makes the

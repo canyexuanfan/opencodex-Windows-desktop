@@ -113,7 +113,7 @@ prove correct (`tests/server-live.test.ts:642-675`).
    is a policy call, not a bug fix. Claiming either is fixed here would be the
    overreach the audit prevented.
 6. #915 gets an evidence comment recording the fix shape and pointing at its
-   own scheduled unit `devlog/_plan/260803_cooldown_recovery_probe/`: it crosses
+   own scheduled unit `devlog/_fin/260803_cooldown_recovery_probe/`: it crosses
    routing state, auth resolution, WHAM refresh concurrency, account
    generations, and quota scopes, and needs a generation-fenced background probe
    rather than ordinary account selection. Notably
