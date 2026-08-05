@@ -65,10 +65,10 @@ describe("redactSecretString", () => {
     // Re-review of the first fix: tokenizing the value on quotes, spaces, and
     // semicolons leaked every variant that contains one. A credential header's
     // value is the rest of the line, so that is what must be masked.
-    // A quoted value keeps its quotes: the mask replaces the contents, so a
-    // serialized field stays syntactically intact.
+    // An unquoted header LABEL always masks to end of line, quotes and all —
+    // only a quoted label (a proven serialized field) terminates early.
     expect(redactSecretString('x-api-key: "quotedcredential123456"'))
-      .toBe(`x-api-key: "${REDACTED_SECRET}"`);
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString("Authorization: Basic dXNlcjpwYXNz"))
       .toBe(`Authorization: ${REDACTED_SECRET}`);
     expect(redactSecretString("Cookie: session=secret-one; csrf=secret-two"))
@@ -226,16 +226,31 @@ describe("redactSecretString", () => {
   });
 
   test("a decoy quoted value does not end the mask early", () => {
-    // The closing quote only terminates the value when a structural terminator
-    // follows. Otherwise `label: "decoy"<secret>` ended the mask at the decoy
-    // and handed the real credential back as a suffix — the smuggling shape
-    // earlier rounds closed, walking back in through a different door.
+    // Early termination is decided by the LABEL, not the value. Two attempts
+    // inspected the value instead — first "stop at the closing quote", then
+    // "stop at a closing quote followed by punctuation" — and both let a decoy
+    // end the mask and hand the real credential back as a suffix, masking LESS
+    // than the rule did before quoted-key support existed.
     expect(redactSecretString('x-api-key: "decoy"credential-suffix-123456'))
       .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString("x-api-key: 'decoy'credential-suffix-123456"))
       .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString('Authorization: "decoy"Bearer realsecret123456'))
       .toBe(`Authorization: ${REDACTED_SECRET}`);
+    // A terminator after the decoy does not help either.
+    for (const terminator of [",", ";", ")", "]", "}"]) {
+      expect(redactSecretString(`x-api-key: "decoy"${terminator}credential-suffix-123456`))
+        .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    }
+  });
+
+  test("an unquoted header label always masks to end of line", () => {
+    // This is the baseline behavior and the monotonicity guarantee: quoted-key
+    // support must never make a plain header line mask less than it used to.
+    expect(redactSecretString('x-api-key: "quotedcredential123456"'))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-key: plain secret with spaces 123456"))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
   });
 
   test("credential names are recognized in non-colon framings", () => {
@@ -248,6 +263,40 @@ describe("redactSecretString", () => {
       .toBe(`<x-api-key>${REDACTED_SECRET}</x-api-key>`);
     expect(redactSecretString('Content-Disposition: form-data; name="authorization"\r\n\r\nBasic dXNlcjpwYXNz\r\n--boundary'))
       .toBe(`Content-Disposition: form-data; name="authorization"\r\n\r\n${REDACTED_SECRET}\r\n--boundary`);
+  });
+
+  test("XML credentials are covered by tag name, identifying attribute, and attribute value", () => {
+    expect(redactSecretString('<header name="authorization">Basic dXNlcjpwYXNz</header>'))
+      .toBe(`<header name="authorization">${REDACTED_SECRET}</header>`);
+    expect(redactSecretString('<field key="x-api-key">secret123456</field>'))
+      .toBe(`<field key="x-api-key">${REDACTED_SECRET}</field>`);
+    // The credential can also ride in an attribute of a credential-named tag.
+    expect(redactSecretString('<authorization value="Basic dXNlcjpwYXNz">public-status</authorization>'))
+      .not.toContain("dXNlcjpwYXNz");
+  });
+
+  test("a tag that merely starts with a credential word keeps its value", () => {
+    // Without an exact tag-name boundary these lost their values.
+    expect(redactSecretString("<authorizationStatus>denied</authorizationStatus>"))
+      .toBe("<authorizationStatus>denied</authorizationStatus>");
+    expect(redactSecretString("<token-count>42</token-count>"))
+      .toBe("<token-count>42</token-count>");
+  });
+
+  test("a multipart credential part is masked through its boundary", () => {
+    // Line-based masking left a multi-line body and the no-blank-line shape
+    // partly intact; the name may also be unquoted.
+    expect(redactSecretString('name="authorization"\r\nBasic dXNlcjpwYXNz\r\n--boundary'))
+      .toBe(`name="authorization"\r\n${REDACTED_SECRET}\r\n--boundary`);
+    expect(redactSecretString('name="authorization"\r\n\r\ndecoy\r\ncredential-suffix-123456\r\n--boundary'))
+      .toBe(`name="authorization"\r\n\r\n${REDACTED_SECRET}\r\n--boundary`);
+    expect(redactSecretString("name=authorization\r\n\r\nBasic dXNlcjpwYXNz\r\n--boundary"))
+      .toBe(`name=authorization\r\n\r\n${REDACTED_SECRET}\r\n--boundary`);
+  });
+
+  test("a quoted form value is masked too", () => {
+    expect(redactSecretString('authorization="Basic%20dXNlcjpwYXNz"&model=gpt-5.5'))
+      .toBe(`authorization=${REDACTED_SECRET}&model=gpt-5.5`);
   });
 
   test("non-credential fields in those framings are untouched", () => {

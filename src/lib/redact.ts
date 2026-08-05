@@ -101,18 +101,50 @@ const COLON_LABELLED_CREDENTIAL = new RegExp(
 const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
   // URL query / form-encoded: `authorization=<value>` up to `&` or `;`.
   [
-    new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=([^&;\\s"']+)`, "gi"),
+    new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=(?:"[^"]*"|'[^']*'|[^&;\\s]*)`, "gi"),
     "=",
   ],
-  // XML/HTML element: `<x-api-key>value</x-api-key>`.
-  [
-    new RegExp(`(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})[^>]*>)([^<]+)`, "gi"),
-    "xml",
-  ],
-  // Multipart part: `name="authorization"` followed by the blank line and body.
+  // A credential carried in an XML/HTML ATTRIBUTE value rather than a body.
+  // Runs BEFORE the element rules: those consume the whole opening tag, so a
+  // credential-bearing attribute inside it would never be reached.
   [
     new RegExp(
-      `(name=["'](?:${CREDENTIAL_HEADER_LABEL})["'][^\\r\\n]*\\r?\\n\\r?\\n)([^\\r\\n]+)`,
+      `(<[^>]*?\\b(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*=[^\\S\\r\\n]*)(?:"[^"]*"|'[^']*')`,
+      "gi",
+    ),
+    "attr",
+  ],
+  // A credential-named ELEMENT carrying its value in some other attribute:
+  // `<authorization value="Basic …">`. The tag name identifies the credential,
+  // so every quoted attribute value on that tag is masked.
+  [
+    new RegExp(
+      `(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*?[A-Za-z_:][\\w:.-]*[^\\S\\r\\n]*=[^\\S\\r\\n]*)(?:"[^"]*"|'[^']*')`,
+      "gi",
+    ),
+    "attr",
+  ],
+  // XML/HTML element whose TAG NAME is the credential. The tag name is bounded
+  // exactly, or `<authorizationStatus>` and `<token-count>` lose their values
+  // for merely starting with a credential word.
+  [
+    new RegExp(`(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*>)([^<]*)`, "gi"),
+    "xml",
+  ],
+  // XML/HTML element IDENTIFIED BY an attribute: `<header name="authorization">`.
+  [
+    new RegExp(
+      `(<[^>]*\\b(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>])[^>]*>)([^<]*)`,
+      "gi",
+    ),
+    "xml",
+  ],
+  // Multipart part: everything from a credential-named part header through the
+  // next boundary. Part-based, not line-based — a body can span lines, and the
+  // blank line is often missing in a malformed echo. The name may be unquoted.
+  [
+    new RegExp(
+      `(name=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?[^\\r\\n]*\\r?\\n(?:\\r?\\n)?)((?:(?!--)[^\\r\\n]*\\r?\\n?)+)`,
       "gi",
     ),
     "multipart",
@@ -122,9 +154,19 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
 function maskOtherFramings(value: string): string {
   let out = value;
   for (const [pattern, kind] of OTHER_FRAMED_CREDENTIALS) {
-    out = kind === "="
-      ? out.replace(pattern, match => `${match.slice(0, match.indexOf("=") + 1)}${REDACTED_SECRET}`)
-      : out.replace(pattern, (_m, head: string) => `${head}${REDACTED_SECRET}`);
+    if (kind === "=" || kind === "attr") {
+      out = out.replace(pattern, match => {
+        const eq = match.lastIndexOf("=");
+        return `${match.slice(0, eq + 1)}${REDACTED_SECRET}`;
+      });
+      continue;
+    }
+    out = out.replace(pattern, (_m, head: string, body: string) => {
+      if (!body.trim()) return `${head}${body}`;
+      // Preserve the trailing newline so the boundary line stays on its own.
+      const tail = /\r?\n$/.exec(body)?.[0] ?? "";
+      return `${head}${REDACTED_SECRET}${tail}`;
+    });
   }
   return out;
 }
@@ -186,13 +228,25 @@ function maskCredentialHeaders(value: string): string {
     // diagnostic into unparseable soup — and those siblings are not the
     // credential.
     //
-    // The quote only ends the value when a STRUCTURAL TERMINATOR follows it.
-    // Otherwise `x-api-key: "decoy"<secret>` would end the mask at the decoy's
-    // closing quote and hand the real credential back as a suffix — the same
-    // smuggling shape earlier rounds closed, reintroduced through a different
-    // door. Anything else falls back to masking the whole line.
+    // Early termination is decided by the LABEL, not by the value.
+    //
+    // Two attempts got this wrong by inspecting the value: ending at the first
+    // closing quote, then ending at a closing quote followed by punctuation.
+    // Both let `x-api-key: "decoy",<secret>` end the mask at the decoy and hand
+    // the real credential back as a suffix — masking LESS than the rule did
+    // before quoted-key support existed. A property of attacker-controlled
+    // text can never be the thing that stops a redaction.
+    //
+    // A QUOTED LABEL (`"x-api-key":`) is different in kind: the input has
+    // already proven it is a serialized field, so its value is one quoted token
+    // and the siblings after it are structure worth keeping. An UNQUOTED label
+    // is a header line, and there the value has always been the rest of the
+    // line — that is the baseline behavior and it stays.
+    const labelWasQuoted = /^["']/.test(match[0]);
     const rest = value.slice(afterLabel, lineEnd);
-    const quoted = /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2(?=[^\S\r\n]*(?:[,;)\]}]|$))/.exec(rest);
+    const quoted = labelWasQuoted
+      ? /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2/.exec(rest)
+      : null;
     const valueEnd = quoted ? afterLabel + quoted[0].length : lineEnd;
     const rawValue = value.slice(afterLabel, valueEnd);
     if (!rawValue.trim()) continue;
