@@ -21,6 +21,7 @@ import {
 import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
 import { getStaleCached } from "./codex/model-cache";
 import { codexAccountNamespaceEntries } from "./codex/account-namespaces";
+import { getEffectiveActiveCodexAccountId } from "./codex/routing";
 import {
   buildRouteDecisionTrace,
   type RouteDecisionKind,
@@ -30,7 +31,7 @@ import {
 import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
 import { candidateCapabilityEvidence } from "./routing/capability";
-import { healthEvidenceForCandidate } from "./routing/health";
+import { codexPoolHealthEvidence, healthEvidenceForCandidate } from "./routing/health";
 
 export class NoEligiblePolicyCandidateError extends Error {
   constructor(readonly profileId: string) {
@@ -440,19 +441,32 @@ function routeModelInternal(
   const slash = modelId.indexOf("/");
   // Policy namespace is system-reserved: an explicit `policy/<id>` or a
   // configured profile alias executes the policy evaluator and routes the
-  // selected candidate. Only explicit requests reach this branch.
-  const policyId = resolvePolicyProfileId(config, modelId);
-  if (policyId) {
-    const profile = getRoutingProfile(config, policyId);
-    if (!profile) throw new Error(`Unknown routing profile: ${policyId}`);
+  // selected candidate. Only explicit requests reach this branch; concrete
+  // recursive targets skip policy resolution entirely (bypassCombos) so an
+  // alias matching a selected candidate can never recurse, and a
+  // `policy/<id>` without a configured profile falls through to normal
+  // provider/default resolution instead of failing.
+  const policyId = !bypassCombos ? resolvePolicyProfileId(config, modelId) : null;
+  const profile = policyId ? getRoutingProfile(config, policyId) : undefined;
+  if (profile && policyId) {
     const candidateEvidence = profile.candidates.map(candidate => ({
       provider: candidate.provider,
       model: candidate.model,
       capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
-      health: healthEvidenceForCandidate({
-        provider: candidate.provider,
-        model: candidate.model,
-      }),
+      health: {
+        ...healthEvidenceForCandidate({
+          provider: candidate.provider,
+          model: candidate.model,
+          codexAccountId: candidate.provider === OPENAI_CODEX_PROVIDER_ID
+            ? getEffectiveActiveCodexAccountId(config)
+            : undefined,
+        }),
+        // Live pool state stays authoritative for `openai` targets even when
+        // no account reference exists in the candidate evidence.
+        ...(candidate.provider === OPENAI_CODEX_PROVIDER_ID
+          ? (codexPoolHealthEvidence(config) ?? {})
+          : {}),
+      },
     }));
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence);
     if (evaluation.selectedIndex === null) {

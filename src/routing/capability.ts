@@ -61,6 +61,16 @@ function isPrivateHostname(hostname: string): boolean {
     || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
 }
 
+/** Adapters whose upstream protocol supports function/tool calling. */
+const TOOL_CAPABLE_ADAPTERS = new Set([
+  "openai-chat",
+  "openai-responses",
+  "anthropic",
+  "cursor",
+  "google",
+  "azure-openai",
+]);
+
 function localRemoteEvidence(baseUrl: string | undefined): Pick<RouteCapabilityEvidence, "localOnly" | "remoteAllowed"> {
   if (typeof baseUrl !== "string" || baseUrl.length === 0) return {};
   try {
@@ -103,8 +113,13 @@ export function candidateCapabilityEvidence(
     : undefined;
 
   const capabilities = catalogRow?.capabilities ?? [];
+  // The catalog capability is the per-model authority. Without a catalog row,
+  // the adapter protocol itself is the signal: `openai-chat` and friends run
+  // single tool calls even when the parallel-call opt-in is unset or false.
   const tools = capabilities.includes("tools")
-    || (isNative ? true : provider?.parallelToolCalls === true)
+    || (isNative ? true : false)
+    || (catalogRow === undefined && provider !== undefined && TOOL_CAPABLE_ADAPTERS.has(provider.adapter))
+    || provider?.parallelToolCalls === true
     || undefined;
 
   const reasoningEfforts = provider?.modelReasoningEfforts?.[modelId]

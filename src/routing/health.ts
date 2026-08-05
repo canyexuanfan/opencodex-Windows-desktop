@@ -21,7 +21,9 @@ import { openRequestHistoryIndexSync, requestHistoryDb } from "./history/indexer
 import {
   getCodexAccountCooldownUntil,
   getCodexAccountSoftAvoidUntil,
+  getEffectiveActiveCodexAccountId,
   isCodexAccountInCooldown,
+  listLiveCodexAccountIds,
 } from "../codex/routing";
 import type { RouteHealthEvidence } from "./trace";
 
@@ -62,6 +64,83 @@ interface HealthSample {
   terminalStatus: string | null;
   durationMs: number;
   timestamp: number;
+}
+
+interface HealthRow extends HealthSample {
+  attemptCount?: number;
+  rowJson?: string | null;
+}
+
+/**
+ * Per-attempt samples for a candidate from a row's persisted entry.
+ * Combo/failover requests store each upstream try in `entry.attempts` while
+ * the top-level row records the final outcome; a provider/model that failed
+ * as a non-final attempt must still contribute its own health samples.
+ */
+function attemptSamplesFor(
+  row: Pick<HealthRow, "timestamp" | "attemptCount" | "rowJson">,
+  provider: string,
+  model: string,
+): HealthSample[] {
+  if (!row.rowJson || (row.attemptCount ?? 1) <= 1) return [];
+  try {
+    const parsed = JSON.parse(row.rowJson) as { attempts?: unknown };
+    if (!Array.isArray(parsed.attempts)) return [];
+    const samples: HealthSample[] = [];
+    for (const attempt of parsed.attempts) {
+      if (!attempt || typeof attempt !== "object" || Array.isArray(attempt)) continue;
+      const record = attempt as Record<string, unknown>;
+      if (record.provider !== provider || record.model !== model) continue;
+      if (typeof record.status !== "number" || typeof record.durationMs !== "number") continue;
+      samples.push({
+        status: record.status,
+        closeReason: null,
+        terminalStatus: null,
+        durationMs: record.durationMs,
+        timestamp: row.timestamp,
+      });
+    }
+    return samples;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Live Codex pool account state for an `openai` policy candidate.
+ *
+ * When a deterministic active account exists (manual selection or
+ * `config.activeCodexAccountId`) its cooldown/soft-avoid state is
+ * authoritative. Otherwise the target is conservatively cooled only when
+ * every live pool account is cooling or soft-avoided; account selection
+ * inside `src/codex/routing.ts` stays authoritative when any account is
+ * usable, so policy scoring never invents account choices.
+ */
+export function codexPoolHealthEvidence(
+  config: Parameters<typeof getEffectiveActiveCodexAccountId>[0],
+  now = Date.now(),
+): Pick<RouteHealthEvidence, "cooldownUntilMs" | "softAvoidUntilMs"> | undefined {
+  const activeId = getEffectiveActiveCodexAccountId(config);
+  if (activeId) {
+    const until = getCodexAccountCooldownUntil(activeId, now);
+    if (until !== null) return { cooldownUntilMs: until };
+    const softUntil = getCodexAccountSoftAvoidUntil(activeId, now);
+    if (softUntil !== null && softUntil > now) return { softAvoidUntilMs: softUntil };
+    return undefined;
+  }
+  const live = [...listLiveCodexAccountIds(config)];
+  if (live.length === 0) return undefined;
+  const cooldowns: number[] = [];
+  const softAvoids: number[] = [];
+  for (const accountId of live) {
+    const until = getCodexAccountCooldownUntil(accountId, now);
+    if (until !== null) cooldowns.push(until);
+    const softUntil = getCodexAccountSoftAvoidUntil(accountId, now);
+    if (softUntil !== null && softUntil > now) softAvoids.push(softUntil);
+  }
+  if (cooldowns.length === live.length) return { cooldownUntilMs: Math.max(...cooldowns) };
+  if (softAvoids.length === live.length) return { softAvoidUntilMs: Math.max(...softAvoids) };
+  return undefined;
 }
 
 function classifySample(sample: HealthSample): "success" | "failure" | "neutral" {
@@ -115,10 +194,33 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
     }
     const rows = handle.query(
       `SELECT status, close_reason AS closeReason, terminal_status AS terminalStatus,
-              duration_ms AS durationMs, timestamp
+              duration_ms AS durationMs, timestamp,
+              attempt_count AS attemptCount, row_json AS rowJson
        FROM requests WHERE ${where.join(" AND ")}
        ORDER BY timestamp DESC LIMIT ?`,
-    ).all(...values, HEALTH_MAX_SAMPLES) as HealthSample[];
+    ).all(...values, HEALTH_MAX_SAMPLES) as HealthRow[];
+    // Rows whose top-level target differs from this candidate may still carry
+    // candidate attempts (combo/failover): expand those too.
+    const attemptRows = handle.query(
+      `SELECT timestamp, attempt_count AS attemptCount, row_json AS rowJson
+       FROM requests WHERE timestamp >= ? AND attempt_count > 1
+         AND NOT (provider = ? AND model = ?)
+       ORDER BY timestamp DESC LIMIT ?`,
+    ).all(now - HEALTH_WINDOW_MS, input.provider, input.model, HEALTH_MAX_SAMPLES) as Array<
+      Pick<HealthRow, "timestamp" | "attemptCount" | "rowJson">
+    >;
+
+    const samples: HealthSample[] = [];
+    for (const row of rows) {
+      const attemptSamples = attemptSamplesFor(row, input.provider, input.model);
+      samples.push(...(attemptSamples.length > 0 ? attemptSamples : [row]));
+    }
+    for (const row of attemptRows) {
+      samples.push(...attemptSamplesFor(row, input.provider, input.model));
+    }
+    // Newest first for the consecutive-failure walk; attempt samples inherit
+    // their row's timestamp.
+    samples.sort((a, b) => b.timestamp - a.timestamp);
 
     let successes = 0;
     let failures = 0;
@@ -126,11 +228,9 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
     let weightedSuccess = 0;
     let weightedTotal = 0;
     const latencies: number[] = [];
-    let consecutiveFailures = 0;
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index]!;
-      const kind = classifySample(row);
-      const weight = decayWeight(row.timestamp, now);
+    for (const sample of samples) {
+      const kind = classifySample(sample);
+      const weight = decayWeight(sample.timestamp, now);
       if (kind === "neutral") continue;
       if (kind === "success") {
         successes += 1;
@@ -140,18 +240,17 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
         failures += 1;
         weightedTotal += weight;
       }
-      if (row.terminalStatus === "incomplete") incompleteStreams += 1;
-      latencies.push(row.durationMs);
+      if (sample.terminalStatus === "incomplete") incompleteStreams += 1;
+      latencies.push(sample.durationMs);
     }
     // Consecutive failures: walk newest -> oldest until a success.
-    let consecutive = 0;
-    for (const row of rows) {
-      const kind = classifySample(row);
+    let consecutiveFailures = 0;
+    for (const sample of samples) {
+      const kind = classifySample(sample);
       if (kind === "neutral") continue;
-      if (kind === "failure") consecutive += 1;
+      if (kind === "failure") consecutiveFailures += 1;
       else break;
     }
-    consecutiveFailures = consecutive;
 
     const sampleCount = successes + failures;
     if (sampleCount > 0) {
@@ -162,7 +261,7 @@ export function healthEvidenceForCandidate(input: HealthEvidenceInput): RouteHea
       latencies.sort((a, b) => a - b);
       const p50 = median(latencies);
       if (p50 !== undefined) evidence.recentLatencyMs = p50;
-      evidence.recencyWeight = decayWeight(rows[0]!.timestamp, now);
+      evidence.recencyWeight = decayWeight(samples[0]!.timestamp, now);
     }
   } catch {
     /* index unreadable: evidence stays unknown */

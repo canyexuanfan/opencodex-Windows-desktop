@@ -8,6 +8,8 @@
 
 import { listRoutingProfileIds, getRoutingProfile, policyPublicModelId } from "../../routing/profile";
 import { evaluatePolicyProfile, type PolicyCandidateEvidence, type PolicyRequestEvidence } from "../../routing/evaluator";
+import { candidateCapabilityEvidence } from "../../routing/capability";
+import { healthEvidenceForCandidate } from "../../routing/health";
 import { isPlainRecord } from "./shared";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import { jsonResponse } from "../auth-cors";
@@ -98,7 +100,15 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
       return jsonResponse({ error: { code: "invalid_evidence", message: "evidence must be an object" } }, 400, req, config);
     }
     const candidateEvidence = body.candidates === undefined
-      ? []
+      // Match execution: fill the same candidate evidence the router would
+      // assemble, so dry-run reports the same eligibility as real routing
+      // instead of treating every capability as unknown.
+      ? getRoutingProfile(config, profile)!.candidates.map(candidate => ({
+          provider: candidate.provider,
+          model: candidate.model,
+          capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
+          health: healthEvidenceForCandidate({ provider: candidate.provider, model: candidate.model }),
+        }))
       : parseCandidateEvidence(body.candidates);
     if (candidateEvidence === null) {
       return jsonResponse({ error: { code: "invalid_candidates", message: "candidates must be an array of evidence objects" } }, 400, req, config);

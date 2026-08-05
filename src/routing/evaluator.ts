@@ -166,6 +166,31 @@ function requestRequirements(
     const image = booleanRequirement("request-image-input", true, capability?.image);
     if (image) requirements.push(image);
   }
+  if (requestEvidence.contextWindow !== undefined) {
+    const actual = capability?.contextWindow;
+    if (typeof actual === "number") {
+      requirements.push({
+        id: "request-context-window",
+        expected: requestEvidence.contextWindow,
+        actual,
+        outcome: actual >= requestEvidence.contextWindow ? "satisfied" : "unsatisfied",
+      });
+    } else {
+      requirements.push({
+        id: "request-context-window",
+        expected: requestEvidence.contextWindow,
+        outcome: "unknown",
+      });
+    }
+  }
+  if (requestEvidence.structuredOutputRequired === true) {
+    const structured = booleanRequirement("request-structured-output", true, capability?.structuredOutput);
+    if (structured) requirements.push(structured);
+  }
+  if (requestEvidence.encryptedCodexTask === true) {
+    const encrypted = booleanRequirement("request-encrypted-codex-task", true, capability?.encryptedCodexTasks);
+    if (encrypted) requirements.push(encrypted);
+  }
   return requirements;
 }
 
@@ -257,7 +282,6 @@ export function evaluatePolicyProfile(
       ...(evidence.health ? { health: evidence.health } : {}),
       ...(evidence.quota ? { quota: evidence.quota } : {}),
       ...(evidence.cost ? { cost: evidence.cost } : {}),
-      ...(evidence.health ? { health: evidence.health } : {}),
       score,
     };
     candidates.push(evaluated);

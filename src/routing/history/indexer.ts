@@ -128,8 +128,14 @@ function sourceIdentity(): UsageLogRevision | null {
 function sourceIdentityMatches(dbHandle: Database, revision: UsageLogRevision | null): boolean {
   const stored = readIndexedMeta(dbHandle);
   if (revision === null) return stored.sourceSize === 0;
-  return stored.sourceSize === Number(revision.size)
-    && stored.sourceMtimeMs === Number(revision.mtimeMs);
+  const storedDev = Number(metaValue(dbHandle, HISTORY_META_KEYS.sourceDev));
+  const storedIno = Number(metaValue(dbHandle, HISTORY_META_KEYS.sourceIno));
+  // Stable file identity (dev/ino) is authoritative; size/mtime growth is a
+  // tail the incremental offset logic ingests, never a rebuild trigger.
+  // Without this, every appended usage row changed size/mtime and forced a
+  // synchronous full rebuild on the next routing-time health read.
+  return storedDev === Number(revision.dev)
+    && storedIno === Number(revision.ino);
 }
 
 /** Extract the `requests` row columns from a canonical persisted entry. */
@@ -203,7 +209,10 @@ function parsedEntryFromLine(line: string): PersistedUsageEntry | null {
     if (parsed && typeof parsed === "object"
       && typeof parsed.requestId === "string"
       && typeof parsed.timestamp === "number"
-      && typeof parsed.provider === "string") {
+      && typeof parsed.provider === "string"
+      && typeof parsed.model === "string"
+      && typeof parsed.status === "number"
+      && typeof parsed.durationMs === "number") {
       return parsed;
     }
   } catch {
@@ -415,7 +424,10 @@ function refreshLockedSync(): RequestHistoryIndexMeta {
     return metaFor(handle);
   }
   if (tailNextOffset < Number(revision.size)) {
-    ingestSourceTail(handle, revision.path, tailNextOffset);
+    const inserted = ingestSourceTail(handle, revision.path, tailNextOffset);
+    // A clean tail ingest proves the index is healthy: clear any earlier
+    // rebuild marker so status readers can distinguish rebuilds from tails.
+    if (inserted > 0) setMeta(handle, HISTORY_META_KEYS.lastError, "");
   }
   return metaFor(handle);
 }

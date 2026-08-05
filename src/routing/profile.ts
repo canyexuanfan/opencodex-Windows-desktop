@@ -153,6 +153,18 @@ function aliasIssues(
   if (hasOwnProvider(config.providers, alias)) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with configured provider name "${alias}"` });
   }
+  // A slashed alias whose first segment is a configured provider shadows that
+  // provider's routes (e.g. `a/m1` resolves as the alias before the provider
+  // namespace). Reject those aliases to preserve existing routing.
+  if (alias.includes("/")) {
+    const firstSegment = alias.split("/")[0]!;
+    if (hasOwnProvider(config.providers, firstSegment)) {
+      issues.push({
+        path: ["alias"],
+        message: `alias "${alias}" collides with configured provider namespace "${firstSegment}"`,
+      });
+    }
+  }
   if (resolveComboId({ combos: config.combos }, alias)) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with a configured combo selector` });
   }
