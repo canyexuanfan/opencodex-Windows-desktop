@@ -1021,8 +1021,9 @@ and the ones that did were rewritten rather than kept.
   replaced by a no-op; (p) the claim-site platform threading is removed; (q) the
   owner-site platform threading is removed; (r) the claim site swallows a required
   hardening failure; (s) the owner site swallows it; (t) the claim reclassifies a
-  denied ACL as busy; (u) the owner reclassifies it as contended.
-  (h) through (u) are not redundant — each survived every other check. (h) and (i)
+  denied ACL as busy; (u) the owner reclassifies it as contended; (v) the owner publishes a transient
+  `held` before settling `unavailable`.
+  (h) through (v) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1063,6 +1064,27 @@ and the ones that did were rewritten rather than kept.
   contention. The claim must reject with `NATIVE_MAIN_CLAIM_UNAVAILABLE`; the owner
   must settle at `{ status: "unavailable", reason: "lock-unavailable" }` and stay
   there.
+
+  ### The class, not the twenty-second instance
+
+  Rounds 10-18 each produced exactly one finding in this surface, and (v) is what
+  named the pattern: these were never independent accidents. Each test proved ONE
+  projection of a conjunctive contract — some hardener ran, the platform arrived,
+  the operation stopped, the classification was right — and a later mutation kept
+  the asserted projection while breaking an unobserved one.
+
+  **A terminal snapshot cannot prove that something never happened.** (v) publishes
+  `held` and then immediately `unavailable`: both reads see `unavailable`, while
+  every subscriber saw a caller briefly believe it owned an unhardened database.
+  The test now subscribes first and asserts the ordered trace
+  `acquiring -> unavailable` with `held` and `contended` forbidden at any point.
+
+  So the rule for every production call edge in this unit, and the reason the list
+  above is a matrix rather than a list: assert the exact target, the default
+  binding, the platform provenance, the success ordering, the failure propagation,
+  the exact refusal taxonomy, the complete observable state trace, and the absence
+  of retries or protected-operation execution. For an asynchronous state machine,
+  assert an ordered trace and forbidden events — never only the eventual state.
 
   **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
   `observe()` treats a zero inode as unobservable, so if Bun returns zero there,

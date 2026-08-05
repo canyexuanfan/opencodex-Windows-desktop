@@ -1247,26 +1247,47 @@ describe("a required hardening failure stops the operation it protects", () => {
     expect(operationRan).toBe(false);
   });
 
-  test("an owner whose ACL cannot be applied settles unavailable, and does not retry", async () => {
+  /**
+   * Asserted as an ORDERED TRACE, not a terminal snapshot.
+   *
+   * This is the generalization that should have come eight rounds earlier. Every
+   * previous version of this test read `owner.snapshot()` after the fact, and a
+   * final snapshot structurally cannot prove that something never happened: an
+   * implementation publishing `held` and then immediately `unavailable` passed,
+   * while every subscriber saw the forbidden intermediate state.
+   *
+   * So subscribe first, record every published state, and assert the whole
+   * sequence plus the events that must be absent.
+   */
+  test("an owner whose ACL cannot be applied goes acquiring -> unavailable, with no held, contended, or retry", async () => {
     resetHardenedStateForTests();
     await forcedWindowsFailure(async codexHome => {
       const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
+      const trace: string[] = [];
+      const unsubscribe = owner.subscribe(snapshot => { trace.push(snapshot.status); });
       try {
         const deadline = Date.now() + 5_000;
         while (owner.snapshot().status === "acquiring" && Date.now() < deadline) {
           await Bun.sleep(10);
         }
-        // `contended` would be wrong in a way `not.toBe("held")` cannot see: it
-        // schedules a retry, so a permanently denied ACL becomes an endless
-        // reacquire loop instead of a settled refusal.
+        // Long enough for a scheduled retry (retryMs: 10) to have fired.
+        await Bun.sleep(60);
+
         expect(owner.snapshot()).toMatchObject({
           status: "unavailable",
           reason: "lock-unavailable",
         });
-        // And it stays settled: a retry would move it off `unavailable`.
-        await Bun.sleep(60);
-        expect(owner.snapshot().status).toBe("unavailable");
+        // `held` would mean a caller briefly believed it owned an unhardened
+        // database; `contended` schedules a retry, turning a permanent denial
+        // into an endless reacquire loop. Neither may appear at any point.
+        expect(trace).not.toContain("held");
+        expect(trace).not.toContain("contended");
+        // The whole observable history, in order, with no retry churn after it
+        // settles. `acquiring` is published to subscribers on attach.
+        expect(trace.filter((status, i) => status !== trace[i - 1]))
+          .toEqual(["acquiring", "unavailable"]);
       } finally {
+        unsubscribe();
         await owner.release();
       }
     });
