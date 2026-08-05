@@ -387,7 +387,7 @@ before every irreversible write below, while the same lock is still held:
 | bundled fallback | `materializeBundledCodexCatalog` at `src/codex/catalog/bundled.ts:213-219` | candidate resolution outside; materialization inside lock |
 | pristine backup | `copyFileSync` / `atomicWriteFile` at `src/codex/catalog/parsing.ts:428-444` | each target-hashed backup write inside lock |
 | catalog | `atomicWriteFile(catalogPath, ...)` at `src/codex/catalog/sync.ts:568` | gathered candidate committed inside lock |
-| models cache | `atomicWriteFile(activeCodexModelsCachePath(), ...)` at `src/codex/catalog/sync.ts:832` | replacement/restoration inside lock |
+| models cache | `replaceCodexModelsCache` at `src/codex/catalog/sync.ts:847`, whose atomic write is `src/codex/internal/catalog-writer.ts:202` | replacement/restoration inside lock |
 | injection journal | `writeJournal(...)` at `src/codex/inject.ts:521-527` | inside lock |
 | config/profile/marker | writes at `src/codex/inject.ts:593-597` | all inside the same lock |
 | history mutation | callback at `src/codex/inject.ts:598-603` | the complete callback, including its hidden writes, inside lock |
@@ -577,7 +577,7 @@ the prior startup ordering could not support.
 
 `restoreNativeCodex` currently restores journal/config, catalog, and history at
 `src/codex/inject.ts:820`, but apply writes routed models into
-`models_cache.json` at `src/codex/catalog/sync.ts:832`. Reporting OFF while
+`models_cache.json` through `replaceCodexModelsCache` (`src/codex/catalog/sync.ts:847`). Reporting OFF while
 that cache still advertises routed slugs repeats the WP2 incident: the test sees
 only artifacts it already knew to assert.
 
@@ -585,7 +585,7 @@ Add `restoreCodexModelsCache` beside `restoreCodexCatalog`. After catalog restor
 rewrite the cache from the restored catalog with an expired wrapper; if the
 catalog is unavailable, parse the existing cache and remove only routed slugs.
 Missing cache is success. Unreadable or unwritable cache is failure, not the
-current swallowed `false` from `invalidateCodexModelsCache` (`:601-616`):
+current swallowed `false` from `invalidateCodexModelsCache` (`src/codex/catalog/sync.ts:833`):
 
 ```diff
    const cat = restoreCodexCatalog();

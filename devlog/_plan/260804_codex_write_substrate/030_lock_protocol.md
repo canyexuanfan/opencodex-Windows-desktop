@@ -1030,8 +1030,10 @@ and the ones that did were rewritten rather than kept.
   a 1ms timer, continuing while icacls is still in flight; (ad) a DIRECTORY-only
   failure policy diverges from the file policy — required soft-failing on an
   ordinary failure or a timeout, or optional throwing on either; (ae) a memo entry
-  proven wrong is kept instead of retired.
-  (h) through (ae) are not redundant — each survived every other check. (h) and (i)
+  proven wrong is kept instead of retired; (af) directory memos alone are exempted
+  from that retirement; (ag) an unreadable observation keeps its memo while a
+  successful re-harden masks which mechanism deleted it.
+  (h) through (ag) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1156,6 +1158,15 @@ and the ones that did were rewritten rather than kept.
   deferred-runner shape: hold the ACL unresolved, require the protected work has
   NOT started, release it, then require the result. An event marker taken at the
   START of an operation cannot order anything against its COMPLETION.
+
+  **The rule applies to every property, including the ones added last.** (af) and
+  (ag) are the memo-retirement branch failing its own four-entry-point rule the
+  moment it shipped: exempting directories alone from the retirement passed all 113
+  tests, because the retirement test drove `hardenSecretPath` only. And (ag) is the
+  attribution trap in miniature — the unreadable test let the ACL succeed, so
+  `recordHarden` deleted the entry for its own reasons and a terminal count of zero
+  could not say which mechanism retired it. The ACL now fails BEFORE `recordHarden`
+  runs, and the re-satisfaction check is what proves the lookup did it.
 
   The matrix, enumerated, is: exact target · default binding · platform provenance ·
   **successful completion** · **ordering relative to the ACL** · failure propagation ·
