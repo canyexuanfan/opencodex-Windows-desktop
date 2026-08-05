@@ -30,7 +30,13 @@ const SENSITIVE_KEY_PATTERN = /^(?:authorization|proxy-authorization|cookie|set-
  * back so unrelated text keeps its original bytes. Folding the string itself
  * rewrote innocent diagnostics (`ratio∶1` became `ratio:1`).
  */
-const CREDENTIAL_HEADER_LABEL = "x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token";
+// Every letter position also accepts \u0001, the placeholder the fold emits for
+// an unresolved HTML named reference: `author&ii;zation` is the label with one
+// character we cannot name, and that is still the label.
+const CREDENTIAL_HEADER_LABEL_RAW = "x-api-key|x-goog-api-key|x-amz-security-token|api[_-]?key|apiKey|access[_-]?token|accessToken|refresh[_-]?token|refreshToken|id[_-]?token|client[_-]?secret|clientSecret|authorization|proxy-authorization|cookie|set-cookie|password|secret|token";
+
+const CREDENTIAL_HEADER_LABEL = CREDENTIAL_HEADER_LABEL_RAW
+  .replace(/(?<![\[\\])([A-Za-z])(?![\]\-])/g, "[$1\u0001]");
 
 /**
  * Characters that render as a colon separator. Folded to `:` in the matching
@@ -52,18 +58,32 @@ const COLON_CONFUSABLES = new Set([
 const INVISIBLE_FORMAT = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Mn}\p{Me}]/u;
 
 /**
- * HTML named entities that can spell a credential label or its separator.
- * The Greek names decode to characters the homoglyph fold already handles, so
- * decoding them here is what connects the two: `&iota;` is `ι` is `i`.
+ * HTML named character references.
+ *
+ * A hand-picked list is a coverage promise nobody can keep — review found
+ * `&ii;`, `&ee;`, and `&DifferentialD;` decoding to compatibility letters that
+ * NFKD already maps onto `i`, `e`, and `d`, and the WHATWG table holds roughly
+ * 2200 entries. Neither Bun nor Node exposes that table, and pulling in a
+ * dependency to spell a header name is the wrong trade for this path.
+ *
+ * So names are not resolved at all. A named reference sitting inside a
+ * credential label is folded to a single placeholder character of unknown
+ * identity, and the label alternation accepts that placeholder wherever a
+ * letter may appear. Every named entity is covered, present and future,
+ * without claiming to know what any of them mean.
  */
-const HTML_NAMED_ENTITIES = new Map<string, string>([
+const NAMED_ENTITY_PLACEHOLDER = "\u0001";
+
+/**
+ * The handful of named references that spell a SEPARATOR rather than a letter.
+ * These have to resolve exactly, because the placeholder stands in for a letter
+ * position and a separator is structure, not a character of the name.
+ */
+const SEPARATOR_ENTITIES = new Map<string, string>([
   ["colon", ":"], ["semi", ";"], ["equals", "="], ["quot", '"'], ["apos", "'"],
   ["lt", "<"], ["gt", ">"], ["amp", "&"], ["sol", "/"], ["lowbar", "_"],
-  ["hyphen", "-"], ["dash", "-"], ["ndash", "-"], ["period", "."], ["comma", ","],
-  ["iota", "\u03B9"], ["alpha", "\u03B1"], ["omicron", "\u03BF"], ["rho", "\u03C1"],
-  ["epsilon", "\u03B5"], ["tau", "\u03C4"], ["kappa", "\u03BA"], ["nu", "\u03BD"],
-  ["upsilon", "\u03C5"], ["chi", "\u03C7"], ["eta", "\u03B7"], ["mu", "\u03BC"],
-  ["beta", "\u03B2"], ["gamma", "\u03B3"], ["sigma", "\u03C3"],
+  ["hyphen", "-"], ["dash", "-"], ["ndash", "-"], ["mdash", "-"], ["minus", "-"],
+  ["period", "."], ["comma", ","], ["num", "#"], ["nbsp", " "],
 ]);
 
 /**
@@ -231,10 +251,41 @@ function foldForMatching(value: string, decodeEscapes = true): { folded: string;
   // `author\u0069zation`, `author%69zation`, and `author&#105;zation` are the
   // label they claim to be.
   const decodeEscape = (at: number): { ch: string; width: number } | null => {
+    // JSON `\uXXXX`, INCLUDING a surrogate pair. Decoding the halves
+    // independently left `\uD835\uDD69` as two lone surrogates, so the
+    // mathematical letter they spell was never normalized as one code point.
     const json = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(at, at + 6));
-    if (json) return { ch: String.fromCharCode(parseInt(json[1]!, 16)), width: 6 };
-    const pct = /^%([0-9a-fA-F]{2})/.exec(value.slice(at, at + 3));
-    if (pct) return { ch: String.fromCharCode(parseInt(pct[1]!, 16)), width: 3 };
+    if (json) {
+      const high = parseInt(json[1]!, 16);
+      if (high >= 0xd800 && high <= 0xdbff) {
+        const low = /^\\u([0-9a-fA-F]{4})/.exec(value.slice(at + 6, at + 12));
+        const lowCode = low ? parseInt(low[1]!, 16) : NaN;
+        if (lowCode >= 0xdc00 && lowCode <= 0xdfff) {
+          return { ch: String.fromCharCode(high, lowCode), width: 12 };
+        }
+      }
+      return { ch: String.fromCharCode(high), width: 6 };
+    }
+    // Percent encoding is UTF-8: consecutive `%XX` bytes form ONE character.
+    // Decoding each byte on its own turned `%D0%B5` into two unrelated
+    // Latin-1 characters instead of the Cyrillic `е` the fold would have
+    // recognized.
+    const pct = /^(?:%[0-9a-fA-F]{2})+/.exec(value.slice(at, at + 24));
+    if (pct) {
+      try {
+        const decoded = decodeURIComponent(pct[0]);
+        if (decoded.length >= 1) {
+          // Consume only the bytes that produced the FIRST character, so the
+          // rest of the sequence is decoded on the next iteration.
+          const first = String.fromCodePoint(decoded.codePointAt(0)!);
+          const bytes = new TextEncoder().encode(first).length;
+          return { ch: first, width: bytes * 3 };
+        }
+      } catch {
+        const single = parseInt(pct[0].slice(1, 3), 16);
+        return { ch: String.fromCharCode(single), width: 3 };
+      }
+    }
     const xml = /^&#(x[0-9a-fA-F]{1,6}|[0-9]{1,7});/.exec(value.slice(at, at + 11));
     if (xml) {
       const raw = xml[1]!;
@@ -245,13 +296,13 @@ function foldForMatching(value: string, decodeEscapes = true): { folded: string;
         return { ch: String.fromCodePoint(code), width: xml[0].length };
       }
     }
-    // HTML named entities. Only the ones that can spell a credential label or
-    // its separator matter here — `&colon;` is the separator itself, and the
-    // Greek names decode to characters the homoglyph fold already covers.
+    // HTML named references. `&colon;` and the other separator names are
+    // resolved exactly; anything else folds to the opaque placeholder so the
+    // label still matches without pretending to know the character.
     const named = /^&([A-Za-z][A-Za-z0-9]{1,31});/.exec(value.slice(at, at + 34));
     if (named) {
-      const decoded = HTML_NAMED_ENTITIES.get(named[1]!.toLowerCase());
-      if (decoded) return { ch: decoded, width: named[0].length };
+      const separator = SEPARATOR_ENTITIES.get(named[1]!.toLowerCase());
+      return { ch: separator ?? NAMED_ENTITY_PLACEHOLDER, width: named[0].length };
     }
     return null;
   };

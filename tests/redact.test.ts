@@ -386,6 +386,33 @@ describe("redactSecretString", () => {
     expect(xml).not.toContain("opaquecredential123456");
   });
 
+  test("multi-unit escapes decode as one character", () => {
+    // A JSON surrogate PAIR is one code point; decoding the halves separately
+    // left two lone surrogates that normalize to nothing. Percent encoding is
+    // UTF-8, so consecutive bytes are one character too — `%D0%B5` is Cyrillic
+    // `е`, not two Latin-1 characters.
+    expect(redactSecretString('{"\\uD835\\uDD69-api-key":"opaquecredential123456"}'))
+      .not.toContain("opaquecredential123456");
+    expect(redactSecretString("x-api-k%D0%B5y=opaquecredential123456&model=gpt-5.5"))
+      .toBe(`x-api-k%D0%B5y=${REDACTED_SECRET}&model=gpt-5.5`);
+  });
+
+  test("any named entity inside a label is treated as one opaque letter", () => {
+    // The WHATWG table has ~2200 entries and neither Bun nor Node exposes it.
+    // Rather than promise a subset, an unresolved name folds to a placeholder
+    // the label accepts wherever a letter may appear — so `&ii;`, `&ee;`, and
+    // `&DifferentialD;` are covered without claiming to know what they mean.
+    for (const input of [
+      '<header name="author&ii;zation">opaquecredential123456</header>',
+      '<header name="s&ee;cret">opaquecredential123456</header>',
+      '<header name="passwor&DifferentialD;">opaquecredential123456</header>',
+    ]) {
+      const redacted = redactSecretString(input);
+      expect(redacted).toContain(REDACTED_SECRET);
+      expect(redacted).not.toContain("opaquecredential123456");
+    }
+  });
+
   test("non-credential fields in those framings are untouched", () => {
     expect(redactSecretString("model=gpt-5.5&status=429")).toBe("model=gpt-5.5&status=429");
     expect(redactSecretString("<model>gpt-5.5</model>")).toBe("<model>gpt-5.5</model>");
