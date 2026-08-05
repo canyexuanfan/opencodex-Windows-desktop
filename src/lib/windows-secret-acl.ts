@@ -38,11 +38,13 @@ const hardenedPaths = new Map<string, HardenedIdentity>();
 const timedOutPaths = new Set<string>();
 
 /**
- * Identity of the file a successful harden actually applied to.
+ * The memo value: `object:freshness` for a file a harden was actually attributed
+ * to.
  *
- * `null` means the identity could not be established, which is NOT the same as
- * "unchanged" — it is recorded as unverifiable so the next harden re-runs
- * instead of inheriting a previous file's credit.
+ * There is deliberately no null member. An observation that cannot be read is
+ * not stored at all — the entry is deleted — because a "recorded as unverifiable"
+ * value was dead code the moment attribution became a before/after comparison,
+ * and a branch nothing can reach is a branch no test can defend.
  */
 type HardenedIdentity = string;
 

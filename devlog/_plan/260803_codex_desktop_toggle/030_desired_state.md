@@ -254,9 +254,9 @@ real migration after OFF and ON mutations and asserts: no `claudeCode` block,
 > its remedy is now a duplicate — a second, weaker per-home lock beside the one the
 > other unit already owns:
 >
-> | This section proposes | What already exists |
+> | This section proposes | What WP4 consumes instead |
 > |---|---|
-> | `withCodexHomeLinearizationLockSync` in a NEW `desired-state.ts` | the N coordinator transaction, `src/codex/transition-state.ts:348` |
+> | `withCodexHomeLinearizationLockSync` in a NEW `desired-state.ts` | the **public N acquisition API** in `src/codex/codex-write-lock.ts` (WP12). Not `openCodexCoordinatorTransaction` directly — that is N's lower layer, and calling it straight would bypass N's admission comparison, lock ordering, and refusal taxonomy. |
 > | `join(tmpdir(), "opencodex-native-locks", sha256(home) + ".sqlite")` | `resolveCodexCoordinatorDatabasePath`, `src/codex/user-identity.ts:165`, which keys on the effective **uid/SID** as well as the canonical home |
 > | `inspectNativeCodexOwnership()` here | `AdmissionSnapshot.ownership`, owned by WP12's admission producer |
 >
@@ -307,7 +307,12 @@ export interface CodexReconcileResult {
 }
 
 export function inspectNativeCodexOwnership(): NativeCodexOwnership;
-export function withCodexHomeLinearizationLockSync<T>(operation: () => T): T;
+// SUPERSEDED — WP4 does not declare this. Linearization comes from WP12's public
+// N acquisition API in `src/codex/codex-write-lock.ts`, whose callback is already
+// synchronous and already holds N -> C. Declaring a second per-home lock here
+// would key on sha256(home) without the uid/SID and split one home across two OS
+// users, which is the failure `005_contract.md` §7 exists to prevent.
+// export function withCodexHomeLinearizationLockSync<T>(operation: () => T): T;
 export function setCodexDesiredEnabled(enabled: boolean): CodexDesiredMutationResult;
 export function setCodexBeforeNativeWriteForTests(
   hook: ((boundary: CodexNativeWriteBoundary) => void) | null,

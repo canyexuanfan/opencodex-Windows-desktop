@@ -632,13 +632,24 @@ Walk components one at a time; never recursive-mkdir across an unvalidated paren
   proves nothing about safety (F5). That requires preserving the `ETIMEDOUT`
   discriminator through sanitization at `src/lib/windows-secret-acl.ts:484`, which
   today rethrows an untyped `Error` and destroys it.
-- The ACL success memo must be bound to **file identity**, not pathname. Today it is
-  a `Set<string>` of paths (`src/lib/windows-secret-acl.ts:36,461`), so a file
-  replaced at the same name inherits the previous file's hardening — probed as
-  `{identityChanged:true, firstCalls:3, totalCalls:3, replacementWasRechecked:false}`
-  (F4). Ephemeral temps already invalidate through `forgetEphemeralSecretPath`
+- The ACL success memo is bound to file identity, not pathname — **shipped**, and the
+  shape it settled on is not the one this section originally prescribed. It separates
+  two questions the first fix conflated:
+  - `object` = `dev:ino` — is this the same file? Compared **before and after** the
+    icacls sequence, because "what is at this path now" does not answer "what did
+    icacls operate on".
+  - `freshness` = `ctimeNs` — has this file's metadata moved since? Stored from the
+    **post-harden** read and deliberately NOT compared across the ACL call: icacls
+    changes permissions and a permission change moves ctime (probed,
+    `{ctimeChangedByChmod: true}`), so comparing it there would have rejected every
+    successful harden and failed closed on the first harden of every path on Windows.
+
+  Ephemeral temps already invalidated through `forgetEphemeralSecretPath`
   (`src/config.ts:214,241,309,336,480,501-510`); the stable destination memo that
-  `hardenStableLockFile` uses never does.
+  `hardenStableLockFile` uses never did, and observed absence now retires it. Both the
+  sync and async entry points are covered — an audit removed the async attribution
+  alone and every test stayed green, while async is the path
+  `hardenStableLockFile` actually takes (`src/codex/native-main-lock-file.ts:130`).
 - Existing DB or `-journal` must be regular, same-user private entries. Existing
   `-wal`/`-shm` refuses. The lock **verifies** rollback journal mode rather than
   forcing it: a pinned-Bun probe shows `bun:sqlite` already opens `delete` and leaves
@@ -970,11 +981,20 @@ and the ones that did were rewritten rather than kept.
   the `busy` SQLite alone produces.
   *Red when:* ALS is removed — the reason must degrade to `busy`. Asserting only
   "does not hang" is vacuous, because `busy_timeout = 0` already guarantees that.
-- **F4** — a coordinator database released, replaced at the same pathname, and
-  reacquired is re-hardened.
-  *Red when:* identity binding / memo invalidation is removed — the
-  release → replace → **reacquire** test must fail. Substituting during a single
-  held acquisition never reaches the memo and would pass with the fix gone.
+- **F4** — a harden is credited only to the file it was performed on, through BOTH
+  the sync and async entry points.
+  *Red when (each separately, and each in both parameterizations):* (a) `dev` is
+  dropped from the object; (b) `freshness` is dropped from the memo value; (c) the
+  before/after object comparison is removed; (d) observed absence keeps the memo;
+  (e) an unreadable observation satisfies the memo; (f) a zero inode is accepted as
+  an identity; (g) the FULL identity is compared across the ACL call — this one is
+  the Windows-breaking form, since icacls moves ctime; (h) the async attribution
+  alone is removed. (h) is not redundant: it survived every other check while
+  `hardenStableLockFile` takes exactly that path.
+  Replacement is driven through the stat seam rather than a real unlink/recreate:
+  ext4 recycles an inode immediately and APFS did not once in 200 cycles, so a
+  real-file version asserts different things on different machines — which is how a
+  fix broken on Linux passed here on macOS.
 - **F5** — outer-budget exhaustion during ACL work returns retryable
   `busy/deadline`; verified ACL/ownership/path failure returns non-retryable refusal.
   *Red when:* `ETIMEDOUT` is collapsed into a generic refusal — the deadline
