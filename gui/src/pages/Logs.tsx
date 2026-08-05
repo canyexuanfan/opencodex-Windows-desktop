@@ -189,7 +189,8 @@ function validCachedRouteDecision(routeDecision: LogEntry["routeDecision"]): boo
 function sanitizeLogEntryRouteDecision(entry: LogEntry): LogEntry {
   if (entry.routeDecision === undefined) return entry;
   if (validCachedRouteDecision(entry.routeDecision)) return entry;
-  const { routeDecision: _drop, ...rest } = entry;
+  const rest = { ...entry };
+  delete rest.routeDecision;
   return rest;
 }
 
