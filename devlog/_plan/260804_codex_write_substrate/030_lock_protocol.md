@@ -1035,8 +1035,10 @@ and the ones that did were rewritten rather than kept.
   successful re-harden masks which mechanism deleted it; (ah) an OPTIONAL caller is
   allowed to trust a pathname-only memo; (ai) an optional caller trusts it when the
   identity is UNOBSERVABLE; (aj) observed absence retires the memo only for required
-  callers.
-  (h) through (aj) are not redundant — each survived every other check. (h) and (i)
+  callers; (ak) an optional caller compares the object but ignores freshness;
+  (al) an optional caller accepts an unobservable identity when the cause is a
+  zero inode rather than a thrown stat.
+  (h) through (al) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1187,10 +1189,18 @@ and the ones that did were rewritten rather than kept.
   same bypass: an optional caller trusting a memo whose identity cannot be
   observed, and observed absence retiring the memo for required callers only.
   Both left every test green. The suite is now the full cross-product — four entry
-  points x {required, optional} x {stale identity, unobservable identity, observed
-  absence} — with a shared `expectRefused` that throws for required and asserts
-  `{ok:false, diagnostics}` for optional, so the same attribution is proven either
-  way. Note that a bypass placed AFTER the absence handling is dead code and
+  points x {required, optional} x how the memo can be wrong — with a shared
+  `expectRefused` that throws for required and asserts `{ok:false, diagnostics}`
+  for optional, so the same attribution is proven either way.
+
+  That last axis turned out to be two axes, which is (ak) and (al). "Stale
+  identity" hid WHICH component moved: a memo comparing `dev:ino` while ignoring
+  freshness passed a matrix whose stale case moved `ino` and `ctimeNs` together.
+  "Unobservable identity" hid WHY: a thrown stat and a zero inode both produce
+  `observe() === null`, and only the thrown case was driven — leaving the zero-inode
+  form, the one NTFS is reported to produce, untested on the platform this module
+  exists for. The matrix now enumerates `{dev-only, ino-only, freshness-only}` and
+  `{stat throws, zero inode}` explicitly. Note that a bypass placed AFTER the absence handling is dead code and
   reddens nothing; the reachable form has to precede it, which is worth knowing
   before concluding that a mutation "survives".
 

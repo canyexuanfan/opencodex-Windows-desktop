@@ -1560,22 +1560,36 @@ for (const { label, harden, create } of ENTRY_POINTS) {
 }
 
 /**
- * Memo attribution across the FULL cross-product: four entry points x both
- * requiredness modes.
+ * Memo attribution across the full cross-product.
  *
- * Requiredness was invisible for a long time because every identity and
- * retirement scenario called with `required: true` while the optional-policy
- * tests used fresh paths with no memo — so neither could see an optional-only
- * shortcut. Three separate shortcuts were then found, one per memo property:
+ * Four public entry points x {required, optional} x how the memo can be wrong.
+ * That last axis is itself two axes, which took two rounds to see:
  *
- *   if (!opts.required && cache.has(path)) return { ok: true };
- *   if (!opts.required && cache.has(path) && observe(path) === null) ...
- *   if (!opts.required && !existsSync(path) && cache.has(path)) ...
+ *   - WHICH identity component moved: dev alone, ino alone, freshness alone. A
+ *     memo that ignores freshness but still compares dev:ino passed a matrix
+ *     whose "stale" case moved both ino and ctimeNs together.
+ *   - WHY the identity is unobservable: a thrown stat, or a zero inode. Both
+ *     produce observe() === null, and the zero-inode case is the one NTFS is
+ *     reported to produce — so testing only EACCES leaves the platform this
+ *     module exists for uncovered.
  *
- * All three left the whole suite green. Optional means a failure is REPORTED
+ * Requiredness runs through all of it. Optional means a failure is REPORTED
  * rather than thrown; it never means the memo may describe a different file, an
  * unobservable one, or one that is gone.
  */
+const IDENTITY_MOVES = [
+  { name: "dev-only", to: { dev: 2n, ino: 10n, ctimeNs: 100n } },
+  { name: "ino-only", to: { dev: 1n, ino: 11n, ctimeNs: 100n } },
+  { name: "freshness-only", to: { dev: 1n, ino: 10n, ctimeNs: 200n } },
+] as const;
+
+const UNOBSERVABLE = [
+  { name: "stat throws", stat: () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); } },
+  // NTFS is reported to return a zero inode from this stat form; observe()
+  // treats that as unobservable, and it had only ever been driven required.
+  { name: "zero inode", stat: () => ({ dev: 1n, ino: 0n, ctimeNs: 100n }) },
+] as const;
+
 for (const { label, harden, create } of ENTRY_POINTS) {
   const memoCount = label.startsWith("dir")
     ? hardenedSecretDirCountForTests
@@ -1583,7 +1597,6 @@ for (const { label, harden, create } of ENTRY_POINTS) {
 
   for (const required of [true, false]) {
     const mode = required ? "required" : "optional";
-    // A required caller throws; an optional one reports. Same attribution either way.
     const expectRefused = async (target: string): Promise<void> => {
       if (required) {
         await expect(harden(target, { required })).rejects.toThrow();
@@ -1594,97 +1607,93 @@ for (const { label, harden, create } of ENTRY_POINTS) {
       expect(result.diagnostics).toBeTruthy();
     };
 
+    /** Both runner seams, so one body drives the sync and async entry points. */
+    const runner = (onGrant: () => void, succeeds: () => boolean): void => {
+      const result = () => (succeeds()
+        ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+        : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
+      setIcaclsRunnerForTests(args => {
+        if (args.includes("/grant:r")) onGrant();
+        return result();
+      });
+      setAsyncIcaclsRunnerForTests(async args => {
+        if (args.includes("/grant:r")) onGrant();
+        return result();
+      });
+    };
+
     describe(`memo attribution — ${label} / ${mode}`, () => {
-      test("a stale memo does not answer, and a failed re-harden retires it", async () => {
-        resetHardenedStateForTests();
-        const target = join(testDir, `attr-${label}-${mode}.sqlite`);
-        create(target);
+      for (const move of IDENTITY_MOVES) {
+        test(`a ${move.name} change retires the memo even when the re-harden fails`, async () => {
+          resetHardenedStateForTests();
+          const target = join(testDir, `attr-${move.name}-${label}-${mode}.sqlite`);
+          create(target);
 
-        await withWin32(async () => {
-          let grants = 0;
-          let aclSucceeds = true;
-          const result = () => (aclSucceeds
-            ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
-            : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
-          setIcaclsRunnerForTests(args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return result();
+          await withWin32(async () => {
+            let grants = 0;
+            let aclSucceeds = true;
+            runner(() => { grants += 1; }, () => aclSucceeds);
+
+            const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
+            let current: { dev: bigint; ino: bigint; ctimeNs: bigint } = original;
+            setStatForTests(() => current);
+
+            expect(await harden(target, { required })).toEqual({ ok: true });
+            expect(grants).toBe(1);
+            expect(memoCount()).toBe(1);
+
+            // One component moves, and the re-harden FAILS — a successful one
+            // would overwrite the memo and hide whether the miss retired it.
+            current = move.to;
+            aclSucceeds = false;
+            await expectRefused(target);
+            expect(grants).toBe(2);
+            expect(memoCount()).toBe(0);
+
+            // Restoring the original identity is not silently re-satisfied.
+            current = original;
+            aclSucceeds = true;
+            expect(await harden(target, { required })).toEqual({ ok: true });
+            expect(grants).toBe(3);
           });
-          setAsyncIcaclsRunnerForTests(async args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return result();
-          });
-
-          const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
-          let current = original;
-          setStatForTests(() => current);
-
-          expect(await harden(target, { required })).toEqual({ ok: true });
-          expect(grants).toBe(1);
-          expect(memoCount()).toBe(1);
-
-          // A different object at the same path. The re-harden FAILS, because a
-          // successful one would overwrite the memo and hide whether the miss
-          // retired it.
-          current = { dev: 1n, ino: 11n, ctimeNs: 500n };
-          aclSucceeds = false;
-          await expectRefused(target);
-          expect(grants).toBe(2);
-          expect(memoCount()).toBe(0);
-
-          // Restoring the original identity is not silently re-satisfied.
-          current = original;
-          aclSucceeds = true;
-          expect(await harden(target, { required })).toEqual({ ok: true });
-          expect(grants).toBe(3);
         });
-      });
+      }
 
-      test("an unobservable identity does not answer, and the lookup is what retires it", async () => {
-        resetHardenedStateForTests();
-        const target = join(testDir, `attr-unreadable-${label}-${mode}.sqlite`);
-        create(target);
+      for (const cause of UNOBSERVABLE) {
+        test(`an identity unobservable because ${cause.name} does not answer`, async () => {
+          resetHardenedStateForTests();
+          const target = join(testDir, `attr-unobs-${cause.name.replace(/\s+/g, "-")}-${label}-${mode}.sqlite`);
+          create(target);
 
-        await withWin32(async () => {
-          let grants = 0;
-          let aclSucceeds = true;
-          const result = () => (aclSucceeds
-            ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
-            : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" });
-          setIcaclsRunnerForTests(args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return result();
+          await withWin32(async () => {
+            let grants = 0;
+            let aclSucceeds = true;
+            runner(() => { grants += 1; }, () => aclSucceeds);
+
+            let observable = true;
+            setStatForTests(() => (observable
+              ? { dev: 1n, ino: 10n, ctimeNs: 100n }
+              : cause.stat()));
+
+            expect(await harden(target, { required })).toEqual({ ok: true });
+            expect(grants).toBe(1);
+            expect(memoCount()).toBe(1);
+
+            // Unobservable AND the ACL fails, so recordHarden never reaches its
+            // own deletion: whatever retires the entry here is the lookup.
+            observable = false;
+            aclSucceeds = false;
+            await expectRefused(target);
+            expect(grants).toBe(2);
+            expect(memoCount()).toBe(0);
+
+            observable = true;
+            aclSucceeds = true;
+            expect(await harden(target, { required })).toEqual({ ok: true });
+            expect(grants).toBe(3);
           });
-          setAsyncIcaclsRunnerForTests(async args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return result();
-          });
-
-          const identity = { dev: 1n, ino: 10n, ctimeNs: 100n };
-          let readable = true;
-          setStatForTests(() => {
-            if (!readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
-            return identity;
-          });
-
-          expect(await harden(target, { required })).toEqual({ ok: true });
-          expect(grants).toBe(1);
-          expect(memoCount()).toBe(1);
-
-          // Unreadable AND the ACL fails, so recordHarden never reaches its own
-          // deletion: whatever retires the entry here is the lookup.
-          readable = false;
-          aclSucceeds = false;
-          await expectRefused(target);
-          expect(grants).toBe(2);
-          expect(memoCount()).toBe(0);
-
-          readable = true;
-          aclSucceeds = true;
-          expect(await harden(target, { required })).toEqual({ ok: true });
-          expect(grants).toBe(3);
         });
-      });
+      }
 
       test("observed absence retires the memo", async () => {
         resetHardenedStateForTests();
@@ -1693,14 +1702,7 @@ for (const { label, harden, create } of ENTRY_POINTS) {
 
         await withWin32(async () => {
           let grants = 0;
-          setIcaclsRunnerForTests(args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-          });
-          setAsyncIcaclsRunnerForTests(async args => {
-            if (args.includes("/grant:r")) grants += 1;
-            return { success: true, exitCode: 0, timedOut: false, stdout: "" };
-          });
+          runner(() => { grants += 1; }, () => true);
           const identity = { dev: 1n, ino: 10n, ctimeNs: 100n };
           setStatForTests(() => identity);
 
