@@ -85,12 +85,17 @@ describe("redactSecretString", () => {
     // quoted value, one containing punctuation, or one under the length floor.
     // The scheme is now handled in the same pass, so the token after it is
     // always consumed whatever its shape.
+    // The Bearer carve-out is also scoped to headers where a scheme is
+    // meaningful; on x-api-key the word buys nothing and the value is masked
+    // whole, which closed `x-api-key: Bearer first <secret>`.
     expect(redactSecretString('x-api-key: Bearer "smuggledcredential123456"'))
-      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString("Authorization: Bearer custom:credential123456"))
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
     expect(redactSecretString("x-api-key: Bearer short"))
-      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("x-api-key: Bearer first secondsecret123456"))
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
   });
 
   test("a suffix appended after the public marker is not trusted", () => {
@@ -98,11 +103,37 @@ describe("redactSecretString", () => {
     // as proof that a prefix was already sanitized let a credential ride along
     // behind it. Nothing in the value grants trust now.
     expect(redactSecretString("x-api-key: Bearer [REDACTED].smuggledcredential123456"))
-      .toBe(`x-api-key: Bearer ${REDACTED_SECRET}`);
+      .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString("x-api-key: [REDACTED],smuggledcredential123456"))
       .toBe(`x-api-key: ${REDACTED_SECRET}`);
     expect(redactSecretString("Authorization: Bearer abcdefgh12345678,smuggledcredential123456"))
       .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
+  });
+
+  test("the preserved Bearer remainder is re-scanned for further credentials", () => {
+    // "the rest is prose" is an assumption the INPUT controls. A second label
+    // or a repeated scheme word after the token is a credential, not text.
+    expect(redactSecretString("Authorization: Bearer firstsecret123456 x-api-key: secondsecret123456"))
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET} x-api-key: ${REDACTED_SECRET}`);
+    expect(redactSecretString("Authorization: Bearer Bearer nestedcredential123456"))
+      .toBe(`Authorization: Bearer ${REDACTED_SECRET}`);
+  });
+
+  test("colon look-alikes do not bypass credential-label recognition", () => {
+    // A full-width or small-form colon reads as a separator to a human and to
+    // whatever produced the error body, so matching only ASCII ":" was a
+    // bypass rather than strictness.
+    for (const colon of ["\uFF1A", "\uFE55", "\uFE13"]) {
+      expect(redactSecretString(`x-api-key${colon}unicodesecret123456`))
+        .toBe(`x-api-key:${REDACTED_SECRET}`);
+    }
+  });
+
+  test("a pathological repeated-header line neither overflows nor leaks", () => {
+    // The first rescan attempt recursed per match and blew the stack here.
+    const line = "Authorization: Bearer tok ".repeat(3000);
+    const redacted = redactSecretString(line);
+    expect(redacted).not.toContain("Bearer tok");
   });
 
   test("trailing prose after a quoted Bearer header stays readable", () => {
