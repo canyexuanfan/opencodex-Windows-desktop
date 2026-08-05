@@ -1170,23 +1170,33 @@ describe("the production default hardener is reached, with the resolved platform
   test("a claim with no hardenPath runs the real ACL sequence under a forced win32", async () => {
     resetHardenedStateForTests();
     let expected = "";
-    const order: string[] = [];
+    let operationStarted = false;
     let result: unknown;
+    let releaseAcl!: () => void;
+    const aclBlocked = new Promise<void>(done => { releaseAcl = done; });
     const seen = await forcedWindows(async codexHome => {
       expected = nativeMainClaimPath({ codexHome } as never);
-      result = await withNativeMainSharedClaim(
+      const claim = withNativeMainSharedClaim(
         { codexHome } as never,
-        async () => { order.push("operation"); return "operation-ran"; },
+        async () => { operationStarted = true; return "operation-ran"; },
         { platform: "win32" },
       );
-    }, () => { order.push("acl"); });
+      // Recording "acl started" and then "operation" only proves the ACL BEGAN
+      // first. Wrapping the harden in Promise.race([harden, sleep(1)]) — an
+      // early continuation that on real Windows would let icacls still be in
+      // flight — passed that version of this test. So hold the ACL unresolved
+      // and require that the operation has NOT started.
+      await Bun.sleep(30);
+      expect(operationStarted).toBe(false);
+      releaseAcl();
+      result = await claim;
+      expect(operationStarted).toBe(true);
+    }, () => {}, aclBlocked);
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
     // The SUCCESS path, which "some ACL ran" cannot see: the protected operation
-    // actually ran, its value came back, and it ran AFTER the hardening rather
-    // than beside it. A claim that hardens and then silently skips its operation
-    // passed every other assertion here.
+    // actually ran and its value came back. A claim that hardens and then
+    // silently skips its operation passed every other assertion here.
     expect(result).toBe("operation-ran");
-    expect(order).toEqual(["acl", "operation"]);
     // The EXACT target, not merely that some ACL ran. Redirecting the caller at
     // an unrelated existing file passed every other dimension of this test.
     expect(seen.every(args => args[0] === expected)).toBe(true);
@@ -1348,5 +1358,178 @@ describe("a required hardening failure stops the operation it protects", () => {
         await owner.release();
       }
     }, args => { hardenAttempts += 1; targets.push(args[0]!); });
+  });
+});
+
+/**
+ * Failure POLICY, across all four entry points.
+ *
+ * The memo-attribution matrix above is parameterized over all four, but the
+ * failure-policy tests were written only against the file APIs. Four
+ * directory-only mutations survived the whole suite: required soft-failing on an
+ * ordinary failure, required soft-failing on a timeout, optional throwing on an
+ * ordinary failure, and optional throwing on a timeout. The production code was
+ * right in each case; nothing executable said so.
+ *
+ * That is the same projection class one level up — parameterizing one property
+ * over four entry points does not parameterize the others.
+ */
+for (const { label, harden, create } of ENTRY_POINTS) {
+  describe(`failure policy — ${label} entry point`, () => {
+    const withFailingAcl = async (
+      result: IcaclsResult,
+      body: (target: string) => Promise<void>,
+    ): Promise<void> => {
+      resetHardenedStateForTests();
+      const target = join(testDir, `policy-${label}-${result.timedOut ? "timeout" : "error"}`);
+      create(target);
+      setPlatformForTests("win32");
+      const previousUsername = process.env.USERNAME;
+      process.env.USERNAME = "ocx-test-user";
+      setIcaclsRunnerForTests(() => result);
+      setAsyncIcaclsRunnerForTests(async () => result);
+      try {
+        await body(target);
+      } finally {
+        if (previousUsername === undefined) delete process.env.USERNAME;
+        else process.env.USERNAME = previousUsername;
+        setIcaclsRunnerForTests(null);
+        setAsyncIcaclsRunnerForTests(null);
+        setPlatformForTests(null);
+      }
+    };
+
+    const ordinaryFailure: IcaclsResult = {
+      success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "",
+    };
+    const timeout: IcaclsResult = {
+      success: false, exitCode: null, timedOut: true, stdout: "", stderr: "",
+    };
+
+    test("required fails closed on an ordinary ACL failure", async () => {
+      await withFailingAcl(ordinaryFailure, async target => {
+        await expect(harden(target, { required: true })).rejects.toThrow();
+      });
+    });
+
+    test("required fails closed on a timeout", async () => {
+      await withFailingAcl(timeout, async target => {
+        await expect(harden(target, { required: true })).rejects.toThrow();
+      });
+    });
+
+    test("optional soft-fails on an ordinary ACL failure, with a diagnostic", async () => {
+      await withFailingAcl(ordinaryFailure, async target => {
+        const result = await harden(target, { required: false });
+        expect(result.ok).toBe(false);
+        expect(typeof result.diagnostics).toBe("string");
+        expect(result.diagnostics!.length).toBeGreaterThan(0);
+      });
+    });
+
+    test("optional soft-fails on a timeout, with a diagnostic", async () => {
+      await withFailingAcl(timeout, async target => {
+        const result = await harden(target, { required: false });
+        expect(result.ok).toBe(false);
+        expect(result.diagnostics).toMatch(/timed out|ETIMEDOUT/i);
+      });
+    });
+  });
+}
+
+describe("a memo entry proven wrong is retired, not kept", () => {
+  /**
+   * The cache state nothing justified.
+   *
+   * `memoSatisfied` used to return false on a mismatch and leave the entry in
+   * place. So after a mismatch and a failed re-harden, the stale value survived —
+   * and restoring the old identity satisfied it again with no ACL work. Biting
+   * that needs exact-identity ABA, which this unit explicitly puts outside its
+   * proof bound, but scope is not a reason to keep an entry we have just proven
+   * does not describe what is at the path.
+   *
+   * Both halves are asserted, because "it was retired" and "it is not silently
+   * re-satisfiable" are different claims and the first does not imply the second
+   * to a reader.
+   */
+  test("a mismatch retires the entry even when the re-harden then fails", async () => {
+    resetHardenedStateForTests();
+    const target = join(testDir, "retired.sqlite");
+    writeFileSync(target, "x", "utf8");
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    let grants = 0;
+    let aclSucceeds = true;
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) grants += 1;
+      return aclSucceeds
+        ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+        : { success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "" };
+    });
+    try {
+      const original = { dev: 1n, ino: 10n, ctimeNs: 100n };
+      let current = original;
+      setStatForTests(() => current);
+
+      expect(hardenSecretPath(target, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(1);
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+
+      // Something else is at the path, and the re-harden FAILS. A successful
+      // re-harden would overwrite the memo and hide whether the miss retired it,
+      // which is exactly what a first version of this test did.
+      current = { dev: 1n, ino: 11n, ctimeNs: 500n };
+      aclSucceeds = false;
+      expect(() => hardenSecretPath(target, { required: true })).toThrow();
+      expect(grants).toBe(2);
+      // Nothing survives that we have proven does not describe the path.
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+
+      // And restoring the original identity is not silently re-satisfied.
+      current = original;
+      aclSucceeds = true;
+      expect(hardenSecretPath(target, { required: true })).toEqual({ ok: true });
+      expect(grants).toBe(3);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      setStatForTests(null);
+    }
+  });
+
+  test("an unreadable observation also retires the entry", () => {
+    resetHardenedStateForTests();
+    const target = join(testDir, "retired-unreadable.sqlite");
+    writeFileSync(target, "x", "utf8");
+
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    setIcaclsRunnerForTests(() => ({ success: true, exitCode: 0, timedOut: false, stdout: "" }));
+    try {
+      let readable = true;
+      setStatForTests(() => {
+        if (!readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        return { dev: 1n, ino: 10n, ctimeNs: 100n };
+      });
+
+      expect(hardenSecretPath(target, { required: true })).toEqual({ ok: true });
+      expect(hardenedSecretPathCountForTests()).toBe(1);
+
+      readable = false;
+      // Fails closed AND leaves nothing behind to be re-satisfied later.
+      expect(() => hardenSecretPath(target, { required: true })).toThrow();
+      expect(hardenedSecretPathCountForTests()).toBe(0);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      setStatForTests(null);
+    }
   });
 });

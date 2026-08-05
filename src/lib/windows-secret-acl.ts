@@ -136,8 +136,18 @@ function memoSatisfied(cache: Map<string, HardenedIdentity>, targetPath: string)
   const current = observe(targetPath);
   // Unreadable now is not "unchanged": re-harden rather than trust a value we
   // cannot confirm still describes what is there.
-  if (current === null) return false;
-  return memoValue(current) === remembered;
+  //
+  // A miss RETIRES the entry rather than leaving it. Keeping it left the cache in
+  // a state nothing could justify: after a mismatch and a failed re-harden, the
+  // stale value survived, so restoring the old identity would satisfy it again
+  // without any ACL work. That needs exact-identity ABA to bite — outside the
+  // proof bound this unit claims — but "the consequence is out of scope" is not a
+  // reason to keep an entry we have just proven does not describe what is there.
+  if (current === null || memoValue(current) !== remembered) {
+    cache.delete(targetPath);
+    return false;
+  }
+  return true;
 }
 
 /**

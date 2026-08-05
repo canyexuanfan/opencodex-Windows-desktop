@@ -1026,8 +1026,12 @@ and the ones that did were rewritten rather than kept.
   permanent refusal, republishing `unavailable` each time; (x) the owner hardens a
   different existing file; (y) the claim hardens a different existing file; (z) the owner hardens correctly and
   then fails to acquire; (aa) the owner never publishes `held`; (ab) the claim
-  hardens and then silently skips its protected operation.
-  (h) through (ab) are not redundant — each survived every other check. (h) and (i)
+  hardens and then silently skips its protected operation; (ac) the claim races the harden against
+  a 1ms timer, continuing while icacls is still in flight; (ad) a DIRECTORY-only
+  failure policy diverges from the file policy — required soft-failing on an
+  ordinary failure or a timeout, or optional throwing on either; (ae) a memo entry
+  proven wrong is kept instead of retired.
+  (h) through (ae) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1115,6 +1119,24 @@ and the ones that did were rewritten rather than kept.
   against `nativeMainClaimPath(context)` and `join(codexHome, NATIVE_MAIN_OWNER_DB)`,
   in the success and the failure test alike.
 
+  **And the matrix applies per entry point, not per property.** (ad) is the class
+  arriving one level up: the memo-attribution matrix was parameterized over all four
+  public entry points, so it looked exhaustive — but the failure-POLICY tests were
+  written only against the file APIs. Four directory-only mutations survived the
+  whole suite. Parameterizing one property over four entry points does not
+  parameterize the others; each property needs the parameterization, not each entry
+  point.
+
+  **(ae) is a cache state nothing justified.** A lookup that missed left the stale
+  entry in place, so after a mismatch and a *failed* re-harden the old value
+  survived and restoring the old identity satisfied it again with no ACL work.
+  Biting that needs exact-identity ABA, which §Deliberate residuals puts outside the
+  proof bound — but scope is not a reason to keep an entry we have just proven does
+  not describe what is at the path. A miss now retires it. The test has to fail the
+  re-harden to see this at all: a successful one overwrites the memo and hides
+  whether the miss retired anything, which is what the first version of that test
+  did.
+
   **The row that stayed empty longest was the successful one.** Every test here
   proved a failure path or an invocation; none required the operation to actually
   succeed. So (z), (aa) and (ab): an owner that hardens correctly and then fails to
@@ -1124,6 +1146,16 @@ and the ones that did were rewritten rather than kept.
   the ACL — and the owner to reach `held`, with a deferred ACL runner proving the
   trace is exactly `["acquiring"]` while hardening is still in flight and exactly
   `["acquiring", "held"]` once it completes.
+
+  **"After" has to mean after it FINISHED.** (ac) is the same row failing a second
+  time in a subtler form: recording `acl` when `/grant:r` is invoked and then
+  `operation` proves only that hardening *began* first. Wrapping the harden in
+  `Promise.race([harden, Bun.sleep(1)])` — an early continuation that on real
+  Windows lets an `icacls` sequence longer than a millisecond stay in flight while
+  the claim proceeds — passed that ordering assertion. Both edges now use the
+  deferred-runner shape: hold the ACL unresolved, require the protected work has
+  NOT started, release it, then require the result. An event marker taken at the
+  START of an operation cannot order anything against its COMPLETION.
 
   The matrix, enumerated, is: exact target · default binding · platform provenance ·
   **successful completion** · **ordering relative to the ACL** · failure propagation ·
