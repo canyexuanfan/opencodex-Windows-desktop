@@ -100,51 +100,44 @@ const COLON_LABELLED_CREDENTIAL = new RegExp(
  */
 const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
   // URL query / form-encoded: `authorization=<value>` up to `&` or `;`.
+  // Unconditionally to the separator — a quoted value is NOT allowed to end it
+  // early, or `authorization="decoy"<secret>&model=…` leaks the suffix.
   [
-    new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=(?:"[^"]*"|'[^']*'|[^&;\\s]*)`, "gi"),
+    new RegExp(`(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})=[^&;\\r\\n]*`, "gi"),
     "=",
   ],
-  // A credential carried in an XML/HTML ATTRIBUTE value rather than a body.
-  // Runs BEFORE the element rules: those consume the whole opening tag, so a
-  // credential-bearing attribute inside it would never be reached.
+  // XML/HTML. A tag qualifies when its NAME is a credential, or when a
+  // `name`/`key`/`id` attribute names one — `data-name` and other prefixed
+  // attributes do not count, or `<field data-name="authorization">` loses
+  // harmless status text. Once a tag qualifies, EVERY quoted attribute value on
+  // it and its ENTIRE element content are masked: masking only the first
+  // attribute left `<authorization type="Basic" value="<secret>">` leaking, and
+  // masking only direct text left `<authorization><value><secret></value>` untouched.
   [
     new RegExp(
-      `(<[^>]*?\\b(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*=[^\\S\\r\\n]*)(?:"[^"]*"|'[^']*')`,
+      `(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*>)([\\s\\S]*?)(</[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})[^>]*>)`,
       "gi",
     ),
-    "attr",
+    "element",
   ],
-  // A credential-named ELEMENT carrying its value in some other attribute:
-  // `<authorization value="Basic …">`. The tag name identifies the credential,
-  // so every quoted attribute value on that tag is masked.
   [
     new RegExp(
-      `(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*?[A-Za-z_:][\\w:.-]*[^\\S\\r\\n]*=[^\\S\\r\\n]*)(?:"[^"]*"|'[^']*')`,
+      `(<([A-Za-z_:][\\w:.-]*)[^>]*?(?<![\\w:.-])(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>])[^>]*>)([\\s\\S]*?)(</\\2[^>]*>)`,
       "gi",
     ),
-    "attr",
+    "named-element",
   ],
-  // XML/HTML element whose TAG NAME is the credential. The tag name is bounded
-  // exactly, or `<authorizationStatus>` and `<token-count>` lose their values
-  // for merely starting with a credential word.
-  [
-    new RegExp(`(<[^\\S\\r\\n]*(?:${CREDENTIAL_HEADER_LABEL})(?=[\\s/>])[^>]*>)([^<]*)`, "gi"),
-    "xml",
-  ],
-  // XML/HTML element IDENTIFIED BY an attribute: `<header name="authorization">`.
-  [
-    new RegExp(
-      `(<[^>]*\\b(?:name|key|id)=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?(?=[\\s/>])[^>]*>)([^<]*)`,
-      "gi",
-    ),
-    "xml",
-  ],
-  // Multipart part: everything from a credential-named part header through the
-  // next boundary. Part-based, not line-based — a body can span lines, and the
-  // blank line is often missing in a malformed echo. The name may be unquoted.
+  // Multipart part: everything from a credential-named part header to the end
+  // of the input. Part-based, not line-based — a body can span lines and the
+  // blank line is often missing in a malformed echo.
+  //
+  // It deliberately does NOT stop at the first `--`: the boundary token is
+  // attacker-controlled text, so a body line starting `--not-the-boundary`
+  // ended the mask and exposed everything after it. Consuming the remainder
+  // costs trailing context in one framing and closes the bypass.
   [
     new RegExp(
-      `(name=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?[^\\r\\n]*\\r?\\n(?:\\r?\\n)?)((?:(?!--)[^\\r\\n]*\\r?\\n?)+)`,
+      `(name=["']?(?:${CREDENTIAL_HEADER_LABEL})["']?[^\\r\\n]*\\r?\\n(?:\\r?\\n)?)([\\s\\S]+)`,
       "gi",
     ),
     "multipart",
@@ -154,18 +147,27 @@ const OTHER_FRAMED_CREDENTIALS: Array<[RegExp, string]> = [
 function maskOtherFramings(value: string): string {
   let out = value;
   for (const [pattern, kind] of OTHER_FRAMED_CREDENTIALS) {
-    if (kind === "=" || kind === "attr") {
+    if (kind === "=") {
       out = out.replace(pattern, match => {
-        const eq = match.lastIndexOf("=");
+        const eq = match.indexOf("=");
         return `${match.slice(0, eq + 1)}${REDACTED_SECRET}`;
+      });
+      continue;
+    }
+    if (kind === "element" || kind === "named-element") {
+      out = out.replace(pattern, (whole: string) => {
+        const open = /^<[^>]*>/.exec(whole)?.[0] ?? "";
+        const close = /<\/[^>]*>$/.exec(whole)?.[0] ?? "";
+        // Every quoted attribute on a qualifying tag is masked, not just the
+        // first, and the whole element content goes with it.
+        const safeOpen = open.replace(/=[^\S\r\n]*(?:"[^"]*"|'[^']*')/g, `=${REDACTED_SECRET}`);
+        return `${safeOpen}${REDACTED_SECRET}${close}`;
       });
       continue;
     }
     out = out.replace(pattern, (_m, head: string, body: string) => {
       if (!body.trim()) return `${head}${body}`;
-      // Preserve the trailing newline so the boundary line stays on its own.
-      const tail = /\r?\n$/.exec(body)?.[0] ?? "";
-      return `${head}${REDACTED_SECRET}${tail}`;
+      return `${head}${REDACTED_SECRET}`;
     });
   }
   return out;
@@ -222,38 +224,28 @@ function maskCredentialHeaders(value: string): string {
       const nl = value.slice(afterLabel).search(/[\r\n]/);
       return nl === -1 ? value.length : afterLabel + nl;
     })();
-    // A QUOTED value ends at its closing quote; everything else runs to
-    // end-of-line. Consuming the rest of the line inside a serialized object
-    // would swallow the closing brace and the sibling fields, turning a
-    // diagnostic into unparseable soup — and those siblings are not the
-    // credential.
+    // THE VALUE ALWAYS RUNS TO END-OF-LINE. There is no early termination and
+    // no attempt to preserve sibling fields.
     //
-    // Early termination is decided by the LABEL, not by the value.
+    // Three attempts tried to be smarter, and each one leaked: stop at the
+    // first closing quote; stop at a closing quote followed by punctuation;
+    // stop only when the LABEL was quoted. The third still leaked on an
+    // unmatched opening quote (`"x-api-key: "decoy",<secret>`) and on a
+    // correctly quoted key whose value quote was a decoy
+    // (`{"x-api-key":"decoy"<secret>}`).
     //
-    // Two attempts got this wrong by inspecting the value: ending at the first
-    // closing quote, then ending at a closing quote followed by punctuation.
-    // Both let `x-api-key: "decoy",<secret>` end the mask at the decoy and hand
-    // the real credential back as a suffix — masking LESS than the rule did
-    // before quoted-key support existed. A property of attacker-controlled
-    // text can never be the thing that stops a redaction.
-    //
-    // A QUOTED LABEL (`"x-api-key":`) is different in kind: the input has
-    // already proven it is a serialized field, so its value is one quoted token
-    // and the siblings after it are structure worth keeping. An UNQUOTED label
-    // is a header line, and there the value has always been the rest of the
-    // line — that is the baseline behavior and it stays.
-    const labelWasQuoted = /^["']/.test(match[0]);
-    const rest = value.slice(afterLabel, lineEnd);
-    const quoted = labelWasQuoted
-      ? /^([^\S\r\n]*)(["'])(?:\\.|[^\\])*?\2/.exec(rest)
-      : null;
-    const valueEnd = quoted ? afterLabel + quoted[0].length : lineEnd;
+    // The pattern is the lesson: any rule that stops early is reading
+    // attacker-controlled text to decide where a secret ends, and the attacker
+    // gets to write that text. Losing the siblings in a serialized object
+    // makes a diagnostic less pretty; stopping early makes it leak. Monotonic
+    // and blunt wins.
+    const valueEnd = lineEnd;
     const rawValue = value.slice(afterLabel, valueEnd);
     if (!rawValue.trim()) continue;
     // Keep the original separator spacing so a diagnostic still reads as
     // `header: [REDACTED]` rather than `header:[REDACTED]`.
     const gap = /^[^\S\r\n]*/.exec(rawValue)?.[0] ?? "";
-    const quote = quoted ? quoted[2]! : "";
+    const quote = "";
     // `Bearer` is a fixed prefix, reproduced from a literal — never copied from
     // the input — and only where an auth scheme is meaningful.
     const label = match[0].replace(/[^\S\r\n]*:$/, "").trim();
