@@ -41,11 +41,37 @@ const COLON_CONFUSABLES = new Set([
   "\u205A", "\u0589", "\u1361", "\u16EC", "\u1803", "\u2982", "\u2AF6", "\uFE30",
 ]);
 
-/** Zero-width and other invisible format characters, dropped from the matching view. */
-const INVISIBLE_FORMAT = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/;
+/**
+ * Characters dropped from the matching view: anything with no visible width
+ * that could split a label into pieces the pattern no longer recognizes.
+ * `\p{Default_Ignorable_Code_Point}` is the systematic answer — it covers the
+ * zero-width set, the bidi isolates and marks, the Mongolian vowel separator,
+ * and the variation selectors in one property instead of a list that review
+ * keeps finding another member of. `\p{Cf}` and combining marks are folded too.
+ */
+const INVISIBLE_FORMAT = /[\p{Default_Ignorable_Code_Point}\p{Cf}\p{Mn}\p{Me}]/u;
 
+/**
+ * Latin look-alikes for the ASCII letters that appear in credential labels.
+ * Cyrillic `а`/`е`, Greek `ο`, fullwidth forms and the mathematical alphabets
+ * all render as the label to a human, so the matching view folds them back.
+ * NFKD handles the width/font variants; this table covers the cross-script
+ * homoglyphs NFKD deliberately leaves alone.
+ */
+const LETTER_CONFUSABLES = new Map<string, string>([
+  ["\u0430", "a"], ["\u0435", "e"], ["\u043E", "o"], ["\u0440", "p"], ["\u0441", "c"],
+  ["\u0445", "x"], ["\u0443", "y"], ["\u04BB", "h"], ["\u0455", "s"], ["\u0456", "i"],
+  ["\u0458", "j"], ["\u043A", "k"], ["\u0442", "t"], ["\u0432", "b"], ["\u043C", "m"],
+  ["\u03B1", "a"], ["\u03BF", "o"], ["\u03C1", "p"], ["\u03BD", "v"], ["\u03BA", "k"],
+  ["\u0261", "g"], ["\u0131", "i"], ["\u2044", "/"],
+]);
+
+// `\b` is the wrong left boundary for a header name: it matches after a `-` or
+// `_`, so `not-authorization:` and `internal_token:` were treated as the
+// credential labels they merely end with. Requiring a non-identifier character
+// (or start of input) keeps the match to whole field names.
 const COLON_LABELLED_CREDENTIAL = new RegExp(
-  `\\b(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:`,
+  `(?<![A-Za-z0-9_-])(?:${CREDENTIAL_HEADER_LABEL})[^\\S\\r\\n]*:`,
   "gi",
 );
 
@@ -60,7 +86,23 @@ function foldForMatching(value: string): { folded: string; map: number[] } {
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i]!;
     if (INVISIBLE_FORMAT.test(ch)) continue;
-    folded += COLON_CONFUSABLES.has(ch) ? ":" : ch;
+    if (COLON_CONFUSABLES.has(ch)) {
+      folded += ":";
+      map.push(i);
+      continue;
+    }
+    const lower = ch.toLowerCase();
+    const homoglyph = LETTER_CONFUSABLES.get(lower);
+    if (homoglyph) {
+      folded += homoglyph;
+      map.push(i);
+      continue;
+    }
+    // NFKD collapses fullwidth, circled, and mathematical letter variants onto
+    // their ASCII base. Only single-unit results are used so the offset map
+    // stays one-to-one.
+    const compat = ch.normalize("NFKD");
+    folded += compat.length === 1 ? compat : ch;
     map.push(i);
   }
   map.push(value.length);

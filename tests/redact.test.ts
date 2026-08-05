@@ -145,6 +145,34 @@ describe("redactSecretString", () => {
     expect(redactSecretString(diagnostic)).toBe(diagnostic);
   });
 
+  test("a label disguised with homoglyphs or invisible characters is still recognized", () => {
+    // Review kept finding another character that splits or spoofs the label.
+    // The matching view now folds cross-script homoglyphs and drops every
+    // default-ignorable code point, rather than growing another finite list.
+    const disguised = [
+      "x-api-k\u0435y",      // Cyrillic e
+      "x-\u0430pi-key",      // Cyrillic a
+      "x-api-ke\u034Fy",     // combining grapheme joiner
+      "x-api-ke\u2066y",     // bidi isolate
+      "x-api-ke\u2069y",     // pop directional isolate
+      "x-api-ke\u061Cy",     // arabic letter mark
+      "x-api-ke\u180Ey",     // mongolian vowel separator
+    ];
+    for (const label of disguised) {
+      expect(redactSecretString(`${label}: secretcredential123456`))
+        .toBe(`${label}: ${REDACTED_SECRET}`);
+    }
+  });
+
+  test("a longer field name that merely ends with a credential label is untouched", () => {
+    // `\b` matched after `-` and `_`, so these were redacted as if they were
+    // the credential headers they only end with.
+    expect(redactSecretString("not-authorization: public-diagnostic-value"))
+      .toBe("not-authorization: public-diagnostic-value");
+    expect(redactSecretString("internal_token: public-diagnostic-value"))
+      .toBe("internal_token: public-diagnostic-value");
+  });
+
   test("a pathological repeated-header line neither overflows nor leaks", () => {
     // The first rescan attempt recursed per match and blew the stack here.
     const line = "Authorization: Bearer tok ".repeat(3000);
