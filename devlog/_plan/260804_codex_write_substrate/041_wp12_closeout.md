@@ -1042,16 +1042,39 @@ forever" defect wearing a different name:
 |---|---|
 | `updated` | terminal recorded |
 | `conflict` | a newer transition won; do not overwrite it |
-| `unavailable / busy` | bounded retry, then a durable retry handoff |
+| `unavailable / busy` | bounded retry; when it exhausts, the row records `status:"blocked", reason:"db-busy"` |
 | `unavailable / database or unsafe-path` | surfaced as a failure, not retried into a wall |
 
-And the outcome union does not line up with the state union one-to-one —
-`CodexHistoryJobOutcome` (`history-job.ts:68-74`) and `CodexHistoryState`
-(`convergence-types.ts:36-52`) name different things — so the mapping is a
-table written down in full, not an `as` cast across two unions that happen to
-share some words. A job that `converged` with zero rows is not the same row as
-a job that was `skipped`, and conflating them is how a user reads "done" for a
-job that did nothing.
+The third row is the one a previous version of this document gestured at with
+the words "durable retry handoff" while naming neither the artifact nor its
+consumer. There is no separate artifact and no separate consumer, because none
+is needed: the exhausted retry is ITSELF a terminal observation, recorded on
+the same row through the same CAS as `blocked` with `db-busy`, so nothing is
+left `pending` waiting for a handoff that does not exist. A later convergence
+reads that state and can retry from it; that read is the consumer.
+
+### The outcome-to-state mapping, in full
+
+The two unions name different things — `CodexHistoryJobOutcome`
+(`history-job.ts:68-74`) against `CodexHistoryState`
+(`convergence-types.ts:36-52`) — so the mapping is written out rather than left
+to a cast that compiles because the words overlap:
+
+| Job outcome | Recorded state |
+|---|---|
+| `converged` | `status:"converged"`, `attempts` incremented, `nextRetryAt:null`, real `pendingRows`/`backupEntries` |
+| `skipped` | `status:"converged"`, `reason:undefined` — the user opted out, which is a completed decision, not a failure; it is NOT `blocked` |
+| `blocked / busy` | `status:"blocked"`, `reason:"db-busy"`, `nextRetryAt` set |
+| `blocked / database` | `status:"blocked"`, `reason:"unreadable"` |
+| `blocked / unsafe-path` | `status:"blocked"`, `reason:"permission"` |
+| `failed / timeout` | `status:"blocked"`, `reason:"timeout"` |
+| `failed / worker-died` | `status:"blocked"`, `reason:"worker-died"` |
+| `failed / worker-error` | `status:"blocked"`, `reason:"record-write-failed"` |
+
+`skipped` is the row to watch. It maps to `converged` with no reason, because
+the user opting out of history resume is a completed decision — marking it
+`blocked` would tell a later reader something went wrong and prompt a retry of
+a thing the user asked not to happen.
 
 Two correctness rules follow from the same round:
 
