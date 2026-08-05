@@ -114,6 +114,24 @@ describe("policy execution (RI-05)", () => {
     expect(route.modelId).toBe("m1");
   });
 
+  test("concrete selection never re-enters policy lookup (alias recursion guard)", () => {
+    // A profile whose winning candidate is a plain provider/model reference
+    // must not re-resolve policy aliases on the recursion, otherwise an alias
+    // that shadows the target would recurse until stack overflow.
+    const config = baseConfig({
+      routingProfiles: {
+        direct: {
+          alias: "direct/a",
+          candidates: [{ provider: "a", model: "m1" }],
+        },
+      },
+    });
+    const route = routeModel(config, "policy/direct");
+    expect(route.routeKind).toBe("policy");
+    expect(route.providerName).toBe("a");
+    expect(route.modelId).toBe("m1");
+  });
+
   test("existing explicit, combo, native and default routes are unchanged", () => {
     const config = baseConfig();
     expect(routeModel(config, "a/m1")).toMatchObject({ routeKind: "explicit-provider", providerName: "a", modelId: "m1" });

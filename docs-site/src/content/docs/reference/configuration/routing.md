@@ -152,6 +152,12 @@ CLI: `ocx route policy list [--json]`, `ocx route policy show <id> [--json]`, an
 `ocx route policy dry-run <id> [--model-context <tokens>] [--tools] [--image] [--structured-output] [--json]`.
 Dry-run evaluates candidates without sending any upstream request.
 
+Quota evidence (`optimize.quota`, `require.minQuotaHeadroom`, `unknownEvidence.quota`) comes from
+the local Codex pool and Anthropic account quota caches, which are keyed by account. Runtime policy
+candidates carry no account reference, so their quota evidence is honestly unknown (`penalize` is
+the default). To see quota-aware behavior, supply account-scoped evidence or account refs through
+the dry-run/API candidate evidence (`candidates[].accountRef` / `candidates[].codexAccountId`).
+
 ### Combos vs policy profiles
 
 - A **combo** is explicit ordered/weighted target routing and failover: the configured order (or
