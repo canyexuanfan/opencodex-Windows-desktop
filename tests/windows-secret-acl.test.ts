@@ -1189,3 +1189,66 @@ describe("the production default hardener is reached, with the resolved platform
     expect(seen.some(args => args.includes("/grant:r"))).toBe(true);
   });
 });
+
+describe("a required hardening failure stops the operation it protects", () => {
+  /**
+   * Proving the default hardener RUNS is not proving its failure matters.
+   *
+   * Appending `.catch(() => {})` at either call site left 93 tests green: the
+   * forced-Windows tests above observe a successful invocation, and the
+   * wrapper's own failure test cannot see a caller swallowing the rejection.
+   *
+   * What is at stake is the whole point of `required: true` — a coordinator
+   * database whose ACL could not be applied must not go on to be used, because
+   * on Windows the ACL is the only thing keeping other accounts out of it.
+   */
+  const forcedWindowsFailure = async (
+    run: (codexHome: string) => Promise<void>,
+  ): Promise<void> => {
+    setPlatformForTests("win32");
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    setAsyncIcaclsRunnerForTests(async () => ({
+      success: false, exitCode: 5, timedOut: false, stdout: "", stderr: "",
+    }));
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-harden-fail-"));
+    try {
+      await run(codexHome);
+    } finally {
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  };
+
+  test("a claim whose ACL cannot be applied never runs its operation", async () => {
+    resetHardenedStateForTests();
+    let operationRan = false;
+    await forcedWindowsFailure(async codexHome => {
+      await expect(withNativeMainSharedClaim(
+        { codexHome } as never,
+        async () => { operationRan = true; },
+        { platform: "win32" },
+      )).rejects.toThrow();
+    });
+    expect(operationRan).toBe(false);
+  });
+
+  test("an owner whose ACL cannot be applied never reports held", async () => {
+    resetHardenedStateForTests();
+    await forcedWindowsFailure(async codexHome => {
+      const owner = retainNativeMainOwner({ codexHome } as never, { platform: "win32", retryMs: 10 });
+      try {
+        const deadline = Date.now() + 5_000;
+        while (owner.snapshot().status === "acquiring" && Date.now() < deadline) {
+          await Bun.sleep(10);
+        }
+        expect(owner.snapshot().status).not.toBe("held");
+      } finally {
+        await owner.release();
+      }
+    });
+  });
+});

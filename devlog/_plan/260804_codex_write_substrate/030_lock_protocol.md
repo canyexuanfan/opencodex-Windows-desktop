@@ -1019,8 +1019,9 @@ and the ones that did were rewritten rather than kept.
   true` is weakened to `false`; (l) its POSIX `chmodSync` is deleted; (m) that
   chmod failure is swallowed again; (n) the claim-site call to it is deleted; (o) the owner-site default is
   replaced by a no-op; (p) the claim-site platform threading is removed; (q) the
-  owner-site platform threading is removed.
-  (h) through (q) are not redundant — each survived every other check. (h) and (i)
+  owner-site platform threading is removed; (r) the claim site swallows a required
+  hardening failure; (s) the owner site swallows it.
+  (h) through (s) are not redundant — each survived every other check. (h) and (i)
   cover production callers the primitive tests missed: `hardenStableLockFile` takes
   the async path, and `hardenSecretDir` backs config, management-auth, tray,
   spill-store, and `native-profile-manager.ts:153`. (j) and (k) are a different
@@ -1043,6 +1044,22 @@ and the ones that did were rewritten rather than kept.
   host they agree. Both are covered by forcing `platform: "win32"` from the outer
   API with no `hardenPath` and requiring the real ACL runner to execute, which can
   only happen if the default is called AND the platform reached it.
+  (r) and (s) are the third distinct claim about the same two call sites: proving
+  the hardener RUNS is not proving its FAILURE matters. Appending `.catch(() => {})`
+  at either site left 93 tests green, because the forced-Windows tests observe a
+  successful invocation and the wrapper's own failure test cannot see a caller
+  swallowing the rejection. That is the whole point of `required: true` — on Windows
+  the ACL is the only thing keeping other accounts out of a coordinator database, so
+  one whose ACL could not be applied must not go on to be used. A claim must never
+  run its operation and an owner must never report `held`.
+
+  **Activation gate, not a test:** the NTFS `bigint` inode behaviour is UNVERIFIED.
+  `observe()` treats a zero inode as unobservable, so if Bun returns zero there,
+  every REQUIRED Windows harden fails closed and this whole surface is inert in the
+  one place it exists for. A pinned-Bun probe on real Windows/NTFS must confirm a
+  nonzero, stable file index before F4 is called complete (goalplan `wp12t0c2`).
+  This is recorded here as well as in the goalplan so this document cannot be read
+  as complete on its own.
 
   The `timeoutMemoKey: path` argument was REMOVED from that call site rather than
   asserted. `timeoutMemoKey()` already falls back to `targetPath` and the caller was
