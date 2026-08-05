@@ -10,7 +10,7 @@
  * (`limits.maxEstimatedCostUsd`) is evaluated deterministically.
  */
 
-import type { OcxUsage, OcxProviderConfig } from "../types";
+import type { OcxUsage } from "../types";
 import type { UsageStatus } from "../usage/log";
 import { estimateRequestCost, type ServiceTierInput } from "../usage/cost";
 import type { RouteCostEvidence } from "./trace";
@@ -25,7 +25,6 @@ export interface CostEvidenceInput {
   usageStatus?: UsageStatus;
   serviceTier?: ServiceTierInput;
   limitUsd?: number;
-  providerConfig?: OcxProviderConfig;
 }
 
 /**
@@ -41,18 +40,12 @@ export function costEvidenceForCandidate(input: CostEvidenceInput): RouteCostEvi
       incomplete: true,
     };
   }
-  const tier = input.serviceTier
-    ?? (input.providerConfig
-      ? {
-        requestedServiceTier: input.providerConfig.supportsServiceTier === true ? "priority" : undefined,
-      }
-      : undefined);
   const estimate = estimateRequestCost({
     provider: input.provider,
     model: input.model,
     usage: input.usage,
     usageStatus: input.usageStatus ?? "estimated",
-    ...(tier ? { serviceTier: tier } : {}),
+    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
   });
   if (!estimate) {
     return {
