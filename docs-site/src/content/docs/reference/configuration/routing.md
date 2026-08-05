@@ -92,8 +92,8 @@ a profile implicitly - policy routing only activates when the client requests a 
 
 Each key is an id matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, always addressable as `policy/<id>`,
 with one optional `alias`. Aliases must be unique and cannot collide with configured providers,
-combos, codex account namespaces, the `policy/` namespace, or reserved bare native families
-(`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `codex-*`).
+the `<provider>/<model>` routing namespace, combos, codex account namespaces, the `policy/`
+namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `codex-*`).
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -107,6 +107,10 @@ combos, codex account namespaces, the `policy/` namespace, or reserved bare nati
 `require` supports: `minContextWindow` (positive integer), and the booleans `tools`, `imageInput`,
 `structuredOutput`, `localOnly`, `remoteAllowed`, `encryptedCodexTasks`; plus `reasoningEffort` and
 `serviceTier` strings.
+
+Request evidence supplied to a dry-run (context window, tools, image input, structured output,
+reasoning effort, service tier, encrypted Codex tasks) is evaluated against candidate capabilities
+together with the profile `require` block; a candidate must satisfy both to be eligible.
 
 ```json
 {

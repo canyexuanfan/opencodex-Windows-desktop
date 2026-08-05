@@ -159,6 +159,12 @@ function aliasIssues(
   if (alias.includes("/") && codexAccountNamespaceEntries(config).some(([namespace]) => namespace === alias.split("/")[0])) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with a configured codex account namespace` });
   }
+  if (alias.includes("/") && hasOwnProvider(config.providers, alias.split("/")[0])) {
+    issues.push({
+      path: ["alias"],
+      message: `alias "${alias}" collides with the provider routing namespace "${alias.split("/")[0]}"`,
+    });
+  }
   for (const [otherId, other] of Object.entries(config.routingProfiles ?? {})) {
     if (otherId === id || otherId === options.excludeProfileId) continue;
     const otherAlias = typeof other?.alias === "string" ? other.alias.trim() : "";
@@ -307,16 +313,6 @@ export function routingProfileIssues(
     }
   }
 
-  return issues;
-}
-
-export function routingProfileIssuesForConfig(
-  config: Pick<OcxConfig, "providers" | "combos" | "routingProfiles" | "codexAccountNamespaces">,
-): RoutingProfileValidationIssue[] {
-  const issues: RoutingProfileValidationIssue[] = [];
-  for (const [id, raw] of Object.entries(config.routingProfiles ?? {})) {
-    issues.push(...routingProfileIssues(id, raw, config));
-  }
   return issues;
 }
 
