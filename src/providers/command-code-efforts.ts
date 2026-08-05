@@ -1,3 +1,5 @@
+import { readBoundedResponseBody } from "../lib/bounded-body";
+
 const COMMAND_CODE_MODEL_EFFORTS = {
   "deepseek/deepseek-v4-pro": {
     efforts: ["high", "max"],
@@ -65,7 +67,11 @@ export async function refreshCommandCodeReasoningEfforts(
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) return undefined;
-    const efforts = parsedProfileEfforts(await response.text());
+    // Bound the profile page before parsing: a large or malformed page must not
+    // allocate unbounded memory on the request path.
+    const observed = await readBoundedResponseBody(response, { maxBytes: 256 * 1024 });
+    if (!observed.displaySafe) return undefined;
+    const efforts = parsedProfileEfforts(observed.text);
     if (efforts === undefined) return undefined;
     refreshedEfforts.set(key, efforts);
     return efforts;

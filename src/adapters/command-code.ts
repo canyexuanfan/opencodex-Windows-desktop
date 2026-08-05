@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
-import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
+import type { AdapterEvent, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTool, OcxUsage } from "../types";
 import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import type { TranslatorBudget } from "../lib/translator-budget";
@@ -9,7 +9,6 @@ import { configuredReasoningEfforts } from "../reasoning-effort";
 import { commandCodeReasoningEfforts, refreshCommandCodeReasoningEfforts } from "../providers/command-code-efforts";
 import { identifyRoutedModel } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
-import { contentPartsToText } from "./image";
 
 // Retain the short ids emitted by the first local integration. New requests use the live catalog's
 // provider-native IDs directly; this map is compatibility-only and is not a model fallback list.
@@ -18,6 +17,10 @@ const COMMAND_CODE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "kimi-k3": "moonshotai/Kimi-K3",
   "glm-5.2": "zai-org/GLM-5.2",
 };
+
+function toolResultText(content: string | OcxContentPart[]): string {
+  return typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("");
+}
 
 function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
@@ -37,8 +40,15 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
         type: "tool-result",
         toolCallId: message.toolCallId,
         toolName: namespacedToolName(message.toolNamespace, message.toolName),
-        output: { type: message.isError ? "error-text" : "text", value: contentPartsToText(message.content) },
+        output: { type: message.isError ? "error-text" : "text", value: toolResultText(message.content) },
       }] });
+      // The proprietary wire's tool-result output is text-only; image parts returned by a
+      // tool (e.g. Codex view_image) cannot live inside it. Carry them in a follow-up user
+      // message using the same image encoding as the user branch so the bytes reach the model.
+      const images = typeof message.content === "string" ? [] : message.content.filter(part => part.type === "image");
+      if (images.length > 0) {
+        out.push({ role: "user", content: images.map(part => ({ type: "image", image: (part as { imageUrl: string }).imageUrl })) });
+      }
       continue;
     }
     const content: Array<Record<string, unknown>> = [];
@@ -171,6 +181,7 @@ async function*ndjson(response: Response, budget: TranslatorBudget): AsyncGenera
     if (final) { try { yield JSON.parse(final) as Record<string, unknown>; } catch { /* ignore */ } }
   } finally {
     budget.releaseRetained(bufferBytes, { kind: "live_transient" });
+    try { await reader.cancel(); } catch { /* already closed */ }
     reader.releaseLock();
   }
 }
@@ -242,7 +253,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
           tools: wireTools(tools),
           system,
           max_tokens: parsed.options.maxOutputTokens ?? provider.defaultMaxOutputTokens ?? 64_000,
-          stream: true,
+          stream: parsed.stream,
           ...(parsed.options.temperature !== undefined ? { temperature: parsed.options.temperature } : {}),
           ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         },
@@ -291,6 +302,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
       return fetchCommandCode(retry, ctx, executor);
     },
     async *parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
+      let sawFinish = false;
       for await (const event of ndjson(response, budget)) {
         switch (event.type) {
           case "text-delta": if (typeof event.text === "string") yield { type: "text_delta", text: event.text }; break;
@@ -312,10 +324,16 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
             }
             break;
           }
-          case "finish": yield { type: "done", usage: usage(event.totalUsage), stopReason: typeof event.rawFinishReason === "string" ? event.rawFinishReason : undefined }; break;
+          case "finish":
+            sawFinish = true;
+            yield { type: "done", usage: usage(event.totalUsage), stopReason: typeof event.rawFinishReason === "string" ? event.rawFinishReason : undefined };
+            break;
           case "error": yield { type: "error", message: eventError(event.error), status: 502 }; break;
         }
       }
+      // A stream that ends without a finish event still needs a terminal done so the
+      // server does not wait on an adapter that silently stopped emitting.
+      if (!sawFinish) yield { type: "done", usage: undefined, stopReason: undefined };
     },
     async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
       const events: AdapterEvent[] = [];

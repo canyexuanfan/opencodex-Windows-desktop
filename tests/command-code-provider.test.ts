@@ -57,8 +57,15 @@ describe("Command Code provider", () => {
   });
 
   test("validates callback shape and state without exposing the key", () => {
-    expect(parseCommandCodeCallback({ apiKey: "key", state: "state", userId: "u", userName: "name", keyName: "cli" }, "state")).toMatchObject({ userId: "u" });
-    expect(() => parseCommandCodeCallback({ apiKey: "key", state: "wrong", userId: "u", userName: "name", keyName: "cli" }, "state")).toThrow("state mismatch");
+    const secret = "super-secret-callback-key";
+    const parsedCallback = parseCommandCodeCallback({ apiKey: secret, state: "state", userId: "u", userName: "name", keyName: "cli" }, "state");
+    expect(parsedCallback).toMatchObject({ userId: "u" });
+    let thrown = "";
+    try {
+      parseCommandCodeCallback({ apiKey: secret, state: "wrong", userId: "u", userName: "name", keyName: "cli" }, "state");
+    } catch (error) { thrown = String(error); }
+    expect(thrown).toContain("state mismatch");
+    expect(thrown).not.toContain(secret);
   });
 
   test("rejects an already-aborted login before it creates a callback server", async () => {
@@ -120,7 +127,7 @@ describe("Command Code provider", () => {
     expect(JSON.parse(built.body).params.model).toBe("xai/grok-4.5");
   });
 
-  test("preserves tool-result text and marks image parts instead of dropping them", () => {
+  test("carries tool-result images in a follow-up user message instead of dropping them", () => {
     const image = "data:image/png;base64,AAAA";
     const request = createCommandCodeAdapter(provider).buildRequest({
       ...parsed(),
@@ -139,11 +146,10 @@ describe("Command Code provider", () => {
     expect(request).not.toBeInstanceOf(Promise);
     const built = request as Exclude<typeof request, Promise<unknown>>;
     const body = JSON.parse(built.body);
-    expect(body.params.messages[0]).toMatchObject({
-      role: "tool",
-      content: [{ type: "tool-result", output: { type: "text", value: "screenshot:[image]" } }],
-    });
-    expect(built.body).not.toContain(image);
+    expect(body.params.messages).toEqual([
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "call_1", toolName: "view_image", output: { type: "text", value: "screenshot:" } }] },
+      { role: "user", content: [{ type: "image", image }] },
+    ]);
   });
 
   test("keeps the generate config to workspace metadata and bounds the project slug", () => {
@@ -216,5 +222,31 @@ describe("Command Code provider", () => {
       { type: "tool_call_end" },
       { type: "done", usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14, cachedInputTokens: 6, cacheReadInputTokens: 6, cacheCreationInputTokens: 2 }, stopReason: "tool_use" },
     ]);
+  });
+
+  test("yields an error event for upstream error events", async () => {
+    const response = new Response(JSON.stringify({ type: "error", error: { message: "upstream boom" } }));
+    const events = [];
+    for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
+    expect(events).toEqual([
+      { type: "error", message: "upstream boom", status: 502 },
+      { type: "done", usage: undefined, stopReason: undefined },
+    ]);
+  });
+
+  test("emits a fallback done when the stream ends without a finish event", async () => {
+    const response = new Response(JSON.stringify({ type: "text-delta", text: "partial" }));
+    const events = [];
+    for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
+    expect(events).toEqual([
+      { type: "text_delta", text: "partial" },
+      { type: "done", usage: undefined, stopReason: undefined },
+    ]);
+  });
+
+  test("sends parsed.stream as the wire stream field", () => {
+    const request = createCommandCodeAdapter(provider).buildRequest({ ...parsed(), stream: false });
+    expect(request).not.toBeInstanceOf(Promise);
+    expect(JSON.parse((request as Exclude<typeof request, Promise<unknown>>).body).params.stream).toBe(false);
   });
 });

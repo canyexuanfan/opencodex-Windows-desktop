@@ -144,8 +144,7 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 opencodex에는 빌트인 프리셋이 69개 들어 있습니다. 키 방식 58개, OAuth 7개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
-입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다르며, Command Code의 공개 카탈로그는 키를
-검증 불가로 보고합니다). 주요 항목은 다음과 같습니다:
+입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
 **ClinePass**는 Cline API 키로 [공식 구독 카탈로그](https://docs.cline.bot/getting-started/clinepass)와
 [Chat Completions 엔드포인트](https://docs.cline.bot/api/chat-completions)에 연결합니다. 운영 주체는
@@ -221,7 +220,7 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 대상으로 하며 별도 image, audio, GPU 엔드포인트는 범위에서 제외합니다. 키는
 [Hyperbolic](https://app.hyperbolic.ai)에서 생성합니다.
 
-**Command Code 검색:** 프리셋은 Command Code의 공개 `/provider/v1/models` 목록을 고정된 Provider API
+**Command Code 검색:** 프리셋은 Command Code의 `/provider/v1/models` 목록을 고정된 Provider API
 호스트에서 읽고, 슬래시가 포함된 네이티브 모델 ID를 보존하며 live discovery를 256 KiB와 raw 행
 256개로 제한합니다. `ocx login command-code`는 브라우저 OAuth 로그인을 지원하며(기존 Command Code
 CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가져올 수 있음), 모델 카탈로그는

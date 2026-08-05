@@ -218,8 +218,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 opencodex ships 69 built-in presets: 58 key-based, seven OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
-validates the key, and stores it; validation is provider-specific, and Command Code's public
-catalog reports keys as unverifiable. Notable entries:
+validates the key, and stores it; validation is provider-specific. Notable entries:
 
 **ClinePass** uses a Cline API key with the [official subscription catalog](https://docs.cline.bot/getting-started/clinepass)
 and [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions), operated by Cline Bot Inc. under
@@ -301,7 +300,7 @@ slash-containing native model ids, and caps live discovery at 256 KiB and 256 ra
 serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
 are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
 
-**Command Code discovery.** The preset reads Command Code's public `/provider/v1/models` list from
+**Command Code discovery.** The preset reads Command Code's `/provider/v1/models` list from
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
 rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
 import from `~/.commandcode/auth.json` for existing Command Code CLI users); the model catalog is

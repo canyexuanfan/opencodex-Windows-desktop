@@ -31,7 +31,10 @@ export function shouldImportLocalCommandCodeAuth(options: CommandCodeLoginOption
   return options.importLocal !== "off";
 }
 
-async function importLocalCommandCodeAuth(): Promise<OAuthCredentials | undefined> {
+async function importLocalCommandCodeAuth(signal?: AbortSignal): Promise<OAuthCredentials | undefined> {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
+  }
   let parsed: CommandCodeLocalAuth;
   try {
     parsed = JSON.parse(await Bun.file(join(homedir(), ".commandcode", "auth.json")).text()) as CommandCodeLocalAuth;
@@ -42,10 +45,11 @@ async function importLocalCommandCodeAuth(): Promise<OAuthCredentials | undefine
   try {
     const response = await fetch("https://api.commandcode.ai/alpha/whoami", {
       headers: { Authorization: `Bearer ${parsed.apiKey}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     });
     if (!response.ok) return undefined;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
     return undefined;
   }
   return {
@@ -162,20 +166,22 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
     throw ctrl.signal.reason ?? new DOMException("Command Code login aborted", "AbortError");
   }
   if (shouldImportLocalCommandCodeAuth(options)) {
-    const local = await importLocalCommandCodeAuth();
+    const local = await importLocalCommandCodeAuth(ctrl.signal);
     if (local) {
       ctrl.onProgress?.("Imported existing Command Code CLI authentication.");
       return local;
     }
   }
   const state = randomState();
-  const { servers, callback } = createCallbackServer(state);
-  const callbackUrl = `http://127.0.0.1:${servers[0].port}${CALLBACK_PATH}`;
-  const authUrl = `${COMMAND_CODE_STUDIO_URL}/studio/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}`;
-  ctrl.onAuth?.({ url: authUrl, instructions: "Sign in with Command Code in the browser." });
-  ctrl.onProgress?.("Waiting for Command Code authentication...");
+  let servers: Array<ReturnType<typeof Bun.serve>> = [];
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
+    const created = createCallbackServer(state);
+    servers = created.servers;
+    const callbackUrl = `http://127.0.0.1:${servers[0].port}${CALLBACK_PATH}`;
+    const authUrl = `${COMMAND_CODE_STUDIO_URL}/studio/auth/cli?callback=${encodeURIComponent(callbackUrl)}&state=${encodeURIComponent(state)}`;
+    ctrl.onAuth?.({ url: authUrl, instructions: "Sign in with Command Code in the browser." });
+    ctrl.onProgress?.("Waiting for Command Code authentication...");
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(() => reject(new Error("Command Code OAuth callback timed out")), LOGIN_TIMEOUT_MS);
       ctrl.signal?.addEventListener("abort", () => { if (timeoutId) clearTimeout(timeoutId); reject(ctrl.signal?.reason); }, { once: true });
@@ -192,7 +198,7 @@ export async function loginCommandCode(ctrl: OAuthController, options: CommandCo
           }
         })()
       : undefined;
-    const result = await Promise.race([callback, timeout, ...(manual ? [manual] : [])]);
+    const result = await Promise.race([created.callback, timeout, ...(manual ? [manual] : [])]);
     if (result === undefined) throw new Error("Command Code OAuth callback cancelled");
     return {
       access: result.apiKey,
