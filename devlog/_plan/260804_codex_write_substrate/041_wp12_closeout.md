@@ -259,6 +259,62 @@ needing its own authority contract, and it does not ride along inside a write
 path that was never admitted. A6b therefore asserts the journal survives
 byte-identical, which is the opposite of what this document said one round ago.
 
+### Except the deletion is load-bearing, and measurement said so
+
+"Preserve the journal" was the third wrong answer here, and only a probe
+settled it. The restore path compares hashes before writing
+(`src/codex/journal.ts:125-126`), which looks like it makes the deletion
+redundant — an external provider owns different bytes, so the hash mismatches
+and nothing is restored. That is true only for a **marked** journal.
+
+`writeJournal` does not record `injectedConfigHash`; `markJournalInjectedState`
+adds it afterwards. And `restoreJournalState` treats a MISSING hash as
+"unchanged" (`!journal.injectedConfigHash || ...`), so an unmarked journal is
+restored unconditionally. Measured, in a scratch home:
+
+```text
+journal written from native config, never marked
+external provider takes over config.toml
+restoreJournalState() -> configRestored:true
+config after restore: model = "gpt-5"          *** CLOBBERED ***
+
+same run, but marked first:
+restoreJournalState() -> configRestored:false, configChanged:true
+config after restore: model_provider = "someone-else"   PRESERVED
+```
+
+So the window the `:497` comment describes is real: a launcher that journaled
+and was interrupted before marking leaves exactly the unmarked journal that
+overwrites an external provider's config on the next `ocx stop`. Deleting that
+call reintroduces the bug it was written for.
+
+The deletion stays. What changes is that it is no longer the only thing standing
+between a stale journal and someone else's config — but making the restore path
+refuse an unmarked journal is a different unit's work, and pretending otherwise
+by removing the guard now would be trading a real protection for a tidier
+diagram.
+
+`tests/codex-inject-integration.test.ts:281-308` already requires the removal,
+so deleting the call would also have turned a shipped regression test red — a
+cheaper signal than the probe, and one I should have looked for first.
+
+## WP-R1c: superseded by the audit below
+
+An earlier draft of this section resolved the Windows problem by branching on
+`process.platform` — coordinate on POSIX, leave Windows on the legacy path. A
+reviewer found the better answer, and it is recorded further down under
+"wiring admission is a separate decision from taking the lock": the lock does
+not need admission to GATE the call in order to hold the write section. Keeping
+both would have left two incompatible designs in one document, so the platform
+split is withdrawn rather than parked.
+
+The four mechanical findings from that audit survive and are stated there: the
+callback must publish or `assertPublished` throws with the files already
+written; the under-lock generation comes from
+`readConfigGenerationInCurrentMutationTransaction()`; `busy` cannot ride inside
+`{success, message}`; and a failed first initialization leaves a coordinator
+database that every later attempt refuses (`src/codex/transition-state.ts:384-424`,
+`:282-290`) — recorded as out of scope with its own follow-up.
 ### The journal admission was hashing does not exist
 
 `admitCodexWrite` records the journal at
@@ -280,16 +336,16 @@ re-deriving the path by hand.
 
 | # | Claim | Evidence |
 |---|---|---|
-| A1 | A first write on a coordinator-less home SUCCEEDS end to end | Not merely that admission returns `admitted`: `withCodexWriteLock` reaches and completes its commit callback with a pre-lock `absent` |
-| A2 | BYTE interference is caught without any generation change | **R1c.** A whitespace-only rewrite — no semantic change, no bump — still yields `authority_not_proven`. A semantic-edit test cannot satisfy this one |
+| A1 | A first write on a coordinator-less home SUCCEEDS end to end | **R1c.** Not merely that the callback returned: the lock must reach `assertPublished` and `commit`, with a pre-lock `absent` generation |
+| A2 | BYTE interference is caught without any generation change | **R1d.** A whitespace-only rewrite — no semantic change, no bump — still refuses. Needs the admission gate; R1c refuses nothing |
 | A2p | The PRIMITIVE that A2 rests on | **R1a.** A whitespace-only rewrite changes `contentSha256` and therefore `hashAuthority`, proven at the function level. R1a cannot reach `authority_not_proven` — that needs an admitted snapshot, which needs truthful ownership, which is R1b |
-| A2b | Committed-bump interference is caught | **R1c.** A competing cooperating write between admission and commit yields `authority_not_proven` |
+| A2b | Committed-bump interference is caught | **R1c.** A competing cooperating write between the witness and the commit yields `authority_not_proven` — this one is exclusion, not permission, so it lands with the lock |
 | A3 | Absence is not corruption, at both layers | Only `ENOENT` reports `absent`; a corrupt DB refuses at the observer AND fails closed at lock open |
 | A4 | Admission creates nothing and destroys nothing | A pre-seeded journal, config, profile, catalog, service-state and integration record all survive byte-identical; no `config-mutation.sqlite`; directory modes unchanged |
 | A5 | Unknown ownership refuses on the OWNERSHIP authority | Generation warmed first so the run cannot be refused earlier for another reason; assert the exact authority |
 | A6 | External provider is its own veto | With ownership proven `owned`, the refusal authority is `external-provider` |
-| A6b | The external branch stops destroying the journal | A pre-seeded journal survives BYTE-IDENTICAL through the REAL `injectCodexConfig` external path, and the call still returns `success: true` with its preservation message |
-| A6c | External provider wins even when ownership is UNKNOWN | With service evidence unavailable, the refusal is still `external-provider` — the message the user can act on — and every artifact is preserved. A6 cannot catch this, because it proves ownership `owned` first |
+| A6b | The external branch keeps deleting an UNMARKED journal, and that is correct | Measurement showed removing the call lets a stale unmarked journal overwrite an external provider's config; `tests/codex-inject-integration.test.ts:281-308` already requires the removal. The call still returns `success: true` with its preservation message |
+| A6c | External provider wins even when ownership is UNKNOWN | With service evidence unavailable, the refusal is still `external-provider` — the message the user can act on — and every artifact EXCEPT the unmarked journal is preserved — A6b requires that one deleted, and "every artifact" contradicted it. A6 cannot catch this, because it proves ownership `owned` first |
 | A7 | The lock has a live production caller | `rg` reachability PLUS a test that observes the lock being taken on the real `injectCodexConfig` path |
 | A8 | The edge is exclusive across processes | A barrier held inside the acquired lock; the loser reports `busy` and its PROCESS-UNIQUE candidate bytes are absent from the final file, so the winner is provable rather than assumed |
 | A9 | The whole native section is inside, history is outside | An ordered trace showing journal write, config write, profile write and marking all between acquire and release, and the history job after release |
@@ -744,6 +800,222 @@ localize or revert.
 
 Only WP-R1c can claim the lock has a production caller, and it depends on both
 of the others. That dependency order is the phase order.
+
+## WP-R1c, after its own audit: wiring admission is a separate decision from taking the lock
+
+The plan for the call edge was "wrap `writeJournal` through
+`markJournalInjectedState` and pass `admitCodexWrite` as the under-lock re-read".
+An audit found five blockers, and two of them change what this phase may
+attempt at all.
+
+### The lock does not accept a callback that publishes nothing
+
+`assertPublished` runs after the callback returns and throws unless the callback
+called `ctx.coordinator.beginTransition(...)`
+(`src/codex/codex-write-lock.ts:324`; the pattern is demonstrated at
+`tests/codex-write-lock.test.ts:58-70`). Wrapping the writes and returning would
+roll SQLite back **after** the files were already replaced — the worst of both,
+since the filesystem does not roll back with it. The callback publishes the
+transition explicitly, with the generation pair the lock just read rather than
+an assumed `{0,null}`.
+
+### Re-admission cannot be `admitCodexWrite`
+
+Three reasons, each fatal on its own:
+
+1. It reads the generation through the OBSERVER (`src/codex/admission.ts`), and
+   the observer cannot see a first-use initialization that has not committed —
+   the measured fact this unit already paid for. Under the lock the generation
+   must come from `readConfigGenerationInCurrentMutationTransaction`.
+2. It returns `CodexAdmission`, a union; the lock's `readAdmissionUnderLock`
+   returns `AdmissionSnapshot` unconditionally
+   (`src/codex/codex-write-lock.ts:86`). A fresh refusal has nowhere to go.
+3. Its ownership arm shells out. `readAdmissionUnderLock` runs with N **and** C
+   both held (`:303`), and the module's own contract forbids subprocesses
+   underneath the callback (`:18`). On macOS that is up to two 2-second probes
+   holding both locks.
+
+So the evidence splits by cost and stability: the expensive manager probe runs
+**before** N, and only cheap, stable evidence is revalidated under the lock.
+That is a narrowing of "authoritative re-read", and it is honest only because
+service installation is not something config bytes can change mid-operation —
+it is a different subject, not a cheaper look at the same one.
+
+### Wiring admission into `injectCodexConfig` NOW would break Windows and some Linux
+
+The probe returns `unknown` for Windows unconditionally, by design, because its
+definition chain is not walked yet. Linux returns `unknown` with no reachable
+user systemd bus. Unattended convergence refuses on `unknown` — correctly — so
+wiring admission into the production path today refuses **every Windows
+injection that works right now**.
+
+That is not a defect in the probe or in the refusal rule. It is the phase order
+being wrong: the lock can take the write section without admission gating the
+call. So WP-R1c does exactly that, and the admission gate becomes its own
+phase behind the Windows chain walk.
+
+| WP-R1c does | WP-R1c does NOT |
+|---|---|
+| Give the lock its first production caller | Gate `injectCodexConfig` on `admitCodexWrite` |
+| Publish the transition from inside the callback | Refuse on `unknown` ownership in production |
+| Prove exclusion with a two-process race through the real entry point | Change what `ocx start` / `ocx sync` / `/api/sync` return today |
+
+The snapshot the lock needs is still real — built from the same config bytes and
+generation — but it authorizes the WRITE, not the DECISION to write. Turning it
+into a gate is a user-visible behavior change and gets its own audit.
+
+### That answer was wrong, and the reason is worth keeping
+
+I argued the snapshot was not decorative because the lock throws
+`CodexWriteLockStaleAdmission` when the two authority IDs differ
+(`codex-write-lock.ts:305`) — so it answers "is the world I looked at still
+there", which is a real question even without a gate.
+
+The audit showed the snapshot cannot answer even that one here.
+`configDigest` hashes the persisted **`config.json`** (`admission.ts:190`), while
+the bytes this operation is about to write are derived from the native
+**`config.toml`** and the `port` it was called with (`inject.ts:492`). Neither
+is in the hash. Two contenders injecting DIFFERENT ports produce the SAME
+`authoritySnapshotId`, so the staleness check passes while the thing that
+actually differs is invisible to it.
+
+Reusing `AdmissionSnapshot` also drags in `ownership` and `externalProvider`,
+which this phase deliberately does not gate on. Carrying them through both
+hashes unchanged proves nothing and makes them look load-bearing.
+
+So WP-R1c gets its own witness, over the inputs that determine THIS mutation:
+
+| Field | Source |
+|---|---|
+| native config identity | sha256 of the exact `config.toml` bytes read at `:492` |
+| persisted config identity | `contentSha256` + generation, as today |
+| candidate inputs | `port`, and the options that change the emitted bytes |
+| canonical targets | config, profile, journal paths |
+| journal identity | as today |
+
+`hashAuthority` keeps `ownership` and stays as it is — WP-R1d needs it. This is
+a second, narrower hash for a narrower claim, not a weakening of the first.
+
+### What the callback publishes
+
+```text
+beginTransition(
+  { nativeGeneration: ctx.expectation.nativeBefore, currentTxId: ctx.currentTxId },
+  { txId: ctx.expectation.txId, direction: "apply",
+    authoritySnapshotId: <the witness ID above>, nextRetryAt: <now, ISO> },
+)
+```
+
+Every expected value comes from what the lock already read — `ctx.currentTxId`
+exists precisely because guessing `null` passes on a fresh machine and fails on
+a real one. The call goes BEFORE the filesystem writes so a rejected transition
+costs nothing; it is not durable until `commit()` one line after
+`assertPublished`.
+
+`direction` is `"apply"`: the external-provider branch returns long before this
+point. The durable row records only `apply|remove`
+(`convergence-types.ts:292`), while the history operation this schedules can be
+`skip`, `apply-opencodex` or `migrate-openai` (`history-job.ts:84`) — so the row
+records the DIRECTION and the Worker derives its operation from admitted intent,
+as it already does. WP-R1c does not widen the row; it states which of the two
+values it writes and why the finer distinction lives elsewhere.
+
+### The minimum a race child must seed
+
+Smaller than it would be with the gate, because ownership is no longer observed:
+
+- a temp `CODEX_HOME` with a clean native `config.toml`
+- a temp `OPENCODEX_HOME` with a valid `config.json`
+- no routed residue and no pre-existing malformed coordinator — initialization
+  refuses those (`transition-state.ts:268`)
+- `catalogPath: null` and `syncResumeHistory: false`, so the race is about the
+  native section rather than catalog and history fixtures
+- a DIFFERENT port per child, which is what makes the winner identifiable
+- a barrier inside the acquired section, and a zero-deadline loser
+
+No service-state or manager fixture: this phase does not look at ownership.
+
+### Ways this could still pass while broken
+
+| False green | Answered by |
+|---|---|
+| Both contenders publish the same authority ID because port and native bytes are absent from the hash | The witness above; a test asserting two ports produce two IDs |
+| Publication passes only because `currentTxId` was assumed null | Pre-seed a nonzero transition before the race |
+| Final `config.toml` names the winner while the profile, journal or transition row belongs to the loser | Assert all four agree on one process |
+| A direct lock-holder child proves contention but never runs production injection | The child calls `injectCodexConfig` |
+| A pass-through mock satisfies "the lock was called" | The race is the proof, not the spy |
+| A fault after the first file replacement rolls N back and leaves partial files | Fault injection between the two `atomicWriteFile` calls |
+
+### A rolled-back row is not a rolled-back filesystem
+
+Publication goes first so that a failure to publish costs no file writes. But the
+converse needed saying out loud, and an audit had to say it: if publication
+succeeds and then `atomicWriteFile` throws, `withCodexWriteLock` rolls the
+coordinator transaction back (`codex-write-lock.ts:327-342`) and the row
+correctly stops claiming a transition — while the files that already renamed stay
+renamed. Each `atomicWriteFile` is atomic by itself, never across the journal,
+config and profile together (`src/config.ts:193-235`).
+
+Three reachable middles:
+
+| Fails at | Left behind |
+|---|---|
+| profile write | journal + config changed, old profile |
+| journal marking | config + profile changed, journal unmarked |
+| any of them | coordinator row rolled back, so nothing records it |
+
+The unmarked-journal case is the one with teeth, because an unmarked journal is
+restored unconditionally — the same property measured earlier in this document.
+
+So the callback compensates rather than assuming the rollback covered it: on any
+failure inside the artifact sequence, restore from the journal before rethrowing,
+check whether the restoration actually completed, and if it did not, report
+partial native state as partial. Calling that a clean rollback would be the
+tidier and less true description.
+
+A publication test with no injected failure at each write boundary proves none of
+this.
+
+### The external deletion still races the admitted write
+
+`removeJournal()` on the external branch (`inject.ts:492-497`) stays — measurement
+proved it necessary — but it is not serialized against N. The lock re-reads
+authority once before invoking the callback (`codex-write-lock.ts:303-315`), so a
+provider change after that point lets a second `injectCodexConfig` enter the
+external branch and delete the journal the first callback just wrote. The result
+is an injected config and profile with no recovery journal.
+
+A9 is therefore narrowed to the ADMITTED APPLY SECTION rather than claiming the
+whole native surface, and this race is recorded as an open safety residual. Fixing
+it needs a reduced journal-cleanup authority that can contend with native writes
+without pretending an external provider admitted a transition — its own phase,
+not a line in this one.
+
+### Outcomes stay structural
+
+`busy` and `refused` differ by `retryable` (`codex-write-lock.ts:68`), and
+flattening both into `success:false` throws that away. `/api/sync` answers **503 with `Retry-After`** for contention while a permanent
+refusal stays a permanent refusal. 503, not 409: the canonical contract already
+fixed that (`005_contract.md:1776-1788`), and a draft here said 409 — one
+document cannot hold two status codes for one condition. Prose in a message field cannot carry that.
+
+Likewise the external-provider branch: `applied.ok` currently drives a
+`state:"current"` response saying routing goes through opencodex
+(`src/server/management/native-integration-routes.ts:263-265`), which is false
+for a preserved external provider. That needs a structural
+`preserved-external`, not a boolean — recorded here, and out of scope for this
+phase.
+
+### The five-second timeout was wrong too
+
+A legitimate holder can exceed it before any contention exists: Windows ACL
+hardening inside each atomic write is bounded by a budget that reaches 60
+seconds (`src/lib/windows-secret-acl.ts:224`). The acquisition timeout must
+bound waiting for a *contended* lock, not the section itself, so it is set
+against the observed cost of the section rather than against how long a CLI
+"feels" hung. History's numbers are deliberately different — `H` fails fast,
+the state DB waits 5s, the Worker has a 30s watchdog — because they bound
+different things, and forcing them equal would be tidiness, not correctness.
 
 ## Deferred, with issues rather than silence
 
