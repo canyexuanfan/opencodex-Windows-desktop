@@ -109,7 +109,11 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
-import { providerModelResponsesUpstreamStreaming, type InboundWire } from "../../providers/registry";
+import {
+  providerModelResponsesTerminalRepair,
+  providerModelResponsesUpstreamStreaming,
+  type InboundWire,
+} from "../../providers/registry";
 import type { AdapterRequest } from "../../adapters/base";
 import {
   hasKeyPoolFailover,
@@ -165,6 +169,10 @@ import {
   sanitizePassthroughHeaders,
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
+import {
+  relayResponsesSseWithTerminalRepair,
+  type ResponsesTerminalRepairScheduler,
+} from "../responses-terminal-repair";
 import { isWin32EagerRewrite, selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
 import {
@@ -636,6 +644,8 @@ export interface HandleResponsesOptions {
   setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined) => void;
   onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
   onNativePassthroughCancel?: () => void;
+  /** Internal deterministic clock/timer seam for provider terminal repair. */
+  responsesTerminalRepairScheduler?: ResponsesTerminalRepairScheduler;
   /**
    * When true, body `prompt_cache_key` is a Claude Desktop shared cache cohort
    * (system/tools hash), not a per-session id — do not use it for Anthropic pool affinity.
@@ -2249,6 +2259,20 @@ async function handleResponsesInner(
     // devlog/_fin/260731_macos_rss_retention/100_darwin_eager_optin.md).
     // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
+      const terminalRepairPolicy = providerModelResponsesTerminalRepair(
+        route.providerName,
+        route.provider,
+        route.modelId,
+      );
+      const passthroughSseBody = terminalRepairPolicy
+        ? relayResponsesSseWithTerminalRepair(
+          upstreamResponse.body,
+          upstream,
+          terminalRepairPolicy,
+          translatorBudget,
+          options.responsesTerminalRepairScheduler,
+        )
+        : upstreamResponse.body;
       const repairConfig = route.provider.responsesItemIdRepair;
       const snapshotRepairEnabled = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair);
       const githubCopilotRepairEnabled = route.providerName === "github-copilot";
@@ -2334,7 +2358,7 @@ async function handleResponsesInner(
           onFirstOutput: options.onFirstOutput,
           pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
-        const eagerBody = relaySseEagerBounded(upstreamResponse.body, turnAc, {
+        const eagerBody = relaySseEagerBounded(passthroughSseBody, turnAc, {
           inspectChunk: chunk => inspector.feed(chunk),
           finishInspection: () => inspector.finish(),
           disposeInspection: () => inspector.dispose(),
@@ -2370,7 +2394,7 @@ async function handleResponsesInner(
           })),
         );
       }
-      const [nativeBody, inspectBody] = upstreamResponse.body.tee();
+      const [nativeBody, inspectBody] = passthroughSseBody.tee();
       const turnAc = new AbortController();
       const clientGone = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
