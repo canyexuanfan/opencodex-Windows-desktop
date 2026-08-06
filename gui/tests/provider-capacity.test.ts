@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { capacityAggregationFromReport } from "../src/provider-workspace/report";
-import { formatDocumentedLimits } from "../src/components/provider-workspace/ProviderDocumentedLimits";
+import { formatDocumentedLimits } from "../src/provider-workspace/documented-limits";
 
 function selectorBlock(css: string, selector: string): string {
   const start = css.indexOf(`${selector} {`);
