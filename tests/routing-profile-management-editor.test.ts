@@ -75,6 +75,7 @@ describe("routing profile management editor API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         id: "balanced",
+        mode: "create",
         profile: {
           alias: "ocx/balanced",
           candidates: [
@@ -125,6 +126,7 @@ describe("routing profile management editor API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         id: "broken",
+        mode: "create",
         profile: { candidates: [{ provider: "missing", model: "m1" }] },
       }),
     });
@@ -140,6 +142,31 @@ describe("routing profile management editor API", () => {
     expect(body.error?.code).toBe("invalid_profile");
     expect(body.error?.issues?.length).toBeGreaterThan(0);
     expect(config.routingProfiles).not.toHaveProperty("broken");
+    expect(saves).toBe(0);
+  });
+
+  test("PUT create refuses to overwrite an existing profile", async () => {
+    const config = baseConfig();
+    let saves = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "create",
+        profile: { candidates: [{ provider: "a", model: "m2" }] },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }),
+    );
+
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toMatchObject({ error: { code: "profile_exists" } });
+    expect(config.routingProfiles?.fast?.candidates).toEqual([{ provider: "a", model: "m1" }]);
     expect(saves).toBe(0);
   });
 
