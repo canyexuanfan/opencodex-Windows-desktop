@@ -1,10 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..");
+
+function ownedEnvironment(codexHome: string, ocxHome: string): Record<string, string> {
+  const home = join(ocxHome, "home");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(ocxHome, "service-state.json"), JSON.stringify({
+    version: 2,
+    codexHome,
+    opencodexHome: ocxHome,
+    backend: "scheduler",
+  }));
+  if (process.platform === "darwin") {
+    const launchAgents = join(home, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true });
+    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
+      `<key>CODEX_HOME</key><string>${codexHome}</string>`,
+      `<key>OPENCODEX_HOME</key><string>${ocxHome}</string>`,
+      "</dict></dict></plist>",
+    ].join("\n"));
+  }
+  return { HOME: home, USERPROFILE: home };
+}
 
 describe("ocx restore back", () => {
   test("restore durably disables Codex in an isolated home", () => {
@@ -15,7 +38,7 @@ describe("ocx restore back", () => {
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({ providers: {}, defaultProvider: "openai", checkForUpdates: false }), "utf8");
       const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "restore"], {
         cwd: repoRoot,
-        env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
+        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
         encoding: "utf8",
       });
       expect(result.status).toBe(0);
@@ -37,7 +60,7 @@ describe("ocx restore back", () => {
       const before = statSync(configPath).mtimeMs;
       const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "sync"], {
         cwd: repoRoot,
-        env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
+        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
         encoding: "utf8",
       });
       expect(result.status).toBe(0);
@@ -62,14 +85,22 @@ describe("ocx restore back", () => {
         "",
       ].join("\n"), "utf8");
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({
-        providers: {},
-        defaultProvider: "openai",
+        providers: {
+          fixture: {
+            adapter: "openai-chat",
+            baseUrl: "http://127.0.0.1:1/v1",
+            apiKey: "fixture-key",
+            allowPrivateNetwork: true,
+            models: ["fixture-model"],
+          },
+        },
+        defaultProvider: "fixture",
         checkForUpdates: false,
       }), "utf8");
 
       const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "sync"], {
         cwd: repoRoot,
-        env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
+        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
         encoding: "utf8",
       });
 

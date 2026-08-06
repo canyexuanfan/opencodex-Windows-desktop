@@ -6,7 +6,7 @@ import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
 import { shouldSyncCodexOnStart } from "./desired-state";
-import { admitCodexWrite } from "./admission";
+import { admitCodexWrite, type CodexAdmission } from "./admission";
 
 export interface CodexSyncResult {
   /** `skipped` is policy truth, never evidence that Codex was written. */
@@ -28,9 +28,13 @@ export interface CodexSyncResult {
   projectConfigGrouped?: { path: string; issues: string[]; bypass: string }[];
 }
 
+type CodexSyncAdmission = Extract<CodexAdmission, { kind: "refused" }> | { readonly kind: "admitted" };
+
 interface CodexSyncDeps {
   refreshCodexModelCatalog: typeof refreshCodexModelCatalog;
   injectCodexConfig: typeof injectCodexConfig;
+  /** The sync entry only needs this admission's service-home verdict. */
+  admitCodexWrite?: () => CodexSyncAdmission;
   currentExternalCodexModelProvider?: typeof currentExternalCodexModelProvider;
   collectCodexHomeDiagnostic?: typeof collectOrcaCodexHomeDiagnostic;
 }
@@ -79,7 +83,7 @@ export async function syncModelsToCodex(
   // Catalog gathering precedes injection and can itself write the native
   // catalog/cache. It therefore needs the same unattended service-home veto as
   // the injector, before it gets a chance to create any artifact.
-  const admission = admitCodexWrite();
+  const admission = (deps.admitCodexWrite ?? admitCodexWrite)();
   if (admission.kind === "refused" && admission.authority === "service-home") {
     return {
       status: "refused",

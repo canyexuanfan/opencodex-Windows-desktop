@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,31 @@ const runnable = process.platform !== "win32" && nodeAvailable;
 
 const spawned: ChildProcess[] = [];
 const tmpHomes: string[] = [];
+
+function claimTempHome(home: string): { homeDir: string; userProfile: string } {
+  const homeDir = join(home, "user-home");
+  const userProfile = join(home, "user-profile");
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(userProfile, { recursive: true });
+  writeFileSync(join(home, "service-state.json"), JSON.stringify({
+    version: 2,
+    codexHome: home,
+    opencodexHome: home,
+    backend: "scheduler",
+  }));
+  if (process.platform === "darwin") {
+    const launchAgents = join(homeDir, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true });
+    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
+      `<key>CODEX_HOME</key><string>${home}</string>`,
+      `<key>OPENCODEX_HOME</key><string>${home}</string>`,
+      "</dict></dict></plist>",
+    ].join("\n"));
+  }
+  return { homeDir, userProfile };
+}
 
 afterAll(() => {
   for (const c of spawned) {
@@ -74,6 +99,7 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
         const home = mkdtempSync(join(tmpdir(), "ocx-shutdown-"));
         tmpHomes.push(home);
         const port = await freePort();
+        const identity = claimTempHome(home);
 
         // Seed a native Codex config so the proxy actually injects on start (injectCodexConfig
         // no-ops when no config.toml exists) — this lets us prove the config is RESTORED.
@@ -82,7 +108,13 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
 
         const child = spawn("node", [BIN_OCX, "start", "--port", String(port)], {
           stdio: "ignore",
-          env: { ...process.env, OPENCODEX_HOME: home, CODEX_HOME: home },
+          env: {
+            ...process.env,
+            HOME: identity.homeDir,
+            USERPROFILE: identity.userProfile,
+            OPENCODEX_HOME: home,
+            CODEX_HOME: home,
+          },
         });
         spawned.push(child);
 
