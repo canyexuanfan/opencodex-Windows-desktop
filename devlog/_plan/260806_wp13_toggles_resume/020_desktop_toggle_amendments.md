@@ -22,6 +22,15 @@ contract exists. What exists after WP-B (this branch):
   route-local single flight (`:199-224`). WP-C extends this union with
   `"claude-desktop"` and reuses the same envelope/flight pattern; no new
   coordinator is invented (mirrors 010 Amendment 1).
+- **Envelope widening is explicit WP-C work.** The current envelopes carry no
+  desired state on the server (`native-integration-routes.ts:42-76`) or in the
+  GUI parser (`gui/src/pages/integrations/native-api.ts:20-46`), while 050
+  requires `desiredEnabled` on every Desktop status, success, and post-commit
+  refusal (`050:685-690`). WP-C adds `desiredEnabled: boolean` to the shared
+  status/success envelope and to post-commit refusals for ALL clients (the
+  field is derived from the same persisted read each route already does), and
+  widens the GUI parser accordingly. Pre-commit refusals that never read config
+  may omit it; everything after the intent read includes it.
 - 050's `runClientIntegrationFlight(...)` call in the auto-apply diff
   (`050:757-783`) is replaced by: the route-local flight for HTTP callers, plus
   the two persisted-intent re-reads it already specifies (before `fetchAllModels`
@@ -39,7 +48,15 @@ classifying inspector. WP-C adds `inspectDesktop3pConfigLibrary()` in
 - `_meta.json` present → resolve the applied id, prove the selected `<id>.json`
   exists and parses as an object, classify `standard` (`{}` / no
   `inferenceProvider`), `gateway_ours` (opencodex fingerprint current),
-  `gateway_drifted`, `foreign`, or `broken` (selected file missing/unparseable).
+  `gateway_drifted`, `foreign`, `no_owned_state` (library exists but nothing we
+  own — the OFF no-op case), or `broken` (selected file missing/unparseable).
+- Typed unsafe handling per 050 (`050:704-715,1044-1054`): malformed
+  `_meta.json` → `metadata_unreadable` refusal (never guess); an applied id that
+  fails the safe-filename shape → refuse without touching the path (no
+  traversal); multiple rows matching our fingerprint after an interrupted
+  cleanup → the remover prefers the SELECTED opencodex row and reports the rest
+  as residue; invalid `inferenceProvider`/credential-field shapes → classified
+  `foreign`, never parsed further, never echoed into envelopes or logs.
 - The official schema is verified current (Anthropic configuration reference,
   2026-08-06, Luna lane 1): configLibrary paths per-OS, `_meta.json` + sibling
   `<id>.json`, gateway fields, `supports1m`/`prefer1m`. Missing-selected-file
@@ -78,10 +95,17 @@ touched).
 - `tests/desktop-3p-removal.test.ts` NEW: pivot order (standard profile selected
   before removal), crash-boundary residue → `cleanup_incomplete`, idempotent
   no-op OFF, `not_installed` reads create nothing (assert directory absent
-  after status).
+  after status), interrupted-cleanup double-row preference.
 - `tests/native-claude-desktop-toggle.test.ts` NEW: route union, persistence
   ordering (intent before artifacts), refusal envelopes, auto-apply suppression
   including the post-await re-read (in-process race).
+- `tests/claude-messages-endpoint.test.ts` MODIFY (050 IN list, restored): prove
+  Desktop OFF leaves the shared `/v1/messages` transport and health live —
+  the toggle disables a client's lifecycle, never the proxy surface
+  (`050:1092-1097`).
+- Profile preservation stays binding: `src/claude/desktop-profile.ts`
+  assignments/defaults are consumed unchanged (`050:92-95`); the standard `{}`
+  profile is written by the remover path, not by re-deriving profile fields.
 - `gui/tests/*` per 050 IN list; `bun run lint:gui` joins the battery.
 - Broken-change check: mutate the post-await re-read guard → auto-apply race
   test goes red; restore → green.
