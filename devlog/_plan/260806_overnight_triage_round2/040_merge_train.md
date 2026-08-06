@@ -42,6 +42,23 @@ Resolution composes both: `shadowCallModelOptions` supplies canonical
 values, the label maps through `formatNamespacedModelId`, the empty
 option is untouched. Merge commit on branch: `d53253b39`.
 
+## Post-train verification
+
+Terra verifier: all seven merge SHAs are ancestors of dev tip
+`bfbc9a405`; all PRs MERGED; issues #1057/#1043/#1061/#1046/#1065/#1075
+/#1078 CLOSED; throwaway-worktree health at the tip — typecheck clean,
+core focused suites 40 pass, gui focused suites 14 pass; no open PR
+overlaps the merged surfaces.
+
+Dev CI on the #1087 merge tip (run 31061634811) first failed on a Bun
+1.3.14 segfault in `test 2/4` — `panic: Segmentation fault at
+0xFFFFFFFFFFFFFFF8` after the shard completed its last listed test, with
+a bun.report crash link and exit 132. That is a runtime crash, not a
+test failure attributable to the merged diffs. `gh run rerun --failed`
+brought the run to `completed success`.
+
+Terminal outcome: DONE.
+
 ## Post-train verification (terra + live rerun)
 
 - All seven merge SHAs are ancestors of `origin/dev` tip `bfbc9a405`;
