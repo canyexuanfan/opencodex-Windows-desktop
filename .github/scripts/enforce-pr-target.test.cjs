@@ -48,15 +48,16 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
-  it("listens for review events so bot findings after ready are caught", () => {
-    // These are top-level webhook events, not `pull_request_target` activity
-    // types — listing them under `types:` is silently ignored by GitHub. Each
-    // assertion anchors to the YAML list-item form so one trigger cannot
-    // satisfy the other's assertion.
-    assert.match(workflow, /^  pull_request_review:\s*$/m);
-    assert.match(workflow, /^  pull_request_review_comment:\s*$/m);
-    assert.match(workflow, /types: \[submitted, edited, dismissed\]/);
-    assert.match(workflow, /types: \[created, edited\]/);
+  it("does not add review events that would break the trusted-base model", () => {
+    // `pull_request_review` / `pull_request_review_comment` load the workflow
+    // from the PR head branch (like `pull_request`), while this workflow's
+    // checkout pins the base SHA — head YAML + base scripts mismatch, so the
+    // gate crashes (`parseGateState is not a function`) and the head controls
+    // the workflow definition under a write token. The findings claim runs on
+    // every `pull_request_target` event instead (opened/edited/synchronize/
+    // ready_for_review).
+    assert.doesNotMatch(workflow, /^  pull_request_review:/m);
+    assert.doesNotMatch(workflow, /^  pull_request_review_comment:/m);
   });
 
   it("queries review threads and feeds them to the findings claim check", () => {
@@ -88,11 +89,16 @@ describe("enforce-pr-target workflow", () => {
     assert.doesNotMatch(workflow, /Recording ownership state/);
   });
 
-  it("manages the review-ready label for the CodeRabbit opt-in trigger", () => {
+  it("manages the review-ready status label at the ready moment", () => {
     assert.match(workflow, /REVIEW_READY_LABEL\s*=\s*"review-ready"/);
     assert.match(workflow, /github\.rest\.issues\.addLabels/);
     assert.match(workflow, /github\.rest\.issues\.removeLabel/);
     assert.match(workflow, /reviewReadyDesired/);
+    // A positive labels filter in .coderabbit.yaml would restrict ALL reviews
+    // to labeled PRs (maintainer PRs never carry this label), so the label is
+    // kept as a visible status marker only and never wired as a CodeRabbit
+    // auto-review filter.
+    assert.doesNotMatch(workflow, /labels:\s*\["?review-ready"?\]/);
   });
 
   it("migrates legacy two-comment PRs and deletes the old comments", () => {

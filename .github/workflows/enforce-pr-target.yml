@@ -8,17 +8,6 @@ on:
       - edited
       - ready_for_review
       - synchronize
-  # Review events let the gate catch bot findings (Codex / CodeRabbit review
-  # threads) that land after a PR was marked ready, without waiting for the
-  # author's next push. These are top-level webhook events, not activity types
-  # of pull_request_target — listing them under `types:` is silently ignored by
-  # GitHub (actionlint: invalid activity type). Both payloads carry
-  # `pull_request`, so the base.sha trusted checkout and
-  # `context.payload.pull_request` reads below are unchanged.
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited]
 
 # pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
@@ -513,7 +502,16 @@ jobs:
               const freshReadiness = extractReviewReadiness(
                 freshPr.body ?? ""
               );
-              readinessStateOverride = defaultGateState();
+              // Reset only the checklist/notification state. The bot's draft
+              // ownership and title-prefix ownership survive the reset so a
+              // wrong-base-drafted PR that was retargeted keeps its restore
+              // path and its prefix ownership.
+              readinessStateOverride = {
+                ...defaultGateState(),
+                active: gateState.active,
+                autoDraftedByBot: gateState.autoDraftedByBot,
+                titlePrefixedByBot: gateState.titlePrefixedByBot
+              };
               headDriftNotice = buildStaleNotice({
                 completionHeadSha,
                 liveHeadSha: freshPr.head.sha,
@@ -683,7 +681,12 @@ jobs:
                 const freshReadiness = extractReviewReadiness(
                   freshPr.body ?? ""
                 );
-                readinessStateOverride = defaultGateState();
+                readinessStateOverride = {
+                  ...defaultGateState(),
+                  active: gateState.active,
+                  autoDraftedByBot: gateState.autoDraftedByBot,
+                  titlePrefixedByBot: gateState.titlePrefixedByBot
+                };
                 claimNotice = [
                   ...(claimViolations.includes("review_findings")
                     ? findingsUnverifiable
@@ -769,8 +772,11 @@ jobs:
               return actions;
             }
 
-            // The `review-ready` label is the CodeRabbit/Codex opt-in trigger:
-            // add it at the ready moment, remove it while the PR is not ready.
+            // The `review-ready` label marks the ready moment for humans and
+            // bots. It is not a CodeRabbit auto-review filter: a positive
+            // `labels:` entry in `.coderabbit.yaml` would restrict ALL reviews
+            // to labeled PRs (maintainer PRs never carry this label), so the
+            // label is kept as a visible status marker only.
             const readyMoment =
               checklistRequired && checklistComplete && failures.length === 0;
             const reviewReadyDesired = readyMoment;
@@ -825,6 +831,47 @@ jobs:
               if (failures.length > 0) {
                 let draftConversionFailed = false;
 
+                // One-line reason for each failure, used in the status line.
+                const failureStatusReason = failures
+                  .map(failure => {
+                    if (failure.code === "wrong_base") {
+                      return `wrong target branch (${pr.base.ref}); retarget to ${inlineCode(DEFAULT_BASE)}.`;
+                    }
+                    if (failure.code === "wrong_ancestry") {
+                      return "wrong branch ancestry; rebase onto the latest dev.";
+                    }
+                    if (failure.code === "bad_description") {
+                      return `PR description needs work (${failure.reason}).`;
+                    }
+                    if (failure.code === "missing_ui_screenshot") {
+                      return "UI screenshot required.";
+                    }
+                    return failure.code;
+                  })
+                  .join(" ");
+
+                // Shared notices for the failure comment: revalidation reason,
+                // the waiver flag, and the prefix notice when the bot owns it.
+                const failureNotices = [
+                  ...revalidationNotice,
+                  ...(screenshotWaived
+                    ? ["UI screenshot waived by a maintainer comment."]
+                    : []),
+                  ...(hasWrongBase && state.titlePrefixedByBot
+                    ? [`Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`]
+                    : [])
+                ];
+
+                const draftComment = (notices) =>
+                  upsertGateComment(state, {
+                    status: "DRAFT",
+                    statusReason: failureStatusReason,
+                    actions: buildActions(),
+                    readiness,
+                    checklistRequired,
+                    notices
+                  });
+
                 // Apply the bot-owned title prefix so the PR itself carries a
                 // durable signal of the wrong base (claim ownership before the
                 // write; a failed write keeps ownership for the next retry).
@@ -837,10 +884,21 @@ jobs:
                   });
                 }
 
-                if (!pr.draft) {
-                  // Claim draft ownership before the mutation so a successful
-                  // convert followed by a failed comment still restores later.
+                const wantsDraftConversion = !pr.draft;
+                if (wantsDraftConversion) {
+                  // Persist the ownership claim BEFORE the mutation so a
+                  // successful convert followed by a failed comment write
+                  // still leaves the bot-created draft owned and restorable.
                   state.autoDraftedByBot = true;
+                  await draftComment([
+                    ...failureNotices,
+                    "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again.",
+                    ...(checklistRequired && !checklistComplete
+                      ? [
+                          `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is resolved.`
+                        ]
+                      : [])
+                  ]);
                   try {
                     await convertToDraft();
                     draftConverted = true;
@@ -850,55 +908,23 @@ jobs:
                     core.warning(
                       `Could not convert pull request to draft: ${error.message}`
                     );
+                    // Reflect the failed conversion in the persisted state.
+                    await draftComment([
+                      ...failureNotices,
+                      "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
+                    ]);
                   }
+                } else {
+                  await draftComment([
+                    ...failureNotices,
+                    "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.",
+                    ...(checklistRequired && !checklistComplete
+                      ? [
+                          `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is resolved.`
+                        ]
+                      : [])
+                  ]);
                 }
-
-                const draftExplanation = draftConversionFailed
-                  ? "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
-                  : state.autoDraftedByBot
-                    ? "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again."
-                    : "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.";
-
-                const notices = [
-                  ...revalidationNotice,
-                  ...(screenshotWaived
-                    ? ["UI screenshot waived by a maintainer comment."]
-                    : []),
-                  ...(hasWrongBase && state.titlePrefixedByBot
-                    ? [`Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`]
-                    : []),
-                  draftExplanation,
-                  ...(checklistRequired && !checklistComplete
-                    ? [
-                        `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is resolved.`
-                      ]
-                    : [])
-                ];
-
-                await upsertGateComment(state, {
-                  status: "DRAFT",
-                  statusReason: failures
-                    .map(failure => {
-                      if (failure.code === "wrong_base") {
-                        return `wrong target branch (${pr.base.ref}); retarget to ${inlineCode(DEFAULT_BASE)}.`;
-                      }
-                      if (failure.code === "wrong_ancestry") {
-                        return "wrong branch ancestry; rebase onto the latest dev.";
-                      }
-                      if (failure.code === "bad_description") {
-                        return `PR description needs work (${failure.reason}).`;
-                      }
-                      if (failure.code === "missing_ui_screenshot") {
-                        return "UI screenshot required.";
-                      }
-                      return failure.code;
-                    })
-                    .join(" "),
-                  actions: buildActions(),
-                  readiness,
-                  checklistRequired,
-                  notices
-                });
 
                 core.setFailed(
                   `PR quality gate failed: ${failureSummary(failures, { pr })}`
@@ -1027,15 +1053,29 @@ jobs:
             // surface but there is nothing to tick; only render it if the
             // author is a maintainer and no checklist is required.
             if (!checklistRequired) {
+              // `pr.draft` is the value from before the ready path ran; when
+              // that path already converted the PR (`readyConverted`), the
+              // recovery must not call markReadyForReview a second time on the
+              // stale draft state. When the ready path already attempted and
+              // failed (`readyConversionFailed`), the failure state is carried
+              // in `readyState`/`recoveredState` and only the comment is
+              // rewritten, so a later run retries.
               if (gateState.autoDraftedByBot && pr.draft) {
                 let recoveryFailed = false;
-                try {
-                  await markReadyForReview();
-                } catch (error) {
-                  recoveryFailed = true;
-                  core.warning(
-                    `Could not mark pull request ready for review: ${error.message}`
-                  );
+                if (!readyConverted && !readyConversionFailed) {
+                  try {
+                    await markReadyForReview();
+                  } catch (error) {
+                    recoveryFailed = true;
+                    core.warning(
+                      `Could not mark pull request ready for review: ${error.message}`
+                    );
+                  }
+                } else {
+                  // The ready path already handled the mutation: either it
+                  // converted (nothing left to do) or it failed and this run
+                  // must not attempt a second mutation on the stale draft.
+                  recoveryFailed = readyConversionFailed;
                 }
                 const recoveredState = {
                   ...gateState,

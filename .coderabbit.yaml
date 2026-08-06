@@ -15,13 +15,6 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
-    # The PR gate adds this label at the ready moment (checklist complete and
-    # quality gates green) and removes it otherwise. A label addition triggers
-    # a CodeRabbit review even while the PR is still a draft, which is how a
-    # ready-but-draft PR gets reviewed without requiring a manual
-    # `@coderabbitai review` comment.
-    labels:
-      - "review-ready"
     # Default branch (main) is included automatically; these are additional
     # base branches (anchored regex).
     base_branches:
