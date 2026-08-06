@@ -38,6 +38,21 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("preserves explicitly empty attempts through normalization", () => {
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-empty-attempts",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-test",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "unreported",
+      attempts: [],
+    });
+
+    expect(normalized.attempts).toEqual([]);
+  });
+
   test("persists the rate-limit-429 recovery kind on attempts", () => {
     const entry: PersistedUsageEntry = {
       requestId: "ocx-ratelimit-kind",

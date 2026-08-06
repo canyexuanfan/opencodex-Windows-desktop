@@ -385,7 +385,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     usageStatus: entry.usageStatus,
     ...(entry.usage ? { usage: normalizeUsageValue(entry.usage) } : {}),
     ...(typeof entry.totalTokens === "number" ? { totalTokens: entry.totalTokens } : {}),
-    ...(attempts.length > 0 ? { attempts } : {}),
+    ...(Array.isArray(entry.attempts) ? { attempts } : {}),
     ...(entry.errorCode ? { errorCode: entry.errorCode } : {}),
     ...(entry.terminalStatus ? { terminalStatus: entry.terminalStatus } : {}),
     ...(entry.closeReason ? { closeReason: entry.closeReason } : {}),
