@@ -29,6 +29,7 @@ const lastEnforcerCommentBody = lastGateCommentBody;
 
 const root = new URL("../", import.meta.url);
 const doctorGuiIfChangedScript = fileURLToPath(new URL("../scripts/doctor-gui-if-changed.ts", import.meta.url));
+const lintGuiIfChangedScript = fileURLToPath(new URL("../scripts/lint-gui-if-changed.ts", import.meta.url));
 
 async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
@@ -675,7 +676,10 @@ describe("GitHub Actions hardening", () => {
   };
   type WorkflowJob = Record<string, unknown> & { "runs-on"?: unknown; steps?: WorkflowStep[] };
   type WorkflowShape = Record<string, unknown> & {
-    on?: { pull_request_target?: { types?: string[] } };
+    on?: {
+      pull_request_target?: { types?: string[] };
+      issue_comment?: { types?: string[] };
+    };
     permissions?: Record<string, string> | string;
     concurrency?: Record<string, unknown> & { group?: string };
     jobs?: Record<string, WorkflowJob>;
@@ -834,7 +838,16 @@ describe("GitHub Actions hardening", () => {
     // head branch (like `pull_request`), which would run head-controlled
     // workflow YAML under a write token against base-pinned scripts — a
     // mismatch that crashes the gate and breaks the trusted-base model.
-    expect(Object.keys(workflow.on ?? {})).toEqual(["pull_request_target"]);
+    //
+    // `issue_comment` is the one extra trigger: a maintainer's GUI-waiver
+    // comment ("not touching gui") must re-run the gate, and issue comments
+    // are not a `pull_request_target` activity type. It never touches PR head
+    // code — the checkout stays on the trusted base/default branch — so it
+    // does not open the escalation path review events would.
+    expect(Object.keys(workflow.on ?? {}).sort()).toEqual([
+      "issue_comment",
+      "pull_request_target",
+    ]);
 
     // And the trigger is exactly a `types:` list — nothing else.
     //
@@ -846,6 +859,7 @@ describe("GitHub Actions hardening", () => {
     // additive, both look like ordinary scoping in a diff, and neither failed a
     // single assertion.
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
+    expect(Object.keys(workflow.on?.issue_comment ?? {})).toEqual(["types"]);
 
     // Exactly the scopes this gate needs. `pull-requests: write` covers title
     // and comment updates. `contents: write` is required for the draft GraphQL
@@ -860,22 +874,49 @@ describe("GitHub Actions hardening", () => {
     // One run per PR, so two rapid events cannot race on the title/draft state,
     // and no `cancel-in-progress` — cancelling the in-flight run mid-mutation is
     // how the bot ends up having prefixed the title but not recorded that it did.
+    // `issue_comment` events carry the PR's number under `issue`, not
+    // `pull_request`, so the group resolves from whichever payload exists.
     expect(workflow.concurrency).toEqual({
-      group: "enforce-pr-target-${{ github.event.pull_request.number }}",
+      group:
+        "pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}",
     });
+
+    // The hygiene workflow reads and rewrites the same consolidated gate
+    // comment, so it must share the gate's per-PR concurrency group. Separate
+    // groups would let a gate rebuild and a hygiene update run concurrently
+    // from stale snapshots, and the last write would drop the other's section.
+    const hygieneWorkflow = Bun.YAML.parse(
+      await readText(".github/workflows/pr-hygiene.yml"),
+    ) as { concurrency?: { group?: string; "cancel-in-progress"?: boolean } };
+    expect(hygieneWorkflow.concurrency?.group).toBe(
+      "pr-gate-comment-${{ github.event.pull_request.number }}",
+    );
+    // Both comment-writing workflows share the group and neither cancels:
+    // `cancel-in-progress: true` would kill an in-flight gate mutation when a
+    // newer hygiene run starts, losing that read-modify-write.
+    expect(hygieneWorkflow.concurrency?.["cancel-in-progress"]).toBe(false);
 
     // One job, and it is this one. An audit round added a `sidecar:` job that
     // inherited the PR-write token and un-drafted the PR — every assertion below
     // still passed, because they only ever looked at `enforce-target`.
     expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
 
-    // The job is exactly a runner plus steps. No `if:` (which silently disables
-    // the whole gate), no `permissions:` (a job-level block overrides the narrow
-    // workflow-level one), no `container:`/`strategy:`/`outputs:`/`env:`/
-    // `defaults:`, and no `<<:` merge key to reintroduce any of them sideways.
+    // The job is a runner plus steps, with one deliberate `if:` guard. The
+    // guard restricts the `issue_comment` trigger to maintainer comments on
+    // PRs — a comment on a plain issue, or from a non-maintainer, must not
+    // start this write-capable gate. On `pull_request_target` events the guard
+    // is always true, so it never disables the gate.
+    // No `permissions:` (a job-level block overrides the narrow workflow-level
+    // one), no `container:`/`strategy:`/`outputs:`/`env:`/`defaults:`, and no
+    // `<<:` merge key to reintroduce any of them sideways.
     const [, job] = jobs[0]!;
-    expect(Object.keys(job).sort()).toEqual(["runs-on", "steps"]);
+    expect(Object.keys(job).sort()).toEqual(["if", "runs-on", "steps"]);
     expect(job["runs-on"]).toBe("ubuntu-latest");
+    expect(job["if"]).toContain("github.event_name != 'issue_comment'");
+    expect(job["if"]).toContain("github.event.issue.pull_request != null");
+    expect(job["if"]).toContain("'OWNER'");
+    expect(job["if"]).toContain("'COLLABORATOR'");
+    expect(job["if"]).toContain("'MEMBER'");
 
     // Checkout trusted scripts, then run the gate. Anything more is an extra
     // privileged action nobody reviewed.
@@ -895,7 +936,7 @@ describe("GitHub Actions hardening", () => {
       // runs this workflow from the base revision, and the scripts must match
       // it — a merged gate would otherwise run against pre-promotion `main`
       // scripts. The immutable SHA pins the checkout to the event's base commit.
-      ref: "${{ github.event.pull_request.base.sha }}",
+      ref: "${{ github.event.pull_request.base.sha || 'dev' }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.
@@ -946,6 +987,16 @@ describe("GitHub Actions hardening", () => {
       "reopened",
       "synchronize",
     ]);
+
+    // A maintainer's GUI-waiver comment must re-run the gate. Issue comments
+    // are delivered as the `issue_comment` event, which is the only way the
+    // waiver can take effect without a PR edit or push.
+    expect(workflow.on?.issue_comment?.types).toBeDefined();
+    expect([...(workflow.on?.issue_comment?.types ?? [])].sort()).toEqual([
+      "created",
+      "edited",
+    ]);
+
     // Review events must NOT be added: they load the workflow from the PR
     // head branch, breaking the base-pinned checkout (`pull_request_review`
     // runs head YAML + base scripts → `parseGateState is not a function`).
@@ -970,8 +1021,11 @@ describe("GitHub Actions hardening", () => {
     // `Number(context.payload.pull_request.title)` — a value the PR author
     // controls, which turns the bot into a write primitive against any PR
     // number the author can name. Bind it to the immutable event field.
+    // `issue_comment` events carry the number under `issue`, so the resolution
+    // falls back from the PR object to the issue object — both are immutable
+    // event fields, never author-controlled title text.
     expect(script).toMatch(
-      /const pull_number = context\.payload\.pull_request\.number;/,
+      /const pull_number =\s*context\.payload\.pull_request\?\.number \?\?\s*context\.payload\.issue\?\.number;/,
     );
     expect(script.match(/pull_number\s*=/g) ?? []).toHaveLength(1);
 
@@ -2601,6 +2655,208 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
       expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
       expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+    });
+
+    test("an issue_comment event re-runs the gate and the waiver takes effect", async () => {
+      // This is the scenario that PR #1119 hit: a maintainer posts the waiver
+      // as an issue comment, and the gate must re-evaluate on that event —
+      // `pull_request_target` types do not include issue comments, so the
+      // separate `issue_comment` trigger carries it. The payload has no
+      // `pull_request` object; the PR number comes from `issue.number`.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+      expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+    });
+
+    test("an issue_comment rerun does not accept a checklist with no recorded head", async () => {
+      // `issue_comment` events carry no `pull_request.head.sha`. A contributor
+      // who ticked the readiness checklist, then pushed, must not have that
+      // stale attestation accepted by a maintainer-waiver comment rerun — the
+      // gate must reset the boxes and re-draft.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: readinessChecklistBody(4),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+          readinessComment({
+            version: 2,
+            autoDraftedByBot: false,
+            maintainersPinged: true,
+            completedAtHeadSha: null,
+          }),
+        ],
+        maintainersFile: MAINTAINERS_FIXTURE,
+      });
+
+      // The comment-triggered rerun delivers no head SHA, so the completed
+      // checklist cannot be attributed to the live head: the gate resets the
+      // boxes and keeps the PR in draft.
+      const resetBody = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(resetBody[0]!.body).toContain(CHECKLIST_START);
+      expect(resetBody[0]!.body).not.toContain("- [x]");
+      expect(resetBody[0]!.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(resetBody[0]!.body).toContain("- [ ] My PR is ready for review.");
+    });
+
+    test("a non-maintainer issue_comment does not re-run the gate", async () => {
+      // The `issue_comment` trigger must only re-run for maintainer comments
+      // (OWNER / COLLABORATOR / MEMBER). A random comment from a contributor
+      // must not start the write-capable gate or re-draft the PR.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        commentAuthorAssociation: "CONTRIBUTOR",
+        comments: [
+          { id: 1, user: { login: "someone" }, author_association: "CONTRIBUTOR", body: "looks good to me" },
+        ],
+      });
+
+      // The gate never runs: no screenshot failure, no waiver notice, no draft
+      // mutation, no comment write.
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
+    test("an issue_comment on a plain issue does not re-run the gate", async () => {
+      // `issue_comment` fires for comments on ANY issue. A comment on a plain
+      // issue (no `issue.pull_request`) is not a PR comment and must not start
+      // this PR-only gate.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        issueIsPullRequest: false,
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
+    test("a COLLABORATOR who is not in MAINTAINERS.md cannot re-run the gate", async () => {
+      // OWNER/COLLABORATOR/MEMBER association is broader than the canonical
+      // maintainer list. A collaborator or member who is absent from
+      // MAINTAINERS.md must not start the write-capable gate — no PR lookup,
+      // no comment/label/title/draft mutations.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        commentAuthorAssociation: "COLLABORATOR",
+        commentAuthorLogin: "someone-else",
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [
+          { id: 1, user: { login: "someone-else" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+      });
+
+      // The in-script guard reads MAINTAINERS.md and skips before pulls.get:
+      // no PR lookup, no writes, no GraphQL mutation.
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("pulls.get");
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
+    test("the gate comment preserves an existing hygiene section across rebuilds", async () => {
+      // The hygiene workflow writes its status into the same consolidated gate
+      // comment. When the gate rebuilds that comment, it must carry the
+      // hygiene block forward instead of dropping it.
+      const HYGIENE_BLOCK_START = "<!-- pr-hygiene-block:start -->";
+      const HYGIENE_BLOCK_END = "<!-- pr-hygiene-block:end -->";
+      const existingGateBody = [
+        GATE_MARKER,
+        '<!-- opencodex-pr-gate-state:{"version":1,"active":true,"autoDraftedByBot":false,"titlePrefixedByBot":false} -->',
+        "",
+        "## ⏳ DRAFT",
+        "- PR is kept in draft.",
+        "",
+        "## Hygiene",
+        "",
+        HYGIENE_BLOCK_START,
+        "<!-- pr-hygiene -->",
+        "",
+        "✅ **Deterministic PR hygiene checks passed.**",
+        "",
+        HYGIENE_BLOCK_END,
+      ].join("\n");
+
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: false },
+        authorPermission: "write",
+        comments: [
+          { id: 7, user: { login: "github-actions[bot]" }, body: existingGateBody },
+        ],
+      });
+
+      const updated = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(updated.length).toBeGreaterThan(0);
+      const gateUpdate = updated.find(call => call.body.includes(GATE_MARKER))!;
+      expect(gateUpdate.body).toContain(HYGIENE_BLOCK_START);
+      expect(gateUpdate.body).toContain(HYGIENE_BLOCK_END);
+      expect(gateUpdate.body).toContain("✅ **Deterministic PR hygiene checks passed.**");
     });
 
     test("the PR author cannot waive their own screenshot requirement", async () => {
@@ -4339,8 +4595,9 @@ describe("GitHub Actions hardening", () => {
     expect(doctorConfig).toContain('"blocking": "warning"');
     expect(rootPkg).toContain('"doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts"');
     expect(rootPkg).toContain('"lint:gui": "cd gui && bun run lint"');
-    // Gating steps include React Doctor after privacy scan on gui/ pushes.
-    expect(rootPkg).toContain("bun run typecheck && bun run lint:gui && bun run test");
+    expect(rootPkg).toContain('"lint:gui:if-changed": "bun scripts/lint-gui-if-changed.ts"');
+    // Gating steps include lint and React Doctor only on gui/ pushes.
+    expect(rootPkg).toContain("bun run typecheck && bun run lint:gui:if-changed && bun run test");
     expect(rootPkg).toContain("bun run privacy:scan && bun run doctor:gui:if-changed");
   });
 });
@@ -4439,5 +4696,46 @@ describe("doctor-gui-if-changed", () => {
     });
     expect(run.exitCode).not.toBe(0);
     expect(run.stderr.toString()).toContain("exceeded buffer");
+  });
+});
+
+describe("lint-gui-if-changed", () => {
+  test("DRY_RUN prints the run/skip decision without spawning lint", () => {
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: { ...process.env, LINT_DRY_RUN: "1", LINT_FILES: "gui/src/App.tsx\nscripts/x.ts" },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("lint:run");
+
+    const skip = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: { ...process.env, LINT_DRY_RUN: "1", LINT_FILES: "scripts/x.ts\nREADME.md" },
+    });
+    expect(skip.exitCode).toBe(0);
+    expect(skip.stdout.toString()).toContain("lint:skip");
+  });
+
+  test("runs eslint when gui/ changed and fails the push on findings", () => {
+    // `bun run lint` in gui/ exits non-zero on findings; a fake command makes
+    // the spawn deterministic without depending on the real eslint output.
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: {
+        ...process.env,
+        LINT_FILES: "gui/src/App.tsx",
+        LINT_CMD: "bun ../scripts/fixtures/lint-findings-exit.ts",
+      },
+    });
+    expect(run.exitCode).not.toBe(0);
+  });
+
+  test("skips eslint when gui/ did not change", () => {
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: {
+        ...process.env,
+        LINT_FILES: "scripts/x.ts\nREADME.md",
+        LINT_CMD: "bun ../scripts/fixtures/lint-findings-exit.ts",
+      },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("lint:gui: skip");
   });
 });

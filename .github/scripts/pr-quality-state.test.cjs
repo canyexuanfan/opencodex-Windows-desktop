@@ -186,6 +186,23 @@ describe("completionIsStale", () => {
     );
   });
 
+  it("is stale when the event delivered no head SHA at all (issue_comment rerun)", () => {
+    // `issue_comment` events carry no `pull_request.head.sha`. The gate passes
+    // an empty eventHeadSha so a completed checklist with no recorded head
+    // cannot be accepted as attesting the live head on a comment-triggered
+    // rerun — the contributor could have pushed since ticking the boxes.
+    assert.equal(
+      completionIsStale({
+        ...base,
+        checklistComplete: true,
+        completionHeadSha: null,
+        eventHeadSha: "",
+        eventAction: "created"
+      }),
+      true,
+    );
+  });
+
 
   it("is not stale for maintainers or absent checklists", () => {
     assert.equal(

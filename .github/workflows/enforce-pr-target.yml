@@ -8,6 +8,15 @@ on:
       - edited
       - ready_for_review
       - synchronize
+  # A maintainer issue comment ("not touching gui") waives the GUI-screenshot
+  # gate. `pull_request_target` types do not include issue comments, so a
+  # separate `issue_comment` trigger re-runs the gate the moment the waiver is
+  # posted. The gate is idempotent — it re-reads the live PR and updates the
+  # single consolidated comment — so a comment cannot race or double-mutate.
+  issue_comment:
+    types:
+      - created
+      - edited
 
 # pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
@@ -19,10 +28,24 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: enforce-pr-target-${{ github.event.pull_request.number }}
+  # `issue_comment` events carry the issue number, not the PR number. The
+  # group is shared with the hygiene workflow: both read-modify-write the same
+  # consolidated gate comment, so serializing them under one key prevents a
+  # concurrent update from clobbering the other's section.
+  group: pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}
 
 jobs:
   enforce-target:
+    # `issue_comment` fires for comments on ANY issue, PR or not, from ANY
+    # user. This gate is PR-only and write-capable, so a comment on a plain
+    # issue — or from a non-maintainer — must not start it. Only a maintainer
+    # comment on a PR (the GUI-waiver case) may re-run the gate.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request != null &&
+       (github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'COLLABORATOR' ||
+        github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
 
     steps:
@@ -33,8 +56,13 @@ jobs:
           # runs this workflow from the base revision, and the scripts must come
           # from the same revision or a merged gate would run against the
           # pre-promotion scripts on `main`. The immutable SHA pins the checkout
-          # to the exact base commit the event was built against.
-          ref: ${{ github.event.pull_request.base.sha }}
+          # to the exact base commit the event was built against. On an
+          # `issue_comment` event there is no PR payload, so the checkout falls
+          # back to the integration branch `dev` — the branch this gate enforces
+          # and the source of the gate's own scripts. The repository default
+          # (`main`) can lag `dev`, which would make a comment-triggered run
+          # evaluate with stale helpers.
+          ref: ${{ github.event.pull_request.base.sha || 'dev' }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -81,8 +109,12 @@ jobs:
             const {
               GATE_MARKER,
               READINESS_MARKER,
+              HYGIENE_MARKER,
+              HYGIENE_BLOCK_START,
+              HYGIENE_BLOCK_END,
               inlineCode,
               buildGateCommentBody,
+              extractHygieneSection,
               buildFailureSections,
               failureSummary,
               buildStaleNotice,
@@ -115,7 +147,44 @@ jobs:
             const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
-            const pull_number = context.payload.pull_request.number;
+            // `issue_comment` events carry the PR's issue object, not a
+            // `pull_request` object. The issue number is the PR number either
+            // way, so resolve it from whichever payload the event delivered.
+            const pull_number =
+              context.payload.pull_request?.number ??
+              context.payload.issue?.number;
+
+            // Defensive re-check of the job-level guard. `issue_comment` events
+            // carry a `comment` object with the author's association; a comment
+            // on a plain issue has no `issue.pull_request`, and a comment from
+            // anyone but a maintainer must not re-run this write-capable gate.
+            if (context.eventName === "issue_comment") {
+              const isPrComment =
+                context.payload.issue?.pull_request != null;
+              const association = context.payload.comment?.author_association;
+              // The association is a cheap prefilter, but OWNER/COLLABORATOR/
+              // MEMBER is broader than this repository's canonical maintainer
+              // list. A collaborator or member who is not a maintainer must not
+              // start this write-capable gate, so require the commenter's
+              // login to be in the trusted MAINTAINERS.md list too.
+              const maintainerLogins = new Set(
+                readMaintainerLogins().map(login => login.toLowerCase())
+              );
+              const commenter = context.payload.comment?.user?.login;
+              const isCanonicalMaintainer =
+                typeof commenter === "string" &&
+                maintainerLogins.has(commenter.toLowerCase());
+              if (
+                !isPrComment ||
+                !["OWNER", "COLLABORATOR", "MEMBER"].includes(association) ||
+                !isCanonicalMaintainer
+              ) {
+                core.info(
+                  "issue_comment not from a canonical maintainer on a PR; skipping the gate."
+                );
+                return;
+              }
+            }
 
             const { data: pr } = await github.rest.pulls.get({
               owner,
@@ -231,7 +300,16 @@ jobs:
              * readiness section or a stale intermediate checkpoint body.
              */
             async function upsertGateComment(state, opts) {
-              const body = buildGateCommentBody(state, opts).join("\n");
+              let body = buildGateCommentBody(state, opts).join("\n");
+              // The hygiene workflow writes its status into this same comment.
+              // Preserve whatever it left so a gate rebuild does not drop it.
+              const existingHygiene = extractHygieneSection(gateComment?.body);
+              if (existingHygiene && !body.includes("pr-hygiene-block")) {
+                body = body.replace(
+                  /\s+$/,
+                  `\n\n## Hygiene\n\n${HYGIENE_BLOCK_START}\n${HYGIENE_MARKER}\n\n${existingHygiene}\n\n${HYGIENE_BLOCK_END}`
+                );
+              }
               if (gateCommentId) {
                 await github.rest.issues.updateComment({
                   owner,
@@ -474,8 +552,16 @@ jobs:
             // (see `completionIsStale`). When it is stale the gate resets the
             // boxes and the notification state, re-drafts, and tells the
             // author to re-test and re-tick against the latest code.
+            // `issue_comment` events carry no `pull_request.head.sha`, so the
+            // fallback to the live head would let a completed checklist with
+            // no recorded completion head pass as if it attested the current
+            // head. A comment-triggered run must not promote readiness: pass
+            // the live head only when the event actually delivered it.
             const eventHeadSha =
-              context.payload.pull_request?.head?.sha ?? pr.head.sha;
+              context.payload.pull_request?.head?.sha ??
+              (context.eventName === "issue_comment"
+                ? ""
+                : pr.head.sha);
             const completionHeadSha =
               gateState.completedAtHeadSha ?? null;
             const headDrifted = completionIsStale({
