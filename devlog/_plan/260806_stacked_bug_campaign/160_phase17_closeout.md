@@ -29,9 +29,27 @@ separately rather than folded into a "green" claim.
 
 ## 3. Disposition matrix
 
-A closing record listing, for every item in `001` and `002`: final state
-(landed in stack NN / deferred / upstream / needs-info), the PR that carries it,
-and the contributor credited.
+Written to `devlog/_plan/260806_stacked_bug_campaign/170_dispositions.md` with
+this exact schema — one row per item in `001` and `002`, no item omitted:
+
+```
+| Item | Kind | Final state | Carrier | Credited | Evidence |
+```
+
+- **Item** — `#<number>` (issue or PR).
+- **Kind** — `issue` or `pr`.
+- **Final state** — one of `landed-stackNN`, `deferred`, `upstream`,
+  `needs-info`, `feature`, `already-merged`.
+- **Carrier** — the stack PR number that carries the work, or `—`.
+- **Credited** — the contributor display name, or `—`.
+- **Evidence** — the commit SHA on the stack branch, or the reason string for a
+  non-landed state.
+
+A row whose Final state is `landed-stackNN` and whose Evidence is empty is a
+FAIL of this phase: it claims a landing with no proof.
+
+The matrix must reconcile against the campaign totals: 49 issues and 32 open
+PRs (+ #1129 already merged). A total mismatch is a FAIL, not a rounding note.
 
 ## 4. What is deliberately NOT done
 

@@ -1,4 +1,11 @@
-# 002 — PR triage and contributor attribution (34 open at the cutoff)
+# 002 — PR triage and contributor attribution (32 open at the cutoff)
+
+Live count at the cutoff, verified with `gh pr list --state open --limit 200`:
+**32** open PRs — `557, 581, 811, 812, 947, 978, 985, 997, 999, 1002, 1008,
+1010, 1036, 1039, 1047, 1056, 1085, 1092, 1093, 1095, 1096, 1109, 1111, 1114,
+1115, 1119, 1121, 1122, 1124, 1126, 1130, 1131`. The tables below also carry
+**#1129**, which merged during triage (`e9d957bf6`) and is listed only to record
+that it needs no action; it is not counted in the 32.
 
 Two sol-medium lanes fetched every PR head, read the real diff, checked
 mergeability against live `dev`, and recorded the **commit author identity** —
@@ -91,5 +98,6 @@ independent diagnosis of the same defect.
 
 ## Coverage
 
-6 adopt-verbatim, 10 adopt-adapted, 3 reimplement (1 landed, 2 deferred),
-15 defer. Total 34 — every open PR accounted for.
+6 adopt-verbatim, 10 adopt-adapted, 3 reimplement (1 landed in phase 070, 2
+deferred), 13 defer. Total **32** open PRs, every one accounted for, plus the
+already-merged #1129 recorded for completeness.

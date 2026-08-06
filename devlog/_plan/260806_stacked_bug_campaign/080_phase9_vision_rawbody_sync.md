@@ -3,33 +3,43 @@
 Credit: **Bailey** (`baileyh8 <baileyh8@gmail.com>`), PR #1047.
 Adoption: **adapted** — one remaining leak closed.
 
-## Defect
+## Defect (verified on `dev` = e9d957bf6)
 
-The Responses passthrough keeps a `_rawBody` copy that is not synchronized with
-the caption-normalized input, so a vision sidecar's captions never reach the
-forwarded payload — and unmatched `input_image` parts are forwarded verbatim to
-a provider that cannot consume them.
+`describeImagesInPlace` (`src/vision/index.ts:347`) rebuilds each message,
+replacing image parts with their descriptions in `parsed.context.messages`
+(`:426`), and `stripImagesInPlace` (`:453`) does the same with an
+"[image omitted…]" placeholder.
+
+Neither touches `parsed._rawBody`. The native Responses passthrough adapter
+serializes `_rawBody`, while translated adapters serialize `context.messages` —
+so on the passthrough path the original pixels are still sent to a text-only
+upstream *after* the sidecar produced a caption. There is no
+`syncRawBodyImageDescriptions` on `dev` (`rg` returns no matches); the whole
+function is new in #1047.
 
 ## Why adapted
 
-#1047's `syncRawBodyImageDescriptions` is the correct mechanism with strong E2E
-coverage, but two gaps remain in the current tree:
+#1047 adds `syncRawBodyImageDescriptions` and calls it at the end of both
+`describeImagesInPlace` and `stripImagesInPlace`. The mechanism is correct and
+the E2E coverage is strong. Two conditions in the contributor's function make it
+a partial fix:
 
-- `src/vision/index.ts:294` skips normalization entirely when there are no
-  captions — so a failed caption pass forwards the raw image instead of a safe
-  substitute.
-- `src/vision/index.ts:308-311` returns the original raw part for an unmatched
-  image rather than removing or replacing it.
-
-Both mean the "leak" the PR set out to close can still occur on the failure
-path, which is exactly the path that matters.
+- It returns early when `descriptions.length === 0`, so a caption pass that
+  produced nothing leaves the raw images in `_rawBody` — the failure path is the
+  one that leaks.
+- When `descriptions[nextDescription++]` is `undefined` (fewer captions than
+  images) it returns the original `input_image` part unchanged, so a partial
+  caption pass still forwards raw pixels.
 
 ## Change
 
+Cherry-pick #1047, then close both failure paths.
+
 | Path | Op | Content |
 |------|----|---------|
-| `src/vision/index.ts` | MODIFY | Keep `syncRawBodyImageDescriptions`; run normalization even when the caption set is empty (`:294`); at `:308-311` remove or replace empty/unmatched `input_image` parts instead of returning the original |
-| `tests/vision-*.test.ts` | MODIFY | Bailey's E2E cases plus: empty-caption path, unmatched-image path, and an assertion that no raw image survives into `_rawBody` |
+| `src/vision/index.ts` | ADOPT | `syncRawBodyImageDescriptions` (+ `isPlainRecord`) after `renderDescription` (~`:275`), called at the end of `describeImagesInPlace` (~`:506`) and `stripImagesInPlace` (~`:535`) |
+| `src/vision/index.ts` | ADAPT | **Change from #1047:** drop the `descriptions.length === 0` early return so normalization runs regardless; when no description is available for an image, substitute the same "[image omitted…]" text `stripImagesInPlace` uses rather than returning the raw part |
+| `tests/vision-sidecar-e2e.test.ts` | ADAPT | Bailey's +195 lines plus: zero-caption path and fewer-captions-than-images path, each asserting no `input_image` survives in `_rawBody` |
 
 ## Verification
 

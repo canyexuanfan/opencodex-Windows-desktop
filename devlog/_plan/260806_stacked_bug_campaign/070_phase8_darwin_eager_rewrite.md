@@ -4,12 +4,15 @@ Credit: **0xWinner98** (reporter, #1127) and **biao**
 (`WZBbiao <16611004+WZBbiao@users.noreply.github.com>`, PR #947 — the Darwin
 predicate idea). Adoption: **reimplement** on current transport code.
 
-## Defect
+## Defect (verified on `dev` = e9d957bf6)
 
-`selectEagerPath` rejects every rewrite on Darwin
-(`src/lib/bun-stream-caps.ts:99`), while inline payload rewrite and the rewrite
-budget are wired only for Win32 (`src/server/responses/core.ts:2128`). #1025
-repaired the snapshots, but the transport gate closed with #928 was never
+`selectEagerPath` (`src/lib/bun-stream-caps.ts:99`) returns `null` for **any**
+caller with `needsClientRewrite` set (`:106`), before platform logic runs at
+all. Its Darwin tail then admits only a `config-eager` decision (`:112`). So a
+macOS client that needs a rewrite always falls back to tee, and the inline
+payload rewrite plus `rewriteBudget` in `core.ts` are wired only for Win32.
+
+#1025 repaired the snapshots, but the transport gate closed with #928 was never
 reopened for macOS — so the macOS half of #893 is still broken.
 
 ## Why reimplement
@@ -24,8 +27,8 @@ deterministic `onDone` promise plus a bounded failure timeout.
 
 | Path | Op | Content |
 |------|----|---------|
-| `src/lib/bun-stream-caps.ts` | MODIFY | `selectEagerPath` keeps an explicit Darwin `eager-relay` selection eligible when a client rewrite is required. Darwin `auto` is **not** broadened — only the explicit selection |
-| `src/server/responses/core.ts` | MODIFY | At ~`:2083`/`:2128`, compose payload/block rewrites when either Win32 forced rewrite **or** a Darwin-selected eager path is active; pass `rewriteBudget` whenever inline rewriting is active rather than only under `win32EagerRewrite` |
+| `src/lib/bun-stream-caps.ts` | MODIFY | In `selectEagerPath`, stop rejecting on `needsClientRewrite` alone (`:106`): when the mode resolves to `config-eager` on Darwin, the explicit selection stays eligible. Darwin `auto` is **not** broadened, and the non-darwin/non-win32 rejection is untouched |
+| `src/server/responses/core.ts` | MODIFY | Locate the `win32EagerRewrite` composition point by symbol (not line — phases 050/060/130 also edit this file). Compose payload/block rewrites when either Win32 forced rewrite **or** a Darwin-selected eager path is active; pass `rewriteBudget` whenever inline rewriting is active |
 | `tests/bun-stream-caps.test.ts` | MODIFY | Full platform × mode × rewrite-required policy matrix |
 | `tests/relay-eager.test.ts` | MODIFY | Replace fixed `settle()` waits with an `onDone` promise and a bounded failure timeout |
 | `tests/responses-snapshot-repair-server.test.ts` | MODIFY | Darwin rewrite activation reaches the client |

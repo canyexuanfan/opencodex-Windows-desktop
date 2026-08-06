@@ -32,8 +32,8 @@ correct mechanism and drops the generalization.
 
 | Path | Op | Content |
 |------|----|---------|
-| `src/server/responses/core.ts` | MODIFY | Before the rewrite at ~`:867`, capture the final Codex-facing selector into a dedicated field (e.g. `clientFacingModelId`) on the parsed request; leave `parsed.modelId` as the upstream wire model so the Anthropic request is unchanged |
-| `src/server/responses/core.ts` | MODIFY | At the streaming and JSON builders (~`:2562`, ~`:2615`) emit `clientFacingModelId ?? modelId` |
+| `src/server/responses/core.ts` | MODIFY | Inside `applyFinalRouteRequestNormalization`, capture the pre-rewrite Codex-facing selector into a dedicated field (`clientFacingModelId`) **only on the Anthropic branch that performs the rewrite**; leave `parsed.modelId` as the upstream wire model so the Anthropic request body is unchanged |
+| `src/server/responses/core.ts` | MODIFY | At the streaming and JSON builders emit `clientFacingModelId ?? modelId`. Because the field is set only where the Anthropic rewrite happens, providers that never rewrite are byte-identical — the `??` fallback is what keeps this a fix rather than a cross-provider contract change |
 | `src/images/loop.ts` | MODIFY | Thread the selector through the loop's dependencies instead of reading mutated `parsed.modelId` (~`:902`) |
 | `src/web-search/loop.ts` | MODIFY | Same (~`:772`) |
 | `src/server/request-log.ts` | MODIFY | Keep the physical routed model in request logs — observability must still show what was actually called |
@@ -46,6 +46,17 @@ restore/removal semantics is a separate contract with its own failure modes
 (user-owned row collision, restore deleting a generated row). If the bare
 selector needs to keep resolving, that is its own unit — noted in the PR so the
 decision is visible rather than silently dropped.
+
+**Scope guard (audit finding 4).** A regression test asserts that a non-Anthropic
+routed provider whose public and wire model differ emits exactly the same
+`response.model` as before this phase. If that test cannot be written without
+the field being set for that provider, the narrowing has failed and the phase
+returns to P rather than shipping a silent contract change.
+
+Exact line numbers are deliberately omitted here: `core.ts` is edited by phases
+050, 060, 070, and 130, so each phase re-locates its anchor by symbol
+(`applyFinalRouteRequestNormalization`, the relay rewrite composition point)
+at its own P rather than trusting a line number recorded before four edits.
 
 ## Verification
 
