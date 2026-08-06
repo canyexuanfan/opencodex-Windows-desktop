@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,27 +136,67 @@ test("an overrun Worker returns a typed timeout rather than hanging", async () =
 
 /**
  * The async restore wrapper owns history; the synchronous body must not also do
- * it, or every restore would run the transition twice — once unserialized on the
- * caller thread, which is the path this phase exists to remove.
+ * it when told to stand down, or every restore would run the transition twice —
+ * once unserialized on the caller thread, which is the path this phase removed.
  *
- * Asserted against the SOURCE rather than by running it. The synchronous body
- * resolves its state database from a module-load constant
- * (`history-provider.ts:16`), so a test that moves `CODEX_HOME` cannot observe
- * which database it would have touched — a behavioural version of this passed
- * with `skipHistory` ignored entirely, which is worse than no test. Removing the
- * guard changes this text, and that is something a check can actually see.
+ * Proven by BEHAVIOR in a child process. The provider resolves its state
+ * database from a module-load constant, so the fixture `CODEX_HOME` must be in
+ * the environment before the module loads — a spawned child gives exactly that.
+ * The fixture DB holds a restorable opencodex-tagged row; `skipHistory: true`
+ * must leave it tagged, and the default must restore it.
  */
 test("the synchronous restore body is gated on skipHistory", () => {
-  const source = readFileSync(join(import.meta.dir, "..", "src", "codex", "inject.ts"), "utf8");
-  const body = source.slice(source.indexOf("export function restoreNativeCodex("));
-  const historyCall = body.indexOf("syncCodexHistoryProvider(\"openai\"");
-  expect(historyCall).toBeGreaterThan(-1);
+  const repoRoot = join(import.meta.dir, "..");
+  const root = mkdtempSync(join(tmpdir(), "ocx-restore-skiphistory-"));
+  const fixtureCodexHome = join(root, ".codex");
+  const fixtureOcxHome = join(root, ".opencodex");
+  mkdirSync(fixtureCodexHome, { recursive: true });
+  mkdirSync(fixtureOcxHome, { recursive: true });
+  try {
+    writeFileSync(join(fixtureCodexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+    const rollout = join(fixtureCodexHome, "rollout.jsonl");
+    writeFileSync(rollout, JSON.stringify({
+      type: "session_meta",
+      payload: { id: "thread-1", model_provider: "opencodex", source: "cli", cwd: fixtureCodexHome },
+    }) + "\n");
+    const dbPath = join(fixtureCodexHome, "state_5.sqlite");
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, model_provider TEXT NOT NULL,
+      source TEXT NOT NULL, first_user_message TEXT NOT NULL, has_user_event INTEGER NOT NULL DEFAULT 0)`);
+    db.run(`INSERT INTO threads VALUES ('thread-1', ?, 'opencodex', 'cli', 'hello', 1)`, rollout);
+    db.close();
 
-  // The inline call is reachable only through the gate.
-  const gate = body.indexOf("options.skipHistory");
-  expect(gate).toBeGreaterThan(-1);
-  expect(gate).toBeLessThan(historyCall);
+    const runRestore = (optionsLiteral: string) => spawnSync(process.execPath, ["--eval", [
+      'const { restoreNativeCodex } = require("./src/codex/inject");',
+      `const result = restoreNativeCodex(${optionsLiteral});`,
+      'console.log(JSON.stringify({ history: result.artifacts.history.state }));',
+    ].join("\n")], {
+      cwd: repoRoot,
+      env: { ...process.env, CODEX_HOME: fixtureCodexHome, OPENCODEX_HOME: fixtureOcxHome },
+      encoding: "utf8",
+    });
+    const provider = () => {
+      const check = new Database(dbPath, { readonly: true });
+      const row = check.query<{ model_provider: string }, []>(
+        "SELECT model_provider FROM threads WHERE id = 'thread-1'",
+      ).get();
+      check.close();
+      return row?.model_provider;
+    };
 
-  // And the async wrapper is the thing that sets it.
-  expect(source).toContain("restoreNativeCodex({ skipHistory: true,");
+    // skipHistory: the wrapper owns history, so the synchronous body writes none.
+    const skipped = runRestore("{ skipHistory: true }");
+    expect(skipped.status).toBe(0);
+    expect(JSON.parse(skipped.stdout.trim().split("\n").filter(Boolean).pop() ?? "{}")).toEqual({ history: "skipped" });
+    expect(provider()).toBe("opencodex");
+
+    // Default: the same body restores history itself.
+    const restored = runRestore("{}");
+    expect(restored.status).toBe(0);
+    expect(JSON.parse(restored.stdout.trim().split("\n").filter(Boolean).pop() ?? "{}")).toEqual({ history: "ok" });
+    expect(provider()).toBe("openai");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

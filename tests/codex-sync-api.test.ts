@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncModelsToCodex } from "../src/codex/sync";
 import { MANAGED_AGENTS_TABLE_MARKER, MANAGED_SUBAGENT_DEFAULT_MARKER } from "../src/codex/subagent-defaults";
@@ -9,6 +10,7 @@ import type { OrcaCodexHomeDiagnostic } from "../src/codex/home";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-sync-api");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
+const repoRoot = join(import.meta.dir, "..");
 let prevCodexHome: string | undefined;
 
 const config = {
@@ -104,6 +106,66 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(result).toMatchObject({ status: "skipped", skippedReason: "desired_disabled", ok: true });
     expect(refreshed).toBe(false);
     expect(injected).toBe(false);
+  });
+
+  /**
+   * The lost-transition race, with a REAL second process. The caller's config
+   * snapshot says ON; while provider discovery is awaited, another process
+   * persists OFF. The under-lock re-read inside the real injector must observe
+   * the fresh persisted intent and skip — the snapshot must not win.
+   *
+   * Runs entirely in a child process with its own temp CODEX_HOME, because the
+   * injector resolves its config path at module load: an in-process variant
+   * would silently address the suite's isolated home instead of the fixture.
+   */
+  test("a competing OFF during catalog discovery becomes the discriminated skip", async () => {
+    const raceRoot = mkdtempSync(join(tmpdir(), "ocx-sync-lost-transition-"));
+    const raceCodexHome = join(raceRoot, ".codex");
+    const raceOcxHome = join(raceRoot, ".opencodex");
+    mkdirSync(raceCodexHome, { recursive: true });
+    mkdirSync(raceOcxHome, { recursive: true });
+    try {
+      writeFileSync(join(raceCodexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+      writeFileSync(join(raceOcxHome, "config.json"), JSON.stringify({
+        providers: {}, defaultProvider: "openai", checkForUpdates: false,
+      }));
+      const script = [
+        'const { spawnSync } = require("node:child_process");',
+        'const { loadConfig } = require("./src/config");',
+        'const { syncModelsToCodex } = require("./src/codex/sync");',
+        'const { injectCodexConfig } = require("./src/codex/inject");',
+        '(async () => {',
+        '  const snapshot = loadConfig(); // admitted BEFORE the flip: reads as ON',
+        '  const result = await syncModelsToCodex(12345, snapshot, null, {',
+        '    refreshCodexModelCatalog: async () => {',
+        '      // The provider-discovery window: a second real process persists OFF.',
+        '      const flip = spawnSync(process.execPath, ["--eval",',
+        '        \'const { setIntegrationEnabled } = require("./src/codex/desired-state");\'',
+        '        + \'const r = setIntegrationEnabled("codex", false);\'',
+        '        + \'if (!r.ok) { console.error(JSON.stringify(r)); process.exit(1); }\',',
+        '      ], { cwd: process.cwd(), env: process.env, encoding: "utf8" });',
+        '      if (flip.status !== 0) throw new Error("flip failed: " + flip.stderr);',
+        '      return { added: 0, path: "/tmp/none.json", catalogExists: false, catalogWritten: false, cacheSynced: false, comboOmissions: [] };',
+        '    },',
+        '    injectCodexConfig, // the REAL injector; its under-lock re-read is the claim',
+        '  });',
+        '  console.log(JSON.stringify({ status: result.status, skippedReason: result.skippedReason, ok: result.ok }));',
+        '})();',
+      ].join("\n");
+      const before = readFileSync(join(raceCodexHome, "config.toml"), "utf8");
+      const child = spawnSync(process.execPath, ["--eval", script], {
+        cwd: repoRoot,
+        env: { ...process.env, CODEX_HOME: raceCodexHome, OPENCODEX_HOME: raceOcxHome },
+        encoding: "utf8",
+      });
+      expect(child.status).toBe(0);
+      const line = child.stdout.trim().split("\n").filter(Boolean).pop() ?? "{}";
+      expect(JSON.parse(line)).toMatchObject({ status: "skipped", skippedReason: "desired_disabled", ok: true });
+      // The stale ON snapshot wrote nothing: the fixture config is untouched.
+      expect(readFileSync(join(raceCodexHome, "config.toml"), "utf8")).toBe(before);
+    } finally {
+      rmSync(raceRoot, { recursive: true, force: true });
+    }
   });
 
   test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {

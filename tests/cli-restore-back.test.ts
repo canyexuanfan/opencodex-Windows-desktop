@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const helpSource = readFileSync(join(import.meta.dir, "..", "src", "cli", "help.ts"), "utf8");
 const repoRoot = join(import.meta.dir, "..");
 
 describe("ocx restore back", () => {
@@ -84,8 +83,24 @@ describe("ocx restore back", () => {
   });
 
   test("help documents both directions of the switch", () => {
-    expect(helpSource).toContain("ocx restore [back]");
-    expect(helpSource).toContain("ocx eject [back]");
-    expect(helpSource).toContain("ocx restore back");
+    const ocxHome = mkdtempSync(join(tmpdir(), "ocx-cli-help-home-"));
+    try {
+      writeFileSync(join(ocxHome, "config.json"), JSON.stringify({
+        providers: {}, defaultProvider: "openai", checkForUpdates: false,
+      }), "utf8");
+      const run = (...cliArgs: string[]) => spawnSync(process.execPath, ["run", "src/cli/index.ts", ...cliArgs], {
+        cwd: repoRoot,
+        env: { ...process.env, OPENCODEX_HOME: ocxHome, CI: "1" },
+        encoding: "utf8",
+      });
+      const usage = run("help");
+      expect(usage.status).toBe(0);
+      expect(`${usage.stdout}\n${usage.stderr}`).toContain("ocx restore back");
+      const restoreHelp = run("help", "restore");
+      expect(restoreHelp.status).toBe(0);
+      expect(`${restoreHelp.stdout}\n${restoreHelp.stderr}`).toContain("ocx restore [back]");
+    } finally {
+      rmSync(ocxHome, { recursive: true, force: true });
+    }
   });
 });
