@@ -66,8 +66,45 @@ function isPlaceholderOnlyValue(raw) {
  */
 function stripMediaTokens(text) {
   if (typeof text !== "string") return "";
-  const markdownStripped = stripMarkdownImages(stripHtmlMedia(text));
-  return stripReferenceImages(markdownStripped);
+  // Indented code lines render as literal code in GitHub Markdown. Protect
+  // them first so neither the HTML nor the Markdown media stripper can
+  // remove example syntax; restore the lines afterwards.
+  const protectedText = protectIndentedCodeLines(text);
+  const markdownStripped = stripMarkdownImages(stripHtmlMedia(protectedText.text));
+  const referenceStripped = stripReferenceImages(markdownStripped);
+  return restoreIndentedCodeLines(referenceStripped, protectedText.lines);
+}
+
+/**
+ * Replace every indented code line (4+ leading spaces or a tab) with a
+ * placeholder of equal length so media stripping cannot touch it. Returns the
+ * masked text plus the original lines for restoration.
+ */
+function protectIndentedCodeLines(text) {
+  const lines = [];
+  const masked = text.split("\n").map((line) => {
+    if (/^(?: {4,}|\t)/.test(line)) {
+      lines.push(line);
+      return "\u0000" + line.replace(/[^\n]/g, " ").slice(1);
+    }
+    lines.push(null);
+    return line;
+  });
+  return { text: masked.join("\n"), lines };
+}
+
+/**
+ * Restore masked indented-code lines from their original content. Placeholder
+ * lines are identified by the leading \u0000 marker and matched positionally.
+ */
+function restoreIndentedCodeLines(text, lines) {
+  const out = text.split("\n").map((line, i) => {
+    if (lines[i] !== null && line.startsWith("\u0000")) {
+      return lines[i];
+    }
+    return line;
+  });
+  return out.join("\n");
 }
 
 /**
@@ -167,17 +204,14 @@ function isInsideIndentedCode(text, index) {
 function stripReferenceImages(text) {
   if (typeof text !== "string") return "";
   // Inline reference: ![alt][ref] or ![alt][] (implicit). Alt may contain
-  // balanced brackets.
-  let s = text.replace(/!\[(?:[^\[\]]|\[[^\]]*\])*\]\[[^\]]*\]/g, " ");
+  // balanced brackets, so a balanced scan is used for the label part.
+  let s = stripInlineReferences(text);
   // Reference definitions: [ref]: url "title" — only when the reference is
   // actually used by an image in the same text. A definition alone (or one
   // used by a text link) is not media and must stay.
   const refs = new Set();
-  for (const m of text.matchAll(/!\[([^\]]*)\]\[([^\]]*)\]/g)) {
-    // Explicit reference: ![alt][ref] — the ref is group 2.
-    if (m[2]) refs.add(m[2].toLowerCase());
-    // Implicit reference: ![alt][] — the ref is the alt text.
-    if (m[2] === "" && m[1]) refs.add(m[1].toLowerCase());
+  for (const ref of collectInlineReferenceLabels(text)) {
+    refs.add(ref.toLowerCase());
   }
   if (refs.size > 0) {
     s = s.replace(
@@ -186,6 +220,94 @@ function stripReferenceImages(text) {
     );
   }
   return s;
+}
+
+/**
+ * Strip inline reference-style image tokens `![alt][ref]` / `![alt][]`
+ * using a balanced scan for the alt text (which may contain nested brackets).
+ */
+function stripInlineReferences(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const end = scanReferenceImage(text, i);
+      if (end !== -1) {
+        out.push(" ");
+        i = end;
+        continue;
+      }
+    }
+    out.push(text[i]);
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
+ * Scan an inline reference-style image `![alt][ref]` or `![alt][]` starting
+ * at `start`. Returns the index just past the closing `]` on success, or -1.
+ */
+function scanReferenceImage(text, start) {
+  const altEnd = scanBalancedBrackets(text, start + 2);
+  if (altEnd === -1 || text[altEnd] !== "]") return -1;
+  if (text[altEnd + 1] !== "[") return -1;
+  const refEnd = scanBalancedBrackets(text, altEnd + 2);
+  if (refEnd === -1 || text[refEnd] !== "]") return -1;
+  return refEnd + 1;
+}
+
+/**
+ * Scan balanced bracket content starting at `start` (inside the opening `[`).
+ * Returns the index of the matching closing `]`, or -1 when unbalanced.
+ */
+function scanBalancedBrackets(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === "[") {
+      depth += 1;
+    } else if (ch === "]") {
+      if (depth === 0) return i;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Collect the reference labels used by inline reference-style images. For an
+ * explicit `![alt][ref]` the label is `ref`; for an implicit `![alt][]` the
+ * label is the alt text.
+ */
+function collectInlineReferenceLabels(text) {
+  const labels = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const altStart = i + 2;
+      const altEnd = scanBalancedBrackets(text, altStart);
+      if (altEnd !== -1 && text[altEnd] === "]") {
+        const alt = text.slice(altStart, altEnd);
+        if (text[altEnd + 1] === "[") {
+          const refStart = altEnd + 2;
+          const refEnd = scanBalancedBrackets(text, refStart);
+          if (refEnd !== -1 && text[refEnd] === "]") {
+            const ref = text.slice(refStart, refEnd);
+            labels.push(ref ? ref : alt);
+            i = refEnd + 1;
+            continue;
+          }
+        }
+      }
+    }
+    i += 1;
+  }
+  return labels;
 }
 
 /**

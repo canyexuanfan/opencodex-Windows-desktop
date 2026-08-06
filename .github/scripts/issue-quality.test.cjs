@@ -385,6 +385,16 @@ describe("validateIssue - feature", () => {
     // Indented code blocks render as literal code, not images (Codex bot finding).
     assert.equal(isMediaOnly("    ![provider status](https://example.com/status.png)"), false);
     assert.equal(isMediaOnly("\t![provider status](https://example.com/status.png)"), false);
+    // HTML media inside indented code is also literal code (CodeRabbit finding).
+    assert.equal(isMediaOnly('    <img src="x.png">'), false);
+    assert.equal(isMediaOnly('    <video src="v.mp4"></video>'), false);
+    assert.equal(isMediaOnly('\t<img src="x.png">'), false);
+    // Reference labels with nested alt brackets (CodeRabbit finding).
+    assert.equal(isMediaOnly("![Image [screenshot]][shot]\n\n[shot]: https://example.com/x.png"), true);
+    assert.equal(
+      isMediaOnly("![Image [screenshot]][shot]\n\n[shot]: https://example.com/x.png\ncaption"),
+      false,
+    );
     assert.equal(isMediaOnly('<picture><source srcset="x.webp"><img src="x.png"></picture>'), true);
     assert.equal(isMediaOnly('<video src="clip.mp4"></video>'), true);
     assert.equal(isMediaOnly('<img src="x.png" />\nCaption text'), false);
