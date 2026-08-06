@@ -48,6 +48,51 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
+  it("listens for review events so bot findings after ready are caught", () => {
+    assert.match(workflow, /pull_request_review/);
+    assert.match(workflow, /pull_request_review_comment/);
+  });
+
+  it("queries review threads and feeds them to the findings claim check", () => {
+    assert.match(workflow, /reviewThreads\(first: 100\)/);
+    assert.match(workflow, /unresolvedFindingsClaim/);
+    assert.match(workflow, /findingsClaim\.byBot/);
+    assert.match(workflow, /review_findings/);
+  });
+
+  it("fails closed when review threads cannot be read", () => {
+    assert.match(workflow, /findingsUnverifiable/);
+    assert.match(workflow, /findings claim could not be verified/);
+  });
+
+  it("writes exactly one consolidated comment via a single upsert helper", () => {
+    assert.match(workflow, /GATE_MARKER,/);
+    assert.match(workflow, /comment\.body\?\.includes\(GATE_MARKER\)/);
+    assert.match(workflow, /upsertGateComment/);
+    assert.match(workflow, /buildGateCommentBody/);
+    // No legacy two-comment write path remains.
+    assert.doesNotMatch(workflow, /upsertReadinessComment/);
+    assert.doesNotMatch(workflow, /buildReadinessCommentBody/);
+    // No intermediate checkpoint comment writes.
+    assert.doesNotMatch(workflow, /Draft conversion pending/);
+    assert.doesNotMatch(workflow, /Recording ownership state/);
+  });
+
+  it("manages the review-ready label for the CodeRabbit opt-in trigger", () => {
+    assert.match(workflow, /REVIEW_READY_LABEL\s*=\s*"review-ready"/);
+    assert.match(workflow, /github\.rest\.issues\.addLabels/);
+    assert.match(workflow, /github\.rest\.issues\.removeLabel/);
+    assert.match(workflow, /reviewReadyDesired/);
+  });
+
+  it("migrates legacy two-comment PRs and deletes the old comments", () => {
+    assert.match(workflow, /migrateLegacyCommentsIfNeeded/);
+    assert.match(workflow, /migrateLegacyGateState/);
+    assert.match(workflow, /github\.rest\.issues\.deleteComment/);
+    assert.match(workflow, /legacyEnforcerComment/);
+    assert.match(workflow, /legacyReadinessComment/);
+  });
+
   it("checks out trusted base-branch scripts only (never PR head)", () => {
     // Scope the assertions to the checkout step itself, so a stray `ref:` on
     // another step cannot satisfy the pin while the checkout stays mutable.

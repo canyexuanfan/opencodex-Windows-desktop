@@ -9,6 +9,7 @@ const {
   authorHasPushPermission,
   assessPrDescription,
   hasGuiCue,
+  hasGuiOverride,
   hasScreenshotEvidence,
   buildReviewReadinessSection,
   extractReviewReadiness,
@@ -145,6 +146,50 @@ describe("hasGuiCue", () => {
   it("does not match missing or non-string inputs", () => {
     assert.equal(hasGuiCue(undefined, undefined), false);
     assert.equal(hasGuiCue(null, null), false);
+  });
+});
+
+describe("hasGuiOverride", () => {
+  const owner = { author_association: "OWNER", body: "Not touching gui here." };
+  const collaborator = { author_association: "COLLABORATOR", body: "no gui changes needed" };
+  const member = { author_association: "MEMBER", body: "doesn't change the gui" };
+  const author = { author_association: "CONTRIBUTOR", body: "Not touching gui here." };
+  const outsider = { author_association: "NONE", body: "Not touching gui here." };
+
+  it("matches a maintainer comment with a negation phrase", () => {
+    assert.equal(hasGuiOverride({ comments: [owner] }), true);
+    assert.equal(hasGuiOverride({ comments: [collaborator] }), true);
+    assert.equal(hasGuiOverride({ comments: [member] }), true);
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "I did not change gui" }] }),
+      true,
+    );
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "Without gui changes" }] }),
+      true,
+    );
+  });
+
+  it("does not let the PR author or a non-collaborator waive the gate", () => {
+    assert.equal(hasGuiOverride({ comments: [author] }), false);
+    assert.equal(hasGuiOverride({ comments: [outsider] }), false);
+  });
+
+  it("does not match a comment that names gui without negating it", () => {
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "This touches gui but only config" }] }),
+      false,
+    );
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "gui is involved here" }] }),
+      false,
+    );
+  });
+
+  it("is clean for no comments or a comment without a body", () => {
+    assert.equal(hasGuiOverride({ comments: [] }), false);
+    assert.equal(hasGuiOverride({ comments: [{ author_association: "OWNER" }] }), false);
+    assert.equal(hasGuiOverride({}), false);
   });
 });
 
@@ -489,7 +534,7 @@ describe("uncheckReviewReadinessBoxes", () => {
     "",
     "- [x] All CI tests are green on my local testing.",
     "- [x] I pushed my PR to the latest dev commit.",
-    "- [x] I fixed all correct Codex and CodeRabbit findings.",
+    "- [x] I resolved all correct Codex and CodeRabbit findings.",
     "- [x] My PR is ready for review.",
     "<!-- pr-quality-readiness-checklist:end -->",
   ].join("\n");
@@ -510,7 +555,7 @@ describe("uncheckReviewReadinessBoxes", () => {
     ]);
     assert.ok(body.includes("- [ ] All CI tests are green on my local testing."));
     assert.ok(body.includes("- [ ] I pushed my PR to the latest dev commit."));
-    assert.ok(body.includes("- [x] I fixed all correct Codex and CodeRabbit findings."));
+    assert.ok(body.includes("- [x] I resolved all correct Codex and CodeRabbit findings."));
     assert.ok(body.includes("- [x] My PR is ready for review."));
   });
 

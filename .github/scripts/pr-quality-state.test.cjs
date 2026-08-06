@@ -7,11 +7,18 @@ const {
   stateMarker,
   parseReadinessState,
   readinessStateMarker,
+  parseGateState,
+  gateStateMarker,
+  defaultGateState,
+  migrateLegacyGateState,
   clearedEnforcerState,
   defaultEnforcerState,
   defaultReadinessState,
   completionIsStale,
   readinessClaimViolations,
+  unresolvedFindingsClaim,
+  coderabbitOutsideDiffFindings,
+  REVIEW_FINDINGS_BOT_LOGINS,
   READINESS_LATEST_DEV_BEHIND_MAX,
   READINESS_STATE_VERSION
 } = require("./pr-quality-state.cjs");
@@ -259,5 +266,269 @@ describe("readinessClaimViolations", () => {
       readinessClaimViolations({ ciGreen: true, behindBase: 5, behindMax: 4 }),
       ["latest_dev"],
     );
+  });
+});
+
+describe("unresolvedFindingsClaim", () => {
+  it("passes when there are no review threads at all", () => {
+    assert.deepEqual(unresolvedFindingsClaim({ threads: [] }), {
+      code: null,
+      unresolved: 0,
+      byBot: {},
+    });
+  });
+
+  it("passes when every bot thread is resolved", () => {
+    assert.deepEqual(
+      unresolvedFindingsClaim({
+        threads: [
+          { isResolved: true, author: { login: "chatgpt-codex-connector[bot]" } },
+          { isResolved: true, author: { login: "coderabbitai[bot]" } },
+        ],
+      }),
+      { code: null, unresolved: 0, byBot: {} },
+    );
+  });
+
+  it("flags one unresolved Codex thread and counts it per bot", () => {
+    assert.deepEqual(
+      unresolvedFindingsClaim({
+        threads: [
+          { isResolved: false, author: { login: "chatgpt-codex-connector[bot]" } },
+          { isResolved: true, author: { login: "coderabbitai[bot]" } },
+        ],
+      }),
+      {
+        code: "review_findings",
+        unresolved: 1,
+        byBot: { "chatgpt-codex-connector[bot]": 1 },
+      },
+    );
+  });
+
+  it("flags unresolved threads from both bots and counts each", () => {
+    assert.deepEqual(
+      unresolvedFindingsClaim({
+        threads: [
+          { isResolved: false, author: { login: "chatgpt-codex-connector[bot]" } },
+          { isResolved: false, author: { login: "chatgpt-codex-connector[bot]" } },
+          { isResolved: false, author: { login: "coderabbitai[bot]" } },
+        ],
+      }),
+      {
+        code: "review_findings",
+        unresolved: 3,
+        byBot: {
+          "chatgpt-codex-connector[bot]": 2,
+          "coderabbitai[bot]": 1,
+        },
+      },
+    );
+  });
+
+  it("ignores unresolved threads from humans", () => {
+    assert.deepEqual(
+      unresolvedFindingsClaim({
+        threads: [
+          { isResolved: false, author: { login: "wibias" } },
+          { isResolved: false, author: null },
+        ],
+      }),
+      { code: null, unresolved: 0, byBot: {} },
+    );
+  });
+
+  it("fails closed on a thread with no resolution state", () => {
+    // A thread whose isResolved is missing cannot be claimed resolved.
+    assert.deepEqual(
+      unresolvedFindingsClaim({
+        threads: [{ isResolved: null, author: { login: "coderabbitai[bot]" } }],
+      }),
+      {
+        code: "review_findings",
+        unresolved: 1,
+        byBot: { "coderabbitai[bot]": 1 },
+      },
+    );
+  });
+
+  it("exposes the bot allowlist", () => {
+    assert.deepEqual(REVIEW_FINDINGS_BOT_LOGINS, [
+      "chatgpt-codex-connector[bot]",
+      "coderabbitai[bot]",
+    ]);
+  });
+});
+
+describe("coderabbitOutsideDiffFindings", () => {
+  const HEAD = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+
+  it("flags a CodeRabbit review of the live head with actionable comments", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [
+        {
+          body: "**Actionable comments posted: 3**\n\nSome walkthrough.",
+          commit_id: HEAD,
+          submitted_at: "2026-08-04T06:24:02Z",
+        },
+      ],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, {
+      code: "review_findings",
+      unresolved: 3,
+      byBot: { "coderabbitai[bot]": 3 },
+    });
+  });
+
+  it("ignores a review of a different head", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [
+        {
+          body: "**Actionable comments posted: 3**",
+          commit_id: "1111111111111111111111111111111111111111",
+          submitted_at: "2026-08-04T06:24:02Z",
+        },
+      ],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
+  });
+
+  it("ignores a review reporting zero actionable comments", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [{ body: "**Actionable comments posted: 0**", commit_id: HEAD }],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
+  });
+
+  it("uses the most recent review of the live head", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [
+        { body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:00:00Z" },
+        { body: "**Actionable comments posted: 5**", commit_id: HEAD, submitted_at: "2026-08-04T07:00:00Z" },
+      ],
+      liveHeadSha: HEAD,
+    });
+    assert.equal(claim.unresolved, 5);
+  });
+
+  it("returns clean for no reviews or no live head", () => {
+    assert.deepEqual(coderabbitOutsideDiffFindings({ reviews: [], liveHeadSha: HEAD }), {
+      code: null,
+      unresolved: 0,
+      byBot: {},
+    });
+    assert.deepEqual(coderabbitOutsideDiffFindings({ reviews: [{ body: "**Actionable comments posted: 1**", commit_id: HEAD }] }), {
+      code: null,
+      unresolved: 0,
+      byBot: {},
+    });
+  });
+});
+
+describe("unresolvedFindingsClaim with outside-diff supplement", () => {
+  const HEAD = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+
+  it("adds the outside-diff count to a clean thread set", () => {
+    const claim = unresolvedFindingsClaim({
+      threads: [],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z" }],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, {
+      code: "review_findings",
+      unresolved: 2,
+      byBot: { "coderabbitai[bot]": 2 },
+    });
+  });
+
+  it("adds the outside-diff count to an unresolved thread count", () => {
+    const claim = unresolvedFindingsClaim({
+      threads: [
+        { isResolved: false, author: { login: "coderabbitai[bot]" } },
+      ],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z" }],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, {
+      code: "review_findings",
+      unresolved: 3,
+      byBot: { "coderabbitai[bot]": 3 },
+    });
+  });
+
+  it("keeps a resolved thread set clean even with a stale review", () => {
+    const claim = unresolvedFindingsClaim({
+      threads: [
+        { isResolved: true, author: { login: "coderabbitai[bot]" } },
+      ],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: "1111111111111111111111111111111111111111", submitted_at: "2026-08-04T06:24:02Z" }],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
+  });
+});
+
+describe("gate state", () => {
+  it("round-trips through gateStateMarker and parseGateState", () => {
+    const state = defaultGateState();
+    assert.deepEqual(parseGateState(gateStateMarker(state)), state);
+  });
+
+  it("returns null for markerless or unreadable gate state and warns", () => {
+    assert.equal(parseGateState("plain comment"), null);
+    assert.equal(parseGateState(null), null);
+    const warnings = [];
+    assert.equal(
+      parseGateState("<!-- opencodex-pr-gate-state:{bad -->", m =>
+        warnings.push(m),
+      ),
+      null,
+    );
+    assert.match(warnings[0], /Could not parse stored gate state/);
+  });
+
+  it("builds a fresh gate state", () => {
+    assert.deepEqual(defaultGateState(), {
+      version: 1,
+      active: false,
+      autoDraftedByBot: false,
+      titlePrefixedByBot: false,
+      maintainersPinged: false,
+      completedAtHeadSha: null,
+      reviewReadyLabeled: false,
+    });
+  });
+
+  it("merges legacy enforcer + readiness states", () => {
+    const merged = migrateLegacyGateState(
+      { version: 1, active: true, autoDraftedByBot: true, titlePrefixedByBot: true },
+      { version: 2, autoDraftedByBot: true, maintainersPinged: true, completedAtHeadSha: "abc123" },
+    );
+    assert.equal(merged.active, true);
+    assert.equal(merged.autoDraftedByBot, true);
+    assert.equal(merged.titlePrefixedByBot, true);
+    assert.equal(merged.maintainersPinged, true);
+    assert.equal(merged.completedAtHeadSha, "abc123");
+    assert.equal(merged.reviewReadyLabeled, false);
+  });
+
+  it("migrates with either legacy state absent", () => {
+    const onlyEnforcer = migrateLegacyGateState(
+      { version: 1, active: true, titlePrefixedByBot: true },
+      null,
+    );
+    assert.equal(onlyEnforcer.active, true);
+    assert.equal(onlyEnforcer.titlePrefixedByBot, true);
+    assert.equal(onlyEnforcer.completedAtHeadSha, null);
+
+    const onlyReadiness = migrateLegacyGateState(
+      null,
+      { version: 2, maintainersPinged: true },
+    );
+    assert.equal(onlyReadiness.active, false);
+    assert.equal(onlyReadiness.maintainersPinged, true);
   });
 });

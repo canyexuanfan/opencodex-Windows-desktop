@@ -6,15 +6,16 @@ const {
   buildReviewReadinessSection
 } = require("./pr-quality.cjs");
 const {
-  READINESS_MARKER,
+  GATE_MARKER,
   inlineCode,
   readinessChecklistLines,
-  buildReadinessCommentBody,
+  buildGateCommentBody,
   descriptionFailureLines,
   buildFailureSections,
   failureSummary,
   buildStaleNotice,
-  buildClaimCheckNotice
+  buildClaimCheckNotice,
+  buildFindingsClaimNotice
 } = require("./pr-quality-messages.cjs");
 
 const PR = {
@@ -45,7 +46,7 @@ describe("readinessChecklistLines", () => {
   });
 });
 
-describe("buildReadinessCommentBody", () => {
+describe("buildGateCommentBody", () => {
   const readiness = {
     present: true,
     complete: false,
@@ -54,26 +55,57 @@ describe("buildReadinessCommentBody", () => {
     items: [{ checked: true }, { checked: false }, { checked: false }, { checked: false }]
   };
 
-  it("carries the marker, serialized state, mirror, and tick count", () => {
-    const state = { version: 2, maintainersPinged: false };
-    const body = buildReadinessCommentBody(state, readiness, ["extra line"]).join("\n");
-    assert.ok(body.startsWith(READINESS_MARKER));
-    assert.ok(body.includes('<!-- pr-quality-readiness-state:{"version":2'));
+  it("carries the marker, serialized state, status, mirror, and tick count", () => {
+    const state = { version: 1, maintainersPinged: false };
+    const body = buildGateCommentBody(state, {
+      status: "DRAFT",
+      statusReason: "review readiness checklist open (1/4 boxes ticked).",
+      actions: ["Tick all four boxes in the PR description once you're done."],
+      readiness,
+      checklistRequired: true,
+      notices: ["extra line"]
+    }).join("\n");
+    assert.ok(body.startsWith(GATE_MARKER));
+    assert.ok(body.includes('<!-- opencodex-pr-gate-state:{"version":1'));
+    assert.ok(body.includes("## ⏳ DRAFT"));
+    assert.ok(body.includes("## What to do"));
+    assert.ok(body.includes("Tick all four boxes"));
+    assert.ok(body.includes("## Review readiness checklist"));
     assert.ok(body.includes("**1/4** boxes ticked."));
     assert.ok(body.includes("extra line"));
-    assert.ok(body.includes("tick all four boxes there."));
   });
 
-  it("states the checklist is not required without claiming the PR is ready", () => {
-    const body = buildReadinessCommentBody(
-      { version: 2 },
-      { present: false, complete: false, checked: 0, total: 0, items: [] },
-      ["⚠️ **Wrong target branch**"],
+  it("renders a ready status without a checklist when not required", () => {
+    const body = buildGateCommentBody(
+      { version: 1 },
+      {
+        status: "READY",
+        statusReason: "this PR is ready for review.",
+        actions: [],
+        readiness: { present: false, complete: false, checked: 0, total: 0, items: [] },
+        checklistRequired: false,
+        notices: ["⚠️ **Wrong target branch**"]
+      },
     ).join("\n");
-    assert.ok(body.includes("not required for this author."));
-    assert.ok(!body.includes("This PR is ready for review"));
-    assert.ok(body.includes("⚠️ **Wrong target branch**"));
+    assert.ok(body.includes("## ✅ READY"));
+    assert.ok(!body.includes("## Review readiness checklist"));
     assert.ok(!body.includes("boxes ticked"));
+    assert.ok(body.includes("⚠️ **Wrong target branch**"));
+  });
+
+  it("does not claim ready when the PR is kept in draft", () => {
+    const body = buildGateCommentBody(
+      { version: 1 },
+      {
+        status: "DRAFT",
+        statusReason: "PR is kept in draft.",
+        actions: [],
+        readiness,
+        checklistRequired: true,
+        notices: []
+      },
+    ).join("\n");
+    assert.ok(!body.includes("READY"));
   });
 });
 
@@ -200,5 +232,25 @@ describe("buildClaimCheckNotice", () => {
     assert.deepEqual(notice, [
       "The checklist has been reset: re-test against the latest code and tick the boxes again.",
     ]);
+  });
+});
+
+describe("buildFindingsClaimNotice", () => {
+  it("names each bot with unresolved threads and the untick", () => {
+    const notice = buildFindingsClaimNotice({
+      "chatgpt-codex-connector[bot]": 2,
+      "coderabbitai[bot]": 1,
+    });
+    assert.match(notice[0], /Codex has 2 unresolved findings/);
+    assert.match(notice[0], /\*\*Codex\/CodeRabbit findings\*\* box has been unticked/);
+    assert.match(notice[1], /CodeRabbit has 1 unresolved finding/);
+    assert.match(notice[2], /Resolve every open review conversation/);
+  });
+
+  it("handles a single bot with one thread", () => {
+    const notice = buildFindingsClaimNotice({ "coderabbitai[bot]": 1 });
+    assert.equal(notice.length, 2);
+    assert.match(notice[0], /CodeRabbit has 1 unresolved finding/);
+    assert.match(notice[1], /Resolve every open review conversation/);
   });
 });
