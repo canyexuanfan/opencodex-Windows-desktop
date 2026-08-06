@@ -778,6 +778,7 @@ switch (command) {
   }
   case "restore":
   case "eject": {
+    const restoreJson = args[1] === "--json";
     if (args[1] === "back") {
       // Reverse switch: re-point plain `codex` at the RUNNING proxy without touching its
       // lifecycle — the counterpart of `ocx restore`. Start/stop triggers are unchanged;
@@ -829,6 +830,14 @@ switch (command) {
       r = await restoreNativeCodexAsync({ revalidateDesiredState: true });
     } catch (err) {
       r = { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+    if (restoreJson) {
+      // Spawned callers need the artifact-level result to distinguish a busy
+      // history worker from a successful native restore. Keep stdout machine
+      // readable; human framing remains the default command contract.
+      console.log(JSON.stringify(r));
+      if (!r.success) process.exitCode = 1;
+      break;
     }
     if (r.success) console.log(`✅ ${r.message}`);
     else {
