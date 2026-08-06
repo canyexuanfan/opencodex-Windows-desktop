@@ -17,8 +17,9 @@
  * Design of record: devlog/_fin/260803_integrations_toggle_all/030 (routes),
  * 011 (Claude Code), 012 (Grok).
  */
-import { readRuntimePort, saveConfigPreservingClaudeCode } from "../../config";
+import { loadConfig, readRuntimePort, saveConfigPreservingClaudeCode } from "../../config";
 import { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } from "../../codex/catalog";
+import { inspectDesktop3pConfigLibrary, removeDesktop3pStandardPivot, writeDesktop3pConfig } from "../../claude/desktop-3p";
 import { injectGrokConfig, stripGrokConfig, type GrokInjectModel } from "../../grok/inject";
 import { inspectGrokConfig } from "../../grok/inspect";
 import { grokConfigPath } from "../../grok/status";
@@ -29,7 +30,7 @@ import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 
-export type NativeIntegrationClientId = "claude" | "grok" | "codex";
+export type NativeIntegrationClientId = "claude" | "grok" | "codex" | "claude-desktop";
 
 /** Every reason this module can decline, in one place (audit r3 #6). */
 export type NativeRefusalReason =
@@ -37,13 +38,16 @@ export type NativeRefusalReason =
   | "orphaned_marker"
   | "home_mismatch"
   | "config_busy"
-  | "write_failed";
+  | "write_failed"
+  | "metadata_unreadable"
+  | "cleanup_incomplete";
 
 export interface NativeStatus {
   clientId: NativeIntegrationClientId;
   state: "absent" | "current" | "unsafe";
   installed: boolean;
   configPath: string;
+  desiredEnabled: boolean;
   /**
    * Set when a disable would be refused right now. ADVISORY: the file can
    * change before the PUT, which re-checks and whose answer is authoritative.
@@ -62,6 +66,7 @@ export interface NativeToggleEnvelope {
   changed: boolean;
   state: NativeStatus["state"];
   message: string;
+  desiredEnabled: boolean;
   /** Present when the outcome needs more than success/failure to be honest. */
   reason?: string;
   artifacts?: CodexNativeRestoreResult["artifacts"];
@@ -73,6 +78,9 @@ export interface NativeRefusalEnvelope {
   clientId: NativeIntegrationClientId;
   reason: NativeRefusalReason;
   message: string;
+  /** Available after intent persistence; absent only for pre-commit refusals. */
+  desiredEnabled?: boolean;
+  residualPaths?: string[];
 }
 
 function refusal(
@@ -80,12 +88,36 @@ function refusal(
   clientId: NativeIntegrationClientId,
   reason: NativeRefusalReason,
   message: string,
+  extra: Pick<NativeRefusalEnvelope, "desiredEnabled" | "residualPaths"> = {},
 ): Response {
   return jsonResponse({
     error: status >= 500 ? "native integration change failed" : "native integration change refused",
     code: status >= 500 ? "native_integration_failed" : "native_integration_refused",
-    clientId, reason, message,
+    clientId, reason, message, ...extra,
   } satisfies NativeRefusalEnvelope, status);
+}
+
+function desktopStatus(config: ManagementContext["config"]): NativeStatus {
+  const seen = inspectDesktop3pConfigLibrary({
+    appliedFingerprint: config.claudeCode?.desktopProfile?.appliedFingerprint ?? null,
+  });
+  const state: NativeStatus["state"] = seen.kind === "gateway_ours"
+    ? "current"
+    : seen.kind === "unsafe" || seen.kind === "broken" ? "unsafe" : "absent";
+  const disableBlocked = seen.kind === "unsafe" || seen.kind === "broken" || seen.kind === "foreign"
+    ? {
+        reason: seen.kind === "unsafe" && seen.reason === "metadata_unreadable" ? "metadata_unreadable" as const : "write_failed" as const,
+        message: "Claude Desktop configuration cannot be changed safely.",
+      }
+    : null;
+  return {
+    clientId: "claude-desktop",
+    state,
+    installed: seen.kind !== "not_installed",
+    configPath: seen.libraryPath,
+    desiredEnabled: config.clientIntegrations?.["claude-desktop"] !== false,
+    disableBlocked,
+  };
 }
 
 /** Absent means ON: the six read sites all treat only an explicit `false` as off. */
@@ -100,6 +132,7 @@ function claudeStatus(config: ManagementContext["config"], configPath: string): 
     // The surface exists wherever the proxy does; there is no separate install.
     installed: true,
     configPath,
+    desiredEnabled: claudeCodeEnabled(config),
     // Nothing can refuse this disable: no external file, no shared teardown.
     disableBlocked: null,
   };
@@ -110,7 +143,7 @@ function claudeStatus(config: ManagementContext["config"], configPath: string): 
  * can change before the PUT, which re-checks with the same inspector and whose
  * answer is authoritative.
  */
-function grokStatus(): NativeStatus {
+function grokStatus(config: ManagementContext["config"]): NativeStatus {
   const seen = inspectGrokConfig();
   let disableBlocked: NativeStatus["disableBlocked"] = null;
   if (seen.kind === "orphaned_marker") {
@@ -139,6 +172,7 @@ function grokStatus(): NativeStatus {
     state,
     installed: seen.kind !== "not_installed",
     configPath: grokConfigPath(),
+    desiredEnabled: config.clientIntegrations?.grok !== false,
     disableBlocked,
   };
 }
@@ -266,6 +300,7 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
         return jsonResponse({
           ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
           state: "absent",
+          desiredEnabled: enabled,
           message: "Codex integration is OFF; enable did not change Codex.",
           reason: "apply_incomplete",
         } satisfies NativeToggleEnvelope);
@@ -273,6 +308,7 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
       return jsonResponse({
         ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
         state: applied.ok ? "current" : "absent",
+        desiredEnabled: enabled,
         message: applied.ok
           ? "Codex now routes through opencodex"
           : `Codex intent saved, but applying it did not complete: ${applied.message}`,
@@ -288,6 +324,7 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
     return jsonResponse({
       ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
       state: restored.success ? "absent" : "unsafe",
+      desiredEnabled: enabled,
       message: restored.success
         ? "Codex restored to its native path; the proxy is still serving other clients"
         : `Codex intent saved, but restoring the native path did not complete: ${restored.message}`,
@@ -398,6 +435,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
       return jsonResponse({
         ok: true, clientId: "grok", changed: result.changed,
         state: "absent",
+        desiredEnabled: enabled,
         message: result.changed
           ? "Grok integration disabled — the opencodex block was removed. Re-enabling regenerates it from the current model list."
           : "Grok integration is already off",
@@ -475,6 +513,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
           return jsonResponse({
             ok: true, clientId: "grok", changed: result.changed,
             state: "current", reason: "non_loopback_superseded",
+            desiredEnabled: enabled,
             message: "opencodex is bound to a non-loopback address, so this request did not write a block — but a well-formed opencodex block is present in the Grok config, written by something else. The card shows what is on disk.",
           } satisfies NativeToggleEnvelope);
         case "not_installed":
@@ -483,6 +522,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
           return jsonResponse({
             ok: true, clientId: "grok", changed: result.changed,
             state: "absent", reason: "non_loopback_removed",
+            desiredEnabled: enabled,
             message: "opencodex is bound to a non-loopback address, so Grok cannot be auto-registered. The previously generated block was removed because it pointed at a loopback address that no longer serves.",
           } satisfies NativeToggleEnvelope);
         default: {
@@ -506,6 +546,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
     return jsonResponse({
       ok: true, clientId: "grok", changed: result.changed,
       state: "current",
+      desiredEnabled: enabled,
       message: result.changed ? "Grok integration enabled — the opencodex block was regenerated from the current model list." : "Grok integration is already on",
     } satisfies NativeToggleEnvelope);
   })();
@@ -516,13 +557,86 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
   }
 }
 
+let claudeDesktopToggleFlight: Promise<Response> | null = null;
+
+async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Response> {
+  if (claudeDesktopToggleFlight) {
+    return refusal(409, "claude-desktop", "config_busy",
+      "Another Claude Desktop change is already in flight. Nothing was written — try again in a moment.");
+  }
+  claudeDesktopToggleFlight = (async (): Promise<Response> => {
+    let body: { enabled?: unknown };
+    try {
+      body = await readManagementJsonBody(ctx.req);
+    } catch (error) {
+      rethrowManagementBodyTooLarge(error);
+      return jsonResponse({ error: "invalid JSON body" }, 400);
+    }
+    if (typeof body.enabled !== "boolean") return jsonResponse({ error: "enabled must be a boolean" }, 400);
+
+    const { setIntegrationEnabled } = await import("../../codex/desired-state");
+    const persisted = setIntegrationEnabled("claude-desktop", body.enabled);
+    if (!persisted.ok) {
+      return refusal(persisted.retryable ? 409 : 500, "claude-desktop", persisted.retryable ? "config_busy" : "write_failed", persisted.message);
+    }
+    const desiredEnabled = loadConfig().clientIntegrations?.["claude-desktop"] !== false;
+    const current = loadConfig();
+    const fingerprint = current.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
+
+    if (!body.enabled) {
+      const removed = removeDesktop3pStandardPivot({ appliedFingerprint: fingerprint });
+      if (removed.kind === "cleanup_incomplete") {
+        return refusal(500, "claude-desktop", "cleanup_incomplete",
+          "Claude Desktop now points at standard mode, but credential cleanup is incomplete.",
+          { desiredEnabled, residualPaths: removed.residualPaths ?? [] });
+      }
+      if (!removed.ok) {
+        return refusal(409, "claude-desktop", removed.reason === "metadata_unreadable" ? "metadata_unreadable" : "write_failed",
+          "Claude Desktop configuration could not be changed safely.", { desiredEnabled });
+      }
+      return jsonResponse({
+        ok: true, clientId: "claude-desktop", changed: removed.changed, state: "absent", desiredEnabled,
+        message: removed.changed ? "Claude Desktop integration disabled." : "Claude Desktop integration is already off.",
+      } satisfies NativeToggleEnvelope);
+    }
+
+    const fetchModels = ctx.deps.fetchAllModels ?? defaultFetchAllModels;
+    try {
+      const routed = filterCatalogVisibleModels(await fetchModels(current), current).map(model => ({
+        provider: model.provider, id: model.id, contextWindow: model.contextWindow,
+      }));
+      const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
+      const result = writeDesktop3pConfig(
+        runtime?.port ?? current.port,
+        [...visibleNativeSlugs(current)],
+        routed,
+        current.apiKeys?.[0]?.key,
+        "static",
+        current.claudeCode?.desktopProfile,
+      );
+      if (!result.written) return refusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled });
+      return jsonResponse({
+        ok: true, clientId: "claude-desktop", changed: true, state: "current", desiredEnabled,
+        message: "Claude Desktop integration enabled.",
+      } satisfies NativeToggleEnvelope);
+    } catch {
+      return refusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled });
+    }
+  })();
+  try {
+    return await claudeDesktopToggleFlight;
+  } finally {
+    claudeDesktopToggleFlight = null;
+  }
+}
+
 export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps } = ctx;
 
   if (url.pathname === "/api/native-integrations" && req.method === "GET") {
     const { getConfigPath } = await import("../../config");
     return jsonResponse({
-      clients: [claudeStatus(config, getConfigPath()), grokStatus()],
+      clients: [claudeStatus(config, getConfigPath()), grokStatus(config), desktopStatus(config)],
     } satisfies NativeStatusListEnvelope);
   }
 
@@ -543,6 +657,7 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
       return jsonResponse({
         ok: true, clientId: "claude", changed: false,
         state: enabled ? "current" : "absent",
+        desiredEnabled: enabled,
         message: enabled ? "Claude inbound is already on" : "Claude inbound is already off",
       } satisfies NativeToggleEnvelope);
     }
@@ -582,6 +697,7 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
     return jsonResponse({
       ok: true, clientId: "claude", changed: true,
       state: enabled ? "current" : "absent",
+      desiredEnabled: enabled,
       message: enabled ? "Claude inbound enabled" : "Claude inbound disabled",
     } satisfies NativeToggleEnvelope);
   }
@@ -592,6 +708,10 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
 
   if (url.pathname === "/api/native-integrations/codex" && req.method === "PUT") {
     return handleCodexToggle(ctx);
+  }
+
+  if (url.pathname === "/api/native-integrations/claude-desktop" && req.method === "PUT") {
+    return handleClaudeDesktopToggle(ctx);
   }
 
   return null;
