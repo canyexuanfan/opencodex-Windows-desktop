@@ -17,9 +17,13 @@ test("routing is a first-class dashboard page with a registered hash", () => {
   expect(resolveAppHashChange("routing").replaceTo).toBeNull();
 });
 
-test("Routing page wires profiles, dry-run, and analytics against management APIs", () => {
+test("Routing page wires profile CRUD, dry-run, and analytics against management APIs", () => {
   const page = readFileSync(join(guiRoot, "pages", "RoutingProfiles.tsx"), "utf8");
   expect(page).toContain("/api/routing-profiles");
+  expect(page).toContain('method: "PUT"');
+  expect(page).toContain('method: "DELETE"');
+  expect(page).toContain("routingProfilePutBody");
+  expect(page).toContain("<form");
   expect(page).toContain("/api/routing-analytics");
   expect(page).toContain("/api/routing-profiles/dry-run");
   expect(page).toContain("if (!response.ok)");
