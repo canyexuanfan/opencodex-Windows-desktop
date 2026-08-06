@@ -765,6 +765,18 @@ export interface OcxConfig {
   /** Account ids administratively excluded from future pool selection until resumed. */
   pausedCodexAccountIds?: string[];
   /**
+   * Selection order per account id, higher used earlier; absent = 0. Keyed by id
+   * rather than stored on `codexAccounts` rows so the Desktop login (`__main__`),
+   * which has no row, can be ordered too. Range -100..100.
+   */
+  codexAccountPriorities?: Record<string, number>;
+  /**
+   * Account id the operator last selected by hand. Suppresses upward priority
+   * preemption until that account crosses the auto-switch threshold. Stores the
+   * id (not a flag) so a stale pin cannot outlive the selection it described.
+   */
+  activeCodexAccountPinned?: string;
+  /**
    * Public model-selector namespaces bound to one Codex account. Values are stored account ids;
    * `"@main"` selects the Codex Desktop/main auth.json account. Account display aliases
    * are intentionally separate from these selectors.

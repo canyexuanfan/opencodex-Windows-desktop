@@ -16,6 +16,20 @@ const {
 const READINESS_MARKER = "<!-- pr-quality-readiness -->";
 /** Marks the bot's consolidated PR gate message. */
 const GATE_MARKER = "<!-- opencodex-pr-gate -->";
+/** Marks the hygiene status block inside the consolidated gate comment. */
+const HYGIENE_MARKER = "<!-- pr-hygiene -->";
+/** HTML comment wrapping the hygiene block so it survives gate rebuilds. */
+const HYGIENE_BLOCK_START = "<!-- pr-hygiene-block:start -->";
+const HYGIENE_BLOCK_END = "<!-- pr-hygiene-block:end -->";
+/**
+ * Both delimiters must occupy a complete line. A contributor-controlled
+ * hygiene line (for example a changed filename) can otherwise embed delimiter
+ * text mid-line and corrupt the block boundary on the next rewrite.
+ */
+const HYGIENE_BLOCK_RE = new RegExp(
+  `^[ \\t]*${HYGIENE_BLOCK_START}[ \\t]*\\n([\\s\\S]*?)\\n[ \\t]*${HYGIENE_BLOCK_END}[ \\t]*$`,
+  "m"
+);
 
 function inlineCode(value) {
   const text = String(value);
@@ -57,7 +71,8 @@ function buildGateCommentBody(state, opts) {
     actions = [],
     readiness,
     checklistRequired = true,
-    notices = []
+    notices = [],
+    hygiene
   } = opts;
   const complete = readiness?.present && readiness?.complete;
   const statusEmoji = status === "READY" ? "✅" : "⏳";
@@ -84,8 +99,62 @@ function buildGateCommentBody(state, opts) {
           ""
         ]
       : []),
+    ...(hygiene && hygiene.length > 0
+      ? [
+          "## Hygiene",
+          "",
+          HYGIENE_BLOCK_START,
+          HYGIENE_MARKER,
+          "",
+          ...hygiene,
+          "",
+          HYGIENE_BLOCK_END,
+          ""
+        ]
+      : []),
     ...notices
   ].filter(line => line !== null && line !== undefined);
+}
+
+/**
+ * The hygiene status block as stored inside the consolidated gate comment, or
+ * `null` when the comment has none. The gate rebuilds its body from scratch
+ * every run, so without this round-trip a hygiene update from the separate
+ * hygiene workflow would be silently dropped on the next gate write.
+ */
+function extractHygieneSection(body) {
+  if (typeof body !== "string") return null;
+  const match = body.match(HYGIENE_BLOCK_RE);
+  if (!match) return null;
+  return match[1]
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line !== "" && line !== HYGIENE_MARKER)
+    .join("\n");
+}
+
+/**
+ * Insert (or replace) a hygiene block in a gate-comment body. Used by the
+ * hygiene workflow to write its status into the single consolidated comment
+ * instead of posting a second bot message.
+ */
+function withHygieneSection(body, hygieneLines) {
+  const base = typeof body === "string" ? body : "";
+  const block = [
+    HYGIENE_BLOCK_START,
+    HYGIENE_MARKER,
+    "",
+    ...hygieneLines,
+    "",
+    HYGIENE_BLOCK_END
+  ].join("\n");
+
+  if (HYGIENE_BLOCK_RE.test(base)) {
+    return base.replace(HYGIENE_BLOCK_RE, block);
+  }
+
+  // No existing block: append one at the end.
+  return `${base.replace(/\s+$/, "")}\n\n## Hygiene\n\n${block}\n`;
 }
 
 function descriptionFailureLines(reason) {
@@ -254,9 +323,14 @@ function buildStaleNotice({ completionHeadSha, liveHeadSha, eventAction }) {
 module.exports = {
   READINESS_MARKER,
   GATE_MARKER,
+  HYGIENE_MARKER,
+  HYGIENE_BLOCK_START,
+  HYGIENE_BLOCK_END,
   inlineCode,
   readinessChecklistLines,
   buildGateCommentBody,
+  extractHygieneSection,
+  withHygieneSection,
   descriptionFailureLines,
   buildFailureSections,
   failureSummary,

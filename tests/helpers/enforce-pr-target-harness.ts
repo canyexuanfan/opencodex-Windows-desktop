@@ -83,6 +83,30 @@ export type RunOptions = {
    */
   eventAction?: string;
   /**
+   * Webhook event name. Defaults to `"pull_request_target"`. Pass
+   * `"issue_comment"` to exercise the GUI-waiver re-run path: the payload then
+   * carries `issue` and `comment` (never `pull_request`), exactly as GitHub
+   * delivers an issue comment on a PR.
+   */
+  eventName?: string;
+  /**
+   * `author_association` of the commenter on an `issue_comment` event.
+   * Defaults to `"COLLABORATOR"`. The gate only re-runs for maintainer
+   * associations (OWNER / COLLABORATOR / MEMBER).
+   */
+  commentAuthorAssociation?: string;
+  /**
+   * Login of the commenter on an `issue_comment` event. Defaults to
+   * `"wibias"`. The gate requires the commenter to be in the trusted
+   * MAINTAINERS.md list, so tests can set a non-maintainer login here.
+   */
+  commentAuthorLogin?: string;
+  /**
+   * Whether the commented-on issue is a pull request. Defaults to `true`.
+   * An `issue_comment` on a plain issue must not start this PR-only gate.
+   */
+  issueIsPullRequest?: boolean;
+  /**
    * Comments as `listComments` returns them, PAGE BY PAGE. Pass more than one
    * page to prove the script paginates: an audit round replaced `paginate` with
    * a single `listComments` call, which loses a bot comment that has scrolled
@@ -822,9 +846,31 @@ export async function runEnforcePrTarget(
      * runner and absent here is another `if (payload.x) return;`.
      */
     payload = {
-      action: options.eventAction ?? "opened",
+      action: options.eventAction ?? (options.eventName === "issue_comment" ? "created" : "opened"),
       number: eventPr.number,
-      pull_request: eventPr,
+      // An issue comment on a PR is delivered with `issue` + `comment`, never
+      // `pull_request`. The gate resolves the PR number from whichever object
+      // the event carried.
+      ...(options.eventName === "issue_comment"
+        ? {
+            issue: {
+              number: eventPr.number,
+              node_id: eventPr.node_id,
+              title: eventPr.title,
+              body: eventPr.body,
+              user: eventPr.user,
+              ...(options.issueIsPullRequest === false
+                ? {}
+                : { pull_request: { url: "https://api.github.com/repos/lidge-jun/opencodex/pulls/42" } }),
+            },
+            comment: {
+              id: 424242,
+              body: "not touching gui",
+              user: { login: options.commentAuthorLogin ?? "wibias" },
+              author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
+            },
+          }
+        : { pull_request: eventPr }),
       repository: {
         id: 987654321,
         name: "opencodex",
@@ -838,7 +884,7 @@ export async function runEnforcePrTarget(
       organization: undefined,
       installation: undefined,
     };
-    eventName = "pull_request_target";
+    eventName = options.eventName ?? "pull_request_target";
     sha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
     ref = "refs/pull/42/merge";
     workflow = "Enforce PR target branch";

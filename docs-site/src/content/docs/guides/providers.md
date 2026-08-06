@@ -89,7 +89,7 @@ The ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna s
 
 ## 2. Account login (OAuth)
 
-Six provider presets use OAuth login — plus GitHub Copilot via an experimental unofficial
+Seven provider presets use OAuth login — plus GitHub Copilot via an experimental unofficial
 device-flow bridge. opencodex stores their credentials in
 `~/.opencodex/auth.json` and refreshes them automatically. `chatgpt` is also accepted by the login
 CLI; it acquires a ChatGPT credential while creating a `forward`-mode provider entry.
@@ -101,6 +101,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # import kiro-cli credentials (or token fallback)
 ocx login google-antigravity
 ocx login cursor       # standalone Cursor PKCE login
+ocx login command-code # Command Code browser OAuth (or import ~/.commandcode/auth.json)
 ocx login github-copilot  # GitHub device flow → Copilot token (Copilot Pro/Business)
 ocx login chatgpt      # standalone ChatGPT OAuth login
 ocx logout <provider>
@@ -216,7 +217,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 70 built-in presets: 58 key-based, eight OAuth, three local, and one default
+opencodex ships 76 built-in presets: 64 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
@@ -250,8 +251,14 @@ free-experimentation model.
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -300,6 +307,15 @@ slash-containing native model ids, and caps live discovery at 256 KiB and 256 ra
 serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
 are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
 
+**Nscale and Vultr discovery.** Both presets read the provider's authenticated `/v1/models` catalog,
+preserve native ids, and cap discovery at 256 KiB and 256 raw rows. Nscale's catalog mixes chat,
+image, and embedding models without a modality field, so the preset admits only
+`meta-llama/Llama-3.1-8B-Instruct`, the model used by Nscale's official tool-calling API example.
+Vultr currently documents tool calling only for `kimi-k2-instruct`, so its preset exposes only that
+model. Other rows remain hidden until the provider publishes equivalent agent-tool evidence. Create
+an Nscale service token in the [Nscale Console](https://console.nscale.com); copy Vultr's inference
+key from the subscription overview in the [Vultr Console](https://my.vultr.com).
+
 **Command Code discovery.** The preset reads Command Code's `/provider/v1/models` list from
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
 rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
@@ -307,6 +323,32 @@ import from `~/.commandcode/auth.json` for existing Command Code CLI users); the
 account-scoped and comes from the authenticated discovery endpoint after login. Chat requests use the
 configured Bearer key. Create keys at
 [Command Code Studio](https://commandcode.ai/studio/).
+
+**SambaNova Cloud discovery.** The preset reads SambaNova Cloud's public `/v1/models` list from the fixed API
+host, preserves provider-native ids, and caps discovery at 128 KiB and 128 raw rows. Because the
+catalog is unauthenticated, the CLI login flow reports the key as unverifiable instead of treating
+the public response as proof. Chat requests still use the configured Bearer key and disable parallel
+function calls, which SambaNova does not yet support. Private SambaStudio deployment endpoints are
+out of scope. Create keys in
+[SambaNova Cloud](https://cloud.sambanova.ai/apis).
+
+**Nebius Token Factory discovery.** The preset requests the authenticated verbose model catalog and
+keeps only rows whose architecture produces text, excluding embedding and image-generation models.
+It preserves slash-containing native ids plus reported context and input-modality metadata, and caps
+discovery at 512 KiB and 512 raw rows. Dedicated deployment hosts are out of scope. Create keys in
+[Nebius Token Factory](https://tokenfactory.nebius.com).
+**DigitalOcean discovery.** The preset uses a model access key against the fixed shared Serverless
+Inference host and intersects the authenticated `/v1/models` response with DigitalOcean's
+docs-backed Chat Completions allowlist. Unknown, Responses-only, embedding, and media-generation
+ids fail closed. Discovery is capped at 256 KiB and 256 raw rows; agent-specific and dedicated
+hosts are out of scope. Create a key in the [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
+
+**Scaleway discovery.** The preset intersects the authenticated model list with Scaleway's
+documented Serverless Chat Completions allowlist. Unknown, Responses-only, embedding,
+transcription, and other media-model ids fail closed; discovery is capped at 128 KiB and 128 raw
+rows. It uses the default Project's shared endpoint; project-qualified URLs and dedicated
+deployments require a custom provider. Create an API key in the
+[Scaleway console](https://console.scaleway.com/generative-api).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > only. Use a personal [API key](https://docs.baseten.co/organization/api-keys) for local use, or a team key

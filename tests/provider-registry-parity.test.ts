@@ -31,7 +31,7 @@ function nativeTemplate(): Record<string, unknown> {
 
 const EXPECTED_KEY_PROVIDER_IDS = [
   "anthropic-apikey", "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "cline-pass", "cline", "orcarouter", "bizrouter", "groq", "google", "google-vertex", "azure-openai",
-  "deepseek", "cerebras", "deepinfra", "hyperbolic", "baseten", "commandcode", "together", "fireworks", "firepass", "moonshot",
+  "deepseek", "cerebras", "deepinfra", "hyperbolic", "nscale", "vultr", "baseten", "commandcode", "sambanova", "nebius", "digitalocean", "scaleway", "together", "fireworks", "firepass", "moonshot",
   "huggingface", "nvidia", "venice", "zai", "zhipu-bigmodel", "nanogpt", "synthetic", "siliconflow", "qwen-cloud", "tencent-coding-plan",
   "volcengine", "volcengine-coding-plan", "volcengine-agent-plan", "qianfan", "alibaba", "alibaba-token-plan", "alibaba-token-plan-intl", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway",
@@ -469,7 +469,7 @@ describe("provider registry parity", () => {
     expect(nvidia?.freeTier).toBe(true);
     expect(nvidia?.authKind).toBe("key");
     expect(nvidia?.keyOptional).toBeUndefined();
-    expect(freeTierProviders).toEqual(["nvidia", "cloudflare-workers-ai"]);
+    expect(freeTierProviders).toEqual(["scaleway", "nvidia", "cloudflare-workers-ai"]);
   });
 
   test("freeTier propagates through config seed, enrich backfill, and presets without overwriting user config", async () => {

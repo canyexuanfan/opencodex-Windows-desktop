@@ -93,7 +93,7 @@ account id, OpenAI beta/originator/session — см. [Адаптеры](/ru/refe
 
 ## 2. Вход по аккаунту (OAuth)
 
-Шесть пресетов провайдеров используют вход через OAuth — плюс GitHub Copilot через
+Семь пресетов провайдеров используют вход через OAuth — плюс GitHub Copilot через
 экспериментальный неофициальный мост device flow. opencodex хранит их учётные данные в
 `~/.opencodex/auth.json` и обновляет их автоматически. CLI входа также принимает `chatgpt`: эта
 команда получает учётные данные ChatGPT и одновременно создаёт запись провайдера в режиме `forward`.
@@ -105,6 +105,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # импорт учётных данных kiro-cli (с фолбэком на токен)
 ocx login google-antigravity
 ocx login cursor       # отдельный PKCE-вход Cursor
+ocx login command-code # браузерный OAuth Command Code (или импорт ~/.commandcode/auth.json)
 ocx login github-copilot  # device flow GitHub → токен Copilot (Copilot Pro/Business)
 ocx login chatgpt      # отдельный OAuth-вход ChatGPT
 ocx logout <provider>
@@ -153,7 +154,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 70 встроенными пресетами: 58 на основе ключей, восемь OAuth, три локальных и
+opencodex поставляется с 76 встроенными пресетами: 64 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
 Наиболее заметные записи:
@@ -188,8 +189,14 @@ opencodex поставляется с 70 встроенными пресетам
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -234,6 +241,15 @@ Volcengine Agent Plan использует нативную конечную т�
 строками. Он охватывает только serverless text и vision-language chat; отдельные image, audio и GPU
 endpoint в него не входят. Ключи создаются в [Hyperbolic](https://app.hyperbolic.ai).
 
+**Discovery для Nscale и Vultr.** Оба пресета читают аутентифицированный каталог `/v1/models`,
+сохраняют нативные id и ограничивают discovery размером 256 KiB и 256 исходными строками. Каталог
+Nscale смешивает chat-, image- и embedding-модели без поля modality, поэтому пресет допускает только
+`meta-llama/Llama-3.1-8B-Instruct` — модель из официального примера API с вызовом инструментов.
+Vultr сейчас документирует tool calling только для `kimi-k2-instruct`, поэтому его пресет показывает
+только эту модель. Остальные строки скрыты до появления равноценного подтверждения agent-tool.
+Service token Nscale создаётся в [Nscale Console](https://console.nscale.com), а inference key Vultr
+копируется со страницы подписки в [Vultr Console](https://my.vultr.com).
+
 **Discovery для Command Code.** Пресет читает список `/provider/v1/models` с фиксированного
 хоста Provider API, сохраняет нативные id моделей со знаком `/` и ограничивает live discovery размером
 256 KiB и 256 исходными строками. `ocx login command-code` поддерживает вход через OAuth в браузере
@@ -241,6 +257,33 @@ endpoint в него не входят. Ключи создаются в [Hyperb
 пользователей CLI Command Code); каталог моделей привязан к учётной записи и берётся из
 аутентифицированного discovery endpoint после входа. Запросы чата используют настроенный bearer-ключ.
 Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
+
+**Discovery для SambaNova Cloud.** Пресет читает общедоступный список SambaNova Cloud `/v1/models` на
+фиксированном API-хосте, сохраняет нативные id провайдера и ограничивает discovery размером 128 KiB
+и 128 исходными строками. Каталог не требует аутентификации, поэтому процедура входа CLI сообщает, что
+ключ невозможно проверить, вместо того чтобы считать публичный ответ подтверждением его действительности.
+Chat-запросы по-прежнему используют настроенный Bearer-ключ; параллельные вызовы функций отключены,
+поскольку SambaNova пока их не поддерживает. Частные endpoint развёртываний
+SambaStudio не входят в область пресета. Ключи создаются в [SambaNova Cloud](https://cloud.sambanova.ai/apis).
+
+**Discovery для Nebius Token Factory.** Пресет запрашивает аутентифицированный verbose-каталог и
+оставляет только модели, architecture которых выдаёт текст, исключая embedding и image-generation.
+Он сохраняет нативные id со знаком `/`, а также заявленные context и input-modality metadata, и
+ограничивает discovery размером 512 KiB и 512 исходными строками. Хосты dedicated deployment не
+входят в область пресета. Ключи создаются в [Nebius Token Factory](https://tokenfactory.nebius.com).
+**Discovery для DigitalOcean.** Пресет использует model access key на фиксированном общем хосте
+Serverless Inference и публикует только пересечение аутентифицированного ответа `/v1/models` с
+подтверждённым документацией allowlist для Chat Completions. Неизвестные, Responses-only,
+embedding- и media-generation id исключаются по принципу fail closed. Discovery ограничен 256 KiB
+и 256 исходными строками; agent-specific и dedicated хосты не входят в область пресета. Ключи
+создаются в [DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys).
+
+**Discovery для Scaleway.** Пресет публикует пересечение аутентифицированного списка моделей с
+подтверждённым документацией allowlist Serverless Chat Completions. Неизвестные, Responses-only,
+embedding-, transcription- и прочие media-model id исключаются по принципу fail closed; discovery
+ограничен 128 KiB и 128 исходными строками. Используется общий endpoint Project по умолчанию; URL с
+Project ID и dedicated deployment настраиваются как custom provider. API-ключ создаётся в
+[консоли Scaleway](https://console.scaleway.com/generative-api).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),

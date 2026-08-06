@@ -27,6 +27,8 @@ import {
   isValidCodexAccountNamespaceTarget,
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
+import { isCodexAccountPriorityKey } from "./codex/account-priority";
+import { parseAccountPriority } from "./codex/pool-rotation";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import { routingProfileIssues } from "./routing/profile";
 import {
@@ -945,6 +947,33 @@ const codexAccountNamespacesSchema = z.custom<Record<string, unknown>>(
   }
 }).pipe(z.record(z.string(), z.string()));
 
+const CODEX_ACCOUNT_PRIORITIES_RECORD_ERROR =
+  "codexAccountPriorities must be a plain object mapping Codex account ids to selection-order integers";
+const CODEX_ACCOUNT_PRIORITY_KEY_ERROR =
+  "selection-order keys must be a Codex pool-account id or the main Codex account and cannot be reserved JavaScript object keys";
+const CODEX_ACCOUNT_PRIORITY_VALUE_ERROR =
+  "selection order must be an integer between -100 and 100";
+
+const CODEX_ACCOUNT_PIN_PATTERN = /^[a-zA-Z0-9._-]{1,64}$/;
+
+const codexAccountPrioritiesSchema = z.custom<Record<string, unknown>>(
+  (value): value is Record<string, unknown> => !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null),
+  { error: CODEX_ACCOUNT_PRIORITIES_RECORD_ERROR },
+).superRefine((priorities, ctx) => {
+  // Inspect raw own entries before z.record parses them; Zod omits __proto__ record keys.
+  for (const [accountId, priority] of Object.entries(priorities)) {
+    if (!isCodexAccountPriorityKey(accountId)) {
+      ctx.addIssue({ code: "custom", path: [accountId], message: CODEX_ACCOUNT_PRIORITY_KEY_ERROR });
+    }
+    if (parseAccountPriority(priority) === null) {
+      ctx.addIssue({ code: "custom", path: [accountId], message: CODEX_ACCOUNT_PRIORITY_VALUE_ERROR });
+    }
+  }
+}).pipe(z.record(z.string(), z.number().int()));
+
 /**
  * Deliberately permissive. A user's config is not ours to invalidate: a strict
  * entry fails the whole parse, and loadConfig's fallback then backs the file up
@@ -1025,6 +1054,12 @@ const configSchema = z.object({
   codexShimAutoRestore: z.boolean().optional(),
   pausedCodexAccountIds: z.array(z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/)).optional(),
   codexAccountNamespaces: codexAccountNamespacesSchema.optional(),
+  // Selection order is a preference, not a safety control like pause: a malformed
+  // map degrades to "no ordering" rather than failing the parse, so a hand-edited
+  // typo cannot trip the backup-and-defaults repair path and wipe providers or
+  // pool accounts. Warning emitted in loadConfig.
+  codexAccountPriorities: codexAccountPrioritiesSchema.optional().catch(undefined),
+  activeCodexAccountPinned: z.string().regex(CODEX_ACCOUNT_PIN_PATTERN).optional().catch(undefined),
   // Model ids excluded from the Grok Build managed block (dashboard switches).
   grokExcludedModels: z.array(z.string()).optional(),
   // Invalid values degrade to undefined ("auto") instead of failing the whole
@@ -1495,6 +1530,32 @@ function warnDegradedHostname(rawParsed: unknown, validated: OcxConfig): void {
 }
 
 /**
+ * Companion to {@link warnDegradedStreamMode} for a malformed selection-order map.
+ * Priority is a preference, so the schema drops the whole map rather than failing
+ * the parse — say so once, otherwise the pool silently reverts to flat ordering.
+ */
+function degradedCodexAccountPriorityWarnings(rawParsed: unknown, validated: OcxConfig): string[] {
+  const record = rawConfigRecord(rawParsed);
+  const warnings: string[] = [];
+  // The pin degrades silently otherwise, which reads as the manual selection simply
+  // not having survived the restart.
+  if (record?.activeCodexAccountPinned !== undefined && validated.activeCodexAccountPinned === undefined) {
+    warnings.push("activeCodexAccountPinned is not a valid account id — the manually selected account is no longer pinned");
+  }
+  const raw = record?.codexAccountPriorities;
+  if (raw !== undefined && validated.codexAccountPriorities === undefined) {
+    warnings.push("codexAccountPriorities is invalid (expected account ids mapped to integers between -100 and 100) — account selection order is disabled");
+  }
+  return warnings;
+}
+
+function warnDegradedCodexAccountPriorities(rawParsed: unknown, validated: OcxConfig): void {
+  for (const warning of degradedCodexAccountPriorityWarnings(rawParsed, validated)) {
+    console.warn(`⚠️  config.json ${warning}`);
+  }
+}
+
+/**
  * The apiKeys schema salvages entry by entry rather than failing the parse, so a
  * dropped key is otherwise invisible — and it will not be re-saved by the next
  * mutation. Say so out loud. Compares the raw array against the validated one,
@@ -1699,6 +1760,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedStreamMode(parsed, config);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
+      warnDegradedCodexAccountPriorities(parsed, config);
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
@@ -1718,6 +1780,7 @@ export function loadConfig(): OcxConfig {
       const config = normalizeApiKeyIds(retryResult.data as OcxConfig);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
+      warnDegradedCodexAccountPriorities(parsed, config);
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
@@ -1764,6 +1827,7 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   const normalized = normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, rawParsed), rawParsed);
   const warnings = configPlaceholderWarnings(normalized);
+  warnings.push(...degradedCodexAccountPriorityWarnings(rawParsed, normalized));
   if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
     warnings.push(`claudeCode.subagentEffort ignored: expected one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`);
   }
@@ -1837,6 +1901,32 @@ function appOwnedMemoryBudgetError(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Same reasoning as {@link blankHostnameError}, and more urgent: the read path degrades a
+ * malformed selection-order map to undefined, which on a write would drop every entry the
+ * user had accumulated and still report success. A load-time degrade leaves the raw map in
+ * the file to be repaired by hand; a degraded write erases it. One bad `ocx config set`
+ * must not cost the whole map, so a live caller is told instead.
+ */
+function codexAccountPrioritiesError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  if (raw.codexAccountPriorities !== undefined) {
+    const parsed = codexAccountPrioritiesSchema.safeParse(raw.codexAccountPriorities);
+    if (!parsed.success) {
+      return schemaDiagnosticsError(parsed.error).replace("schema_invalid: ", "schema_invalid: codexAccountPriorities.");
+    }
+  }
+  // Tested as a string rather than coerced: `String(123)` matches the id pattern, so a
+  // coercing guard waves a non-string pin through to the schema, where `.catch(undefined)`
+  // drops it and reports the write as a success — the exact silent-degrade this guards.
+  const pin = raw.activeCodexAccountPinned;
+  if (pin !== undefined && (typeof pin !== "string" || !CODEX_ACCOUNT_PIN_PATTERN.test(pin))) {
+    return "schema_invalid: activeCodexAccountPinned: must be an account id";
+  }
+  return null;
+}
+
 function googleAntigravityStaticCatalogVersionError(value: unknown): string | null {
   const raw = rawConfigRecord(value);
   if (!raw || !Object.hasOwn(raw, "googleAntigravityStaticCatalogVersion")) return null;
@@ -1850,7 +1940,8 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
   const boundaryError = blankHostnameError(value)
     ?? claudeSubagentEffortError(value)
     ?? appOwnedMemoryBudgetError(value)
-    ?? googleAntigravityStaticCatalogVersionError(value);
+    ?? googleAntigravityStaticCatalogVersionError(value)
+    ?? codexAccountPrioritiesError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };

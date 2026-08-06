@@ -36,6 +36,9 @@ devlog/**/security-advisory-draft*
 .omo/
 **/.omo/
 
+# Local development worktrees
+.worktrees/
+
 # Test-generated artifacts
 tests/.tmp-*/
 .claude/

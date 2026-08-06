@@ -110,7 +110,7 @@ const helpEntries: Record<string, HelpEntry> = {
     ],
   },
   account: {
-    usage: "ocx account <list|current|use|refresh|auto-switch|login|reauth|code|cancel|remove|add-key|reset-credits|main> ...",
+    usage: "ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits|main> ...",
     summary: "List and switch provider accounts and API-key pools (GUI parity).",
     details: [
       "list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).",
@@ -118,12 +118,14 @@ const helpEntries: Record<string, HelpEntry> = {
       "use <provider> <id> Switch the active credential; 'main' selects the Codex App login.",
       "refresh <provider>  Force-refresh Codex or provider quota reports.",
       "auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.",
+      "priority <provider> <id|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.",
       "remove <provider> <id> --yes  Remove a stored account or key after an existence check.",
       "add-key <provider> [--label <label>]  Add a key read only from piped stdin.",
       "login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.",
       "reset-credits <id|main> [--consume --yes]  Inspect or consume Codex reset credits.",
       "main <subcommand>     Manage the physical native Codex login separately from Pool routing.",
-      "Codex pool selection applies to the next request after clearing existing affinity; in-flight requests keep their captured account.",
+      "Switching the active account takes effect immediately; running threads move on their next request, and in-flight requests keep the account they captured.",
+      "A selection-order change applies from the next unbound request and never moves a bound thread.",
     ],
   },
   models: {

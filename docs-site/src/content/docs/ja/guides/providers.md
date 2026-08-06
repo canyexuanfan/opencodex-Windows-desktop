@@ -84,7 +84,7 @@ ChatGPT パススルーカタログには GPT-5.6 Sol/Terra/Luna の名前空間
 
 ## 2. アカウントログイン(OAuth)
 
-OAuth ログインを使うプロバイダープリセットは 6 つで、これに実験的な非公式デバイスフロー
+OAuth ログインを使うプロバイダープリセットは 7 つで、これに実験的な非公式デバイスフロー
 ブリッジ経由の GitHub Copilot が加わります。認証情報は `~/.opencodex/auth.json` に保存され、
 自動更新されます。ログイン CLI は `chatgpt` も受け付けます。このコマンドは ChatGPT 認証情報を
 発行し `forward` モードのプロバイダーエントリを作成します。
@@ -96,6 +96,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # kiro-cli 認証情報の取り込み(トークンフォールバック対応)
 ocx login google-antigravity
 ocx login cursor       # Cursor 専用 PKCE ログイン
+ocx login command-code # Command Code のブラウザ OAuth (または ~/.commandcode/auth.json を取り込み)
 ocx login github-copilot  # GitHub デバイスフロー → Copilot トークン (Copilot Pro/Business)
 ocx login chatgpt      # 別途 ChatGPT OAuth ログイン
 ocx logout <provider>
@@ -143,7 +144,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 70 個含まれています。キー方式 58、OAuth 8、ローカル 3、
+opencodex には組み込みプリセットが 76 個含まれています。キー方式 64、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
@@ -177,8 +178,14 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
+| SambaNova Cloud | `https://api.sambanova.ai/v1` |
+| Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -221,6 +228,14 @@ Volcengine Agent Plan は `openai-responses` アダプターでネイティブ R
 vision-language chat のみを対象とし、別系統の image、audio、GPU endpoint は対象外です。キーは
 [Hyperbolic](https://app.hyperbolic.ai) で作成します。
 
+**Nscale と Vultr の discovery:** どちらの preset も認証付き `/v1/models` カタログを読み、ネイティブ ID を
+保持し、discovery を 256 KiB と raw 256 行に制限します。Nscale のカタログには modality フィールドなしで
+chat、image、embedding が混在するため、公式の tool-calling API 例で使われる
+`meta-llama/Llama-3.1-8B-Instruct` のみを許可します。Vultr は現在 `kimi-k2-instruct` だけに tool calling を
+明記しているため、そのモデルのみを公開します。ほかの行は同等の agent-tool 証拠が公開されるまで非表示です。
+Nscale の service token は [Nscale Console](https://console.nscale.com) で作成し、Vultr の inference key は
+[Vultr Console](https://my.vultr.com) の subscription overview から取得します。
+
 **Command Code の discovery:** preset は Command Code の `/provider/v1/models` リストを固定の
 Provider API ホストから読み、スラッシュを含むネイティブモデル ID を保持し、live discovery を
 256 KiB と raw 256 行に制限します。`ocx login command-code` はブラウザーでの OAuth サインインを
@@ -228,6 +243,30 @@ Provider API ホストから読み、スラッシュを含むネイティブモ�
 CLI 資格情報の取り込みも可能)。モデルカタログはアカウント単位で、ログイン後に認証済みの
 discovery エンドポイントから取得します。チャットリクエストは設定済みの bearer キーを使います。
 キーは [Command Code Studio](https://commandcode.ai/studio/) で作成します。
+
+**SambaNova Cloud の discovery:** preset は固定 API ホスト上の SambaNova Cloud の公開 `/v1/models` 一覧を読み、
+プロバイダー固有の ID を保持し、discovery を 128 KiB と raw 128 行に制限します。カタログは認証不要のため、
+CLI の login flow は公開レスポンスをキーの有効性の証拠にせず、キーを検証不能として報告します。chat リクエストは
+引き続き設定済み Bearer キーを使い、SambaNova がまだ対応していない並列 function call は無効にします。
+非公開の SambaStudio deployment endpoint は対象外です。キーは
+[SambaNova Cloud](https://cloud.sambanova.ai/apis) で作成します。
+
+**Nebius Token Factory の discovery:** preset は認証付きの verbose モデルカタログを取得し、architecture
+が text を出力する行だけを残して embedding と image-generation モデルを除外します。スラッシュを含む
+ネイティブ ID と、報告された context / input modality metadata を保持し、discovery を 512 KiB と raw
+512 行に制限します。dedicated deployment のホストは対象外です。キーは
+[Nebius Token Factory](https://tokenfactory.nebius.com) で作成します。
+**DigitalOcean の discovery:** preset は model access key を固定の共有 Serverless Inference ホストで使い、
+認証済み `/v1/models` の応答と DigitalOcean の公式ドキュメントで確認した Chat Completions allowlist の
+積集合だけを公開します。未知、Responses 専用、embedding、media generation の id は fail closed で除外し、
+discovery を 256 KiB と raw 256 行に制限します。agent 固有 host と dedicated host は対象外です。キーは
+[DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys) で作成します。
+
+**Scaleway の discovery:** 認証済みモデル一覧と公式ドキュメントで確認した Serverless Chat Completions
+allowlist の積集合だけを公開します。未知、Responses 専用、embedding、transcription、その他の media-model
+id は fail closed で除外し、discovery を 128 KiB と raw 128 行に制限します。default Project の共有
+endpoint を使用します。Project id 付き URL と dedicated deployment は custom provider で設定してください。
+API キーは [Scaleway console](https://console.scaleway.com/generative-api) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > のみを対象とします。ローカル利用では個人の [API キー](https://docs.baseten.co/organization/api-keys)を、

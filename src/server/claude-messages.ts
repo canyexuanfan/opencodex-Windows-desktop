@@ -7,7 +7,7 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
-import { enforceAnthropicImageLimits } from "../adapters/anthropic-image-guard";
+import { enforceAnthropicImageLimits, sniffImageDimensions } from "../adapters/anthropic-image-guard";
 import { normalizeAnthropicImages } from "../adapters/anthropic-image-normalize";
 import { AnthropicRequestError, anthropicToResponsesTranslation, extractOcxEffortDirective, extractOcxRouteDirective, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
 import { resolveDesktop3pAlias } from "../claude/desktop-3p";
@@ -647,12 +647,7 @@ async function handleClaudeMessagesWithBudget(
     // accurate-usage adapters — the request-log merge is max(reported, estimate) and
     // would overwrite real usage (audit 133 R1#7).
     if (route.provider.adapter === "cursor" || route.provider.adapter === "kiro") {
-      const raw = anthropicBody as Rec;
-      const parts: string[] = [];
-      if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
-      if (raw.messages !== undefined) parts.push(JSON.stringify(raw.messages));
-      if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
-      logCtx.usageLogInputTokens = Math.max(1, estimateTokens(parts.join("\n"), requestedModel));
+      logCtx.usageLogInputTokens = estimateClaudeRequestTokens(anthropicBody as Rec, requestedModel);
     }
     // Effort safety valve (devlog 136 B6, audit 139 R2#2): opus-shaped aliases make
     // every routed model look like a reasoning model to Claude clients, so a forced
@@ -873,7 +868,68 @@ async function handleClaudeMessagesWithBudget(
   });
 }
 
-/** Documented approximation: serialize system+messages+tools, run the char estimator. */
+/** Per-attachment token estimate for a base64 payload: real image dimensions when the
+ * header is sniffable (Anthropic prices images at ~pixels/750), else decoded bytes/512,
+ * min 256 — the same shape as the Kiro usage estimator (estimateKiroImageTokens). */
+function estimateBase64AttachmentTokens(data: string): number {
+  const dims = sniffImageDimensions(data);
+  if (dims) return Math.max(256, Math.ceil((dims.width * dims.height) / 750));
+  const unpadded = data.endsWith("==") ? data.length - 2 : data.endsWith("=") ? data.length - 1 : data.length;
+  return Math.max(256, Math.ceil(Math.floor((unpadded * 3) / 4) / 512));
+}
+
+/**
+ * Char-based token estimate for an Anthropic-shaped request body. Base64 attachment
+ * payloads (image/document blocks in message content, including blocks nested in
+ * tool_result.content) are counted as a bounded per-attachment estimate instead of raw
+ * characters: one 2MB screenshot is ~2.7M base64 chars, which the plain chars/token
+ * divide reports as hundreds of thousands of tokens versus a real cost around 1.6k.
+ * That breaks the >2x drift bound the estimator is held to (devlog 260711_claude_inbound
+ * 040 §3). Text and url sources are left in place and counted as characters, as is
+ * anything outside protocol content positions (tool_use.input, tool schemas).
+ */
+export function estimateClaudeRequestTokens(
+  raw: { system?: unknown; messages?: unknown; tools?: unknown },
+  modelId: string | undefined,
+): number {
+  let attachmentTokens = 0;
+  // Blank base64 payloads ONLY in protocol content positions: message content blocks and
+  // blocks nested in tool_result.content. tool_use.input and tool schemas can legitimately
+  // contain attachment-shaped JSON, and those bytes ARE serialized into function_call
+  // arguments / tool definitions for routed providers, so they must keep counting as text.
+  // system is text-only per the Anthropic protocol (no attachment sources), so it is
+  // stringified as-is.
+  const sanitizeBlock = (block: unknown): unknown => {
+    if (!block || typeof block !== "object") return block;
+    const b = block as Record<string, unknown>;
+    if (b.type === "image" || b.type === "document") {
+      const source = b.source as { type?: unknown; data?: unknown } | undefined;
+      if (source && typeof source === "object" && source.type === "base64" && typeof source.data === "string") {
+        attachmentTokens += estimateBase64AttachmentTokens(source.data);
+        return { ...b, source: { ...(source as Record<string, unknown>), data: "" } };
+      }
+      return block;
+    }
+    if (b.type === "tool_result" && Array.isArray(b.content)) {
+      return { ...b, content: (b.content as unknown[]).map(sanitizeBlock) };
+    }
+    return block;
+  };
+  const sanitizedMessages = (messages: unknown): unknown =>
+    Array.isArray(messages)
+      ? messages.map(message => {
+          if (!message || typeof message !== "object") return message;
+          const m = message as Record<string, unknown>;
+          return Array.isArray(m.content) ? { ...m, content: (m.content as unknown[]).map(sanitizeBlock) } : message;
+        })
+      : messages;
+  const parts: string[] = [];
+  if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
+  if (raw.messages !== undefined) parts.push(JSON.stringify(sanitizedMessages(raw.messages)));
+  if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
+  return Math.max(1, estimateTokens(parts.join("\n"), modelId) + attachmentTokens);
+}
+
 export async function handleClaudeCountTokens(req: Request, config: OcxConfig): Promise<Response> {
   const disabled = claudeInboundDisabled(config);
   if (disabled) return disabled;
@@ -910,11 +966,7 @@ export async function handleClaudeCountTokens(req: Request, config: OcxConfig): 
   if (wantsNativePassthrough(req, config, model)) {
     return await anthropicNativePassthrough(req, config, { model, provider: "anthropic-native", surface: "claude" }, undefined, raw, "/v1/messages/count_tokens");
   }
-  const parts: string[] = [];
-  if (raw.system !== undefined) parts.push(typeof raw.system === "string" ? raw.system : JSON.stringify(raw.system));
-  if (raw.messages !== undefined) parts.push(JSON.stringify(raw.messages));
-  if (raw.tools !== undefined) parts.push(JSON.stringify(raw.tools));
-  const inputTokens = Math.max(1, estimateTokens(parts.join("\n"), model));
+  const inputTokens = estimateClaudeRequestTokens(raw, model);
   return new Response(JSON.stringify({ input_tokens: inputTokens }), {
     status: 200,
     headers: { "Content-Type": "application/json" },

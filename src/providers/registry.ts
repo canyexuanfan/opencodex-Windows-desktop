@@ -719,6 +719,62 @@ const BASETEN_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
   "moonshotai/Kimi-K2.7-Code": ["text", "image"],
   "moonshotai/Kimi-K3": ["text", "image"],
 };
+
+// 260801 DigitalOcean and Scaleway expose OpenAI-shaped `/v1/models` rows with only
+// id/object/created/owned_by, while their shared serverless catalogs also contain
+// non-chat and endpoint-specific models. Fail closed by intersecting live discovery
+// with ids that the providers' current first-party model tables establish for Chat
+// Completions. A newly listed id therefore needs a docs-backed registry refresh before
+// it can enter the Codex catalog.
+// Evidence: https://docs.digitalocean.com/products/inference/details/models/
+//           https://docs.digitalocean.com/reference/api/reference/serverless-inference/
+//           https://www.scaleway.com/en/docs/generative-apis/reference-content/supported-models/
+const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
+  "arcee-trinity-large-thinking",
+  "openai-gpt-5.6-sol",
+  "openai-gpt-5.6-terra",
+  "openai-gpt-5.6-luna",
+  "qwen3-coder-flash",
+  "qwen3.5-397b-a17b",
+  "deepseek-v4-pro",
+  "deepseek-4-flash",
+  "deepseek-3.2",
+  "gemma-4-31B-it",
+  "minimax-m2.5",
+  "kimi-k3",
+  "kimi-k2.6",
+  "kimi-k2.5",
+  "llama3.3-70b-instruct",
+  "llama-4-maverick",
+  "mistral-3-14B",
+  "nemotron-3-ultra-550b",
+  "nvidia-nemotron-3-super-120b",
+  "nemotron-3-nano-omni",
+  "nemotron-nano-12b-v2-vl",
+  "mimo-v2.5-pro",
+  "glm-5.2",
+  "glm-5.1",
+  "glm-5",
+  // The API reference uses this native slash id in its Chat Completions example.
+  "meta-llama/Meta-Llama-3.1-8B-Instruct",
+] as const;
+const SCALEWAY_SERVERLESS_CHAT_MODELS = [
+  "glm-5.2",
+  // gpt-oss-120b is intentionally omitted: Scaleway requires Responses API for tool calling,
+  // while this preset routes Codex agent tools through Chat Completions.
+  "qwen3.6-35b-a3b",
+  "qwen3.5-397b-a17b",
+  "qwen3-235b-a22b-instruct-2507",
+  "qwen3-coder-30b-a3b-instruct",
+  "gemma-4-26b-a4b-it",
+  "llama-3.3-70b-instruct",
+  "mistral-medium-3.5-128b",
+  "mistral-small-3.2-24b-instruct-2506",
+  "pixtral-12b-2409",
+] as const;
+const SCALEWAY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
+  "pixtral-12b-2409": ["text", "image"],
+};
 const UMANS_MODELS = [
   "umans-coder",
   "umans-kimi-k2.7",
@@ -1330,6 +1386,69 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Serverless text and vision-language chat models only; Hyperbolic's separate image, audio, and GPU endpoints are out of scope.",
   },
   {
+    // Primary sources checked 2026-08-03:
+    // - docs.nscale.com documents the production OpenAI-compatible endpoint, bearer service
+    //   tokens, /v1/models, and a tool-calling request using this exact Llama model id.
+    // - nscale.com/policies/terms-conditions identifies Nscale AS as the service operator and
+    //   covers customers using its public-cloud inference offering. Maintainer: @olddonkey;
+    //   no affiliation with Nscale.
+    id: "nscale",
+    label: "Nscale Serverless Inference",
+    baseUrl: "https://inference.api.nscale.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.nscale.com",
+    defaultModel: "meta-llama/Llama-3.1-8B-Instruct",
+    models: ["meta-llama/Llama-3.1-8B-Instruct"],
+    liveModels: true,
+    preserveCustomDestination: true,
+    // Nscale documents tools but not parallel tool calls. Keep requests serialized.
+    parallelToolCalls: false,
+    // The API schema accepts reasoning_effort, but does not publish per-model tiers.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        // Nscale's catalog mixes chat, image, and embedding rows without a modality field.
+        // Admit only the exact model used in its official tool-calling API example.
+        allOf: [{ path: ["id"], equalsAny: ["meta-llama/Llama-3.1-8B-Instruct"] }],
+      },
+    },
+    note: "Serverless OpenAI-compatible inference. Live discovery admits only the tool-capable model established by Nscale's official API example; other mixed-catalog rows remain hidden pending equivalent evidence.",
+  },
+  {
+    // Primary sources checked 2026-08-03:
+    // - docs.vultr.com documents the fixed OpenAI-compatible base URL, per-subscription bearer
+    //   key, /v1/models, and states that tool calling is currently limited to kimi-k2-instruct.
+    // - Vultr's official properties identify VULTR as a The Constant Company, LLC trademark and
+    //   document customer API integrations. Maintainer: @olddonkey; no affiliation with Vultr.
+    id: "vultr",
+    label: "Vultr Serverless Inference",
+    baseUrl: "https://api.vultrinference.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://my.vultr.com",
+    defaultModel: "kimi-k2-instruct",
+    models: ["kimi-k2-instruct"],
+    liveModels: true,
+    preserveCustomDestination: true,
+    parallelToolCalls: false,
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        // Vultr explicitly limits tool calling to this model. A coding agent must not select
+        // another chat model that cannot complete its tool loop.
+        allOf: [{ path: ["id"], equalsAny: ["kimi-k2-instruct"] }],
+      },
+    },
+    note: "Serverless Inference subscription API. Live discovery exposes only kimi-k2-instruct because Vultr documents it as the sole tool-calling model.",
+  },
+  {
     id: "baseten",
     label: "Baseten Model APIs",
     baseUrl: "https://inference.baseten.co/v1",
@@ -1379,6 +1498,101 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Verified 2026-08-03: public /provider/v1/models returns 51 rows; /chat/completions returns
     // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
     note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. Use `ocx login command-code` for OAuth account login (imports an existing local Command Code CLI credential when present). Docs: https://commandcode.ai/docs/provider.",
+  },
+  {
+    id: "sambanova",
+    label: "SambaNova Cloud",
+    baseUrl: "https://api.sambanova.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.sambanova.ai/apis",
+    liveModels: true,
+    preserveCustomDestination: true,
+    apiKeyValidation: "unknown",
+    // SambaNova documents this request field but does not yet support parallel function calls.
+    parallelToolCalls: false,
+    // The public catalog does not report a trustworthy per-model reasoning contract.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 128 * 1024,
+      maxModels: 128,
+    },
+    note: "SambaNova Cloud text-generation models only; private SambaStudio deployment endpoints are outside this preset.",
+  },
+  {
+    id: "nebius",
+    label: "Nebius Token Factory",
+    baseUrl: "https://api.tokenfactory.nebius.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://tokenfactory.nebius.com",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The public tools guide documents single function selection, not parallel tool calls.
+    parallelToolCalls: false,
+    // Missing reasoning metadata must not promote a model to Codex's full fallback ladder.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      query: { verbose: "true" },
+      maxResponseBytes: 512 * 1024,
+      maxModels: 512,
+      filter: {
+        // Keep rows whose reported architecture output includes text (for example,
+        // text->text or text+image->text); embedding and image-generation rows are excluded.
+        allOf: [{ path: ["architecture", "modality"], containsAny: ["->text"] }],
+      },
+    },
+    note: "Shared Token Factory text-output inference only; live discovery excludes embedding and image-generation rows.",
+  },
+  {
+    id: "digitalocean",
+    label: "DigitalOcean Serverless Inference",
+    baseUrl: "https://inference.do-ai.run/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.digitalocean.com/model-studio/manage-keys",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The Chat Completions contract documents function calls but not universal parallel support.
+    parallelToolCalls: false,
+    // Unknown catalog rows must not inherit Codex's full fallback reasoning ladder.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        allOf: [{ path: ["id"], equalsAny: DIGITALOCEAN_CHAT_COMPLETION_MODELS }],
+      },
+    },
+    note: "Shared Serverless Inference Chat Completions only; agent-specific, dedicated, Responses-only, embedding, and media-generation models are outside this preset.",
+  },
+  {
+    id: "scaleway",
+    label: "Scaleway Generative APIs",
+    baseUrl: "https://api.scaleway.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.scaleway.com/generative-api",
+    liveModels: true,
+    freeTier: true,
+    preserveCustomDestination: true,
+    // Parallel support varies by model; avoid advertising it as a provider-wide capability.
+    parallelToolCalls: false,
+    // The generic `/models` rows carry no trustworthy reasoning metadata.
+    reasoningEfforts: [],
+    modelInputModalities: SCALEWAY_MODEL_INPUT_MODALITIES,
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 128 * 1024,
+      maxModels: 128,
+      filter: {
+        allOf: [{ path: ["id"], equalsAny: SCALEWAY_SERVERLESS_CHAT_MODELS }],
+      },
+    },
+    note: "Shared Generative APIs Serverless Chat Completions only; project-qualified and dedicated deployment hosts require a custom provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
@@ -1750,15 +1964,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
   },
   {
-    id: "opencode-zen",
-    label: "opencode zen",
-    baseUrl: "https://opencode.ai/zen/v1",
-    adapter: "openai-chat",
-    authKind: "key",
-    dashboardUrl: "https://opencode.ai/auth",
-    // #1043: without this the proxy forwards image parts to text-only Zen models and
-    // the upstream rejects the whole request with a 400.
-    noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
+    id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth",
+    // Same opencode.ai/zen/v1 gateway as `opencode-free` (keyed tier): DeepSeek thinking mode
+    // requires the assistant's original reasoning_content to be replayed on tool-call
+    // continuations, or the gateway answers HTTP 400 (issues #950/#994). Mirror the DeepSeek
+    // reasoning + thinking metadata so `opencode-zen/deepseek-v4-flash-free` — and the other
+    // Zen DeepSeek thinking models — never serialize a bare tool-call turn.
+    modelReasoningEfforts: Object.fromEntries(
+      [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekThinkingEffortsFor(id)]),
+    ),
+    modelReasoningEffortMap: Object.fromEntries(
+      [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
+    ),
+    preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
+    noVisionModels: [...OPENCODE_ZEN_TEXT_ONLY_MODELS, ...DEEPSEEK_THINKING_MODELS],
   },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
   {

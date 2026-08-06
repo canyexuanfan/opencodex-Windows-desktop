@@ -736,6 +736,17 @@ function modelInputModalities(
     value === "text" || value === "image" || value === "audio"
   ));
   if (explicit && explicit.length > 0) return explicit;
+  const architecture = plainRecord(item.architecture);
+  const architectureModality = typeof architecture?.modality === "string"
+    ? normalizedMetadataString(architecture.modality, 64)
+    : undefined;
+  if (architectureModality?.includes("->")) {
+    const [rawInput = ""] = architectureModality.split("->");
+    const inferred = rawInput
+      .split("+")
+      .filter(value => value === "text" || value === "image" || value === "audio");
+    if (inferred.length > 0) return [...new Set(inferred)];
+  }
   if (capabilityRecord?.vision === false) return ["text"];
   if (capabilityRecord?.vision === true || capabilities?.some(value => value === "vision" || value === "image-input")) {
     return ["text", "image"];

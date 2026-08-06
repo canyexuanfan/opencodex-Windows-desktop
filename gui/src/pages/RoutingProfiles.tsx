@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  modelOptionsForProvider,
+  newDraftCandidate,
+  newRoutingProfileDraft,
+  routingProfileDraftFromDto,
+  routingProfilePutBody,
+  routingProfileResponseError,
+  routingProfileResponseSucceeded,
+  type ModelOption,
+  type OptionalBoolean,
+  type RoutingProfileDraft,
+  type RoutingProfileDto,
+  type UnknownEvidenceMode,
+} from "../routing-profile-editor-data";
+import { readJsonIfOk } from "../fetch-json";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
-
-type ProfileDto = {
-  id: string;
-  model: string;
-  revision: string;
-  candidates: Array<{ provider: string; model: string }>;
-  require: Record<string, unknown>;
-  optimize: Record<string, number>;
-  limits: Record<string, number>;
-  unknownEvidence: Record<string, string>;
-};
 
 type DryRunCandidate = {
   provider: string;
@@ -39,6 +43,33 @@ type DryRunResult = {
   trace?: { profile?: { revision?: string } };
 };
 
+type ProviderDto = {
+  disabled?: boolean;
+  defaultModel?: string;
+};
+
+type ConfigDto = {
+  providers?: Record<string, ProviderDto>;
+};
+
+const BOOLEAN_REQUIREMENTS = [
+  "tools",
+  "imageInput",
+  "structuredOutput",
+  "localOnly",
+  "remoteAllowed",
+  "encryptedCodexTasks",
+] as const;
+const STRING_REQUIREMENTS = ["reasoningEffort", "serviceTier"] as const;
+const NUMERIC_REQUIREMENT_SPEC = {
+  minContextWindow: { min: 1, max: undefined, step: 1 },
+  minQuotaHeadroom: { min: 0, max: 1, step: "any" },
+} as const;
+const NUMERIC_REQUIREMENTS = Object.keys(NUMERIC_REQUIREMENT_SPEC) as Array<keyof typeof NUMERIC_REQUIREMENT_SPEC>;
+const OPTIMIZE_KEYS = ["latency", "health", "cost", "quota"] as const;
+const UNKNOWN_EVIDENCE_KEYS = ["capability", "health", "quota", "cost"] as const;
+const UNKNOWN_EVIDENCE_OPTIONS: UnknownEvidenceMode[] = ["allow", "penalize", "exclude"];
+
 function fmtMs(value: number | undefined, unavailable: string): string {
   return value === undefined ? unavailable : `${Math.round(value)}ms`;
 }
@@ -47,30 +78,82 @@ function fmtRate(value: number | null | undefined, unavailable: string): string 
   return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
 }
 
-function pickSelectedProfile(next: ProfileDto[], current: ProfileDto | null): ProfileDto | null {
-  if (current) {
-    const refreshed = next.find(profile => profile.id === current.id);
-    if (refreshed) return refreshed;
-  }
-  return next[0] ?? null;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function shouldClearDryRunOnSelectionChange(
-  current: ProfileDto | null,
-  next: ProfileDto | null,
-): boolean {
-  if (!current) return false;
-  if (!next) return true;
-  return current.id !== next.id || current.revision !== next.revision;
+function parseProfiles(raw: unknown): RoutingProfileDto[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const profiles = (raw as { profiles?: unknown }).profiles;
+  if (!Array.isArray(profiles)) return [];
+  return profiles.filter((profile): profile is RoutingProfileDto => {
+    if (!isPlainObject(profile)) return false;
+    // Validate the complete DTO shape: routingProfileDraftFromDto dereferences
+    // these nested objects, so a management response that omits any of them
+    // must be rejected here rather than crash the load path.
+    return typeof profile.id === "string"
+      && typeof profile.model === "string"
+      && typeof profile.revision === "string"
+      && Array.isArray(profile.candidates)
+      && isPlainObject(profile.require)
+      && isPlainObject(profile.optimize)
+      && isPlainObject(profile.limits)
+      && isPlainObject(profile.unknownEvidence);
+  }).map(profile => ({ ...profile, alias: profile.alias ?? null }));
+}
+
+function parseModels(raw: unknown): ModelOption[] {
+  const rows = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { models?: unknown }).models)
+      ? (raw as { models: unknown[] }).models
+      : [];
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const provider = typeof (row as { provider?: unknown }).provider === "string"
+      ? (row as { provider: string }).provider.trim()
+      : "";
+    const id = typeof (row as { id?: unknown }).id === "string"
+      ? (row as { id: string }).id.trim()
+      : "";
+    if (!provider || !id || provider === "combo" || provider === "policy") continue;
+    if ((row as { disabled?: unknown }).disabled === true) continue;
+    const key = JSON.stringify([provider, id]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    models.push({ provider, id });
+  }
+  return models;
+}
+
+function selectedAfterLoad(
+  profiles: RoutingProfileDto[],
+  currentId: string | null,
+  preferredId?: string,
+): RoutingProfileDto | null {
+  const requestedId = preferredId ?? currentId;
+  if (requestedId) {
+    const match = profiles.find(profile => profile.id === requestedId);
+    if (match) return match;
+  }
+  return profiles[0] ?? null;
 }
 
 export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const t = useT();
   const unavailable = t("routing.unavailable");
-  const [profiles, setProfiles] = useState<ProfileDto[]>([]);
+  const [profiles, setProfiles] = useState<RoutingProfileDto[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [providerNames, setProviderNames] = useState<string[]>([]);
+  const [providerDefaults, setProviderDefaults] = useState<Record<string, string>>({});
+  const [models, setModels] = useState<ModelOption[]>([]);
   const [loadError, setLoadError] = useState("");
-  const [selected, setSelected] = useState<ProfileDto | null>(null);
+  const [selected, setSelected] = useState<RoutingProfileDto | null>(null);
+  const [draft, setDraft] = useState<RoutingProfileDraft | null>(null);
+  const [status, setStatus] = useState<{ message: string; ok: boolean } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [context, setContext] = useState("");
   const [tools, setTools] = useState(false);
   const [image, setImage] = useState(false);
@@ -78,52 +161,79 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState("");
   const [running, setRunning] = useState(false);
-  const selectedRef = useRef<ProfileDto | null>(null);
+  const selectedRef = useRef<RoutingProfileDto | null>(null);
+  const loadGenerationRef = useRef(0);
   const dryRunGenerationRef = useRef(0);
+
+  const notify = useCallback((message: string, ok: boolean) => {
+    setStatus({ message, ok });
+  }, []);
+
+  useEffect(() => {
+    if (!status?.ok) return;
+    const timer = window.setTimeout(() => setStatus(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   const clearDryRun = useCallback(() => {
     dryRunGenerationRef.current += 1;
     setDryRunResult(null);
     setDryRunError("");
+    setRunning(false);
   }, []);
 
-  const selectProfile = useCallback((profile: ProfileDto | null) => {
+  const selectProfile = useCallback((profile: RoutingProfileDto | null) => {
     selectedRef.current = profile;
     setSelected(profile);
+    setDraft(profile ? routingProfileDraftFromDto(profile) : null);
+    setStatus(null);
     clearDryRun();
   }, [clearDryRun]);
 
-  const loadGenerationRef = useRef(0);
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (preferredId?: string) => {
     const generation = ++loadGenerationRef.current;
     setLoadError("");
     try {
-      const [profilesRes, analyticsRes] = await Promise.all([
+      const [profilesRes, analyticsRes, configRes, modelsRes] = await Promise.all([
         fetch(`${apiBase}/api/routing-profiles`),
         fetch(`${apiBase}/api/routing-analytics`),
+        fetch(`${apiBase}/api/config`),
+        fetch(`${apiBase}/api/models`),
+      ]);
+      if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
+      const [profilesJson, analyticsJson, configJson, modelsJson] = await Promise.all([
+        profilesRes.json() as Promise<unknown>,
+        analyticsRes.ok ? analyticsRes.json() as Promise<Analytics> : Promise.resolve(null),
+        configRes.ok ? configRes.json() as Promise<ConfigDto> : Promise.resolve({} as ConfigDto),
+        modelsRes.ok ? modelsRes.json() as Promise<unknown> : Promise.resolve([]),
       ]);
       if (generation !== loadGenerationRef.current) return;
-      if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
-      const profilesJson = await profilesRes.json() as { profiles?: ProfileDto[] };
-      if (generation !== loadGenerationRef.current) return;
-      let analyticsJson: Analytics | null = null;
-      if (analyticsRes.ok) {
-        analyticsJson = await analyticsRes.json() as Analytics;
-        if (generation !== loadGenerationRef.current) return;
-      }
-      // Apply state only after every body await, and only while this load is still current.
-      if (generation !== loadGenerationRef.current) return;
-      const next = profilesJson.profiles ?? [];
+
+      const nextProfiles = parseProfiles(profilesJson);
       const current = selectedRef.current;
-      const refreshed = pickSelectedProfile(next, current);
+      const refreshed = selectedAfterLoad(nextProfiles, current?.id ?? null, preferredId);
+      const configuredProviders = configJson.providers ?? {};
+      const nextProviderNames = Object.entries(configuredProviders)
+        .filter(([, provider]) => provider.disabled !== true)
+        .map(([name]) => name)
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      const nextDefaults = Object.fromEntries(
+        Object.entries(configuredProviders)
+          .filter(([, provider]) => provider.disabled !== true && typeof provider.defaultModel === "string")
+          .map(([name, provider]) => [name, provider.defaultModel!.trim()]),
+      );
+
       selectedRef.current = refreshed;
-      setProfiles(next);
+      setProfiles(nextProfiles);
       setSelected(refreshed);
-      if (shouldClearDryRunOnSelectionChange(current, refreshed)) {
+      setDraft(refreshed ? routingProfileDraftFromDto(refreshed) : null);
+      setAnalytics(analyticsJson);
+      setProviderNames(nextProviderNames);
+      setProviderDefaults(nextDefaults);
+      setModels(parseModels(modelsJson));
+      if (!current || !refreshed || current.id !== refreshed.id || current.revision !== refreshed.revision) {
         clearDryRun();
       }
-      setAnalytics(analyticsJson);
     } catch (error) {
       if (generation !== loadGenerationRef.current) return;
       setLoadError(error instanceof Error ? error.message : String(error));
@@ -134,6 +244,129 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  const firstProvider = providerNames[0] ?? "";
+  const firstModel = providerDefaults[firstProvider]
+    ?? modelOptionsForProvider(models, firstProvider)[0]?.id
+    ?? "";
+
+  const startCreate = () => {
+    selectedRef.current = null;
+    setSelected(null);
+    setDraft(newRoutingProfileDraft(firstProvider, firstModel));
+    setStatus(null);
+    clearDryRun();
+  };
+
+  const cancelEdit = () => {
+    if (selected) {
+      setDraft(routingProfileDraftFromDto(selected));
+      setStatus(null);
+      return;
+    }
+    selectProfile(profiles[0] ?? null);
+  };
+
+  const saveProfile = async () => {
+    if (!draft || saving) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      const body = routingProfilePutBody(draft, selected ? "update" : "create", selected?.revision);
+      const response = await fetch(`${apiBase}/api/routing-profiles`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await readJsonIfOk<unknown>(response);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as unknown;
+        notify(routingProfileResponseError(errorBody) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      if (!routingProfileResponseSucceeded(data)) {
+        notify(routingProfileResponseError(data) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      await load(body.id);
+      notify(t("common.ok"), true);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t("routing.loadFailed"), false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeProfile = async () => {
+    if (!selected || saving) return;
+    if (!window.confirm(t("routing.removeConfirm", { id: selected.id }))) return;
+    setSaving(true);
+    setStatus(null);
+    try {
+      const response = await fetch(
+        `${apiBase}/api/routing-profiles?id=${encodeURIComponent(selected.id)}`,
+        { method: "DELETE" },
+      );
+      const data = await readJsonIfOk<unknown>(response);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as unknown;
+        notify(routingProfileResponseError(errorBody) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      if (!routingProfileResponseSucceeded(data)) {
+        notify(routingProfileResponseError(data) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      selectedRef.current = null;
+      await load();
+      notify(t("common.ok"), true);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : t("routing.loadFailed"), false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateCandidate = (
+    index: number,
+    field: "provider" | "model",
+    value: string,
+  ) => {
+    setDraft(current => {
+      if (!current) return current;
+      const candidates = current.candidates.map((candidate, candidateIndex) => {
+        if (candidateIndex !== index) return candidate;
+        if (field === "provider") {
+          return {
+            ...candidate,
+            provider: value,
+            model: providerDefaults[value]
+              ?? modelOptionsForProvider(models, value)[0]?.id
+              ?? "",
+          };
+        }
+        return { ...candidate, model: value };
+      });
+      return { ...current, candidates };
+    });
+  };
+
+  const addCandidate = () => {
+    setDraft(current => current ? {
+      ...current,
+      candidates: [
+        ...current.candidates,
+        newDraftCandidate(firstProvider, firstModel),
+      ],
+    } : current);
+  };
+
+  const removeCandidate = (index: number) => {
+    setDraft(current => current ? {
+      ...current,
+      candidates: current.candidates.filter((_, candidateIndex) => candidateIndex !== index),
+    } : current);
+  };
 
   const runDryRun = async () => {
     if (!selected) return;
@@ -160,15 +393,9 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       });
       if (generation !== dryRunGenerationRef.current) return;
       if (!response.ok) {
-        let message = `dry-run ${response.status}`;
-        try {
-          const body = await response.json() as { error?: { message?: string } };
-          message = body.error?.message ?? message;
-        } catch {
-          // Keep the status fallback when the error body is not JSON.
-        }
+        const body = await response.json().catch(() => null) as unknown;
         if (generation !== dryRunGenerationRef.current) return;
-        setDryRunError(message);
+        setDryRunError(routingProfileResponseError(body) ?? t("routing.dryRunError", { status: response.status }));
         return;
       }
       const result = await response.json() as DryRunResult;
@@ -184,19 +411,27 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     }
   };
 
+  const selectedModelOptions = draft?.candidates.map(
+    candidate => modelOptionsForProvider(models, candidate.provider),
+  ) ?? [];
+
   return (
     <div className="page" data-page="routing">
       <div className="page-head">
         <h2>{t("routing.title")}</h2>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
+            <span aria-hidden="true">+</span> {t("routing.createProfile")}
+          </button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
+        </div>
       </div>
       <p className="muted">{t("routing.subtitle")}</p>
 
       {loadError ? <Notice tone="err">{t("routing.loadFailed")}: {loadError}</Notice> : null}
+      {status ? <Notice tone={status.ok ? "ok" : "err"}>{status.message}</Notice> : null}
 
-      {profiles.length === 0 && !loadError ? (
-        <div className="panel">{t("routing.empty")}</div>
-      ) : (
+      {profiles.length > 0 ? (
         <div className="panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {profiles.map(profile => (
             <button
@@ -215,37 +450,233 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
             </button>
           ))}
         </div>
-      )}
+      ) : null}
 
-      {selected ? (
-        <div className="panel" style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-          <h3>{t("routing.detail")}: {selected.model}</h3>
-          <div>
-            <span className="field-label">{t("routing.candidates")}</span>
+      {draft ? (
+        <form
+          className="panel"
+          style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 16 }}
+          onSubmit={event => {
+            event.preventDefault();
+            void saveProfile();
+          }}
+        >
+          <div className="page-head">
+            <h3>{t("routing.detail")}: {selected?.model ?? <code>policy/…</code>}</h3>
+            {selected ? <span className="badge badge-muted">{t("routing.revision")}: {selected.revision}</span> : null}
+          </div>
+
+          <div className="model-grid">
+            <label className="field-label">
+              <code>id</code>
+              <input
+                className="input"
+                required
+                disabled={selected !== null}
+                value={draft.id}
+                onChange={event => setDraft(current => current ? { ...current, id: event.target.value } : current)}
+              />
+            </label>
+            <label className="field-label">
+              <code>alias</code>
+              <input
+                className="input"
+                value={draft.alias}
+                onChange={event => setDraft(current => current ? { ...current, alias: event.target.value } : current)}
+              />
+            </label>
+          </div>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.candidates")}</legend>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {draft.candidates.map((candidate, index) => {
+                const candidateProviders = [...new Set([candidate.provider, ...providerNames])].filter(Boolean);
+                const listId = `routing-model-options-${index}`;
+                return (
+                  <div key={candidate.key} className="model-card">
+                    <div className="model-grid">
+                      <label className="field-label">
+                        <code>provider</code>
+                        <select
+                          className="input"
+                          required
+                          value={candidate.provider}
+                          onChange={event => updateCandidate(index, "provider", event.target.value)}
+                        >
+                          <option value="" disabled>{t("routing.none")}</option>
+                          {candidateProviders.map(provider => <option key={provider} value={provider}>{provider}</option>)}
+                        </select>
+                      </label>
+                      <label className="field-label">
+                        <code>model</code>
+                        <input
+                          className="input"
+                          required
+                          list={listId}
+                          value={candidate.model}
+                          onChange={event => updateCandidate(index, "model", event.target.value)}
+                        />
+                        <datalist id={listId}>
+                          {selectedModelOptions[index]?.map(model => <option key={model.id} value={model.id} />)}
+                        </datalist>
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      disabled={draft.candidates.length === 1}
+                      onClick={() => removeCandidate(index)}
+                      aria-label={t("routing.removeCandidate", { provider: candidate.provider, model: candidate.model })}
+                    >
+                      {t("common.remove")}
+                    </button>
+                  </div>
+                );
+              })}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={addCandidate}>
+                <span aria-hidden="true">+</span> {t("routing.candidate")}
+              </button>
+            </div>
+          </fieldset>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.require")}</legend>
             <div className="model-grid">
-              {selected.candidates.map(candidate => (
-                <div key={`${candidate.provider}/${candidate.model}`} className="model-card">
-                  {candidate.provider}/{candidate.model}
-                </div>
+              {NUMERIC_REQUIREMENTS.map(key => (
+                <label key={key} className="field-label">
+                  <code>{key}</code>
+                  <input
+                    className="input"
+                    type="number"
+                    min={NUMERIC_REQUIREMENT_SPEC[key].min}
+                    max={NUMERIC_REQUIREMENT_SPEC[key].max}
+                    step={NUMERIC_REQUIREMENT_SPEC[key].step}
+                    value={draft.require[key]}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      require: { ...current.require, [key]: event.target.value },
+                    } : current)}
+                  />
+                </label>
+              ))}
+              {STRING_REQUIREMENTS.map(key => (
+                <label key={key} className="field-label">
+                  <code>{key}</code>
+                  <input
+                    className="input"
+                    value={draft.require[key]}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      require: { ...current.require, [key]: event.target.value },
+                    } : current)}
+                  />
+                </label>
+              ))}
+              {BOOLEAN_REQUIREMENTS.map(key => (
+                <label key={key} className="field-label">
+                  <code>{key}</code>
+                  <select
+                    className="input"
+                    value={draft.require[key]}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      require: {
+                        ...current.require,
+                        [key]: event.target.value as OptionalBoolean,
+                      },
+                    } : current)}
+                  >
+                    <option value="">{t("routing.none")}</option>
+                    <option value="true">{t("routing.yes")}</option>
+                    <option value="false">{t("routing.no")}</option>
+                  </select>
+                </label>
               ))}
             </div>
-          </div>
-          {([
-            ["routing.require", selected.require, true],
-            ["routing.optimize", selected.optimize, false],
-            ["routing.limits", selected.limits, true],
-            ["routing.unknownEvidence", selected.unknownEvidence, false],
-          ] as const).map(([labelKey, value, allowEmpty]) => (
-            <div key={labelKey}>
-              <span className="field-label">{t(labelKey)}</span>
-              <pre className="muted" style={{ margin: 0, whiteSpace: "pre-wrap" }}>
-                {allowEmpty && Object.keys(value).length === 0
-                  ? t("routing.none")
-                  : JSON.stringify(value, null, 2)}
-              </pre>
+          </fieldset>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.optimize")}</legend>
+            <div className="model-grid">
+              {OPTIMIZE_KEYS.map(key => (
+                <label key={key} className="field-label">
+                  <code>{key}</code>
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    step="any"
+                    required
+                    value={draft.optimize[key]}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      optimize: { ...current.optimize, [key]: event.target.value },
+                    } : current)}
+                  />
+                </label>
+              ))}
             </div>
-          ))}
-        </div>
+          </fieldset>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.limits")}</legend>
+            <label className="field-label">
+              <code>maxEstimatedCostUsd</code>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                step="any"
+                value={draft.limits.maxEstimatedCostUsd}
+                onChange={event => setDraft(current => current ? {
+                  ...current,
+                  limits: { maxEstimatedCostUsd: event.target.value },
+                } : current)}
+              />
+            </label>
+          </fieldset>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.unknownEvidence")}</legend>
+            <div className="model-grid">
+              {UNKNOWN_EVIDENCE_KEYS.map(key => (
+                <label key={key} className="field-label">
+                  <code>{key}</code>
+                  <select
+                    className="input"
+                    value={draft.unknownEvidence[key]}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      unknownEvidence: {
+                        ...current.unknownEvidence,
+                        [key]: event.target.value as UnknownEvidenceMode,
+                      },
+                    } : current)}
+                  >
+                    {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
+                      <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
+                    ))}
+                  </select>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              {saving ? t("common.saving") : t("common.save")}
+            </button>
+            <button type="button" className="btn btn-ghost" disabled={saving} onClick={cancelEdit}>
+              {t("common.cancel")}
+            </button>
+            {selected ? (
+              <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => void removeProfile()}>
+                {t("common.remove")}
+              </button>
+            ) : null}
+          </div>
+        </form>
       ) : null}
 
       <div className="panel" style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
