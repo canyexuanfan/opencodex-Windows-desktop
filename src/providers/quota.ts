@@ -34,6 +34,8 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 const A6API_BASE_URL = "https://api.a6api.com";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
@@ -243,6 +245,16 @@ function isCanonicalA6apiBaseUrl(baseUrl: string): boolean {
   return normalized === A6API_BASE_URL || normalized === `${A6API_BASE_URL}/v1`;
 }
 
+function isCanonicalOpenRouterBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === OPENROUTER_BASE_URL;
+}
+
+function isCanonicalDeepSeekBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === DEEPSEEK_BASE_URL;
+}
+
 function a6apiPayload(value: unknown): Record<string, unknown> | null {
   const body = asRecord(value);
   return asRecord(body?.data) ?? body;
@@ -304,6 +316,87 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   if (percent === undefined) return TERMINAL_QUOTA_FAILURE;
   const label = `API credits ($${remainingUsd.toFixed(2)} of $${limitUsd.toFixed(2)} remaining)`;
   return report(provider, "a6api:billing", {
+    customWindows: [{ label, percent }],
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * OpenRouter `GET /api/v1/key` — the key's own credit balance and optional
+ * per-key spending cap. `limit` is the configured cap (absent = uncapped);
+ * `usage` is lifetime spend; `limit_remaining` is what is left of the cap.
+ * When no cap is set there is no hard limit to meter against, so no bar is
+ * produced — the provider falls back to its documented reference.
+ */
+async function fetchOpenRouterQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  // Never send a configured API key to a lookalike host or through a redirect.
+  if (!isCanonicalOpenRouterBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(`${OPENROUTER_BASE_URL}/key`, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await response.json().catch(() => null));
+  const data = asRecord(body?.data) ?? body;
+  if (!data) return null;
+  const limit = toFiniteNumber(data.limit);
+  const limitRemaining = toFiniteNumber(data.limit_remaining);
+  const usage = toFiniteNumber(data.usage);
+  // No per-key cap means there is no limit to render utilization against.
+  if (limit === undefined || limit <= 0) return null;
+  const used = usage !== undefined && usage > 0
+    ? usage
+    : limitRemaining !== undefined ? Math.max(0, limit - limitRemaining) : undefined;
+  if (used === undefined) return null;
+  const percent = normalizePercent((used / limit) * 100);
+  if (percent === undefined) return null;
+  const remaining = Math.max(0, limit - used);
+  const label = `API credits ($${remaining.toFixed(2)} of $${limit.toFixed(2)} remaining)`;
+  return report(provider, "openrouter:key-info", {
+    customWindows: [{ label, percent }],
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * DeepSeek `GET /user/balance` — the account's granted + topped-up credit
+ * balance. DeepSeek grants new accounts a one-time token allowance; the API
+ * reports `total_balance` and `granted_balance`, so a bar can be rendered
+ * against the granted allowance. When the balance is pure pay-as-you-go there
+ * is no hard cap to meter against, so no bar is produced.
+ */
+async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  if (!isCanonicalDeepSeekBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(`${DEEPSEEK_BASE_URL}/user/balance`, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await response.json().catch(() => null));
+  const totalBalance = toFiniteNumber(body?.total_balance);
+  const grantedBalance = toFiniteNumber(body?.granted_balance);
+  // A granted allowance is the only hard cap DeepSeek meters against; a
+  // top-up-only account (granted = 0) has no limit to render utilization.
+  if (grantedBalance === undefined || grantedBalance <= 0) return null;
+  if (totalBalance === undefined || totalBalance < 0) return null;
+  const percent = normalizePercent((totalBalance / grantedBalance) * 100);
+  if (percent === undefined) return null;
+  const label = `API balance ($${totalBalance.toFixed(2)} of $${grantedBalance.toFixed(2)} granted)`;
+  return report(provider, "deepseek:balance", {
     customWindows: [{ label, percent }],
     updatedAt: Date.now(),
   });
@@ -1178,6 +1271,12 @@ async function maybeFetchProviderQuota(
     }
     if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
       return fetchA6apiQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "openrouter") {
+      return fetchOpenRouterQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "deepseek") {
+      return fetchDeepSeekQuota(name, provider);
     }
     return null;
   } catch {

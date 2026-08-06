@@ -47,6 +47,15 @@ export interface WorkspaceProvider {
   allowPrivateNetwork?: boolean;
   /** Codex account routing mode for the canonical `openai` forward provider. */
   codexAccountMode?: "direct" | "pool";
+  /** Documented rate limits (official docs, not probed); shown as reference in the overview. */
+  rateLimits?: {
+    rpm?: number;
+    tpm?: number;
+    rpd?: number;
+    freeTier?: string;
+    source?: string;
+    updatedAt?: string;
+  };
 }
 
 /** Three-way pricing/ownership tier for a ready provider row. */

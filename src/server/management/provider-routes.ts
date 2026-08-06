@@ -241,20 +241,24 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
-    return jsonResponse(Object.entries(config.providers).map(([name, p]) => ({
-      name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
-      hasApiKey: !!p.apiKey,
-      // Presence only (#959 review): header names and values never leave the process.
-      hasHeaders: !!p.headers && Object.keys(p.headers).length > 0,
-      allowPrivateNetwork: p.allowPrivateNetwork === true,
-      liveModels: p.liveModels !== false,
-      models: p.models ?? [],
-      authMode: p.authMode,
-      apiKeyTransport: p.apiKeyTransport,
-      disabled: p.disabled === true,
-      codexAccountMode: providerCodexAccountMode(name, p),
-      discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
-    })));
+    return jsonResponse(Object.entries(config.providers).map(([name, p]) => {
+      const registry = getProviderRegistryEntry(name);
+      return {
+        name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
+        hasApiKey: !!p.apiKey,
+        // Presence only (#959 review): header names and values never leave the process.
+        hasHeaders: !!p.headers && Object.keys(p.headers).length > 0,
+        allowPrivateNetwork: p.allowPrivateNetwork === true,
+        liveModels: p.liveModels !== false,
+        models: p.models ?? [],
+        authMode: p.authMode,
+        apiKeyTransport: p.apiKeyTransport,
+        disabled: p.disabled === true,
+        codexAccountMode: providerCodexAccountMode(name, p),
+        discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
+        ...(registry?.rateLimits ? { rateLimits: { ...registry.rateLimits } } : {}),
+      };
+    }));
   }
 
   // Add (or overwrite) a single provider. Merges into the live in-memory config and

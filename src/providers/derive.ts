@@ -1,5 +1,10 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
-import { PROVIDER_REGISTRY, providerMatchesRegistryTransport, type ProviderRegistryEntry } from "./registry";
+import {
+  PROVIDER_REGISTRY,
+  providerMatchesRegistryTransport,
+  type ProviderRateLimits,
+  type ProviderRegistryEntry,
+} from "./registry";
 
 export interface DerivedKeyLoginProvider {
   label: string;
@@ -73,6 +78,8 @@ export interface DerivedProviderPreset {
   baseUrlChoices?: Array<{ id: string; label: string; baseUrl?: string }>;
   /** Immutable canonical provider config seed for the reserved canonical `openai` forward preset. */
   provider?: OcxProviderConfig;
+  /** Documented rate limits (official docs, not probed); shown as reference in the overview. */
+  rateLimits?: ProviderRateLimits;
 }
 
 export function listRegistryEntries(): readonly ProviderRegistryEntry[] {
@@ -341,6 +348,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     ...(entry.keyOptional ? { keyOptional: true } : {}),
     ...(entry.freeTier ? { freeTier: true } : {}),
     ...(entry.baseUrlChoices ? { baseUrlChoices: entry.baseUrlChoices.map(c => ({ ...c })) } : {}),
+    ...(entry.rateLimits ? { rateLimits: { ...entry.rateLimits } } : {}),
   };
 }
 

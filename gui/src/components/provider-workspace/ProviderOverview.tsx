@@ -13,6 +13,7 @@ import type { ProviderUsageTotals } from "./types";
 import { authModeLabel } from "./ProviderRail";
 import type { ProviderUpdatePatch } from "./types";
 import { ProviderCapacityQuota } from "./ProviderCapacityQuota";
+import { ProviderDocumentedLimits } from "./ProviderDocumentedLimits";
 
 type ConnectionTestResult = {
   applicable?: boolean;
@@ -205,6 +206,13 @@ export default function ProviderOverview({
         <section className="pws-section" aria-label={t("pws.rateLimits")}>
           <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
           <ProviderCapacityQuota report={quotaReport} pending={false} />
+          {item.rateLimits && <ProviderDocumentedLimits rateLimits={item.rateLimits} t={t} />}
+        </section>
+      )}
+      {!quotaReport && item.rateLimits && (
+        <section className="pws-section" aria-label={t("pws.rateLimits")}>
+          <h3 className="pws-section-title">{t("pws.rateLimits")}</h3>
+          <ProviderDocumentedLimits rateLimits={item.rateLimits} t={t} />
         </section>
       )}
 

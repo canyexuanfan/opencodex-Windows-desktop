@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { capacityAggregationFromReport } from "../src/provider-workspace/report";
+import { formatDocumentedLimits } from "../src/components/provider-workspace/ProviderDocumentedLimits";
 
 function selectorBlock(css: string, selector: string): string {
   const start = css.indexOf(`${selector} {`);
@@ -119,4 +120,32 @@ test("capacity recovery layout wraps and stacks in narrow provider panes", async
 test("malformed or future aggregation contracts fail closed", () => {
   expect(capacityAggregationFromReport({ aggregation: { kind: "capacity-weighted-v2" } })).toBeNull();
   expect(capacityAggregationFromReport({ aggregation: { kind: "capacity-weighted-v1", scope: "routable-known" } })).toBeNull();
+});
+
+describe("documented rate limits formatting", () => {
+  const t = (key: string, vars?: Record<string, string | number>) => {
+    const en = {
+      "pws.rateLimits.rpm": "{value} req/min",
+      "pws.rateLimits.tpm": "{value} tok/min",
+      "pws.rateLimits.rpd": "{value} req/day",
+    } as Record<string, string>;
+    const template = en[key] ?? key;
+    let out = template;
+    for (const [k, v] of Object.entries(vars ?? {})) out = out.split(`{${k}}`).join(String(v));
+    return out;
+  };
+
+  test("renders rpm/tpm/rpd with compact units", () => {
+    expect(formatDocumentedLimits({ rpm: 30, tpm: 6000, rpd: 1000 }, t))
+      .toBe("30 req/min · 6K tok/min · 1K req/day");
+  });
+
+  test("appends free-tier prose", () => {
+    expect(formatDocumentedLimits({ rpm: 15, freeTier: "Free tier: ~15 RPM" }, t))
+      .toBe("15 req/min · Free tier: ~15 RPM");
+  });
+
+  test("empty rate limits render as empty string", () => {
+    expect(formatDocumentedLimits({}, t)).toBe("");
+  });
 });

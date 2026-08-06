@@ -20,6 +20,28 @@ export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
 
 /**
+ * Documented rate limits from a provider's official docs — NOT probed live.
+ * Shown as reference in the providers overview (dashboard "Rate limits"
+ * section and per-provider overview) for providers without a live quota
+ * probe. Tier-dependent and can drift; always displayed as documented
+ * reference, never as live utilization.
+ */
+export interface ProviderRateLimits {
+  /** Requests per minute (documented tier). */
+  rpm?: number;
+  /** Tokens per minute (documented tier). */
+  tpm?: number;
+  /** Requests per day (documented tier). */
+  rpd?: number;
+  /** Free-tier cap, prose (e.g. "~200 req / 5 hours"). */
+  freeTier?: string;
+  /** Where the numbers came from (official docs URL). */
+  source?: string;
+  /** When last verified against the docs (YYYY-MM-DD). */
+  updatedAt?: string;
+}
+
+/**
  * Wire protocol a client spoke when it reached the proxy. Chat and Anthropic surfaces
  * translate into a Responses-shaped body and replay through `handleResponses`, so the
  * original inbound has to travel with the request or the replay looks native.
@@ -232,6 +254,8 @@ export interface ProviderRegistryEntry {
   googleMode?: "ai-studio" | "vertex" | "cloud-code-assist";
   project?: string;
   location?: string;
+  /** Documented rate limits (official docs, not probed); shown as reference in the overview. */
+  rateLimits?: ProviderRateLimits;
 }
 
 export type ProviderConfigSeed = Pick<
@@ -1165,7 +1189,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     autoToolChoiceOnlyModels: ["kimi-k2.7-code"],
     preserveReasoningContentModels: NEURALWATT_REASONING_HISTORY_MODELS,
   },
-  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
+  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS }, rateLimits: { rpm: 20, freeTier: "Free models: ~20 req/min, credit-capped; paid per model", source: "https://openrouter.ai/docs/api_reference/limits", updatedAt: "2026-08-06" } },
   {
     // Primary sources checked 2026-08-02:
     // - docs.cline.bot/getting-started/clinepass publishes this exact catalog and explicitly
@@ -1261,7 +1285,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: ["openai/gpt-5.6-sol", "anthropic/claude-sonnet-5", "google/gemini-3.5-flash"],
     note: "Korean enterprise LLM gateway. Per-key allowed models are discovered live from /v1/models. Full catalog: https://bizrouter.ai/models",
   },
-  { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys" },
+  { id: "groq", label: "Groq", adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", authKind: "key", featured: true, dashboardUrl: "https://console.groq.com/keys", rateLimits: { rpm: 30, tpm: 6_000, rpd: 1_000, source: "https://console.groq.com/docs/rate-limits", updatedAt: "2026-08-06" } },
   // 2026-07-10 Gemini API refresh: Tier-2 ai.google.dev evidence recorded in
   // devlog/_plan/260710_provider_hardening/001_research_frontier.md.
   {
@@ -1275,15 +1299,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "gemini-3.1-pro-preview": ["low", "medium", "high"],
     },
     jawcodeBundle: "google", extraMetadataAliases: ["gemini"],
+    rateLimits: { rpm: 15, tpm: 250_000, rpd: 1_000, freeTier: "Free tier: ~15 RPM / 250K TPM / 1K RPD (tier-dependent)", source: "https://ai.google.dev/gemini-api/docs/rate-limits", updatedAt: "2026-08-06" },
   },
   // 2026-07-10: defaultModel is frozen pending Vertex-specific Tier-2 evidence; Gemini API
   // evidence from ai.google.dev does not establish Vertex publisher availability.
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
   { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, liveModels: false, defaultModel: "gemini-3.6-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
-  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
-  { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
-  { id: "lm-studio", label: "LM Studio (local)", adapter: "openai-chat", baseUrl: "http://localhost:1234/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — no key needed" },
+  { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank", rateLimits: { freeTier: "Local — no remote limits", source: "https://github.com/ollama/ollama", updatedAt: "2026-08-06" } },
+  { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank", rateLimits: { freeTier: "Local — no remote limits", source: "https://docs.vllm.ai", updatedAt: "2026-08-06" } },
+  { id: "lm-studio", label: "LM Studio (local)", adapter: "openai-chat", baseUrl: "http://localhost:1234/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — no key needed", rateLimits: { freeTier: "Local — no remote limits", source: "https://lmstudio.ai/docs", updatedAt: "2026-08-06" } },
   {
     id: "deepseek",
     label: "DeepSeek",
@@ -1345,9 +1370,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // vision sidecar describes attached images for them, and the catalog advertises image input
     // on their behalf (same treatment as opencode-go's DeepSeek V4 entries above).
     noVisionModels: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
+    rateLimits: { rpm: 30, freeTier: "New accounts: one-time token grant; then pay-as-you-go", source: "https://api-docs.deepseek.com/quick_start/rate_limit", updatedAt: "2026-08-06" },
   },
   // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
-  { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b" },
+  { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b", rateLimits: { rpm: 30, tpm: 30_000, source: "https://inference-docs.cerebras.ai/ratelimits", updatedAt: "2026-08-06" } },
   {
     id: "deepinfra",
     label: "DeepInfra",
@@ -1519,6 +1545,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       maxModels: 128,
     },
     note: "SambaNova Cloud text-generation models only; private SambaStudio deployment endpoints are outside this preset.",
+    rateLimits: { rpm: 60, tpm: 100_000, freeTier: "Free tier: ~60 RPM / 100K TPM; then pay-as-you-go", source: "https://docs.sambanova.ai/cloud/docs/rate-limits", updatedAt: "2026-08-06" },
   },
   {
     id: "nebius",
@@ -1527,6 +1554,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://tokenfactory.nebius.com",
+    rateLimits: { rpm: 50, tpm: 50_000, freeTier: "Free tier: ~50 RPM / 50K TPM", source: "https://docs.nebius.com/studio/rate-limits", updatedAt: "2026-08-06" },
     liveModels: true,
     preserveCustomDestination: true,
     // The public tools guide documents single function selection, not parallel tool calls.
@@ -1595,8 +1623,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Shared Generative APIs Serverless Chat Completions only; project-qualified and dedicated deployment hosts require a custom provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
-  { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
-  { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
+  { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys", rateLimits: { rpm: 60, tpm: 1_000_000, freeTier: "Free tier: ~60 RPM / 1M TPM; then pay-as-you-go", source: "https://docs.together.ai/docs/rate-limits", updatedAt: "2026-08-06" } },
+  { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys", rateLimits: { rpm: 600, tpm: 150_000, freeTier: "Free tier: ~600 RPM / 150K TPM", source: "https://docs.fireworks.ai/guides/rate-limits", updatedAt: "2026-08-06" } },
   {
     id: "firepass", label: "Fire Pass (Fireworks Kimi)", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://fireworks.ai/account/api-keys",
@@ -1654,6 +1682,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noVisionModels: ZAI_GLM_52_MODELS,
     modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
     preserveReasoningContentModels: ZAI_GLM_52_MODELS,
+    rateLimits: { rpm: 60, tpm: 1_000_000, freeTier: "GLM coding subscription (paid plan)", source: "https://docs.z.ai/guides/overview/pricing", updatedAt: "2026-08-06" },
   },
   // Zhipu's domestic BigModel platform: OpenAI-compatible pay-as-you-go on open.bigmodel.cn — a
   // different host and billing product from the `zai` coding-plan subscription above.
@@ -1919,7 +1948,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     ],
   },
   // FREEZE 2026-07-10: codestral-latest is unconfirmed behind auth. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
-  { id: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.mistral.ai/api-keys", defaultModel: "codestral-latest" },
+  { id: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.mistral.ai/api-keys", defaultModel: "codestral-latest", rateLimits: { rpm: 5, tpm: 20_000, freeTier: "Free tier: ~5 RPM / 20K TPM; then pay-as-you-go", source: "https://docs.mistral.ai/getting-started/models/rate_limits/", updatedAt: "2026-08-06" } },
   {
     id: "minimax", label: "MiniMax — Coding Plan", baseUrl: "https://api.minimax.io/v1", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://platform.minimax.io", defaultModel: "MiniMax-M3", models: MINIMAX_MODELS,
@@ -1931,6 +1960,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     reasoningSplitModels: MINIMAX_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "Subscription Key or API Key",
+    rateLimits: { rpm: 100, tpm: 200_000, freeTier: "Coding plan subscription; per-plan quotas", source: "https://platform.minimax.io/docs/guides/rate-limits", updatedAt: "2026-08-06" },
   },
   {
     id: "minimax-cn", label: "MiniMax — Coding Plan (CN)", baseUrl: "https://api.minimaxi.com/v1", adapter: "openai-chat", authKind: "key",
@@ -1991,6 +2021,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     liveModels: true,
     note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
     dashboardUrl: "https://opencode.ai",
+    rateLimits: { freeTier: "~200 free-model requests per 5 hours", source: "https://opencode.ai/docs/zen/", updatedAt: "2026-08-06" },
     staticHeaders: {
       "x-opencode-client": "desktop",
     },

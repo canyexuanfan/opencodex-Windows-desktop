@@ -518,6 +518,175 @@ describe("fetchProviderQuotaReports", () => {
     expect(rejectedRefresh.reports).toEqual([]);
   });
 
+  function keyQuotaConfig(name: string, baseUrl: string): OcxConfig {
+    return {
+      defaultProvider: name,
+      providers: {
+        [name]: { adapter: "openai-chat", authMode: "key", baseUrl, apiKey: `${name}-secret` },
+      },
+    } as OcxConfig;
+  }
+
+  test("OpenRouter quota renders a credit window against the per-key cap", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        data: { label: "openrouter", usage: 5, limit: 20, limit_remaining: 15, is_free_tier: false },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("openrouter:key-info");
+    expect(result.reports[0]?.quota.customWindows).toEqual([{
+      label: "API credits ($15.00 of $20.00 remaining)",
+      percent: 25,
+    }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://openrouter.ai/api/v1/key");
+    expect(seen[0]?.authorization).toBe("Bearer openrouter-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("OpenRouter quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("openrouter", "https://attacker.example/api/v1"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("OpenRouter quota drops a key with no spending cap (no bar to render)", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: { label: "openrouter", usage: 3, is_free_tier: false },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1"), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("OpenRouter quota treats a terminal 401 as invalid (drops last-good)", async () => {
+    let rejected = false;
+    globalThis.fetch = (async () => {
+      if (rejected) return new Response("unauthorized", { status: 401 });
+      return new Response(JSON.stringify({
+        data: { usage: 5, limit: 20, limit_remaining: 15 },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const config = keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1");
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    rejected = true;
+    const invalid = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(invalid.reports).toEqual([]);
+  });
+
+  test("OpenRouter quota keeps the last-good row on a transient 429", async () => {
+    let throttled = false;
+    globalThis.fetch = (async () => {
+      if (throttled) return new Response("rate limited", { status: 429 });
+      return new Response(JSON.stringify({
+        data: { usage: 5, limit: 20, limit_remaining: 15 },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const config = keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1");
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    throttled = true;
+    const throttledRefresh = await fetchProviderQuotaReports(config, true);
+
+    expect(throttledRefresh.reports).toEqual(valid.reports);
+  });
+
+  test("DeepSeek quota renders a balance window against the granted allowance", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "CNY", total_balance: "6", granted_balance: "8", topped_up_balance: "0" }],
+        total_balance: "6",
+        granted_balance: "8",
+        topped_up_balance: "0",
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("deepseek", "https://api.deepseek.com"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("deepseek:balance");
+    expect(result.reports[0]?.quota.customWindows).toEqual([{
+      label: "API balance ($6.00 of $8.00 granted)",
+      percent: 75,
+    }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://api.deepseek.com/user/balance");
+    expect(seen[0]?.authorization).toBe("Bearer deepseek-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("DeepSeek quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("deepseek", "https://attacker.example"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("DeepSeek quota drops a top-up-only account (granted = 0, no cap to meter)", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      is_available: true,
+      total_balance: "50",
+      granted_balance: "0",
+      topped_up_balance: "50",
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("deepseek", "https://api.deepseek.com"), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("DeepSeek quota treats a terminal 401 as invalid (drops last-good)", async () => {
+    let rejected = false;
+    globalThis.fetch = (async () => {
+      if (rejected) return new Response("unauthorized", { status: 401 });
+      return new Response(JSON.stringify({ is_available: true, total_balance: "6", granted_balance: "8" }), { status: 200 });
+    }) as typeof fetch;
+    const config = keyQuotaConfig("deepseek", "https://api.deepseek.com");
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    rejected = true;
+    const invalid = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(invalid.reports).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
