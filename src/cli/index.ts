@@ -812,7 +812,21 @@ switch (command) {
     const desired = setIntegrationEnabled("codex", false);
     if (!desired.ok) {
       process.exitCode = desired.reason === "conflict" ? 2 : 1;
-      console.error(`Codex desired state was not saved (${desired.reason}).`);
+      if (restoreJson) {
+        // Machine-readable contract: every restore --json outcome emits one
+        // envelope on stdout, including failures before restore machinery runs.
+        console.log(JSON.stringify({
+          success: false,
+          message: `Codex desired state was not saved (${desired.reason}).`,
+          artifacts: {
+            config: { state: "skipped" },
+            catalog: { state: "skipped" },
+            history: { state: "skipped" },
+          },
+        }));
+      } else {
+        console.error(`Codex desired state was not saved (${desired.reason}).`);
+      }
       break;
     }
     // A repeated OFF on an already-clean home is a policy no-op. Do not enter
@@ -821,7 +835,20 @@ switch (command) {
     if (desired.status === "unchanged") {
       const { classifyNativeRoutedResidue } = await import("../codex/native-residue");
       if (classifyNativeRoutedResidue().kind === "clean") {
-        console.log("Codex integration is already OFF and native; no Codex files changed.");
+        const alreadyOff = "Codex integration is already OFF and native; no Codex files changed.";
+        if (restoreJson) {
+          console.log(JSON.stringify({
+            success: true,
+            message: alreadyOff,
+            artifacts: {
+              config: { state: "skipped" },
+              catalog: { state: "skipped" },
+              history: { state: "skipped" },
+            },
+          }));
+        } else {
+          console.log(alreadyOff);
+        }
         break;
       }
     }
