@@ -6,6 +6,26 @@ export type RoutingProfileCandidate = {
   model: string;
 };
 
+/**
+ * Draft-only candidate carrying a stable client-side identity for list keys.
+ * The key never reaches the server: `routingProfilePutBody` strips it.
+ */
+export type RoutingProfileDraftCandidate = RoutingProfileCandidate & { key: string };
+
+let draftCandidateKey = 0;
+function newDraftCandidateKey(): string {
+  draftCandidateKey += 1;
+  return `candidate-${draftCandidateKey}`;
+}
+
+/** Create a draft candidate with a fresh stable key. */
+export function newDraftCandidate(
+  provider: string,
+  model: string,
+): RoutingProfileDraftCandidate {
+  return { provider, model, key: newDraftCandidateKey() };
+}
+
 export type RoutingProfileDto = {
   id: string;
   alias: string | null;
@@ -39,7 +59,7 @@ export type RoutingProfileDto = {
 export type RoutingProfileDraft = {
   id: string;
   alias: string;
-  candidates: RoutingProfileCandidate[];
+  candidates: RoutingProfileDraftCandidate[];
   require: {
     minContextWindow: string;
     minQuotaHeadroom: string;
@@ -100,7 +120,7 @@ export function newRoutingProfileDraft(
   return {
     id: "",
     alias: "",
-    candidates: [{ provider, model }],
+    candidates: [newDraftCandidate(provider, model)],
     require: {
       minContextWindow: "",
       minQuotaHeadroom: "",
@@ -123,7 +143,7 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
   return {
     id: profile.id,
     alias: profile.alias ?? "",
-    candidates: profile.candidates.map(candidate => ({ ...candidate })),
+    candidates: profile.candidates.map(candidate => ({ ...candidate, key: newDraftCandidateKey() })),
     require: {
       minContextWindow: numberInput(profile.require.minContextWindow),
       minQuotaHeadroom: numberInput(profile.require.minQuotaHeadroom),

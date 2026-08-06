@@ -38,7 +38,12 @@ const profile: RoutingProfileDto = {
 describe("routing profile editor data", () => {
   test("creates a usable draft with one candidate and stable defaults", () => {
     const draft = newRoutingProfileDraft("openai", "gpt-5.6");
-    expect(draft.candidates).toEqual([{ provider: "openai", model: "gpt-5.6" }]);
+    expect(draft.candidates).toEqual([
+      { provider: "openai", model: "gpt-5.6", key: expect.stringMatching(/^candidate-\d+$/) },
+    ]);
+    // Keys are unique per created candidate.
+    expect(newRoutingProfileDraft("openai", "gpt-5.6").candidates[0]!.key)
+      .not.toBe(draft.candidates[0]!.key);
     expect(draft.optimize).toEqual({ latency: "0.55", health: "0.25", cost: "0.1", quota: "0.1" });
     expect(draft.unknownEvidence.capability).toBe("exclude");
   });

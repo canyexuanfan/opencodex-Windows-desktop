@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   modelOptionsForProvider,
+  newDraftCandidate,
   newRoutingProfileDraft,
   routingProfileDraftFromDto,
   routingProfilePutBody,
@@ -12,6 +13,7 @@ import {
   type RoutingProfileDto,
   type UnknownEvidenceMode,
 } from "../routing-profile-editor-data";
+import { readJsonIfOk } from "../fetch-json";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 
@@ -267,10 +269,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...body, mode: selected ? "update" : "create" }),
       });
-      const data = await response.json().catch(() => null) as unknown;
-      const serverError = routingProfileResponseError(data);
-      if (!response.ok || serverError || !routingProfileResponseSucceeded(data)) {
-        notify(serverError ?? t("routing.loadFailed"), false);
+      const data = await readJsonIfOk<unknown>(response);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as unknown;
+        notify(routingProfileResponseError(errorBody) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      if (!routingProfileResponseSucceeded(data)) {
+        notify(routingProfileResponseError(data) ?? t("routing.loadFailed"), false);
         return;
       }
       await load(body.id);
@@ -292,10 +298,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         `${apiBase}/api/routing-profiles?id=${encodeURIComponent(selected.id)}`,
         { method: "DELETE" },
       );
-      const data = await response.json().catch(() => null) as unknown;
-      const serverError = routingProfileResponseError(data);
-      if (!response.ok || serverError || !routingProfileResponseSucceeded(data)) {
-        notify(serverError ?? t("routing.loadFailed"), false);
+      const data = await readJsonIfOk<unknown>(response);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as unknown;
+        notify(routingProfileResponseError(errorBody) ?? t("routing.loadFailed"), false);
+        return;
+      }
+      if (!routingProfileResponseSucceeded(data)) {
+        notify(routingProfileResponseError(data) ?? t("routing.loadFailed"), false);
         return;
       }
       selectedRef.current = null;
@@ -319,6 +329,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         if (candidateIndex !== index) return candidate;
         if (field === "provider") {
           return {
+            ...candidate,
             provider: value,
             model: providerDefaults[value]
               ?? modelOptionsForProvider(models, value)[0]?.id
@@ -336,7 +347,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       ...current,
       candidates: [
         ...current.candidates,
-        { provider: firstProvider, model: firstModel },
+        newDraftCandidate(firstProvider, firstModel),
       ],
     } : current);
   };
@@ -474,7 +485,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                 const candidateProviders = [...new Set([candidate.provider, ...providerNames])].filter(Boolean);
                 const listId = `routing-model-options-${index}`;
                 return (
-                  <div key={`${index}-${candidate.provider}`} className="model-card">
+                  <div key={candidate.key} className="model-card">
                     <div className="model-grid">
                       <label className="field-label">
                         <code>provider</code>
