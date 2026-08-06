@@ -477,7 +477,13 @@ describe("WP13 composed toggle acceptance", () => {
     `], { cwd: repoRoot, env: fx.env(), stdout: "pipe", stderr: "pipe" });
     fx.children.push(holder);
     await waitFor(() => existsSync(held) ? true : null, "history BEGIN IMMEDIATE");
-    const blocked = await fx.runCli(["restore", "--json"], fx.homeA, fx.userprofileA, 15_000);
+    // The contended restore deliberately waits out PRODUCTION's retry budget:
+    // a 5 s SQLite busy timeout per attempt, two attempts, plus the delay
+    // between them — ~11 s of intentional waiting before it can report `busy`.
+    // A 15 s watchdog left almost no margin and fired on a loaded macOS runner
+    // (dev CI run 31105071651). Give the wait its budget plus real headroom;
+    // the case's own 45 s test timeout still bounds it.
+    const blocked = await fx.runCli(["restore", "--json"], fx.homeA, fx.userprofileA, 30_000);
     expect(blocked.exitCode).toBe(1);
     const envelope = JSON.parse(blocked.stdout) as { success: boolean; artifacts: { history: { state: string; reason?: string } } };
     expect(envelope).toMatchObject({ success: false, artifacts: { history: { state: "failed", reason: "busy" } } });
