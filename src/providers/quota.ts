@@ -260,7 +260,7 @@ function isCanonicalOpenRouterBaseUrl(baseUrl: string): boolean {
 
 function isCanonicalDeepSeekBaseUrl(baseUrl: string): boolean {
   const normalized = normalizedBaseUrl(baseUrl);
-  return normalized === DEEPSEEK_BASE_URL;
+  return normalized === DEEPSEEK_BASE_URL || normalized === `${DEEPSEEK_BASE_URL}/v1`;
 }
 
 function isCanonicalClineBaseUrl(baseUrl: string): boolean {
@@ -394,11 +394,14 @@ async function fetchOpenRouterQuota(provider: string, config: OcxProviderConfig)
   const limit = toFiniteNumber(data.limit);
   const limitRemaining = toFiniteNumber(data.limit_remaining);
   const usage = toFiniteNumber(data.usage);
-  // No per-key cap means there is no limit to render utilization against.
-  if (limit === undefined || limit <= 0) return null;
-  const used = usage !== undefined && usage > 0
-    ? usage
-    : limitRemaining !== undefined ? Math.max(0, limit - limitRemaining) : undefined;
+  // A successful no-cap response is a DELIBERATE change, not a transient
+  // failure: the old capped row must be dropped, not preserved as last-good.
+  if (limit === undefined || limit <= 0) return TERMINAL_QUOTA_FAILURE;
+  // Prefer the authoritative remaining-cap value when present: `usage` is
+  // lifetime accumulated spend and overstates a reset or re-capped key.
+  const used = limitRemaining !== undefined
+    ? Math.max(0, limit - limitRemaining)
+    : usage !== undefined && usage > 0 ? usage : undefined;
   if (used === undefined) return null;
   const percent = normalizePercent((used / limit) * 100);
   if (percent === undefined) return null;
@@ -412,10 +415,11 @@ async function fetchOpenRouterQuota(provider: string, config: OcxProviderConfig)
 
 /**
  * DeepSeek `GET /user/balance` — the account's granted + topped-up credit
- * balance. DeepSeek grants new accounts a one-time token allowance; the API
- * reports `total_balance` and `granted_balance`, so a bar can be rendered
- * against the granted allowance. When the balance is pure pay-as-you-go there
- * is no hard cap to meter against, so no bar is produced.
+ * balance. The payload places `total_balance` / `granted_balance` inside
+ * entries of `balance_infos` (one row per currency); the row for the account's
+ * currency is selected by preference. `granted_balance` is a CURRENT balance
+ * component, not the original grant ceiling, so no consumed percentage is
+ * fabricated — the balance is reported as a balance-only window.
  */
 async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   if (!isCanonicalDeepSeekBaseUrl(config.baseUrl)) return null;
@@ -432,17 +436,26 @@ async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): 
       : null;
   }
   const body = asRecord(await response.json().catch(() => null));
-  const totalBalance = toFiniteNumber(body?.total_balance);
-  const grantedBalance = toFiniteNumber(body?.granted_balance);
-  // A granted allowance is the only hard cap DeepSeek meters against; a
-  // top-up-only account (granted = 0) has no limit to render utilization.
-  if (grantedBalance === undefined || grantedBalance <= 0) return null;
-  if (totalBalance === undefined || totalBalance < 0) return null;
-  const percent = normalizePercent((totalBalance / grantedBalance) * 100);
-  if (percent === undefined) return null;
-  const label = `API balance ($${totalBalance.toFixed(2)} of $${grantedBalance.toFixed(2)} granted)`;
+  // The payload nests balances under `balance_infos` rows keyed by currency;
+  // prefer a USD row, then CNY, then the first row that parses.
+  const infos = Array.isArray(body?.balance_infos) ? body.balance_infos as unknown[] : null;
+  const rows = infos
+    ? infos.map((raw): Record<string, unknown> | null => asRecord(raw)).filter((r): r is Record<string, unknown> => r !== null)
+    : [];
+  const pick = (currency: string): Record<string, unknown> | null =>
+    rows.find(row => String(row.currency ?? "").toUpperCase() === currency) ?? null;
+  const preferred = pick("USD") ?? pick("CNY") ?? rows[0] ?? null;
+  if (!preferred) return null;
+  const totalBalance = toFiniteNumber(preferred.total_balance);
+  const grantedBalance = toFiniteNumber(preferred.granted_balance);
+  const toppedUp = toFiniteNumber(preferred.topped_up_balance);
+  const balance = totalBalance ?? grantedBalance ?? toppedUp;
+  if (balance === undefined || balance < 0) return null;
+  const label = grantedBalance !== undefined && grantedBalance > 0
+    ? `API balance ($${balance.toFixed(2)} total, $${grantedBalance.toFixed(2)} granted)`
+    : `API balance ($${balance.toFixed(2)})`;
   return report(provider, "deepseek:balance", {
-    customWindows: [{ label, percent }],
+    customWindows: [{ label, percent: 0 }],
     updatedAt: Date.now(),
   });
 }
@@ -551,15 +564,20 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
 
 /**
  * MiniMax Token Plan `GET /v1/token_plan/remains` — the subscription's
- * remaining quota as a countdown-time value (ms). The console shows a usage
- * bar; this endpoint exposes the raw remaining time, so the bar is rendered
- * from the remaining share of the plan window.
+ * remaining quota as a countdown-time value (ms). The endpoint does not expose
+ * the plan's total duration, so no percentage is fabricated from a presumed
+ * window: the remaining time is reported as a duration-only window. When the
+ * API supplies a total (`total_time` / `plan_duration_ms`), a consumed share
+ * is derived from it. Region selects the host: `minimax` → www.minimax.io,
+ * `minimax-cn` → api.minimaxi.com.
  */
 async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   if (!isCanonicalMinimaxBaseUrl(config.baseUrl)) return null;
   const apiKey = resolveEnvValue(config.apiKey)?.trim();
   if (!apiKey) return null;
-  const response = await fetch(MINIMAX_REMAINS_URL, {
+  const cnHost = normalizedBaseUrl(config.baseUrl)?.startsWith("https://api.minimaxi.com");
+  const remainsUrl = cnHost ? "https://api.minimaxi.com/v1/token_plan/remains" : MINIMAX_REMAINS_URL;
+  const response = await fetch(remainsUrl, {
     headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -572,16 +590,24 @@ async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): P
   const body = asRecord(await response.json().catch(() => null));
   if (!body || body.success === false) return null;
   const data = asRecord(body.data) ?? body;
-  // `remains_time` is the remaining plan quota in ms (a countdown). The plan
-  // window (e.g. 30 days) is not exposed, so render the remaining share as a
-  // single custom window at the raw value; the label states it is remaining.
   const remainsMs = toFiniteNumber(data.remains_time ?? data.remainsTime);
   if (remainsMs === undefined || remainsMs < 0) return null;
-  const percent = normalizePercent(remainsMs <= 0 ? 100 : Math.min(100, (1 - remainsMs / 2_592_000_000) * 100));
-  if (percent === undefined) return null;
-  const label = `Token Plan remaining (${Math.floor(remainsMs / 3_600_000)}h)`;
+  const hours = Math.floor(remainsMs / 3_600_000);
+  const label = `Token Plan remaining (${hours}h)`;
+  // Only derive a consumed share when the API actually reports the plan total;
+  // a presumed window (e.g. 30 days) would fabricate utilization.
+  const totalMs = toFiniteNumber(data.total_time ?? data.plan_duration_ms ?? data.total_duration_ms);
+  if (totalMs !== undefined && totalMs > 0) {
+    const consumed = Math.max(0, totalMs - remainsMs);
+    const percent = normalizePercent((consumed / totalMs) * 100);
+    if (percent === undefined) return null;
+    return report(provider, "minimax:token-plan-remains", {
+      customWindows: [{ label, percent }],
+      updatedAt: Date.now(),
+    });
+  }
   return report(provider, "minimax:token-plan-remains", {
-    customWindows: [{ label, percent }],
+    customWindows: [{ label, percent: 0 }],
     updatedAt: Date.now(),
   });
 }
@@ -613,15 +639,13 @@ async function fetchMoonshotQuota(provider: string, config: OcxProviderConfig): 
   const voucher = toFiniteNumber(data.voucher_balance);
   const cash = toFiniteNumber(data.cash_balance);
   if (available === undefined || available < 0) return null;
-  const cap = voucher !== undefined && cash !== undefined && voucher + cash > 0
-    ? voucher + cash
-    : available;
-  if (cap <= 0) return null;
-  const percent = normalizePercent((available / cap) * 100);
-  if (percent === undefined) return null;
-  const label = `Balance ($${available.toFixed(2)} available)`;
+  // Moonshot exposes no per-window quota ceiling, only a balance — report it
+  // as a balance-only window (percent 0) rather than a fabricated utilization.
+  const label = voucher !== undefined && cash !== undefined
+    ? `Balance ($${available.toFixed(2)} available, $${voucher.toFixed(2)} voucher)`
+    : `Balance ($${available.toFixed(2)} available)`;
   return report(provider, "moonshot:balance", {
-    customWindows: [{ label, percent }],
+    customWindows: [{ label, percent: 0 }],
     updatedAt: Date.now(),
   });
 }
@@ -797,7 +821,9 @@ async function fetchNeuralwattQuota(provider: string, config: OcxProviderConfig)
   const totalCredits = balance ? toFiniteNumber(balance.total_credits_usd) : undefined;
   const remainingCredits = balance ? toFiniteNumber(balance.credits_remaining_usd) : undefined;
   if (totalCredits !== undefined && totalCredits > 0 && remainingCredits !== undefined) {
-    const percent = normalizePercent((remainingCredits / totalCredits) * 100);
+    // Utilization is CONSUMED credits, not the remaining share.
+    const used = Math.max(0, totalCredits - remainingCredits);
+    const percent = normalizePercent((used / totalCredits) * 100);
     if (percent !== undefined) {
       quota.customWindows = [...(quota.customWindows ?? []), { label: "Prepaid credits", percent }];
       windows += 1;

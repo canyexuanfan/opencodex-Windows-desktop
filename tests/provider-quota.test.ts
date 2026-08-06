@@ -568,14 +568,39 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("OpenRouter quota drops a key with no spending cap (no bar to render)", async () => {
+  test("OpenRouter quota drops a key with no spending cap (terminal, not transient)", async () => {
+    // A successful no-cap response is a DELIBERATE cap removal — the old
+    // capped row must be suppressed, not preserved as a last-good transient.
+    let capped = true;
+    globalThis.fetch = (async () => new Response(JSON.stringify(
+      capped
+        ? { data: { usage: 5, limit: 20, limit_remaining: 15 } }
+        : { data: { usage: 3, is_free_tier: false } },
+    ), { status: 200 })) as typeof fetch;
+    const config = keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1");
+
+    const valid = await fetchProviderQuotaReports(config, true);
+    capped = false;
+    const uncapped = await fetchProviderQuotaReports(config, true);
+
+    expect(valid.reports).toHaveLength(1);
+    expect(uncapped.reports).toEqual([]);
+  });
+
+  test("OpenRouter quota prefers limit_remaining over accumulated usage for reset keys", async () => {
+    // A reset key can report large accumulated `usage` while most of the
+    // current cap remains; utilization must come from limit_remaining.
     globalThis.fetch = (async () => new Response(JSON.stringify({
-      data: { label: "openrouter", usage: 3, is_free_tier: false },
+      data: { usage: 90, limit: 20, limit_remaining: 18 },
     }), { status: 200 })) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1"), true);
 
-    expect(result.reports).toEqual([]);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota.customWindows?.[0]).toEqual({
+      label: "API credits ($18.00 of $20.00 remaining)",
+      percent: 10,
+    });
   });
 
   test("OpenRouter quota treats a terminal 401 as invalid (drops last-good)", async () => {
@@ -613,7 +638,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(throttledRefresh.reports).toEqual(valid.reports);
   });
 
-  test("DeepSeek quota renders a balance window against the granted allowance", async () => {
+  test("DeepSeek quota renders a balance-only window from balance_infos", async () => {
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -621,10 +646,8 @@ describe("fetchProviderQuotaReports", () => {
       seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
       return new Response(JSON.stringify({
         is_available: true,
-        balance_infos: [{ currency: "CNY", total_balance: "6", granted_balance: "8", topped_up_balance: "0" }],
-        total_balance: "6",
-        granted_balance: "8",
-        topped_up_balance: "0",
+        // The real payload nests balances per currency inside balance_infos.
+        balance_infos: [{ currency: "CNY", total_balance: "6", granted_balance: "4", topped_up_balance: "2" }],
       }), { status: 200 });
     }) as typeof fetch;
 
@@ -633,8 +656,8 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports).toHaveLength(1);
     expect(result.reports[0]?.source).toBe("deepseek:balance");
     expect(result.reports[0]?.quota.customWindows).toEqual([{
-      label: "API balance ($6.00 of $8.00 granted)",
-      percent: 75,
+      label: "API balance ($6.00 total, $4.00 granted)",
+      percent: 0,
     }]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://api.deepseek.com/user/balance");
@@ -658,12 +681,27 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("DeepSeek quota drops a top-up-only account (granted = 0, no cap to meter)", async () => {
+  test("DeepSeek quota accepts the canonical /v1 base URL and probes the root endpoint", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "CNY", total_balance: "6" }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("deepseek", "https://api.deepseek.com/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(seen[0]).toBe("https://api.deepseek.com/user/balance");
+  });
+
+  test("DeepSeek quota drops a payload with no balance_infos rows", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       is_available: true,
       total_balance: "50",
       granted_balance: "0",
-      topped_up_balance: "50",
     }), { status: 200 })) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(keyQuotaConfig("deepseek", "https://api.deepseek.com"), true);
@@ -675,7 +713,10 @@ describe("fetchProviderQuotaReports", () => {
     let rejected = false;
     globalThis.fetch = (async () => {
       if (rejected) return new Response("unauthorized", { status: 401 });
-      return new Response(JSON.stringify({ is_available: true, total_balance: "6", granted_balance: "8" }), { status: 200 });
+      return new Response(JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "CNY", total_balance: "6", granted_balance: "4" }],
+      }), { status: 200 });
     }) as typeof fetch;
     const config = keyQuotaConfig("deepseek", "https://api.deepseek.com");
 
@@ -796,7 +837,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("MiniMax quota renders the Token Plan remaining-time window", async () => {
+  test("MiniMax quota renders the Token Plan remaining-time as a duration-only window", async () => {
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -809,11 +850,40 @@ describe("fetchProviderQuotaReports", () => {
 
     expect(result.reports).toHaveLength(1);
     expect(result.reports[0]?.source).toBe("minimax:token-plan-remains");
-    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("Token Plan remaining");
+    // No total duration from the API → duration-only window, no fabricated percent.
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({
+      label: "Token Plan remaining (277h)",
+      percent: 0,
+    });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://www.minimax.io/v1/token_plan/remains");
     expect(seen[0]?.authorization).toBe("Bearer minimax-secret");
     expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("MiniMax quota derives a consumed share when the API reports the plan total", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: { remains_time: 750_000_000, total_time: 1_000_000_000 },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax", "https://api.minimax.io/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota.customWindows?.[0]?.percent).toBe(25);
+  });
+
+  test("MiniMax CN quota probes the minimaxi.com host", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ success: true, data: { remains_time: 1_000_000_000 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax-cn", "https://api.minimaxi.com/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(seen[0]).toBe("https://api.minimaxi.com/v1/token_plan/remains");
   });
 
   test("MiniMax quota never sends the key to a non-canonical base URL", async () => {
@@ -832,7 +902,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("Moonshot quota renders a balance window from the account balance", async () => {
+  test("Moonshot quota renders a balance-only window from the account balance", async () => {
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -847,11 +917,30 @@ describe("fetchProviderQuotaReports", () => {
 
     expect(result.reports).toHaveLength(1);
     expect(result.reports[0]?.source).toBe("moonshot:balance");
-    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("$8.00");
+    // Balance-only: no fabricated utilization percentage.
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({
+      label: "Balance ($8.00 available, $2.00 voucher)",
+      percent: 0,
+    });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://api.moonshot.ai/v1/users/me/balance");
     expect(seen[0]?.authorization).toBe("Bearer moonshot-secret");
     expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Moonshot quota probes the CN host for a China-region base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({
+        data: { available_balance: 5, voucher_balance: 0, cash_balance: 5 },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("moonshot", "https://api.moonshot.cn/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(seen[0]).toBe("https://api.moonshot.cn/v1/users/me/balance");
   });
 
   test("Moonshot quota never sends the key to a non-canonical base URL", async () => {
@@ -959,6 +1048,19 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
+  test("DeepInfra quota accepts the root base URL and probes the payment checklist", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ stripe_balance: -10, spending_limit: 50, total_amount_due: 5 }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("deepinfra", "https://api.deepinfra.com"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(seen[0]).toBe("https://api.deepinfra.com/payment/checklist?compute_owed=true");
+  });
+
   test("Neuralwatt quota renders subscription kWh + prepaid credits windows", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       data: {
@@ -972,7 +1074,8 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports).toHaveLength(1);
     expect(result.reports[0]?.source).toBe("neuralwatt:quota");
     expect(result.reports[0]?.quota.fiveHourPercent).toBe(25);
-    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({ label: "Prepaid credits", percent: 70 });
+    // Utilization is CONSUMED credits: (10 − 7) / 10 = 30%, not the 70% remaining.
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({ label: "Prepaid credits", percent: 30 });
   });
 
   test("Neuralwatt quota never sends the key to a non-canonical base URL", async () => {

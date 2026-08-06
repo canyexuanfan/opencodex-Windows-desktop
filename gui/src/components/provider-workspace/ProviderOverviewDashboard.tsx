@@ -197,18 +197,12 @@ export default function ProviderOverviewDashboard({
                 </div>
               ))}
             </div>
-          ) : (
+          ) : documentedLimitProviders.length === 0 ? (
             <p className="muted pws-dashboard-empty">{t("pws.dashboard.noRateLimits")}</p>
-          )}
-        </section>
-
-        {documentedLimitProviders.length > 0 && (
-          <section
-            className="pws-dashboard-section pws-dashboard-section--documented-limits"
-            aria-label={t("pws.rateLimits.documented")}
-          >
-            <h3 className="pws-dashboard-section-title">{t("pws.rateLimits.documented")}</h3>
-            <div className="pws-dashboard-rows">
+          ) : null}
+          {documentedLimitProviders.length > 0 && (
+            <div className="pws-dashboard-rows pws-dashboard-rows--documented">
+              <div className="pws-dashboard-documented-heading">{t("pws.rateLimits.documented")}</div>
               {documentedLimitProviders.map(item => (
                 <button
                   key={item.name}
@@ -225,8 +219,8 @@ export default function ProviderOverviewDashboard({
                 </button>
               ))}
             </div>
-          </section>
-        )}
+          )}
+        </section>
 
         <section
           className="pws-dashboard-section pws-dashboard-section--recent"

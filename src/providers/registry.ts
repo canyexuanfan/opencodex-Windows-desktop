@@ -1973,6 +1973,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     reasoningSplitModels: MINIMAX_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "中国区 Subscription Key",
+    rateLimits: { rpm: 100, tpm: 200_000, freeTier: "Coding plan subscription; per-plan quotas", source: "https://platform.minimaxi.com/docs/guides/rate-limits", updatedAt: "2026-08-06" },
   },
   {
     id: "kimi-code", label: "Kimi (coding)", baseUrl: "https://api.kimi.com/coding/v1", adapter: "openai-chat", authKind: "key",

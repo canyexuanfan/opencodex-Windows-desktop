@@ -1,5 +1,45 @@
 /* ProviderOverviewDashboard — aggregate overview (Phase 010) */
 
+/* Documented (reference) rate limits nested in the Rate limits column */
+.pws-dashboard-rows--documented {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(128, 128, 128, 0.25);
+}
+.pws-dashboard-documented-heading {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted, #8a8a8a);
+  margin-bottom: 4px;
+}
+
+/* Documented-limit reference lines: label, value, and provenance with gaps and wrapping */
+.pws-documented-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.pws-documented-limits-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--fg-muted, #8a8a8a);
+}
+.pws-documented-limits-value {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.pws-documented-limits-meta {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
 .pws-dashboard {
   /* Muted labels here must clear WCAG 4.5:1 in both themes; the old `var(--fg-muted, #888)`
      fallback only reached ~3.5:1 on white. Alias the design-system muted token instead. */

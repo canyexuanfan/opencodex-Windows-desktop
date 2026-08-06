@@ -48,7 +48,7 @@ import { readUsageEntries } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
-import { getProviderRegistryEntry } from "../../providers/registry";
+import { getProviderRegistryEntry, registryEntryForProviderDestination } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -242,7 +242,12 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
     return jsonResponse(Object.entries(config.providers).map(([name, p]) => {
-      const registry = getProviderRegistryEntry(name);
+      // Documented limits follow the DESTINATION, not the config key: a preset
+      // saved under a custom name (e.g. "my-groq") must still surface Groq's
+      // limits. Fall back to the exact id lookup for non-key presets (forward/
+      // oauth/local) whose destination resolver does not apply.
+      const registry = getProviderRegistryEntry(name)
+        ?? registryEntryForProviderDestination(p);
       return {
         name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
         hasApiKey: !!p.apiKey,

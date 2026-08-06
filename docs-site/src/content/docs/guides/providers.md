@@ -484,3 +484,21 @@ If a provider speaks Chat Completions, the `openai-chat` adapter handles it — 
 dashboard or `custom` in `ocx init` and enter the base URL. See the
 [Configuration reference](/reference/configuration/) for every provider field
 (`headers`, `noReasoningModels`, `noVisionModels`, `models`, …).
+
+## Rate limits in the providers overview
+
+The **Rate limits** section of the Providers overview shows two kinds of data:
+
+- **Live utilization** — refreshed from each provider's own usage/billing endpoint when one exists.
+  The bars show how much of a window (5-hour, weekly, monthly, or provider-specific) is already
+  consumed. Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi, Google
+  Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax, Moonshot, Venice, Synthetic,
+  DeepInfra, Neuralwatt, and any a6api-backed custom provider.
+- **Documented reference** — for providers without a live endpoint, the overview shows the rate
+  limits published in the provider's official docs (requests/minute, tokens/minute, free-tier
+  caps) as reference text.
+
+Documented limits are **not account-specific**: they describe a published tier, not your actual
+plan, and can drift as providers change their pricing or limits. Treat them as reference — the
+`source` and `updatedAt` fields show where the numbers came from and when they were last verified.
+
