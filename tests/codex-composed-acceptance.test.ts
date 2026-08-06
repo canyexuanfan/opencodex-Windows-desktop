@@ -31,6 +31,7 @@ import {
   resolveCodexCoordinatorDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
+import { claimOwnedServiceHome } from "./helpers/owned-service-home";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const cliPath = resolve(repoRoot, "src/cli/index.ts");
@@ -84,6 +85,7 @@ class Fixture {
   readonly managementToken = "composed-admin-token";
   readonly lockPath: string;
   readonly lockAllowlist: string[];
+  readonly serviceManagerEnv: Record<string, string>;
   readonly children: Array<ReturnType<typeof Bun.spawn>> = [];
 
   constructor() {
@@ -96,25 +98,7 @@ class Fixture {
       if (existsSync(path)) throw new Error(`lock preflight found pre-existing case path: ${path}`);
     }
     writeFileSync(join(this.codex, "config.toml"), 'model = "gpt-5"\n');
-    // The host may have a real service claim. Record this fixture as the active
-    // install so an acceptance writer never consults that ambient identity.
-    writeFileSync(join(this.ocx, "service-state.json"), JSON.stringify({
-      version: 2,
-      codexHome: this.codex,
-      opencodexHome: this.ocx,
-      backend: "scheduler",
-    }));
-    if (process.platform === "darwin") {
-      const launchAgents = join(this.homeA, "Library", "LaunchAgents");
-      mkdirSync(launchAgents, { recursive: true, mode: 0o700 });
-      writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-        "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
-        `<key>CODEX_HOME</key><string>${this.codex}</string>`,
-        `<key>OPENCODEX_HOME</key><string>${this.ocx}</string>`,
-        "</dict></dict></plist>",
-      ].join("\n"));
-    }
+    this.serviceManagerEnv = claimOwnedServiceHome(this.codex, this.ocx, this.homeA).env;
   }
 
   env(home = this.homeA, userprofile = this.userprofileA): Record<string, string> {
@@ -131,6 +115,7 @@ class Fixture {
       // A fixed fixture value avoids reading the generated credential file.
       OPENCODEX_ADMIN_AUTH_TOKEN: this.managementToken,
       NO_PROXY: "127.0.0.1,localhost",
+      ...this.serviceManagerEnv,
     };
   }
 

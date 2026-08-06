@@ -16,6 +16,7 @@ import {
   resolveCodexCatalogSerializationDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
+import { claimOwnedServiceHome } from "./helpers/owned-service-home";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const sandboxes: Sandbox[] = [];
@@ -64,6 +65,7 @@ function makeSandbox(prefix: string): Sandbox {
     mkdirSync(path, { recursive: true });
     chmodSync(path, 0o700);
   }
+  const serviceManagerEnv = claimOwnedServiceHome(codexHome, opencodexHome, home).env;
   const sandbox = {
     root,
     codexHome,
@@ -79,25 +81,9 @@ function makeSandbox(prefix: string): Sandbox {
       TMP: runtime,
       XDG_RUNTIME_DIR: runtime,
       LOCALAPPDATA: join(home, "LocalAppData"),
+      ...serviceManagerEnv,
     },
   };
-  writeFileSync(join(opencodexHome, "service-state.json"), JSON.stringify({
-    version: 2,
-    codexHome,
-    opencodexHome,
-    backend: "scheduler",
-  }));
-  if (process.platform === "darwin") {
-    const launchAgents = join(home, "Library", "LaunchAgents");
-    mkdirSync(launchAgents, { recursive: true, mode: 0o700 });
-    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
-      `<key>CODEX_HOME</key><string>${codexHome}</string>`,
-      `<key>OPENCODEX_HOME</key><string>${opencodexHome}</string>`,
-      "</dict></dict></plist>",
-    ].join("\n"));
-  }
   sandboxes.push(sandbox);
   return sandbox;
 }

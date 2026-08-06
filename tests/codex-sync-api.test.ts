@@ -7,6 +7,7 @@ import { syncModelsToCodex } from "../src/codex/sync";
 import { MANAGED_AGENTS_TABLE_MARKER, MANAGED_SUBAGENT_DEFAULT_MARKER } from "../src/codex/subagent-defaults";
 import type { OcxConfig } from "../src/types";
 import type { OrcaCodexHomeDiagnostic } from "../src/codex/home";
+import { claimOwnedServiceHome } from "./helpers/owned-service-home";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-sync-api");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -33,23 +34,7 @@ const config = {
 } as OcxConfig;
 
 function claimTempHome(codexHome: string, ocxHome: string, home: string): void {
-  writeFileSync(join(ocxHome, "service-state.json"), JSON.stringify({
-    version: 2,
-    codexHome,
-    opencodexHome: ocxHome,
-    backend: "scheduler",
-  }));
-  if (process.platform === "darwin") {
-    const launchAgents = join(home, "Library", "LaunchAgents");
-    mkdirSync(launchAgents, { recursive: true });
-    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
-      `<key>CODEX_HOME</key><string>${codexHome}</string>`,
-      `<key>OPENCODEX_HOME</key><string>${ocxHome}</string>`,
-      "</dict></dict></plist>",
-    ].join("\n"));
-  }
+  claimOwnedServiceHome(codexHome, ocxHome, home);
 }
 
 const admittedSync = () => ({ kind: "admitted" as const });

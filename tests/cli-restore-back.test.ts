@@ -3,30 +3,14 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claimOwnedServiceHome } from "./helpers/owned-service-home";
 
 const repoRoot = join(import.meta.dir, "..");
 
 function ownedEnvironment(codexHome: string, ocxHome: string): Record<string, string> {
   const home = join(ocxHome, "home");
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(ocxHome, "service-state.json"), JSON.stringify({
-    version: 2,
-    codexHome,
-    opencodexHome: ocxHome,
-    backend: "scheduler",
-  }));
-  if (process.platform === "darwin") {
-    const launchAgents = join(home, "Library", "LaunchAgents");
-    mkdirSync(launchAgents, { recursive: true });
-    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
-      `<key>CODEX_HOME</key><string>${codexHome}</string>`,
-      `<key>OPENCODEX_HOME</key><string>${ocxHome}</string>`,
-      "</dict></dict></plist>",
-    ].join("\n"));
-  }
-  return { HOME: home, USERPROFILE: home };
+  return { HOME: home, USERPROFILE: home, ...claimOwnedServiceHome(codexHome, ocxHome, home).env };
 }
 
 describe("ocx restore back", () => {

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claimOwnedServiceHome } from "./helpers/owned-service-home";
 
 /**
  * Regression: `ocx start` + Ctrl-C must NOT orphan the Bun proxy.
@@ -25,29 +26,12 @@ const runnable = process.platform !== "win32" && nodeAvailable;
 const spawned: ChildProcess[] = [];
 const tmpHomes: string[] = [];
 
-function claimTempHome(home: string): { homeDir: string; userProfile: string } {
+function claimTempHome(home: string): { homeDir: string; userProfile: string; serviceManagerEnv: Record<string, string> } {
   const homeDir = join(home, "user-home");
   const userProfile = join(home, "user-profile");
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(userProfile, { recursive: true });
-  writeFileSync(join(home, "service-state.json"), JSON.stringify({
-    version: 2,
-    codexHome: home,
-    opencodexHome: home,
-    backend: "scheduler",
-  }));
-  if (process.platform === "darwin") {
-    const launchAgents = join(homeDir, "Library", "LaunchAgents");
-    mkdirSync(launchAgents, { recursive: true });
-    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
-      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
-      `<key>CODEX_HOME</key><string>${home}</string>`,
-      `<key>OPENCODEX_HOME</key><string>${home}</string>`,
-      "</dict></dict></plist>",
-    ].join("\n"));
-  }
-  return { homeDir, userProfile };
+  return { homeDir, userProfile, serviceManagerEnv: claimOwnedServiceHome(home, home, homeDir).env };
 }
 
 afterAll(() => {
@@ -114,6 +98,7 @@ describe.skipIf(!runnable)("ocx launcher graceful shutdown", () => {
             USERPROFILE: identity.userProfile,
             OPENCODEX_HOME: home,
             CODEX_HOME: home,
+            ...identity.serviceManagerEnv,
           },
         });
         spawned.push(child);
