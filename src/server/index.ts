@@ -174,6 +174,12 @@ import {
   requireManagementAuth,
   type ManagementAuthState,
 } from "./management-auth";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  createLocalAttestationProof,
+  createLocalAttestationSecret,
+} from "../lib/local-management-attestation";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -357,6 +363,8 @@ export interface StartServerDeps {
   nativeMainStartup?: NativeMainStartupGateDeps;
   /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
+  /** Test-only seam; production derives a fresh local-attestation secret per process. */
+  localAttestationSecret?: string;
 }
 
 /*
@@ -381,6 +389,7 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
 }
 
 export function startServer(port?: number, deps: StartServerDeps = {}) {
+  const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
@@ -571,7 +580,14 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
 
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
-        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+        const healthPort = server.port ?? listenPort;
+        const response = jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: healthPort }, 200, req, config);
+        const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
+        if (challenge) {
+          const proof = createLocalAttestationProof(localAttestationSecret, challenge, process.pid, healthPort);
+          if (proof) response.headers.set(LOCAL_ATTESTATION_PROOF_HEADER, proof);
+        }
+        return response;
       }
 
       if (url.pathname.startsWith("/api/")) {

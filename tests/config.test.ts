@@ -1713,10 +1713,11 @@ describe("opencodex config defaults", () => {
   });
 
   test("runtime port metadata round-trips and validates expected pid", () => {
-    writeRuntimePort({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
+    const attestationSecret = "A".repeat(43);
+    writeRuntimePort({ pid: 1234, port: 58195, hostname: "0.0.0.0", attestationSecret });
 
-    expect(readRuntimePort()).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
-    expect(readRuntimePort(1234)).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0" });
+    expect(readRuntimePort()).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0", attestationSecret });
+    expect(readRuntimePort(1234)).toEqual({ pid: 1234, port: 58195, hostname: "0.0.0.0", attestationSecret });
     expect(readRuntimePort(9999)).toBeNull();
   });
 
@@ -1733,6 +1734,9 @@ describe("opencodex config defaults", () => {
   test("invalid runtime port metadata returns null", () => {
     writeFileSync(getRuntimePortPath(), JSON.stringify({ pid: 1234, port: 99999 }), "utf-8");
 
+    expect(readRuntimePort()).toBeNull();
+
+    writeFileSync(getRuntimePortPath(), JSON.stringify({ pid: 1234, port: 58195, attestationSecret: "too-short" }), "utf-8");
     expect(readRuntimePort()).toBeNull();
   });
 });

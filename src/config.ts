@@ -38,6 +38,7 @@ import {
 } from "./lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
 import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
+import { isLocalAttestationSecret } from "./lib/local-management-attestation";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
@@ -2608,18 +2609,22 @@ export type RuntimePortState = {
   pid: number;
   port: number;
   hostname?: string;
+  /** Per-process proof key; protected by the config directory and never served. */
+  attestationSecret?: string;
 };
 
 function isValidRuntimePortState(value: unknown): value is RuntimePortState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
   const hostnameOk = state.hostname === undefined || typeof state.hostname === "string";
+  const attestationOk = state.attestationSecret === undefined || isLocalAttestationSecret(state.attestationSecret);
   return Number.isSafeInteger(state.pid)
     && Number(state.pid) > 0
     && Number.isInteger(state.port)
     && Number(state.port) > 0
     && Number(state.port) <= 65535
-    && hostnameOk;
+    && hostnameOk
+    && attestationOk;
 }
 
 export function writeRuntimePort(state: RuntimePortState): void {

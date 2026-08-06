@@ -28,6 +28,20 @@ management credential for `/api/codex-auth/accounts`, never the service/data-pla
 output distinguishes a missing proxy, rejected management authentication, and an unexpected
 management response so a reachable `401` cannot be reported as "proxy not running."
 
+Before either CLI command attaches the management bearer, it challenges the listener and verifies
+an HMAC proof bound to the proxy PID and port. The per-process proof key lives only in the protected
+`runtime-port.json`; the public `/healthz` identity marker alone is never sufficient to receive a
+management credential. Legacy or configured-port-only listeners still satisfy ordinary liveness,
+but their account-health detail remains unavailable until an attested runtime record exists.
+
+[Decision Log]
+- 목적과 의도: Keep a lower-privileged local process from collecting the management bearer by impersonating `/healthz` on an unused port.
+- 기존 구현 및 제약 조건: Liveness must remain public and backward-compatible, but its service string and reported PID are assertions made by the listener itself.
+- 검토한 주요 대안: Require only a runtime source and non-null PID; stop showing account health; authenticate the listener with a protected per-process challenge secret.
+- 선택한 방식: Store a random secret in the mode-protected runtime record and require a challenge/PID/port HMAC before the CLI sends Authorization.
+- 다른 대안 대신 이 방식을 선택한 이유: PID and command-line checks are not cryptographic listener identity, while removing live account health would regress diagnostics unnecessarily.
+- 장점, 단점 및 영향: The long-lived token never reaches a listener without the runtime secret; an old running proxy remains visible but cannot provide detailed CLI account health until restarted on the new version.
+
 Management authentication never has a loopback bypass. If no management credential is available, or
 management token creation, validation, or permission hardening fails, every `/api/*` request returns
 503 while `/v1/*` and unauthenticated `/healthz` continue to operate. Windows ACL hardening results

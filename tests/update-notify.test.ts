@@ -124,7 +124,7 @@ describe("cli wiring", () => {
     const cli = await readText("src/cli/index.ts");
     const promptIndex = cli.indexOf("await maybeShowUpdatePrompt()");
     const portIndex = cli.indexOf("let port = await chooseListenPort");
-    const serverIndex = cli.indexOf("startServer(port)");
+    const serverIndex = cli.indexOf("startServer(port, { localAttestationSecret })");
     expect(promptIndex).toBeGreaterThan(-1);
     expect(portIndex).toBeGreaterThan(-1);
     expect(promptIndex).toBeLessThan(portIndex);
