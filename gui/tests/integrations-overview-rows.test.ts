@@ -35,6 +35,8 @@ function sources(overrides: Partial<OverviewSources> = {}): OverviewSources {
     claude: null,
     claudeDesktop: null,
     grok: null,
+    native: null,
+    nativeSettled: true,
     ...overrides,
   };
 }
@@ -79,24 +81,32 @@ test("Codex reads routingInjected, not status", () => {
 });
 
 test("Claude Desktop: applied but not the served profile reads as stale", () => {
+  const desktopNative = [{
+    clientId: "claude-desktop" as const,
+    state: "current" as const,
+    installed: true,
+    configPath: "/tmp/desktop",
+    desiredEnabled: true,
+    disableBlocked: null,
+  }];
   const served = buildOverviewRows(
-    sources({ claudeDesktop: { applied: true, stale: false, activeProfile: true } }),
+    sources({ native: desktopNative, claudeDesktop: { desiredEnabled: true, installed: true, applied: true, stale: false, activeProfile: true } }),
   );
   expect(rowById(served, "claudeDesktop").state).toBe("current");
 
   const notServed = buildOverviewRows(
-    sources({ claudeDesktop: { applied: true, stale: false, activeProfile: false } }),
+    sources({ native: desktopNative, claudeDesktop: { desiredEnabled: true, installed: true, applied: true, stale: false, activeProfile: false } }),
   );
   expect(rowById(notServed, "claudeDesktop").state).toBe("stale");
 
   const drifted = buildOverviewRows(
-    sources({ claudeDesktop: { applied: true, stale: true, activeProfile: true } }),
+    sources({ native: desktopNative, claudeDesktop: { desiredEnabled: true, installed: true, applied: true, stale: true, activeProfile: true } }),
   );
   expect(rowById(drifted, "claudeDesktop").state).toBe("stale");
 
   // Undeterminable must not downgrade a healthy applied profile.
   const unknownProfile = buildOverviewRows(
-    sources({ claudeDesktop: { applied: true, stale: false, activeProfile: null } }),
+    sources({ native: desktopNative, claudeDesktop: { desiredEnabled: true, installed: true, applied: true, stale: false, activeProfile: null } }),
   );
   expect(rowById(unknownProfile, "claudeDesktop").state).toBe("current");
 });
@@ -133,7 +143,29 @@ test("every client counts toward the summary, not just the file six", () => {
     codex: { routingInjected: true, status: "at-risk" },
     keyCount: 2,
     claude: { enabled: true },
-    claudeDesktop: { applied: true, stale: true, activeProfile: true },
+    claudeDesktop: { desiredEnabled: true, installed: true, applied: true, stale: true, activeProfile: true },
+    native: [{
+      clientId: "claude-desktop",
+      state: "current",
+      installed: true,
+      configPath: "/tmp/desktop",
+      desiredEnabled: true,
+      disableBlocked: null,
+    }, {
+      clientId: "claude",
+      state: "current",
+      installed: true,
+      configPath: "/tmp/config",
+      desiredEnabled: true,
+      disableBlocked: null,
+    }, {
+      clientId: "grok",
+      state: "current",
+      installed: true,
+      configPath: "/tmp/grok",
+      desiredEnabled: true,
+      disableBlocked: null,
+    }],
     grok: { present: true, models: [{}, {}] },
   }));
   const counts = countOverviewRows(rows.rows);

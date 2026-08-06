@@ -66,6 +66,8 @@ export interface OverviewRow {
   installed: boolean;
   /** Drives the "applied" summary count. */
   applied: boolean;
+  /** Desired switch position; separate from observed application. */
+  toggleOn?: boolean;
   /**
    * The one line under the title. File clients show their config path — the
    * thing a user copies when a refusal tells them to finish by hand. The other
@@ -96,6 +98,9 @@ export interface ClaudeCodePayload {
   authMode?: string;
 }
 export interface ClaudeDesktopPayload {
+  desiredEnabled?: boolean;
+  installed?: boolean;
+  observedKind?: string;
   applied?: boolean;
   stale?: boolean;
   activeProfile?: boolean | null;
@@ -270,27 +275,35 @@ function claudeRow(
  * Desktop is not honoring. `null` is undeterminable and must not downgrade a
  * healthy `current`.
  */
-function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
+function claudeDesktopRow(
+  payload: ClaudeDesktopPayload | null,
+  native: NativeStatus | undefined,
+  nativeSettled: boolean,
+): OverviewRow {
   const base = {
     id: "claudeDesktop" as const,
     hash: "integrations/claude/desktop",
     // "Desktop" alone is ambiguous next to ten other client names.
     labelKey: "claudeDesktop.title" as TKey,
-    toggle: null,
-    toggleBlocked: null,
-    togglePath: null,
+    toggle: "claude-desktop" as const,
+    toggleBlocked: native?.disableBlocked ?? null,
+    togglePath: native?.configPath ?? null,
     status: null,
     detail: null,
     detailVars: null,
   };
-  if (!payload) return { ...base, state: "unknown", installed: false, applied: false, detailKey: null };
+  if (!payload || !nativeSettled || !native || typeof payload.desiredEnabled !== "boolean") {
+    return { ...base, toggle: null, state: "unknown", installed: false, applied: false, detailKey: null };
+  }
+  const toggleOn = payload.desiredEnabled;
   if (payload.applied !== true) {
     return {
       ...base,
       state: "absent",
-      installed: true,
+      installed: payload.installed === true,
       applied: false,
-      detailKey: "integrations.detail.desktopAbsent",
+      toggleOn,
+      detailKey: toggleOn ? "integrations.detail.desktopDesiredOnNotApplied" : "integrations.detail.desktopDesiredOff",
     };
   }
   const drifted = payload.stale === true || payload.activeProfile === false;
@@ -299,6 +312,7 @@ function claudeDesktopRow(payload: ClaudeDesktopPayload | null): OverviewRow {
     state: drifted ? "stale" : "current",
     installed: true,
     applied: true,
+    toggleOn,
     // Separate sentences: a drifted file and a profile Desktop is not serving
     // are different problems with different fixes.
     detailKey: payload.activeProfile === false
@@ -395,7 +409,11 @@ export function buildOverviewRows(sources: OverviewSources): OverviewRows {
   const rows: OverviewRow[] = [
     codexRow(sources.codex),
     claudeRow(sources.claude, nativeClaude, sources.nativeSettled),
-    claudeDesktopRow(sources.claudeDesktop),
+    claudeDesktopRow(
+      sources.claudeDesktop,
+      sources.native?.find(client => client.clientId === "claude-desktop"),
+      sources.nativeSettled,
+    ),
     grokRow(sources.grok, nativeGrok, sources.nativeSettled),
   ];
   for (const clientId of FILE_INTEGRATION_CLIENTS) {

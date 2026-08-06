@@ -43,6 +43,7 @@ interface DesktopModel {
 }
 
 interface DesktopStatus {
+  desiredEnabled: boolean;
   applied: boolean;
   appliedAt: string | null;
   stale: boolean;
@@ -408,6 +409,8 @@ export default function ClaudeDesktop({
             ? "not-applied"
             : !status
               ? "pending"
+              : !status.desiredEnabled
+                ? "not-applied"
               : status.activeProfile === false
                 ? "not-applied"
                 : status.stale
@@ -426,6 +429,8 @@ export default function ClaudeDesktop({
             ? t("claudeDesktop.loadFail")
             : !status
               ? t("claudeDesktop.loading")
+              : !status.desiredEnabled
+                ? t("claudeDesktop.status.disabled")
               : status.activeProfile === false
                 ? t("claudeDesktop.status.notActiveProfile")
                 : status.stale
@@ -459,7 +464,7 @@ export default function ClaudeDesktop({
             {pending === "save" ? t("claudeDesktop.saving") : t("common.save")}
           </button>
           <button type="button" className="btn btn-primary" disabled={pending !== null} onClick={() => void save(true)}>
-            {pending === "apply" ? t("claudeDesktop.applying") : pending === "save" ? t("claudeDesktop.saving") : t("claudeDesktop.saveApply")}
+            {pending === "apply" ? t("claudeDesktop.applying") : pending === "save" ? t("claudeDesktop.saving") : status?.desiredEnabled === false ? t("claudeDesktop.enableApply") : t("claudeDesktop.saveApply")}
           </button>
         </div>
       </div>
