@@ -41,7 +41,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
-import { shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import { setIntegrationEnabled, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
@@ -787,6 +787,12 @@ switch (command) {
         console.error("No running proxy found. Run 'ocx start' — it injects opencodex automatically.");
         process.exit(1);
       }
+      const desired = setIntegrationEnabled("codex", true);
+      if (!desired.ok) {
+        process.exitCode = desired.reason === "conflict" ? 2 : 1;
+        console.error(`Codex desired state was not saved (${desired.reason}).`);
+        break;
+      }
       const synced = await syncModelsToCodex(live.port);
       if (synced.status === "skipped") {
         process.exitCode = 2;
@@ -802,9 +808,15 @@ switch (command) {
       console.log(`Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`);
       break;
     }
+    const desired = setIntegrationEnabled("codex", false);
+    if (!desired.ok) {
+      process.exitCode = desired.reason === "conflict" ? 2 : 1;
+      console.error(`Codex desired state was not saved (${desired.reason}).`);
+      break;
+    }
     let r: { success: boolean; message: string };
     try {
-      r = await restoreNativeCodexAsync();
+      r = await restoreNativeCodexAsync({ revalidateDesiredState: true });
     } catch (err) {
       r = { success: false, message: err instanceof Error ? err.message : String(err) };
     }
@@ -822,7 +834,7 @@ switch (command) {
       }
     } catch { /* best-effort */ }
     if (r.success) {
-      console.log("Plain `codex` now runs natively (no proxy). Switch back with: ocx restore back");
+      console.log("Codex integration is OFF and plain `codex` now runs natively. Switch back with: ocx restore back");
     } else {
       console.error("Plain `codex` was not fully restored. Inspect $CODEX_HOME/config.toml before using native Codex.");
     }
