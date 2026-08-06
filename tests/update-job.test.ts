@@ -115,7 +115,7 @@ describe("GUI update execution decisions", () => {
   test("restart command separates service and direct proxy modes", () => {
     expect(restartCommand(true, "npm", "/pkg/bin/ocx.mjs")).toMatchObject({
       mode: "service",
-      args: ["/pkg/bin/ocx.mjs", "service", "install"],
+      args: ["/pkg/bin/ocx.mjs", "service", "repair"],
     });
     expect(restartCommand(false, "npm", "/pkg/bin/ocx.mjs")).toMatchObject({
       mode: "proxy",
@@ -128,9 +128,9 @@ describe("GUI update execution decisions", () => {
     expect(proxy.mode).toBe("proxy");
     expect(proxy.args).toEqual(["/pkg/bin/ocx.mjs", "start", "--port", "10100"]);
     expect(proxy.display).toContain("start --port 10100");
-    // Service reinstall stays install-only at the argv level; wrappers bake --port via OCX_BAKE_PORT.
+    // The service refresh takes no --port at the argv level; wrappers bake it via OCX_BAKE_PORT.
     expect(restartCommand(true, "npm", "/pkg/bin/ocx.mjs", 10100).args).toEqual([
-      "/pkg/bin/ocx.mjs", "service", "install",
+      "/pkg/bin/ocx.mjs", "service", "repair",
     ]);
   });
 
@@ -379,6 +379,56 @@ describe("GUI update execution decisions", () => {
       });
       // The fallback must fire: direct proxy start instead of throwing.
       expect(spawned).toEqual([{ port: 19999 }]);
+    } finally {
+      if (prevService === undefined) delete process.env.OCX_SERVICE;
+      else process.env.OCX_SERVICE = prevService;
+    }
+  });
+
+  // 260804 #970: the Windows GUI update worker (OCX_SERVICE=1, never elevated) used to
+  // skip the service refresh entirely, because it ran `service install` whose scheduler
+  // path always reaches `schtasks /create`. `repair` never calls /create, so the skip's
+  // reason is gone and the dashboard-triggered update — the most common Windows path —
+  // must actually refresh the service. Ablate by restoring the unconditional skip:
+  // runService is then never called and this goes red.
+  test("a non-elevated Windows update worker repairs the service instead of skipping it", async () => {
+    const ranService: string[][] = [];
+    const spawned: Array<{ port: number }> = [];
+    const job: UpdateJobState = {
+      id: "svc-win-repair",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.7.42",
+      latestVersion: "2.7.43",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    const prevService = process.env.OCX_SERVICE;
+    process.env.OCX_SERVICE = "1";
+    try {
+      await restartAfterUpdateForTests(job, { port: 19998, hostname: "127.0.0.1" }, {
+        platform: "win32",
+        serviceInstalledFn: () => true,
+        serviceViableFn: () => true,
+        waitForPort: async () => true,
+        probeProxy: async () => true,
+        runService: (_j, _bin, args) => {
+          ranService.push(args);
+          return { status: 0 };
+        },
+        spawnStart: (_job, _installer, port) => {
+          spawned.push({ port: port ?? 0 });
+        },
+      });
+      // The refresh ran, and it ran the non-registering subcommand.
+      expect(ranService.length).toBe(1);
+      expect(ranService[0]).toContain("repair");
+      expect(ranService[0]).not.toContain("install");
     } finally {
       if (prevService === undefined) delete process.env.OCX_SERVICE;
       else process.env.OCX_SERVICE = prevService;

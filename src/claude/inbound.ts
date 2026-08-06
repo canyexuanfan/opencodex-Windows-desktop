@@ -498,7 +498,13 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   const thinking = raw.thinking;
   const outputConfigEffort = effortFromOutputConfig(raw.output_config);
   const thinkingDisabled = isRec(thinking) && thinking.type === "disabled";
-  if (!thinkingDisabled && (isRec(thinking) || outputConfigEffort !== undefined)) {
+  if (thinkingDisabled) {
+    // An explicit "disabled" is an instruction, not an absence. Dropping it made this
+    // indistinguishable from a request that never mentioned thinking — and for models that
+    // think by default, omission means thinking is ON, sharing the caller's max_tokens (#545).
+    // "none" is the parser's disable sentinel (parser.ts REASONING_EFFORTS).
+    body.reasoning = { effort: "none", summary: "none" };
+  } else if (isRec(thinking) || outputConfigEffort !== undefined) {
     const reasoning: Rec = { summary: "auto" };
     if (outputConfigEffort !== undefined) {
       // Adaptive wire: /effort arrives as output_config.effort (devlog 080).

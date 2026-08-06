@@ -18,6 +18,7 @@ import {
   usageTotalTokens,
   usageReadCacheStatsForTests,
   usageLogRevisionKey,
+  type PersistedUsageEntry,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -37,6 +38,32 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("persists the rate-limit-429 recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-ratelimit-kind",
+      timestamp: 1,
+      provider: "blsc",
+      model: "blsc/DeepSeek-V4-Flash",
+      status: 429,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "blsc",
+        model: "blsc/DeepSeek-V4-Flash",
+        adapter: "openai-chat",
+        status: 429,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["rate-limit-429", "rate-limit-429"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429"]);
+  });
+
+  /** Build one minimal persisted-usage JSONL line for the given request id. */
   const persistedLine = (requestId: string) => JSON.stringify({
     requestId,
     timestamp: 1,
@@ -99,16 +126,16 @@ describe("usage log", () => {
   test("usage byte-prefix truncation and entry-count truncation report independent metadata", async () => {
     writeFileSync(
       usageLogPath(),
-      `${Array.from({ length: 200_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
+      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
     );
     const snapshot = await readUsageSnapshotForManagement();
-    expect(snapshot.entries).toHaveLength(200_000);
+    expect(snapshot.entries).toHaveLength(500_000);
     expect(snapshot.entries[0]?.requestId).toBe("1");
-    expect(snapshot.entries.at(-1)?.requestId).toBe("200000");
+    expect(snapshot.entries.at(-1)?.requestId).toBe("500000");
     expect(snapshot.truncatedPrefixBytes).toBe(0);
     expect(snapshot.entriesTruncated).toBe(true);
     expect(snapshot.entriesDropped).toBe(1);
-  }, STORE_BUDGET_MS); // parsing 200,001 rows IS the entry-cap assertion; windows-latest measured ~5.05s against Bun's 5s default.
+  }, STORE_BUDGET_MS); // parsing 500,001 rows IS the entry-cap assertion; the 200k-row variant measured ~5.05s on windows-latest against Bun's 5s default.
 
   test("stale usage-read flight is replaced and old completion cannot clear new owner", async () => {
     writeFileSync(

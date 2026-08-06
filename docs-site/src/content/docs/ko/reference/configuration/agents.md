@@ -10,10 +10,10 @@ description: 멀티 에이전트 표면, 위임 안내, 선호 모델, 대체 �
 | 필드 | 형식 | 기본값 | 의미 |
 | --- | --- | --- | --- |
 | `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | `v1`은 카탈로그의 모든 모델에 v1을 표시하고, `v2`는 모든 모델에 v2를 표시합니다. `default`는 상위 고정값(Sol/Terra는 v2, Luna는 v1)을 복원하고, 그 외에는 네이티브 `multi_agent_v2` 플래그를 따릅니다. 새 세션에 적용됩니다. |
-| `subagentModels?` | `string[]` | `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4-mini` | 최대 다섯 개의 네이티브 또는 라우팅된 id를 서브에이전트 선택기에서 우선 표시합니다. 명시적으로 빈 목록을 넣어도 그대로 보존합니다. |
+| `subagentModels?` | `string[]` | `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4-mini` | 최대 다섯 개의 bare native id, account-qualified `<selector>/<native-openai-model>` id 또는 routed `provider/model` id를 서브에이전트 선택기에서 우선 표시합니다. Subagents 페이지는 bare native와 routed id만 제공하며 저장할 때 exact account-qualified 선택을 제외합니다. exact 선택은 `ocx agent subagents set`을 사용하거나 설정을 직접 편집하세요. 명시적인 빈 목록도 그대로 보존됩니다. |
 | `injectionModel?` | `string` | — | 프록시가 작성한 v2 위임 안내에서 사용하는 선호 네이티브 또는 라우팅된 서브에이전트 모델입니다. |
 | `injectionEffort?` | `string` | — | 선호 노력(`low`부터 `ultra`까지)입니다. `injectionModel`이 있을 때만 의미가 있습니다. |
-| `injectionPrompt?` | `string` | — | 내장 안내 본문을 대체합니다. `{{model}}`, `{{effort}}`, `{{roster}}`, `{{fallback}}`를 지원합니다. 발동 조건은 그대로입니다. |
+| `injectionPrompt?` | `string` | — | 내장 v2 안내 본문을 대체합니다. `{{model}}`, `{{effort}}`, `{{roster}}`, `{{fallback}}`를 지원합니다. `injectionModel`만 설정되어 있어도 사용자 정의 프롬프트가 발동합니다. |
 | `multiAgentGuidanceEnabled?` | `boolean` | `true` | opencodex가 작성하는 v1/v2 개발자 안내만 제어합니다. 네이티브 에이전트 기본값, 도구, 라우팅, 로스터, 노력 상한은 바꾸지 않습니다. |
 | `syncCodexSubagentDefaults?` | `boolean` | `false` | 동기화 또는 재시작 시 `injectionModel`과 선택적 `injectionEffort`를 Codex의 네이티브 기본값으로 기록하도록 선택합니다. `injectionModel`이 필요합니다. |
 | `subagentModelFallback?` | `string[]` | `[]` | 생성된 하위 턴에 적용되는 전역 대체 모델 우선순위 목록입니다. |

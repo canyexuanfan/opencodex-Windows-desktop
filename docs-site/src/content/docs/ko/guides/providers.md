@@ -53,6 +53,11 @@ shipped v1 config는 marker 2의 단일 옵션 행으로 자동 이관됩니다.
 | `forward` | **수신된 Codex 인증 헤더를** 프로바이더에 그대로 중계합니다 — 키를 저장하지 않습니다. ChatGPT 로그인 패스스루입니다. | OpenAI (`openai-responses` 어댑터). |
 | `oauth` | 저장된 OAuth 액세스 토큰을 불러와 bearer 키로 사용하며, 만료 전에 자동 갱신합니다. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor. |
 
+[`retryOn429`](/ko/reference/configuration/)（동일 키 429 재시도）는 API 키 프로바이더
+（`authMode: "key"`）에만 적용됩니다. OAuth·forward·로컬 프리셋은 제외됩니다 — 같은 토큰을
+재전송해서는 안 되며, 로컬 런타임에는 보존할 원격 키가 없습니다. 옵트인입니다: 옵션이 없으면
+꺼져 있고, 객체가 있으면 `enabled: false`가 아닌 한 활성화됩니다.
+
 ## 1. ChatGPT 로그인 (forward / 패스스루)
 
 기본 프로바이더는 **API 키가 필요 없습니다**. 기존 `codex login`의 자격 증명을 OpenAI Responses 백엔드로
@@ -137,10 +142,9 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 69개 들어 있습니다. 키 방식 58개, OAuth 7개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 70개 들어 있습니다. 키 방식 58개, OAuth 8개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
-입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다르며, Command Code의 공개 카탈로그는 키를
-검증 불가로 보고합니다). 주요 항목은 다음과 같습니다:
+입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
 **ClinePass**는 Cline API 키로 [공식 구독 카탈로그](https://docs.cline.bot/getting-started/clinepass)와
 [Chat Completions 엔드포인트](https://docs.cline.bot/api/chat-completions)에 연결합니다. 운영 주체는
@@ -216,12 +220,12 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 대상으로 하며 별도 image, audio, GPU 엔드포인트는 범위에서 제외합니다. 키는
 [Hyperbolic](https://app.hyperbolic.ai)에서 생성합니다.
 
-**Command Code 검색:** 프리셋은 Command Code의 공개 `/provider/v1/models` 목록을 고정된 Provider API
+**Command Code 검색:** 프리셋은 Command Code의 `/provider/v1/models` 목록을 고정된 Provider API
 호스트에서 읽고, 슬래시가 포함된 네이티브 모델 ID를 보존하며 live discovery를 256 KiB와 raw 행
-256개로 제한합니다. 모델 카탈로그는 인증이 없으므로 CLI 로그인 흐름은 키를 유효하다고 잘못 보고하지
-않고 검증 불가로 보고합니다. 채팅 요청은 설정된 bearer 키를 사용하며, API 액세스에는 Provider 플랜이
-필요하고 Go/Pro 구독자용 CLI 인증 브리지는 아직 제공되지 않습니다. 키는
-[Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
+256개로 제한합니다. `ocx login command-code`는 브라우저 OAuth 로그인을 지원하며(기존 Command Code
+CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가져올 수 있음), 모델 카탈로그는
+계정 단위이며 로그인 후 인증된 discovery 엔드포인트에서 가져옵니다. 채팅 요청은 설정된 bearer
+키를 사용합니다. 키는 [Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션
@@ -287,6 +291,15 @@ Amazon Bedrock 네이티브 API처럼 이 구현 중 어느 것과도 맞지 않
 교환하며, 활성 Copilot 구독이 필요하고 GitHub 정책 변경으로 막힐 수 있음). GitLab Duo는 Bearer
 **구독 토큰**(일반 API 키가 아님)으로 인증합니다. **Cloudflare AI
 Gateway**는 URL에 계정 + 게이트웨이 id를 채워야 합니다.
+
+Copilot은 혼합 wire 카탈로그를 제공합니다. GPT-5 계열 모델(`gpt-5.3-codex`, `gpt-5.4`,
+`gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)은 에이전트
+트래픽에 대해 `/chat/completions`를 거부하므로 opencodex는 이 모델들을 내장 기본값으로
+Responses API를 통해 라우팅하고, 다른 Copilot 모델은 모두 chat completions를 유지합니다.
+우선순위는 하드 wire 핀 → 명시적 [`modelAdapters`](/ko/reference/configuration/providers/)
+항목 → 레지스트리 기본값 → 프로바이더 전체 adapter 순입니다. 내장 기본값이 없는 모델(예:
+`gpt-5.4-nano`)을 Responses로 전환하려면 `"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`를
+설정하세요.
 
 Cursor는 별도의 실험적 어댑터로 추적합니다. `adapter: "cursor"`는 `ocx init`과 dashboard Add
 Provider picker에 실험적 local config 항목으로 표시되며, Cursor의 static fallback model catalog

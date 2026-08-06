@@ -62,6 +62,12 @@ description: Все способы, которыми opencodex аутентиф�
 | `forward` | Передаёт провайдеру **входящие заголовки аутентификации Codex** без изменений — ключ не хранится. Это сквозной режим (passthrough) входа через ChatGPT. | OpenAI (адаптер `openai-responses`). |
 | `oauth` | Берёт сохранённый OAuth-токен доступа (автоматически обновляется до истечения срока) и использует его как bearer-ключ. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor, GitHub Copilot. |
 
+Повтор при 429 на том же ключе ([`retryOn429`](/ru/reference/configuration/)) применим только к
+провайдерам с API-ключом (`authMode: "key"`). Пресеты OAuth, forward и local исключены — их
+учётные данные нельзя повторно отправлять по тому же токену, а у локальных сред выполнения нет
+удалённого ключа. Это opt-in: при отсутствии опции функция выключена; наличие объекта включает
+её, если только `enabled: false`.
+
 ## 1. Вход через ChatGPT (forward / passthrough)
 
 Провайдеру `openai` **не нужен API-ключ**. Direct пересылает учётные данные вашего существующего
@@ -147,10 +153,10 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 69 встроенными пресетами: 58 на основе ключей, семь OAuth, три локальных и
+opencodex поставляется с 70 встроенными пресетами: 58 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
-выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера, а публичный
-каталог Command Code сообщает ключ как непроверенный. Наиболее заметные записи:
+выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
+Наиболее заметные записи:
 
 **ClinePass** подключается с помощью Cline API key к [официальному каталогу подписки](https://docs.cline.bot/getting-started/clinepass)
 и [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions). Оператор — Cline Bot Inc., указанный в
@@ -228,12 +234,13 @@ Volcengine Agent Plan использует нативную конечную т�
 строками. Он охватывает только serverless text и vision-language chat; отдельные image, audio и GPU
 endpoint в него не входят. Ключи создаются в [Hyperbolic](https://app.hyperbolic.ai).
 
-**Discovery для Command Code.** Пресет читает публичный список `/provider/v1/models` с фиксированного
+**Discovery для Command Code.** Пресет читает список `/provider/v1/models` с фиксированного
 хоста Provider API, сохраняет нативные id моделей со знаком `/` и ограничивает live discovery размером
-256 KiB и 256 исходными строками. Каталог моделей не требует аутентификации, поэтому CLI-флоу входа
-сообщает ключ как непроверенный, а не как ложноположительно действительный. Запросы чата используют
-настроенный bearer-ключ; для доступа к API требуется план Provider, а CLI-мост аутентификации для
-подписок Go/Pro пока недоступен. Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
+256 KiB и 256 исходными строками. `ocx login command-code` поддерживает вход через OAuth в браузере
+(с возможностью импорта локальных учётных данных CLI из `~/.commandcode/auth.json` для существующих
+пользователей CLI Command Code); каталог моделей привязан к учётной записи и берётся из
+аутентифицированного discovery endpoint после входа. Запросы чата используют настроенный bearer-ключ.
+Ключи создаются в [Command Code Studio](https://commandcode.ai/studio/).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),
@@ -302,6 +309,15 @@ Assist), `azure` / `azure-openai`, `kiro` и `cursor`. Проприетарны�
 через device flow GitHub на короткоживущий API-токен Copilot, а не принимает вставленный API-ключ.
 **GitLab Duo** остаётся шлюзом с ключом/токеном подписки на своей OpenAI-совместимой конечной
 точке. **Cloudflare AI Gateway** требует подставить в URL id аккаунта и шлюза.
+
+Copilot предоставляет каталог со смешанными проводами: его семейство GPT-5 (`gpt-5.3-codex`,
+`gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)
+отклоняет `/chat/completions` для агентного трафика, поэтому opencodex по умолчанию
+маршрутизирует эти модели через Responses API, а все остальные модели Copilot остаются на
+chat completions. Приоритет: жёсткий wire-пин → явная запись
+[`modelAdapters`](/ru/reference/configuration/providers/) → дефолт реестра → adapter всего
+провайдера. Чтобы перевести модель без встроенного дефолта (например, `gpt-5.4-nano`) на
+Responses, задайте `"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`.
 
 Cursor отслеживается отдельно как экспериментальный адаптер. `adapter: "cursor"` появляется в
 `ocx init` и в селекторе Add Provider дашборда как экспериментальная запись локальной конфигурации

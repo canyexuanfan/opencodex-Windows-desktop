@@ -14,6 +14,9 @@ const {
   extractReviewReadiness,
   appendReviewReadinessSection,
   stripReviewReadinessSection,
+  uncheckReviewReadinessBoxes,
+  REVIEW_READINESS_CLAIM_INDEX,
+  resetReviewReadinessSection,
   collectPrQualityFailures,
 } = require("./pr-quality.cjs");
 
@@ -398,6 +401,140 @@ describe("review readiness checklist", () => {
     assert.equal(stripReviewReadinessSection(SECTION), "");
     assert.equal(stripReviewReadinessSection("plain body"), "plain body");
     assert.equal(stripReviewReadinessSection(null), null);
+  });
+
+  it("resets every checked box to unticked and keeps the surrounding body", () => {
+    const body = [
+      "## Summary",
+      "Author content.",
+      "",
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+      "",
+      "## Test plan",
+      "- Ran the suite.",
+    ].join("\n");
+    const reset = resetReviewReadinessSection(body);
+    const extracted = extractReviewReadiness(reset);
+    assert.equal(extracted.present, true);
+    assert.equal(extracted.complete, false);
+    assert.equal(extracted.checked, 0);
+    assert.equal(extracted.total, 4);
+    assert.equal((reset.match(/\[x\]/g) || []).length, 0);
+    assert.ok(reset.includes("Author content."));
+    assert.ok(reset.includes("## Test plan"));
+  });
+
+  it("resets a partially ticked section as well", () => {
+    const partial = SECTION.replace(
+      "- [ ] My PR is ready for review.",
+      "- [x] My PR is ready for review.",
+    );
+    const reset = resetReviewReadinessSection(partial);
+    const extracted = extractReviewReadiness(reset);
+    assert.equal(extracted.checked, 0);
+    assert.equal(extracted.complete, false);
+  });
+
+  it("preserves the surrounding author formatting exactly", () => {
+    const body = [
+      "## Summary",
+      "Author content.",
+      "",
+      "",
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+      "",
+      "",
+      "Trailing note with blank lines above.",
+      "",
+    ].join("\n");
+    const reset = resetReviewReadinessSection(body);
+    // Only the bounded section changed; deliberate blank lines and trailing
+    // markdown survive byte for byte (no `\n{3,}` collapse, no trimEnd).
+    assert.equal(reset, body.replaceAll("- [x] ", "- [ ] "));
+  });
+
+  it("is idempotent on an already-unticked section", () => {
+    const once = resetReviewReadinessSection(
+      SECTION.replaceAll("- [ ] ", "- [x] "),
+    );
+    assert.equal(resetReviewReadinessSection(once), once);
+    assert.equal(extractReviewReadiness(once).checked, 0);
+  });
+
+  it("leaves markerless and malformed bodies alone", () => {
+    assert.equal(resetReviewReadinessSection("plain body"), "plain body");
+    assert.equal(resetReviewReadinessSection(null), null);
+    const duplicate = SECTION + SECTION;
+    assert.equal(resetReviewReadinessSection(duplicate), duplicate);
+    const inverted =
+      "<!-- pr-quality-readiness-checklist:end -->\n" +
+      "<!-- pr-quality-readiness-checklist:start -->\n" +
+      "- [x] orphan box";
+    assert.equal(resetReviewReadinessSection(inverted), inverted);
+  });
+});
+
+describe("uncheckReviewReadinessBoxes", () => {
+  const checkedBody = [
+    "## Summary",
+    "",
+    "Substantive summary text for the author's own description.",
+    "",
+    "## Test plan",
+    "",
+    "- [x] Run the suite",
+    "",
+    "<!-- pr-quality-readiness-checklist:start -->",
+    "## Review readiness checklist",
+    "",
+    "- [x] All CI tests are green on my local testing.",
+    "- [x] I pushed my PR to the latest dev commit.",
+    "- [x] I fixed all correct Codex and CodeRabbit findings.",
+    "- [x] My PR is ready for review.",
+    "<!-- pr-quality-readiness-checklist:end -->",
+  ].join("\n");
+
+  it("unchecks only the requested boxes", () => {
+    const body = uncheckReviewReadinessBoxes(checkedBody, [
+      REVIEW_READINESS_CLAIM_INDEX.ci_green,
+    ]);
+    assert.ok(body.includes("- [ ] All CI tests are green on my local testing."));
+    assert.ok(body.includes("- [x] I pushed my PR to the latest dev commit."));
+    assert.ok(body.includes("- [x] My PR is ready for review."));
+  });
+
+  it("can uncheck several boxes at once", () => {
+    const body = uncheckReviewReadinessBoxes(checkedBody, [
+      REVIEW_READINESS_CLAIM_INDEX.ci_green,
+      REVIEW_READINESS_CLAIM_INDEX.latest_dev,
+    ]);
+    assert.ok(body.includes("- [ ] All CI tests are green on my local testing."));
+    assert.ok(body.includes("- [ ] I pushed my PR to the latest dev commit."));
+    assert.ok(body.includes("- [x] I fixed all correct Codex and CodeRabbit findings."));
+    assert.ok(body.includes("- [x] My PR is ready for review."));
+  });
+
+  it("preserves the surrounding author content exactly", () => {
+    const body = uncheckReviewReadinessBoxes(checkedBody, [0]);
+    assert.ok(body.startsWith("## Summary\n"));
+    assert.ok(body.includes("- [x] Run the suite\n"));
+    assert.ok(body.endsWith("<!-- pr-quality-readiness-checklist:end -->"));
+    // The three untouched checklist boxes keep their ticks; only the CI box
+    // flipped. The author's own box in the Test plan is untouched too.
+    const checklist = body.split("<!-- pr-quality-readiness-checklist:start -->")[1];
+    assert.equal((checklist.match(/- \[x\]/g) || []).length, 3);
+  });
+
+  it("is idempotent on an already-unchecked box", () => {
+    const once = uncheckReviewReadinessBoxes(checkedBody, [0]);
+    const twice = uncheckReviewReadinessBoxes(once, [0]);
+    assert.equal(twice, once);
+  });
+
+  it("leaves markerless and malformed bodies alone", () => {
+    assert.equal(uncheckReviewReadinessBoxes("plain body", [0]), "plain body");
+    const malformed = checkedBody + "<!-- pr-quality-readiness-checklist:start -->\n<!-- pr-quality-readiness-checklist:end -->";
+    assert.equal(uncheckReviewReadinessBoxes(malformed, [0]), malformed);
   });
 });
 

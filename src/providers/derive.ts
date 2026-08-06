@@ -104,13 +104,20 @@ function cloneNestedRecord(input: Record<string, Record<string, string>>): Recor
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }
 
+/**
+ * Build the provider config a registry entry contributes when a preset is materialized.
+ * The registry auth kind is preserved verbatim (including `"local"`) so fail-closed gates
+ * keep distinguishing local runtimes from API-key providers after the seed round-trip.
+ */
 export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderConfig {
   return {
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
     ...(entry.apiKeyTransport !== undefined ? { apiKeyTransport: entry.apiKeyTransport } : {}),
     ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
-    authMode: entry.authKind === "local" ? undefined : entry.authKind,
+    // Preserve the registry auth kind verbatim (including "local") so fail-closed gates that
+    // distinguish local runtimes from API-key providers keep working after the seed round-trip.
+    authMode: entry.authKind,
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.keyOptional !== undefined ? { keyOptional: entry.keyOptional } : {}),
     ...(entry.freeTier !== undefined ? { freeTier: entry.freeTier } : {}),
@@ -269,6 +276,21 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // the entry so an explicit user value stays distinguishable from the default.
   if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
+  // Registry-only repair policy (#938): fill only when the runtime provider has
+  // no explicit policy, and deep-clone so saved/user values never alias the
+  // registry constant.
+  if (prov.responsesItemIdRepair === undefined && entry.responsesItemIdRepair) {
+    prov.responsesItemIdRepair = {
+      ...(entry.responsesItemIdRepair.message ? { message: [...entry.responsesItemIdRepair.message] } : {}),
+      ...(entry.responsesItemIdRepair.reasoning ? { reasoning: [...entry.responsesItemIdRepair.reasoning] } : {}),
+      ...(entry.responsesItemIdRepair.repairMissingTerminalIds !== undefined
+        ? { repairMissingTerminalIds: entry.responsesItemIdRepair.repairMissingTerminalIds }
+        : {}),
+      ...(entry.responsesItemIdRepair.repairInvalidIds !== undefined
+        ? { repairInvalidIds: entry.responsesItemIdRepair.repairInvalidIds }
+        : {}),
+    };
+  }
   if (!prov.autoToolChoiceOnlyModels && seed.autoToolChoiceOnlyModels) prov.autoToolChoiceOnlyModels = [...seed.autoToolChoiceOnlyModels];
   if (!prov.preserveReasoningContentModels && seed.preserveReasoningContentModels) prov.preserveReasoningContentModels = [...seed.preserveReasoningContentModels];
   if (!prov.reasoningSplitModels && seed.reasoningSplitModels) prov.reasoningSplitModels = [...seed.reasoningSplitModels];

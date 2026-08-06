@@ -1160,7 +1160,9 @@ describe("codex routing", () => {
       rate_limit: {
         primary_window: { used_percent: 39, reset_at: 3, limit_window_seconds: 2_628_000 },
       },
-    })).toEqual({ monthlyPercent: 39, monthlyResetAt: 3 });
+    // The provenance flag rides with the value: this monthly reading IS the primary window,
+    // which is what lets recovery tell it apart from a tertiary-only monthly figure (#967).
+    })).toEqual({ monthlyPercent: 39, monthlyResetAt: 3, monthlyIsPrimaryWindow: true });
   });
 
   test("WHAM monthly primary preserves a legacy secondary weekly window", () => {
@@ -1175,6 +1177,7 @@ describe("codex routing", () => {
       weeklyResetAt: 7,
       monthlyPercent: 39,
       monthlyResetAt: 30,
+      monthlyIsPrimaryWindow: true,
     });
   });
 

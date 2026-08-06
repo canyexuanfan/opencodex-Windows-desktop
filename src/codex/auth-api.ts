@@ -16,11 +16,13 @@ import {
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { isCodexAccountPaused, setCodexAccountPaused } from "./account-pause";
 import {
+  claimDueCodexQuotaRecoveryProbes,
   clearCodexAccountCooldown,
   clearThreadAccountMapForAccount,
   getEffectiveActiveCodexAccountId,
   reconcileCodexActiveAfterExclusion,
   resetCodexRoutingForManualSelection,
+  settleCodexQuotaRecoveryProbe,
 } from "./routing";
 import {
   normalizeAccountPoolStickyLimit,
@@ -35,6 +37,7 @@ import { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth }
 import {
   clearAccountQuota,
   getAccountQuota,
+  isCompleteCodexQuotaRecoverySnapshot,
   isCodexQuotaExhausted,
   listAccountQuotas,
   parseUsageQuota,
@@ -53,7 +56,7 @@ export {
 } from "./quota";
 import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
 import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
-import { captureConfigGeneration } from "../lib/state-store-sweeper";
+import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
   captureMainAccountIdentityGeneration,
@@ -816,6 +819,49 @@ async function fetchPoolAccountQuota(accountId: string, forceRefresh = false, co
 }
 
 let primeInFlight: Promise<void> | null = null;
+let cooldownRecoveryInFlight: Promise<void> | null = null;
+
+export async function runCodexCooldownRecoveryProbes(config: OcxConfig, now = Date.now()): Promise<void> {
+  const openai = config.providers[OPENAI_CODEX_PROVIDER_ID];
+  if (!openai
+    || openai.disabled === true
+    || !isCanonicalOpenAiForwardProvider(openai)
+    || providerCodexAccountMode(OPENAI_CODEX_PROVIDER_ID, openai) !== "pool") return;
+  if (cooldownRecoveryInFlight) return cooldownRecoveryInFlight;
+  cooldownRecoveryInFlight = (async () => {
+    const claims = claimDueCodexQuotaRecoveryProbes(config, POOL_QUOTA_REFRESH_CONCURRENCY, now);
+    await mapWithConcurrency(claims, POOL_QUOTA_REFRESH_CONCURRENCY, async claim => {
+      const account = configuredPoolAccount(config, claim.accountId);
+      if (!account) {
+        settleCodexQuotaRecoveryProbe(claim, false, {}, now);
+        return;
+      }
+      try {
+        const result = await fetchPoolAccountQuota(claim.accountId, true, account.plan);
+        // Defence in depth: `spark` is already excluded at the claim site, since generic WHAM
+        // cannot prove a spark recovery. Keep the settle-side guard so a future claim change
+        // cannot silently start clearing spark on generic evidence.
+        const recovered = claim.scope !== "spark"
+          && isCompleteCodexQuotaRecoverySnapshot(result.freshQuota ?? null, result.freshPlan ?? account.plan);
+        settleCodexQuotaRecoveryProbe(claim, recovered, {
+          credentialGeneration: result.freshCredentialGeneration,
+        }, now);
+      } catch {
+        settleCodexQuotaRecoveryProbe(claim, false, {}, now);
+      }
+    });
+  })().catch(() => {
+    // Background recovery is best-effort; routing keeps the cooldown on failure.
+  }).finally(() => { cooldownRecoveryInFlight = null; });
+  return cooldownRecoveryInFlight;
+}
+
+export function registerCodexCooldownRecoveryProbeWorker(config: OcxConfig): void {
+  registerStateSweepAfterTick({
+    name: "codex-cooldown-recovery",
+    afterTick: () => { void runCodexCooldownRecoveryProbes(config); },
+  });
+}
 
 export interface PrimeCodexPoolQuotasOptions {
   /** Test seams for proving fenced/recovery priming performs no native-main work. */
@@ -906,6 +952,11 @@ export async function primeCodexPoolQuotas(
  * from another suite cannot coalesce into the next prime. */
 export function clearCodexQuotaPrimeState(): void {
   primeInFlight = null;
+}
+
+/** Test-only reset for the worker-level single-flight. */
+export function clearCodexCooldownRecoveryProbeState(): void {
+  cooldownRecoveryInFlight = null;
 }
 
 export function effectiveCodexAuthAccountId(config: OcxConfig): string {

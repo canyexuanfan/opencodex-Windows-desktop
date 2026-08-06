@@ -50,6 +50,10 @@ shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保�
 | `forward` | 将**你传入的 Codex 认证请求头**原样转发给提供商——不存储任何密钥。这就是 ChatGPT 登录的透传方式。 | OpenAI（`openai-responses` adapter）。 |
 | `oauth` | 读取已存储的 OAuth 访问令牌（过期前自动刷新），并将其用作 bearer 密钥。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
 
+[`retryOn429`](/zh-cn/reference/configuration/)（同 key 的 429 重试）仅适用于 API-key 提供商
+（`authMode: "key"`）。OAuth、forward 与本地预设均被排除——同一 token 绝不可重放，本地运行时
+也没有需要保留的远程 key。仅在配置后启用，默认关闭；配置了对象即启用，除非 `enabled: false`。
+
 ## 1. ChatGPT 登录（forward / 透传）
 
 默认提供商**不需要 API 密钥**。它将你现有 `codex login` 的凭据直接转发到 OpenAI Responses 后端：
@@ -127,9 +131,9 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 69 个预设：58 个密钥预设、7 个 OAuth 预设、3 个本地预设，以及 1 个默认的
+opencodex 内置 70 个预设：58 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
-验证因提供商而异，Command Code 的公开目录会将密钥报告为无法验证。主要条目包括：
+验证因提供商而异。主要条目包括：
 
 **ClinePass** 使用 Cline API 密钥连接[官方订阅目录](https://docs.cline.bot/getting-started/clinepass)和
 [Chat Completions 端点](https://docs.cline.bot/api/chat-completions)。运营主体是
@@ -201,11 +205,11 @@ OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 UR
 并将实时发现限制为 256 KiB 和 256 条原始记录。它仅覆盖 serverless text 与 vision-language chat；独立的
 image、audio 和 GPU 端点不在范围内。密钥可在 [Hyperbolic](https://app.hyperbolic.ai) 创建。
 
-**Command Code 发现：**该预设从固定的 Provider API 主机读取 Command Code 公开的
+**Command Code 发现：**该预设从固定的 Provider API 主机读取 Command Code 的
 `/provider/v1/models` 列表，保留含 `/` 的原生模型 id，并将实时发现限制为 256 KiB 和 256 条原始记录。
-模型目录无需认证，因此 CLI 登录流程会将密钥报告为无法验证，而不是误报为有效。聊天请求使用已配置的
-bearer 密钥；API 访问需要 Provider 套餐，Go/Pro 订阅用户的 CLI 认证桥接尚不可用。
-密钥可在 [Command Code Studio](https://commandcode.ai/studio/) 创建。
+`ocx login command-code` 支持通过浏览器进行 OAuth 登录（现有 Command Code CLI 用户还可选择从
+`~/.commandcode/auth.json` 导入本地 CLI 凭据）；模型目录按账户隔离，并在登录后从经过认证的发现
+端点获取。聊天请求使用已配置的 bearer 密钥。密钥可在 [Command Code Studio](https://commandcode.ai/studio/) 创建。
 
 > **Baseten 范围：**该预设仅覆盖 Baseten 的共享 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)。
 > 本地使用可选择个人 [API 密钥](https://docs.baseten.co/organization/api-keys)；共享或生产用途请使用具备
@@ -265,6 +269,14 @@ GPT-5.6 Sol/Terra/Luna 会预置在提供商的回退列表中，因此即使实
 登录后换取短期 Copilot API 令牌，需要有效的 Copilot 订阅，GitHub 政策收紧时可能失效）；GitLab Duo
 使用 Bearer **订阅令牌**（而非普通 API 密钥）进行认证。
 **Cloudflare AI Gateway** 需要将 account 和 gateway id 填入 URL。
+
+Copilot 提供混合 wire 目录：其 GPT-5 系列模型（`gpt-5.3-codex`、`gpt-5.4`、
+`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）会拒绝面向
+agent 流量的 `/chat/completions`，因此 opencodex 默认将这些模型路由到 Responses API，而其他
+Copilot 模型仍走 chat completions。优先级为：硬 wire 固定 → 显式
+[`modelAdapters`](/zh-cn/reference/configuration/providers/) 条目 → 注册表默认值 → 提供商级
+adapter。若要将没有内置默认值的模型（例如 `gpt-5.4-nano`）接入 Responses，请设置
+`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`。
 
 Cursor 作为单独的实验性 adapter 进行跟踪。`adapter: "cursor"` 会作为实验性本地配置出现在
 `ocx init` 和 dashboard Add Provider picker 中，并保存 Cursor 的静态回退模型目录 metadata。配置

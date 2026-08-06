@@ -59,6 +59,12 @@ labels local presets separately; those normally omit both `authMode` and `apiKey
 | `forward` | Relays **your incoming Codex auth headers** verbatim to the provider — no key stored. This is the ChatGPT-login passthrough. | OpenAI (`openai-responses` adapter). |
 | `oauth` | Resolves a stored OAuth access token (auto-refreshed before expiry) and uses it as the bearer key. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor, GitHub Copilot. |
 
+The [`retryOn429`](/reference/configuration/) same-key 429 replay applies only to API-key
+providers (`authMode: "key"`). OAuth, forward, and local presets are excluded — their
+credentials must never be replayed on the same token, and local runtimes have no remote key to
+preserve. It is opt-in: when the option is absent the feature is off; object presence enables
+it unless `enabled: false`.
+
 ## 1. ChatGPT login (forward / passthrough)
 
 The `openai` provider needs **no API key**. Direct forwards credentials from your existing
@@ -210,10 +216,9 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 69 built-in presets: 58 key-based, seven OAuth, three local, and one default
+opencodex ships 70 built-in presets: 58 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
-validates the key, and stores it; validation is provider-specific, and Command Code's public
-catalog reports keys as unverifiable. Notable entries:
+validates the key, and stores it; validation is provider-specific. Notable entries:
 
 **ClinePass** uses a Cline API key with the [official subscription catalog](https://docs.cline.bot/getting-started/clinepass)
 and [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions), operated by Cline Bot Inc. under
@@ -295,11 +300,12 @@ slash-containing native model ids, and caps live discovery at 256 KiB and 256 ra
 serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
 are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
 
-**Command Code discovery.** The preset reads Command Code's public `/provider/v1/models` list from
+**Command Code discovery.** The preset reads Command Code's `/provider/v1/models` list from
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
-rows. The model catalog is unauthenticated, so the CLI login flow reports the key as unverifiable
-instead of a false positive. Chat requests use the configured Bearer key; API access requires the
-Provider plan, and CLI auth bridging for Go/Pro subscriptions is not yet available. Create keys at
+rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
+import from `~/.commandcode/auth.json` for existing Command Code CLI users); the model catalog is
+account-scoped and comes from the authenticated discovery endpoint after login. Chat requests use the
+configured Bearer key. Create keys at
 [Command Code Studio](https://commandcode.ai/studio/).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)

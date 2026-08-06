@@ -19,7 +19,10 @@ import {
   websocketsEnabled,
 } from "../config";
 import { reconcileOAuthProviders } from "../oauth";
-import { invalidateCodexModelsCache } from "../codex/catalog";
+import { withCatalogWriteSerialization } from "../codex/catalog-write-serialization";
+import { invalidateCodexModelsCacheWithPermit } from "../codex/catalog/sync";
+import { getCodexHome } from "../codex/paths";
+import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import {
   reconcileLiveStateStores,
@@ -57,7 +60,7 @@ export {
 import { formatCodexProviderForLog } from "../codex/routing";
 import { CatalogGatherBusyError } from "../codex/catalog/provider-fetch";
 import { registerCodexWebSocket, tryReserveCodexWebSocket, unregisterCodexWebSocket, updateCodexWebSocketAuthContext } from "../codex/websocket-registry";
-import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile } from "./gui-static";
+import { resolveGuiFilePath, rootFallbackPayload, serveGuiFile, serveSessionBootstrap } from "./gui-static";
 export { resolveGuiFilePath, rootFallbackPayload } from "./gui-static";
 export { resolveAdapter } from "./adapter-resolve";
 import { formatErrorResponse, type ResponsesTerminalStatus } from "../bridge";
@@ -356,6 +359,27 @@ export interface StartServerDeps {
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
 }
 
+/*
+ * #1046. `startServer` rewrites the Codex models cache during boot, and an
+ * app-server that started earlier keeps its own in-memory model list. The stale
+ * warning is not emitted here: `handleStart` runs a catalog sync moments later,
+ * so warning now would read an mtime that write is about to move, and both sites
+ * calling the helper independently would warn twice. This records the fact; the
+ * CLI start path owns the single decision.
+ *
+ * A caller that starts a server without `handleStart` (tests, embedded use)
+ * deliberately gets no warning — lifecycle diagnostics belong to whoever owns
+ * the lifecycle.
+ */
+let startupCacheInvalidationWrote = false;
+
+/** #1046: did this process's startup cache invalidation actually write? */
+export function consumeStartupCacheInvalidationWrite(): boolean {
+  const wrote = startupCacheInvalidationWrote;
+  startupCacheInvalidationWrote = false;
+  return wrote;
+}
+
 export function startServer(port?: number, deps: StartServerDeps = {}) {
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
@@ -397,7 +421,21 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
       if (migrated) saveConfig(config);
     }
   }
-  invalidateCodexModelsCache();
+  // Startup cache invalidation is best-effort and must never block the server from
+  // serving. It now takes K so it cannot race a convergence commit, but both the
+  // home resolution and the acquisition can fail on a machine with no Codex home —
+  // `getCodexHome()` THROWS when CODEX_HOME names a missing directory, which would
+  // otherwise turn "no Codex installed" into "proxy will not start".
+  try {
+    const startupCodexHome = getCodexHome();
+    // #1046: record whether this actually rewrote the cache. `handleStart` ORs this
+    // with the later startup sync and warns ONCE about stale app-servers; warning
+    // here instead would read a catalog mtime the sync is about to move.
+    const outcome = withCatalogWriteSerialization(startupCodexHome, permit =>
+      invalidateCodexModelsCacheWithPermit(permit, startupCodexHome));
+    // A refused permit is not a write; only a completed run that returned true is.
+    startupCacheInvalidationWrote = outcome.kind === "completed" && outcome.value === true;
+  } catch { /* no readable Codex home: nothing to invalidate */ }
   // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
   // the server can serve a request, and AFTER the startup migrations above — those run
   // against a config nobody else holds and are the documented exception to the save
@@ -416,6 +454,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   registerAppOwnedMemorySweepFallback();
   configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
   enforceAppOwnedMemoryBudget();
+  registerCodexCooldownRecoveryProbeWorker(config);
   startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
@@ -568,8 +607,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, uniqueCatalogModelsForRawPublicList, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
-        const nativeSlugs = nativeOpenAiSlugs();
+        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
+        const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
+        const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
+        const disabledNatives = disabledNativeSlugs(config);
+        const disabledModels = new Set(config.disabledModels ?? []);
+        const accountSelectors = includeAccountBoundNativeOpenAi
+          ? visibleCodexAccountSelectors(config)
+          : [];
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -613,8 +659,20 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
           // Disabled natives stay in the catalog shape with visibility "hide" (mirrors the
           // on-disk sync; codex-rs keeps them out of the picker itself).
           const maMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
-          const entries = buildCatalogEntries(loadCatalogTemplate(), nativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config));
-          return jsonResponse({ models: applyNativeVisibility(entries, disabledNativeSlugs(config)) }, 200, req, config);
+          // Account rows use the same hidden-inclusive supported set as on-disk sync. This lets a
+          // newly re-enabled native reappear under each selector before the next sync, while the
+          // no-selector path keeps nativeOpenAiSlugs()'s existing visibility-sensitive behavior.
+          const catalogNativeSlugs = accountSelectors.length > 0
+            ? NATIVE_OPENAI_MODELS
+            : nativeSlugs;
+          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors);
+          return jsonResponse({
+            models: applyNativeVisibility(
+              entries,
+              disabledModels,
+              accountSelectors.length > 0,
+            ),
+          }, 200, req, config);
         }
         // OpenAI list shape: native gpt bare + routed models namespaced "<provider>/<id>"
         // (pure availability list — disabled natives are omitted entirely).
@@ -642,14 +700,34 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
             reasoning_efforts: efforts.map(effort => grokEffortOption(effort, effort === defaultEffort)),
           };
         };
-        const data = [
-          ...visibleNativeSlugs(config).map(id => ({
+        const nativeModelRow = (id: string, metadataId = id) => ({
             id,
             object: "model",
             created: 0,
             owned_by: "openai",
-            ...grokEffortFields(nativeReasoningEfforts(id), nativeDefaultReasoningEffort(id)),
-          })),
+            ...grokEffortFields(
+              nativeReasoningEfforts(metadataId),
+              nativeDefaultReasoningEffort(metadataId),
+            ),
+          });
+        // Selector-active discovery follows the same complete supported set as the Codex catalog
+        // for both bare and qualified rows. Without selectors, the live catalog continues to own
+        // bare availability.
+        const selectorNativeSlugs = accountSelectors.length > 0
+          ? NATIVE_OPENAI_MODELS.filter(slug => !disabledNatives.has(slug))
+          : [];
+        const visibleNatives = includeNativeOpenAi
+          ? accountSelectors.length > 0 ? selectorNativeSlugs : visibleNativeSlugs(config)
+          : [];
+        const visibleAccountNatives = accountSelectors.flatMap(selector =>
+          selectorNativeSlugs.flatMap(metadataId => {
+            const id = `${selector}/${metadataId}`;
+            return disabledModels.has(id) ? [] : [{ id, metadataId }];
+          })
+        );
+        const data = [
+          ...visibleNatives.map(id => nativeModelRow(id)),
+          ...visibleAccountNatives.map(({ id, metadataId }) => nativeModelRow(id, metadataId)),
           ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({
             id: m.alias ?? `${m.provider}/${m.id}`,
             object: "model",
@@ -993,6 +1071,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
       const guiSessionCandidate = req.method === "GET" && (url.pathname === "/" || !url.pathname.includes("."))
         ? issueGuiSession(req, config, managementAuth)
         : null;
+      // Dedicated bootstrap path: answer without requiring a packaged GUI build, so the
+      // Vite dev server can mint an origin-bound loopback session on a fresh checkout.
+      if (url.pathname === "/opencodex-session" && guiSessionCandidate) {
+        return serveSessionBootstrap(guiSessionCandidate);
+      }
       const guiFile = serveGuiFile(url.pathname, undefined, guiSessionCandidate ?? undefined);
       if (guiFile) return guiFile;
       if (url.pathname === "/" && req.method === "GET") {
