@@ -391,8 +391,6 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
   return wrote;
 }
 
-export function startServer(port?: number, deps: StartServerDeps = {}) {
-  const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
 export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
   const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
@@ -550,11 +548,23 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       const url = new URL(req.url);
       markActivity(`${req.method} ${url.pathname}`);
 
+      // Readiness is exact-GET on the literal /readyz path. Compare the DECODED
+      // pathname so an encoded variant like /readyz%2F (which decodes to
+      // /readyz/) cannot bypass the exact-path rejection and reach the GUI
+      // fallback (serveGuiFile decodes the pathname and would serve index.html
+      // with 200). Malformed percent-sequences fall back to the raw pathname,
+      // which still cannot match the exact literal below.
+      let readyzPath: string | undefined;
+      try {
+        const decoded = decodeURIComponent(url.pathname);
+        if (decoded === "/readyz" || decoded === "/readyz/") readyzPath = decoded;
+      } catch { /* malformed encoding — not a readiness path */ }
+
       if (req.method === "OPTIONS") {
         // /readyz is exact-GET only; OPTIONS (like POST and the trailing-slash
         // path) must answer the deterministic JSON 404, never the generic 204
         // preflight response that the SPA fallback would otherwise allow.
-        if (url.pathname === "/readyz" || url.pathname === "/readyz/") {
+        if (readyzPath !== undefined) {
           return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
         }
         const managementPreflight = url.pathname.startsWith("/api/");
@@ -619,8 +629,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // POST or "/readyz/" must NOT match (exact pathname + GET method): answer them
       // with a JSON 404 here so they can never be silently accepted by the GUI SPA
       // fallback (which would serve index.html with HTTP 200 once gui/dist exists).
-      if (url.pathname === "/readyz" || url.pathname === "/readyz/") {
-        if (url.pathname !== "/readyz" || req.method !== "GET") {
+      if (readyzPath !== undefined) {
+        if (readyzPath !== "/readyz" || req.method !== "GET") {
           return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
         }
         // A draining proxy must never advertise ready: every data-plane branch

@@ -973,8 +973,27 @@ describe("GET /readyz", () => {
       // preflight (the generic OPTIONS branch would otherwise answer 204).
       const optionsRes = await fetch(new URL("/readyz", base), { method: "OPTIONS" });
       expect(optionsRes.status).toBe(404);
+      expect(optionsRes.headers.get("content-type")).toContain("application/json");
+      expect(((await optionsRes.json()) as { error?: { type?: string; message?: string } }).error).toMatchObject({
+        type: "not_found",
+        message: "Unknown endpoint: OPTIONS /readyz",
+      });
       const optionsSlashRes = await fetch(new URL("/readyz/", base), { method: "OPTIONS" });
       expect(optionsSlashRes.status).toBe(404);
+      expect(optionsSlashRes.headers.get("content-type")).toContain("application/json");
+      expect(((await optionsSlashRes.json()) as { error?: { type?: string; message?: string } }).error).toMatchObject({
+        type: "not_found",
+        message: "Unknown endpoint: OPTIONS /readyz/",
+      });
+      // Encoded variants (e.g. /readyz%2F, which decodes to /readyz/) must NOT
+      // bypass the exact-path rejection and reach the GUI fallback (which would
+      // serve index.html with 200). GET, POST, and OPTIONS all answer the JSON 404.
+      const encodedGetRes = await fetch(`${base}/readyz%2F`);
+      expect(encodedGetRes.status).toBe(404);
+      const encodedPostRes = await fetch(`${base}/readyz%2F`, { method: "POST" });
+      expect(encodedPostRes.status).toBe(404);
+      const encodedOptionsRes = await fetch(`${base}/readyz%2F`, { method: "OPTIONS" });
+      expect(encodedOptionsRes.status).toBe(404);
     } finally {
       await server.stop(true);
     }

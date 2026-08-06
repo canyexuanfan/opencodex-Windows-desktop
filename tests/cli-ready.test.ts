@@ -624,8 +624,8 @@ describe("handleStart readinessGate wiring (source-level)", () => {
     const createMatch = cliSource.match(/const\s+readinessGate\s*=\s*createReadinessGate\(\)/);
     expect(createMatch, "handleStart must create readinessGate via createReadinessGate()").not.toBeNull();
 
-    const startMatch = cliSource.match(/startServer\s*\(\s*port\s*,\s*\{\s*readinessGate\s*\}\s*\)/);
-    expect(startMatch, "startServer must be called with { readinessGate } in the retry path").not.toBeNull();
+    const startMatch = cliSource.match(/startServer\s*\(\s*port\s*,\s*\{\s*[^}]*readinessGate[^}]*\}\s*\)/);
+    expect(startMatch, "startServer must be called with readinessGate among its deps in the retry path").not.toBeNull();
 
     const syncMatch = cliSource.match(
       /syncCodexOnStartIfEnabled\s*\(\s*port\s*,\s*config\s*,\s*undefined\s*,\s*readinessGate\s*\)/,
