@@ -59,7 +59,11 @@ const BOOLEAN_REQUIREMENTS = [
   "encryptedCodexTasks",
 ] as const;
 const STRING_REQUIREMENTS = ["reasoningEffort", "serviceTier"] as const;
-const NUMERIC_REQUIREMENTS = ["minContextWindow", "minQuotaHeadroom"] as const;
+const NUMERIC_REQUIREMENT_SPEC = {
+  minContextWindow: { min: 1, step: 1 },
+  minQuotaHeadroom: { min: 0, max: 1, step: "any" },
+} as const;
+const NUMERIC_REQUIREMENTS = Object.keys(NUMERIC_REQUIREMENT_SPEC) as Array<keyof typeof NUMERIC_REQUIREMENT_SPEC>;
 const OPTIMIZE_KEYS = ["latency", "health", "cost", "quota"] as const;
 const UNKNOWN_EVIDENCE_KEYS = ["capability", "health", "quota", "cost"] as const;
 const UNKNOWN_EVIDENCE_OPTIONS: UnknownEvidenceMode[] = ["allow", "penalize", "exclude"];
@@ -137,8 +141,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [loadError, setLoadError] = useState("");
   const [selected, setSelected] = useState<RoutingProfileDto | null>(null);
   const [draft, setDraft] = useState<RoutingProfileDraft | null>(null);
-  const [status, setStatus] = useState("");
-  const [statusOk, setStatusOk] = useState(false);
+  const [status, setStatus] = useState<{ message: string; ok: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
   const [context, setContext] = useState("");
   const [tools, setTools] = useState(false);
@@ -152,18 +155,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const dryRunGenerationRef = useRef(0);
 
   const notify = useCallback((message: string, ok: boolean) => {
-    setStatus(message);
-    setStatusOk(ok);
+    setStatus({ message, ok });
   }, []);
 
   useEffect(() => {
-    if (!status || !statusOk) return;
-    const timer = window.setTimeout(() => {
-      setStatus("");
-      setStatusOk(false);
-    }, 5000);
+    if (!status?.ok) return;
+    const timer = window.setTimeout(() => setStatus(null), 5000);
     return () => window.clearTimeout(timer);
-  }, [status, statusOk]);
+  }, [status]);
 
   const clearDryRun = useCallback(() => {
     dryRunGenerationRef.current += 1;
@@ -176,8 +175,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     selectedRef.current = profile;
     setSelected(profile);
     setDraft(profile ? routingProfileDraftFromDto(profile) : null);
-    setStatus("");
-    setStatusOk(false);
+    setStatus(null);
     clearDryRun();
   }, [clearDryRun]);
 
@@ -245,16 +243,14 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     selectedRef.current = null;
     setSelected(null);
     setDraft(newRoutingProfileDraft(firstProvider, firstModel));
-    setStatus("");
-    setStatusOk(false);
+    setStatus(null);
     clearDryRun();
   };
 
   const cancelEdit = () => {
     if (selected) {
       setDraft(routingProfileDraftFromDto(selected));
-      setStatus("");
-      setStatusOk(false);
+      setStatus(null);
       return;
     }
     selectProfile(profiles[0] ?? null);
@@ -263,8 +259,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const saveProfile = async () => {
     if (!draft || saving) return;
     setSaving(true);
-    setStatus("");
-    setStatusOk(false);
+    setStatus(null);
     try {
       const body = routingProfilePutBody(draft);
       const response = await fetch(`${apiBase}/api/routing-profiles`, {
@@ -291,8 +286,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     if (!selected || saving) return;
     if (!window.confirm(`${t("common.remove")} ${selected.id}?`)) return;
     setSaving(true);
-    setStatus("");
-    setStatusOk(false);
+    setStatus(null);
     try {
       const response = await fetch(
         `${apiBase}/api/routing-profiles?id=${encodeURIComponent(selected.id)}`,
@@ -415,7 +409,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       <p className="muted">{t("routing.subtitle")}</p>
 
       {loadError ? <Notice tone="err">{t("routing.loadFailed")}: {loadError}</Notice> : null}
-      {status ? <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice> : null}
+      {status ? <Notice tone={status.ok ? "ok" : "err"}>{status.message}</Notice> : null}
 
       {profiles.length > 0 ? (
         <div className="panel" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -534,9 +528,9 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                   <input
                     className="input"
                     type="number"
-                    min={key === "minContextWindow" ? 1 : 0}
-                    max={key === "minQuotaHeadroom" ? 1 : undefined}
-                    step={key === "minContextWindow" ? 1 : "any"}
+                    min={NUMERIC_REQUIREMENT_SPEC[key].min}
+                    max={NUMERIC_REQUIREMENT_SPEC[key].max}
+                    step={NUMERIC_REQUIREMENT_SPEC[key].step}
                     value={draft.require[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
