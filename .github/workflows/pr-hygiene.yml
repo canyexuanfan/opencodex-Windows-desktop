@@ -10,7 +10,9 @@ on:
 permissions: {}
 
 concurrency:
-  group: pr-hygiene-${{ github.event.pull_request.number }}
+  # Shared with the enforce-target gate: both workflows read-modify-write the
+  # same consolidated gate comment, so one per-PR group serializes them.
+  group: pr-gate-comment-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:

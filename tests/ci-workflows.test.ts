@@ -878,8 +878,19 @@ describe("GitHub Actions hardening", () => {
     // `pull_request`, so the group resolves from whichever payload exists.
     expect(workflow.concurrency).toEqual({
       group:
-        "enforce-pr-target-${{ github.event.pull_request.number || github.event.issue.number }}",
+        "pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}",
     });
+
+    // The hygiene workflow reads and rewrites the same consolidated gate
+    // comment, so it must share the gate's per-PR concurrency group. Separate
+    // groups would let a gate rebuild and a hygiene update run concurrently
+    // from stale snapshots, and the last write would drop the other's section.
+    const hygieneWorkflow = Bun.YAML.parse(
+      await readText(".github/workflows/pr-hygiene.yml"),
+    ) as { concurrency?: { group?: string; "cancel-in-progress"?: boolean } };
+    expect(hygieneWorkflow.concurrency?.group).toBe(
+      "pr-gate-comment-${{ github.event.pull_request.number }}",
+    );
 
     // One job, and it is this one. An audit round added a `sidecar:` job that
     // inherited the PR-write token and un-drafted the PR — every assertion below

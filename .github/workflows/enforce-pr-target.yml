@@ -28,8 +28,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # `issue_comment` events carry the issue number, not the PR number.
-  group: enforce-pr-target-${{ github.event.pull_request.number || github.event.issue.number }}
+  # `issue_comment` events carry the issue number, not the PR number. The
+  # group is shared with the hygiene workflow: both read-modify-write the same
+  # consolidated gate comment, so serializing them under one key prevents a
+  # concurrent update from clobbering the other's section.
+  group: pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}
 
 jobs:
   enforce-target:

@@ -311,4 +311,44 @@ describe("hygiene section round-trip", () => {
     assert.ok(updated.includes("✅ **Deterministic PR hygiene checks passed.**"));
     assert.ok(updated.includes(GATE_MARKER));
   });
+
+  it("ignores delimiter text embedded inside a hygiene content line", () => {
+    // A contributor-controlled changed filename can contain delimiter text
+    // mid-line (e.g. `src/<!-- pr-hygiene-block:end -->/x.ts`). The block
+    // regex must anchor delimiters to complete lines so such a line neither
+    // ends the block early nor corrupts the next rewrite.
+    const malicious = [
+      GATE_MARKER,
+      '<!-- opencodex-pr-gate-state:{"version":1,"active":false} -->',
+      "",
+      "## ✅ READY",
+      "- all PR quality gates passed.",
+      "",
+      "## Hygiene",
+      "",
+      HYGIENE_BLOCK_START,
+      "<!-- pr-hygiene -->",
+      "",
+      "✅ **Deterministic PR hygiene checks passed.**",
+      `- Paths: \`src/${HYGIENE_BLOCK_END}/x.ts\`.`,
+      "",
+      HYGIENE_BLOCK_END,
+    ].join("\n");
+
+    const extracted = extractHygieneSection(malicious);
+    assert.ok(extracted);
+    assert.ok(extracted.includes("✅ **Deterministic PR hygiene checks passed.**"));
+    assert.ok(extracted.includes("Paths"));
+
+    // Replacing must preserve the malicious line inside the block, not split
+    // the block at the embedded delimiter.
+    const updated = withHygieneSection(malicious, [
+      "⚠️ **Deterministic hygiene checks failed.**",
+    ]);
+    assert.ok(updated.includes(HYGIENE_BLOCK_START));
+    assert.ok(updated.includes(HYGIENE_BLOCK_END));
+    assert.ok(updated.includes("⚠️ **Deterministic hygiene checks failed.**"));
+    assert.equal(updated.split(HYGIENE_BLOCK_START).length - 1, 1);
+    assert.equal(updated.split(HYGIENE_BLOCK_END).length - 1, 1);
+  });
 });

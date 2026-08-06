@@ -21,6 +21,15 @@ const HYGIENE_MARKER = "<!-- pr-hygiene -->";
 /** HTML comment wrapping the hygiene block so it survives gate rebuilds. */
 const HYGIENE_BLOCK_START = "<!-- pr-hygiene-block:start -->";
 const HYGIENE_BLOCK_END = "<!-- pr-hygiene-block:end -->";
+/**
+ * Both delimiters must occupy a complete line. A contributor-controlled
+ * hygiene line (for example a changed filename) can otherwise embed delimiter
+ * text mid-line and corrupt the block boundary on the next rewrite.
+ */
+const HYGIENE_BLOCK_RE = new RegExp(
+  `^[ \\t]*${HYGIENE_BLOCK_START}[ \\t]*\\n([\\s\\S]*?)\\n[ \\t]*${HYGIENE_BLOCK_END}[ \\t]*$`,
+  "m"
+);
 
 function inlineCode(value) {
   const text = String(value);
@@ -115,9 +124,7 @@ function buildGateCommentBody(state, opts) {
  */
 function extractHygieneSection(body) {
   if (typeof body !== "string") return null;
-  const match = body.match(
-    new RegExp(`${HYGIENE_BLOCK_START}([\\s\\S]*?)${HYGIENE_BLOCK_END}`)
-  );
+  const match = body.match(HYGIENE_BLOCK_RE);
   if (!match) return null;
   return match[1]
     .split("\n")
@@ -142,11 +149,8 @@ function withHygieneSection(body, hygieneLines) {
     HYGIENE_BLOCK_END
   ].join("\n");
 
-  if (base.includes(HYGIENE_BLOCK_START) && base.includes(HYGIENE_BLOCK_END)) {
-    return base.replace(
-      new RegExp(`${HYGIENE_BLOCK_START}[\\s\\S]*?${HYGIENE_BLOCK_END}`),
-      block
-    );
+  if (HYGIENE_BLOCK_RE.test(base)) {
+    return base.replace(HYGIENE_BLOCK_RE, block);
   }
 
   // No existing block: append one at the end.
