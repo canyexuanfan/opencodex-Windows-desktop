@@ -43,7 +43,9 @@ tells you exactly what to change:
   maintainer (OWNER / COLLABORATOR / MEMBER — repository owners,
   collaborators, and members) can waive the screenshot
   requirement with an issue comment saying the change does not touch the GUI
-  (for example "no gui changes"); the PR author cannot self-waive.
+  (for example "no gui changes"); a contributor PR author cannot self-waive
+  (a maintainer who authors the PR can waive, but they already hold push
+  permission and are not gated by the contributor checklist).
   Contributor PRs (authors without repository push permission) open in draft
   and stay there until a four-box review-readiness checklist in the
   description is complete: local CI green, the branch on the latest `dev`

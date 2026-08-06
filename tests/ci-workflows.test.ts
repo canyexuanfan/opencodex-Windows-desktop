@@ -1643,9 +1643,9 @@ describe("GitHub Actions hardening", () => {
         })],
       });
 
+      const titleUpdates = callsTo(result, "pulls.update") as Array<{ title?: string; body?: string }>;
       // The stale prefix is stripped (the ownership survived the reset long
       // enough for the strip to run), and the state records ownership cleared.
-      const titleUpdates = callsTo(result, "pulls.update") as Array<{ title?: string; body?: string }>;
       expect(titleUpdates.some(u => u.title === "Add a thing")).toBe(true);
       const readinessBody = lastReadinessCommentBody(result);
       expect(readinessBody).toContain('"titlePrefixedByBot":false');

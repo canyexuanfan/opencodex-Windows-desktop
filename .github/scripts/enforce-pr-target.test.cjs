@@ -94,11 +94,22 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /github\.rest\.issues\.addLabels/);
     assert.match(workflow, /github\.rest\.issues\.removeLabel/);
     assert.match(workflow, /reviewReadyDesired/);
-    // A positive labels filter in .coderabbit.yaml would restrict ALL reviews
-    // to labeled PRs (maintainer PRs never carry this label), so the label is
-    // kept as a visible status marker only and never wired as a CodeRabbit
-    // auto-review filter.
-    assert.doesNotMatch(workflow, /labels:\s*\["?review-ready"?\]/);
+  });
+
+  it("keeps CodeRabbit auto-review unfiltered so maintainer PRs are not starved", () => {
+    // A positive `labels:` filter under `reviews.auto_review` in
+    // `.coderabbit.yaml` would restrict ALL automatic reviews to PRs carrying
+    // that label. Maintainer PRs never carry `review-ready` (no checklist), so
+    // such a filter would silently stop CodeRabbit from reviewing maintainer
+    // PRs. The label is a status marker only; assert the reviewer config
+    // directly, since the workflow never writes a labels block.
+    const coderabbit = fs.readFileSync(
+      path.join(__dirname, "../../.coderabbit.yaml"),
+      "utf8",
+    );
+    const autoReview = coderabbit.match(/auto_review:[\s\S]*?(?=\n\S|\n\s{2}\S)/);
+    assert.ok(autoReview, ".coderabbit.yaml must declare auto_review");
+    assert.doesNotMatch(autoReview[0], /labels:/);
   });
 
   it("migrates legacy two-comment PRs and deletes the old comments", () => {
