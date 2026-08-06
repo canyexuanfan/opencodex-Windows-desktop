@@ -12,8 +12,11 @@ permissions: {}
 concurrency:
   # Shared with the enforce-target gate: both workflows read-modify-write the
   # same consolidated gate comment, so one per-PR group serializes them.
+  # `cancel-in-progress` stays false (the enforce-target gate also omits it):
+  # a newer run must queue behind the in-flight one, never cancel it mid
+  # comment mutation, or the cancelled run's read-modify-write is lost.
   group: pr-gate-comment-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   hygiene:

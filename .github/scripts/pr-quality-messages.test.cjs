@@ -351,4 +351,70 @@ describe("hygiene section round-trip", () => {
     assert.equal(updated.split(HYGIENE_BLOCK_START).length - 1, 1);
     assert.equal(updated.split(HYGIENE_BLOCK_END).length - 1, 1);
   });
+
+  it("preserves both sections across an interleaved gate rebuild and hygiene update", () => {
+    // The gate and hygiene workflows share one concurrency group, but the
+    // merge helpers must also be order-independent: whichever write lands
+    // second must preserve the other's section. Start with a gate comment
+    // carrying a hygiene block, apply a gate rebuild, then a hygiene update,
+    // and assert both the gate status and the hygiene status survive.
+    const withBlock = [
+      GATE_MARKER,
+      '<!-- opencodex-pr-gate-state:{"version":1,"active":false} -->',
+      "",
+      "## ✅ READY",
+      "- all PR quality gates passed.",
+      "",
+      "## Hygiene",
+      "",
+      HYGIENE_BLOCK_START,
+      "<!-- pr-hygiene -->",
+      "",
+      "✅ **Deterministic PR hygiene checks passed.**",
+      "",
+      HYGIENE_BLOCK_END,
+    ].join("\n");
+
+    // Gate rebuild (the gate rewrites its own section, preserving hygiene).
+    const afterGate = buildGateCommentBody(
+      { version: 1, active: false },
+      {
+        status: "READY",
+        statusReason: "all PR quality gates passed.",
+        checklistRequired: false,
+        hygiene: ["✅ **Deterministic PR hygiene checks passed.**"],
+      },
+    ).join("\n");
+
+    // Hygiene update (the hygiene workflow rewrites its block, preserving gate).
+    const afterHygiene = withHygieneSection(afterGate, [
+      "✅ **Deterministic PR hygiene checks passed.**",
+    ]);
+
+    assert.ok(afterHygiene.includes(GATE_MARKER));
+    assert.ok(afterHygiene.includes("## ✅ READY"));
+    assert.ok(afterHygiene.includes("✅ **Deterministic PR hygiene checks passed.**"));
+    assert.equal(afterHygiene.split(HYGIENE_BLOCK_START).length - 1, 1);
+    assert.equal(afterHygiene.split(HYGIENE_BLOCK_END).length - 1, 1);
+
+    // Reverse order: hygiene first, then gate rebuild — same invariant.
+    const afterHygieneFirst = withHygieneSection(withBlock, [
+      "⚠️ **Deterministic hygiene checks failed.**",
+      "- `missing_regression_test` — Behavior changed under `src/` without a test change.",
+    ]);
+    const afterGateSecond = buildGateCommentBody(
+      { version: 1, active: false },
+      {
+        status: "READY",
+        statusReason: "all PR quality gates passed.",
+        checklistRequired: false,
+        hygiene: ["⚠️ **Deterministic hygiene checks failed.**", "- `missing_regression_test` — Behavior changed under `src/` without a test change."],
+      },
+    ).join("\n");
+    assert.ok(afterGateSecond.includes(GATE_MARKER));
+    assert.ok(afterGateSecond.includes("## ✅ READY"));
+    assert.ok(afterGateSecond.includes("⚠️ **Deterministic hygiene checks failed.**"));
+    assert.equal(afterGateSecond.split(HYGIENE_BLOCK_START).length - 1, 1);
+    assert.equal(afterGateSecond.split(HYGIENE_BLOCK_END).length - 1, 1);
+  });
 });

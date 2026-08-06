@@ -891,6 +891,10 @@ describe("GitHub Actions hardening", () => {
     expect(hygieneWorkflow.concurrency?.group).toBe(
       "pr-gate-comment-${{ github.event.pull_request.number }}",
     );
+    // Both comment-writing workflows share the group and neither cancels:
+    // `cancel-in-progress: true` would kill an in-flight gate mutation when a
+    // newer hygiene run starts, losing that read-modify-write.
+    expect(hygieneWorkflow.concurrency?.["cancel-in-progress"]).toBe(false);
 
     // One job, and it is this one. An audit round added a `sidecar:` job that
     // inherited the PR-write token and un-drafted the PR — every assertion below
