@@ -66,12 +66,11 @@ import { desktopDepsFromConfig } from "./native-exec-desktop";
 import {
   buildCursorToolDefinitions,
   cursorRequestAdvertisesApplyPatch,
-  cursorRequestAdvertisesStructuredEdits,
-  cursorStructuredEditTools,
   cursorRequestHasShellAlias,
   cursorToolArgNormalizeSchema,
   cursorToolWireName,
   cursorToolsForActivePrompt,
+  isCursorSyntheticStructuredEditTool,
   isGenericToolUseCountDemoPrompt,
   requestedCursorToolUseCount,
 } from "./tool-definitions";
@@ -542,23 +541,20 @@ class LiveCursorTransport implements CursorTransport {
     this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(request, this.clientToolFinalizeGraceMs);
     const cursorVisibleTools = cursorToolsForActivePrompt(request.tools, activeText, request.toolChoice);
     const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, request.toolChoice);
+    // `request.tools` is the catalog already filtered and budgeted by request-builder. Derive
+    // conversion provenance only from tagged synthetic tools that also survive this final prompt
+    // filter; a client tool with the same wire name can never opt into conversion by collision.
+    const syntheticStructuredEditToolNames = new Set(
+      (cursorVisibleTools ?? [])
+        .filter(isCursorSyntheticStructuredEditTool)
+        .map(cursorToolWireName),
+    );
     this.execContext = {
       ...this.execContext,
       clientToolDefs,
       rejectNativeFileMutations: cursorRequestAdvertisesApplyPatch(request.tools, request.toolChoice),
-      structuredEditAvailable: cursorRequestAdvertisesStructuredEdits(request.tools, request.toolChoice),
+      structuredEditAvailable: syntheticStructuredEditToolNames.size > 0,
     };
-    // Provenance for the synthetic structured-edit tools (#1036 review): record the bare names WE
-    // actually advertised on THIS request, taken from the definitions that were really sent rather
-    // than from the name alone. A client or MCP tool legitimately called `edit_file` is in
-    // clientToolDefs too, so the discriminator is `cursorStructuredEditTools` having produced it —
-    // which is precisely what `structuredEditAvailable` already reflects.
-    const syntheticStructuredEditToolNames = new Set(
-      (this.execContext.structuredEditAvailable
-        ? cursorStructuredEditTools(request.tools, request.toolChoice)
-        : []
-      ).map(tool => tool.name),
-    );
     const toolSchemas = new Map<string, unknown>();
     const cursorToolNameMap = new Map<string, string>();
     for (const tool of cursorVisibleTools ?? []) {

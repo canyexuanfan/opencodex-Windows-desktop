@@ -29,6 +29,8 @@ import {
   CURSOR_MULTI_EDIT_INPUT_SCHEMA,
   CURSOR_MULTI_EDIT_TOOL,
   cursorStructuredEditTools,
+  cursorToolsForActivePrompt,
+  isCursorSyntheticStructuredEditTool,
 } from "../src/adapters/cursor/tool-definitions";
 
 const encoder = new TextEncoder();
@@ -90,6 +92,7 @@ describe("cursor structured edit tools (#1017)", () => {
   test("advertises edit_file and multi_edit alongside a bare freeform apply_patch", () => {
     const tools = cursorStructuredEditTools([applyPatchTool()], "auto");
     expect(tools.map(tool => tool.name)).toEqual([CURSOR_EDIT_FILE_TOOL, CURSOR_MULTI_EDIT_TOOL]);
+    expect(tools.every(isCursorSyntheticStructuredEditTool)).toBe(true);
     expect(tools[0]?.parameters).toEqual(CURSOR_EDIT_FILE_INPUT_SCHEMA);
     expect(tools[1]?.parameters).toEqual(CURSOR_MULTI_EDIT_INPUT_SCHEMA);
   });
@@ -125,6 +128,20 @@ describe("cursor structured edit tools (#1017)", () => {
   test("cursor tool budget omits structured edit tools when apply_patch is forced", () => {
     const result = applyCursorToolBudget([applyPatchTool()], { name: "apply_patch" });
     expect(result.tools.map(tool => tool.name)).toEqual(["apply_patch"]);
+  });
+
+  test("derives structured-edit provenance after the final prompt filter", () => {
+    const catalog = [
+      execCommandTool(),
+      ...cursorStructuredEditTools([applyPatchTool()], "auto"),
+    ];
+    const filtered = cursorToolsForActivePrompt(catalog, "Use exactly 2 tools for this demo", "auto");
+    const names = (filtered ?? [])
+      .filter(isCursorSyntheticStructuredEditTool)
+      .map(tool => tool.name);
+
+    expect(filtered?.map(tool => tool.name)).toEqual(["exec_command"]);
+    expect(names).toEqual([]);
   });
 
   test("guidance note tells the model to prefer the structured edit tools", () => {

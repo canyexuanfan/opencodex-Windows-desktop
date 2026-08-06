@@ -188,6 +188,13 @@ export function isCursorStructuredEditToolName(name: string): boolean {
   return (CURSOR_STRUCTURED_EDIT_TOOLS as readonly string[]).includes(name);
 }
 
+/** Internal provenance gate for synthetic edits after prompt filtering and catalog budgeting. */
+export function isCursorSyntheticStructuredEditTool(
+  tool: Pick<OcxTool, "namespace" | "name" | "cursorStructuredEdit">,
+): boolean {
+  return !tool.namespace && tool.cursorStructuredEdit === true && isCursorStructuredEditToolName(tool.name);
+}
+
 /**
  * Synthetic structured edit tools for the Cursor route (#1017).
  *
@@ -216,12 +223,14 @@ export function cursorStructuredEditTools(
   const candidates: OcxTool[] = [
     {
       name: CURSOR_EDIT_FILE_TOOL,
+      cursorStructuredEdit: true,
       description:
         "Replace one block of exact text in a file. OpenCodex converts the replacement into a Codex apply_patch change, which the Codex client applies with its normal approval and sandbox policy. old_string must match the current file content exactly at exactly one location (apply_patch rejects ambiguous hunks). Matching is line-based, so an edit cannot add or remove only the file's final newline, and old_string/new_string that are identical after line normalization are rejected as a no-op.",
       parameters: { ...CURSOR_EDIT_FILE_INPUT_SCHEMA },
     },
     {
       name: CURSOR_MULTI_EDIT_TOOL,
+      cursorStructuredEdit: true,
       description:
         "Apply several exact-text replacements to one file. OpenCodex converts the edits into a single Codex apply_patch change, which the Codex client applies with its normal approval and sandbox policy. Each old_string must match the current file content exactly at exactly one location (apply_patch rejects ambiguous hunks). Edits are independent: every old_string is matched against the ORIGINAL file content, so a later edit must not rely on text introduced by an earlier one. Matching is line-based, so an edit cannot add or remove only the file's final newline, and old_string/new_string that are identical after line normalization are rejected as a no-op.",
       parameters: { ...CURSOR_MULTI_EDIT_INPUT_SCHEMA },

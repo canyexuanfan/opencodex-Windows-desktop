@@ -166,6 +166,8 @@ export interface OcxTool {
   toolSearch?: boolean;
   /** Tool definition restored from a prior tool_search output; transports may prioritize it when catalogs are bounded. */
   loadedFromToolSearch?: boolean;
+  /** Cursor-only synthetic exact-match edit tool; never inferred from the wire name. */
+  cursorStructuredEdit?: true;
   /** Synthetic web_search tool: the model's call is executed by the gpt-5.4-mini sidecar, not relayed to Codex. */
   webSearch?: boolean;
   /** Synthetic image_gen tool: the model's call is executed by the xAI image bridge sidecar, not relayed to Codex. */
