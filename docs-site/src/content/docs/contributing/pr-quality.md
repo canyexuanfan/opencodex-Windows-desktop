@@ -39,23 +39,33 @@ tells you exactly what to change:
   a real description: a **Summary** of what changed and why, plus a **Test
   plan** (or equivalent substance). When the title or description mentions
   `gui`, the description must include a screenshot of the UI change; the check
-  keeps the PR a draft and comments until the screenshot is present.
+  keeps the PR a draft and comments until the screenshot is present. A
+  maintainer (OWNER / COLLABORATOR / MEMBER) can waive the screenshot
+  requirement with an issue comment saying the change does not touch the GUI
+  (for example "no gui changes"); the PR author cannot self-waive.
   Contributor PRs (authors without repository push permission) open in draft
   and stay there until a four-box review-readiness checklist in the
   description is complete: local CI green, the branch on the latest `dev`
   commit, all correct Codex and CodeRabbit findings fixed, and the
   ready-for-review confirmation. Once every box is ticked the check marks the
   PR ready for review and notifies the maintainers listed in `MAINTAINERS.md`
-  (excluding the author). Completion is bound to the exact commit the PR head
+  (excluding the author). The gate's status and "what to do" live in a single
+  consolidated bot comment that is rewritten on every run, so there is exactly
+  one place to look. Completion is bound to the exact commit the PR head
   pointed at: if new commits are pushed afterwards, the gate moves the PR back
   to draft, resets the checklist and the maintainer notification, and asks you
   to test and tick the boxes again against the latest code. A retarget to
   `dev` clears the wrong-branch message automatically and is remembered by the
   gate; the draft stays until the checklist is complete.
-  Before a completion is accepted, the gate verifies the two checklist claims
-  it can check itself: the head's `ci` check must be green, and the branch
-  must be on the latest `dev` commit or at most 10 commits behind it. A
-  disproved claim unticks the matching box and keeps the PR a draft.
+  Before a completion is accepted, the gate verifies the checklist claims it
+  can check itself: the head's `ci` check must be green, the branch must be on
+  the latest `dev` commit or at most 10 commits behind it, and every Codex and
+  CodeRabbit review thread on the PR must be resolved. A disproved claim
+  unticks the matching box and keeps the PR a draft. The gate also re-runs on
+  review events, so a bot finding posted after the PR was marked ready is
+  caught without waiting for the next push. When the checklist is complete and
+  every gate is green, the gate adds a `review-ready` label that opts the PR
+  into CodeRabbit review.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a

@@ -135,10 +135,17 @@ export type RunOptions = {
   reviewThreads?: Array<{ isResolved: boolean | null; author: { login: string } | null }>;
   /**
    * Pull-request reviews `pulls.listReviews` reports for the PR. Each entry is
-   * `{ body, commit_id, submitted_at }`; the workflow reads CodeRabbit's
-   * "Actionable comments posted: N" body line as the outside-diff supplement.
+   * `{ body, commit_id, submitted_at, user }`; the workflow reads CodeRabbit's
+   * "Actionable comments posted: N" body line as the outside-diff supplement
+   * and filters by `user.login` so a human review quoting the line does not
+   * count.
    */
-  reviews?: Array<{ body: string; commit_id: string; submitted_at?: string }>;
+  reviews?: Array<{
+    body: string;
+    commit_id: string;
+    submitted_at?: string;
+    user?: { login: string };
+  }>;
   /**
    * Labels the PR already carries (from `pulls.get`). The gate reads these to
    * decide whether to add/remove the `review-ready` label.
@@ -692,9 +699,12 @@ export async function runEnforcePrTarget(
    */
   class Octokit {
     rest = rest;
-    graphql = (query: unknown, variables: unknown) => {
+    graphql = async (query: unknown, variables: unknown) => {
       const text = String(query ?? "");
-      const recorded = record("graphql", { query, variables });
+      // Routed through `respond` so a `failOn: ["graphql"]` simulated failure
+      // REJECTS rather than throwing synchronously, like every other method
+      // (real Octokit graphql returns a promise and rejects it).
+      await respond("graphql", { query, variables });
       // Fail a specific mutation after recording so the failed call appears in
       // the recording (same semantics as `failOn`). The review-threads read is
       // the first graphql call; targeting a mutation by query text lets a test
@@ -705,8 +715,9 @@ export async function runEnforcePrTarget(
       // The review-threads query is answered with the shape the workflow
       // reads. `github.graphql` resolves to the raw data payload (no `data`
       // wrapper, unlike `github.rest.*`), so the threads object is returned
-      // directly. Everything else (the draft/ready mutations) records raw; the
-      // workflow ignores the return value of those.
+      // directly. Mutations also resolve to a raw GraphQL payload, never a
+      // REST envelope, so a workflow that reads a mutation result gets the
+      // same shape production produces.
       if (text.includes("reviewThreads")) {
         const threads = (options.reviewThreads ?? []).map(thread => ({
           isResolved: thread.isResolved,
@@ -722,7 +733,7 @@ export async function runEnforcePrTarget(
           },
         };
       }
-      return recorded;
+      return {};
     };
     request = (route: unknown, params: unknown) =>
       respond("request", { route, params });

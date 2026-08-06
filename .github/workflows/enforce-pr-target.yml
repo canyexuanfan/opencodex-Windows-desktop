@@ -8,11 +8,17 @@ on:
       - edited
       - ready_for_review
       - synchronize
-      # Review events let the gate catch bot findings (Codex / CodeRabbit
-      # review threads) that land after a PR was marked ready, without waiting
-      # for the author's next push.
-      - pull_request_review
-      - pull_request_review_comment
+  # Review events let the gate catch bot findings (Codex / CodeRabbit review
+  # threads) that land after a PR was marked ready, without waiting for the
+  # author's next push. These are top-level webhook events, not activity types
+  # of pull_request_target — listing them under `types:` is silently ignored by
+  # GitHub (actionlint: invalid activity type). Both payloads carry
+  # `pull_request`, so the base.sha trusted checkout and
+  # `context.payload.pull_request` reads below are unchanged.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited]
 
 # pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
@@ -203,20 +209,29 @@ jobs:
             }
 
             async function setReviewReadyLabel(shouldHave, hasLabel) {
-              if (shouldHave && !hasLabel) {
-                await github.rest.issues.addLabels({
-                  owner,
-                  repo,
-                  issue_number: pull_number,
-                  labels: [REVIEW_READY_LABEL]
-                });
-              } else if (!shouldHave && hasLabel) {
-                await github.rest.issues.removeLabel({
-                  owner,
-                  repo,
-                  issue_number: pull_number,
-                  name: REVIEW_READY_LABEL
-                });
+              // The label is a review trigger, not a gate decision. A label
+              // write failure must not abort the run before the gate comment
+              // or the draft/ready conversion happens.
+              try {
+                if (shouldHave && !hasLabel) {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    labels: [REVIEW_READY_LABEL]
+                  });
+                } else if (!shouldHave && hasLabel) {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    name: REVIEW_READY_LABEL
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not ${shouldHave ? "add" : "remove"} the ${inlineCode(REVIEW_READY_LABEL)} label: ${error.message}`
+                );
               }
             }
 
@@ -580,26 +595,51 @@ jobs:
               let findingsClaim = null;
               let findingsUnverifiable = false;
               try {
-                const reviewData = await github.graphql(
-                  `
-                    query($owner: String!, $repo: String!, $number: Int!) {
-                      repository(owner: $owner, name: $repo) {
-                        pullRequest(number: $number) {
-                          reviewThreads(first: 100) {
-                            nodes {
-                              isResolved
-                              comments(first: 1) {
-                                nodes {
-                                  author { login }
+                // Paginate the review threads: a busy PR can carry more than
+                // 100 threads (CodeRabbit posts many reviews), and a truncated
+                // read would silently miss unresolved bot threads — a fail-open
+                // gap in a fail-closed check.
+                const allThreadNodes = [];
+                let threadCursor = null;
+                let threadPage = null;
+                let reviewThreadsPage = null;
+                do {
+                  threadPage = await github.graphql(
+                    `
+                      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                        repository(owner: $owner, name: $repo) {
+                          pullRequest(number: $number) {
+                            reviewThreads(first: 100, after: $cursor) {
+                              pageInfo {
+                                hasNextPage
+                                endCursor
+                              }
+                              nodes {
+                                isResolved
+                                comments(first: 1) {
+                                  nodes {
+                                    author { login }
+                                  }
                                 }
                               }
                             }
                           }
                         }
                       }
+                    `,
+                    {
+                      owner,
+                      repo,
+                      number: pull_number,
+                      cursor: threadCursor
                     }
-                  `,
-                  { owner, repo, number: pull_number }
+                  );
+                  reviewThreadsPage = threadPage?.repository?.pullRequest?.reviewThreads;
+                  allThreadNodes.push(...(reviewThreadsPage?.nodes ?? []));
+                  threadCursor = reviewThreadsPage?.pageInfo?.endCursor ?? null;
+                } while (
+                  reviewThreadsPage?.pageInfo?.hasNextPage === true &&
+                  threadCursor
                 );
                 const reviewsData = await github.paginate(
                   github.rest.pulls.listReviews,
@@ -611,10 +651,7 @@ jobs:
                   }
                 );
                 findingsClaim = unresolvedFindingsClaim({
-                  threads: (
-                    reviewData?.repository?.pullRequest?.reviewThreads?.nodes ??
-                    []
-                  ).map(node => ({
+                  threads: allThreadNodes.map(node => ({
                     isResolved: node.isResolved,
                     author: node.comments?.nodes?.[0]?.author ?? null
                   })),
@@ -1020,17 +1057,4 @@ jobs:
                 "All PR quality gates passed and there is no active bot state."
               );
               return;
-            }
-
-            // Fallback for a clean contributor PR whose checklist is complete
-            // but which already left the mustDraft branch above (defensive).
-            if (checklistRequired && checklistComplete) {
-              await upsertGateComment(readyState, {
-                status: "READY",
-                statusReason: "all PR quality gates passed; the review readiness checklist is complete.",
-                actions: [],
-                readiness,
-                checklistRequired,
-                notices: []
-              });
             }

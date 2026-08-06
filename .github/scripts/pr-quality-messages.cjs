@@ -9,7 +9,10 @@ const {
   READINESS_LATEST_DEV_BEHIND_MAX
 } = require("./pr-quality-state.cjs");
 
-/** Marks the bot's consolidated PR gate message. */
+/**
+ * Legacy marker for the pre-consolidation readiness comment. It is matched
+ * only to migrate and delete old comments; the gate never writes it.
+ */
 const READINESS_MARKER = "<!-- pr-quality-readiness -->";
 /** Marks the bot's consolidated PR gate message. */
 const GATE_MARKER = "<!-- opencodex-pr-gate -->";

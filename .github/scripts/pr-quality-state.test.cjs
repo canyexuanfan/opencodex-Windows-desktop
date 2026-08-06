@@ -370,6 +370,7 @@ describe("coderabbitOutsideDiffFindings", () => {
           body: "**Actionable comments posted: 3**\n\nSome walkthrough.",
           commit_id: HEAD,
           submitted_at: "2026-08-04T06:24:02Z",
+          user: { login: "coderabbitai[bot]" },
         },
       ],
       liveHeadSha: HEAD,
@@ -388,6 +389,7 @@ describe("coderabbitOutsideDiffFindings", () => {
           body: "**Actionable comments posted: 3**",
           commit_id: "1111111111111111111111111111111111111111",
           submitted_at: "2026-08-04T06:24:02Z",
+          user: { login: "coderabbitai[bot]" },
         },
       ],
       liveHeadSha: HEAD,
@@ -397,7 +399,7 @@ describe("coderabbitOutsideDiffFindings", () => {
 
   it("ignores a review reporting zero actionable comments", () => {
     const claim = coderabbitOutsideDiffFindings({
-      reviews: [{ body: "**Actionable comments posted: 0**", commit_id: HEAD }],
+      reviews: [{ body: "**Actionable comments posted: 0**", commit_id: HEAD, user: { login: "coderabbitai[bot]" } }],
       liveHeadSha: HEAD,
     });
     assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
@@ -406,8 +408,8 @@ describe("coderabbitOutsideDiffFindings", () => {
   it("uses the most recent review of the live head", () => {
     const claim = coderabbitOutsideDiffFindings({
       reviews: [
-        { body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:00:00Z" },
-        { body: "**Actionable comments posted: 5**", commit_id: HEAD, submitted_at: "2026-08-04T07:00:00Z" },
+        { body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:00:00Z", user: { login: "coderabbitai[bot]" } },
+        { body: "**Actionable comments posted: 5**", commit_id: HEAD, submitted_at: "2026-08-04T07:00:00Z", user: { login: "coderabbitai[bot]" } },
       ],
       liveHeadSha: HEAD,
     });
@@ -420,28 +422,53 @@ describe("coderabbitOutsideDiffFindings", () => {
       unresolved: 0,
       byBot: {},
     });
-    assert.deepEqual(coderabbitOutsideDiffFindings({ reviews: [{ body: "**Actionable comments posted: 1**", commit_id: HEAD }] }), {
+    assert.deepEqual(coderabbitOutsideDiffFindings({ reviews: [{ body: "**Actionable comments posted: 1**", commit_id: HEAD, user: { login: "coderabbitai[bot]" } }] }), {
       code: null,
       unresolved: 0,
       byBot: {},
     });
+  });
+
+  it("ignores a human review that quotes the actionable-comments line", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [
+        {
+          body: "CodeRabbit said **Actionable comments posted: 2** — let's discuss.",
+          commit_id: HEAD,
+          submitted_at: "2026-08-04T06:24:02Z",
+          user: { login: "wibias" },
+        },
+      ],
+      liveHeadSha: HEAD,
+    });
+    assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
+  });
+
+  it("sorts undated reviews last deterministically", () => {
+    const claim = coderabbitOutsideDiffFindings({
+      reviews: [
+        { body: "**Actionable comments posted: 2**", commit_id: HEAD, user: { login: "coderabbitai[bot]" } },
+        { body: "**Actionable comments posted: 5**", commit_id: HEAD, submitted_at: "2026-08-04T07:00:00Z", user: { login: "coderabbitai[bot]" } },
+      ],
+      liveHeadSha: HEAD,
+    });
+    // The dated review wins over the undated one, so 5 is the count.
+    assert.equal(claim.unresolved, 5);
   });
 });
 
 describe("unresolvedFindingsClaim with outside-diff supplement", () => {
   const HEAD = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
 
-  it("adds the outside-diff count to a clean thread set", () => {
+  it("does not count outside-diff when no unresolved bot thread exists", () => {
+    // The review body is immutable; once the author resolves every thread the
+    // supplement must not keep the box unticked forever (no empty commit).
     const claim = unresolvedFindingsClaim({
       threads: [],
-      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z" }],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z", user: { login: "coderabbitai[bot]" } }],
       liveHeadSha: HEAD,
     });
-    assert.deepEqual(claim, {
-      code: "review_findings",
-      unresolved: 2,
-      byBot: { "coderabbitai[bot]": 2 },
-    });
+    assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
   });
 
   it("adds the outside-diff count to an unresolved thread count", () => {
@@ -449,7 +476,7 @@ describe("unresolvedFindingsClaim with outside-diff supplement", () => {
       threads: [
         { isResolved: false, author: { login: "coderabbitai[bot]" } },
       ],
-      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z" }],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: HEAD, submitted_at: "2026-08-04T06:24:02Z", user: { login: "coderabbitai[bot]" } }],
       liveHeadSha: HEAD,
     });
     assert.deepEqual(claim, {
@@ -464,7 +491,7 @@ describe("unresolvedFindingsClaim with outside-diff supplement", () => {
       threads: [
         { isResolved: true, author: { login: "coderabbitai[bot]" } },
       ],
-      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: "1111111111111111111111111111111111111111", submitted_at: "2026-08-04T06:24:02Z" }],
+      reviews: [{ body: "**Actionable comments posted: 2**", commit_id: "1111111111111111111111111111111111111111", submitted_at: "2026-08-04T06:24:02Z", user: { login: "coderabbitai[bot]" } }],
       liveHeadSha: HEAD,
     });
     assert.deepEqual(claim, { code: null, unresolved: 0, byBot: {} });
@@ -513,6 +540,16 @@ describe("gate state", () => {
     assert.equal(merged.maintainersPinged, true);
     assert.equal(merged.completedAtHeadSha, "abc123");
     assert.equal(merged.reviewReadyLabeled, false);
+  });
+
+  it("keeps enforcer-owned auto-draft when the readiness record says false", () => {
+    const merged = migrateLegacyGateState(
+      { version: 1, active: true, autoDraftedByBot: true },
+      { version: 2, autoDraftedByBot: false, maintainersPinged: true },
+    );
+    // Ownership is a union: the enforcer converted the PR to draft for a
+    // quality failure, so the readiness record must not drop the restore path.
+    assert.equal(merged.autoDraftedByBot, true);
   });
 
   it("migrates with either legacy state absent", () => {

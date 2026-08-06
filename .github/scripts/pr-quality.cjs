@@ -186,9 +186,11 @@ function hasGuiCue(title, body) {
  * title/description is a false positive and a screenshot is not required. The
  * negation word must appear within a short window before `gui`, so a comment
  * like "this touches gui but only the config" (no negation) keeps the gate.
+ * The window cannot cross a sentence or line boundary: "This does not change
+ * the API. Please add a gui screenshot." must not waive the gate.
  */
 const GUI_OVERRIDE_RE =
-  /\b(?:no|not|doesn'?t|does not|never|without)\b[\s\S]{0,40}?\bgui\b/i;
+  /\b(?:no|not|doesn'?t|does not|never|without)\b[^.!?\n]{0,40}?\bgui\b/i;
 
 /**
  * True when a maintainer (OWNER / COLLABORATOR / MEMBER) issue comment waives

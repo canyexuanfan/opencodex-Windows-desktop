@@ -49,12 +49,22 @@ describe("enforce-pr-target workflow", () => {
   });
 
   it("listens for review events so bot findings after ready are caught", () => {
-    assert.match(workflow, /pull_request_review/);
-    assert.match(workflow, /pull_request_review_comment/);
+    // These are top-level webhook events, not `pull_request_target` activity
+    // types — listing them under `types:` is silently ignored by GitHub. Each
+    // assertion anchors to the YAML list-item form so one trigger cannot
+    // satisfy the other's assertion.
+    assert.match(workflow, /^  pull_request_review:\s*$/m);
+    assert.match(workflow, /^  pull_request_review_comment:\s*$/m);
+    assert.match(workflow, /types: \[submitted, edited, dismissed\]/);
+    assert.match(workflow, /types: \[created, edited\]/);
   });
 
   it("queries review threads and feeds them to the findings claim check", () => {
-    assert.match(workflow, /reviewThreads\(first: 100\)/);
+    // Paginated read: `after: $cursor` + `pageInfo.hasNextPage`, so a busy PR
+    // with more than 100 threads cannot hide unresolved bot threads (fail-open
+    // gap in a fail-closed check).
+    assert.match(workflow, /reviewThreads\(first: 100, after: \$cursor\)/);
+    assert.match(workflow, /hasNextPage/);
     assert.match(workflow, /unresolvedFindingsClaim/);
     assert.match(workflow, /findingsClaim\.byBot/);
     assert.match(workflow, /review_findings/);

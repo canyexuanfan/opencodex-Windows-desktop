@@ -186,6 +186,17 @@ describe("hasGuiOverride", () => {
     );
   });
 
+  it("does not match a negation that belongs to another sentence or line", () => {
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "This does not change the API. Please add a gui screenshot." }] }),
+      false,
+    );
+    assert.equal(
+      hasGuiOverride({ comments: [{ author_association: "OWNER", body: "- no rebase needed\n- gui tweak included" }] }),
+      false,
+    );
+  });
+
   it("is clean for no comments or a comment without a body", () => {
     assert.equal(hasGuiOverride({ comments: [] }), false);
     assert.equal(hasGuiOverride({ comments: [{ author_association: "OWNER" }] }), false);
@@ -809,6 +820,50 @@ describe("collectPrQualityFailures", () => {
       behindMain: 0,
       behindBase: 0,
       authorPermission: "read",
+    });
+    assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("waives the screenshot gate for a maintainer override comment", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change adjusts gui/ spacing tokens used by the dashboard.",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+      guiOverrideComments: [
+        { author_association: "OWNER", body: "no gui changes here" },
+      ],
+    });
+    assert.ok(!failures.some((f) => f.code === "missing_ui_screenshot"));
+  });
+
+  it("keeps the screenshot gate when only the PR author claims no gui change", () => {
+    const failures = collectPrQualityFailures({
+      baseRef: "dev",
+      allowedBases: allowed,
+      title: "GUI: fix provider list spacing",
+      body: [
+        "## Summary",
+        "This change adjusts gui/ spacing tokens used by the dashboard.",
+        "",
+        "## Test plan",
+        "- Ran bun test tests/ci-workflows.test.ts",
+      ].join("\n"),
+      behindMain: 0,
+      behindBase: 0,
+      authorPermission: "read",
+      guiOverrideComments: [
+        { author_association: "CONTRIBUTOR", body: "no gui changes here" },
+      ],
     });
     assert.ok(failures.some((f) => f.code === "missing_ui_screenshot"));
   });

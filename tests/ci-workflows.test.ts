@@ -830,7 +830,15 @@ describe("GitHub Actions hardening", () => {
 
     // pull_request_target runs with the base repo's token. Checking out or
     // executing the PR's code under it is the classic escalation.
-    expect(Object.keys(workflow.on ?? {})).toEqual(["pull_request_target"]);
+    // The two review events are sibling top-level events (not
+    // `pull_request_target` activity types — those are silently ignored by
+    // GitHub), and both payloads carry `pull_request`, so the trusted base.sha
+    // checkout and the `context.payload.pull_request` reads stay unchanged.
+    expect(Object.keys(workflow.on ?? {}).sort()).toEqual([
+      "pull_request_review",
+      "pull_request_review_comment",
+      "pull_request_target",
+    ]);
 
     // And the trigger is exactly a `types:` list — nothing else.
     //
@@ -842,6 +850,9 @@ describe("GitHub Actions hardening", () => {
     // additive, both look like ordinary scoping in a diff, and neither failed a
     // single assertion.
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
+    // The sibling review events are also exactly `types:` lists.
+    expect(Object.keys(workflow.on?.pull_request_review ?? {})).toEqual(["types"]);
+    expect(Object.keys(workflow.on?.pull_request_review_comment ?? {})).toEqual(["types"]);
 
     // Exactly the scopes this gate needs. `pull-requests: write` covers title
     // and comment updates. `contents: write` is required for the draft GraphQL
@@ -938,11 +949,23 @@ describe("GitHub Actions hardening", () => {
     expect([...types].sort()).toEqual([
       "edited",
       "opened",
-      "pull_request_review",
-      "pull_request_review_comment",
       "ready_for_review",
       "reopened",
       "synchronize",
+    ]);
+
+    // Review events are top-level webhook events, not `pull_request_target`
+    // activity types — GitHub silently ignores invalid types, so the gate
+    // would never re-run on a bot finding posted after ready. Assert the
+    // sibling events and their activity-type lists.
+    expect(workflow.on?.pull_request_review?.types).toEqual([
+      "submitted",
+      "edited",
+      "dismissed",
+    ]);
+    expect(workflow.on?.pull_request_review_comment?.types).toEqual([
+      "created",
+      "edited",
     ]);
 
     // The verdict is a live PR read plus ancestry/description checks.
@@ -1892,15 +1915,18 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain("**4/4** boxes ticked");
     });
 
-    test("CodeRabbit outside-diff findings untick the box even with clean threads", async () => {
+    test("CodeRabbit outside-diff findings do not untick the box once threads are clean", async () => {
       // CodeRabbit posts some findings only in its review body ("outside the
-      // diff range"), which never become review threads. The supplement reads
-      // `pulls.listReviews` for a live-head CodeRabbit review reporting
-      // actionable comments and treats it as an unresolved finding.
+      // diff range"), which never become review threads. A review body is
+      // immutable, so the count can never fall to zero on its own once posted;
+      // the supplement therefore only counts while an unresolved bot thread
+      // exists. Clean threads + a live-head review body with a positive count
+      // must stay green — otherwise the author could never clear the box
+      // without pushing an empty commit.
       const result = await run({
         pr: {
           base: { ref: "dev" },
-          draft: false,
+          draft: true,
           body: readinessChecklistBody(4),
         },
         maintainersFile: MAINTAINERS_FIXTURE,
@@ -1909,6 +1935,7 @@ describe("GitHub Actions hardening", () => {
             body: "**Actionable comments posted: 2**\n\nWalkthrough.",
             commit_id: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
             submitted_at: "2026-08-04T06:24:02Z",
+            user: { login: "coderabbitai[bot]" },
           },
         ],
       });
@@ -1917,20 +1944,44 @@ describe("GitHub Actions hardening", () => {
         "checks.listForRef",
         "graphql",
         "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
+        "issues.addLabels",
         "graphql",
         "issues.createComment",
       ]));
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain("**4/4** boxes ticked");
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("CodeRabbit outside-diff findings add to an unresolved thread count", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        reviewThreads: [
+          { isResolved: false, author: { login: "coderabbitai[bot]" } },
+        ],
+        reviews: [
+          {
+            body: "**Actionable comments posted: 2**\n\nWalkthrough.",
+            commit_id: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
+            submitted_at: "2026-08-04T06:24:02Z",
+            user: { login: "coderabbitai[bot]" },
+          },
+        ],
+      });
+
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       expect(bodyUpdate.body).toContain("- [ ] I resolved all correct Codex and CodeRabbit findings.");
-      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
       const readinessBody = lastReadinessCommentBody(result);
       expect(readinessBody).toContain(
-        "CodeRabbit has 2 unresolved findings; the **Codex/CodeRabbit findings** box has been unticked.",
+        "CodeRabbit has 3 unresolved findings; the **Codex/CodeRabbit findings** box has been unticked.",
       );
       expect(readinessBody).toContain("**3/4** boxes ticked");
-      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
     test("a CodeRabbit outside-diff review of a stale head does not untick the box", async () => {
@@ -1948,6 +1999,7 @@ describe("GitHub Actions hardening", () => {
             body: "**Actionable comments posted: 2**",
             commit_id: "1111111111111111111111111111111111111111",
             submitted_at: "2026-08-04T06:24:02Z",
+            user: { login: "coderabbitai[bot]" },
           },
         ],
       });
@@ -1994,6 +2046,39 @@ describe("GitHub Actions hardening", () => {
       expect(drafts).toHaveLength(2);
       expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
       expect(lastReadinessCommentBody(result)).toContain("**4/4** boxes ticked");
+    });
+
+    test("a human review quoting the actionable-comments line does not untick the box", async () => {
+      // The outside-diff supplement filters by author: a maintainer quoting
+      // CodeRabbit's summary in their own review must not count as CodeRabbit
+      // findings, or the box would be unticked by a human's quote.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        reviewThreads: [
+          { isResolved: false, author: { login: "coderabbitai[bot]" } },
+        ],
+        reviews: [
+          {
+            body: "CodeRabbit said **Actionable comments posted: 2** — let's discuss.",
+            commit_id: "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
+            submitted_at: "2026-08-04T06:24:02Z",
+            user: { login: "wibias" },
+          },
+        ],
+      });
+
+      // Only the unresolved thread counts (1), not the human's quoted line.
+      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(bodyUpdate.body).toContain("- [ ] I resolved all correct Codex and CodeRabbit findings.");
+      const readinessBody = lastReadinessCommentBody(result);
+      expect(readinessBody).toContain(
+        "CodeRabbit has 1 unresolved finding; the **Codex/CodeRabbit findings** box has been unticked.",
+      );
     });
 
     test("a review-threads lookup failure fails closed for the findings claim", async () => {

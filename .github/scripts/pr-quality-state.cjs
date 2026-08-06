@@ -109,9 +109,9 @@ function gateStateMarker(state) {
 /**
  * Fresh consolidated gate state. It merges the old enforcer ownership fields
  * (active / autoDraftedByBot / titlePrefixedByBot) with the readiness fields
- * (maintainersPinged / completedAtHeadSha). `reviewReadyLabeled` records
- * whether the gate currently owns the `review-ready` label, so a run that
- * merely re-renders the comment does not re-fire the label webhook.
+ * (maintainersPinged / completedAtHeadSha). `reviewReadyLabeled` is serialized
+ * for backward compatibility with states written by earlier versions of this
+ * gate; live label decisions read `pr.labels` directly, never this field.
  */
 function defaultGateState() {
   return {
@@ -176,7 +176,13 @@ function migrateLegacyGateState(enforcerState, readinessState) {
     gate.titlePrefixedByBot = Boolean(enforcerState.titlePrefixedByBot);
   }
   if (readinessState) {
-    gate.autoDraftedByBot = Boolean(readinessState.autoDraftedByBot);
+    // Either legacy record may own the auto-draft: the enforcer converted the
+    // PR to draft for a quality failure, the readiness comment recorded the
+    // checklist-driven draft, or both. Ownership is a union — letting the
+    // readiness value overwrite a true enforcer bit drops the restore path
+    // and leaves a bot-drafted maintainer PR stuck in draft forever.
+    gate.autoDraftedByBot =
+      gate.autoDraftedByBot || Boolean(readinessState.autoDraftedByBot);
     gate.maintainersPinged = Boolean(readinessState.maintainersPinged);
     gate.completedAtHeadSha = readinessState.completedAtHeadSha ?? null;
   }
@@ -228,6 +234,9 @@ const REVIEW_FINDINGS_BOT_LOGINS = [
   "coderabbitai[bot]"
 ];
 
+/** The login that authors CodeRabbit reviews. */
+const CODE_RABBIT_LOGIN = "coderabbitai[bot]";
+
 /**
  * CodeRabbit's review-body line that reports actionable inline findings. The
  * gate reads this to count findings that CodeRabbit posts only as review-body
@@ -243,23 +252,30 @@ const CODE_RABBIT_ACTIONABLE_RE =
  * `**Actionable comments posted: N**`; those never become review threads, so
  * the thread check alone would miss them. This supplements the thread check:
  * a CodeRabbit review of the live head whose body reports actionable comments
- * counts as an unresolved finding.
+ * counts as an unresolved finding. Only CodeRabbit's own reviews are read —
+ * a human review quoting the same line must not count.
  *
  * Only the most recent review for the live head is considered (the head a
  * findings-review covers is the head that must be clean), so an older review
- * of a superseded commit cannot keep the box unticked forever.
+ * of a superseded commit cannot keep the box unticked forever. Reviews with a
+ * missing or unparsable `submitted_at` sort last deterministically so the
+ * "most recent" pick is never arbitrary.
  */
 function coderabbitOutsideDiffFindings({ reviews = [], liveHeadSha }) {
   if (!liveHeadSha || !Array.isArray(reviews) || reviews.length === 0) {
     return { code: null, unresolved: 0, byBot: {} };
   }
+  const submittedAt = review => {
+    const parsed = Date.parse(String(review?.submitted_at ?? ""));
+    return Number.isNaN(parsed) ? -Infinity : parsed;
+  };
   const latestForHead = reviews
-    .filter(review => review?.commit_id === liveHeadSha)
-    .sort(
-      (a, b) =>
-        Date.parse(String(b?.submitted_at ?? "")) -
-        Date.parse(String(a?.submitted_at ?? ""))
-    )[0];
+    .filter(
+      review =>
+        review?.commit_id === liveHeadSha &&
+        review?.user?.login === CODE_RABBIT_LOGIN
+    )
+    .sort((a, b) => submittedAt(b) - submittedAt(a))[0];
   const body = String(latestForHead?.body ?? "");
   const match = CODE_RABBIT_ACTIONABLE_RE.exec(body);
   if (!match) return { code: null, unresolved: 0, byBot: {} };
@@ -268,7 +284,7 @@ function coderabbitOutsideDiffFindings({ reviews = [], liveHeadSha }) {
   return {
     code: "review_findings",
     unresolved: count,
-    byBot: { "coderabbitai[bot]": count }
+    byBot: { [CODE_RABBIT_LOGIN]: count }
   };
 }
 
@@ -280,8 +296,11 @@ function coderabbitOutsideDiffFindings({ reviews = [], liveHeadSha }) {
  * only in its review body (outside the diff range); those are added by the
  * `coderabbitOutsideDiffFindings` supplement so they cannot slip through.
  * The supplement is subordinate: it never subtracts, only adds unresolved
- * counts for the live head, and once the reviewer resolves the threads the
- * next run re-checks.
+ * counts for the live head while a bot thread is still open. A review body is
+ * immutable, so the count can never fall to zero on its own once posted; the
+ * supplement therefore only counts while an unresolved bot thread exists — the
+ * author resolves that thread to clear the box, matching the checklist wording
+ * ("I resolved all correct ... findings") without requiring an empty commit.
  */
 function unresolvedFindingsClaim({ threads = [], reviews = [], liveHeadSha }) {
   const byBot = {};
@@ -294,11 +313,13 @@ function unresolvedFindingsClaim({ threads = [], reviews = [], liveHeadSha }) {
       unresolved += 1;
     }
   }
-  const outside = coderabbitOutsideDiffFindings({ reviews, liveHeadSha });
-  if (outside.code) {
-    for (const [login, count] of Object.entries(outside.byBot)) {
-      byBot[login] = (byBot[login] ?? 0) + count;
-      unresolved += count;
+  if (unresolved > 0) {
+    const outside = coderabbitOutsideDiffFindings({ reviews, liveHeadSha });
+    if (outside.code) {
+      for (const [login, count] of Object.entries(outside.byBot)) {
+        byBot[login] = (byBot[login] ?? 0) + count;
+        unresolved += count;
+      }
     }
   }
   return unresolved > 0
@@ -349,6 +370,7 @@ module.exports = {
   GATE_STATE_PATTERN,
   READINESS_STATE_VERSION,
   REVIEW_FINDINGS_BOT_LOGINS,
+  CODE_RABBIT_LOGIN,
   CODE_RABBIT_ACTIONABLE_RE,
   coderabbitOutsideDiffFindings,
   parseState,
