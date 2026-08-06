@@ -1196,13 +1196,14 @@ describe("GitHub Actions hardening", () => {
 
     /**
      * The writes a fresh contributor PR triggers on `dev` with no quality
-     * failures: inject the checklist, convert to draft, then write the single
-     * consolidated comment.
+     * failures: inject the checklist, then the ownership checkpoint comment
+     * (claiming `autoDraftedByBot` before the mutation), then the draft
+     * conversion.
      */
     const CONTRIBUTOR_CLEAN_TAIL = [
       "pulls.update",
-      "graphql",
       "issues.createComment",
+      "graphql",
     ];
 
     /**
@@ -1278,8 +1279,9 @@ describe("GitHub Actions hardening", () => {
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
+        "issues.updateComment",
       ]));
       // Only a successful conversion records autoDraftedByBot; a failed one
       // clears it so a later permission recovery cannot leave the bot-created
@@ -1392,9 +1394,9 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
         "issues.deleteComment",
+        "graphql",
       ]));
       const [resetBody] = callsTo(result, "pulls.update") as [{ body: string }];
       expect(resetBody.body).toContain(CHECKLIST_START);
@@ -1524,8 +1526,8 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const drafts = callsTo(result, "graphql") as [{ query: string }];
       expect(drafts).toHaveLength(1);
@@ -1559,8 +1561,8 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const drafts = callsTo(result, "graphql") as [{ query: string }];
       expect(drafts).toHaveLength(1);
@@ -1597,8 +1599,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       // Only the CI box is unticked; the other three stay checked.
@@ -1672,8 +1674,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       // Only the latest-dev box is unticked; CI stays checked.
@@ -1712,8 +1714,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
@@ -1745,8 +1747,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
@@ -1830,8 +1832,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
@@ -1858,8 +1860,8 @@ describe("GitHub Actions hardening", () => {
         "pulls.listReviews",
         "pulls.get",
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
       // Only the findings box is unticked; CI and latest-dev stay checked.
@@ -2177,9 +2179,9 @@ describe("GitHub Actions hardening", () => {
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.get",
-        "graphql",
         "issues.createComment",
         "issues.deleteComment",
+        "graphql",
       ]));
       // No body rewrite: the boxes are already unticked from the failed reset.
       expect(callsTo(result, "pulls.update")).toEqual([]);
@@ -2318,8 +2320,8 @@ describe("GitHub Actions hardening", () => {
       });
       expect(methodsOf(duringFailure)).toEqual(readsAllowedBase([
         "pulls.update",
-        "graphql",
         "issues.createComment",
+        "graphql",
       ]));
       expect(lastReadinessCommentBody(duringFailure)).toContain('"autoDraftedByBot":true');
 
@@ -3363,9 +3365,9 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).toEqual(readsAllowedBase([
         "pulls.update",
         "pulls.update",
-        "graphql",
         "issues.createComment",
         "issues.deleteComment",
+        "graphql",
       ]));
       const cleared = lastReadinessCommentBody(result);
       expect(cleared).toContain('"active":true');

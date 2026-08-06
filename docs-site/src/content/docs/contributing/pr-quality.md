@@ -63,13 +63,14 @@ tells you exactly what to change:
   Before a completion is accepted, the gate verifies the checklist claims it
   can check itself: the head's `ci` check must be green, the branch must be on
   the latest `dev` commit or at most 10 commits behind it, and every Codex and
-  CodeRabbit review thread on the PR must be resolved. CodeRabbit findings
-  that fall outside the diff range and are reported only in a review body on
-  the current head are counted the same way while a bot review thread is open;
-  resolving every bot thread clears them. A disproved claim unticks the
-  matching box and keeps the PR a draft. When the checklist is complete and
-  every gate is green, the gate adds a `review-ready` label as a visible
-  status marker at the ready moment.
+  CodeRabbit review thread authored by a review bot on the current head must be
+  resolved (unresolved threads from other authors do not block). CodeRabbit
+  findings that fall outside the diff range and are reported only in a review
+  body on the current head add to the unresolved count while a bot review
+  thread is open; resolving every bot thread clears the box. A disproved claim
+  unticks the matching box and keeps the PR a draft. When the checklist is
+  complete and every gate is green, the gate adds a `review-ready` label as a
+  visible status marker at the ready moment.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a

@@ -933,10 +933,41 @@ jobs:
               }
 
               // No quality failure; the draft is owed by the open checklist.
-              if (!pr.draft && !draftConverted) {
-                // Claim draft ownership before the mutation so a successful
-                // convert followed by a failed comment still restores later.
+              if (pr.draft) {
+                // Already a draft: update the gate comment with the open
+                // checklist status and no conversion needed.
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
+                  readiness,
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "This PR stays in draft until every box above is ticked."
+                  ]
+                });
+              } else if (!draftConverted) {
+                // Persist the ownership checkpoint BEFORE the mutation so a
+                // successful convert followed by a failed comment write still
+                // leaves the bot-created draft owned and restorable. The
+                // failure path above uses the same ordering via draftComment.
                 state.autoDraftedByBot = true;
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
+                  readiness,
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "This PR stays in draft until every box above is ticked."
+                  ]
+                });
                 try {
                   await convertToDraft();
                   draftConverted = true;
@@ -951,23 +982,25 @@ jobs:
                 }
               }
 
-              const notices = [
-                ...revalidationNotice,
-                pr.draft || draftConverted
-                  ? "This PR stays in draft until every box above is ticked."
-                  : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
-              ];
-
-              await upsertGateComment(state, {
-                status: "DRAFT",
-                statusReason: checklistRequired
-                  ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
-                  : "PR is kept in draft.",
-                actions: buildActions(),
-                readiness,
-                checklistRequired,
-                notices
-              });
+              // A failed conversion must still surface in the persisted state:
+              // the checkpoint above claimed ownership, so a failure rewrites
+              // it to release ownership and tell the author what to do.
+              if (!draftConverted && !pr.draft) {
+                state.autoDraftedByBot = false;
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
+                  readiness,
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
+                  ]
+                });
+              }
               return;
             }
 
@@ -1053,13 +1086,13 @@ jobs:
             // surface but there is nothing to tick; only render it if the
             // author is a maintainer and no checklist is required.
             if (!checklistRequired) {
-              // `pr.draft` is the value from before the ready path ran; when
-              // that path already converted the PR (`readyConverted`), the
-              // recovery must not call markReadyForReview a second time on the
-              // stale draft state. When the ready path already attempted and
-              // failed (`readyConversionFailed`), the failure state is carried
-              // in `readyState`/`recoveredState` and only the comment is
-              // rewritten, so a later run retries.
+              // A maintainer PR the gate drafted (`autoDraftedByBot`) must be
+              // restored when its failures clear. A maintainer PR that was
+              // already a draft while it failed a gate still carries an active
+              // gate comment (`active: true` with stale DRAFT actions) that
+              // must be cleared to READY even though the bot never converted
+              // it — otherwise the old comment keeps telling the author to fix
+              // already-passed gates.
               if (gateState.autoDraftedByBot && pr.draft) {
                 let recoveryFailed = false;
                 if (!readyConverted && !readyConversionFailed) {
@@ -1091,6 +1124,20 @@ jobs:
                   checklistRequired,
                   notices: []
                 });
+                return;
+              }
+              if (gateState.active) {
+                await upsertGateComment(
+                  { ...gateState, active: false, autoDraftedByBot: false },
+                  {
+                    status: "READY",
+                    statusReason: "all PR quality gates passed.",
+                    actions: [],
+                    readiness,
+                    checklistRequired,
+                    notices: []
+                  }
+                );
                 return;
               }
               core.info(
