@@ -15,6 +15,7 @@ import {
   type ReadinessGate,
 } from "../src/server/readiness";
 import { startServer } from "../src/server";
+import { beginShutdownDrain, isDraining, resetLifecycleDrainStateForTests } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
@@ -1106,6 +1107,45 @@ describe("per-server readiness gate isolation", () => {
     } finally {
       // Clean up ONLY A — B never bound, so there is no B server to stop.
       await serverA.stop(true);
+    }
+  });
+});
+
+describe("GET /readyz while draining", () => {
+  afterEach(() => {
+    resetLifecycleDrainStateForTests();
+  });
+
+  test("a ready gate reports pending (503) once the listener starts draining", async () => {
+    saveConfig(forwardConfig());
+    const gate = createReadinessGate();
+    const server = startServer(0, { readinessGate: gate });
+    try {
+      gate.markReady();
+      const base = server.url;
+
+      // Before drain: ready → 200.
+      const readyRes = await fetch(new URL("/readyz", base));
+      expect(readyRes.status).toBe(200);
+      expect(((await readyRes.json()) as { status: string }).status).toBe("ready");
+
+      // Begin draining (as shutdown would). The one-shot gate is NOT mutated,
+      // but /readyz must stop advertising ready while the listener drains.
+      expect(isDraining()).toBe(false);
+      expect(beginShutdownDrain()).toBe(true);
+      expect(isDraining()).toBe(true);
+
+      const drainRes = await fetch(new URL("/readyz", base));
+      expect(drainRes.status).toBe(503);
+      expect(drainRes.headers.get("retry-after")).toBe("1");
+      expect(((await drainRes.json()) as { status: string }).status).toBe("pending");
+
+      // The gate itself is untouched — draining is a listener state, not a gate
+      // transition, so the startup-sync ownership contract is preserved.
+      expect(gate.getStatus()).toBe("ready");
+    } finally {
+      await server.stop(true);
+      resetLifecycleDrainStateForTests();
     }
   });
 });

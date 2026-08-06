@@ -451,11 +451,12 @@ describe("createReadinessGate", () => {
     gate.markFailed();
     // Only the sanitized status enum is reachable; the interface surface is fixed.
     expect(gate.getStatus()).toBe("failed");
-    const serialized = JSON.stringify(gate);
-    expect(serialized).not.toContain("reason");
-    expect(serialized).not.toContain("changedAt");
-    expect(serialized).not.toContain("warning");
-    expect(serialized).not.toContain("path");
+    // JSON.stringify of a method-only object returns "{}", so it cannot prove
+    // the absence of closure-held diagnostic fields. Assert the own-property
+    // surface directly: exactly the three control methods and no data field.
+    expect(Object.keys(gate).sort()).toEqual(["getStatus", "markFailed", "markReady"]);
+    // The only readable value is the fixed sanitized enum.
+    expect(["pending", "ready", "failed"]).toContain(gate.getStatus());
   });
 });
 

@@ -617,7 +617,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         if (url.pathname !== "/readyz" || req.method !== "GET") {
           return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
         }
-        const status = readinessGate.getStatus();
+        // A draining proxy must never advertise ready: every data-plane branch
+        // answers drainingResponse while isDraining() is set, but the one-shot
+        // readiness gate is not mutated on shutdown (it is owned by the startup
+        // sync). Report pending so `ocx ready --wait` and external supervisors
+        // keep polling instead of promoting a proxy that is draining.
+        const status = isDraining() ? "pending" : readinessGate.getStatus();
         const body = {
           service: "opencodex",
           version: VERSION,

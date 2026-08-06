@@ -142,9 +142,8 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
   const readRuntimeFn = io.readRuntimeFn ?? readRuntimePort;
   const configFn = io.configFn ?? loadConfig;
   const nowFn = io.nowFn ?? Date.now;
-  // Tests and callers may supply either the canonical deadlineAt or the legacy deadlineMs alias.
-  const deadlineAt = io.deadlineAt ?? (io as { deadlineMs?: number }).deadlineMs;
-  const probeIo: LivenessIo = deadlineAt === io.deadlineAt ? io : { ...io, deadlineAt };
+  const deadlineAt = io.deadlineAt;
+  const probeIo: LivenessIo = io;
   const budgetExhausted = (): boolean =>
     deadlineAt !== undefined && nowFn() >= deadlineAt;
 

@@ -112,13 +112,15 @@ describe("ocx ready real subprocess", () => {
       const result = await runCli(
         ["ready", "--wait", "--timeout", "300", "--json"],
         { OPENCODEX_HOME: homes.opencodexHome, CODEX_HOME: homes.codexHome },
+        10_000,
       );
 
       expect(healthzHits).toBe(1);
       expect(readyzHits).toBe(1);
       expect(result.timedOut).toBe(false);
       expect(result.exitCode).toBe(1);
-      expect(result.elapsedMs).toBeLessThan(2_000);
+      // Far below the 300s --timeout, but tolerant of cold Bun startup on CI.
+      expect(result.elapsedMs).toBeLessThan(9_000);
       expect(JSON.parse(result.stdout.trim())).toEqual({
         ready: false,
         status: "failed",

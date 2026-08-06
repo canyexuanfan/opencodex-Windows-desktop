@@ -217,7 +217,7 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
         // First discovery returns null (proxy not up yet); second returns LIVE.
         findLive: async () => { findCalls++; return findCalls < 2 ? null : LIVE; },
         probe: async () => probeBodies[Math.min(probeCalls++, probeBodies.length - 1)]!,
-        now: () => (t += 100), // 100, 200, 300 … never crosses the 5000ms deadline.
+        now: () => (t += 100), // First read is 100, so the deadline is 100 + 5000 = 5100; 100, 200, 300 … never crosses it.
         sleep: async () => {},
       },
     );
@@ -236,7 +236,7 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
         ...io,
         findLive: async () => null,
         probe: async () => READY_PROBE,
-        now: () => (t += 500), // 500, 1000, 1500 … crosses 1000 after the 2nd iteration.
+        now: () => (t += 500), // First read is 500, so the deadline is 500 + 1000 = 1500; the after-find read of 1500 ends the loop.
         sleep: async () => {},
       },
     );
@@ -254,7 +254,7 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
         ...io,
         findLive: async () => LIVE,
         probe: async () => PENDING_PROBE,
-        now: () => (t += 1000), // 1000, 2000, 3000, 4000 crosses the 3000 deadline.
+        now: () => (t += 1000), // First read is 1000, so the deadline is 1000 + 3000 = 4000; the after-probe read of 4000 ends the loop.
         sleep: async () => {},
       },
     );
@@ -774,7 +774,8 @@ describe("runReady production findLiveProxy deadline wiring (source-level)", () 
     // The default find forwards only verifyPidFn: () => null when remainingMs is
     // undefined so the built-in per-probe timeout (no deadline) is preserved for
     // the single probe and no OS pid verification runs outside a deadline.
-    expect(readySource).toContain("remainingMs === undefined\n        ? { verifyPidFn: () => null }");
+    // Whitespace-tolerant so the assertion survives reformatting of the ternary.
+    expect(readySource).toMatch(/remainingMs === undefined\s*\?\s*\{ verifyPidFn: \(\) => null \}/);
     // deadlineAt is only ever passed conditionally (in the wait branch), never
     // as an unconditional findLiveProxy({ deadlineAt: ... }).
     expect(readySource).not.toContain("findLiveProxy({ deadlineAt");
