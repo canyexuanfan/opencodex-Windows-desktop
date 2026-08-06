@@ -2,6 +2,8 @@ import type { KiroOAuthMetadata } from "./oauth/types";
 
 export interface OcxParsedRequest {
   modelId: string;
+  /** Client-facing model selector retained for Anthropic routes after wire-model normalization. */
+  _responseModelId?: string;
   /** Selected OpenAI API virtual-model id retained after it rewrites the upstream wire model. */
   _openAiVirtualSelectedModelId?: string;
   previousResponseId?: string;
