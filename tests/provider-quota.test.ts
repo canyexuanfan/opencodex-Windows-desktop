@@ -603,6 +603,22 @@ describe("fetchProviderQuotaReports", () => {
     });
   });
 
+  test("OpenRouter quota reports zero consumption for a capped key with usage 0", async () => {
+    // A valid capped response with `usage: 0` and no limit_remaining must
+    // still render: 0% consumed, full cap remaining.
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: { usage: 0, limit: 20 },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("openrouter", "https://openrouter.ai/api/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota.customWindows?.[0]).toEqual({
+      label: "API credits ($20.00 of $20.00 remaining)",
+      percent: 0,
+    });
+  });
+
   test("OpenRouter quota treats a terminal 401 as invalid (drops last-good)", async () => {
     let rejected = false;
     globalThis.fetch = (async () => {
@@ -837,7 +853,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("MiniMax quota renders the Token Plan remaining-time as a duration-only window", async () => {
+  test("MiniMax quota suppresses the row when the API omits the plan total duration", async () => {
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -848,13 +864,9 @@ describe("fetchProviderQuotaReports", () => {
 
     const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax", "https://api.minimax.io/v1"), true);
 
-    expect(result.reports).toHaveLength(1);
-    expect(result.reports[0]?.source).toBe("minimax:token-plan-remains");
-    // No total duration from the API → duration-only window, no fabricated percent.
-    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({
-      label: "Token Plan remaining (277h)",
-      percent: 0,
-    });
+    // No total duration → no percentage to render; a 0% bar would falsely
+    // claim zero consumption, so the row is suppressed entirely.
+    expect(result.reports).toEqual([]);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://www.minimax.io/v1/token_plan/remains");
     expect(seen[0]?.authorization).toBe("Bearer minimax-secret");
@@ -877,7 +889,10 @@ describe("fetchProviderQuotaReports", () => {
     const seen: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       seen.push(String(input));
-      return new Response(JSON.stringify({ success: true, data: { remains_time: 1_000_000_000 } }), { status: 200 });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { remains_time: 750_000_000, total_time: 1_000_000_000 },
+      }), { status: 200 });
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax-cn", "https://api.minimaxi.com/v1"), true);

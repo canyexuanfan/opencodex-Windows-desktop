@@ -25,7 +25,7 @@ function formatNumber(value: number): string {
  * leaves non-English locales with a partially-English row. Unknown strings
  * fall back to the raw prose.
  */
-const FREE_TIER_KEYS: Record<string, string> = {
+const FREE_TIER_KEYS: Record<string, Parameters<TFn>[0]> = {
   "Local — no remote limits": "pws.rateLimits.freeTier.local",
   "~200 free-model requests per 5 hours": "pws.rateLimits.freeTier.opencodeFree",
   "Free tier: ~15 RPM / 250K TPM / 1K RPD (tier-dependent)": "pws.rateLimits.freeTier.gemini",
@@ -43,7 +43,7 @@ const FREE_TIER_KEYS: Record<string, string> = {
 
 function localizeFreeTier(freeTier: string, t: TFn): string {
   const key = FREE_TIER_KEYS[freeTier];
-  return key ? t(key as never) : freeTier;
+  return key ? t(key) : freeTier;
 }
 
 export function formatDocumentedLimits(rateLimits: DocumentedRateLimits, t: TFn): string {

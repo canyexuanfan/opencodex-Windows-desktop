@@ -401,7 +401,7 @@ async function fetchOpenRouterQuota(provider: string, config: OcxProviderConfig)
   // lifetime accumulated spend and overstates a reset or re-capped key.
   const used = limitRemaining !== undefined
     ? Math.max(0, limit - limitRemaining)
-    : usage !== undefined && usage > 0 ? usage : undefined;
+    : usage !== undefined && usage >= 0 ? usage : undefined;
   if (used === undefined) return null;
   const percent = normalizePercent((used / limit) * 100);
   if (percent === undefined) return null;
@@ -595,19 +595,16 @@ async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): P
   const hours = Math.floor(remainsMs / 3_600_000);
   const label = `Token Plan remaining (${hours}h)`;
   // Only derive a consumed share when the API actually reports the plan total;
-  // a presumed window (e.g. 30 days) would fabricate utilization.
+  // a presumed window (e.g. 30 days) would fabricate utilization. Without a
+  // total there is no percentage to render, so suppress the row rather than
+  // report a false 0% (zero would mean "no consumption").
   const totalMs = toFiniteNumber(data.total_time ?? data.plan_duration_ms ?? data.total_duration_ms);
-  if (totalMs !== undefined && totalMs > 0) {
-    const consumed = Math.max(0, totalMs - remainsMs);
-    const percent = normalizePercent((consumed / totalMs) * 100);
-    if (percent === undefined) return null;
-    return report(provider, "minimax:token-plan-remains", {
-      customWindows: [{ label, percent }],
-      updatedAt: Date.now(),
-    });
-  }
+  if (totalMs === undefined || totalMs <= 0) return null;
+  const consumed = Math.max(0, totalMs - remainsMs);
+  const percent = normalizePercent((consumed / totalMs) * 100);
+  if (percent === undefined) return null;
   return report(provider, "minimax:token-plan-remains", {
-    customWindows: [{ label, percent: 0 }],
+    customWindows: [{ label, percent }],
     updatedAt: Date.now(),
   });
 }
