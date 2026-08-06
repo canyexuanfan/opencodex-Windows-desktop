@@ -72,6 +72,23 @@ let grokApplyTestHooks: { now?: () => number; run?: () => Promise<unknown> } | n
 class GrokApplyBusyError extends Error {}
 
 /**
+ * Mirror a durable desired-state transition onto the long-lived server snapshot.
+ *
+ * `setIntegrationEnabled` writes DISK only. The server reuses one `config` object
+ * for every request, so leaving it stale makes the native GET report the opposite
+ * of what was just persisted, and makes any later whole-snapshot save (the Desktop
+ * profile PUT does exactly that) write the stale value back over the transition.
+ * ON is the ABSENCE of the key, matching `setIntegrationEnabled`'s on-disk shape.
+ */
+function mirrorDesiredEnabledOntoSnapshot(config: OcxConfig, client: "claude-desktop", enabled: boolean): void {
+  const integrations = { ...(config.clientIntegrations ?? {}) };
+  if (enabled) delete integrations[client];
+  else integrations[client] = false;
+  if (Object.keys(integrations).length === 0) delete config.clientIntegrations;
+  else config.clientIntegrations = integrations;
+}
+
+/**
  * Persist ONLY `claudeCode.desktopProfile`, field-scoped, against the CURRENT
  * on-disk config.
  *
@@ -85,13 +102,16 @@ class GrokApplyBusyError extends Error {}
 function persistDesktopProfileField(
   config: OcxConfig,
   desktopProfile: NonNullable<OcxConfig["claudeCode"]>["desktopProfile"],
-): void {
-  // Keep the in-process snapshot coherent for the rest of this request.
-  config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile };
-  mutatePersistedConfig(persisted => {
+): { ok: true } | { ok: false; reason: "missing" | "invalid" | "conflict" } {
+  const outcome = mutatePersistedConfig(persisted => {
     persisted.claudeCode = { ...(persisted.claudeCode ?? {}), desktopProfile };
     return { changed: true, value: true };
   });
+  // Only mirror into memory once the durable write actually landed; an
+  // `unavailable` outcome must not leave the snapshot claiming a saved profile.
+  if (outcome.status === "unavailable") return { ok: false, reason: outcome.reason };
+  config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile };
+  return { ok: true };
 }
 
 export function grokApplyFlightSnapshot(): { currentBytes: number; highWaterBytes: number; active: number } {
@@ -742,6 +762,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       const { setIntegrationEnabled, claudeDesktopIntegrationEnabled } = await import("../../codex/desired-state");
       const desired = setIntegrationEnabled("claude-desktop", true);
       if (!desired.ok) return jsonResponse({ error: desired.message }, desired.retryable ? 409 : 500);
+      // Disk now says ON; the reused server snapshot must agree, or the native
+      // GET reports OFF and a later whole-snapshot save undoes this transition.
+      mirrorDesiredEnabledOntoSnapshot(config, "claude-desktop", true);
+      // Disk now says ON; the reused server snapshot must agree, or the native
+      // GET reports OFF and a later whole-snapshot save undoes this transition.
       // #859: the CLI delegates here so the registry is built in the serving
       // process. Accept an optional mode; default stays static for back-compat.
       let mode: "static" | "hybrid" | "discovery" = "static";
@@ -781,7 +806,14 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       // its stale `clientIntegrations` back over that write and turn the enable
       // action into an immediate self-cancelling OFF — the guard below would then
       // refuse the apply it was asked to perform. Persist ONLY the profile field.
-      persistDesktopProfileField(config, state.profile);
+      const profileSaved = persistDesktopProfileField(config, state.profile);
+      if (!profileSaved.ok) {
+        return jsonResponse({
+          error: `Claude Desktop profile could not be saved (${profileSaved.reason}); nothing was applied.`,
+          saved: false,
+          applied: false,
+        }, profileSaved.reason === "conflict" ? 409 : 500);
+      }
       const { writeDesktop3pConfig } = await import("../../claude/desktop-3p");
       const { desktopVisibleNativeSlugs } = await import("../../codex/catalog");
       const routed = state.models
@@ -814,11 +846,23 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.
       if (result.fingerprint) {
-        persistDesktopProfileField(config, {
+        // The Desktop write already landed, so a failed bookkeeping save is not
+        // an apply failure: report the miss instead of claiming a clean apply.
+        const marked = persistDesktopProfileField(config, {
           ...state.profile,
           appliedFingerprint: result.fingerprint,
           appliedAt: new Date().toISOString(),
         });
+        if (!marked.ok) {
+          return jsonResponse({
+            ok: true,
+            applied: true,
+            saved: false,
+            path: result.path,
+            fingerprint: result.fingerprint,
+            warning: `Claude Desktop was applied, but the applied marker was not saved (${marked.reason}).`,
+          });
+        }
       }
       return jsonResponse({ ok: true, saved: true, applied: true, path: result.path, fingerprint: result.fingerprint });
     } catch (error) {

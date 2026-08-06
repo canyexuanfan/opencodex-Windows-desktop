@@ -213,3 +213,34 @@ test("POST /apply enables from a stale OFF server snapshot instead of cancelling
   // Desired ON survives the profile/fingerprint saves that follow it.
   expect(persistedIntent()).toBeUndefined();
 });
+
+test("POST /apply leaves the reused server snapshot agreeing with disk", async () => {
+  // Disk-only repair is not enough: the server reuses ONE config object per
+  // request, so a stale snapshot makes the native GET report the opposite of
+  // what was persisted, and lets a later whole-snapshot save undo the enable.
+  expect(setIntegrationEnabled("claude-desktop", false).ok).toBe(true);
+  const staleSnapshot = { ...config(), clientIntegrations: { "claude-desktop": false } } as OcxConfig;
+  const deps: ManagementApiDeps = {
+    fetchAllModels: async () => [],
+    writeDesktop3pConfig: () => ({ written: true, path: join(library, "applied.json"), fingerprint: "fingerprint" }),
+  };
+
+  expect((await dispatch("/api/claude-desktop/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "static" }),
+  }, deps, staleSnapshot))!.status).toBe(200);
+
+  // (1) the SAME snapshot object now reports ON through the native GET
+  const status = await dispatch("/api/native-integrations", undefined, deps, staleSnapshot);
+  const clients = (await status!.json() as { clients: Array<{ clientId: string; desiredEnabled: boolean }> }).clients;
+  expect(clients.find(client => client.clientId === "claude-desktop")?.desiredEnabled).toBe(true);
+
+  // (2) a later whole-snapshot save (the Desktop profile PUT) cannot write OFF back
+  await dispatch("/api/claude-desktop", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profile: { mode: "static" } }),
+  }, deps, staleSnapshot);
+  expect(persistedIntent()).toBeUndefined();
+});
