@@ -185,3 +185,31 @@ test("explicit enable re-reads desired state after catalog fetch and skips a con
   expect(result.body).toMatchObject({ reason: "desired_state_changed", desiredEnabled: false });
   expect(writes).toBe(0);
 });
+
+test("POST /apply enables from a stale OFF server snapshot instead of cancelling itself", async () => {
+  // The regression: /apply persisted ON, then saved the WHOLE long-lived server
+  // config — whose snapshot still said OFF — over that write, so its own
+  // post-await guard read OFF and refused the apply it had just been asked for.
+  expect(setIntegrationEnabled("claude-desktop", false).ok).toBe(true);
+  expect(persistedIntent()).toBe(false);
+  // The server object captured at startup, still carrying the OFF it booted with.
+  const staleSnapshot = { ...config(), clientIntegrations: { "claude-desktop": false } } as OcxConfig;
+
+  let writes = 0;
+  const response = await dispatch("/api/claude-desktop/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "static" }),
+  }, {
+    fetchAllModels: async () => [],
+    writeDesktop3pConfig: () => {
+      writes++;
+      return { written: true, path: join(library, "applied.json"), fingerprint: "fingerprint" };
+    },
+  }, staleSnapshot);
+
+  expect(response!.status).toBe(200);
+  expect(writes).toBe(1);
+  // Desired ON survives the profile/fingerprint saves that follow it.
+  expect(persistedIntent()).toBeUndefined();
+});

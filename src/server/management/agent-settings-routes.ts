@@ -9,6 +9,7 @@ import {
   isValidProviderName,
   loadConfig,
   multiAgentGuidanceEnabled,
+  mutatePersistedConfig,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
   saveConfigPreservingClaudeCode,
@@ -69,6 +70,29 @@ let grokApplyHighWaterBytes = 0;
 let grokApplyTestHooks: { now?: () => number; run?: () => Promise<unknown> } | null = null;
 
 class GrokApplyBusyError extends Error {}
+
+/**
+ * Persist ONLY `claudeCode.desktopProfile`, field-scoped, against the CURRENT
+ * on-disk config.
+ *
+ * `saveConfigPreservingClaudeCode(ctx.config)` writes the whole long-lived server
+ * snapshot. On the apply path that snapshot still carries the `clientIntegrations`
+ * it was loaded with, so a save right after `setIntegrationEnabled("claude-desktop",
+ * true)` carried the stale OFF back over the enable and made the route cancel its
+ * own apply. Mutating one field under the config-mutation lock cannot regress an
+ * unrelated key another writer just committed.
+ */
+function persistDesktopProfileField(
+  config: OcxConfig,
+  desktopProfile: NonNullable<OcxConfig["claudeCode"]>["desktopProfile"],
+): void {
+  // Keep the in-process snapshot coherent for the rest of this request.
+  config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile };
+  mutatePersistedConfig(persisted => {
+    persisted.claudeCode = { ...(persisted.claudeCode ?? {}), desktopProfile };
+    return { changed: true, value: true };
+  });
+}
 
 export function grokApplyFlightSnapshot(): { currentBytes: number; highWaterBytes: number; active: number } {
   return {
@@ -752,8 +776,12 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         }
       }
       const state = await buildClaudeDesktopState(config, profileOverride);
-      config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
-      saveConfigPreservingClaudeCode(config);
+      // `setIntegrationEnabled` above wrote desired ON to DISK; it does not touch
+      // this long-lived server snapshot. Saving the snapshot wholesale would carry
+      // its stale `clientIntegrations` back over that write and turn the enable
+      // action into an immediate self-cancelling OFF — the guard below would then
+      // refuse the apply it was asked to perform. Persist ONLY the profile field.
+      persistDesktopProfileField(config, state.profile);
       const { writeDesktop3pConfig } = await import("../../claude/desktop-3p");
       const { desktopVisibleNativeSlugs } = await import("../../codex/catalog");
       const routed = state.models
@@ -775,7 +803,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
           applied: false,
         }, 409);
       }
-      const result = writeDesktop3pConfig(
+      const result = (deps.writeDesktop3pConfig ?? writeDesktop3pConfig)(
         Number(url.port) || latest.port,
         [...desktopVisibleNativeSlugs(latest)],
         routed,
@@ -786,8 +814,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.
       if (result.fingerprint) {
-        config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: { ...state.profile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
-        saveConfigPreservingClaudeCode(config);
+        persistDesktopProfileField(config, {
+          ...state.profile,
+          appliedFingerprint: result.fingerprint,
+          appliedAt: new Date().toISOString(),
+        });
       }
       return jsonResponse({ ok: true, saved: true, applied: true, path: result.path, fingerprint: result.fingerprint });
     } catch (error) {
