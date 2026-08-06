@@ -55,7 +55,13 @@ export type PullRequestState = {
   user?: { login: string };
 };
 
-export type Comment = { id: number; user?: { login: string }; body?: string };
+export type Comment = {
+  id: number;
+  user?: { login: string };
+  body?: string;
+  /** GitHub's per-comment association; used for the GUI-screenshot waiver. */
+  author_association?: string;
+};
 
 export type RunOptions = {
   /** The PR as `pulls.get` will report it — the live, authoritative state. */
@@ -121,6 +127,37 @@ export type RunOptions = {
    * Pass a red/pending/missing set to exercise the claim-check reset paths.
    */
   checkRuns?: Array<{ name: string; status: string; conclusion: string | null }>;
+  /**
+   * Review threads `pullRequestReviewThreads` (via GraphQL) reports for the PR.
+   * Each entry is `{ isResolved, author }`; the harness wraps it into the
+   * GraphQL shape the workflow reads. Defaults to no threads (clean).
+   */
+  reviewThreads?: Array<{ isResolved: boolean | null; author: { login: string } | null }>;
+  /**
+   * Pull-request reviews `pulls.listReviews` reports for the PR. Each entry is
+   * `{ body, commit_id, submitted_at, user }`; the workflow reads CodeRabbit's
+   * "Actionable comments posted: N" body line as the outside-diff supplement
+   * and filters by `user.login` so a human review quoting the line does not
+   * count.
+   */
+  reviews?: Array<{
+    body: string;
+    commit_id: string;
+    submitted_at?: string;
+    user?: { login: string };
+  }>;
+  /**
+   * Labels the PR already carries (from `pulls.get`). The gate reads these to
+   * decide whether to add/remove the `review-ready` label.
+   */
+  labels?: string[];
+  /**
+   * GraphQL query fragments that should reject. Unlike `failOn: ["graphql"]`,
+   * which fails the review-threads read, this lets a test fail a specific
+   * mutation (e.g. `markPullRequestReadyForReview`) while the threads read
+   * succeeds. Matched case-sensitively against the query text.
+   */
+  failGraphqlOn?: string[];
 };
 
 /**
@@ -481,6 +518,7 @@ export async function runEnforcePrTarget(
       },
     },
     user: { ...DEFAULT_PR.user, ...(options.pr.user ?? {}) },
+    labels: (options.labels ?? []).map(name => ({ name })),
   };
   // Deep-independent from `pr`, so nothing the script does to one can reach the
   // other by aliasing. Defaults to the same values; pass `eventPayload` to make
@@ -613,6 +651,7 @@ export async function runEnforcePrTarget(
         const page = Number((args as { page?: number })?.page ?? 1);
         return respond("pulls.list", args, openPullPages[page - 1] ?? []);
       },
+      listReviews: (args: unknown) => respond("pulls.listReviews", args, options.reviews ?? []),
     },
     issues: {
       // Honours `page`, so a caller that skips `paginate` sees only page one —
@@ -623,6 +662,9 @@ export async function runEnforcePrTarget(
       },
       createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
       updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
+      deleteComment: (args: unknown) => respond("issues.deleteComment", args, {}),
+      addLabels: (args: unknown) => respond("issues.addLabels", args, {}),
+      removeLabel: (args: unknown) => respond("issues.removeLabel", args, {}),
     },
     checks: {
       listForRef: (args: unknown) =>
@@ -657,8 +699,42 @@ export async function runEnforcePrTarget(
    */
   class Octokit {
     rest = rest;
-    graphql = (query: unknown, variables: unknown) =>
-      respond("graphql", { query, variables });
+    graphql = async (query: unknown, variables: unknown) => {
+      const text = String(query ?? "");
+      // Routed through `respond` so a `failOn: ["graphql"]` simulated failure
+      // REJECTS rather than throwing synchronously, like every other method
+      // (real Octokit graphql returns a promise and rejects it).
+      await respond("graphql", { query, variables });
+      // Fail a specific mutation after recording so the failed call appears in
+      // the recording (same semantics as `failOn`). The review-threads read is
+      // the first graphql call; targeting a mutation by query text lets a test
+      // fail only the mutation while the threads read succeeds.
+      if ((options.failGraphqlOn ?? []).some(fragment => text.includes(fragment))) {
+        throw octokitError("graphql", options.failStatus ?? 500);
+      }
+      // The review-threads query is answered with the shape the workflow
+      // reads. `github.graphql` resolves to the raw data payload (no `data`
+      // wrapper, unlike `github.rest.*`), so the threads object is returned
+      // directly. Mutations also resolve to a raw GraphQL payload, never a
+      // REST envelope, so a workflow that reads a mutation result gets the
+      // same shape production produces.
+      if (text.includes("reviewThreads")) {
+        const threads = (options.reviewThreads ?? []).map(thread => ({
+          isResolved: thread.isResolved,
+          comments: {
+            nodes: thread.author ? [{ author: { login: thread.author.login } }] : [],
+          },
+        }));
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: { nodes: threads },
+            },
+          },
+        };
+      }
+      return {};
+    };
     request = (route: unknown, params: unknown) =>
       respond("request", { route, params });
     /**

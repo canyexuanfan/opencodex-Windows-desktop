@@ -422,9 +422,40 @@ describe("injectCodexConfig integration (Design B)", () => {
 
     expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
     expect(readFileSync(profilePath, "utf8")).toBe(profile);
-    expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
-    expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
-    expect(existsSync(journalPath)).toBe(false);
+   expect(readFileSync(dbPath).equals(dbBefore)).toBe(true);
+   expect(readFileSync(rolloutPath, "utf8")).toBe(rollout);
+   expect(existsSync(journalPath)).toBe(false);
+ });
+
+  // Regression for #1090: the reporter's Windows shape — CRLF line endings, an external
+  // root model_provider, a coexisting [model_providers.opencodex] table, and a [windows]
+  // section — must survive injectCodexConfig byte-for-byte. The external-provider guard
+  // runs on raw (pre-EOL-normalized) content, so CRLF parsing is part of what this proves.
+  test("#1090: CRLF Windows config with external deepseek provider and opencodex table stays byte-for-byte unchanged", () => {
+    const original = [
+      'model = "deepseek-v4-flash"',
+      'model_provider = "deepseek"',
+      "",
+      "[model_providers.opencodex]",
+      'name = "opencodex"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      'wire_api = "responses"',
+      'env_key = "CODEX_DEEPSEEK_API_KEY"',
+      "",
+      "[windows]",
+      'sandbox = "unelevated"',
+      "",
+    ].join("\r\n");
+    writeFileSync(join(codexHome, "config.toml"), original, "utf8");
+
+    const r = runInject(codexHome, ocxHome);
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout);
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("routing NOT injected");
+    expect(result.message).toContain('external model_provider "deepseek"');
+
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(original);
   });
 
   test("restoreNativeCodex removes a stale journal without changing external provider state", () => {

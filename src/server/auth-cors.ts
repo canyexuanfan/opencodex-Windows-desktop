@@ -15,10 +15,11 @@ import {
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
 import { redactSecretString } from "../lib/redact";
-import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
+import { effectiveGoogleMode, getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
+import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
 
 let _corsOrigin = "http://localhost:10100";
 export function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
@@ -425,6 +426,10 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   const typed = provider as unknown as OcxProviderConfig;
   const baseUrlError = providerBaseUrlConfigError(typed.baseUrl);
   if (baseUrlError) return `provider ${name} ${baseUrlError}`;
+  if (effectiveGoogleMode(name, typed) === "vertex" && typed.location !== undefined) {
+    const locationError = googleVertexLocationConfigError(typed.location);
+    if (locationError) return `provider ${name} ${locationError}`;
+  }
   const destinationError = providerDestinationConfigError(name, typed);
   if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(typed.headers);

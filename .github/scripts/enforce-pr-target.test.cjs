@@ -48,6 +48,78 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
+  it("does not add review events that would break the trusted-base model", () => {
+    // `pull_request_review` / `pull_request_review_comment` load the workflow
+    // from the PR head branch (like `pull_request`), while this workflow's
+    // checkout pins the base SHA — head YAML + base scripts mismatch, so the
+    // gate crashes (`parseGateState is not a function`) and the head controls
+    // the workflow definition under a write token. The findings claim runs on
+    // every `pull_request_target` event instead (opened/edited/synchronize/
+    // ready_for_review).
+    assert.doesNotMatch(workflow, /^  pull_request_review:/m);
+    assert.doesNotMatch(workflow, /^  pull_request_review_comment:/m);
+  });
+
+  it("queries review threads and feeds them to the findings claim check", () => {
+    // Paginated read: `after: $cursor` + `pageInfo.hasNextPage`, so a busy PR
+    // with more than 100 threads cannot hide unresolved bot threads (fail-open
+    // gap in a fail-closed check).
+    assert.match(workflow, /reviewThreads\(first: 100, after: \$cursor\)/);
+    assert.match(workflow, /hasNextPage/);
+    assert.match(workflow, /unresolvedFindingsClaim/);
+    assert.match(workflow, /findingsClaim\.byBot/);
+    assert.match(workflow, /review_findings/);
+  });
+
+  it("fails closed when review threads cannot be read", () => {
+    assert.match(workflow, /findingsUnverifiable/);
+    assert.match(workflow, /findings claim could not be verified/);
+  });
+
+  it("writes exactly one consolidated comment via a single upsert helper", () => {
+    assert.match(workflow, /GATE_MARKER,/);
+    assert.match(workflow, /comment\.body\?\.includes\(GATE_MARKER\)/);
+    assert.match(workflow, /upsertGateComment/);
+    assert.match(workflow, /buildGateCommentBody/);
+    // No legacy two-comment write path remains.
+    assert.doesNotMatch(workflow, /upsertReadinessComment/);
+    assert.doesNotMatch(workflow, /buildReadinessCommentBody/);
+    // No intermediate checkpoint comment writes.
+    assert.doesNotMatch(workflow, /Draft conversion pending/);
+    assert.doesNotMatch(workflow, /Recording ownership state/);
+  });
+
+  it("manages the review-ready status label at the ready moment", () => {
+    assert.match(workflow, /REVIEW_READY_LABEL\s*=\s*"review-ready"/);
+    assert.match(workflow, /github\.rest\.issues\.addLabels/);
+    assert.match(workflow, /github\.rest\.issues\.removeLabel/);
+    assert.match(workflow, /reviewReadyDesired/);
+  });
+
+  it("keeps CodeRabbit auto-review unfiltered so maintainer PRs are not starved", () => {
+    // A positive `labels:` filter under `reviews.auto_review` in
+    // `.coderabbit.yaml` would restrict ALL automatic reviews to PRs carrying
+    // that label. Maintainer PRs never carry `review-ready` (no checklist), so
+    // such a filter would silently stop CodeRabbit from reviewing maintainer
+    // PRs. The label is a status marker only; assert the reviewer config
+    // directly, since the workflow never writes a labels block.
+    const coderabbit = fs.readFileSync(
+      path.join(__dirname, "../../.coderabbit.yaml"),
+      "utf8",
+    );
+    const autoReview = coderabbit.match(/auto_review:[\s\S]*?(?=\n\S|\n\s{2}\S)/);
+    assert.ok(autoReview, ".coderabbit.yaml must declare auto_review");
+    assert.doesNotMatch(autoReview[0], /labels:/);
+  });
+
+  it("migrates legacy two-comment PRs and deletes the old comments", () => {
+    assert.match(workflow, /migrateLegacyCommentsIfNeeded/);
+    assert.match(workflow, /migrateLegacyGateState/);
+    assert.match(workflow, /github\.rest\.issues\.deleteComment/);
+    assert.match(workflow, /legacyEnforcerComment/);
+    assert.match(workflow, /legacyReadinessComment/);
+  });
+
   it("checks out trusted base-branch scripts only (never PR head)", () => {
     // Scope the assertions to the checkout step itself, so a stray `ref:` on
     // another step cannot satisfy the pin while the checkout stays mutable.

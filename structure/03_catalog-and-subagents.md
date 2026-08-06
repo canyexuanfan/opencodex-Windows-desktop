@@ -34,6 +34,26 @@ deleting, or editing a provider's shape clears that per-provider cache; a disabl
 deliberately does not, because a disabled provider is already excluded from the catalog gather
 instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
 
+## Startup readiness
+
+Each `startServer` invocation owns a private, one-shot readiness gate created before the listener
+binds. `handleStart` supplies its gate and transitions it after the shared catalog sync settles.
+Calls without a supplied gate receive a fresh private gate that intentionally remains pending. Only
+`ok: true` with no nonempty warning becomes ready; `null`, a throw, `ok !== true`, or a nonempty
+warning becomes failed. State is isolated per server instance.
+
+Exact unauthenticated `GET /readyz` returns sanitized identity fields plus pending, ready, or failed:
+`200` for ready, or `503` with `Retry-After: 1` for pending and terminal failed. The full CLI syntax
+is `ocx ready [--json] [--wait [--timeout <seconds>]]`. The probe validates the service, version,
+uptime, PID, port, status, and HTTP/status pairing. The default is one probe. With `--wait`, it
+applies one absolute deadline (45 seconds by default) across discovery, readiness probes, polling,
+and sleeps, but exits immediately on terminal failed. `--timeout <seconds>` requires `--wait` and
+accepts positive integer seconds from 1–300. CLI `--json` emits
+`{ready, status, pid, port}`, with status in `ready|pending|failed|unreachable`. Exit 0 means ready;
+exit 1 covers not-ready, pending, failed, timeout, and unreachable; exit 64 means invalid arguments.
+Older proxies without `/readyz` fail closed as unreachable. `/healthz` remains the separate
+liveness contract.
+
 ## Entry shape
 
 Routed entries keep Codex-required metadata such as reasoning levels, shell type, API support flags,

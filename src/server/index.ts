@@ -177,6 +177,13 @@ import {
   requireManagementAuth,
   type ManagementAuthState,
 } from "./management-auth";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  createLocalAttestationProof,
+  createLocalAttestationSecret,
+} from "../lib/local-management-attestation";
+import { createReadinessGate, type ReadinessGate } from "./readiness";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -360,6 +367,10 @@ export interface StartServerDeps {
   nativeMainStartup?: NativeMainStartupGateDeps;
   /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
+  /** Test-only seam; production derives a fresh local-attestation secret per process. */
+  localAttestationSecret?: string;
+  /** Optional readiness gate; a fresh pending gate is created when omitted. */
+  readinessGate?: ReadinessGate;
 }
 
 /*
@@ -383,7 +394,8 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
   return wrote;
 }
 
-export function startServer(port?: number, deps: StartServerDeps = {}) {
+export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
+  const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
@@ -517,6 +529,17 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
     return response;
   }
 
+  // Readiness gate: one PRIVATE controller per startServer invocation, captured
+  // by this listener's closure. Starting/failing a second server in the same
+  // process can never reset or mutate this gate. handleStart creates the gate,
+  // passes it in, and transitions it after the post-startup sync settles. When
+  // no gate is supplied (tests, ad-hoc starts) a fresh pending gate is created.
+  const readinessGate = deps.readinessGate ?? createReadinessGate();
+  // Actual bound port, filled in after Bun.serve binds so /readyz reports the
+  // real ephemeral port for startServer(0). /healthz keeps its existing port
+  // field (the requested listenPort) byte-for-byte.
+  let boundPort: number | null = null;
+
   // Native-main startup ownership creates several SQLite coordination files in
   // CODEX_HOME. When the user has disabled the Codex integration, starting the
   // proxy must not manufacture those Codex artifacts merely to serve other
@@ -533,14 +556,32 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   let server: Server<WsData>;
   try {
     server = Bun.serve<WsData>({
-    port: listenPort,
-    hostname: bindHost,
-    idleTimeout: 255,
-    async fetch(req, requestServer): Promise<Response> {
+      port: listenPort,
+      hostname: bindHost,
+      idleTimeout: 255,
+      async fetch(req, requestServer): Promise<Response> {
       const url = new URL(req.url);
       markActivity(`${req.method} ${url.pathname}`);
 
+      // Readiness is exact-GET on the literal /readyz path. Compare the DECODED
+      // pathname so an encoded variant like /readyz%2F (which decodes to
+      // /readyz/) cannot bypass the exact-path rejection and reach the GUI
+      // fallback (serveGuiFile decodes the pathname and would serve index.html
+      // with 200). Malformed percent-sequences fall back to the raw pathname,
+      // which still cannot match the exact literal below.
+      let readyzPath: string | undefined;
+      try {
+        const decoded = decodeURIComponent(url.pathname);
+        if (decoded === "/readyz" || decoded === "/readyz/") readyzPath = decoded;
+      } catch { /* malformed encoding — not a readiness path */ }
+
       if (req.method === "OPTIONS") {
+        // /readyz is exact-GET only; OPTIONS (like POST and the trailing-slash
+        // path) must answer the deterministic JSON 404, never the generic 204
+        // preflight response that the SPA fallback would otherwise allow.
+        if (readyzPath !== undefined) {
+          return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+        }
         const managementPreflight = url.pathname.startsWith("/api/");
         const allowed = managementPreflight
           ? isAllowedManagementOrigin(req, config)
@@ -586,7 +627,50 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
 
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
-        return jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: listenPort }, 200, req, config);
+        const healthPort = server.port ?? listenPort;
+        const response = jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: healthPort }, 200, req, config);
+        const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
+        if (challenge) {
+          const proof = createLocalAttestationProof(localAttestationSecret, challenge, process.pid, healthPort);
+          if (proof) response.headers.set(LOCAL_ATTESTATION_PROOF_HEADER, proof);
+        }
+        return response;
+      }
+
+      // Readiness: like /healthz this is exact GET and unauthenticated (so a client can
+      // back off BEFORE knowing the admission token), but stricter than liveness. The
+      // body carries only sanitized identity + the fixed status enum; the sync message,
+      // warning text, catalog path, provider output, and account data are never exposed.
+      // POST or "/readyz/" must NOT match (exact pathname + GET method): answer them
+      // with a JSON 404 here so they can never be silently accepted by the GUI SPA
+      // fallback (which would serve index.html with HTTP 200 once gui/dist exists).
+      if (readyzPath !== undefined) {
+        if (readyzPath !== "/readyz" || req.method !== "GET") {
+          return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+        }
+        // A draining proxy must never advertise ready: every data-plane branch
+        // answers drainingResponse while isDraining() is set, but the one-shot
+        // readiness gate is not mutated on shutdown (it is owned by the startup
+        // sync). Report pending so `ocx ready --wait` and external supervisors
+        // keep polling instead of promoting a proxy that is draining.
+        const status = isDraining() ? "pending" : readinessGate.getStatus();
+        const body = {
+          service: "opencodex",
+          version: VERSION,
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: boundPort ?? listenPort,
+          status,
+        };
+        if (status === "ready") {
+          return jsonResponse(body, 200, req, config);
+        }
+        // Pending/failed: 503 with a conservative Retry-After so well-behaved clients
+        // (and `ocx ready --wait`) back off instead of hot-looping.
+        const resp = jsonResponse(body, 503, req, config);
+        const headers = new Headers(resp.headers);
+        headers.set("Retry-After", "1");
+        return new Response(resp.body, { status: 503, headers });
       }
 
       if (url.pathname.startsWith("/api/")) {
@@ -1321,6 +1405,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   });
   setServerRef(server);
   const actualPort = server.port ?? listenPort;
+  boundPort = actualPort;
   setCorsOrigin(actualPort);
 
   console.log(`🚀 opencodex proxy running on http://localhost:${actualPort}`);

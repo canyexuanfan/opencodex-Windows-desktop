@@ -26,6 +26,8 @@ import { installCrashGuards } from "../lib/crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./help";
 import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSelectedPort, waitForPortAvailable } from "../server/ports";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
+import { createReadinessGate } from "../server/readiness";
+import { parseReadyArgs, runReady, type ReadyArgs } from "./ready";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
@@ -46,7 +48,10 @@ import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
+import { initializeNodeLauncherContext } from "./launcher-context";
+import { createLocalAttestationSecret } from "../lib/local-management-attestation";
 
+initializeNodeLauncherContext();
 const args = process.argv.slice(2);
 const command = args[0];
 
@@ -64,6 +69,23 @@ if (command === undefined || command === "help" || command === "--help" || comma
 if (command !== undefined && command !== "help" && hasHelpFlag(args.slice(1))) {
   printSubcommandUsage(command);
   process.exit(0);
+}
+
+// P1: pre-parse `ocx ready` and reject invalid arguments with exit 64 BEFORE
+// maybeAutoRestoreCodexShim (or any discovery/probe/filesystem-capable global
+// preflight) runs. `ready --help` / `help ready` already exited above, so this
+// only sees ready args without a help flag. Valid args are stashed so the
+// switch dispatch can call runReady without a second parse.
+let readyArgs: ReadyArgs | undefined;
+if (command === "ready") {
+  const parsed = parseReadyArgs(args.slice(1));
+  if (!parsed.ok) {
+    console.error("Usage: ocx ready [--json] [--wait [--timeout <seconds>]]");
+    console.error("  --timeout requires --wait; <seconds> must be a positive integer (1..300).");
+    console.error("  Default wait timeout is 45 seconds.");
+    process.exit(parsed.code);
+  }
+  readyArgs = parsed.args;
 }
 
 maybeAutoRestoreCodexShim(command, args);
@@ -194,10 +216,16 @@ async function handleStart(options: { block?: boolean } = {}) {
   // between the probe and Bun.serve. Soft starts may re-pick; hard-pinned `--port` retries
   // the same port only (never hop — that was the remaining PR #152 gap).
   let port = await chooseListenPort(requestedPort);
+  // One private readiness gate for this startServer invocation, captured by the
+  // listener's closure. handleStart owns it and transitions it after the
+  // post-startup sync settles. A second startServer in the same process would
+  // get its own gate and could never reset/mutate this one.
+  const readinessGate = createReadinessGate();
   let server: ReturnType<typeof startServer>;
+  const localAttestationSecret = createLocalAttestationSecret();
   for (let attempt = 0; ; attempt++) {
     try {
-      server = startServer(port);
+      server = startServer(port, { localAttestationSecret, readinessGate });
       // Prewarm the live provider model cache as soon as the port is bound so the
       // first GUI /v1/models (and syncModelsToCodex below) share one discovery flight
       // instead of racing duplicate upstream /models fetches.
@@ -225,7 +253,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   writePid(process.pid);
 
   const config = loadConfig();
-  writeRuntimePort({ pid: process.pid, port, hostname: config.hostname });
+  writeRuntimePort({ pid: process.pid, port, hostname: config.hostname, attestationSecret: localAttestationSecret });
   // No pre-emptive snapshot here. `injectCodexConfig` journals the exact bytes it
   // is about to transform; snapshotting earlier only captured a baseline that could
   // already be stale by the time injection ran (#477).
@@ -317,7 +345,12 @@ async function handleStart(options: { block?: boolean } = {}) {
   installShellHook();
 
   await maybeShowStarPrompt(); // once-only Yes/No GitHub-star prompt on first interactive start
-  const startupSync = await syncCodexOnStartIfEnabled(port, config);
+  // Post-startup sync drives the readiness gate AND the #1046 stale app-server
+  // warning. `syncCodexOnStartIfEnabled` respects the Codex integration toggle
+  // (OFF → no sync) and reports whether anything was written; the readiness gate
+  // observes the real sync outcome (ok/warning) so /readyz never advertises a
+  // half-synced proxy as ready while /healthz stays live.
+  const startupSync = await syncCodexOnStartIfEnabled(port, config, undefined, readinessGate);
   if (!startupSync.ran) console.log("   Codex integration OFF; startup left Codex native.");
   // #1046: one warning per startup, after BOTH writes. The server's cache
   // invalidation happens first and the catalog sync second, so the mtime is only
@@ -758,6 +791,17 @@ async function handleRecoverHistory() {
   console.log(`Recovered ${r.rows} legacy thread(s) to openai (${r.files} rollout file(s) updated).`);
 }
 
+/**
+ * `ocx ready` — arguments are pre-parsed above (before
+ * maybeAutoRestoreCodexShim) so invalid usage exits 64 before any global
+ * preflight. This handler only runs the dependency-injected runner in ./ready
+ * and exits with the returned code; it performs no parsing and no I/O of its
+ * own. The full behavior is unit-testable without spawning a subprocess.
+ */
+async function handleReady(args: ReadyArgs): Promise<never> {
+  process.exit(await runReady(args));
+}
+
 switch (command) {
   case "init":
   case "setup": {
@@ -1072,6 +1116,14 @@ switch (command) {
     }
     process.exit(live ? 0 : 1);
   }
+  case "ready":
+    // Fail-closed impossible-state guard: readyArgs is populated by the
+    // preparse block before maybeAutoRestoreCodexShim, so reaching here
+    // without it means dispatch diverged. Refuse with code 64 and perform
+    // NO I/O (no discovery/probe). process.exit is `never`, narrowing below.
+    if (!readyArgs) process.exit(64);
+    await handleReady(readyArgs);
+    break;
     case "provider": {
     const { handleProviderCommand } = await import("./provider");
     await handleProviderCommand(args.slice(1));

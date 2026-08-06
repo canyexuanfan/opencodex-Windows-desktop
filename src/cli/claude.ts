@@ -18,6 +18,7 @@ import { configuredAdminToken } from "../lib/admin-secrets";
 import { PROXY_MARKER, ownAdmissionTokens, defaultAuthDetectDeps, detectClaudeAuth, type AuthDetectDeps } from "../claude/auth-detect";
 import { resolveClaudeAuthMode } from "../claude/auth-mode";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
+import { ANTHROPIC_PARENT_ENV_SLOTS, trustedNodeLauncherContext, type AnthropicParentEnvSlot } from "./launcher-context";
 
 export interface ClaudeLaunchEnv {
   [key: string]: string | undefined;
@@ -27,13 +28,18 @@ export interface ClaudeLaunchEnv {
  * Injectable IO for tests. `env` is deliberately NOT injectable: it is bound to the
  * launch base so detection and the spawned process can never disagree (audit R3-3).
  */
-export type ClaudeEnvDeps = { authDetect?: Omit<Partial<AuthDetectDeps>, "env" | "ownTokens"> };
+export type ClaudeEnvDeps = {
+  authDetect?: Omit<Partial<AuthDetectDeps>, "env" | "ownTokens">;
+  /** Test seam; production uses the authenticated Node-launcher context. */
+  preBunAnthropicSlots?: readonly AnthropicParentEnvSlot[] | null;
+};
 
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
- * overrides variables the user already exported, apart from stale loopback
- * ANTHROPIC_BASE_URL values owned by a previous opencodex launch.
+ * preserves Anthropic variables proven to exist in the parent Node launcher,
+ * apart from stale loopback ANTHROPIC_BASE_URL values owned by a previous
+ * opencodex launch. Unproven ambient values fail closed as project dotenv.
  */
 export function buildClaudeEnv(
   config: OcxConfig,
@@ -49,27 +55,36 @@ export function buildClaudeEnv(
   // leaving the child with no token at all (audit R2-1). It is opencodex state, never
   // user auth, so dropping it unconditionally is safe.
   if (env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
-  // Step 1b — drop Anthropic credentials that the bundled Bun runtime synthesized from a
-  // project `.env`/`.env.local` (issue #701). Claude Code disables claude.ai connectors the
-  // moment either token slot is populated, so an ambient project file silently moved a
-  // subscriber onto API billing while their OAuth login stayed healthy. The npm launcher
-  // runs under Node, which does NOT auto-load dotenv, so it records the slots that existed
-  // before Bun started; anything populated now but absent then came from the working
-  // directory, not from the user. A genuine shell export is still honored, which keeps
-  // auto-mode API-key auth working. An ABSENT marker means provenance is unknowable
-  // (a direct `bun src/cli/index.ts` run, a test, or an older launcher), and then we
-  // change nothing rather than guess — an EMPTY marker is different: the launcher ran
-  // and saw no pre-existing slots.
-  const preBunSlots = base.OCX_PRE_BUN_ANTHROPIC_ENV;
-  if (preBunSlots !== undefined) {
-    const exported = new Set(preBunSlots.split(",").filter(name => name.length > 0));
-    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const) {
-      const value = env[name];
-      if (value !== undefined && value !== "" && !exported.has(name)) delete env[name];
-    }
+  // Step 1b — drop Anthropic credentials AND destinations that Bun may have synthesized
+  // from a project `.env`/`.env.local`. The plain-Node launcher records genuine parent
+  // exports before Bun starts and pairs that context with an argv proof, so with a
+  // trusted context we know exactly which slots the user really exported.
+  //
+  // Without a trusted context all three slots are treated as project-controlled. An
+  // earlier revision of this branch preserved credentials here, reasoning that the
+  // destination is pinned below so a dotenv key would only ever reach the local proxy.
+  // That reasoning is wrong, and review caught it: `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`
+  // is only set when we own an auth token (see below, and #253 for why asserting it
+  // otherwise logs a subscriber out), so on a subscription launch Claude Code's
+  // settings.env merge can still replace `ANTHROPIC_BASE_URL` after we return. A
+  // preserved key then travels to that host. The repository documents that residual for
+  // subscription mode; it must not be widened into a credential leak.
+  //
+  // Direct `bun src/cli/index.ts` therefore loses ambient Anthropic values. That is a
+  // real cost to a documented entry point, and the escape hatch is the launcher: run
+  // through `ocx` (the published bin) and genuine shell exports are preserved by proof.
+  const explicitSlots = deps.preBunAnthropicSlots;
+  const trustedSlots = explicitSlots === undefined
+    ? trustedNodeLauncherContext()?.anthropicEnvSlots ?? []
+    : explicitSlots ?? [];
+  const exported = new Set<AnthropicParentEnvSlot>(trustedSlots);
+  for (const name of ANTHROPIC_PARENT_ENV_SLOTS) {
+    const value = env[name];
+    if (value !== undefined && value !== "" && !exported.has(name)) delete env[name];
   }
-  // Never forward the seam itself to Claude Code.
+  // Never forward old or current provenance seams to Claude Code.
   delete env.OCX_PRE_BUN_ANTHROPIC_ENV;
+  delete env.OCX_NODE_LAUNCH_CONTEXT;
   const setDefault = (name: string, value: string | undefined) => {
     if (value === undefined || value.length === 0) return;
     if (env[name] !== undefined && env[name] !== "") return; // user wins

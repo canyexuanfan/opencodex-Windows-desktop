@@ -12,7 +12,7 @@
  */
 import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { isRealBunBinary } from "./bun-binary-validator.mjs";
 
 export { isRealBunBinary };
@@ -108,17 +108,21 @@ export function withProcessRuntimeProvenance(
  * exact executable, otherwise what this executable actually is.
  */
 function currentRuntimeProvenance(env: NodeJS.ProcessEnv): DurableBunRuntime {
-  const claimed = reportedBunRuntimeSource(env);
-  const claimedPath = env[BUN_RUNTIME_PATH_ENV]?.trim();
-  if (claimed && claimedPath && samePath(claimedPath, process.execPath)) {
-    return { path: process.execPath, source: claimed, overrideEnv: BUN_OVERRIDE_ENV };
-  }
+  const recorded = recordedCurrentRuntime(env);
+  if (recorded) return recorded;
   // No marker that describes this binary: report what is running. One resolution
   // supplies both halves so the pair can never disagree.
-  const runtime = durableBunRuntime();
+  const runtime = unmarkedDurableBunRuntime();
   return samePath(runtime.path, process.execPath)
     ? runtime
     : { path: process.execPath, source: "process", overrideEnv: BUN_OVERRIDE_ENV };
+}
+
+function recordedCurrentRuntime(env: NodeJS.ProcessEnv): DurableBunRuntime | null {
+  const source = reportedBunRuntimeSource(env);
+  const path = env[BUN_RUNTIME_PATH_ENV]?.trim();
+  if (!source || !path || !samePath(path, process.execPath)) return null;
+  return { path, source, overrideEnv: BUN_OVERRIDE_ENV };
 }
 
 /**
@@ -154,19 +158,19 @@ export function bundledBunPath(): string | null {
   }
 }
 
-export function overrideBunPath(): string | null {
-  const value = process.env[BUN_OVERRIDE_ENV]?.trim();
-  if (!value) return null;
-  const resolved = resolve(value);
-  return isRealBunBinary(resolved) ? resolved : null;
-}
-
-export function durableBunRuntime(): DurableBunRuntime {
-  const override = overrideBunPath();
-  if (override) return { path: override, source: "override", overrideEnv: BUN_OVERRIDE_ENV };
+function unmarkedDurableBunRuntime(): DurableBunRuntime {
   const bundled = bundledBunPath();
   if (bundled) return { path: bundled, source: "bundled", overrideEnv: BUN_OVERRIDE_ENV };
   return { path: process.execPath, source: "process", overrideEnv: BUN_OVERRIDE_ENV };
+}
+
+export function durableBunRuntime(): DurableBunRuntime {
+  // A durable artifact must use the runtime selected BEFORE Bun auto-loaded a
+  // project dotenv. The Node launcher and owned service/shim launchers stamp the
+  // selected source/path pair; it is accepted only when it names this exact
+  // running executable. Re-reading OPENCODEX_BUN_PATH here would let a project
+  // `.env` persist an arbitrary executable into a shim or service.
+  return recordedCurrentRuntime(process.env) ?? unmarkedDurableBunRuntime();
 }
 
 /**

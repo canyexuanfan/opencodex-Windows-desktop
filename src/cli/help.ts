@@ -249,6 +249,19 @@ const helpEntries: Record<string, HelpEntry> = {
     summary: "Check proxy health. Exits 0 if healthy, 1 otherwise.",
     details: ["Use --json for structured output: {ok, pid, port}."],
   },
+  ready: {
+    usage: "ocx ready [--json] [--wait [--timeout <seconds>]]",
+    summary: "Check post-sync readiness. Exits 0 only when ready.",
+    details: [
+      "Exact unauthenticated GET /readyz returns HTTP 200 when ready, or 503 with Retry-After: 1 for pending or failed.",
+      "Its sanitized HTTP identity is {service, version, uptime, pid, port, status}; /healthz is separate liveness, not readiness.",
+      "Default is a single identity-checked /readyz probe; old proxies without /readyz fail closed as unreachable.",
+      "--wait polls until ready or timeout, but exits immediately on terminal failed (default 45s, max 300s).",
+      "--timeout requires --wait and accepts a positive integer (1..300).",
+      "--json emits {ready, status, pid, port}; status is one of ready|pending|failed|unreachable.",
+      "Invalid or unknown arguments exit 64. Not-ready, pending, failed, timeout, and unreachable exit 1.",
+    ],
+  },
 };
 
 function packageVersion(): string {
@@ -290,6 +303,7 @@ Usage:
   ocx restart                  Stop and restart the proxy
   ocx v2 <sub>                multi_agent_v2 surface (status|on|off|mode|threads)
   ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
+  ocx ready [--json] [--wait [--timeout <s>]]  Check post-sync readiness (exit 0 only when ready)
   ocx provider <sub>          Providers, connectivity, quota, and selected models
   ocx account <sub>           Accounts, login/reauth, key pools, and quota controls
   ocx models <sub>            Live/custom models, visibility, context, and shadow calls
