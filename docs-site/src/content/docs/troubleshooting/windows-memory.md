@@ -81,7 +81,7 @@ restart it.
    unvalidated territory — you are running opencodex on a runtime we have not
    tested; at your own risk. Important for service installs: the override is
    read **when the service artifact is generated**, not at service start. Set
-   the environment variable, then re-run `ocx service install` from that same
+   the environment variable, then re-run `ocx service repair` from that same
    shell so the path is baked into the durable service definition. Setting
    the env alone does nothing for an already-installed service.
 

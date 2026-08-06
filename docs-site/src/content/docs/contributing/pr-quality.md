@@ -32,8 +32,30 @@ on your behalf.
 
 ## Automated gates
 
-Two checks run before human review, and both are deterministic — the failure
-message tells you exactly what to change:
+Three deterministic checks run before human review, and each failure message
+tells you exactly what to change:
+
+- **PR quality (`enforce-target`).** Pull requests must target `dev` and carry
+  a real description: a **Summary** of what changed and why, plus a **Test
+  plan** (or equivalent substance). When the title or description mentions
+  `gui`, the description must include a screenshot of the UI change; the check
+  keeps the PR a draft and comments until the screenshot is present.
+  Contributor PRs (authors without repository push permission) open in draft
+  and stay there until a four-box review-readiness checklist in the
+  description is complete: local CI green, the branch on the latest `dev`
+  commit, all correct Codex and CodeRabbit findings fixed, and the
+  ready-for-review confirmation. Once every box is ticked the check marks the
+  PR ready for review and notifies the maintainers listed in `MAINTAINERS.md`
+  (excluding the author). Completion is bound to the exact commit the PR head
+  pointed at: if new commits are pushed afterwards, the gate moves the PR back
+  to draft, resets the checklist and the maintainer notification, and asks you
+  to test and tick the boxes again against the latest code. A retarget to
+  `dev` clears the wrong-branch message automatically and is remembered by the
+  gate; the draft stays until the checklist is complete.
+  Before a completion is accepted, the gate verifies the two checklist claims
+  it can check itself: the head's `ci` check must be green, and the branch
+  must be on the latest `dev` commit or at most 10 commits behind it. A
+  disproved claim unticks the matching box and keeps the PR a draft.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a
@@ -44,9 +66,28 @@ message tells you exactly what to change:
   every pull request. Windows runs at the shipping boundary — on promotion to
   `main` or `preview` — so a slow or flaky Windows runner cannot decide when your
   pull request turns green.
+  This runs for **every** pull request, whatever its base branch — including a
+  stacked child whose base is another open PR's head. The `paths:` filter, not
+  the base branch, decides whether the jobs run at all: a PR touching only docs
+  or `devlog/` queues nothing.
+
+- **Type label.** The `label` check derives `bug` / `enhancement` /
+  `documentation` / `chore` from your PR title. A title without a recognisable
+  prefix (`stack 3/5: …`) falls back to the PR's commits, which usually stay
+  conventional; `chore`-family commits (`test:`, `ci:`, `refactor:`) do not
+  outvote a `fix:` or `feat:`. A PR that genuinely mixes types is left
+  unlabeled rather than guessed, and a label a human sets is never overwritten.
 
 CodeRabbit reviews every PR and its findings are advisory. Address what it gets
 right; say why when it is wrong. It does not block a merge.
+
+### When a workflow change takes effect
+
+`enforce-target` and `label` run on `pull_request_target`, which GitHub always
+loads from the repository **default branch**. A change to either takes effect
+only after it is promoted to `main` — merging it to `dev` does not change live
+behavior. The cross-platform CI workflow runs on `pull_request` and takes effect
+as soon as it is on the branch being targeted.
 
 ## Sponsored surfaces
 

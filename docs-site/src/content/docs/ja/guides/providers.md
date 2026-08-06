@@ -9,7 +9,7 @@ description: opencodex が LLM プロバイダーを認証し通信するすべ�
 ## OpenAI アカウントモード
 
 | プロバイダー ID | 用途 | 認証情報/アカウットルール |
- --- | --- | --- |
+| --- | --- | --- |
 | `openai` | Codex ログイン | Pool(デフォルト)はメイン + 追加アカウントを選び、Direct は現在の caller/メインログインのみを使います。 |
 | `openai-apikey` | OpenAI API | 設定された API キー/キープールのみを使い、Codex アカウントは読みません。 |
 
@@ -19,6 +19,25 @@ max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire で�
 `reasoning.mode: "pro"` に切り替わります。
 
 組み込み `openai` が欠落または無効な場合、ダッシュボードの Accounts ピッカーと Codex Auth から復元できます。欠落行は正規プリセットから作成され、正規の無効行は保存済みのモードやモデル設定を置き換えずに再有効化され、非正規の `openai` 行にはその復元経路は出ません。
+
+### プロバイダー概要のプール容量
+
+Codex login を Pool モードで使うと、Providers の概要には任意の 1 アカウントではなく、
+プール全体の使用済み容量の推定値が表示されます。同じ行には現在の有効アカウントの
+生のクォータ使用率も表示されるため、プールの推定値と次のリクエストで使われる
+アカウントの状態を区別できます。
+
+リセット情報がある場合は、次のリセット時刻と、その時点で回復するプール容量が表示されます。
+**対象範囲が不完全**という警告は、プランやクォータが不明、読み取りが古い、アカウントが
+一時停止中、または再認証が必要などの理由で、安全に推定へ含められないアカウントがあることを示します。
+
+**期間別の対象範囲が一部不完全**という警告は、含まれるアカウントの一部が、表示中の
+クォータ期間のうち一部だけを報告したことを示します。概要では各期間を分けたまま、影響を受ける
+期間を個別に不完全と表示し、欠けた値をその期間の使用量として扱いません。
+
+この推定値は表示専用です。アカウント選択、セッション affinity、自動切り替え、cooldown、
+その他のルーティング判断には影響しません。個別アカウントの状態とルーティング設定は
+[Codex Auth のアカウントプール](/ja/guides/web-dashboard/#codex-auth-and-account-pools)を参照してください。
 
 出荷版 v1 config は marker 2 の単一オプション行に自動移行されます。オリジナルは
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak` に一度保存され、次のコマンドで復元します:
@@ -30,10 +49,15 @@ max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire で�
 ローカルプリセットを別に分類します。ローカルプリセットでは通常 `authMode` と `apiKey` を両方使いません。
 
 | `authMode` | 認証方式 | 用途 |
- --- | --- | --- |
+| --- | --- | --- |
 | `key` | API キーを送信します(`Authorization: Bearer …`、またはアダプターにより `x-api-key` / `api-key`)。キーはリテラルまたは `${ENV_VAR}` 参照です。 | 大半のプロバイダー。 |
 | `forward` | **受け取った Codex 認証ヘッダーを**プロバイダーにそのまま中継します — キーを保存しません。ChatGPT ログインのパススルーです。 | OpenAI(`openai-responses` アダプター)。 |
 | `oauth` | 保存された OAuth アクセストークンを読み込み bearer キーとして使い、期限切れ前に自動更新します。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
+
+[`retryOn429`](/ja/reference/configuration/)（同一キーでの 429 リトライ）は API キー プロバイダー
+（`authMode: "key"`）のみに適用されます。OAuth・forward・ローカル プリセットは除外されます —
+同じトークンを再送すべきではなく、ローカルランタイムには保存すべきリモートキーがありません。
+オプトインです: オプションが無ければ無効、オブジェクトがあれば `enabled: false` でない限り有効です。
 
 ## 1. ChatGPT ログイン(forward / パススルー)
 
@@ -119,10 +143,9 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 69 個含まれています。キー方式 58、OAuth 7、ローカル 3、
+opencodex には組み込みプリセットが 70 個含まれています。キー方式 58、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
-入力したキーを検証した後保存します(検証はプロバイダー固有で、Command Code の公開カタログはキーを
-検証不能として報告します)。主な項目は以下のとおりです:
+入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
 **ClinePass** は Cline API キーで[公式サブスクリプションカタログ](https://docs.cline.bot/getting-started/clinepass)と
 [Chat Completions エンドポイント](https://docs.cline.bot/api/chat-completions)に接続します。運営主体は
@@ -138,7 +161,7 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 無料試用モデルとして文書化されています。
 
 | プロバイダー | ベース URL |
- --- | --- |
+| --- | --- |
 | **OpenAI (API キー)** | `https://api.openai.com/v1` |
 | **Anthropic (API キー)** | `https://api.anthropic.com` |
 | **OpenRouter** | `https://openrouter.ai/api/v1` |
@@ -198,11 +221,12 @@ Volcengine Agent Plan は `openai-responses` アダプターでネイティブ R
 vision-language chat のみを対象とし、別系統の image、audio、GPU endpoint は対象外です。キーは
 [Hyperbolic](https://app.hyperbolic.ai) で作成します。
 
-**Command Code の discovery:** preset は Command Code の公開 `/provider/v1/models` リストを固定の
+**Command Code の discovery:** preset は Command Code の `/provider/v1/models` リストを固定の
 Provider API ホストから読み、スラッシュを含むネイティブモデル ID を保持し、live discovery を
-256 KiB と raw 256 行に制限します。モデルカタログは未認証のため、CLI ログインフローはキーを
-誤って有効と報告せず、検証不能として報告します。チャットリクエストは設定済みの bearer キーを使います。
-API アクセスには Provider プランが必要で、Go/Pro サブスクリプション向けの CLI 認証ブリッジはまだ利用できません。
+256 KiB と raw 256 行に制限します。`ocx login command-code` はブラウザーでの OAuth サインインを
+サポートします(既存の Command Code CLI ユーザー向けに `~/.commandcode/auth.json` からのローカル
+CLI 資格情報の取り込みも可能)。モデルカタログはアカウント単位で、ログイン後に認証済みの
+discovery エンドポイントから取得します。チャットリクエストは設定済みの bearer キーを使います。
 キーは [Command Code Studio](https://commandcode.ai/studio/) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
@@ -210,6 +234,15 @@ API アクセスには Provider プランが必要で、Go/Pro サブスクリ�
 > 共有/本番利用では **Call Model APIs** 権限を持つチームキーを使用してください。専用 Truss `predict`
 > エンドポイントはホストとスキーマが異なるため、このプリセットではルーティングされません。
 > このプリセットのライブディスカバリーは、レスポンス 1 MiB、モデルの生行 256 件が上限です。
+
+### A6API クレジットクォータ
+
+`openai-chat`、`authMode: "key"`、正規の `https://api.a6api.com` または
+`https://api.a6api.com/v1` を使うカスタムプロバイダーでは、ダッシュボードと
+`ocx account refresh <provider>` に A6API クレジット使用量が表示されます。プロバイダー名は任意です。
+アカウントの hard credit limit を基準にトークン単位を USD に換算し、使用率と残高を表示します。トークン期限は補充を意味しないため、クォータの
+リセットとしては表示しません。アクティブキーだけを正規ホストへ送信し、リダイレクトを拒否します。負数や
+整合しない請求合計からはレポートを生成しません。
 
 > **Tencent Cloud Coding Plan の利用制限:** Tencent はこのサブスクリプションを対話型
 > コーディングツール専用としています。一般的な API 自動化、カスタムアプリのバックエンド、
@@ -238,7 +271,7 @@ OAuth、API キープールを確認・切り替えできます。完全なコ�
 Sol/Terra/Luna をフォールバックリストに入れています。
 
 | Codex 経路 | 事前登録されたモデル ID | Codex に表示されるコンテキスト |
- --- | --- | --- |
+| --- | --- | --- |
 | Codex ログイン(Pool または Direct) | `gpt-5.6-*` | 372,000 |
 | OpenAI (API キー) | `openai-apikey/gpt-5.6-*` と `*-pro` | 1,050,000 (max input 922,000) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
@@ -259,6 +292,15 @@ Amazon Bedrock ネイティブ API のような、これらの実装のいずれ
 交換し、有効な Copilot サブスクリプションが必要で GitHub ポリシー変更でブロックされる可能性あり)。GitLab Duo は Bearer
 **サブスクリプショントークン**(通常の API キーではない)で認証します。**Cloudflare AI
 Gateway** は URL にアカウント + ゲートウェイ ID を埋める必要があります。
+
+Copilot は混在 wire カタログを提供します。GPT-5 系モデル（`gpt-5.3-codex`、`gpt-5.4`、
+`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）はエージェント
+通信の `/chat/completions` を拒否するため、opencodex はこれらのモデルを組み込みデフォルトで
+Responses API 経由にルーティングし、他の Copilot モデルはすべて chat completions のままです。
+優先順位は次のとおりです: ハード wire ピン → 明示的な
+[`modelAdapters`](/ja/reference/configuration/providers/) エントリ → レジストリのデフォルト →
+プロバイダー全体の adapter。組み込みデフォルトのないモデル（例: `gpt-5.4-nano`）を Responses
+に移すには、`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }` を設定してください。
 
 Cursor は別の実験的アダプターとして追跡します。`adapter: "cursor"` は `ocx init` とダッシュボード Add
 Provider ピッカーに実験的 local config 項目として表示され、Cursor の静的フォールバックモデルカタログ
@@ -293,7 +335,7 @@ Ollama の `:size` タグに寛容なので `gpt-oss` は `gpt-oss:120b` と `gp
 opencodex をローカルの OpenAI 互換サーバーに向けてください — 通常は空キーで使います:
 
 | プロバイダー | ベース URL |
- --- | --- |
+| --- | --- |
 | Ollama (local) | `http://localhost:11434/v1` |
 | vLLM | `http://localhost:8000/v1` |
 | LM Studio | `http://localhost:1234/v1` |

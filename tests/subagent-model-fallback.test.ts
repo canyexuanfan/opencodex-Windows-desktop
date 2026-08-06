@@ -20,6 +20,12 @@ import {
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/account-runtime-state";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
+import {
+  canAcquireCodexQuotaProbeLease,
+  clearCodexUpstreamHealthForAccount,
+  CODEX_QUOTA_PROBE_INTERVAL_MS,
+  recordCodexUpstreamOutcome,
+} from "../src/codex/routing";
 import type { OcxConfig } from "../src/types";
 
 // beforeEach writes three Codex credentials (NTFS ACL harden on Windows). Under
@@ -45,7 +51,10 @@ function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
     port: 10100,
     providers: {
       // Omitted codexAccountMode — canonical openai defaults to pool via routeModel.
-      openai: { adapter: "openai-responses" },
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
       "alibaba-token-plan": { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
       kimi: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://example.invalid" },
       xai: { adapter: "openai-chat", apiKey: "test", baseUrl: "https://api.x.ai/v1" },
@@ -61,7 +70,7 @@ function cfg(overrides: Partial<OcxConfig> = {}): OcxConfig {
     ],
     subagentModelFallback: [
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ],
     ...overrides,
@@ -101,6 +110,9 @@ afterEach(() => {
   clearAccountNeedsReauth("account-a");
   clearAccountNeedsReauth("account-b");
   clearAccountNeedsReauth("main");
+  clearCodexUpstreamHealthForAccount("pool-a");
+  clearCodexUpstreamHealthForAccount("account-a");
+  clearCodexUpstreamHealthForAccount("account-b");
   rmSync(testDir, { recursive: true, force: true });
 }, { timeout: 30_000 });
 
@@ -108,14 +120,29 @@ describe("subagent model fallback chain", () => {
   test("buildSubagentModelChain dedupes and preserves order", () => {
     expect(buildSubagentModelChain("gpt-5.6-sol", cfg())).toEqual([
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ]);
     expect(buildSubagentModelChain("kimi/k3", cfg())).toEqual([
       "kimi/k3",
       "gpt-5.6-sol",
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a", Work: "account-b" },
+      subagentModelFallback: ["Work/gpt-5.5"],
+    }))).toEqual(["work/gpt-5.5", "Work/gpt-5.5"]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a" },
+      subagentModelFallback: ["Work/gpt-5.5"],
+    }))).toEqual(["work/gpt-5.5", "Work/gpt-5.5"]);
+    expect(buildSubagentModelChain("work/gpt-5.5", cfg({
+      codexAccountNamespaces: { work: "account-a" },
+      subagentModelFallback: ["work/GPT-5.5"],
+    }))).toEqual(["work/gpt-5.5"]);
+    expect(buildSubagentModelChain("kimi/k3", cfg({
+      subagentModelFallback: ["KIMI/K3"],
+    }))).toEqual(["kimi/k3"]);
   });
 
   test("selectAvailableSubagentModel skips quota-exhausted native models", () => {
@@ -123,7 +150,7 @@ describe("subagent model fallback chain", () => {
     updateAccountQuota("pool-a", 95, undefined, 20);
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected).toEqual({
-      model: "alibaba-token-plan/qwen3.8-max-preview",
+      model: "alibaba-token-plan/qwen3.8-max",
       rewritten: true,
       skipped: ["gpt-5.6-sol"],
     });
@@ -144,10 +171,10 @@ describe("subagent model fallback chain", () => {
   test("selectAvailableSubagentModel skips cached routed failures", () => {
     resetSubagentModelFallbackStateForTests();
     updateAccountQuota("pool-a", 95, undefined, 20);
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg());
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "quota exhausted", cfg());
     const selected = selectAvailableSubagentModel("gpt-5.6-sol", cfg());
     expect(selected.model).toBe("kimi/k3");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg())).toBe(true);
   });
 
   test("selectAvailableSubagentModel skips stale fallback entries that cannot route", () => {
@@ -167,6 +194,141 @@ describe("subagent model fallback chain", () => {
       rewritten: true,
       skipped: ["gpt-5.6-sol", "missing-provider/does-not-exist"],
     });
+  });
+
+  test("selectAvailableSubagentModel admits account selectors and checks their fixed account", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+
+    expect(isSubagentModelUnavailable("team/gpt-5.5", config, "pool-a")).toBe(false);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "team/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("case-distinct account selector fallbacks remain independent", () => {
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { work: "account-a", Work: "account-b" },
+      pausedCodexAccountIds: ["account-a"],
+      subagentModelFallback: ["work/gpt-5.5", "Work/gpt-5.5", "kimi/k3"],
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "Work/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "work/gpt-5.5"],
+    });
+  });
+
+  test("account selector fallback skips a model-scoped cooldown on its fixed account", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      modelId: "gpt-5.5",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/gpt-5.5"],
+    });
+  });
+
+  test("account selector fallback never uses Pool's account-wide cooldown probe", () => {
+    const now = 1_800_000_000_000;
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(canAcquireCodexQuotaProbeLease("account-a", probeAt)).toBe(true);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", probeAt)).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/gpt-5.5"],
+    });
+  });
+
+  test("account selector fallback ignores cooldowns for an unrelated quota scope", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["team/gpt-5.5", "kimi/k3"],
+    });
+    recordCodexUpstreamOutcome(config, "account-a", 429, {
+      fixedAccount: true,
+      modelId: "gpt-5.3-codex-spark",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "team/gpt-5.5",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("account selector fallbacks still reject invalid or disabled native models", () => {
+    resetSubagentModelFallbackStateForTests();
+    updateAccountQuota("pool-a", 95, undefined, 20);
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({
+      codexAccountNamespaces: { team: "account-a", other: "account-b" },
+      subagentModelFallback: ["team/claude-opus-4-6", "kimi/k3"],
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a")).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol", "team/claude-opus-4-6"],
+    });
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["openai/gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      { ...config, disabledModels: ["team/gpt-5.5"] },
+      "pool-a",
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "other/gpt-5.5",
+      { ...config, disabledModels: ["team/gpt-5.5"] },
+      "pool-a",
+    )).toBe(false);
   });
 
   test("noteSubagentModelFailure treats numeric 429 as quota-like", () => {
@@ -215,10 +377,23 @@ describe("subagent model fallback chain", () => {
     await priming;
     expect(midRefreshModel).toBe("gpt-5.6-sol");
     expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     );
     expect(getSubagentQuotaPrimeStateForTests().primedAt).toBeGreaterThan(0);
     expect(getSubagentQuotaPrimeStateForTests().inFlight).toBe(false);
+  });
+
+  test("fenced quota priming does not invoke the injected refresh", async () => {
+    resetSubagentModelFallbackStateForTests();
+    let calls = 0;
+    setSubagentQuotaPrimeForTests(async () => {
+      calls += 1;
+    });
+
+    await maybePrimeSubagentQuota(cfg(), Date.now(), { nativeMainReadsForbidden: true });
+
+    expect(calls).toBe(0);
+    expect(getSubagentQuotaPrimeStateForTests()).toEqual({ primedAt: 0, inFlight: false });
   });
 
   test("concurrent maybePrimeSubagentQuota callers share one in-flight refresh", async () => {
@@ -240,7 +415,7 @@ describe("subagent model fallback chain", () => {
     await Promise.all([a, b, c]);
     expect(calls).toBe(1);
     expect(selectAvailableSubagentModel("gpt-5.6-sol", cfg()).model).toBe(
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     );
   });
 
@@ -287,8 +462,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure records the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg());
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg())).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "429", cfg());
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg())).toBe(true);
     expect(isSubagentModelUnavailable("kimi/k3", cfg())).toBe(false);
   });
 
@@ -306,7 +481,7 @@ describe("subagent model fallback chain", () => {
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
       rewritten: false,
-      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max", "kimi/k3"],
     });
   });
 
@@ -324,7 +499,7 @@ describe("subagent model fallback chain", () => {
     expect(selected).toEqual({
       model: "gpt-5.6-sol",
       rewritten: false,
-      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max-preview", "kimi/k3"],
+      skipped: ["gpt-5.6-sol", "alibaba-token-plan/qwen3.8-max", "kimi/k3"],
     });
   });
 
@@ -574,8 +749,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure records failures under the configured fallback slug", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "429", cfg(), "pool-a");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "pool-a")).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "429", cfg(), "pool-a");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg(), "pool-a")).toBe(true);
     expect(isSubagentModelUnavailable("kimi/k3", cfg(), "pool-a")).toBe(false);
   });
 
@@ -585,13 +760,13 @@ describe("subagent model fallback chain", () => {
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
       "model_fallback = [",
-      "  \"alibaba-token-plan/qwen3.8-max-preview\",",
+      "  \"alibaba-token-plan/qwen3.8-max\",",
       "  \"kimi/k3\",",
       "]",
       "",
     ].join("\n"), "utf8");
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
       "kimi/k3",
     ]);
   });
@@ -602,13 +777,13 @@ describe("subagent model fallback chain", () => {
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
       "model_fallback = [",
-      "  \"alibaba-token-plan/qwen3.8-max-preview\",",
+      "  \"alibaba-token-plan/qwen3.8-max\",",
       "]",
       "tools = [\"search\", \"edit\"]",
       "",
     ].join("\n"), "utf8");
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
   });
 
@@ -651,8 +826,8 @@ describe("subagent model fallback chain", () => {
 
   test("noteSubagentModelFailure scopes routed-provider health globally", () => {
     resetSubagentModelFallbackStateForTests();
-    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max-preview", "quota exhausted", cfg(), "account-a");
-    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max-preview", cfg(), "account-b")).toBe(true);
+    noteSubagentModelFailure("alibaba-token-plan/qwen3.8-max", "quota exhausted", cfg(), "account-a");
+    expect(isSubagentModelUnavailable("alibaba-token-plan/qwen3.8-max", cfg(), "account-b")).toBe(true);
   });
 
   test("applySubagentModelFallback rewrites parsed request model", () => {
@@ -670,11 +845,11 @@ describe("subagent model fallback chain", () => {
     );
     expect(result).toEqual({
       from: "gpt-5.6-sol",
-      to: "alibaba-token-plan/qwen3.8-max-preview",
+      to: "alibaba-token-plan/qwen3.8-max",
       skipped: ["gpt-5.6-sol"],
     });
-    expect(parsed.modelId).toBe("alibaba-token-plan/qwen3.8-max-preview");
-    expect((parsed._rawBody as { model?: string }).model).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect(parsed.modelId).toBe("alibaba-token-plan/qwen3.8-max");
+    expect((parsed._rawBody as { model?: string }).model).toBe("alibaba-token-plan/qwen3.8-max");
   });
 
   test("applySubagentModelFallback is a no-op for main turns", () => {
@@ -689,12 +864,39 @@ describe("subagent model fallback chain", () => {
     expect(parsed.modelId).toBe("gpt-5.6-sol");
   });
 
+  test("role model_fallback preserves case-distinct account selectors", () => {
+    const dir = codexHomeFixture();
+    writeFileSync(join(dir, "agents", "executor.toml"), [
+      "name = \"executor\"",
+      "model = \"gpt-5.6-sol\"",
+      "model_fallback = [",
+      "  \"work/gpt-5.5\",",
+      "  \"Work/gpt-5.5\",",
+      "  \"work/GPT-5.5\",",
+      "  \"kimi/k3\",",
+      "]",
+      "",
+    ].join("\n"), "utf8");
+    const namespaces = { work: "account-a", Work: "account-b" };
+    expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir, namespaces)).toEqual([
+      "work/gpt-5.5",
+      "Work/gpt-5.5",
+      "kimi/k3",
+    ]);
+    // Without configured namespaces the slash prefix is treated like a provider id and
+    // remains case-insensitive, matching ordinary provider/model de-duplication.
+    expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir)).toEqual([
+      "work/gpt-5.5",
+      "kimi/k3",
+    ]);
+  });
+
   test("applySubagentModelFallback can use per-agent model_fallback without global config", () => {
     const dir = codexHomeFixture();
     writeFileSync(join(dir, "agents", "executor.toml"), [
       "name = \"executor\"",
       "model = \"gpt-5.6-sol\"",
-      "model_fallback = [\"alibaba-token-plan/qwen3.8-max-preview\"]",
+      "model_fallback = [\"alibaba-token-plan/qwen3.8-max\"]",
       "",
     ].join("\n"), "utf8");
     updateAccountQuota("pool-a", 95);
@@ -709,12 +911,12 @@ describe("subagent model fallback chain", () => {
       new Headers({ "x-openai-subagent": "collab_spawn" }),
       cfg({ subagentModelFallback: undefined }),
     );
-    expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max-preview");
+    expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max");
     expect(resolveAgentModelFallbackForPrimary("gpt-5.6-sol", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
     expect(readCodexAgentModelFallback("executor", dir)).toEqual([
-      "alibaba-token-plan/qwen3.8-max-preview",
+      "alibaba-token-plan/qwen3.8-max",
     ]);
   });
 

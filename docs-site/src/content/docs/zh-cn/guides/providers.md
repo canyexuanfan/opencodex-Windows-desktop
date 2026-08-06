@@ -19,6 +19,22 @@ bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
 
 若内置 `openai` 提供商缺失或已禁用，可在仪表盘 Accounts 选择器或 Codex Auth 页面恢复：缺失行会从规范预设创建，已禁用的规范行会在不替换已保存模式/模型设置的情况下重新启用，非规范的 `openai` 行不会提供该恢复路径。
 
+### 提供商概览中的账户池容量
+
+Codex 登录使用 Pool 模式时，Providers 概览显示整个账户池的已用容量估算，而不是任意一个
+账户的数值。同一行还会显示当前有效账户的原始配额使用率，便于区分账户池估算与下一次请求
+将使用的账户状态。
+
+如果有重置信息，概览会显示下一次重置时间以及届时恢复的账户池容量。**覆盖不完整**表示某些
+账户无法安全计入估算，例如套餐或配额未知、读数过旧、账户已暂停或需要重新认证。
+
+**部分窗口覆盖不完整**表示某些已计入账户只报告了部分显示的配额窗口。概览会保持各窗口相互
+独立，逐一标记受影响的窗口，并且不会把缺失值当作该窗口的使用量。
+
+此估算仅用于显示，不会改变账户选择、会话关联、自动切换、cooldown 或任何其他路由决策。
+各账户状态和路由控制请参阅
+[Codex Auth 账户池](/zh-cn/guides/web-dashboard/#codex-auth-and-account-pools)。
+
 shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保留一次到
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`；恢复命令：
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`。
@@ -33,6 +49,10 @@ shipped v1 配置自动迁移到 marker 2 的单一选项行。原配置只保�
 | `key` | 发送你的 API 密钥（`Authorization: Bearer …`，或按 adapter 使用 `x-api-key` / `api-key`）。密钥可以是字面值，也可以是 `${ENV_VAR}` 引用。 | 大多数提供商。 |
 | `forward` | 将**你传入的 Codex 认证请求头**原样转发给提供商——不存储任何密钥。这就是 ChatGPT 登录的透传方式。 | OpenAI（`openai-responses` adapter）。 |
 | `oauth` | 读取已存储的 OAuth 访问令牌（过期前自动刷新），并将其用作 bearer 密钥。 | xAI、Anthropic、Kimi、Kiro、Google Antigravity、Cursor。 |
+
+[`retryOn429`](/zh-cn/reference/configuration/)（同 key 的 429 重试）仅适用于 API-key 提供商
+（`authMode: "key"`）。OAuth、forward 与本地预设均被排除——同一 token 绝不可重放，本地运行时
+也没有需要保留的远程 key。仅在配置后启用，默认关闭；配置了对象即启用，除非 `enabled: false`。
 
 ## 1. ChatGPT 登录（forward / 透传）
 
@@ -111,9 +131,9 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 69 个预设：58 个密钥预设、7 个 OAuth 预设、3 个本地预设，以及 1 个默认的
+opencodex 内置 70 个预设：58 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
-验证因提供商而异，Command Code 的公开目录会将密钥报告为无法验证。主要条目包括：
+验证因提供商而异。主要条目包括：
 
 **ClinePass** 使用 Cline API 密钥连接[官方订阅目录](https://docs.cline.bot/getting-started/clinepass)和
 [Chat Completions 端点](https://docs.cline.bot/api/chat-completions)。运营主体是
@@ -185,17 +205,25 @@ OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 UR
 并将实时发现限制为 256 KiB 和 256 条原始记录。它仅覆盖 serverless text 与 vision-language chat；独立的
 image、audio 和 GPU 端点不在范围内。密钥可在 [Hyperbolic](https://app.hyperbolic.ai) 创建。
 
-**Command Code 发现：**该预设从固定的 Provider API 主机读取 Command Code 公开的
+**Command Code 发现：**该预设从固定的 Provider API 主机读取 Command Code 的
 `/provider/v1/models` 列表，保留含 `/` 的原生模型 id，并将实时发现限制为 256 KiB 和 256 条原始记录。
-模型目录无需认证，因此 CLI 登录流程会将密钥报告为无法验证，而不是误报为有效。聊天请求使用已配置的
-bearer 密钥；API 访问需要 Provider 套餐，Go/Pro 订阅用户的 CLI 认证桥接尚不可用。
-密钥可在 [Command Code Studio](https://commandcode.ai/studio/) 创建。
+`ocx login command-code` 支持通过浏览器进行 OAuth 登录（现有 Command Code CLI 用户还可选择从
+`~/.commandcode/auth.json` 导入本地 CLI 凭据）；模型目录按账户隔离，并在登录后从经过认证的发现
+端点获取。聊天请求使用已配置的 bearer 密钥。密钥可在 [Command Code Studio](https://commandcode.ai/studio/) 创建。
 
 > **Baseten 范围：**该预设仅覆盖 Baseten 的共享 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)。
 > 本地使用可选择个人 [API 密钥](https://docs.baseten.co/organization/api-keys)；共享或生产用途请使用具备
 > **Call Model APIs** 权限的团队密钥。
 > 专用 Truss `predict` 端点使用不同的主机和请求 schema，不由此预设路由。
 > 该预设的实时发现上限为 1 MiB 响应和 256 条原始模型记录。
+
+### A6API 信用额度
+
+使用 `openai-chat`、`authMode: "key"` 以及规范地址 `https://api.a6api.com` 或
+`https://api.a6api.com/v1` 的自定义提供商，会在仪表板和 `ocx account refresh <provider>`
+中显示 A6API 信用使用情况；提供商名称可以自定义。系统依据账户的 hard credit limit 将令牌单位换算为 USD，并显示已用百分比和剩余额度。
+令牌到期不代表额度补充，因此不会显示为配额重置。只有当前活动密钥会发送到规范主机，重定向会被拒绝；负数
+或内部不一致的计费总数不会生成报告。
 
 > **腾讯云 Coding Plan 使用限制：**腾讯将此订阅限定为交互式编程工具使用。禁止通用 API
 > 自动化、自定义应用后端和非交互式批量调用；违规使用可能导致套餐密钥被停用。
@@ -241,6 +269,14 @@ GPT-5.6 Sol/Terra/Luna 会预置在提供商的回退列表中，因此即使实
 登录后换取短期 Copilot API 令牌，需要有效的 Copilot 订阅，GitHub 政策收紧时可能失效）；GitLab Duo
 使用 Bearer **订阅令牌**（而非普通 API 密钥）进行认证。
 **Cloudflare AI Gateway** 需要将 account 和 gateway id 填入 URL。
+
+Copilot 提供混合 wire 目录：其 GPT-5 系列模型（`gpt-5.3-codex`、`gpt-5.4`、
+`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）会拒绝面向
+agent 流量的 `/chat/completions`，因此 opencodex 默认将这些模型路由到 Responses API，而其他
+Copilot 模型仍走 chat completions。优先级为：硬 wire 固定 → 显式
+[`modelAdapters`](/zh-cn/reference/configuration/providers/) 条目 → 注册表默认值 → 提供商级
+adapter。若要将没有内置默认值的模型（例如 `gpt-5.4-nano`）接入 Responses，请设置
+`"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`。
 
 Cursor 作为单独的实验性 adapter 进行跟踪。`adapter: "cursor"` 会作为实验性本地配置出现在
 `ocx init` 和 dashboard Add Provider picker 中，并保存 Cursor 的静态回退模型目录 metadata。配置

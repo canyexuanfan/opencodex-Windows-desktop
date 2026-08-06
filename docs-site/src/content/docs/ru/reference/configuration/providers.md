@@ -12,28 +12,30 @@ description: Записи провайдеров, аутентификация, 
 | --- | --- | --- | --- |
 | `providers` | `Record<string, OcxProviderConfig>` | — | Map вида provider name → provider config. |
 | `openaiProviderTierVersion?` | `2` | set by migration | Отмечает, что единая projection OpenAI с учётом режима уже завершена. |
-| `disabledModels?` | `string[]` | — | Модели, скрытые из каталога Codex и `/v1/models`, но не заблокированные для прямых вызовов прокси. Routed-id удаляются из списков; bare native GPT-id получают `visibility: "hide"`. |
+| `disabledModels?` | `string[]` | — | Модели, скрытые из каталога Codex и `/v1/models`, но не заблокированные для прямых вызовов прокси. Routed-id удаляются из списков. Account-qualified native-id скрывает только строку этого селектора; bare native GPT-id скрывает bare-строку и строки всех селекторов аккаунтов для этой модели. Страница Models показывает только bare native- и routed-строки; чтобы скрыть одну selector-qualified строку, задайте это поле конфигурации напрямую. |
 | `providerContextCaps?` | `Record<string, number>` | `{}` | Context cap'ы, видимые Codex, по каждому провайдеру. Cap может только понижать известное context window. |
 | `contextCapValue?` | `number` | `350000` | Значение, используемое элементами управления context-cap в дашборде; его изменение обновляет все включённые записи `providerContextCaps`. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Метаданные аккаунтов пула ChatGPT/Codex, которыми управляет Codex Auth. Секреты живут отдельно в `codex-accounts.json`. |
 | `pausedCodexAccountIds?` | `string[]` | `[]` | Аккаунты, исключённые из выбора Pool до снятия паузы, включая основной аккаунт `__main__`, если он поставлен на паузу. |
-| `codexAccountNamespaces?` | `Record<string, string>` | — | Публичное пространство имён селектора модели на сохранённую цель аккаунта Codex. Это поле валидирует и сохраняет mapping, но само по себе не добавляет строки в picker и не меняет routing. |
+| `codexAccountNamespaces?` | `Record<string, string>` | — | Необязательное сопоставление произвольного публичного селектора модели с сохранённым аккаунтом Codex. Каждый селектор с существующей целью добавляет в model picker Codex отдельные строки `<selector>/<native-openai-model>`; каждая строка использует только этот аккаунт. Если активен хотя бы один селектор, bare native-строки скрываются в picker, но их id остаются маршрутизируемыми и перечисляются raw `/v1/models`, если они не отключены явно. |
 | `activeCodexAccountId?` | `string` | — | Вручную выбранный аккаунт Pool для следующего запроса. Выбор очищает thread affinity; in-flight-запросы сохраняют уже захваченные credential'ы. |
 | `autoSwitchThreshold?` | `number` | `80` | Порог проактивного переключения по использованию. `quota` может повторно оценить следующий запрос как привязанной, так и непривязанной задачи; `fill-first` использует его только как точку исчерпания для непривязанных назначений; обычный `round-robin` его не использует. Оценка берёт самое горячее из окон 5 часов, недели и 30 дней. `0` отключает только переключение по использованию, но не назначение непривязанных задач и не восстановление после сбоев. |
 | `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | Стратегия назначения для новых/непривязанных запросов Codex. Запрос непривязан, если у него нет live affinity `(parent thread id, quota scope)`; видимая существующая задача может стать непривязанной после перезапуска прокси или сброса affinity. `quota` выбирает подходящий аккаунт с наименьшим известным usage, когда активного аккаунта нет, сохраняет подходящий активный аккаунт ниже `autoSwitchThreshold`, а после порога может перевести непривязанный запрос или следующий запрос привязанной задачи на подходящий аккаунт с меньшим usage. `round-robin` равномерно распределяет непривязанные запросы; `fill-first` назначает их активному аккаунту до cooldown, недоступности или порога исчерпания. |
 | `accountPoolStickyLimit?` | `number` | `1` | Число назначений новых/непривязанных задач на одном выборе round-robin перед переходом дальше. Счётчик растёт при привязке задачи, а не после успеха upstream. Диапазон 1–100; только при `accountPoolStrategy` = `round-robin`. |
-| `upstreamFailoverThreshold?` | `number` | `3` | Сколько подряд transient failure допустить, прежде чем новые сессии начнут делать failover. `0` отключает эту логику. |
+| `upstreamFailoverThreshold?` | `number` | `3` | Сколько подряд transient failure допустить, прежде чем новые сессии начнут делать failover. `0` отключает эту логику. Доказанные ошибки доступности DNS/TCP до соединения учитываются на уровне пары «провайдер, хост» и не влияют на здоровье аккаунта, кулдауны, привязку потока/сессии, выбор активного аккаунта или маршрутизацию пула, а также не учитываются в этом пороге. |
 | `modelCacheTtlMs?` | `number` | `300000` | Окно свежести для кэша `/models` на уровне провайдера. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Политика prompt-cache Anthropic: отключено, 5-минутный ephemeral или 1-часовой extended. |
 | `tokenGuardian?` | `OcxTokenGuardianConfig` | off | Необязательная политика proactive OAuth refresh и warmup'а аккаунтов Codex. |
 
-Ключи `codexAccountNamespaces` — это публичные селекторы: 1–64 символа, начинаются и
-заканчиваются ASCII-буквой или цифрой, а внутри могут содержать буквы, цифры, `.`, `_` или `-`.
-Зарезервированные имена объектов JavaScript отклоняются. Каждое значение — это валидный id
-аккаунта из пула (никогда не внутренний `__main__`) или `"@main"` для аккаунта Codex Desktop.
-Конфликты с именами провайдеров и зарезервированными `openai` / `combo` проверяются
-без учёта регистра. Сырые account-id и email должны оставаться приватными; селектор — это
-публичное имя.
+Имена селекторов — выбранные пользователем публичные метки; opencodex не придаёт им семантики ролей
+аккаунтов. Ключи `codexAccountNamespaces` имеют длину 1–64 символа. Они должны начинаться и
+заканчиваться ASCII-буквой или цифрой; внутри разрешены буквы, цифры, `.`, `_` и `-`. Зарезервированные
+имена объектов JavaScript запрещены. Значение — допустимый id аккаунта пула (кроме внутреннего `__main__`)
+либо `"@main"` для аккаунта Codex Desktop. Коллизии с provider и зарезервированными `openai` / `combo`
+проверяются без учёта регистра; namespace-префикс namespaced combo alias не может повторять селектор.
+Настроенные id пула и цели других селекторов также нельзя повторно использовать как селектор. Сохраняйте
+raw id аккаунтов и email приватными, а селектор используйте как публичное имя. Поведение и приоритет
+явного выбора описаны в разделе [Конфигурация маршрутизации](/reference/configuration/routing/).
 
 ## Зарезервированные провайдеры OpenAI
 
@@ -93,7 +95,9 @@ cross-route credential fallback не существует. Строки API GPT-
 | `noTopPModels?` | `string[]` | Модели, отвергающие переданный вызывающей стороной `top_p`. |
 | `noPenaltyModels?` | `string[]` | Модели, отвергающие penalty presence/frequency. |
 | `parallelToolCalls?` | `boolean` | Переключатель parallel tool call'ов. Для OpenAI Chat по умолчанию включено; не-chat adapter'ы рекламируют это только при явном `true`. |
-| `responsesItemIdRepair?` | `{ message?: string[]; reasoning?: string[]; repairMissingTerminalIds?: boolean }` | По умолчанию выключенная downstream SSE-repair для exact placeholder-id и отсутствующих terminal-id. Function-call id никогда не переписываются. |
+| `responsesItemIdRepair?` | `{ message?: string[]; reasoning?: string[]; repairMissingTerminalIds?: boolean; repairInvalidIds?: boolean }` | По умолчанию выключенная downstream SSE-repair для exact placeholder-id, отсутствующих terminal-id и (с `repairInvalidIds`) message/reasoning id без канонического префикса `msg_`/`rs_`. Function-call id никогда не переписываются. Встроенный DeepSeek включает последние два по умолчанию. |
+| `responsesSnapshotRepair?` | `boolean` | По умолчанию выключенная клиентская repair для неполных lifecycle snapshot'ов Responses в SSE и JSON. Добавляет отсутствующие status, output и tool metadata, не меняя raw inspection и persistence. |
+| `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | Только для провайдеров с API-ключом (`authMode: "key"`). Опциональный повтор при 429 на том же таргете: если `retryOn429` отсутствует, функция выключена; наличие объекта включает её, если только `enabled: false`. При 429: ожидание (`Retry-After` апстрима или фиксированный интервал) и повтор идентичного запроса на том же ключе до любого фейловера ключей — покрывает основной цикл восстановления текстовых ходов, passthrough-канал Responses, мост изображений/видео, sidecar web-search и терминальные продолжения. Повтор допустим только для HTTP 429, полученных до начала потока; пользовательские транспорты `runTurn` не входят в цикл HTTP-повторов. `attempts` — это число повторов на том же ключе после первого 429 (всего отправок = `attempts` + 1) и единый бюджет на запрос, общий для основного цикла восстановления, терминального продолжения и повторов моста. Исчерпание `attempts` лишь останавливает дальнейшие повторы на том же ключе; далее применяется обычный фейловер ключей или финальная обработка ошибки в зависимости от доступных таргетов — на passthrough-канале с ключевой аутентификацией фейловера нет, поэтому исчерпанный 429 возвращается как есть. Codex сам никогда не повторяет 429, поэтому это единственная защита для провайдеров с одним ключом. По умолчанию: `enabled: true`, `attempts: 3`, `intervalMs: 5000`, `maxIntervalMs: 60000` (любое ожидание ограничено `maxIntervalMs`, который сам ограничен 600000), `respectRetryAfter: true`. |
 | `autoToolChoiceOnlyModels?` | `string[]` | Модели, у которых `tool_choice` принимает только `auto` или `none`; forced choice понижается. |
 | `preserveReasoningContentModels?` | `string[]` | Модели, которым нужен предыдущий assistant `reasoning_content` в chat history. |
 | `thinkingToggleModels?` | `string[]` | Chat-модели, использующие `thinking.enabled` вместо effort-ladder. |

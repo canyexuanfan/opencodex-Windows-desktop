@@ -119,6 +119,11 @@ The **Codex Auth** page manages the native ChatGPT/Codex route:
   values.
 - Pool request logs use opaque labels such as `p3fa91c`, never account emails.
 
+The Providers overview separately summarizes Pool-mode usage as a display-only weighted capacity
+estimate, alongside the effective account's raw quota and the next capacity recovery. See
+[Providers overview pool capacity](/guides/providers/#providers-overview-pool-capacity) for the
+visible fields, incomplete-coverage meaning, and routing boundary.
+
 ## Starring is yours to decide, not an agent's
 
 The sidebar's star button — and the one-time question `ocx start` asks in an interactive

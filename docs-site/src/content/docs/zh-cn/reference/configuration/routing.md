@@ -16,18 +16,33 @@ description: 默认提供方选择、模型解析顺序、组合别名、目标�
 
 opencodex 按以下顺序解析请求的模型：
 
-1. 规范化的 `combo/<id>` 或已配置的 combo 别名。规范化 id 会优先于别名匹配。
-2. 显式的 `<provider>/<model>` 命名空间，其前缀名称对应一个已配置的提供方。
-3. 诸如 `gpt-*`、`o1-*`、`o3-*` 或 `o4-*` 之类未带前缀的原生 OpenAI 系列 id，会通过
+1. 已配置的 `<account-selector>/<native-openai-model>` 命名空间，只会路由到映射的已存储 Codex
+   账户。无效或不可用的精确目标会以 fail closed 方式失败。
+2. 规范化的 `combo/<id>` 或已配置的 combo 别名。规范化 id 会优先于别名匹配。
+3. 显式的 `<provider>/<model>` 命名空间，其前缀名称对应一个已配置的提供方。
+4. 诸如 `gpt-*`、`o1-*`、`o3-*` 或 `o4-*` 之类未带前缀的原生 OpenAI 系列 id，会通过
    规范化且已启用的 `openai` 提供方进行路由。
-4. 与某个提供方的 `defaultModel` 完全匹配。
-5. 已知的提供方系列模型前缀。
-6. 与某个提供方配置的 `models` 列表中的模型完全匹配。
-7. `defaultProvider`，同时保留请求的 model id。
+5. 与某个提供方的 `defaultModel` 完全匹配。
+6. 已知的提供方系列模型前缀。
+7. 与某个提供方配置的 `models` 列表中的模型完全匹配。
+8. `defaultProvider`，同时保留请求的 model id。
 
 已禁用的提供方会被排除在外。对已禁用提供方的显式命名空间会直接失败，而不会继续
 向后回退。对于可能匹配多个提供方的规则，提供方条目会按照其 JSON 插入顺序进行检查，
 因此当一个裸模型可能存在歧义时，请使用显式命名空间。
+
+## 精确 Codex 账户选择器
+
+`codexAccountNamespaces` 会把 `side` 这样的公开 selector 映射到一个已存储 Codex 账户。
+`side/gpt-5.6-sol` 请求即使在规范 `openai` 提供方处于 Direct mode 时也只使用该账户，并向
+upstream 发送裸 `gpt-5.6-sol` model id。selector 后只能使用裸原生 OpenAI-family id。
+
+精确选择会绕过 Pool 分配策略和普通 thread affinity。若映射账户不存在、已暂停、处于 cooldown、
+不可用或需要重新认证，请求会 fail closed，不会切换到其他账户，也不会改变 active Pool account。
+配置至少一个合格 selector 后，Codex catalog 会隐藏 bare native picker row，并为每个 selector 显示
+独立的 `<selector>/<native-openai-model>` row。除非显式禁用，bare native model id 仍保持正常的 Pool /
+Direct routing，并继续出现在 raw `/v1/models` 中。映射到缺失已保存账户的 selector 不会被展示。
+selector 校验、冲突规则和隐私说明见[提供方配置](/reference/configuration/providers/)。
 
 ## Combos (`config.combos`)
 
@@ -74,3 +89,26 @@ opencodex 按以下顺序解析请求的模型：
 如果是一个没有上下文元数据的裸 relay id，或者目标之间的模态互不相交，combo 就会从
 目录中移除。同步时会输出一条汇总警告，仪表板会将其标记为 **Needs attention**。
 补充上下文元数据、对齐模态，或者把目标模型切换为可发现且兼容的能力。
+
+## 路由策略配置文件（`config.routingProfiles`）
+
+显式请求的 `policy/<id>`（或配置的别名）会在固定的候选白名单中，根据硬性能力要求与确定性、可解释的评分进行选择。现有模型 ID 永远不会隐式经过配置文件。支持 `candidates`（显式白名单）、可选 `alias`、`require`（`minContextWindow`、`minQuotaHeadroom`、`tools`、`imageInput`、`structuredOutput`、`localOnly`、`remoteAllowed`、`encryptedCodexTasks`、`reasoningEffort`、`serviceTier`）、`optimize`（latency/health/cost/quota 权重）、`limits.maxEstimatedCostUsd`、`unknownEvidence`（allow/penalize/exclude）。未知不会被当作零或免费。
+
+CLI：`ocx route policy list`、`ocx route policy show <id>`、`ocx route policy dry-run <id> --model-context <tokens> --tools`、`ocx route policy evaluate <id>`。
+
+组合是显式的有序/加权目标路由与故障转移；策略配置文件是基于证据在候选之间进行选择。
+
+## 请求历史与路由分析
+
+- `GET /api/request-history` - 从派生索引（`routing-history.sqlite`）进行游标分页的全历史查询。过滤器：`provider`、`model`、`requestedModel`、`status`、`conversationId`、`surface`、`inboundProtocol`、`apiKeyId`、`profileId`、`fallback`、`from`、`to`。
+- `GET /api/request-history/:requestId/route-decision` - 为什么选择此路由（跟踪、候选、排除、分数、配置文件+版本、执行尝试、结果）。
+- `GET /api/routing-analytics` - 成功/失败/取消/回退率、p50/p95/p99 耗时与 TTFT、不完整流率、冷却失败数、每次成功请求的估算成本、覆盖率、置信度、截断标志。
+- `GET /api/routing-profiles`、`POST /api/routing-profiles/dry-run` - 配置文件查看与试运行评估（不发送上游请求）。
+
+返回的历史记录与路由决策负载仅暴露已脱敏的请求元数据（例如不透明的 `apiKeyId` 标签）。不包含凭证、原始提示正文或提供商密钥。
+
+CLI：`ocx logs explain <request-id>`、`ocx logs rebuild-index`、`ocx logs index-status`。
+
+## 迁移
+
+`routingProfiles` 是可选的增量配置：现有配置文件与旧 `usage.jsonl` 行均可原样加载。索引是一次性的——删除后会在下次查询时从 `usage.jsonl` 自动重建。系统不会自动调优。

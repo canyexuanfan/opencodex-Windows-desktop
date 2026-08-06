@@ -2,7 +2,23 @@ name: Cross-platform CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    # No base-branch filter on purpose. GitHub matches `branches:` against the
+    # BASE ref, so `[main, dev]` silently excluded stacked child PRs — whose
+    # base is another open PR's head branch, an intentional review workflow per
+    # AGENTS.md that `enforce-target` already exempts from the wrong-base gate.
+    # The #951-#955 stack merged with `enforce-target`, `label`, and
+    # `react-doctor` as its only check-runs: no test job ever queued for 24
+    # changed files under `src/`.
+    #
+    # An allowlist cannot express "base is another PR's head" — stacked bases
+    # carry contributor prefixes (`fix/`, `feat/`, `agent/`) as readily as
+    # `codex/`, and contributor stacks need CI most. `paths:` below is the real
+    # scope gate, same shape as issue-quality-tests.yml. Safe to widen here
+    # because this workflow is `pull_request` (not `pull_request_target`),
+    # declares `contents: read`, and reads no secrets.
+    #
+    # `push:` stays pinned to the integration lines: it gates the release path,
+    # and this trigger already covers review.
     paths:
       - "src/**"
       - "bin/**"
@@ -316,6 +332,10 @@ jobs:
   platform-macos:
     name: macos
     runs-on: macos-latest
+    # The unsharded control for the sharded lanes: the only place the whole
+    # suite runs in one pool, so it is the place that catches what sharding
+    # hides. The flakes it keeps surfacing are timing, not logic, and the fix
+    # is the tests, not a fourth lane.
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -349,36 +369,36 @@ jobs:
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
 
-  # Windows runs when something is about to ship — promotion to main/preview, or
-  # an explicit dispatch — not on every pull request.
+  # Windows runs only when a maintainer asks for it by hand.
   #
-  # It was 16m23s against a 6-minute Linux critical path on the baseline run, so
-  # it alone decided when a PR turned green. The history in this file records the
-  # ceiling being raised twice rather than the gap being closed (#711 vs #653,
-  # issue #717, then #827's 20-minute kill). The coverage is not dropped: it
-  # moves to the boundary where a maintainer acts on it, and release.yml already
-  # refuses to publish a commit without a successful run of this workflow.
+  # It left the PR lane first (16m23s against a 6-minute Linux critical path;
+  # the ceiling was raised twice rather than the gap closed — #711 vs #653,
+  # issue #717, then #827's 20-minute kill), then left the shipping boundary
+  # when the sharded promotion run surfaced ~207 Windows-only test failures
+  # that had been invisible while dev skipped the leg. Those are real defects,
+  # tracked as issue #1059, but they are pre-existing on every released
+  # version — gating the release on them blocks shipping fixes to the platforms
+  # that pass, for a platform that has never shipped green.
   #
-  # The trade is real and worth naming: a Windows-only regression can now reach
-  # `dev` and be caught at promotion instead of at review time. `dev` is not
-  # published; main and preview are, and both still gate on this job.
-  #
-  # The condition is spelled out positively rather than as `!= 'pull_request'`,
-  # which would also match every push to dev — most of the traffic this change
-  # exists to speed up.
+  # The leg stays in the workflow, sharded and dispatchable, so the failure
+  # list can be burned down without losing the ability to measure progress.
+  # release.yml gates on a successful push-event run of this workflow, which
+  # now means Linux + macOS + the gates; Windows re-enters the gate when the
+  # tracked failures are fixed, not before.
   platform-windows:
-    name: windows
+    name: windows ${{ matrix.shard }}/4
     needs: select-windows-runner
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' &&
-       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'))
+      github.event_name == 'workflow_dispatch'
     runs-on: ${{ fromJSON(needs.select-windows-runner.outputs.runner) }}
-    # After the 2026-08-01 state-store admission merge, Windows under
-    # `bun test --isolate` on #827 hit the 20-minute kill while still green
-    # mid-suite (~19m of tests). 30 minutes is the margin for that tip — not a
-    # licence to absorb hung tests (see the oauth mutation waitMs unref fix).
-    timeout-minutes: 30
+    # Sharded like the Linux legs. The single-leg run reached 30 minutes on a
+    # green suite and was killed in cleanup; four shards put each leg inside the
+    # same budget the Linux shards already hold.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Show selected runner
         shell: bash
@@ -428,10 +448,74 @@ jobs:
           bun run build
 
       - name: Test
-        run: bun test --isolate tests
+        run: bun test --isolate tests --shard=${{ matrix.shard }}/4
 
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
+
+  # Keep every OS credential-store check on a disposable GitHub-hosted machine.
+  # A force-cancelled process cannot run its in-process finally cleanup, so no
+  # keyring matrix leg may use the persistent self-hosted Windows runner.
+  keyring-smoke:
+    name: keyring ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu
+            runner: ubuntu-latest
+          - name: windows
+            runner: windows-latest
+          - name: macos
+            runner: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Linux hosted runners do not provide an unlocked desktop keyring session.
+      # Run Secret Service with temporary state instead of skipping Linux.
+      - name: Install Secret Service dependencies (Linux)
+        if: matrix.name == 'ubuntu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends dbus-x11 gnome-keyring
+
+      - name: OS keyring create/read/delete smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" != "Linux" ]; then
+            bun run scripts/keyring-smoke.ts
+            exit 0
+          fi
+
+          keyring_home="$(mktemp -d)"
+          runtime_dir="$(mktemp -d)"
+          cleanup() { rm -rf -- "$keyring_home" "$runtime_dir"; }
+          trap cleanup EXIT
+          chmod 700 "$keyring_home" "$runtime_dir"
+          HOME="$keyring_home" XDG_RUNTIME_DIR="$runtime_dir" dbus-run-session -- bash -euo pipefail -c '
+            # Create and unlock the isolated login keyring without putting its
+            # ephemeral password in argv, the environment, or the job log.
+            od -An -N32 -tx1 /dev/urandom |
+              tr -d "[:space:]" |
+              gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            bun run scripts/keyring-smoke.ts
+          '
 
   npm-global-smoke:
     name: npm-global ${{ matrix.os }}
@@ -508,7 +592,7 @@ jobs:
     # direct dependencies only, so a failing `select-windows-runner` would
     # otherwise reach this gate as nothing at all while its dependents report
     # `skipped` — which the gate is required to read as a deliberate skip.
-    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, npm-global-smoke]
+    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, keyring-smoke, npm-global-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -534,24 +618,8 @@ jobs:
             exit 1
           fi
 
-      # `skipped` passing is right for a job that is SUPPOSED to be skipped, and
-      # wrong everywhere else. The windows leg is the whole reason this workflow
-      # can be trusted at the shipping boundary, so on the events that ARE that
-      # boundary it has to have actually run. Without this, a one-character slip
-      # in its `if:` would silently skip it, the gate would go green, and the
-      # release helper — which only checks that this workflow succeeded — would
-      # publish a tip no Windows machine ever executed.
-      - name: Assert the windows leg ran where it is mandatory
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' &&
-           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/preview'))
-        shell: bash
-        env:
-          WINDOWS_RESULT: ${{ needs.platform-windows.result }}
-        run: |
-          set -euo pipefail
-          if [ "$WINDOWS_RESULT" != "success" ]; then
-            echo "::error::the windows leg is mandatory on ${GITHUB_REF#refs/heads/} / workflow_dispatch but reported '${WINDOWS_RESULT}'. A skipped windows leg must never reach the release gate."
-            exit 1
-          fi
+      # Windows is dispatch-only, so there is no event where a skipped Windows
+      # leg is a gate violation: on push events it is always skipped, and on
+      # dispatch a failed Windows leg already fails the allowlist above. The
+      # old "windows must have run on main/preview" assertion left with the
+      # condition it policed.

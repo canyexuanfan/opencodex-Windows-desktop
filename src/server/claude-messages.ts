@@ -25,7 +25,8 @@ import {
 } from "../claude/outbound";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { estimateTokens } from "../lib/token-estimate";
-import { routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, routeModel } from "../router";
+import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
@@ -34,6 +35,7 @@ import { conversationIdFromClaudeMetadata } from "./request-log-conversation";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
+import { tryClaimNativeMainProfileForTurn } from "../codex/native-main-admission";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -627,10 +629,11 @@ async function handleClaudeMessagesWithBudget(
   // verified live 2026-07-11). Strip them for that route; routed providers keep them.
   let nativeRoute = false;
   try {
-    const route = routeModel(config, internalBody.model as string);
+    const route = routeModel(config, internalBody.model as string, evidenceFromBody(internalBody));
     // Settle the wire once so the sampling decision below reads the effective
     // adapter rather than the provider-wide default (#404).
     route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "anthropic");
+    logCtx.routeDecision = route.routeDecision;
     if (route.provider.adapter === "openai-responses") {
       nativeRoute = true;
       delete internalBody.max_output_tokens;
@@ -661,7 +664,14 @@ async function handleClaudeMessagesWithBudget(
       const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
-  } catch { /* unknown model: let handleResponses shape the 404 */ }
+  } catch (err) {
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      logCtx.routeDecision = err.trace;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return anthropicErrorResponse(404, err.message, "invalid_request_error");
+    }
+    /* unknown model: let handleResponses shape the 404 */
+  }
 
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of FORWARD_HEADERS) {
@@ -671,8 +681,11 @@ async function handleClaudeMessagesWithBudget(
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (!nativeRoute) {
-    // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable.
+  // Routed replays need main ChatGPT auth so OpenAI-backed sidecars remain reachable;
+  // native replays have no caller ChatGPT credential. This enrichment is optional:
+  // auth-context later rejects a real physical-main selection, while routed/pool
+  // traffic continues without reading native credentials during a fence/recovery.
+  if (tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
     const { getMainAccountToken } = await import("../codex/main-account");
     const token = getMainAccountToken();
     if (token) {
@@ -681,14 +694,6 @@ async function handleClaudeMessagesWithBudget(
     }
   }
   if (nativeRoute) {
-    // No forwarded ChatGPT auth exists on this surface. Attach the main codex login
-    // (read-only auth.json token); account-pool rotation still overrides downstream.
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
-    }
     // ChatGPT-backend prompt-cache affinity rides the session_id HEADER (codex
     // clients always send their session uuid; devlog 090 follow-up: body-level
     // prompt_cache_key alone still yielded cached_tokens:0). Claude Code never sends
@@ -763,8 +768,11 @@ async function handleClaudeMessagesWithBudget(
     // rewrite): log = upstream truth, client = retry signal.
     // Retryable 429s also get Retry-After (#507) so Codex-shaped clients and Claude Code
     // share a backoff hint when the upstream omitted the header.
-    const transient = isTransientUpstreamStatus(response.status);
-    const outStatus = transient ? 529 : response.status;
+    const nativeMainFence = response.status === 503
+      && upstreamRetryAfter?.trim() === "1"
+      && message === "Native Codex main profile is switching; retry this request";
+    const transient = !nativeMainFence && isTransientUpstreamStatus(response.status);
+    const outStatus = nativeMainFence ? 503 : transient ? 529 : response.status;
     const out = new Response(JSON.stringify(anthropicErrorBody(outStatus, message)), {
       status: outStatus,
       headers: {

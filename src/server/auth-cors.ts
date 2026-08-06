@@ -11,8 +11,10 @@ import {
   providerBaseUrlConfigError,
   providerHeadersConfigError,
   reasoningSummaryDeliveryRecordConfigError,
+  retryOn429PolicyConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
+import { redactSecretString } from "../lib/redact";
 import { effectiveGoogleMode, getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
@@ -390,6 +392,11 @@ function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: Oc
   return actualKeys.every(key => JSON.stringify(actual[key]) === JSON.stringify((expected as unknown as Record<string, unknown>)[key]));
 }
 
+/**
+ * Validate a provider object arriving at the management write boundary. Returns an error
+ * string, or null when the provider may be persisted. Caller-controlled names/fields are
+ * redacted and JSON-escaped so secrets never reach the response.
+ */
 export function providerManagementConfigError(name: unknown, provider: unknown): string | null {
   if (typeof name !== "string" || !provider || typeof provider !== "object" || Array.isArray(provider)) {
     return "provider must be a plain object";
@@ -407,7 +414,9 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
       return "provider openai codexAccountMode must be pool or direct";
     }
     if (seed) seed.codexAccountMode = raw.codexAccountMode;
-    const canonical = seed && sameCanonicalProviderSeed(raw, seed);
+    const canonicalCandidate = { ...raw };
+    delete canonicalCandidate.responsesSnapshotRepair;
+    const canonical = seed && sameCanonicalProviderSeed(canonicalCandidate, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;
     }
@@ -425,6 +434,12 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(typed.headers);
   if (headersError) return `provider ${name} ${headersError}`;
+  const retryOn429Error = retryOn429PolicyConfigError(raw.retryOn429);
+  if (retryOn429Error) {
+    // The provider name is caller-controlled and can be token-shaped; redact and JSON-escape
+    // it before it reaches the management API response.
+    return `provider ${JSON.stringify(redactSecretString(name))} ${retryOn429Error}`;
+  }
   const apiKeyTransportError = apiKeyTransportConfigError(typed);
   if (apiKeyTransportError) return `provider ${name} ${apiKeyTransportError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");
@@ -445,6 +460,9 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     typed,
   );
   if (preferHostedToolsError) return `provider ${name} ${preferHostedToolsError}`;
+  if (raw.responsesSnapshotRepair !== undefined && typeof raw.responsesSnapshotRepair !== "boolean") {
+    return `provider ${name} responsesSnapshotRepair must be a boolean`;
+  }
   const defaultMaxOutputError = positiveIntegerConfigError(raw.defaultMaxOutputTokens, "defaultMaxOutputTokens");
   if (defaultMaxOutputError) return `provider ${name} ${defaultMaxOutputError}`;
   const maxOutputError = positiveIntegerRecordConfigError(raw.modelMaxOutputTokens, "modelMaxOutputTokens");

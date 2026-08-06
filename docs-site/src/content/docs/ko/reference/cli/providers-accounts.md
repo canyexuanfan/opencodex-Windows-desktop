@@ -15,7 +15,7 @@ description: 제공자 설정, 자격 증명, 할당량, 모델 카탈로그 명
 | --- | --- | --- |
 | `list` | `--json` | 설정된 제공자와 남아 있는 레지스트리 항목을 나열합니다. |
 | `add <name>` | `--adapter <adapter>`, `--base-url <url>`, `--api-key <key>`, `--default-model <model>`, `--set-default`, `--force`, `--json`, `--sync` | 레지스트리/사용자 지정 제공자를 추가합니다. `--force`는 덮어쓰고, `--sync`는 사람이 읽는 출력 모드에서 실행 중인 프록시를 새로 고칩니다. |
-| `edit <name>` | 제공자 필드 플래그, `--json` | 키 풀을 바꾸지 않고 검증된 실시간 제공자 필드를 수정합니다. |
+| `edit <name>` | 제공자 필드 플래그, `--headers <json>`, `--json` | 키 풀을 바꾸지 않고 검증된 실시간 제공자 필드를 수정합니다. `--headers`는 사용자 지정 요청 헤더를 병합하며, `{}` 또는 `-`로 지울 수 있습니다. |
 | `test <name>` | `--json` | 실제 상위 모델 엔드포인트를 확인합니다. |
 | `show <name>` | `--json` | API 키를 마스킹한 설정을 보여줍니다. |
 | `remove <name>` | `--json` | 기본값이 아닌 제공자를 제거합니다. 마지막 제공자는 제거할 수 없습니다. |
@@ -34,6 +34,23 @@ ocx provider show anthropic --json
 ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
+
+:::caution[커스텀 헤더는 자격증명 통로가 아닙니다]
+`--headers`는 비밀이 아닌 요청 메타데이터용입니다 — 라우팅 힌트, 테넌트나 프로젝트
+선택자, 추적 id 같은 것들이요. 인증 정보를 넣는 자리가 아니고, 검증기는 표준 자격증명
+헤더 이름(`Authorization`, `X-Api-Key`, `Cookie` 등)을 `apiKey` / `authMode`를
+쓰라는 안내와 함께 거부합니다.
+
+다만 `X-My-Token` 같은 임의 이름까지 알아볼 수는 없으니 그 경계는 사용자가 지켜야
+합니다. 이유는 두 가지입니다.
+
+- JSON이 명령줄 인자라서, 비밀이 들어가면 셸 히스토리와 프로세스 목록에 남습니다.
+  CLI가 무엇을 가리기도 전에 같은 머신의 다른 프로세스가 읽을 수 있습니다.
+- 헤더 값은 `config.json`에 평문으로 저장됩니다. 별도 저장·마스킹 경로가 있는
+  API 키와 다릅니다.
+
+비밀에 해당하는 값은 `--api-key`나 OAuth 로그인을 쓰세요.
+:::
 
 ## 인증
 
@@ -164,6 +181,33 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 
 계정의 Codex reset credits를 확인합니다. credit을 소비하는 동작은 파괴적이므로 `--consume`와 `--yes`를 둘 다 요구합니다.
 
+### `ocx account main <subcommand>`
+
+OpenCodex 계정 풀 라우팅을 변경하지 않고 이름이 지정된 네이티브 Codex 기본 로그인 프로필을 관리합니다.
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+각 변경 명령은 실행 중인 프록시가 반환한 정규화된 유효 `CODEX_HOME`을 표시합니다. 이 경로는
+호출자의 `CODEX_HOME`과 다를 수 있으며, JSON을 지원하는 명령은 같은 값을
+`effectiveCodexHome`으로 반환합니다.
+
+버전 1은 파일 기반 Codex 인증을 지원하고 저장된 프로필을 AES-256-GCM으로 암호화하며 암호화 키를 운영 체제 자격 증명 저장소에 보관합니다. `add`는 생성된 자격 증명을 가져오기 전에 공식 Codex 로그인을 스테이징합니다. 프로필을 전환하기 전에 Codex를 종료하십시오. 전환에 성공하면 로컬 작업과 기록은 보존되지만 계속하기 전에 Codex를 다시 시작해야 합니다. `doctor`로 프로필 상태를 확인하고 `recover`로 중단된 전환을 완료하거나 롤백할 수 있습니다. `switch`에는 프로필 ID 또는 라벨을 지정할 수 있습니다.
+
+v1 복구 매트릭스는 트랜잭션 파일이 rename으로 게시된 뒤 OpenCodex 프로세스가 종료되는 경우를 다룹니다. 운영 체제 또는 커널 충돌이나 갑작스러운 전원 손실에 대한 내구성은 보장하지 않습니다. `atomicWriteFileAsync()`는 파일이나 부모 디렉터리에 `fsync`를 수행하지 않습니다.
+
+암호화된 볼트, 전환 저널, 복구 마커 및 저널 격리 파일은 정규 `<real CODEX_HOME>/.opencodex-native-main-profiles` 디렉터리에 저장됩니다. 따라서 해당 Codex 홈을 공유하는 모든 OpenCodex 인스턴스는 동일한 단일 소유자와 단일 복구 상태를 관찰합니다. 평문 로그인 스테이징은 각 `<OPENCODEX_HOME>/native-main-profile-staging` 디렉터리 아래에 서로 분리된 채 유지됩니다.
+
+native-main 트래픽이나 저널 복구를 허용하기 전에 수명 주기 소유자가 자격 증명에 대한 배타적 점유권을 획득하고, 이름이 정확히 `auth.json.ocx.<pid>.<sequence>.tmp`인 충돌 잔여 파일만 제거합니다. 각 후보는 변경되지 않은 정규 `CODEX_HOME` 아래에서 하드 링크 수가 1인 일반 파일로 유지되어야 하며, 내용을 잘라내고 flush한 다음 unlink합니다. 링크나 재분석 지점(reparse point)으로의 바꿔치기, 파일 식별 정보 변경 또는 그 밖의 모호성이 있으면 native-main 트래픽은 계속 차단되며, 이름이 비슷할 뿐 정확히 일치하지 않는 파일은 자동으로 제거하지 않습니다. 이는 정상적으로 협력하는 OpenCodex 프로세스의 충돌을 방어하지만, 이미 같은 운영 체제 사용자로 실행 중인 악의적 프로세스까지 방어하지는 않습니다. 해당 사용자와 `CODEX_HOME`이 있는 파일 시스템은 계속 신뢰 대상으로 간주되며, 내용을 잘라내더라도 copy-on-write 저장소, 스냅샷 또는 SSD 잔류 데이터에서 물리적으로 지워진다고 보장할 수 없습니다.
+
+프리뷰 빌드는 `<OPENCODEX_HOME>/native-main-profiles`를 사용했습니다. 이 레이아웃은 절대로 자동으로 가져오지 않습니다. `doctor`가 레거시 프로필 상태를 보고하면 동일한 `CODEX_HOME`을 공유하는 모든 OpenCodex 프록시를 중지하십시오. 그런 다음 해당하는 `*.vault.json`, `*.journal.json`, 복구 마커 및 참조된 journal-quarantine 파일을 백업하고, 소유자 전용 권한을 유지한 채 모두 함께 정규 디렉터리로 옮기십시오. 또는 이전 프리뷰 파일 세트를 제거하고 `ocx account main register`를 다시 실행하십시오. 동일한 `CODEX_HOME`을 공유하는 프록시가 하나라도 실행 중인 동안에는 여러 이전 루트 중 하나를 선택하거나 두 레이아웃을 동시에 사용하지 마십시오. Windows에서는 이전의 대소문자를 구분하지 않는 홈 식별자를 키로 사용한 프리뷰 상태를 옮기지 말고 재설정해야 합니다. 암호화된 AAD와 운영 체제 키링 식별자는 의도적으로 재사용하지 않기 때문입니다.
+
 ## 모델
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`
@@ -185,7 +229,7 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 | `provider <name> <on\|off>` | `--json` | 한 제공자의 모든 모델을 한 번의 쓰기로 활성화하거나 비활성화합니다. |
 | `selected <provider>` | `--set <id,id...>`, `--clear`, `--json` | 제공자 모델 허용 목록을 읽거나 교체합니다. `--clear`는 허용 목록을 제거해 모든 모델을 제공하도록 합니다. |
 | `context <status\|value <tokens>\|provider <name> <on\|off>\|all <on\|off>>` | `--json` | 전역 또는 제공자별로 컨텍스트 창 한도를 읽거나 설정합니다. |
-| `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | Codex의 백그라운드 헬퍼 호출에 사용할 대체 모델을 읽거나 설정합니다. `-`는 모델을 지웁니다. `status`는 프록시가 가로채는 헬퍼 슬러그인 `sourceModels`도 보고합니다(기본값: `gpt-5.4-mini`와 `gpt-5.6-luna`). |
+| `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | Codex의 백그라운드 헬퍼 호출에 사용할 대체 모델을 읽거나 설정합니다. `-`는 모델을 지웁니다. `status`는 프록시가 가로채는 헬퍼 슬러그인 `sourceModels`도 보고합니다(기본값: `gpt-5.6-luna`; 0.144.x 이하 클라이언트가 사용한 `gpt-5.4-mini`는 명시적인 `sourceModels` 재정의로 복원할 수 있습니다). |
 
 ```bash
 ocx models live --json                                  # what Codex can actually see right now

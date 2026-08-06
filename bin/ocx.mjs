@@ -137,19 +137,52 @@ function runNpmSelfUpdate() {
   }
 
   // Remember whether a background service manages the proxy BEFORE stopping — `ocx stop`
-  // unloads it permanently, so a successful update must reinstall it afterwards.
+  // unloads it, so a successful update must refresh and restart it afterwards.
   const serviceStatePath = join(configDir(), "service-state.json");
   const serviceWasInstalled = existsSync(serviceStatePath);
   const trayBeforeUpdate = planWindowsTrayUpdate(
     process.platform === "win32" ? trayInstallState() : { installed: false, running: false },
   );
-  /** Read the backend from service-state.json so the update reinstalls the same one. */
-  function serviceReinstallArgs() {
+  /**
+   * Refresh the existing service without re-registering it. `service repair` discovers
+   * the installed backend itself and, on Windows scheduler installs, rewrites the wrapper
+   * assets and restarts the existing task without `schtasks /create` — the elevation a
+   * non-admin `ocx update` does not have.
+   */
+  function serviceRefreshArgs() {
+    return [launcher, "service", "repair"];
+  }
+  /** Register from scratch, preserving the recorded backend. Only for a genuinely absent service. */
+  function serviceInstallArgs() {
     try {
       const state = JSON.parse(readFileSync(serviceStatePath, "utf8"));
       if (state.backend === "native") return [launcher, "service", "install", "--native"];
     } catch { /* missing or corrupt — fall through to default */ }
     return [launcher, "service", "install"];
+  }
+  /**
+   * Structured "is a service actually registered?" answer.
+   *
+   * This file is plain Node ESM and cannot import `diagnoseService()` from the
+   * TypeScript runtime, so it asks the freshly-installed launcher — which runs that
+   * diagnostic under Bun — and reads `startup.serviceInstalled`.
+   *
+   * Returns `null` when the probe itself could not answer, which callers must treat as
+   * "unknown" rather than "absent": failing closed here means NOT re-registering.
+   */
+  function readServiceInstalledFromStatus(launcherPath) {
+    try {
+      const st = spawnSync(process.execPath, [launcherPath, "status", "--json"], {
+        encoding: "utf8",
+        timeout: 20_000,
+        windowsHide: true,
+      });
+      if (st.status !== 0 || typeof st.stdout !== "string" || !st.stdout.trim()) return null;
+      const installed = JSON.parse(st.stdout)?.startup?.serviceInstalled;
+      return typeof installed === "boolean" ? installed : null;
+    } catch {
+      return null;
+    }
   }
 
   // Capture listen target before stop clears runtime-port.json (mirrors GUI/CLI update worker).
@@ -244,15 +277,26 @@ function runNpmSelfUpdate() {
         if (trayBeforeUpdate.restoreOnFailure) runTrayLifecycle(launcher, "start");
       }
     }
-    // The stop above unloaded any managed service; reinstall via the freshly-installed
+    // The stop above unloaded any managed service; refresh via the freshly-installed
     // launcher so the new files write the baked paths and the service restarts.
     if (serviceWasInstalled) {
-      console.log("Reinstalling the background service with the updated files...");
+      console.log("Refreshing the background service with the updated files...");
       const prevBake = process.env.OCX_BAKE_PORT;
       process.env.OCX_BAKE_PORT = String(bakePort);
       try {
-        const svcArgs = serviceReinstallArgs();
-        const svc = spawnSync(process.execPath, svcArgs, { stdio: "inherit", windowsHide: true });
+        let svc = spawnSync(process.execPath, serviceRefreshArgs(), { stdio: "inherit", windowsHide: true });
+        // `serviceWasInstalled` is inferred from service-state.json alone, which can be
+        // STALE — present while the registration is gone. Repair refuses that case by
+        // design, and its thrown Error is indistinguishable from any other failure at
+        // this layer (plain Error, inherited stdio, generic exit status). So ask for
+        // structured state instead of parsing the failure: install only when the
+        // diagnostic says the service is genuinely absent. Installing after ANY repair
+        // failure would resurrect the elevation prompt this change exists to avoid, and
+        // could re-register a service the user just uninstalled.
+        if (svc.status !== 0 && readServiceInstalledFromStatus(launcher) === false) {
+          console.log("No registered service found — installing it instead.");
+          svc = spawnSync(process.execPath, serviceInstallArgs(), { stdio: "inherit", windowsHide: true });
+        }
         let needDirectStart = svc.status !== 0;
         if (!needDirectStart) {
           // Exit 0 can still leave stale/missing assets that never bring the proxy
@@ -277,17 +321,15 @@ function runNpmSelfUpdate() {
           }
         }
         if (needDirectStart) {
-          // On Windows, schtasks /create requires elevation. The launcher inherits the
-          // user's (non-admin) token, so the service reinstall can fail with access
-          // denied — or exit 0 while leaving a non-viable manager. Fall back to a
-          // direct detached proxy start so the update never leaves the user without
-          // a running proxy.
+          // A repair needs no elevation, but it can still fail — or exit 0 while leaving
+          // a non-viable manager. Fall back to a direct detached proxy start so the
+          // update never leaves the user without a running proxy.
           console.warn(
             svc.status === 0
               ? "opencodex: service refresh left a non-viable manager — starting the proxy directly instead."
               : "opencodex: service refresh failed — starting the proxy directly instead.",
           );
-          console.warn("  Run 'ocx service install' as administrator to refresh the background service.");
+          console.warn("  Run 'ocx service repair' to see why the background service could not restart.");
           const env = { ...process.env };
           delete env.OCX_SERVICE;
           const child = spawn(process.execPath, [launcher, "start", "--port", String(bakePort)], {

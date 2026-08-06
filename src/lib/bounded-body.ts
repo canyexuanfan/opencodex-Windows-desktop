@@ -8,6 +8,12 @@ export interface BoundedBodyOptions {
 	/** Abort the read with this signal. Its reason is rethrown by identity. */
 	signal?: AbortSignal;
 	/**
+	 * Reject the returned promise with TypeError on malformed or truncated UTF-8
+	 * instead of replacing invalid bytes, including during timeout-path flushes.
+	 * Reader cancellation and lock release still run. Defaults to false.
+	 */
+	fatalUtf8?: boolean;
+	/**
 	 * Byte ceiling for retained body data. Defaults to BOUNDED_BODY_MAX_BYTES (64 KiB),
 	 * which suits error bodies; callers materializing whole success payloads (e.g. a
 	 * non-streaming upstream JSON completion) pass a larger explicit budget.
@@ -17,6 +23,8 @@ export interface BoundedBodyOptions {
 	totalTimeoutMs?: number;
 	/** Deadline between non-empty raw chunks. Exposed for focused tests. */
 	inactivityTimeoutMs?: number;
+	/** Deadline for the first non-empty raw chunk. Defaults to inactivityTimeoutMs. */
+	firstByteTimeoutMs?: number;
 }
 
 export interface BoundedBodyResult {
@@ -75,8 +83,8 @@ function cancelWithoutWaiting(reader: ReadableStreamDefaultReader<Uint8Array>, r
 	}
 }
 
-function decodeUtf8(chunks: readonly Uint8Array[]): string {
-	const decoder = new TextDecoder();
+function decodeUtf8(chunks: readonly Uint8Array[], fatal: boolean): string {
+	const decoder = new TextDecoder("utf-8", { fatal });
 	let text = "";
 	for (const chunk of chunks) text += decoder.decode(chunk, { stream: true });
 	// Flush an incomplete trailing UTF-8 sequence deterministically.
@@ -123,7 +131,7 @@ export async function readBoundedResponseBody(
 	let cancelReason: unknown;
 	const total = timeoutPromise(options.totalTimeoutMs ?? BOUNDED_BODY_TIMEOUT_MS, TOTAL_TIMEOUT);
 	let inactivity = timeoutPromise(
-		options.inactivityTimeoutMs ?? BOUNDED_BODY_TIMEOUT_MS,
+		options.firstByteTimeoutMs ?? options.inactivityTimeoutMs ?? BOUNDED_BODY_TIMEOUT_MS,
 		INACTIVITY_TIMEOUT,
 	);
 
@@ -158,7 +166,7 @@ export async function readBoundedResponseBody(
 					"TimeoutError",
 				);
 				return {
-					text: decodeUtf8([retained.subarray(0, retainedBytes)]),
+					text: decodeUtf8([retained.subarray(0, retainedBytes)], options.fatalUtf8 === true),
 					truncated: true,
 					timedOut: true,
 					totalTimedOut: outcome === TOTAL_TIMEOUT,
@@ -171,7 +179,7 @@ export async function readBoundedResponseBody(
 			const { value, done } = outcome as ReadableStreamReadResult<Uint8Array>;
 			if (done) {
 				return {
-					text: decodeUtf8([retained.subarray(0, retainedBytes)]),
+					text: decodeUtf8([retained.subarray(0, retainedBytes)], options.fatalUtf8 === true),
 					truncated: false,
 					timedOut: false,
 					totalTimedOut: false,

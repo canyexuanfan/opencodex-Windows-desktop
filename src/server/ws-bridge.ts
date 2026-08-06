@@ -1,10 +1,11 @@
 import type { ServerWebSocket } from "bun";
+import { responsesJsonEventSequence } from "./responses-json-events";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import type { CodexAuthContext } from "../codex/auth-context";
 import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
 import type { DataPlaneAdmission } from "./auth-cors";
-import type { AdmissionReservation } from "../lib/admission";
+import type { AdmissionLease, AdmissionReservation } from "../lib/admission";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -39,6 +40,12 @@ export interface WsData {
   liveUpstreamHeaders?: Record<string, string>;
   livePending?: Array<string | Buffer>;
   liveOpened?: boolean;
+  /** Once teardown starts, ignore new client frames until the upstream closes. */
+  liveClosing?: boolean;
+  /** Schedules one bounded close retry without surrendering native-main ownership. */
+  liveCloseFallback?: ReturnType<typeof setTimeout>;
+  /** Turn/account ownership retained for the complete sideband socket lifetime. */
+  liveTurnAdmissionLease?: AdmissionLease;
   admissionLease?: AdmissionReservation<ServerWebSocket<WsData>>;
 }
 
@@ -301,25 +308,12 @@ export function sendResponsesJsonAsEvents(
     }
     sendTextFrame(ws, text);
   };
-  const output = Array.isArray(response.output) ? response.output : [];
-  sendObservedFrame({
-    type: "response.created",
-    response: { ...response, status: "in_progress", output: [] },
-  });
-  output.forEach((item, outputIndex) => {
-    sendObservedFrame({
-      type: "response.output_item.done",
-      output_index: outputIndex,
-      item,
-    });
-  });
   const finalStatus = response.status === "failed" || response.status === "incomplete"
     ? response.status
     : "completed";
-  sendObservedFrame({
-    type: `response.${finalStatus}` as "response.completed" | "response.failed" | "response.incomplete",
-    response: { ...response, status: finalStatus },
-  });
+  for (const frame of responsesJsonEventSequence(response)) {
+    sendObservedFrame(frame);
+  }
   onTerminal?.(finalStatus);
 }
 

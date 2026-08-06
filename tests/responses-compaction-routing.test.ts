@@ -5,7 +5,7 @@
  * fatals on a compaction turn that came back as an ordinary message.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleResponses, handleResponsesCompact } from "../src/server/responses";
@@ -17,12 +17,15 @@ import {
   recordCodexUpstreamOutcome,
   resolveCodexAccountForThread,
 } from "../src/codex/routing";
-import { updateAccountQuota } from "../src/codex/auth-api";
+import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 import {
   releaseCodexAuthContextProbeLease,
   resolveCodexAuthContext,
 } from "../src/codex/auth-context";
 import { supportsNativeResponsesCompactEndpoint } from "../src/providers/openai-tiers";
+import type { RequestLogContext } from "../src/server/request-log";
+import { acquireNativeMainProfileDrain, tryAdmitTurn } from "../src/server/lifecycle";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const originalFetch = globalThis.fetch;
@@ -161,6 +164,33 @@ describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
       ...officialApi,
       baseUrl: "https://gateway.example/v1",
     })).toBe(false);
+  });
+});
+
+describe("native compact usage reporting", () => {
+  test("the buffered upstream body fills the request log usage and stays intact for the client", async () => {
+    const config = {
+      defaultProvider: "openai-apikey",
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+        },
+      },
+    } as unknown as OcxConfig;
+    globalThis.fetch = (async () => jsonResponse(completedPayload("native summary"))) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "", provider: "" };
+    const response = await handleResponsesCompact(
+      compactionRequest(baseCompactionBody({ model: "openai-apikey/gpt-5.5" })),
+      config,
+      logCtx,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { usage?: Record<string, unknown> };
+    expect(body.usage).toMatchObject({ input_tokens: 10, output_tokens: 5, total_tokens: 15 });
+    expect(logCtx.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
   });
 });
 
@@ -541,6 +571,7 @@ describe("compact alternate-account attempt (#913)", () => {
     process.env.OPENCODEX_HOME = testDir;
     process.env.CODEX_HOME = testDir;
     clearCodexUpstreamHealth();
+    clearAccountQuota();
     for (const id of ["pool-a", "pool-b"]) {
       saveCodexAccountCredential(id, {
         accessToken: `${id}-access-token`,
@@ -548,10 +579,12 @@ describe("compact alternate-account attempt (#913)", () => {
         expiresAt: Date.now() + 300_000,
         chatgptAccountId: id === "pool-a" ? "pool_acc_a" : "pool_acc_b",
       });
+      updateAccountQuota(id, id === "pool-a" ? 10 : 20);
     }
     return run(twoAccountPoolConfig()).finally(() => {
       globalThis.fetch = originalFetch;
       clearCodexUpstreamHealth();
+      clearAccountQuota();
       rmSync(testDir, { recursive: true, force: true });
       if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousOpencodexHome;
@@ -583,8 +616,7 @@ describe("compact alternate-account attempt (#913)", () => {
         );
 
         // Two sends, not one and not three: the alternate ran once and did not recurse.
-        expect(bearers).toHaveLength(2);
-        expect(bearers[0]).not.toBe(bearers[1]);
+        expect(bearers).toEqual(["Bearer pool-a-access-token", "Bearer pool-b-access-token"]);
         expect(res.status).toBe(200);
       });
     });
@@ -616,7 +648,93 @@ describe("compact alternate-account attempt (#913)", () => {
         expect(res.status).toBe(503);
       });
     });
+
+    test(`an exact account selector preserves the original ${rejection} without an alternate send`, async () => {
+      await withPoolEnv(`ocx-compact-exact-${rejection}-`, async config => {
+        config.codexAccountNamespaces = { side: "pool-a" };
+        const bearers: string[] = [];
+        const accountIds: string[] = [];
+        const body = JSON.stringify({ error: { message: "selected account exhausted" } });
+        globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+          const headers = new Headers(init?.headers);
+          bearers.push(headers.get("authorization") ?? "");
+          accountIds.push(headers.get("chatgpt-account-id") ?? "");
+          return new Response(body, {
+            status: rejection,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "42",
+              "x-codex-primary-reset-at": "1900000000",
+            },
+          });
+        }) as typeof fetch;
+
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({ model: "side/gpt-5.6-sol" })),
+          config,
+          { model: "", provider: "" },
+        );
+
+        expect(bearers).toEqual(["Bearer pool-a-access-token"]);
+        expect(accountIds).toEqual(["pool_acc_a"]);
+        expect(res.status).toBe(rejection);
+        expect(res.headers.get("retry-after")).toBe("42");
+        expect(res.headers.get("x-codex-primary-reset-at")).toBe("1900000000");
+        expect(await res.text()).toBe(body);
+        expect(config.activeCodexAccountId).toBe("pool-a");
+        expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+      });
+    });
   }
+
+  test("a native-main drain starting between attempts preserves the first rejection", async () => {
+    await withPoolEnv("ocx-compact-alt-main-drain-", async config => {
+      // Keep native main as A's only alternate. This makes the fixture fail closed
+      // only when the second auth selection receives the same admitted-turn lease.
+      config.codexAccounts = [config.codexAccounts![0]!];
+      config.activeCodexAccountId = "pool-a";
+      writeFileSync(join(process.env.CODEX_HOME!, "auth.json"), JSON.stringify({
+        tokens: {
+          access_token: "main-access-token",
+          account_id: "main-account",
+        },
+      }));
+      updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 0);
+
+      const turn = tryAdmitTurn();
+      expect(turn).not.toBeNull();
+      let profileDrain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+      const accounts: Array<string | null> = [];
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        accounts.push(new Headers(init?.headers).get("chatgpt-account-id"));
+        if (accounts.length === 1) {
+          profileDrain = acquireNativeMainProfileDrain("compact-between-attempts");
+          expect(profileDrain).not.toBeNull();
+          return Response.json({ error: { message: "pool exhausted" } }, {
+            status: 429,
+            headers: { "retry-after": "47" },
+          });
+        }
+        return jsonResponse(completedPayload("unexpected native-main alternate"));
+      }) as typeof fetch;
+
+      try {
+        const res = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+          turn!,
+        );
+
+        expect(accounts).toEqual(["pool_acc_a"]);
+        expect(res.status).toBe(429);
+        expect(res.headers.get("retry-after")).toBe("47");
+      } finally {
+        profileDrain?.release();
+        turn?.release();
+      }
+    });
+  });
 
   test("a bound thread at 100% local quota still sends once, with no alternate attempt", async () => {
     // The scope guard. The alternate path must trigger on an actual upstream 429/402,
@@ -811,4 +929,29 @@ describe("compact alternate-account attempt (#913)", () => {
       expect(statuses).toEqual([402, 429]);
     });
   });
+});
+
+test("a no-eligible policy compact request persists the evaluation trace", async () => {
+  const config = {
+    ...keyProviderConfig(),
+    routingProfiles: {
+      strict: {
+        candidates: [{ provider: "gw", model: "gpt-5.5" }],
+        require: { minContextWindow: 128000 },
+      },
+    },
+  } as unknown as OcxConfig;
+  globalThis.fetch = (async () => {
+    throw new Error("compact must not send upstream when policy evaluation has no eligible candidate");
+  }) as typeof fetch;
+  const logCtx: RequestLogContext = { model: "", provider: "" };
+  const response = await handleResponsesCompact(
+    compactionRequest(baseCompactionBody({ model: "policy/strict" })),
+    config,
+    logCtx,
+  );
+  expect(response.status).toBe(404);
+  expect(logCtx.routeDecision).toBeDefined();
+  expect(logCtx.routeDecision!.selected.reason).toBe("no-eligible-candidate");
+  expect(logCtx.routeDecision!.candidates).toHaveLength(1);
 });

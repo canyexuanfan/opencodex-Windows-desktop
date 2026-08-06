@@ -18,6 +18,7 @@ import {
   type ServiceMemoryData,
 } from "../src/cli/doctor";
 import { collectOrcaCodexHomeDiagnostic } from "../src/codex/home";
+import { NativeProfileError } from "../src/codex/native-profile-types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-doctor-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -320,6 +321,50 @@ describe("doctor", () => {
     }) as typeof fetch);
     expect(connect.classification).toBe("connect_error");
   });
+
+  test("probeWham suppresses credential and network reads when the cross-process claim is unavailable", async () => {
+    let fetchCalls = 0;
+    const result = await probeWham((async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch, {
+      withNativeMainClaim: async () => {
+        throw new NativeProfileError(
+          "NATIVE_MAIN_CLAIM_BUSY",
+          "Native-main credentials are in use.",
+          503,
+          true,
+        );
+      },
+    });
+
+    expect(fetchCalls).toBe(0);
+    expect(result).toMatchObject({
+      ok: false,
+      status: null,
+      classification: "native_main_claim_busy",
+      authenticated: false,
+    });
+  });
+
+  test("probeWham suppresses credential and network reads during retained recovery", async () => {
+    let fetchCalls = 0;
+    const result = await probeWham((async () => {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch, {
+      withNativeMainClaim: operation => operation(),
+      probeNativeMainRecoveryState: () => "manual",
+    });
+
+    expect(fetchCalls).toBe(0);
+    expect(result).toMatchObject({
+      ok: false,
+      status: null,
+      classification: "native_main_recovery_manual",
+      authenticated: false,
+    });
+  });
 });
 
 describe("service memory section (#314 WP4)", () => {
@@ -483,5 +528,21 @@ describe("service memory section (#314 WP4)", () => {
     expect(hint).toContain("ocx service start");
     expect(hint).toContain("127.0.0.1:12000");
     expect(hint).not.toContain("ocx service install");
+  });
+
+  // 260804 #970 follow-up: serviceViable=false conflates "no service" with "registered
+  // but stale/stopped". Only the first wants install; re-registering an existing service
+  // costs a UAC prompt on Windows and can switch a WinSW backend to Task Scheduler.
+  test("an installed but unhealthy service is pointed at repair, not install", () => {
+    const broken = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true });
+    expect(broken).toContain("ocx service repair");
+    expect(broken).not.toContain("ocx service install");
+
+    const absent = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: false });
+    expect(absent).toContain("ocx service install");
+
+    // A two-manager conflict must be uninstalled first; repairService() refuses it.
+    const conflict = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true, serviceConflict: true });
+    expect(conflict).toContain("ocx service install");
   });
 });

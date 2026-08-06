@@ -175,7 +175,7 @@ same stale-`app-server` warning and optional `--restart-codex` behavior as `ocx 
 
 ## Background service
 
-### `ocx service [install|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|start|stop|status|uninstall|remove]`
 
 Run opencodex as a login-managed background service (macOS **launchd**, Linux **systemd user unit**,
 Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash. Service runs set
@@ -184,7 +184,8 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 | Subcommand | Action |
 | --- | --- |
 | none | Create/update and start the service. |
-| `install` | Create and start the service. |
+| `install` | Create and start the service. Registers it, which on Windows needs elevation. |
+| `repair` | Refresh an installed service in place and restart it, without re-registering it. |
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
 | `status` | Report service and proxy diagnostics plus log paths. |
@@ -194,6 +195,7 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 ```bash
 ocx service
 ocx service install
+ocx service repair
 ocx service status
 ocx service uninstall
 ```
@@ -230,9 +232,9 @@ log named in the message, and use `ocx start` to serve in the foreground meanwhi
 ⚠️  installed and loaded (launchd; logs: …)
    Registered, but no proxy is answering on port 10100.
    launchd is running an OLDER plist than the one on disk.
-   Fix:    launchctl bootout gui/$(id -u)/com.opencodex.proxy && ocx service install
+   Fix:    launchctl bootout gui/$(id -u)/com.opencodex.proxy && ocx service repair
    Log:    ~/.opencodex/service.log
-   Repair: ocx service install
+   Repair: ocx service repair
    Meanwhile: ocx start           (serves in the foreground)
 ```
 

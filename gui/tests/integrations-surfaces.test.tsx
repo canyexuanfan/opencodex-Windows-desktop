@@ -53,6 +53,13 @@ type JournalRow = {
 let stateResponse: () => Response;
 let journalRows: JournalRow[];
 let putResponse: () => Response;
+/**
+ * The overview also reads Codex routing, API keys, Claude Code, Claude Desktop
+ * and the Grok fence. Default answers keep every existing test's card grid
+ * shaped the way it was written; flipping this makes all five fail so the
+ * unknown path can be driven.
+ */
+let failExtraSources = false;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -94,6 +101,7 @@ beforeEach(() => {
   apiBase = `http://ocx-test-${mountCount}.invalid`;
   stateResponse = () => json(status());
   putResponse = () => json({ ok: true, clientId: "hermes", changed: true, state: "absent", message: "disabled" });
+  failExtraSources = false;
 
   const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -104,6 +112,25 @@ beforeEach(() => {
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
     if (url.includes("/journal")) return json({ operations: journalRows });
+    if (url.includes("/api/startup-health")) {
+      return failExtraSources
+        ? json({ error: "nope" }, 500)
+        : json({ routingInjected: false, status: "native", recommendedCommand: null });
+    }
+    if (url.includes("/api/keys")) {
+      return failExtraSources ? json({ error: "nope" }, 500) : json({ keys: [] });
+    }
+    if (url.includes("/api/claude-desktop/status")) {
+      return failExtraSources
+        ? json({ error: "nope" }, 500)
+        : json({ applied: false, stale: false, activeProfile: null, appliedAt: null });
+    }
+    if (url.includes("/api/claude-code")) {
+      return failExtraSources ? json({ error: "nope" }, 500) : json({ enabled: false });
+    }
+    if (url.includes("/api/grok")) {
+      return failExtraSources ? json({ error: "nope" }, 500) : json({ present: false, models: [] });
+    }
     if (method === "PUT") return putResponse();
     if (url.includes("/restore")) return json({ ok: true, clientId: "hermes", changed: true, state: "current", message: "restored" });
     return stateResponse();
@@ -146,6 +173,22 @@ async function mountClient(active = true): Promise<void> {
 
 function buttons(): HTMLButtonElement[] {
   return Array.from(container.querySelectorAll("button")) as unknown as HTMLButtonElement[];
+}
+
+/**
+ * The switch belonging to ONE card.
+ *
+ * `buttons()[0]` used to be the file client's switch because it was the only
+ * card with one. The Codex card now renders too, so "the first switch" is
+ * whichever card sorts first — a fact about layout, not about the client under
+ * test.
+ */
+function switchFor(clientId: string): HTMLButtonElement | undefined {
+  const card = container.querySelector(`[data-client="${clientId}"]`);
+  if (!card) return undefined;
+  return Array.from(card.querySelectorAll("button")).find(
+    button => (button as HTMLButtonElement).className.includes("switch"),
+  ) as HTMLButtonElement | undefined;
 }
 
 function buttonByText(text: string): HTMLButtonElement | undefined {
@@ -491,7 +534,7 @@ test("a card toggles its own client without a trip to the sub-page", async () =>
   stateResponse = () => json({ clients: [status({ state: "stale" })] });
   await mountOverview();
 
-  const sw = buttons().find(button => button.className.includes("switch"));
+  const sw = switchFor("hermes");
   expect(sw).toBeDefined();
   expect(sw!.getAttribute("aria-pressed")).toBe("true");
   await act(async () => { sw!.click(); });
@@ -505,8 +548,98 @@ test("a card toggles its own client without a trip to the sub-page", async () =>
 test("a card cannot toggle a client whose config is in conflict", async () => {
   stateResponse = () => json({ clients: [status({ state: "conflict", reason: "foreign-edit" })] });
   await mountOverview();
-  const sw = buttons().find(button => button.className.includes("switch"));
+  const sw = switchFor("hermes");
   expect(sw?.disabled).toBe(true);
+});
+
+test("a card body navigates to its own client's tab", async () => {
+  /*
+   * The card LOOKS like the target, so that is what a user clicks. It used to
+   * do nothing: only the small ghost button below it navigated. The card is
+   * still not a single button — it holds a switch — so the title carries the
+   * navigation and stretches over the card, and this test drives that title.
+   */
+  stateResponse = () => json({ clients: [status({ state: "current" })] });
+  await mountOverview();
+
+  const link = container.querySelector(
+    ".integration-card[data-client='hermes'] .integration-card-link",
+  ) as unknown as HTMLButtonElement | null;
+  expect(link).not.toBeNull();
+  await act(async () => { link!.click(); });
+  expect(testWindow.location.hash).toBe("#integrations/hermes");
+});
+
+test("every reachable client gets a card, not just the file six", async () => {
+  /*
+   * The overview read one route and counted six clients, so a user with
+   * Claude Code connected and a Grok fence written was told nothing was
+   * applied while three integrations were live one tab away.
+   */
+  stateResponse = () => json({ clients: [status({ state: "absent" })] });
+  await mountOverview();
+
+  const clientIds = Array.from(container.querySelectorAll(".integration-card"))
+    .map(card => (card as unknown as HTMLElement).getAttribute("data-client"));
+  expect(clientIds).toContain("codex");
+  // Keys deliberately absent: a credential is not a client card. It renders as
+  // its own row above the grid instead.
+  expect(clientIds).not.toContain("keys");
+  expect(container.querySelector(".integration-cards [data-client='keys']")).toBeNull();
+  expect(container.querySelector(".integration-api-keys-row")).not.toBeNull();
+  expect(clientIds).toContain("claude");
+  expect(clientIds).toContain("claudeDesktop");
+  expect(clientIds).toContain("grok");
+  expect(clientIds).toContain("hermes");
+
+  /*
+   * Switches belong to the clients this build can toggle in place, and that set
+   * grew: the file client had the only one until Codex and Grok gained theirs.
+   * Naming the owners keeps the assertion about WHICH cards can toggle rather
+   * than about how many happen to today.
+   */
+  const switchOwners = Array.from(container.querySelectorAll(".integration-cards [data-client]"))
+    .filter(card => Array.from(card.querySelectorAll("button"))
+      .some(button => (button as HTMLButtonElement).className.includes("switch")))
+    .map(card => card.getAttribute("data-client"));
+  expect(switchOwners).toContain("hermes");
+  expect(switchOwners).toContain("codex");
+  // Navigation-only cards still have none.
+  expect(switchOwners).not.toContain("claudeDesktop");
+
+  // Claude Desktop opens Claude's nested route, not a tab of its own.
+  const desktopLink = container.querySelector(
+    ".integration-card[data-client='claudeDesktop'] .integration-card-link",
+  ) as unknown as HTMLButtonElement | null;
+  await act(async () => { desktopLink!.click(); });
+  expect(testWindow.location.hash).toBe("#integrations/claude/desktop");
+});
+
+test("a source that cannot be read is unknown, never 'not applied'", async () => {
+  /*
+   * The five extra reads settle independently. Painting a failed one as
+   * `absent` would be the same lie this whole surface exists to remove, so
+   * they resolve to a muted unknown badge and are counted in neither total.
+   */
+  stateResponse = () => json({ clients: [status({ state: "current" })] });
+  failExtraSources = true;
+  await mountOverview();
+
+  for (const id of ["codex", "claude", "claudeDesktop", "grok"]) {
+    const badge = container.querySelector(
+      `.integration-card[data-client='${id}'] .badge`,
+    ) as unknown as HTMLElement | null;
+    expect(badge?.getAttribute("data-integration-state")).toBe("unknown");
+  }
+  // The keys row says the same thing in credential words: a failed read is
+  // "unavailable", never "no keys issued".
+  const keysRow = container.querySelector(".integration-api-keys-row") as unknown as HTMLElement | null;
+  expect(keysRow?.getAttribute("data-key-state")).toBe("unavailable");
+  // The file client still reports its real state.
+  const hermes = container.querySelector(
+    ".integration-card[data-client='hermes'] .badge",
+  ) as unknown as HTMLElement | null;
+  expect(hermes?.getAttribute("data-integration-state")).toBe("current");
 });
 
 test("a loopback-only refusal is localized, not the server's English message", async () => {

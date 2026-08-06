@@ -16,7 +16,7 @@ both `--adapter` and `--base-url`.
 | --- | --- | --- |
 | `list` | `--json` | List configured providers and the remaining registry entries. |
 | `add <name>` | `--adapter <adapter>`, `--base-url <url>`, `--api-key <key>`, `--default-model <model>`, `--set-default`, `--force`, `--json`, `--sync` | Add a registry/custom provider. `--force` overwrites; `--sync` refreshes a running proxy in human-output mode. |
-| `edit <name>` | provider field flags, `--json` | Edit validated live provider fields without replacing key pools. |
+| `edit <name>` | provider field flags, `--headers <json>`, `--json` | Edit validated live provider fields without replacing key pools. `--headers` merges custom request headers; pass `{}` or `-` to clear them. |
 | `test <name>` | `--json` | Probe the real upstream model endpoint. |
 | `show <name>` | `--json` | Show config with API keys masked. |
 | `remove <name>` | `--json` | Remove a non-default provider; the last provider cannot be removed. |
@@ -35,6 +35,25 @@ ocx provider show anthropic --json
 ocx models --provider anthropic --json
 ocx models live --provider ark --json
 ```
+
+:::caution[Custom headers are not a credential channel]
+`--headers` is for non-secret request metadata — routing hints, tenant or
+project selectors, tracing ids. It is **not** a place to put authentication
+material, and the validator rejects the standard credential header names
+(`Authorization`, `X-Api-Key`, `Cookie`, and the rest) with a pointer to
+`apiKey` / `authMode`.
+
+The validator cannot recognize an arbitrary name such as `X-My-Token`, so the
+boundary is yours to respect. Two reasons it matters:
+
+- The JSON is a command-line argument, so a secret in it lands in shell history
+  and in the process list, where any other process on the machine can read it
+  before the CLI ever redacts anything.
+- Header values are persisted in `config.json` in cleartext, unlike API keys,
+  which have their own storage and masking path.
+
+Use `--api-key` or an OAuth login for anything secret.
+:::
 
 ## Authentication
 
@@ -210,6 +229,57 @@ security find-generic-password -w openrouter | ocx account add-key openrouter --
 Inspect Codex reset credits for an account. Consuming a credit is destructive and requires both
 `--consume` and `--yes`.
 
+### `ocx account main <subcommand>`
+
+Manage named native Codex main-login profiles without changing OpenCodex account-pool routing:
+
+```text
+ocx account main doctor [--json]
+ocx account main list [--json]
+ocx account main register <label> [--json]
+ocx account main add <label>
+ocx account main switch <profile-id-or-label> --yes [--json]
+ocx account main recover [--rollback --yes] [--json]
+```
+
+Each mutating command reports the canonical effective `CODEX_HOME` returned by the running proxy.
+This path can differ from the caller's `CODEX_HOME`; commands that support JSON expose the same
+value as `effectiveCodexHome`.
+
+Version 1 supports file-based Codex authentication, encrypts stored profiles with AES-256-GCM, and
+keeps the encryption key in the operating-system credential store. `add` stages the official Codex
+login flow before importing the resulting credential. Close Codex before switching profiles; a
+successful switch preserves local tasks and history, then requires Codex to be restarted. Use
+`doctor` to inspect profile state and `recover` to finish or roll back an interrupted transition.
+`switch` accepts either the profile ID or its label.
+
+The v1 recovery matrix covers an OpenCodex process exiting after a transaction file has been
+published by rename. It does not claim durability across an OS or kernel crash or sudden power
+loss: `atomicWriteFileAsync()` does not `fsync` either the file or its parent directory.
+
+The encrypted vault, switch journal, recovery marker, and journal quarantine live in the canonical
+`<real CODEX_HOME>/.opencodex-native-main-profiles` directory, so every OpenCodex instance sharing
+that Codex home observes one owner and one recovery state. Plaintext login staging remains isolated
+under each `<OPENCODEX_HOME>/native-main-profile-staging` directory.
+
+Before native-main traffic or journal recovery is admitted, the lifetime owner takes the exclusive
+credential claim and removes only exact `auth.json.ocx.<pid>.<sequence>.tmp` crash residues. Each
+candidate must remain a single-linked regular file under the unchanged canonical `CODEX_HOME`; it is
+truncated, flushed, and then unlinked. Link/reparse substitutions, identity changes, and other
+ambiguity keep native-main traffic closed, while near-miss names are never removed automatically.
+This protects against cooperative OpenCodex crashes, not a malicious process already running as the
+same OS user. That user and the filesystem containing `CODEX_HOME` remain trusted, and truncation
+does not promise physical erasure from copy-on-write storage, snapshots, or SSD remanence.
+
+Preview builds used `<OPENCODEX_HOME>/native-main-profiles`. That layout is never imported silently.
+If `doctor` reports legacy profile state, stop every OpenCodex proxy sharing the same `CODEX_HOME`.
+Then either back up and move the matching `*.vault.json`, `*.journal.json`, recovery marker, and any
+referenced journal-quarantine file together into the canonical directory while preserving owner-only
+permissions, or remove the old preview set and run `ocx account main register` again. Do not choose
+between multiple old roots or run both layouts while any sharing proxy is active.
+On Windows, preview state keyed by the former case-folded home identity must be reset rather than
+moved because its encrypted AAD and operating-system keyring identity are intentionally not reused.
+
 ## Models
 
 ### `ocx models [subcommand]` · `ocx model <subcommand>`
@@ -239,7 +309,7 @@ proxy to be running (`ocx start`, or an installed service).
 | `provider <name> <on\|off>` | `--json` | Enable or disable every model of one provider in a single write. |
 | `selected <provider>` | `--set <id,id...>`, `--clear`, `--json` | Read or replace the provider model allowlist. `--clear` removes the allowlist so every model is offered. |
 | `context <status\|value <tokens>\|provider <name> <on\|off>\|all <on\|off>>` | `--json` | Read or set the context-window cap, globally or per provider. |
-| `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | Read or set the replacement model for Codex's background helper calls. `-` clears the model. `status` also reports `sourceModels`, the helper slugs the proxy intercepts (defaults: `gpt-5.4-mini` and `gpt-5.6-luna`). |
+| `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | Read or set the replacement model for Codex's background helper calls. `-` clears the model. `status` also reports `sourceModels`, the helper slugs the proxy intercepts (default: `gpt-5.6-luna`; clients through 0.144.x used `gpt-5.4-mini`, which an explicit `sourceModels` override can restore). |
 
 ```bash
 ocx models live --json                                  # what Codex can actually see right now

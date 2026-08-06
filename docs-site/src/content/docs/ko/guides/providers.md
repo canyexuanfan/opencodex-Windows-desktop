@@ -20,6 +20,24 @@ max input 922,000이며 `*-pro` virtual id는 공개 상태에 유지되고 wire
 
 내장 `openai` 제공자가 없거나 비활성화된 경우 대시보드 Accounts 선택기와 Codex Auth 페이지에서 복구할 수 있습니다. 없는 항목은 정규 프리셋으로 만들고, 비활성화된 정규 항목은 저장된 모드/모델 설정을 바꾸지 않고 다시 켜며, 비정규 `openai` 항목에는 그 복구 경로를 제공하지 않습니다.
 
+### 프로바이더 개요의 풀 용량
+
+Codex 로그인을 Pool 모드로 사용하면 Providers 개요에는 임의의 한 계정이 아니라 풀 전체의
+사용 용량 추정치가 표시됩니다. 같은 행에는 현재 유효 계정의 원본 quota 사용률도 표시되므로,
+풀 추정치와 다음 요청에서 사용할 계정의 상태를 구분할 수 있습니다.
+
+리셋 정보가 있으면 다음 리셋 시각과 그때 회복되는 풀 용량을 표시합니다. **불완전한 범위**는
+요금제나 quota를 알 수 없거나, 측정값이 오래되었거나, 계정이 일시 중지되었거나 재인증이 필요한
+등의 이유로 일부 계정을 안전하게 추정치에 포함하지 못했음을 뜻합니다.
+
+**일부 기간의 범위가 불완전함**은 포함된 계정 중 일부가 표시된 quota 기간을 모두 보고하지
+않았음을 뜻합니다. 개요는 각 기간을 서로 분리한 채 영향을 받은 기간을 개별적으로 불완전하다고
+표시하며, 누락된 값을 해당 기간의 사용량으로 간주하지 않습니다.
+
+이 추정치는 표시 전용입니다. 계정 선택, 세션 affinity, 자동 전환, cooldown 또는 다른 라우팅
+판단을 변경하지 않습니다. 개별 계정 상태와 라우팅 제어는
+[Codex Auth 계정 풀](/ko/guides/web-dashboard/#codex-auth-and-account-pools)을 참고하세요.
+
 shipped v1 config는 marker 2의 단일 옵션 행으로 자동 이관됩니다. 원본은
 `~/.opencodex/config.json.pre-openai-tiers-v2.bak`에 한 번 보존되며 다음 명령으로 복원합니다:
 `cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json`.
@@ -34,6 +52,11 @@ shipped v1 config는 marker 2의 단일 옵션 행으로 자동 이관됩니다.
 | `key` | API 키를 전송합니다(`Authorization: Bearer …`, 또는 어댑터에 따라 `x-api-key` / `api-key`). 키는 리터럴이거나 `${ENV_VAR}` 참조일 수 있습니다. | 대부분의 프로바이더. |
 | `forward` | **수신된 Codex 인증 헤더를** 프로바이더에 그대로 중계합니다 — 키를 저장하지 않습니다. ChatGPT 로그인 패스스루입니다. | OpenAI (`openai-responses` 어댑터). |
 | `oauth` | 저장된 OAuth 액세스 토큰을 불러와 bearer 키로 사용하며, 만료 전에 자동 갱신합니다. | xAI, Anthropic, Kimi, Kiro, Google Antigravity, Cursor. |
+
+[`retryOn429`](/ko/reference/configuration/)（동일 키 429 재시도）는 API 키 프로바이더
+（`authMode: "key"`）에만 적용됩니다. OAuth·forward·로컬 프리셋은 제외됩니다 — 같은 토큰을
+재전송해서는 안 되며, 로컬 런타임에는 보존할 원격 키가 없습니다. 옵트인입니다: 옵션이 없으면
+꺼져 있고, 객체가 있으면 `enabled: false`가 아닌 한 활성화됩니다.
 
 ## 1. ChatGPT 로그인 (forward / 패스스루)
 
@@ -119,10 +142,9 @@ Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL http
 
 ## 3. API 키 카탈로그
 
-opencodex에는 빌트인 프리셋이 69개 들어 있습니다. 키 방식 58개, OAuth 7개, 로컬 3개,
+opencodex에는 빌트인 프리셋이 70개 들어 있습니다. 키 방식 58개, OAuth 8개, 로컬 3개,
 기본 ChatGPT 포워드 프리셋 1개입니다. 대시보드의 **Add provider** 선택기는 키 발급 페이지를 열고,
-입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다르며, Command Code의 공개 카탈로그는 키를
-검증 불가로 보고합니다). 주요 항목은 다음과 같습니다:
+입력한 키를 검증한 뒤 저장합니다(검증은 프로바이더별로 다릅니다). 주요 항목은 다음과 같습니다:
 
 **ClinePass**는 Cline API 키로 [공식 구독 카탈로그](https://docs.cline.bot/getting-started/clinepass)와
 [Chat Completions 엔드포인트](https://docs.cline.bot/api/chat-completions)에 연결합니다. 운영 주체는
@@ -198,18 +220,27 @@ Bearer API 키를 사용합니다. registry가 소유하는 DeepInfra 모델 목
 대상으로 하며 별도 image, audio, GPU 엔드포인트는 범위에서 제외합니다. 키는
 [Hyperbolic](https://app.hyperbolic.ai)에서 생성합니다.
 
-**Command Code 검색:** 프리셋은 Command Code의 공개 `/provider/v1/models` 목록을 고정된 Provider API
+**Command Code 검색:** 프리셋은 Command Code의 `/provider/v1/models` 목록을 고정된 Provider API
 호스트에서 읽고, 슬래시가 포함된 네이티브 모델 ID를 보존하며 live discovery를 256 KiB와 raw 행
-256개로 제한합니다. 모델 카탈로그는 인증이 없으므로 CLI 로그인 흐름은 키를 유효하다고 잘못 보고하지
-않고 검증 불가로 보고합니다. 채팅 요청은 설정된 bearer 키를 사용하며, API 액세스에는 Provider 플랜이
-필요하고 Go/Pro 구독자용 CLI 인증 브리지는 아직 제공되지 않습니다. 키는
-[Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
+256개로 제한합니다. `ocx login command-code`는 브라우저 OAuth 로그인을 지원하며(기존 Command Code
+CLI 사용자는 `~/.commandcode/auth.json`의 로컬 CLI 자격 증명을 가져올 수 있음), 모델 카탈로그는
+계정 단위이며 로그인 후 인증된 discovery 엔드포인트에서 가져옵니다. 채팅 요청은 설정된 bearer
+키를 사용합니다. 키는 [Command Code Studio](https://commandcode.ai/studio/)에서 생성합니다.
 
 > **Baseten 범위:** 이 프리셋은 Baseten의 공유 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)만
 > 지원합니다. 로컬 사용에는 개인 [API 키](https://docs.baseten.co/organization/api-keys)를, 공유/프로덕션
 > 사용에는 **Call Model APIs** 권한이 있는 팀 키를 사용하세요. 전용 Truss `predict` 엔드포인트는
 > 호스트와 스키마가 다르므로 이 프리셋으로 라우팅되지 않습니다.
 > 이 프리셋의 실시간 검색은 응답 1 MiB와 원시 모델 행 256개로 제한됩니다.
+
+### A6API 크레딧 쿼터
+
+`openai-chat`, `authMode: "key"`, 공식 `https://api.a6api.com` 또는
+`https://api.a6api.com/v1` 주소를 사용하는 사용자 지정 프로바이더는 대시보드와
+`ocx account refresh <provider>`에서 A6API 크레딧 사용량을 표시합니다. 프로바이더 이름은 자유롭게 정할 수
+있습니다. 계정의 hard credit limit을 기준으로 토큰 단위를 USD로 환산해 사용률과 남은 크레딧을 표시하며, 토큰 만료는 충전을 뜻하지 않으므로 쿼터
+리셋으로 표시하지 않습니다. 활성 키만 공식 호스트로 전송하고 리디렉션을 거부하며, 음수이거나 서로 일치하지
+않는 결제 합계에는 보고서를 만들지 않습니다.
 
 > **Tencent Cloud Coding Plan 사용 제한:** Tencent는 이 구독을 대화형 코딩 도구 전용으로
 > 안내합니다. 일반 API 자동화, 사용자 애플리케이션 백엔드 및 비대화형 일괄 호출은 금지되며
@@ -260,6 +291,15 @@ Amazon Bedrock 네이티브 API처럼 이 구현 중 어느 것과도 맞지 않
 교환하며, 활성 Copilot 구독이 필요하고 GitHub 정책 변경으로 막힐 수 있음). GitLab Duo는 Bearer
 **구독 토큰**(일반 API 키가 아님)으로 인증합니다. **Cloudflare AI
 Gateway**는 URL에 계정 + 게이트웨이 id를 채워야 합니다.
+
+Copilot은 혼합 wire 카탈로그를 제공합니다. GPT-5 계열 모델(`gpt-5.3-codex`, `gpt-5.4`,
+`gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)은 에이전트
+트래픽에 대해 `/chat/completions`를 거부하므로 opencodex는 이 모델들을 내장 기본값으로
+Responses API를 통해 라우팅하고, 다른 Copilot 모델은 모두 chat completions를 유지합니다.
+우선순위는 하드 wire 핀 → 명시적 [`modelAdapters`](/ko/reference/configuration/providers/)
+항목 → 레지스트리 기본값 → 프로바이더 전체 adapter 순입니다. 내장 기본값이 없는 모델(예:
+`gpt-5.4-nano`)을 Responses로 전환하려면 `"modelAdapters": { "gpt-5.4-nano": "openai-responses" }`를
+설정하세요.
 
 Cursor는 별도의 실험적 어댑터로 추적합니다. `adapter: "cursor"`는 `ocx init`과 dashboard Add
 Provider picker에 실험적 local config 항목으로 표시되며, Cursor의 static fallback model catalog

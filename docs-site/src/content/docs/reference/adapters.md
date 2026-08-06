@@ -53,6 +53,11 @@ provider — xAI, Kimi, DeepSeek, GLM, Groq, OpenRouter, Ollama (local & cloud),
 streams the response back **untranslated**.
 **Auth:** `forward` (relay the caller's headers) or `key`.
 
+For `key` auth, [`retryOn429`](/reference/configuration/) applies here too: a pre-stream 429
+waits and replays the identical request on the same key before any other handling, exactly like
+the translated `openai-chat` / Anthropic request path. Custom `runTurn` transports are not part
+of the HTTP retry loop.
+
 - `forward` URL → `{baseUrl}/responses`. A `key` provider defaults to the legacy `{baseUrl}/v1/responses` construction.
 - A `key` provider may set a validated relative `responsesPath`; the adapter removes one trailing slash from `baseUrl` and sends `{trimmedBaseUrl}{responsesPath}`. For Ark Agent Plan, use `baseUrl: "https://ark.cn-beijing.volces.com/api/plan/v3"` with `responsesPath: "/responses"`.
 - In `forward` mode only a safe header allowlist is relayed (`FORWARD_HEADERS`): authorization,

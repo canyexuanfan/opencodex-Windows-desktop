@@ -55,15 +55,21 @@ describe("update stops the running proxy before replacing files", () => {
     expect(launcherSource).not.toContain('"npm.cmd"');
   });
 
-  test("both paths abort when the stop fails, and reinstall a managed service after success", () => {
+  test("both paths abort when the stop fails, and REPAIR a managed service after success", () => {
     expect(updateSource).toContain("aborting the update");
-    // The update path now uses serviceReinstallArgs() to preserve the chosen backend.
+    // 260804 #970: the refresh must not re-register. `install` reaches `schtasks /create`
+    // on Windows scheduler backends, which a non-elevated updater cannot run — it would
+    // stop a working proxy and then fail to bring its service back.
     expect(updateSource).toContain("serviceReinstallArgs()");
     expect(launcherSource).toContain("aborting the update");
-    // The launcher reads service-state.json to preserve the backend choice on reinstall.
-    expect(launcherSource).toContain("serviceReinstallArgs");
-    // The launcher reads the state path for both service-installed detection and backend choice.
+    expect(launcherSource).toContain('"service", "repair"');
+    // The launcher still reads service-state.json for service-installed detection, and
+    // for the backend choice on the genuinely-absent install fallback.
     expect(launcherSource).toContain('"service-state.json"');
+    // That marker can be STALE, so the fallback asks for structured state rather than
+    // parsing a failure message; bin/ocx.mjs is plain Node and cannot import
+    // diagnoseService(), so it reads startup.serviceInstalled from `status --json`.
+    expect(launcherSource).toContain("startup?.serviceInstalled");
     expect(updateSource).toContain("OCX_BAKE_PORT");
     expect(launcherSource).toContain("OCX_BAKE_PORT");
     // Live runtime port 10100 must not be discarded as a missing-port sentinel.
