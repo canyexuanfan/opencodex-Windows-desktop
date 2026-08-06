@@ -60,7 +60,7 @@ const BOOLEAN_REQUIREMENTS = [
 ] as const;
 const STRING_REQUIREMENTS = ["reasoningEffort", "serviceTier"] as const;
 const NUMERIC_REQUIREMENT_SPEC = {
-  minContextWindow: { min: 1, step: 1 },
+  minContextWindow: { min: 1, max: undefined, step: 1 },
   minQuotaHeadroom: { min: 0, max: 1, step: "any" },
 } as const;
 const NUMERIC_REQUIREMENTS = Object.keys(NUMERIC_REQUIREMENT_SPEC) as Array<keyof typeof NUMERIC_REQUIREMENT_SPEC>;
