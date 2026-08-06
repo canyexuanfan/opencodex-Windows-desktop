@@ -203,6 +203,45 @@ describe("opencodex config defaults", () => {
     });
   });
 
+  // A write must not inherit the read path's degrade-to-undefined: dropping a malformed
+  // map on load leaves the raw entries in the file to be repaired by hand, but dropping
+  // it on a write erases every order the user had set and still reports success.
+  test("config candidates reject a malformed selection-order map instead of erasing it", () => {
+    const base = getDefaultConfig();
+
+    expect(validateConfigCandidate({ ...base, codexAccountPriorities: { work: 2, side: 200 } })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("codexAccountPriorities"),
+    });
+    expect(validateConfigCandidate({ ...base, codexAccountPriorities: { "bad id!": 1 } })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("codexAccountPriorities"),
+    });
+    expect(validateConfigCandidate({ ...base, activeCodexAccountPinned: "not a valid id" })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("activeCodexAccountPinned"),
+    });
+    // A coercing guard lets these through — String(123) matches the id pattern — and the
+    // schema's .catch(undefined) then drops the pin while reporting the write as a success.
+    for (const pin of [123, true, ["work"]]) {
+      expect(validateConfigCandidate({ ...base, activeCodexAccountPinned: pin })).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("activeCodexAccountPinned"),
+      });
+    }
+    expect(validateConfigCandidate({
+      ...base,
+      codexAccountPriorities: { work: 2, __main__: -2 },
+      activeCodexAccountPinned: "work",
+    })).toMatchObject({
+      ok: true,
+      config: expect.objectContaining({
+        codexAccountPriorities: { work: 2, __main__: -2 },
+        activeCodexAccountPinned: "work",
+      }),
+    });
+  });
+
   test("config candidates validate Claude Code subagent effort levels", () => {
     const base = getDefaultConfig();
     for (const subagentEffort of ["low", "medium", "high", "xhigh", "max"]) {
@@ -2096,5 +2135,102 @@ describe("config.ts – async atomic writes preserve symlinked destinations", ()
     await expect(atomicWriteFileAsync(link, "recovered")).rejects.toThrow(/unresolvable symlinked write target/);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(existsSync(join(testDir, "gone-async"))).toBe(false);
+  });
+});
+
+describe("codex account selection order", () => {
+  function writePriorityConfig(
+    codexAccountPriorities: unknown,
+    overrides: Record<string, unknown> = {},
+  ): void {
+    writeConfig({
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      codexAccountPriorities,
+      ...overrides,
+    });
+  }
+
+  test("round-trips pool ids, the main account, and negative order", () => {
+    const priorities = { work: 2, side: 1, __main__: -2 };
+    writePriorityConfig(priorities);
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.error).toBeNull();
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.config.codexAccountPriorities).toEqual(priorities);
+    expect(Object.hasOwn(getDefaultConfig(), "codexAccountPriorities")).toBe(false);
+  });
+
+  test.each([
+    ["null", null],
+    ["an array", []],
+    ["a string", "work"],
+    ["a fractional value", { work: 1.5 }],
+    ["a stringified number", { work: "2" }],
+    ["a boolean", { work: true }],
+    ["an above-range value", { work: 101 }],
+    ["a below-range value", { work: -101 }],
+    ["a reserved constructor key", { constructor: 1 }],
+    ["a slash in the key", { "work/account": 1 }],
+  ] as const)("degrades %s to no ordering without discarding the rest of the config", (_label, priorities) => {
+    writePriorityConfig(priorities);
+
+    const diagnostics = readConfigDiagnostics();
+    // Selection order is a preference: a malformed map must never trip the
+    // backup-and-defaults repair path that would reset providers.
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.error).toBeNull();
+    expect(diagnostics.config.codexAccountPriorities).toBeUndefined();
+    expect(Object.keys(diagnostics.config.providers)).toContain("openai");
+    expect(backupNames()).toHaveLength(0);
+    expect(diagnostics.warnings).toContainEqual(expect.stringContaining("account selection order is disabled"));
+  });
+
+  test("degrades a literal __proto__ entry, which JSON.parse materializes as an own key", () => {
+    writeConfig(
+      '{"port":10100,"providers":{"openai":{"adapter":"openai-responses",'
+      + '"baseUrl":"https://chatgpt.com/backend-api/codex","authMode":"forward"}},'
+      + '"defaultProvider":"openai","codexAccountPriorities":{"__proto__":1,"work":2}}',
+    );
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics.source).toBe("file");
+    expect(diagnostics.config.codexAccountPriorities).toBeUndefined();
+    expect(Object.keys(diagnostics.config.providers)).toContain("openai");
+    expect(diagnostics.warnings).toContainEqual(expect.stringContaining("account selection order is disabled"));
+  });
+
+  test("warns when load degrades a malformed selection-order map", () => {
+    writePriorityConfig({ work: 101 });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const loaded = loadConfig();
+      expect(loaded.codexAccountPriorities).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("account selection order is disabled"));
+      expect(backupNames()).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("keeps a valid pin and degrades a malformed one", () => {
+    writePriorityConfig({ work: 1 }, { activeCodexAccountPinned: "work" });
+    expect(readConfigDiagnostics().config.activeCodexAccountPinned).toBe("work");
+
+    writePriorityConfig({ work: 1 }, { activeCodexAccountPinned: "work/account" });
+    const degraded = readConfigDiagnostics();
+    expect(degraded.source).toBe("file");
+    expect(degraded.config.activeCodexAccountPinned).toBeUndefined();
+    expect(degraded.config.codexAccountPriorities).toEqual({ work: 1 });
+    expect(degraded.warnings).toContainEqual(expect.stringContaining("no longer pinned"));
   });
 });

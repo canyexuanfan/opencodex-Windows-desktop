@@ -16,19 +16,32 @@ import {
 import { deleteCodexAccount, reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
 import { isCodexAccountPaused, setCodexAccountPaused } from "./account-pause";
 import {
+  clearCodexAccountPin,
+  getCodexAccountPriority,
+  isCodexAccountPriorityKey,
+  pinnedCodexAccountId,
+  setCodexAccountPin,
+  setCodexAccountPriority,
+} from "./account-priority";
+import {
   claimDueCodexQuotaRecoveryProbes,
   clearCodexAccountCooldown,
   clearThreadAccountMapForAccount,
   getEffectiveActiveCodexAccountId,
+  isEffectiveCodexAccountPinned,
   reconcileCodexActiveAfterExclusion,
   resetCodexRoutingForManualSelection,
   settleCodexQuotaRecoveryProbe,
 } from "./routing";
 import {
+  DEFAULT_ACCOUNT_PRIORITY,
+  MAX_ACCOUNT_PRIORITY,
+  MIN_ACCOUNT_PRIORITY,
   normalizeAccountPoolStickyLimit,
   normalizeAccountPoolStrategy,
   parseAccountPoolStickyLimit,
   parseAccountPoolStrategy,
+  parseAccountPriority,
 } from "./pool-rotation";
 import { checkAccountIdCollision, getMainChatgptAccountId, readCodexTokens, readCodexTokensResult } from "./auth-collision";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./auth-collision";
@@ -191,6 +204,7 @@ function poolAccountDto(
   quotaResult: PoolQuotaResult,
   hasCredential: boolean,
   paused: boolean,
+  priority: number,
 ): CodexAuthAccountDto {
   const quota = quotaForPlan(quotaResult.quota, account.plan);
   const needsReauth = !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id);
@@ -203,6 +217,7 @@ function poolAccountDto(
     ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
     isMain: false,
     paused,
+    priority,
     quota: quota ? { ...quota } : null,
     needsReauth,
     hasCredential,
@@ -644,6 +659,8 @@ export interface CodexAuthAccountDto {
   logLabel?: string;
   isMain: boolean;
   paused: boolean;
+  /** Selection order; higher is used earlier. Always present, 0 when unset. */
+  priority: number;
   quota: (StoredAccountQuota | (Omit<StoredAccountQuota, "updatedAt"> & { updatedAt: number })) | null;
   needsReauth?: boolean;
   hasCredential: boolean;
@@ -1017,6 +1034,7 @@ export async function listCodexAuthAccountsSnapshot(
         { quota: null, needsReauth: true },
         false,
         isCodexAccountPaused(runtimeConfig, accountId),
+        getCodexAccountPriority(runtimeConfig, accountId),
       )];
     }
     const resultGeneration = quotaResult.credentialGeneration ?? quotaResult.freshCredentialGeneration;
@@ -1035,6 +1053,7 @@ export async function listCodexAuthAccountsSnapshot(
       effectiveQuotaResult,
       true,
       isCodexAccountPaused(runtimeConfig, accountId),
+      getCodexAccountPriority(runtimeConfig, accountId),
     )];
   });
   const fetchedMainGeneration = mainResult.identityGeneration ?? captureMainAccountIdentityGeneration();
@@ -1055,6 +1074,7 @@ export async function listCodexAuthAccountsSnapshot(
     plan: mainInfo.plan,
     isMain: true,
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
+    priority: getCodexAccountPriority(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     hasCredential: hasMainCredential,
     needsReauth: mainNeedsReauth,
     quota: mainInfo.quota ? {
@@ -1297,6 +1317,53 @@ export async function handleCodexAuthAPI(
     });
   }
 
+  // Deliberately a route of its own rather than a field on the alias PATCH: aliases
+  // are display-only and reject __main__, while selection order is routing metadata
+  // that the Desktop account must be able to carry. Re-ordering never kicks a live
+  // thread, so there is no affinity clearing and no appliesImmediately here.
+  if (url.pathname === "/api/codex-auth/accounts/priority" && req.method === "PUT") {
+    let parsedBody: unknown;
+    try { parsedBody = await req.json(); } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
+    if (typeof parsedBody !== "object" || parsedBody === null || Array.isArray(parsedBody)) {
+      return jsonResponse({ error: "body must be an object" }, 400);
+    }
+    const body = parsedBody as { id?: unknown; priority?: unknown };
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    if (!isCodexAccountPriorityKey(id)) {
+      return jsonResponse({ error: "Invalid account id format" }, 400);
+    }
+
+    let priority = DEFAULT_ACCOUNT_PRIORITY;
+    if (body.priority !== null) {
+      const parsed = parseAccountPriority(body.priority);
+      if (parsed === null) {
+        return jsonResponse({
+          error: `priority must be null or an integer ${MIN_ACCOUNT_PRIORITY}-${MAX_ACCOUNT_PRIORITY}`,
+        }, 400);
+      }
+      priority = parsed;
+    }
+
+    const runtimeConfig = getRuntimeConfig(config);
+    const exists = id === MAIN_CODEX_ACCOUNT_ID
+      || (runtimeConfig.codexAccounts ?? []).some(account => isSelectableCodexPoolAccount(account) && account.id === id);
+    if (!exists) return jsonResponse({ error: "Account not found" }, 404);
+
+    setCodexAccountPriority(runtimeConfig, id, priority);
+    // Both a pin and an order are the operator saying which account to use, so the newer
+    // statement wins. Without this a pin made before any order existed — an ordinary
+    // account switch — would outrank the order forever: it blocks preemption and caps
+    // every eligibility list at its own tier until that account drains or is paused.
+    clearCodexAccountPin(runtimeConfig);
+    saveRuntimeConfig(config, runtimeConfig);
+    return jsonResponse({
+      ok: true,
+      id,
+      priority,
+      activeCodexAccountId: getEffectiveActiveCodexAccountId(runtimeConfig) ?? null,
+    });
+  }
+
   if (url.pathname === "/api/codex-auth/accounts/pause-exhausted" && req.method === "PUT") {
     const runtimeConfig = getRuntimeConfig(config);
     const result = await pauseExhaustedCodexAccounts(
@@ -1359,6 +1426,15 @@ export async function handleCodexAuthAPI(
       if (!exists) return jsonResponse({ error: "Account not found" }, 400);
     }
     runtimeConfig.activeCodexAccountId = body.accountId ?? undefined;
+    // "Use this account now" outranks selection order until the account is spent:
+    // persisted here rather than in resetCodexRoutingForManualSelection, which is
+    // runtime state only. A null id clears the selection instead of making one, so it
+    // must release the pin rather than record one: pinning the `targetAccountId`
+    // fallback would leave a pin that no effective active account matches, which
+    // `isEffectiveCodexAccountPinned` reports as unpinned while the tier filter still
+    // honours it as a ceiling — invisibly capping the pool at the main account's tier.
+    if (body.accountId == null) clearCodexAccountPin(runtimeConfig);
+    else setCodexAccountPin(runtimeConfig, targetAccountId);
     resetCodexRoutingForManualSelection(targetAccountId);
     saveRuntimeConfig(config, runtimeConfig);
     return jsonResponse({ ok: true, activeCodexAccountId: body.accountId, appliesImmediately: true });
@@ -1368,6 +1444,13 @@ export async function handleCodexAuthAPI(
     const runtimeConfig = getRuntimeConfig(config);
     return jsonResponse({
       activeCodexAccountId: getEffectiveActiveCodexAccountId(runtimeConfig) ?? null,
+      pinned: isEffectiveCodexAccountPinned(runtimeConfig),
+      // Which account carries the pin, not just whether the active one does. Under
+      // round-robin or fill-first the pin caps the tier ceiling at its own tier while the
+      // strategy cursor moves freely inside that tier, so `pinned` alone goes false on a
+      // sibling's turn even though the pin is still suppressing every higher tier. The id
+      // lets a surface mark the account the operator actually chose.
+      pinnedAccountId: pinnedCodexAccountId(runtimeConfig) ?? null,
       autoSwitchThreshold: runtimeConfig.autoSwitchThreshold ?? 80,
       upstreamFailoverThreshold: runtimeConfig.upstreamFailoverThreshold ?? 3,
       accountPoolStrategy: normalizeAccountPoolStrategy(runtimeConfig.accountPoolStrategy),

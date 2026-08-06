@@ -80,13 +80,14 @@ ocx login anthropic
 通过正在运行的代理列出并切换提供方账号和 API 密钥池。随附的帮助输出如下：
 
 ```text
-Usage: ocx account <list|current|use|refresh|auto-switch|login|reauth|code|cancel|remove|add-key|reset-credits> ...
+Usage: ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits> ...
 
 list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).
 current <provider>  Show the active account or key.
 use <provider> <id> Switch the active credential; 'main' selects the Codex App login.
 refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
+priority <provider> <id|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
@@ -112,6 +113,7 @@ OAuth 账号会显示为 `Account N`，而 plan/label 列会在 plan、屏蔽后
   "label": "plus",
   "email": "m***@example.com",
   "plan": "plus",
+  "priority": 0,
   "masked": "sk-ab****wxyz",
   "active": true,
   "needsReauth": false,
@@ -123,7 +125,7 @@ OAuth 账号会显示为 `Account N`，而 plan/label 列会在 plan、屏蔽后
 
 不指定提供方时，会列出 Codex 池、OAuth 账号和已配置的 API 密钥池。除非提供
 `--all`，否则会跳过空的提供方。指定提供方时，只列出该凭据家族。人类可读输出
-使用 `PROVIDER TYPE ID PLAN/LABEL STATUS`；手动选中的 Codex 行会标记为 `selected`。
+使用 `PROVIDER TYPE ID PLAN/LABEL PRIORITY STATUS`；手动选中的 Codex 行会标记为 `selected`。
 当存在已存储的 Kiro 账号时，输出会提示 Kiro 只有一个登录槽位，并且再次登录会
 替换当前账号。空结果仍然算成功。`--json` 返回：
 
@@ -175,6 +177,26 @@ token，也不是简单重读账号列表。`--json` 返回
 ```text
 { provider, autoSwitchThreshold: number, enabled: boolean }
 ```
+
+### `ocx account priority <provider> <account-id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]`
+
+读取或设置某个 Codex pool 账号的选择顺序：**数值越大越先使用**，默认值为 `0`，范围是 `-100` 到
+`100`。只有 `openai` 的 Codex pool 有选择顺序，其他 provider 返回退出码 1。`main` 指向 Codex Desktop
+登录账号，它与其他 pool 账号一样参与排序：`ocx account priority openai main last` 就能把它留作备用。
+
+预设词只是小整数的别名：`first` 为 `+2`，`earlier` 为 `+1`，`normal` 为 `0`，`later` 为 `-1`，
+`last` 为 `-2`。`reset` 恢复默认值并删除已保存的条目。**省略取值即为读取**，不会改写当前顺序。
+
+顺序决定的是先考虑哪些账号，而不是哪些账号可用：选择仍然只在合格账号中进行，取仍有 quota 余量的
+最高 tier，再由 `accountPoolStrategy` 在该 tier 内挑选。暂停、cooldown 和重新认证都不受影响。改动
+从**下一个未绑定请求**起生效，而不仅限于新开的 session：一旦更高顺序重新有了余量，preemption 会立即把
+未绑定请求提上去。已绑定账号的 thread 通常会保留该账号直到其用尽，但重新认证失败、quota cooldown 或连续的临时失败都会更早解除绑定。任何被接受的写入也会解除手动的“立即使用此账号”固定，无论固定在哪个账号上；写入与当前相同的顺序同样会解除，这是在保留当前所选账号的前提下解除固定的唯一方式（通过管理 API 清空活动账号同样会解除固定，但所选账号也一并丢失）。代理不可达、账号 id 不存在或取值不在
+允许范围内都会返回退出码 1。`--json` 返回：
+
+```text
+{ ok: true, provider, id, priority: number, preset: string | null }
+```
+
 
 ### `ocx account login|reauth|code|cancel ...`
 
