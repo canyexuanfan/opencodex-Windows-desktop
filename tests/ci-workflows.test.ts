@@ -4142,7 +4142,7 @@ describe("GitHub Actions hardening", () => {
 
     // Job-scoped permissions only (no top-level issues:write; no actions:write).
     expect(workflow).toMatch(
-      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*models: read/,
+      /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*(?:copilot-requests: write|models: read)/,
     );
     const translateJob = workflow.split(/\n {2}translate:\n/)[1]!.split(/\n {2}[a-zA-Z]/)[0]!;
     expect(translateJob).not.toMatch(/actions:\s*write/);
