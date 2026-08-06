@@ -53,10 +53,12 @@ implementable as written. What changed under them:
    `native-integration-routes.ts:31`), auto-apply calls the writer directly ignoring
    desired state (`agent-settings-routes.ts:131-150`), status does not classify
    standard/gateway/foreign/not_installed (`agent-settings-routes.ts:767-815`), and no
-   `removeDesktop3pConfig`/read-only inspect exists. 050's read-never-writes rule is
-   still violated by `writeDesktop3pConfig`'s eager `mkdirSync`
-   (`src/claude/desktop-3p.ts:343-345`) on the write path only — reads must never
-   route through it.
+   `removeDesktop3pConfig`/read-only inspector exists. Audit correction: the current
+   status GET reads via `existsSync`/`readFileSync` and never calls the writer, so
+   reads are non-mutating **today**; the risk 050 guards against is a *future* OFF or
+   status path routing through `writeDesktop3pConfig`, whose eager `mkdirSync`
+   (`src/claude/desktop-3p.ts:331-345`) would manufacture a library. 020 adds the
+   dedicated read-only inspector rather than fixing an active violation.
 5. **No composed acceptance suite.** WP13's P01-P36 doc cites pre-substrate line
    numbers and pre-substrate RED claims (lock absence, no production caller) that are
    no longer true. The surviving target: compose real entry points — CLI
@@ -86,19 +88,33 @@ implementable as written. What changed under them:
 
 - **010 (WP-B)** Codex toggle completion, consuming existing `clientIntegrations`:
   CLI restore/eject persist OFF, restore back/eject back persist ON, artifact-level
-  restore result (history failure classified, never silent), gate `ocx ensure`/`sync`
-  on desired OFF. Source doc: `260803_codex_desktop_toggle/040_codex_toggle.md` with
-  the line-map above; drop its four-client-coordinator premise — extend the landed
-  two-key schema instead.
+  restore result (history failure classified, never silent), and desired-state gating
+  for **every** direct `syncModelsToCodex` caller with 040's discriminated skip
+  semantics (`040_codex_toggle.md:222-235`) and fresh checks at irreversible
+  boundaries (`:600-618`): `ocx ensure` (`src/cli/index.ts:379-424`), `ocx sync`
+  (`:856-871`), restore/eject dispatch (`:774-819`), `src/cli/models.ts:102-107`,
+  `src/cli/provider.ts:232-237`, and
+  `src/server/management/config-routes.ts:261-268`. Source doc:
+  `260803_codex_desktop_toggle/040_codex_toggle.md` with the line-map above; drop its
+  four-client-coordinator premise — extend the landed two-key schema instead.
 - **020 (WP-C)** Claude Desktop toggle per 050's amended contract: add
-  `claude-desktop` to `clientIntegrations` and the native route union; read-only
-  status classification (absent library = `not_installed`; reads never write); OFF =
-  write+select `{}` standard profile, then remove the opencodex profile and its
-  credential-bearing backup; OFF with no owned state = successful no-op; GUI switch.
-- **030 (WP-D)** Composed acceptance (issue #1048): one suite through real entry
-  points against temp homes — CLI process invocations, management routes, startup
-  gate — covering refusal/foreign-home/race/restore truth, including the missing
-  Grok E2E (disable → fresh start path → fence stays absent).
+  `claude-desktop` to `clientIntegrations` and the native route union; a dedicated
+  read-only inspector for status classification (absent library = `not_installed`;
+  reads never write); OFF = write+select `{}` standard profile, then remove the
+  opencodex profile and its credential-bearing backup; OFF with no owned state =
+  successful no-op; GUI switch. Also gate the Desktop auto-apply path with 050's
+  before/after-await desired-state guards (`050_desktop_toggle.md:747-783`,
+  `agent-settings-routes.ts:131-150`) so a concurrent OFF cannot lose to an in-flight
+  apply.
+- **030 (WP-D)** Composed acceptance, **reduced workstation-only scope**: one suite
+  through real entry points against temp homes — CLI process invocations, management
+  routes, startup gate — covering refusal/foreign-home/race/restore truth, including
+  the missing Grok E2E (disable → fresh start path → fence stays absent). This is a
+  deliberate subset of issue #1048's 36-entry two-execution-class program: the
+  disposable-host service-lifecycle class (`050_composed_acceptance.md:24-35,55-99,
+  108-177,568-580`) needs `ocx service` on a throwaway host, which this session's
+  safety boundary forbids. **#1048 therefore stays OPEN** after 030; the PR references
+  it without a closing keyword and states which entries remain.
 - **WP-E** Push branch, open template-complete PR(s) against dev referencing #1048,
   PR CI green. **No merge, no promotion.** dev/preview/main tips proven unchanged.
 
