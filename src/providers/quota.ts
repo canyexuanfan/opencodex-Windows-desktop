@@ -288,7 +288,8 @@ function isCanonicalVeniceBaseUrl(baseUrl: string): boolean {
 }
 
 function isCanonicalSyntheticBaseUrl(baseUrl: string): boolean {
-  return normalizedBaseUrl(baseUrl) === SYNTHETIC_BASE_URL;
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === SYNTHETIC_BASE_URL || normalized === "https://api.synthetic.new/openai/v1";
 }
 
 function isCanonicalDeepInfraBaseUrl(baseUrl: string): boolean {
@@ -515,14 +516,14 @@ async function fetchClineQuota(provider: string, config: OcxProviderConfig): Pro
 /**
  * Z.AI GLM Coding Plan `GET /api/monitor/usage/quota/limit` — the coding-plan
  * subscription's 5-hour token cycle, weekly quota, and monthly MCP usage.
- * The token is sent RAW (no `Bearer` prefix) per Z.AI's API contract.
+ * Authenticates with the API key as a Bearer token per Z.AI's API reference.
  */
 async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   if (!isCanonicalZaiBaseUrl(config.baseUrl)) return null;
   const apiKey = resolveEnvValue(config.apiKey)?.trim();
   if (!apiKey) return null;
   const response = await fetch(`${ZAI_BASE_URL}/api/monitor/usage/quota/limit`, {
-    headers: { Accept: "application/json", Authorization: apiKey },
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -595,11 +596,12 @@ async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): P
   const hours = Math.floor(remainsMs / 3_600_000);
   const label = `Token Plan remaining (${hours}h)`;
   // Only derive a consumed share when the API actually reports the plan total;
-  // a presumed window (e.g. 30 days) would fabricate utilization. Without a
-  // total there is no percentage to render, so suppress the row rather than
-  // report a false 0% (zero would mean "no consumption").
+  // a presumed window (e.g. 30 days) would fabricate utilization. A valid
+  // response that omits the total after a prior refresh had it is a DELIBERATE
+  // contract change — the old row must be dropped (terminal), not preserved as
+  // a transient last-good.
   const totalMs = toFiniteNumber(data.total_time ?? data.plan_duration_ms ?? data.total_duration_ms);
-  if (totalMs === undefined || totalMs <= 0) return null;
+  if (totalMs === undefined || totalMs <= 0) return TERMINAL_QUOTA_FAILURE;
   const consumed = Math.max(0, totalMs - remainsMs);
   const percent = normalizePercent((consumed / totalMs) * 100);
   if (percent === undefined) return null;

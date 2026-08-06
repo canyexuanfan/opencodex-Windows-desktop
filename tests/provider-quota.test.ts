@@ -800,7 +800,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("Z.AI quota sends the raw token (no Bearer prefix) and maps plan windows", async () => {
+  test("Z.AI quota sends the key as a Bearer token and maps plan windows", async () => {
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -823,7 +823,7 @@ describe("fetchProviderQuotaReports", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://api.z.ai/api/monitor/usage/quota/limit");
-    expect(seen[0]?.authorization).toBe("zai-secret"); // raw token, NO Bearer
+    expect(seen[0]?.authorization).toBe("Bearer zai-secret");
     expect(seen[0]?.redirect).toBe("error");
   });
 
@@ -853,21 +853,28 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
-  test("MiniMax quota suppresses the row when the API omits the plan total duration", async () => {
+  test("MiniMax quota drops the row when the API omits the plan total after having it", async () => {
+    // A valid row (with total) exists; a later valid response omitting the
+    // total is a DELIBERATE contract change — the stale row must be dropped
+    // (terminal), not preserved as a transient last-good.
+    let withTotal = true;
     const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const headers = init?.headers as Record<string, string> | undefined;
       seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
-      return new Response(JSON.stringify({ success: true, data: { remains_time: 1_000_000_000 } }), { status: 200 });
+      return new Response(JSON.stringify(withTotal
+        ? { success: true, data: { remains_time: 750_000_000, total_time: 1_000_000_000 } }
+        : { success: true, data: { remains_time: 1_000_000_000 } }), { status: 200 });
     }) as typeof fetch;
+    const config = keyQuotaConfig("minimax", "https://api.minimax.io/v1");
 
-    const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax", "https://api.minimax.io/v1"), true);
+    const valid = await fetchProviderQuotaReports(config, true);
+    withTotal = false;
+    const noTotal = await fetchProviderQuotaReports(config, true);
 
-    // No total duration → no percentage to render; a 0% bar would falsely
-    // claim zero consumption, so the row is suppressed entirely.
-    expect(result.reports).toEqual([]);
-    expect(seen).toHaveLength(1);
+    expect(valid.reports).toHaveLength(1);
+    expect(noTotal.reports).toEqual([]);
     expect(seen[0]?.url).toBe("https://www.minimax.io/v1/token_plan/remains");
     expect(seen[0]?.authorization).toBe("Bearer minimax-secret");
     expect(seen[0]?.redirect).toBe("error");
@@ -1009,6 +1016,21 @@ describe("fetchProviderQuotaReports", () => {
       weeklyPercent: 52,
     });
     expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({ label: "Search hourly", percent: 12 });
+  });
+
+  test("Synthetic quota accepts the preset /openai/v1 base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({
+        data: { rollingFiveHourLimit: 10, weeklyTokenLimit: 20 },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("synthetic", "https://api.synthetic.new/openai/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(seen[0]).toBe("https://api.synthetic.new/v2/quotas");
   });
 
   test("Synthetic quota never sends the key to a non-canonical base URL", async () => {

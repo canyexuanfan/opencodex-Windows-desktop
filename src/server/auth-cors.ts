@@ -560,6 +560,16 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       ? getProviderRegistryEntry(name)
       : registryEntryForProviderDestination(provider))?.note;
     if (typeof registryNote === "string" && registryNote.trim()) dto.note = registryNote;
+    // Documented limits follow the DESTINATION, not the config key: a renamed
+    // preset keeps its vendor's limits, while a key provider whose transport
+    // was edited to a custom host must not inherit the registry id's limits.
+    // Key providers resolve purely by destination; forward/oauth/local presets
+    // (which the destination resolver skips) resolve by id.
+    const isKeyAuth = (provider.authMode ?? "key") === "key";
+    const limitsEntry = isKeyAuth
+      ? registryEntryForProviderDestination(provider)
+      : getProviderRegistryEntry(name);
+    if (limitsEntry?.rateLimits) dto.rateLimits = { ...limitsEntry.rateLimits };
     const codexAccountMode = providerCodexAccountMode(name, provider);
     if (codexAccountMode) dto.codexAccountMode = codexAccountMode;
     providers[name] = dto;
