@@ -132,7 +132,8 @@ test("auto-apply re-reads desired state after catalog fetch and skips a concurre
   writeFileSync(join(library, "_meta.json"), JSON.stringify({ appliedId: id, entries: [{ id, name: "opencodex" }] }));
   writeFileSync(join(library, `${id}.json`), JSON.stringify({
     inferenceProvider: "gateway", inferenceCredentialKind: "static",
-    inferenceGatewayBaseUrl: "http://127.0.0.1:10100", inferenceGatewayApiKey: "not-printed",
+    // Shape-only value: deliberately inert; never a credential.
+    inferenceGatewayBaseUrl: "http://127.0.0.1:10100", inferenceGatewayApiKey: "not-a-secret",
   }));
   let release!: () => void;
   let started!: () => void;

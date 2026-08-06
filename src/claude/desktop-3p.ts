@@ -373,6 +373,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isOwnedDesktopEntry(entry: Desktop3pMetadataEntry | undefined): boolean {
+  return entry?.name === "opencodex" || entry?.name === "opencodex-standard";
+}
+
+/** A gateway row is removable; the selected standard row must always remain. */
+function isOwnedDesktopGatewayEntry(entry: Desktop3pMetadataEntry | undefined): boolean {
   return entry?.name === "opencodex";
 }
 
@@ -411,9 +416,9 @@ export function inspectDesktop3pConfigLibrary(
   if (appliedId === null) {
     return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
   }
-  const ownedEntry = metadata.entries.find(entry => isOwnedDesktopEntry(entry));
+  const selected = metadata.entries.find(entry => entry?.id === appliedId);
   // A readable appliedId with no owned entry is a KNOWN false, not unknown.
-  const ownedProfileActive = ownedEntry?.id ? appliedId === ownedEntry.id : false;
+  const ownedProfileActive = isOwnedDesktopEntry(selected);
   if (!SAFE_DESKTOP_PROFILE_ID.test(appliedId)) {
     return {
       kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId, residualPaths: [], reason: "unsafe_applied_id", ownedProfileActive,
@@ -421,9 +426,8 @@ export function inspectDesktop3pConfigLibrary(
   }
 
   const selectedProfilePath = profilePath(libraryPath, appliedId);
-  const selected = metadata.entries.find(entry => entry?.id === appliedId);
   const residualPaths = metadata.entries
-    .filter(entry => isOwnedDesktopEntry(entry) && entry.id !== appliedId && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
+    .filter(entry => isOwnedDesktopGatewayEntry(entry) && entry.id !== appliedId && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
     .flatMap(entry => [profilePath(libraryPath, entry.id), `${profilePath(libraryPath, entry.id)}.bak`])
     .filter(existsSync);
   if (!existsSync(selectedProfilePath)) {
@@ -441,11 +445,11 @@ export function inspectDesktop3pConfigLibrary(
   } catch {
     return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
   }
-  if (profile.inferenceProvider === undefined) {
-    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
-  }
   if (!isOwnedDesktopEntry(selected)) {
     return { kind: "foreign", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
+  }
+  if (profile.inferenceProvider === undefined) {
+    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
   }
   const validGateway = profile.inferenceProvider === "gateway"
     && profile.inferenceCredentialKind === "static"
@@ -464,8 +468,8 @@ export function inspectDesktop3pConfigLibrary(
 
 /**
  * Select a credential-free standard profile before deleting an owned gateway.
- * The old metadata row intentionally remains as a retry locator until both its
- * profile and backup are absent.
+ * The old metadata row remains as a retry locator only until both its profile
+ * and backup are absent; successful cleanup removes it in the same operation.
  */
 export function removeDesktop3pStandardPivot(
   options: Desktop3pConfigLibraryOptions & {
@@ -477,11 +481,8 @@ export function removeDesktop3pStandardPivot(
   if (inspected.kind === "not_installed" || inspected.kind === "no_owned_state") {
     return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
   }
-  if (inspected.kind === "foreign" || inspected.kind === "broken" || inspected.kind === "unsafe") {
+  if (inspected.kind === "broken" || inspected.kind === "unsafe" || inspected.kind === "gateway_drifted") {
     return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: inspected.reason };
-  }
-  if (inspected.kind === "standard" && inspected.residualPaths.length === 0) {
-    return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
   }
   if (!inspected.appliedId || !SAFE_DESKTOP_PROFILE_ID.test(inspected.appliedId)) {
     return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: "unsafe_applied_id" };
@@ -491,28 +492,25 @@ export function removeDesktop3pStandardPivot(
   try {
     const metadata = parseMetadata(metadataPath);
     const selectedId = inspected.appliedId;
-    const selectedEntry = metadata.entries.find(entry => entry.id === selectedId);
-    if (!selectedEntry || !isOwnedDesktopEntry(selectedEntry)) {
-      // A selected standard profile with outstanding owned rows gets cleanup on
-      // retry; a selected foreign profile never grants us deletion authority.
-      if (inspected.kind !== "standard") {
-        return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath };
-      }
-    }
-    const targetIds = inspected.kind === "standard"
-      ? metadata.entries.filter(isOwnedDesktopEntry).map(entry => entry.id).filter(id => SAFE_DESKTOP_PROFILE_ID.test(id))
-      : [selectedId];
+    // When Desktop is actively using our gateway, pivot only that selected row
+    // first. Any second owned row is residue for a later standard-mode retry;
+    // this preserves the selected-row preference after an interrupted cleanup.
+    const targetIds = inspected.kind === "gateway_ours"
+      ? [selectedId]
+      : metadata.entries
+        .filter(isOwnedDesktopGatewayEntry)
+        .map(entry => entry.id)
+        .filter(id => SAFE_DESKTOP_PROFILE_ID.test(id));
     if (targetIds.length === 0) return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
 
-    if (inspected.kind !== "standard") {
+    let metadataAfterPivot = metadata;
+    if (inspected.kind === "gateway_ours") {
       const standardId = randomUUID();
       const standardPath = profilePath(inspected.libraryPath, standardId);
       atomicWriteFile(standardPath, "{}\n");
       const standardEntry: Desktop3pMetadataEntry = { id: standardId, name: "opencodex-standard" };
-      atomicWriteFile(
-        metadataPath,
-        JSON.stringify({ ...metadata, appliedId: standardId, entries: [...metadata.entries, standardEntry] }, null, 2) + "\n",
-      );
+      metadataAfterPivot = { ...metadata, appliedId: standardId, entries: [...metadata.entries, standardEntry] };
+      atomicWriteFile(metadataPath, JSON.stringify(metadataAfterPivot, null, 2) + "\n");
     }
 
     const residualPaths: string[] = [];
@@ -526,12 +524,22 @@ export function removeDesktop3pStandardPivot(
         if (existsSync(candidate)) residualPaths.push(candidate);
       }
     }
-    if (residualPaths.length > 0 || inspected.residualPaths.length > 0) {
+    const ownedResiduePaths = metadataAfterPivot.entries
+      .filter(entry => isOwnedDesktopGatewayEntry(entry) && !targetIds.includes(entry.id) && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
+      .flatMap(entry => [profilePath(inspected.libraryPath, entry.id), `${profilePath(inspected.libraryPath, entry.id)}.bak`])
+      .filter(existsSync);
+    if (residualPaths.length > 0 || ownedResiduePaths.length > 0) {
       return {
         ok: false, changed: true, kind: "cleanup_incomplete", libraryPath: inspected.libraryPath,
-        residualPaths: [...new Set([...residualPaths, ...inspected.residualPaths])],
+        residualPaths: [...new Set([...residualPaths, ...ownedResiduePaths])],
       };
     }
+    // Do not leave a metadata row pointing at a deleted profile. For a foreign
+    // selection this only removes proven opencodex residues; appliedId is kept.
+    atomicWriteFile(
+      metadataPath,
+      JSON.stringify({ ...metadataAfterPivot, entries: metadataAfterPivot.entries.filter(entry => !targetIds.includes(entry.id)) }, null, 2) + "\n",
+    );
     return { ok: true, changed: true, kind: "removed", libraryPath: inspected.libraryPath };
   } catch {
     return { ok: false, changed: false, kind: "write_failed", libraryPath: inspected.libraryPath };
@@ -554,7 +562,8 @@ export function writeDesktop3pConfig(
   try {
     mkdirSync(libraryPath, { recursive: true, mode: 0o700 });
     const metadata = parseMetadata(metadataPath);
-    const existing = metadata.entries.find(entry => entry?.name === "opencodex" && typeof entry.id === "string");
+    const selected = metadata.entries.find(entry => entry?.id === metadata.appliedId && isOwnedDesktopGatewayEntry(entry));
+    const existing = selected ?? metadata.entries.find(entry => isOwnedDesktopGatewayEntry(entry) && typeof entry.id === "string");
     const id = existing?.id ?? randomUUID();
     configPath = join(libraryPath, `${id}.json`);
     const entry: Desktop3pMetadataEntry = existing ? { ...existing, id, name: "opencodex" } : { id, name: "opencodex" };
