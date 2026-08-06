@@ -3,7 +3,7 @@ import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
 import { navigateHash } from "../hash-routing";
-import { EFFORT_CAP_LEVELS, requireJson, sidecarBackendForModel, updateJobLabel } from "./dashboard-shared";
+import { EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel } from "./dashboard-shared";
 import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
@@ -360,7 +360,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
             </button>
             <Select
               value={shadowCall?.model ?? ""}
-              options={[{ value: "", label: "—" }, ...models.map(m => ({ value: m.id, label: `${m.provider}/${m.id}` }))]}
+              options={shadowCallModelOptions(models, shadowCall?.model)}
               onChange={v => { void saveShadowCall({ model: v }); }}
               disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
               label={t("dash.shadowCallModel")}
