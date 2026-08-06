@@ -380,14 +380,21 @@ describe("openai-chat response_format emission", () => {
     });
   });
 
-  test("omits response_format without a textFormat option or without a schema", () => {
+  test("omits response_format without a textFormat option", () => {
     const plain = createOpenAIChatAdapter(provider()).buildRequest(parsed());
+
+    expect(bodyOf(plain).response_format).toBeUndefined();
+  });
+
+  test("preserves a schema-less json_schema response_format", () => {
     const schemaless = createOpenAIChatAdapter(provider()).buildRequest({
       ...parsed(),
       options: { textFormat: { type: "json_schema", name: "answer" } },
     });
 
-    expect(bodyOf(plain).response_format).toBeUndefined();
-    expect(bodyOf(schemaless).response_format).toBeUndefined();
+    expect(bodyOf(schemaless).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer" },
+    });
   });
 });

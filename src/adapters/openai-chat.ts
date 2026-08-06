@@ -827,13 +827,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const textFormat = parsed.options.textFormat;
       if (textFormat?.type === "json_object") {
         body.response_format = { type: "json_object" };
-      } else if (textFormat?.type === "json_schema" && textFormat.schema !== undefined) {
+      } else if (textFormat?.type === "json_schema") {
         body.response_format = {
           type: "json_schema",
           json_schema: {
             name: textFormat.name ?? "response",
             ...(textFormat.description !== undefined ? { description: textFormat.description } : {}),
-            schema: textFormat.schema,
+            ...(textFormat.schema !== undefined ? { schema: textFormat.schema } : {}),
             ...(textFormat.strict !== undefined ? { strict: textFormat.strict } : {}),
           },
         };
