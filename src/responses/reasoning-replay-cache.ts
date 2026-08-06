@@ -44,6 +44,7 @@ const keyFor = (callId: string, scope: string | undefined): string =>
  * id is never read again.
  */
 export function rememberReasoningForCall(callId: string, text: string, scope?: string): void {
+  // Empty provider deltas are absence of new reasoning, not a request to erase a candidate.
   if (!callId || typeof text !== "string" || text.length === 0) return;
   const bytes = Buffer.byteLength(text, "utf8");
   // A single entry larger than the whole budget would immediately evict itself.
