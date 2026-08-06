@@ -30,3 +30,15 @@ review where needed, extend the stack with new fixes.
 ## Feature issues left open (out of scope)
 
 #1086, #1082, #1076, #1073 — enhancements, not bugs; no action this round.
+
+## Execution record (verified live, terra audit PASS on all planned items)
+
+- #1078 CLOSED not-planned, comment 5198845197; #1075 OPEN with comment
+  5198844990 (root-cause confirmation + namespaced correction + collision
+  caveat).
+- Six PR triage comments posted 2026-08-06: 1077/5198850702,
+  1079/5198850571, 1081/5198850370, 1083/5198850193, 1084/5198850085,
+  1085/5198851836.
+- Audit-window closures NOT ours (verified): #1064 closed by its author
+  hanbinnoh (superseded by #1066), #1074 and #1018 maintainer merges on
+  2026-08-05, #1080 closed by issue-quality automation.
