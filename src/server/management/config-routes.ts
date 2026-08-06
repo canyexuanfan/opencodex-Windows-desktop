@@ -261,8 +261,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sync" && req.method === "POST") {
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
-    const result = await syncModelsToCodex(undefined, config, null);
-    const status = result.status === "skipped" || result.ok ? 200 : 500;
+    const { readRuntimePort, loadConfig } = await import("../../config");
+    // Never use the server-captured startup object for a durable integration
+    // decision. A toggle may have persisted while this process was gathering.
+    const runtime = readRuntimePort(process.pid);
+    const result = await syncModelsToCodex(runtime?.port, loadConfig(), null);
+    const status = result.status === "refused" ? 409 : (result.status === "skipped" || result.ok ? 200 : 500);
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),

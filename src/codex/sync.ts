@@ -6,12 +6,15 @@ import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
 import { shouldSyncCodexOnStart } from "./desired-state";
+import { admitCodexWrite } from "./admission";
 
 export interface CodexSyncResult {
   /** `skipped` is policy truth, never evidence that Codex was written. */
-  status: "applied" | "skipped";
+  status: "applied" | "skipped" | "refused";
   ok: boolean;
   skippedReason?: "desired_disabled";
+  /** Present when unattended convergence refused another service's native home. */
+  authority?: "service-home";
   added: number;
   catalogPath: string | null;
   catalogExists: boolean;
@@ -56,7 +59,11 @@ export async function syncModelsToCodex(
   log: Pick<Console, "log" | "error"> | null = console,
   deps: CodexSyncDeps = defaultDeps,
 ): Promise<CodexSyncResult> {
-  if (!shouldSyncCodexOnStart(config)) {
+  // `config` can be the server's startup object. The decision, however, is a
+  // durable user switch and must be read again at this production boundary: a
+  // PUT OFF while provider discovery is in flight cannot be allowed to commit
+  // through an older captured object.
+  if (!shouldSyncCodexOnStart(loadConfig())) {
     return {
       status: "skipped",
       skippedReason: "desired_disabled",
@@ -67,6 +74,23 @@ export async function syncModelsToCodex(
       catalogWritten: false,
       cacheSynced: false,
       message: "Codex integration is OFF; no Codex config, catalog, cache, or history was changed.",
+    };
+  }
+  // Catalog gathering precedes injection and can itself write the native
+  // catalog/cache. It therefore needs the same unattended service-home veto as
+  // the injector, before it gets a chance to create any artifact.
+  const admission = admitCodexWrite();
+  if (admission.kind === "refused" && admission.authority === "service-home") {
+    return {
+      status: "refused",
+      authority: "service-home",
+      ok: false,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: admission.message,
     };
   }
   const p = port ?? config.port ?? 10100;
