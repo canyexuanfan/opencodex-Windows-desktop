@@ -8,7 +8,7 @@ The **Routing** page in the OpenCodex dashboard can manage `config.routingProfil
 ## Create a profile
 
 1. Open **Routing** in the dashboard.
-2. Select **+ Profile**.
+2. Select **Create profile**.
 3. Enter an `id`. The canonical model id is `policy/<id>`.
 4. Add one or more explicit provider/model candidates.
 5. Configure optional requirements, scoring weights, cost limits, and unknown-evidence behavior.

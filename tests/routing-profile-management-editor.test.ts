@@ -170,6 +170,139 @@ describe("routing profile management editor API", () => {
     expect(saves).toBe(0);
   });
 
+  test("PUT update replaces an existing profile, persists once, and refreshes the catalog", async () => {
+    const config = baseConfig();
+    let saves = 0;
+    let refreshes = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        profile: {
+          alias: "ocx/faster",
+          candidates: [
+            { provider: "a", model: "m1" },
+            { provider: "b", model: "m2" },
+          ],
+          require: { tools: true, minContextWindow: 64000 },
+          optimize: { latency: 2, health: 1, cost: 1, quota: 0 },
+        },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }, () => { refreshes += 1; }),
+    );
+
+    expect(response?.status).toBe(200);
+    const body = await response!.json() as {
+      success?: boolean;
+      profile?: { alias?: string | null; candidates?: unknown[]; revision?: string };
+    };
+    expect(body.success).toBe(true);
+    expect(body.profile?.alias).toBe("ocx/faster");
+    expect(body.profile?.candidates).toEqual([
+      { provider: "a", model: "m1" },
+      { provider: "b", model: "m2" },
+    ]);
+    expect(body.profile?.revision).toMatch(/^[0-9a-f]{16}$/);
+    expect(config.routingProfiles?.fast).toMatchObject({
+      alias: "ocx/faster",
+      candidates: [
+        { provider: "a", model: "m1" },
+        { provider: "b", model: "m2" },
+      ],
+      require: { tools: true, minContextWindow: 64000 },
+    });
+    expect(saves).toBe(1);
+    expect(refreshes).toBe(1);
+  });
+
+  test("PUT update rejects a stale expectedRevision with 409 and does not persist", async () => {
+    const config = baseConfig();
+    let saves = 0;
+    const current = await (async () => {
+      const req = new ManagementRequest("http://localhost/api/routing-profiles", { method: "GET" });
+      const res = await handleManagementAPI(req, new URL(req.url), config, deps());
+      const body = await res!.json() as { profiles?: Array<{ id: string; revision: string }> };
+      return body.profiles!.find(p => p.id === "fast")!;
+    })();
+
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        expectedRevision: "definitely-stale-revision",
+        profile: { candidates: [{ provider: "a", model: "m2" }] },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }),
+    );
+
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toMatchObject({ error: { code: "profile_revision_conflict" } });
+    expect(config.routingProfiles?.fast?.candidates).toEqual([{ provider: "a", model: "m1" }]);
+    expect(saves).toBe(0);
+    expect(current.revision).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("PUT update migrates config references when the profile alias changes", async () => {
+    const config = baseConfig();
+    config.disabledModels = ["ocx/fast"];
+    config.subagentModels = ["ocx/fast", "a/m1"];
+    config.injectionModel = "ocx/fast";
+    config.shadowCallIntercept = { model: "ocx/fast" };
+    config.claudeCode = {
+      enabled: true,
+      model: "ocx/fast",
+      smallFastModel: "a/m1",
+    };
+    let saves = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        expectedRevision: (await (async () => {
+          const getReq = new ManagementRequest("http://localhost/api/routing-profiles", { method: "GET" });
+          const getRes = await handleManagementAPI(getReq, new URL(getReq.url), config, deps());
+          const getBody = await getRes!.json() as { profiles?: Array<{ revision: string }> };
+          return getBody.profiles![0]!.revision;
+        })()),
+        profile: {
+          alias: "ocx/faster",
+          candidates: [{ provider: "a", model: "m1" }],
+        },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(config.disabledModels).toEqual(["ocx/faster"]);
+    expect(config.subagentModels).toEqual(["ocx/faster", "a/m1"]);
+    expect(config.injectionModel).toBe("ocx/faster");
+    expect(config.shadowCallIntercept?.model).toBe("ocx/faster");
+    expect(config.claudeCode?.model).toBe("ocx/faster");
+    expect(config.claudeCode?.smallFastModel).toBe("a/m1");
+    expect(saves).toBe(1);
+  });
+
   test("DELETE removes a profile, persists, and refreshes the catalog", async () => {
     const config = baseConfig();
     let saves = 0;

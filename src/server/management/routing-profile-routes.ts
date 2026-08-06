@@ -156,8 +156,63 @@ function storedProfile(
   return alias === null ? profile : { ...profile, alias };
 }
 
+/**
+ * Rewrite config references from one public model id to another (alias change
+ * on update). Mirrors the /api/combos migration: model-valued config that
+ * still names the old alias must follow it, or requests fall through to
+ * ordinary routing and send the obsolete alias upstream.
+ */
+function migrateProfileModelReferences(
+  config: OcxConfig,
+  oldPublicModel: string,
+  newPublicModel: string,
+): boolean {
+  if (oldPublicModel === newPublicModel) return false;
+  const migrateReference = (model: string): string => (
+    model === oldPublicModel ? newPublicModel : model
+  );
+  let shouldSyncClaudeAgentDefs = false;
+  const migrateAgentReference = (model: string): string => {
+    const migrated = migrateReference(model);
+    if (migrated !== model) shouldSyncClaudeAgentDefs = true;
+    return migrated;
+  };
+  const migrateReferences = (models: string[]): string[] => [
+    ...new Set(models.map(migrateReference)),
+  ];
+  if (config.disabledModels) {
+    config.disabledModels = migrateReferences(config.disabledModels);
+  }
+  if (config.subagentModels) {
+    config.subagentModels = [...new Set(config.subagentModels.map(migrateAgentReference))];
+  }
+  if (config.injectionModel && config.injectionModel === oldPublicModel) {
+    config.injectionModel = newPublicModel;
+  }
+  if (config.shadowCallIntercept?.model && config.shadowCallIntercept.model === oldPublicModel) {
+    config.shadowCallIntercept = { ...config.shadowCallIntercept, model: newPublicModel };
+  }
+  if (config.claudeCode) {
+    const claudeCode = { ...config.claudeCode };
+    for (const field of ["model", "smallFastModel"] as const) {
+      if (claudeCode[field]) claudeCode[field] = migrateAgentReference(claudeCode[field]);
+    }
+    if (claudeCode.tierModels) {
+      claudeCode.tierModels = Object.fromEntries(
+        Object.entries(claudeCode.tierModels).map(([tier, model]) => [tier, migrateAgentReference(model)]),
+      );
+    }
+    if (claudeCode.modelMap) {
+      claudeCode.modelMap = Object.fromEntries(
+        Object.entries(claudeCode.modelMap).map(([source, model]) => [source, migrateAgentReference(model)]),
+      );
+    }
+    config.claudeCode = claudeCode;
+  }
+  return shouldSyncClaudeAgentDefs;
+}
 export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, convergeCodexCatalog } = ctx;
+  const { req, url, config, deps, convergeCodexCatalog, syncClaudeAgentDefsBestEffort } = ctx;
 
   if (url.pathname === "/api/routing-profiles" && req.method === "GET") {
     const profiles = listRoutingProfileIds(config).map(id => profileDto(config, id)).filter(
@@ -193,6 +248,23 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     if (mode === "update" && !exists) {
       return jsonResponse({ error: { code: "unknown_profile", message: `unknown routing profile: ${id}` } }, 404, req, config);
     }
+    if (mode === "update") {
+      const expectedRevision = typeof body.expectedRevision === "string" && body.expectedRevision.trim()
+        ? body.expectedRevision.trim()
+        : undefined;
+      if (expectedRevision) {
+        const current = getRoutingProfile(config, id);
+        if (current && current.revision !== expectedRevision) {
+          return jsonResponse({
+            error: {
+              code: "profile_revision_conflict",
+              message: `routing profile ${id} changed since it was loaded; reload and retry`,
+              currentRevision: current.revision,
+            },
+          }, 409, req, config);
+        }
+      }
+    }
     const issues = routingProfileIssues(id, body.profile, config, { excludeProfileId: id });
     if (issues.length > 0) {
       return jsonResponse({
@@ -204,13 +276,24 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
       }, 400, req, config);
     }
 
+    const previousProfile = mode === "update" ? getRoutingProfile(config, id) : undefined;
     const nextProfiles = { ...(config.routingProfiles ?? {}) };
     nextProfiles[id] = storedProfile(id, body.profile as OcxRoutingProfileConfig);
     config.routingProfiles = nextProfiles;
+    // An alias change on update renames the public model id; rewrite config
+    // references (disabledModels, subagentModels, injectionModel,
+    // shadowCallIntercept, claudeCode) so they follow the new alias.
+    let shouldSyncClaudeAgentDefs = false;
+    if (previousProfile) {
+      const oldPublicModel = policyPublicModelId(id, previousProfile);
+      const newPublicModel = policyPublicModelId(id, getRoutingProfile(config, id)!);
+      shouldSyncClaudeAgentDefs = migrateProfileModelReferences(config, oldPublicModel, newPublicModel);
+    }
     const save = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
     save(config);
     reconcileLiveStateStores();
     const catalogRefresh = await convergeCodexCatalog();
+    if (shouldSyncClaudeAgentDefs) await syncClaudeAgentDefsBestEffort();
     const profile = profileDto(config, id)!;
     return jsonResponse({
       success: true,

@@ -184,8 +184,16 @@ function compactRecord(record: Record<string, unknown>): Record<string, unknown>
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
-export function routingProfilePutBody(draft: RoutingProfileDraft): {
+export type RoutingProfileWriteMode = "create" | "update";
+
+export function routingProfilePutBody(
+  draft: RoutingProfileDraft,
+  mode: RoutingProfileWriteMode,
+  expectedRevision?: string,
+): {
+  mode: RoutingProfileWriteMode;
   id: string;
+  expectedRevision?: string;
   profile: Record<string, unknown>;
 } {
   const require = compactRecord({
@@ -203,7 +211,9 @@ export function routingProfilePutBody(draft: RoutingProfileDraft): {
   const maxEstimatedCostUsd = optionalNumber(draft.limits.maxEstimatedCostUsd);
 
   return {
+    mode,
     id: draft.id.trim(),
+    ...(mode === "update" && expectedRevision ? { expectedRevision } : {}),
     profile: {
       ...(draft.alias.trim() ? { alias: draft.alias.trim() } : {}),
       candidates: draft.candidates.map(candidate => ({

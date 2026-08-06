@@ -50,10 +50,12 @@ describe("routing profile editor data", () => {
 
   test("round-trips normalized DTO values into a PUT payload", () => {
     const draft = routingProfileDraftFromDto(profile);
-    const body = routingProfilePutBody(draft);
+    const body = routingProfilePutBody(draft, "update", profile.revision);
 
     expect(body).toEqual({
+      mode: "update",
       id: "fast",
+      expectedRevision: "abc123",
       profile: {
         alias: "ocx/fast",
         candidates: profile.candidates,
@@ -71,6 +73,15 @@ describe("routing profile editor data", () => {
     });
   });
 
+  test("carries expectedRevision on update and omits it on create", () => {
+    const draft = newRoutingProfileDraft("openai", "gpt-5.6");
+    const updateBody = routingProfilePutBody(draft, "update", "rev-1");
+    expect(updateBody).toMatchObject({ mode: "update", expectedRevision: "rev-1" });
+    const createBody = routingProfilePutBody(draft, "create");
+    expect(createBody).toMatchObject({ mode: "create" });
+    expect(createBody).not.toHaveProperty("expectedRevision");
+  });
+
   test("omits blank optional fields while retaining explicit false", () => {
     const draft = newRoutingProfileDraft("openai", "gpt-5.6");
     draft.id = "  balanced  ";
@@ -78,15 +89,16 @@ describe("routing profile editor data", () => {
     draft.require.serviceTier = "  ";
     draft.limits.maxEstimatedCostUsd = "";
 
-    expect(routingProfilePutBody(draft)).toMatchObject({
+    expect(routingProfilePutBody(draft, "create")).toMatchObject({
+      mode: "create",
       id: "balanced",
       profile: {
         candidates: [{ provider: "openai", model: "gpt-5.6" }],
         require: { tools: false },
       },
     });
-    expect(routingProfilePutBody(draft).profile).not.toHaveProperty("limits");
-    expect(routingProfilePutBody(draft).profile).not.toHaveProperty("alias");
+    expect(routingProfilePutBody(draft, "create").profile).not.toHaveProperty("limits");
+    expect(routingProfilePutBody(draft, "create").profile).not.toHaveProperty("alias");
   });
 
   test("extracts both string and structured management errors", () => {

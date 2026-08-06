@@ -78,19 +78,28 @@ function fmtRate(value: number | null | undefined, unavailable: string): string 
   return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 function parseProfiles(raw: unknown): RoutingProfileDto[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const profiles = (raw as { profiles?: unknown }).profiles;
   if (!Array.isArray(profiles)) return [];
-  return profiles.filter((profile): profile is RoutingProfileDto => (
-    !!profile
-      && typeof profile === "object"
-      && !Array.isArray(profile)
-      && typeof (profile as { id?: unknown }).id === "string"
-      && typeof (profile as { model?: unknown }).model === "string"
-      && typeof (profile as { revision?: unknown }).revision === "string"
-      && Array.isArray((profile as { candidates?: unknown }).candidates)
-  )).map(profile => ({ ...profile, alias: profile.alias ?? null }));
+  return profiles.filter((profile): profile is RoutingProfileDto => {
+    if (!isPlainObject(profile)) return false;
+    // Validate the complete DTO shape: routingProfileDraftFromDto dereferences
+    // these nested objects, so a management response that omits any of them
+    // must be rejected here rather than crash the load path.
+    return typeof profile.id === "string"
+      && typeof profile.model === "string"
+      && typeof profile.revision === "string"
+      && Array.isArray(profile.candidates)
+      && isPlainObject(profile.require)
+      && isPlainObject(profile.optimize)
+      && isPlainObject(profile.limits)
+      && isPlainObject(profile.unknownEvidence);
+  }).map(profile => ({ ...profile, alias: profile.alias ?? null }));
 }
 
 function parseModels(raw: unknown): ModelOption[] {
@@ -263,11 +272,11 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
     setSaving(true);
     setStatus(null);
     try {
-      const body = routingProfilePutBody(draft);
+      const body = routingProfilePutBody(draft, selected ? "update" : "create", selected?.revision);
       const response = await fetch(`${apiBase}/api/routing-profiles`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...body, mode: selected ? "update" : "create" }),
+        body: JSON.stringify(body),
       });
       const data = await readJsonIfOk<unknown>(response);
       if (!response.ok) {
@@ -290,7 +299,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
 
   const removeProfile = async () => {
     if (!selected || saving) return;
-    if (!window.confirm(`${t("common.remove")} ${selected.id}?`)) return;
+    if (!window.confirm(t("routing.removeConfirm", { id: selected.id }))) return;
     setSaving(true);
     setStatus(null);
     try {
@@ -386,7 +395,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       if (!response.ok) {
         const body = await response.json().catch(() => null) as unknown;
         if (generation !== dryRunGenerationRef.current) return;
-        setDryRunError(routingProfileResponseError(body) ?? `dry-run ${response.status}`);
+        setDryRunError(routingProfileResponseError(body) ?? t("routing.dryRunError", { status: response.status }));
         return;
       }
       const result = await response.json() as DryRunResult;
@@ -412,7 +421,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
         <h2>{t("routing.title")}</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
-            <span aria-hidden="true">+</span> {t("routing.detail")}
+            <span aria-hidden="true">+</span> {t("routing.createProfile")}
           </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
         </div>
@@ -518,6 +527,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                       className="btn btn-ghost btn-sm"
                       disabled={draft.candidates.length === 1}
                       onClick={() => removeCandidate(index)}
+                      aria-label={t("routing.removeCandidate", { provider: candidate.provider, model: candidate.model })}
                     >
                       {t("common.remove")}
                     </button>
@@ -644,7 +654,9 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
                       },
                     } : current)}
                   >
-                    {UNKNOWN_EVIDENCE_OPTIONS.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+                    {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
+                      <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
+                    ))}
                   </select>
                 </label>
               ))}
