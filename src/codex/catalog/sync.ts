@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { expandUserPath, readConfigDiagnostics, websocketsEnabled } from "../../config";
+import { expandUserPath, loadConfig, readConfigDiagnostics, websocketsEnabled } from "../../config";
+import { shouldSyncCodexOnStart } from "../desired-state";
 import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, getCodexHome, readRootTomlString, resolveCodexConfigPath } from "../paths";
 import { clearModelCache, DEFAULT_MODEL_CACHE_TTL_MS, getFreshCached, getStaleCached, isModelsFetchCoolingDown, markModelsFetchFailure, setCached } from "../model-cache";
 import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
@@ -652,6 +653,8 @@ interface RetainedCatalogSyncResult {
   path: string;
   catalogWritten: boolean;
   comboOmissions: ComboCatalogOmission[];
+  /** `desired_disabled` observed under K after the provider await; nothing was written. */
+  skippedReason?: "desired_disabled";
 }
 
 interface RetainedCatalogSyncWrite {
@@ -965,6 +968,20 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
   };
   const goModels = await gatherRoutedModels(config, { comboOmissions });
   const committed = withCatalogWriteSerialization(owningCodexHome, permit => {
+    // Desired state can flip OFF during the provider await above. The catalog
+    // evidence revalidation below cannot see that — intent lives in our config,
+    // not in the catalog files — so the policy is re-read here, under K, right
+    // before the only write. A lost race becomes the discriminated skip instead
+    // of a routed catalog/cache surviving a completed disable.
+    if (!shouldSyncCodexOnStart(loadConfig())) {
+      return {
+        added: 0,
+        path: prepared.catalogPath,
+        catalogWritten: false,
+        comboOmissions,
+        skippedReason: "desired_disabled" as const,
+      };
+    }
     const current = revalidateRetainedCatalogSync(config, prepared);
     if (current === null) return null;
     return writeRetainedCatalogSync({
