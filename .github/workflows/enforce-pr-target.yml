@@ -9,7 +9,7 @@ on:
       - ready_for_review
       - synchronize
 
-# pull-requests:write covers title/comment updates.
+# pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
 # markPullRequestReadyForReview GraphQL mutations with GITHUB_TOKEN
 # (otherwise: "Resource not accessible by integration"). This workflow
@@ -49,6 +49,7 @@ jobs:
             const {
               collectPrQualityFailures,
               authorHasPushPermission,
+              hasGuiOverride,
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
@@ -59,14 +60,15 @@ jobs:
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
             );
             const {
+              parseGateState,
+              gateStateMarker,
               parseState,
-              stateMarker,
               parseReadinessState,
-              clearedEnforcerState,
-              defaultEnforcerState,
-              defaultReadinessState,
+              defaultGateState,
+              migrateLegacyGateState,
               completionIsStale,
               readinessClaimViolations,
+              unresolvedFindingsClaim,
               READINESS_STATE_VERSION
             } = require(
               path.join(
@@ -77,13 +79,15 @@ jobs:
               ),
             );
             const {
+              GATE_MARKER,
               READINESS_MARKER,
               inlineCode,
-              buildReadinessCommentBody,
+              buildGateCommentBody,
               buildFailureSections,
               failureSummary,
               buildStaleNotice,
-              buildClaimCheckNotice
+              buildClaimCheckNotice,
+              buildFindingsClaimNotice
             } = require(
               path.join(
                 process.cwd(),
@@ -106,8 +110,8 @@ jobs:
             const ALLOWED_BASES = ["dev"];
             const DEFAULT_BASE = "dev";
             const TITLE_PREFIX = "[WRONG BRANCH] ";
-            const COMMENT_MARKER = "<!-- pr-quality-enforcer -->";
             const LEGACY_COMMENT_MARKER = "<!-- wrong-branch-enforcer -->";
+            const REVIEW_READY_LABEL = "review-ready";
             const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
@@ -129,24 +133,48 @@ jobs:
               }
             );
 
-            const botComment = comments.find(
+            // One consolidated comment. The gate finds its own comment by the
+            // single GATE_MARKER; the legacy enforcer/readiness markers are
+            // matched only to migrate pre-consolidation PRs.
+            const gateComment = comments.find(
               comment =>
                 comment.user?.login === "github-actions[bot]" &&
-                (comment.body?.includes(COMMENT_MARKER) ||
+                comment.body?.includes(GATE_MARKER)
+            );
+            let gateCommentId = gateComment?.id ?? null;
+            const storedGateState = parseGateState(
+              gateComment?.body,
+              message => core.warning(message)
+            );
+
+            // Legacy comments: the pre-consolidation two-comment model. Their
+            // state is merged once into the single comment, then the old
+            // comments are deleted.
+            const legacyEnforcerComment = comments.find(
+              comment =>
+                comment.user?.login === "github-actions[bot]" &&
+                (comment.body?.includes("<!-- pr-quality-enforcer -->") ||
                   comment.body?.includes(LEGACY_COMMENT_MARKER))
             );
-            let botCommentId = botComment?.id ?? null;
-
-            const readinessComment = comments.find(
+            const legacyReadinessComment = comments.find(
               comment =>
                 comment.user?.login === "github-actions[bot]" &&
                 comment.body?.includes(READINESS_MARKER)
             );
-            let readinessCommentId = readinessComment?.id ?? null;
-            const storedReadinessState = parseReadinessState(
-              readinessComment?.body,
+            const legacyEnforcerState = parseState(
+              legacyEnforcerComment?.body,
               message => core.warning(message)
             );
+            const legacyReadinessState = parseReadinessState(
+              legacyReadinessComment?.body,
+              message => core.warning(message)
+            );
+            const migratedGateState = migrateLegacyGateState(
+              legacyEnforcerState,
+              legacyReadinessState
+            );
+
+            let gateState = storedGateState ?? migratedGateState;
 
             /**
              * Maintainers from `MAINTAINERS.md` on the trusted default branch
@@ -169,48 +197,86 @@ jobs:
               }
             }
 
-            async function upsertReadinessComment(state, readiness, extra) {
-              const lines = buildReadinessCommentBody(state, readiness, extra);
-
-              if (readinessCommentId) {
-                await github.rest.issues.updateComment({
-                  owner,
-                  repo,
-                  comment_id: readinessCommentId,
-                  body: lines.join("\n")
-                });
-
-                return;
+            async function setReviewReadyLabel(shouldHave, hasLabel) {
+              // The label is a review trigger, not a gate decision. A label
+              // write failure must not abort the run before the gate comment
+              // or the draft/ready conversion happens.
+              try {
+                if (shouldHave && !hasLabel) {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    labels: [REVIEW_READY_LABEL]
+                  });
+                } else if (!shouldHave && hasLabel) {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    name: REVIEW_READY_LABEL
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not ${shouldHave ? "add" : "remove"} the ${inlineCode(REVIEW_READY_LABEL)} label: ${error.message}`
+                );
               }
-
-              const created = await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: pull_number,
-                body: lines.join("\n")
-              });
-              readinessCommentId = created.data.id;
             }
 
-            async function upsertComment(body) {
-              if (botCommentId) {
+            /**
+             * The single write to the consolidated comment. Every run rebuilds
+             * the full body and writes it exactly once (create-if-absent,
+             * update-if-present), so there is never a double-edit of the
+             * readiness section or a stale intermediate checkpoint body.
+             */
+            async function upsertGateComment(state, opts) {
+              const body = buildGateCommentBody(state, opts).join("\n");
+              if (gateCommentId) {
                 await github.rest.issues.updateComment({
                   owner,
                   repo,
-                  comment_id: botCommentId,
+                  comment_id: gateCommentId,
                   body
                 });
-
+                await migrateLegacyCommentsIfNeeded();
                 return;
               }
-
               const created = await github.rest.issues.createComment({
                 owner,
                 repo,
                 issue_number: pull_number,
                 body
               });
-              botCommentId = created.data.id;
+              gateCommentId = created.data.id;
+              await migrateLegacyCommentsIfNeeded();
+            }
+
+            /**
+             * One-time migration: merge legacy state into the single comment,
+             * then delete the two old comments. The gate comment must already
+             * exist (created/updated by upsertGateComment) so its id is known
+             * and the legacy comments are not mistaken for it.
+             */
+            async function migrateLegacyCommentsIfNeeded() {
+              const legacyIds = [
+                legacyEnforcerComment?.id,
+                legacyReadinessComment?.id
+              ].filter(id => typeof id === "number" && id !== gateCommentId);
+              if (legacyIds.length === 0) return;
+              for (const id of legacyIds) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: id
+                  });
+                } catch (error) {
+                  core.warning(
+                    `Could not delete legacy bot comment ${id}: ${error.message}`
+                  );
+                }
+              }
             }
 
             async function convertToDraft() {
@@ -256,11 +322,6 @@ jobs:
                 }
               );
             }
-
-            const storedState = parseState(
-              botComment?.body,
-              message => core.warning(message)
-            );
 
             let authorPermission = null;
             let permissionLookupFailed = false;
@@ -356,8 +417,17 @@ jobs:
               authorPermission,
               permissionLookupFailed,
               ancestryLookupFailed,
-              stackedBase
+              stackedBase,
+              // A maintainer issue comment ("not touching gui") waives the
+              // GUI-screenshot gate; the comments are already fetched above.
+              guiOverrideComments: comments
             });
+
+            // A maintainer issue comment saying the change does not touch
+            // the GUI waives the screenshot gate. The flag is what tells the
+            // author the screenshot is not required, even though the failure
+            // itself is gone from `failures`.
+            const screenshotWaived = hasGuiOverride({ comments });
 
             // The readiness gate applies to contributors (no push permission).
             // Maintainers keep the failure-only contract: draft while quality
@@ -407,7 +477,7 @@ jobs:
             const eventHeadSha =
               context.payload.pull_request?.head?.sha ?? pr.head.sha;
             const completionHeadSha =
-              storedReadinessState?.completedAtHeadSha ?? null;
+              gateState.completedAtHeadSha ?? null;
             const headDrifted = completionIsStale({
               checklistRequired,
               checklistComplete,
@@ -432,7 +502,16 @@ jobs:
               const freshReadiness = extractReviewReadiness(
                 freshPr.body ?? ""
               );
-              readinessStateOverride = defaultReadinessState();
+              // Reset only the checklist/notification state. The bot's draft
+              // ownership and title-prefix ownership survive the reset so a
+              // wrong-base-drafted PR that was retargeted keeps its restore
+              // path and its prefix ownership.
+              readinessStateOverride = {
+                ...defaultGateState(),
+                active: gateState.active,
+                autoDraftedByBot: gateState.autoDraftedByBot,
+                titlePrefixedByBot: gateState.titlePrefixedByBot
+              };
               headDriftNotice = buildStaleNotice({
                 completionHeadSha,
                 liveHeadSha: freshPr.head.sha,
@@ -457,12 +536,14 @@ jobs:
               checklistComplete = readiness.present && readiness.complete;
             }
 
-            // The bot verifies the two checklist claims it can check itself.
+            // The bot verifies the three checklist claims it can check itself.
             // The CI box only counts when the head's `ci` check (the repo's
             // documented "CI passed" signal) is green; the latest-dev box only
             // counts while the head is at most READINESS_LATEST_DEV_BEHIND_MAX
-            // commits behind the base. A disproved claim unchecks that box and
-            // keeps the PR a draft, exactly like a head-drift reset.
+            // commits behind the base; the findings box only counts while every
+            // Codex/CodeRabbit review thread on the PR is resolved. A disproved
+            // claim unchecks that box and keeps the PR a draft, exactly like a
+            // head-drift reset.
             let claimViolations = [];
             let claimNotice = [];
             if (
@@ -502,6 +583,95 @@ jobs:
                 behindBase,
                 behindUnknown: ancestryLookupFailed
               });
+              // The findings claim reads the review threads via GraphQL. Only
+              // threads authored by the review bots count; `isResolved` must be
+              // explicitly true, so a missing or unreadable thread fails closed.
+              // CodeRabbit additionally reports some findings only in its
+              // review body (outside the diff range); `pulls.listReviews`
+              // supplies those as a supplement. A review listing failure fails
+              // closed the same way as an unreadable thread list.
+              let findingsClaim = null;
+              let findingsUnverifiable = false;
+              try {
+                // Paginate the review threads: a busy PR can carry more than
+                // 100 threads (CodeRabbit posts many reviews), and a truncated
+                // read would silently miss unresolved bot threads — a fail-open
+                // gap in a fail-closed check.
+                const allThreadNodes = [];
+                let threadCursor = null;
+                let threadPage = null;
+                let reviewThreadsPage = null;
+                do {
+                  threadPage = await github.graphql(
+                    `
+                      query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+                        repository(owner: $owner, name: $repo) {
+                          pullRequest(number: $number) {
+                            reviewThreads(first: 100, after: $cursor) {
+                              pageInfo {
+                                hasNextPage
+                                endCursor
+                              }
+                              nodes {
+                                isResolved
+                                comments(first: 1) {
+                                  nodes {
+                                    author { login }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    `,
+                    {
+                      owner,
+                      repo,
+                      number: pull_number,
+                      cursor: threadCursor
+                    }
+                  );
+                  reviewThreadsPage = threadPage?.repository?.pullRequest?.reviewThreads;
+                  allThreadNodes.push(...(reviewThreadsPage?.nodes ?? []));
+                  threadCursor = reviewThreadsPage?.pageInfo?.endCursor ?? null;
+                } while (
+                  reviewThreadsPage?.pageInfo?.hasNextPage === true &&
+                  threadCursor
+                );
+                const reviewsData = await github.paginate(
+                  github.rest.pulls.listReviews,
+                  {
+                    owner,
+                    repo,
+                    pull_number,
+                    per_page: 100
+                  }
+                );
+                findingsClaim = unresolvedFindingsClaim({
+                  threads: allThreadNodes.map(node => ({
+                    isResolved: node.isResolved,
+                    author: node.comments?.nodes?.[0]?.author ?? null
+                  })),
+                  reviews: reviewsData,
+                  liveHeadSha: pr.head.sha
+                });
+              } catch (error) {
+                core.warning(
+                  `Could not list review threads for the readiness claim check: ${error.message}`
+                );
+                // Fail closed: an attestation must not ride on missing
+                // evidence, exactly like unknown CI or behind counts.
+                findingsUnverifiable = true;
+                findingsClaim = {
+                  code: "review_findings",
+                  unresolved: 0,
+                  byBot: {}
+                };
+              }
+              if (findingsClaim?.code) {
+                claimViolations.push(findingsClaim.code);
+              }
               if (claimViolations.length > 0) {
                 const { data: freshPr } = await github.rest.pulls.get({
                   owner,
@@ -511,11 +681,27 @@ jobs:
                 const freshReadiness = extractReviewReadiness(
                   freshPr.body ?? ""
                 );
-                readinessStateOverride = defaultReadinessState();
-                claimNotice = buildClaimCheckNotice(
-                  claimViolations,
-                  freshPr.head.sha
-                );
+                readinessStateOverride = {
+                  ...defaultGateState(),
+                  active: gateState.active,
+                  autoDraftedByBot: gateState.autoDraftedByBot,
+                  titlePrefixedByBot: gateState.titlePrefixedByBot
+                };
+                claimNotice = [
+                  ...(claimViolations.includes("review_findings")
+                    ? findingsUnverifiable
+                      ? [
+                          "The Codex/CodeRabbit findings claim could not be verified; the **Codex/CodeRabbit findings** box has been unticked. The PR stays a draft until review threads are readable again."
+                        ]
+                      : buildFindingsClaimNotice(findingsClaim.byBot)
+                    : []),
+                  ...buildClaimCheckNotice(
+                    claimViolations.filter(
+                      code => code !== "review_findings"
+                    ),
+                    freshPr.head.sha
+                  )
+                ];
                 if (freshReadiness.present) {
                   const uncheckedBody = uncheckReviewReadinessBoxes(
                     freshPr.body ?? "",
@@ -551,25 +737,69 @@ jobs:
               ? headDriftNotice
               : claimNotice;
 
+            // Assemble the "What to do" action lines for the consolidated
+            // comment. Only the applicable actions render.
+            function buildActions() {
+              const actions = [];
+              if (failures.some(failure => failure.code === "wrong_base")) {
+                actions.push(
+                  `Retarget this PR to ${inlineCode(DEFAULT_BASE)} — all contributions go to ${inlineCode(DEFAULT_BASE)}.`
+                );
+              }
+              if (failures.some(failure => failure.code === "wrong_ancestry")) {
+                actions.push(
+                  `Rebase onto the current ${inlineCode(DEFAULT_BASE)} branch instead of opening from ${inlineCode("main")}.`
+                );
+              }
+              if (failures.some(failure => failure.code === "bad_description")) {
+                actions.push(
+                  "Add a real **Summary** and **Test plan** to the PR description."
+                );
+              }
+              if (failures.some(failure => failure.code === "missing_ui_screenshot")) {
+                actions.push(
+                  "Add a screenshot of the UI change to the PR description."
+                );
+              }
+              if (checklistRequired && !checklistComplete) {
+                actions.push(
+                  `Tick all four boxes in the PR description once you're done (currently ${readiness.checked}/${readiness.total}).`
+                );
+              }
+              if (revalidationNotice.length > 0) {
+                actions.push(...revalidationNotice);
+              }
+              return actions;
+            }
+
+            // The `review-ready` label marks the ready moment for humans and
+            // bots. It is not a CodeRabbit auto-review filter: a positive
+            // `labels:` entry in `.coderabbit.yaml` would restrict ALL reviews
+            // to labeled PRs (maintainer PRs never carry this label), so the
+            // label is kept as a visible status marker only.
+            const readyMoment =
+              checklistRequired && checklistComplete && failures.length === 0;
+            const reviewReadyDesired = readyMoment;
+            const hasReviewReadyLabel = (pr.labels ?? []).some(
+              label => label.name === REVIEW_READY_LABEL
+            );
+            const reviewReadyChanged = hasReviewReadyLabel !== reviewReadyDesired;
+            if (reviewReadyChanged) {
+              await setReviewReadyLabel(reviewReadyDesired, hasReviewReadyLabel);
+            }
+            gateState.reviewReadyLabeled = reviewReadyDesired;
+
             if (mustDraft) {
               let draftConverted = false;
-              const readinessState =
-                readinessStateOverride ??
-                (storedReadinessState
-                  ? { ...storedReadinessState }
-                  : defaultReadinessState());
+              const draftState = readinessStateOverride ?? { ...gateState };
               if (checklistRequired && checklistComplete) {
                 // The attestation covers this head even while another quality
                 // gate keeps the draft: bind it now, because the failure path
                 // below returns before the completion block that records it.
-                // A later push then still resets the checklist instead of
-                // sliding the completion forward onto un-attested code.
-                readinessState.completedAtHeadSha = pr.head.sha;
-                readinessState.version = READINESS_STATE_VERSION;
+                draftState.completedAtHeadSha = pr.head.sha;
+                draftState.version = 1;
               }
-              const state = storedState?.active
-                ? { ...storedState }
-                : defaultEnforcerState();
+              const state = { ...draftState, active: true };
               const hasWrongBase = failures.some(
                 failure => failure.code === "wrong_base"
               );
@@ -598,61 +828,53 @@ jobs:
                 state.titlePrefixedByBot = false;
               }
 
-              if (checklistRequired && !pr.draft && !checklistComplete) {
-                // Claim draft ownership before the mutation so a successful
-                // convert followed by a failed comment still restores later
-                // (same checkpoint discipline as the quality-failure path).
-                readinessState.autoDraftedByBot = true;
-                await upsertReadinessComment(
-                  readinessState,
-                  readiness,
-                  [
-                    ...revalidationNotice,
-                    "This PR stays in draft until every box above is ticked."
-                  ]
-                );
-              }
-
               if (failures.length > 0) {
-                state.ancestryFailed = failures.some(
-                  failure => failure.code === "wrong_ancestry"
-                );
-                state.descriptionFailed = failures.some(
-                  failure => failure.code === "bad_description"
-                );
-                state.screenshotFailed = failures.some(
-                  failure => failure.code === "missing_ui_screenshot"
-                );
-  
                 let draftConversionFailed = false;
-                const failureSections = buildFailureSections(failures, {
-                  pr,
-                  allowedBases: ALLOWED_BASES,
-                  defaultBase: DEFAULT_BASE
-                });
-  
-                if (checklistRequired && !checklistComplete) {
-                  failureSections.push(
-                    "",
-                    "⏳ **Review readiness checklist**",
-                    "",
-                    `This pull request stays in draft until all four boxes of the readiness checklist in the description are ticked (currently ${readiness.checked}/${readiness.total}).`,
-                    "",
-                    `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is fixed.`
-                  );
-                }
-  
-                await upsertComment(
-                  [
-                    COMMENT_MARKER,
-                    stateMarker(state),
-                    "",
-                    ...failureSections,
-                    "",
-                    "Recording ownership state before applying title/draft changes…"
-                  ].join("\n")
-                );
-  
+
+                // One-line reason for each failure, used in the status line.
+                const failureStatusReason = failures
+                  .map(failure => {
+                    if (failure.code === "wrong_base") {
+                      return `wrong target branch (${pr.base.ref}); retarget to ${inlineCode(DEFAULT_BASE)}.`;
+                    }
+                    if (failure.code === "wrong_ancestry") {
+                      return "wrong branch ancestry; rebase onto the latest dev.";
+                    }
+                    if (failure.code === "bad_description") {
+                      return `PR description needs work (${failure.reason}).`;
+                    }
+                    if (failure.code === "missing_ui_screenshot") {
+                      return "UI screenshot required.";
+                    }
+                    return failure.code;
+                  })
+                  .join(" ");
+
+                // Shared notices for the failure comment: revalidation reason,
+                // the waiver flag, and the prefix notice when the bot owns it.
+                const failureNotices = [
+                  ...revalidationNotice,
+                  ...(screenshotWaived
+                    ? ["UI screenshot waived by a maintainer comment."]
+                    : []),
+                  ...(hasWrongBase && state.titlePrefixedByBot
+                    ? [`Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`]
+                    : [])
+                ];
+
+                const draftComment = (notices) =>
+                  upsertGateComment(state, {
+                    status: "DRAFT",
+                    statusReason: failureStatusReason,
+                    actions: buildActions(),
+                    readiness,
+                    checklistRequired,
+                    notices
+                  });
+
+                // Apply the bot-owned title prefix so the PR itself carries a
+                // durable signal of the wrong base (claim ownership before the
+                // write; a failed write keeps ownership for the next retry).
                 if (willPrefixTitle) {
                   await github.rest.pulls.update({
                     owner,
@@ -661,85 +883,49 @@ jobs:
                     title: `${TITLE_PREFIX}${pr.title}`
                   });
                 }
-  
-                if (!pr.draft) {
-                  // Claim draft ownership before the mutation so a successful
-                  // convert followed by a failed comment still restores later.
+
+                const wantsDraftConversion = !pr.draft;
+                if (wantsDraftConversion) {
+                  // Persist the ownership claim BEFORE the mutation so a
+                  // successful convert followed by a failed comment write
+                  // still leaves the bot-created draft owned and restorable.
                   state.autoDraftedByBot = true;
-                  await upsertComment(
-                    [
-                      COMMENT_MARKER,
-                      stateMarker(state),
-                      "",
-                      ...failureSections,
-                      "",
-                      "Draft conversion pending…"
-                    ].join("\n")
-                  );
+                  await draftComment([
+                    ...failureNotices,
+                    "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again.",
+                    ...(checklistRequired && !checklistComplete
+                      ? [
+                          `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is resolved.`
+                        ]
+                      : [])
+                  ]);
                   try {
                     await convertToDraft();
                     draftConverted = true;
-                    readinessState.autoDraftedByBot = true;
-                    await upsertComment(
-                      [
-                        COMMENT_MARKER,
-                        stateMarker(state),
-                        "",
-                        ...failureSections,
-                        "",
-                        "Draft conversion succeeded; finalising explanation…"
-                      ].join("\n")
-                    );
                   } catch (error) {
                     draftConversionFailed = true;
                     state.autoDraftedByBot = false;
                     core.warning(
                       `Could not convert pull request to draft: ${error.message}`
                     );
+                    // Reflect the failed conversion in the persisted state.
+                    await draftComment([
+                      ...failureNotices,
+                      "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
+                    ]);
                   }
+                } else {
+                  await draftComment([
+                    ...failureNotices,
+                    "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.",
+                    ...(checklistRequired && !checklistComplete
+                      ? [
+                          `@${pr.user.login} Tick the boxes once your local CI is green, your branch is on the latest ${inlineCode(DEFAULT_BASE)} commit, and every correct Codex and CodeRabbit finding is resolved.`
+                        ]
+                      : [])
+                  ]);
                 }
-  
-                const draftExplanation = draftConversionFailed
-                  ? "Automatic draft conversion failed (token cannot change draft status). Please convert this pull request to a draft manually. The required `enforce-target` check will keep failing until every issue above is resolved."
-                  : state.autoDraftedByBot
-                    ? "This pull request is being kept as a draft automatically. Once every issue above is resolved, it will be marked ready for review again."
-                    : "This pull request was already a draft. Its draft status will be preserved after every issue above is resolved.";
-  
-                const finalSections = [...failureSections];
-  
-                if (hasWrongBase && state.titlePrefixedByBot) {
-                  finalSections.push(
-                    "",
-                    `Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`
-                  );
-                }
-  
-                await upsertComment(
-                  [
-                    COMMENT_MARKER,
-                    stateMarker(state),
-                    "",
-                    ...finalSections,
-                    "",
-                    draftExplanation
-                  ].join("\n")
-                );
-  
-                if (checklistRequired) {
-                  await upsertReadinessComment(
-                    readinessState,
-                    readiness,
-                    [
-                      ...revalidationNotice,
-                      checklistComplete
-                        ? "✅ **All four boxes are ticked.** This PR still stays in draft until the issues above are resolved."
-                        : pr.draft || draftConverted
-                          ? "This PR stays in draft until every box above is ticked."
-                          : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
-                    ]
-                  );
-                }
-  
+
                 core.setFailed(
                   `PR quality gate failed: ${failureSummary(failures, { pr })}`
                 );
@@ -747,32 +933,46 @@ jobs:
               }
 
               // No quality failure; the draft is owed by the open checklist.
-              // Prior enforcer history (title prefix, earlier failures) gets a
-              // closing confirmation; the readiness comment owns the draft now.
-              if (storedState?.active || botComment) {
-                const prefixResult = shouldStripTitlePrefix
-                  ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
-                  : "The title was left unchanged.";
-                await upsertComment(
-                  [
-                    COMMENT_MARKER,
-                    stateMarker(clearedEnforcerState()),
-                    "",
-                    "✅ **PR quality gates passed**",
-                    "",
-                    `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage. It stays in draft until the review readiness checklist is complete.`,
-                    "",
-                    `${prefixResult} The draft is owned by the checklist message below.`
-                  ].join("\n")
-                );
-              }
-
-              if (!pr.draft && !draftConverted) {
+              if (pr.draft) {
+                // Already a draft: update the gate comment with the open
+                // checklist status and no conversion needed.
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
+                  readiness,
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "This PR stays in draft until every box above is ticked."
+                  ]
+                });
+              } else if (!draftConverted) {
+                // Persist the ownership checkpoint BEFORE the mutation so a
+                // successful convert followed by a failed comment write still
+                // leaves the bot-created draft owned and restorable. The
+                // failure path above uses the same ordering via draftComment.
+                state.autoDraftedByBot = true;
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
+                  readiness,
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "This PR stays in draft until every box above is ticked."
+                  ]
+                });
                 try {
                   await convertToDraft();
                   draftConverted = true;
                 } catch (error) {
-                  readinessState.autoDraftedByBot = false;
+                  state.autoDraftedByBot = false;
                   core.warning(
                     `Could not convert pull request to draft: ${error.message}`
                   );
@@ -782,53 +982,31 @@ jobs:
                 }
               }
 
-              await upsertReadinessComment(
-                readinessState,
-                readiness,
-                [
-                  ...revalidationNotice,
-                  pr.draft || draftConverted
-                    ? "This PR stays in draft until every box above is ticked."
-                    : "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
-                ]
-              );
-              return;
-            }
-
-            if (!storedState?.active && !checklistRequired) {
-              // A maintainer PR drafted while the permission lookup was failing
-              // (fail-closed) gets restored once the lookup recovers.
-              if (storedReadinessState?.autoDraftedByBot && pr.draft) {
-                let recoveryFailed = false;
-                try {
-                  await markReadyForReview();
-                } catch (error) {
-                  recoveryFailed = true;
-                  core.warning(
-                    `Could not mark pull request ready for review: ${error.message}`
-                  );
-                }
-                await upsertReadinessComment(
-                  recoveryFailed
-                    ? { ...storedReadinessState }
-                    : { ...storedReadinessState, autoDraftedByBot: false },
+              // A failed conversion must still surface in the persisted state:
+              // the checkpoint above claimed ownership, so a failure rewrites
+              // it to release ownership and tell the author what to do.
+              if (!draftConverted && !pr.draft) {
+                state.autoDraftedByBot = false;
+                await upsertGateComment(state, {
+                  status: "DRAFT",
+                  statusReason: checklistRequired
+                    ? `review readiness checklist open (${readiness.checked}/${readiness.total} boxes ticked).`
+                    : "PR is kept in draft.",
+                  actions: buildActions(),
                   readiness,
-                  [
-                    recoveryFailed
-                      ? "Automatic ready-for-review conversion failed; the PR stays a draft and will be retried on the next run."
-                      : "✅ This PR is ready for review."
+                  checklistRequired,
+                  notices: [
+                    ...revalidationNotice,
+                    "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
                   ]
-                );
+                });
               }
-              core.info(
-                "All PR quality gates passed and there is no active bot state."
-              );
-
               return;
             }
 
+            // Ready path: strip a stale title prefix, mark ready, clear state.
             if (
-              storedState?.titlePrefixedByBot &&
+              gateState.titlePrefixedByBot &&
               pr.title.startsWith(TITLE_PREFIX)
             ) {
               await github.rest.pulls.update({
@@ -837,12 +1015,13 @@ jobs:
                 pull_number,
                 title: pr.title.slice(TITLE_PREFIX.length)
               });
+              gateState.titlePrefixedByBot = false;
             }
 
             let readyConversionFailed = false;
             let readyConverted = false;
             const shouldMarkReady =
-              (storedState?.active && storedState.autoDraftedByBot) ||
+              (gateState.active && gateState.autoDraftedByBot) ||
               (checklistRequired && checklistComplete);
             if (shouldMarkReady && pr.draft) {
               try {
@@ -856,82 +1035,113 @@ jobs:
               }
             }
 
-            // The enforcer comment only exists when there was something to say;
-            // a clean contributor PR that never failed a quality gate has none.
-            if (storedState?.active || botComment) {
-              const completedState = readyConversionFailed
-                ? { ...clearedEnforcerState(), active: true, autoDraftedByBot: true }
-                : clearedEnforcerState();
-
-              const titleResult = storedState?.titlePrefixedByBot
-                ? `The ${inlineCode(TITLE_PREFIX.trim())} title prefix has been removed.`
-                : "The title was left unchanged.";
-
-              const draftResult = readyConversionFailed
-                ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually if it is still a draft."
-                : storedState?.autoDraftedByBot
-                  ? "The pull request has been marked ready for review again."
-                  : "Its existing draft status has been preserved.";
-
-              await upsertComment(
-                [
-                  COMMENT_MARKER,
-                  stateMarker(completedState),
-                  "",
-                  "✅ **PR quality gates passed**",
-                  "",
-                  `This pull request now targets ${inlineCode(pr.base.ref)} with acceptable ancestry, description, and UI screenshot coverage.${
-                    checklistRequired
-                      ? " The review readiness checklist is complete."
-                      : ""
-                  }`,
-                  "",
-                  `${titleResult} ${draftResult}`
-                ].join("\n")
-              );
-            }
-
-            // Checklist completion lifts the contributor draft and pings the
-            // maintainers from `MAINTAINERS.md` (minus the PR author).
+            const readyState = {
+              ...gateState,
+              active: readyConversionFailed ? true : false
+            };
             if (checklistRequired && checklistComplete) {
-              const readinessState = storedReadinessState
-                ? { ...storedReadinessState }
-                : defaultReadinessState();
               const maintainers = readMaintainerLogins().filter(
                 login => login !== pr.user.login
               );
               let notified = false;
-              if (!readinessState.maintainersPinged && maintainers.length > 0) {
-                readinessState.maintainersPinged = true;
+              if (!readyState.maintainersPinged && maintainers.length > 0) {
+                readyState.maintainersPinged = true;
                 notified = true;
               }
+              readyState.completedAtHeadSha = pr.head.sha;
+              readyState.version = 1;
 
-              // Bind the completion to the exact head it attested. A later
-              // `synchronize` event with a different head resets the checklist
-              // and the notification state (see `headDrifted` above).
-              readinessState.completedAtHeadSha = pr.head.sha;
-              readinessState.version = READINESS_STATE_VERSION;
-
-              await upsertReadinessComment(
-                readinessState,
-                readiness,
-                [
-                  "✅ **All four boxes are ticked.**",
-                  `Completed against head ${inlineCode(pr.head.sha.slice(0, 7))}; new commits after this will reset the checklist.`,
-                  readyConverted
+              const notices = [
+                readyConversionFailed
+                  ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually if it is still a draft."
+                  : readyConverted
                     ? "This pull request has been marked Ready for Review."
-                    : pr.draft
-                      ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually."
-                      : "This pull request is already Ready for Review.",
-                  notified && maintainers.length > 0
-                    ? `Maintainers notified: ${maintainers
+                    : "This pull request is already Ready for Review.",
+                readyMoment
+                  ? `CodeRabbit/Codex review was requested via the ${inlineCode(REVIEW_READY_LABEL)} label. If no review appears, comment ${inlineCode("@coderabbitai review")} to request one.`
+                  : "",
+                notified && maintainers.length > 0
+                  ? `Maintainers notified: ${maintainers
+                      .map(login => `@${login}`)
+                      .join(" ")}`
+                  : maintainers.length > 0
+                    ? `Maintainers: ${maintainers
                         .map(login => `@${login}`)
                         .join(" ")}`
-                    : maintainers.length > 0
-                      ? `Maintainers: ${maintainers
-                          .map(login => `@${login}`)
-                          .join(" ")}`
-                      : "Maintainers will be notified."
-                ]
+                    : "Maintainers will be notified."
+              ].filter(Boolean);
+
+              await upsertGateComment(readyState, {
+                status: "READY",
+                statusReason: "all PR quality gates passed; the review readiness checklist is complete.",
+                actions: [],
+                readiness,
+                checklistRequired,
+                notices
+              });
+              return;
+            }
+
+            // Maintainer PR with no checklist: the comment is the single status
+            // surface but there is nothing to tick; only render it if the
+            // author is a maintainer and no checklist is required.
+            if (!checklistRequired) {
+              // A maintainer PR the gate drafted (`autoDraftedByBot`) must be
+              // restored when its failures clear. A maintainer PR that was
+              // already a draft while it failed a gate still carries an active
+              // gate comment (`active: true` with stale DRAFT actions) that
+              // must be cleared to READY even though the bot never converted
+              // it — otherwise the old comment keeps telling the author to fix
+              // already-passed gates.
+              if (gateState.autoDraftedByBot && pr.draft) {
+                let recoveryFailed = false;
+                if (!readyConverted && !readyConversionFailed) {
+                  try {
+                    await markReadyForReview();
+                  } catch (error) {
+                    recoveryFailed = true;
+                    core.warning(
+                      `Could not mark pull request ready for review: ${error.message}`
+                    );
+                  }
+                } else {
+                  // The ready path already handled the mutation: either it
+                  // converted (nothing left to do) or it failed and this run
+                  // must not attempt a second mutation on the stale draft.
+                  recoveryFailed = readyConversionFailed;
+                }
+                const recoveredState = {
+                  ...gateState,
+                  autoDraftedByBot: recoveryFailed
+                };
+                await upsertGateComment(recoveredState, {
+                  status: "READY",
+                  statusReason: recoveryFailed
+                    ? "ready-for-review conversion failed; will retry on the next run."
+                    : "this PR is ready for review.",
+                  actions: [],
+                  readiness,
+                  checklistRequired,
+                  notices: []
+                });
+                return;
+              }
+              if (gateState.active) {
+                await upsertGateComment(
+                  { ...gateState, active: false, autoDraftedByBot: false },
+                  {
+                    status: "READY",
+                    statusReason: "all PR quality gates passed.",
+                    actions: [],
+                    readiness,
+                    checklistRequired,
+                    notices: []
+                  }
+                );
+                return;
+              }
+              core.info(
+                "All PR quality gates passed and there is no active bot state."
               );
+              return;
             }

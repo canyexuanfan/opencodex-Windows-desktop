@@ -27,18 +27,19 @@ const REVIEW_READINESS_END = "<!-- pr-quality-readiness-checklist:end -->";
 const REVIEW_READINESS_ITEMS = [
   "All CI tests are green on my local testing.",
   "I pushed my PR to the latest dev commit.",
-  "I fixed all correct Codex and CodeRabbit findings.",
+  "I resolved all correct Codex and CodeRabbit findings.",
   "My PR is ready for review.",
 ];
 
 /**
  * Which checklist box each bot-verifiable claim maps to. The order must stay
- * in sync with REVIEW_READINESS_ITEMS: index 0 is the CI claim and index 1 is
- * the latest-dev claim.
+ * in sync with REVIEW_READINESS_ITEMS: index 0 is the CI claim, index 1 is
+ * the latest-dev claim, and index 2 is the Codex/CodeRabbit findings claim.
  */
 const REVIEW_READINESS_CLAIM_INDEX = {
   ci_green: 0,
-  latest_dev: 1
+  latest_dev: 1,
+  review_findings: 2
 };
 
 /**
@@ -176,6 +177,35 @@ function hasGuiCue(title, body) {
   return (
     (typeof title === "string" && GUI_CUE_RE.test(title)) ||
     (typeof body === "string" && GUI_CUE_RE.test(body))
+  );
+}
+
+/**
+ * Phrases in a maintainer comment that waive the GUI-screenshot gate. A
+ * comment saying the change does not touch the GUI means the `gui` cue in the
+ * title/description is a false positive and a screenshot is not required. The
+ * negation word must appear within a short window before `gui`, so a comment
+ * like "this touches gui but only the config" (no negation) keeps the gate.
+ * The window cannot cross a sentence or line boundary: "This does not change
+ * the API. Please add a gui screenshot." must not waive the gate.
+ */
+const GUI_OVERRIDE_RE =
+  /\b(?:no|not|doesn'?t|does not|never|without)\b[^.!?\n]{0,40}?\bgui\b/i;
+
+/**
+ * True when a maintainer (OWNER / COLLABORATOR / MEMBER) issue comment waives
+ * the GUI-screenshot requirement. Only the comment author's association
+ * counts: the PR author (`CONTRIBUTOR`/`NONE`) cannot override their own
+ * screenshot requirement.
+ */
+function hasGuiOverride({ comments = [] }) {
+  return comments.some(
+    comment =>
+      (comment?.author_association === "OWNER" ||
+        comment?.author_association === "COLLABORATOR" ||
+        comment?.author_association === "MEMBER") &&
+      typeof comment?.body === "string" &&
+      GUI_OVERRIDE_RE.test(comment.body)
   );
 }
 
@@ -416,6 +446,8 @@ function collectPrQualityFailures({
   ancestryLookupFailed = false,
   /** True when baseRef is another open PR's head (stacked child). */
   stackedBase = false,
+  /** Issue comments; a maintainer comment waives the GUI-screenshot gate. */
+  guiOverrideComments = []
 }) {
   const failures = [];
   const wrongBase = !allowedBases.includes(baseRef) && !stackedBase;
@@ -444,13 +476,15 @@ function collectPrQualityFailures({
   }
 
   // GUI-cued PRs must prove the UI change visually. The template's own
-  // screenshot instruction is boilerplate, so it cannot trigger this gate.
+  // screenshot instruction is boilerplate, so it cannot trigger this gate. A
+  // maintainer comment saying the change does not touch the GUI waives it.
   if (
     hasGuiCue(
       title,
       typeof body === "string" ? stripPrTemplateBoilerplate(body) : "",
     ) &&
-    !hasScreenshotEvidence(body)
+    !hasScreenshotEvidence(body) &&
+    !hasGuiOverride({ comments: guiOverrideComments })
   ) {
     failures.push({ code: "missing_ui_screenshot" });
   }
@@ -467,6 +501,7 @@ module.exports = {
   authorHasPushPermission,
   assessPrDescription,
   hasGuiCue,
+  hasGuiOverride,
   hasScreenshotEvidence,
   buildReviewReadinessSection,
   extractReviewReadiness,
