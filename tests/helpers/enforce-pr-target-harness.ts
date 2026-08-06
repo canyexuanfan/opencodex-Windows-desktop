@@ -90,6 +90,17 @@ export type RunOptions = {
    */
   eventName?: string;
   /**
+   * `author_association` of the commenter on an `issue_comment` event.
+   * Defaults to `"COLLABORATOR"`. The gate only re-runs for maintainer
+   * associations (OWNER / COLLABORATOR / MEMBER).
+   */
+  commentAuthorAssociation?: string;
+  /**
+   * Whether the commented-on issue is a pull request. Defaults to `true`.
+   * An `issue_comment` on a plain issue must not start this PR-only gate.
+   */
+  issueIsPullRequest?: boolean;
+  /**
    * Comments as `listComments` returns them, PAGE BY PAGE. Pass more than one
    * page to prove the script paginates: an audit round replaced `paginate` with
    * a single `listComments` call, which loses a bot comment that has scrolled
@@ -842,12 +853,15 @@ export async function runEnforcePrTarget(
               title: eventPr.title,
               body: eventPr.body,
               user: eventPr.user,
-              pull_request: { url: "https://api.github.com/repos/lidge-jun/opencodex/pulls/42" },
+              ...(options.issueIsPullRequest === false
+                ? {}
+                : { pull_request: { url: "https://api.github.com/repos/lidge-jun/opencodex/pulls/42" } }),
             },
             comment: {
               id: 424242,
               body: "not touching gui",
               user: { login: "wibias" },
+              author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
             },
           }
         : { pull_request: eventPr }),

@@ -33,6 +33,16 @@ concurrency:
 
 jobs:
   enforce-target:
+    # `issue_comment` fires for comments on ANY issue, PR or not, from ANY
+    # user. This gate is PR-only and write-capable, so a comment on a plain
+    # issue — or from a non-maintainer — must not start it. Only a maintainer
+    # comment on a PR (the GUI-waiver case) may re-run the gate.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request != null &&
+       (github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'COLLABORATOR' ||
+        github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
 
     steps:
@@ -93,8 +103,12 @@ jobs:
             const {
               GATE_MARKER,
               READINESS_MARKER,
+              HYGIENE_MARKER,
+              HYGIENE_BLOCK_START,
+              HYGIENE_BLOCK_END,
               inlineCode,
               buildGateCommentBody,
+              extractHygieneSection,
               buildFailureSections,
               failureSummary,
               buildStaleNotice,
@@ -133,6 +147,25 @@ jobs:
             const pull_number =
               context.payload.pull_request?.number ??
               context.payload.issue?.number;
+
+            // Defensive re-check of the job-level guard. `issue_comment` events
+            // carry a `comment` object with the author's association; a comment
+            // on a plain issue has no `issue.pull_request`, and a comment from
+            // anyone but a maintainer must not re-run this write-capable gate.
+            if (context.eventName === "issue_comment") {
+              const isPrComment =
+                context.payload.issue?.pull_request != null;
+              const association = context.payload.comment?.author_association;
+              const isMaintainer = ["OWNER", "COLLABORATOR", "MEMBER"].includes(
+                association
+              );
+              if (!isPrComment || !isMaintainer) {
+                core.info(
+                  "issue_comment not from a maintainer on a PR; skipping the gate."
+                );
+                return;
+              }
+            }
 
             const { data: pr } = await github.rest.pulls.get({
               owner,
@@ -248,7 +281,16 @@ jobs:
              * readiness section or a stale intermediate checkpoint body.
              */
             async function upsertGateComment(state, opts) {
-              const body = buildGateCommentBody(state, opts).join("\n");
+              let body = buildGateCommentBody(state, opts).join("\n");
+              // The hygiene workflow writes its status into this same comment.
+              // Preserve whatever it left so a gate rebuild does not drop it.
+              const existingHygiene = extractHygieneSection(gateComment?.body);
+              if (existingHygiene && !body.includes("pr-hygiene-block")) {
+                body = body.replace(
+                  /\s+$/,
+                  `\n\n## Hygiene\n\n${HYGIENE_BLOCK_START}\n${HYGIENE_MARKER}\n\n${existingHygiene}\n\n${HYGIENE_BLOCK_END}`
+                );
+              }
               if (gateCommentId) {
                 await github.rest.issues.updateComment({
                   owner,

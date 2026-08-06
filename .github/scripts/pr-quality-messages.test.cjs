@@ -7,9 +7,14 @@ const {
 } = require("./pr-quality.cjs");
 const {
   GATE_MARKER,
+  HYGIENE_MARKER,
+  HYGIENE_BLOCK_START,
+  HYGIENE_BLOCK_END,
   inlineCode,
   readinessChecklistLines,
   buildGateCommentBody,
+  extractHygieneSection,
+  withHygieneSection,
   descriptionFailureLines,
   buildFailureSections,
   failureSummary,
@@ -252,5 +257,58 @@ describe("buildFindingsClaimNotice", () => {
     assert.equal(notice.length, 2);
     assert.match(notice[0], /CodeRabbit has 1 unresolved finding/);
     assert.match(notice[1], /Resolve every open review conversation/);
+  });
+});
+
+describe("hygiene section round-trip", () => {
+  const GATE = [
+    GATE_MARKER,
+    '<!-- opencodex-pr-gate-state:{"version":1,"active":false} -->',
+    "",
+    "## ✅ READY",
+    "- all PR quality gates passed.",
+  ].join("\n");
+
+  it("renders a hygiene block in the gate comment when requested", () => {
+    const body = buildGateCommentBody(
+      { version: 1, active: false },
+      {
+        status: "READY",
+        statusReason: "all PR quality gates passed.",
+        checklistRequired: false,
+        hygiene: ["✅ **Deterministic PR hygiene checks passed.**"],
+      },
+    ).join("\n");
+    assert.ok(body.includes(HYGIENE_BLOCK_START));
+    assert.ok(body.includes(HYGIENE_BLOCK_END));
+    assert.ok(body.includes(HYGIENE_MARKER));
+    assert.ok(body.includes("✅ **Deterministic PR hygiene checks passed.**"));
+  });
+
+  it("extracts the hygiene content from a gate comment", () => {
+    const withBlock = `${GATE}\n\n## Hygiene\n\n${HYGIENE_BLOCK_START}\n${HYGIENE_MARKER}\n\n✅ **Deterministic PR hygiene checks passed.**\n\n${HYGIENE_BLOCK_END}\n`;
+    const extracted = extractHygieneSection(withBlock);
+    assert.equal(extracted, "✅ **Deterministic PR hygiene checks passed.**");
+    assert.equal(extractHygieneSection(GATE), null);
+  });
+
+  it("replaces an existing hygiene block without duplicating it", () => {
+    const withBlock = `${GATE}\n\n## Hygiene\n\n${HYGIENE_BLOCK_START}\n${HYGIENE_MARKER}\n\n✅ **Deterministic PR hygiene checks passed.**\n\n${HYGIENE_BLOCK_END}\n`;
+    const updated = withHygieneSection(withBlock, [
+      "⚠️ **Deterministic hygiene checks failed.**",
+      "- `missing_regression_test` — Behavior changed under `src/` without a test change.",
+    ]);
+    assert.ok(updated.includes("⚠️ **Deterministic hygiene checks failed.**"));
+    assert.ok(!updated.includes("✅ **Deterministic PR hygiene checks passed.**"));
+    assert.equal(updated.split(HYGIENE_BLOCK_START).length - 1, 1);
+  });
+
+  it("appends a hygiene block when the gate comment has none", () => {
+    const updated = withHygieneSection(GATE, [
+      "✅ **Deterministic PR hygiene checks passed.**",
+    ]);
+    assert.ok(updated.includes(HYGIENE_BLOCK_START));
+    assert.ok(updated.includes("✅ **Deterministic PR hygiene checks passed.**"));
+    assert.ok(updated.includes(GATE_MARKER));
   });
 });

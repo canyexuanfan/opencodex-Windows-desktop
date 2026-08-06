@@ -886,13 +886,22 @@ describe("GitHub Actions hardening", () => {
     // still passed, because they only ever looked at `enforce-target`.
     expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
 
-    // The job is exactly a runner plus steps. No `if:` (which silently disables
-    // the whole gate), no `permissions:` (a job-level block overrides the narrow
-    // workflow-level one), no `container:`/`strategy:`/`outputs:`/`env:`/
-    // `defaults:`, and no `<<:` merge key to reintroduce any of them sideways.
+    // The job is a runner plus steps, with one deliberate `if:` guard. The
+    // guard restricts the `issue_comment` trigger to maintainer comments on
+    // PRs — a comment on a plain issue, or from a non-maintainer, must not
+    // start this write-capable gate. On `pull_request_target` events the guard
+    // is always true, so it never disables the gate.
+    // No `permissions:` (a job-level block overrides the narrow workflow-level
+    // one), no `container:`/`strategy:`/`outputs:`/`env:`/`defaults:`, and no
+    // `<<:` merge key to reintroduce any of them sideways.
     const [, job] = jobs[0]!;
-    expect(Object.keys(job).sort()).toEqual(["runs-on", "steps"]);
+    expect(Object.keys(job).sort()).toEqual(["if", "runs-on", "steps"]);
     expect(job["runs-on"]).toBe("ubuntu-latest");
+    expect(job["if"]).toContain("github.event_name != 'issue_comment'");
+    expect(job["if"]).toContain("github.event.issue.pull_request != null");
+    expect(job["if"]).toContain("'OWNER'");
+    expect(job["if"]).toContain("'COLLABORATOR'");
+    expect(job["if"]).toContain("'MEMBER'");
 
     // Checkout trusted scripts, then run the gate. Anything more is an extra
     // privileged action nobody reviewed.
@@ -2661,6 +2670,107 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
       expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
       expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+    });
+
+    test("a non-maintainer issue_comment does not re-run the gate", async () => {
+      // The `issue_comment` trigger must only re-run for maintainer comments
+      // (OWNER / COLLABORATOR / MEMBER). A random comment from a contributor
+      // must not start the write-capable gate or re-draft the PR.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        commentAuthorAssociation: "CONTRIBUTOR",
+        comments: [
+          { id: 1, user: { login: "someone" }, author_association: "CONTRIBUTOR", body: "looks good to me" },
+        ],
+      });
+
+      // The gate never runs: no screenshot failure, no waiver notice, no draft
+      // mutation, no comment write.
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
+    test("an issue_comment on a plain issue does not re-run the gate", async () => {
+      // `issue_comment` fires for comments on ANY issue. A comment on a plain
+      // issue (no `issue.pull_request`) is not a PR comment and must not start
+      // this PR-only gate.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        issueIsPullRequest: false,
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
+    test("the gate comment preserves an existing hygiene section across rebuilds", async () => {
+      // The hygiene workflow writes its status into the same consolidated gate
+      // comment. When the gate rebuilds that comment, it must carry the
+      // hygiene block forward instead of dropping it.
+      const HYGIENE_BLOCK_START = "<!-- pr-hygiene-block:start -->";
+      const HYGIENE_BLOCK_END = "<!-- pr-hygiene-block:end -->";
+      const existingGateBody = [
+        GATE_MARKER,
+        '<!-- opencodex-pr-gate-state:{"version":1,"active":true,"autoDraftedByBot":false,"titlePrefixedByBot":false} -->',
+        "",
+        "## ⏳ DRAFT",
+        "- PR is kept in draft.",
+        "",
+        "## Hygiene",
+        "",
+        HYGIENE_BLOCK_START,
+        "<!-- pr-hygiene -->",
+        "",
+        "✅ **Deterministic PR hygiene checks passed.**",
+        "",
+        HYGIENE_BLOCK_END,
+      ].join("\n");
+
+      const result = await run({
+        pr: { base: { ref: "dev" }, draft: false },
+        authorPermission: "write",
+        comments: [
+          { id: 7, user: { login: "github-actions[bot]" }, body: existingGateBody },
+        ],
+      });
+
+      const updated = callsTo(result, "issues.updateComment") as [{ body: string }];
+      expect(updated.length).toBeGreaterThan(0);
+      const gateUpdate = updated.find(call => call.body.includes(GATE_MARKER))!;
+      expect(gateUpdate.body).toContain(HYGIENE_BLOCK_START);
+      expect(gateUpdate.body).toContain(HYGIENE_BLOCK_END);
+      expect(gateUpdate.body).toContain("✅ **Deterministic PR hygiene checks passed.**");
     });
 
     test("the PR author cannot waive their own screenshot requirement", async () => {
