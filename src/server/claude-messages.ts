@@ -859,7 +859,6 @@ async function handleClaudeMessagesWithBudget(
   });
 }
 
-/** Documented approximation: serialize system+messages+tools, run the char estimator. */
 /** Per-attachment token estimate for a base64 payload: real image dimensions when the
  * header is sniffable (Anthropic prices images at ~pixels/750), else decoded bytes/512,
  * min 256 — the same shape as the Kiro usage estimator (estimateKiroImageTokens). */
