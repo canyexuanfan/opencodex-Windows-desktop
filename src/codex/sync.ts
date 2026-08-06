@@ -126,6 +126,19 @@ export async function syncModelsToCodex(
   }
 
   const result = await deps.injectCodexConfig(p, config, { catalogPath: catalogPathForInjection });
+  if (result.status === "skipped") {
+    return {
+      status: "skipped",
+      skippedReason: result.skippedReason ?? "desired_disabled",
+      ok: true,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: result.message,
+    };
+  }
   log?.log(result.message);
   reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
   const projectConfigWarnings = printProjectCodexConfigWarnings(log, { cwd: process.cwd() });

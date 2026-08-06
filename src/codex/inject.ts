@@ -7,7 +7,8 @@ import {
   subagentDefaultSyncEffective,
   websocketsEnabled,
 } from "../config";
-import { withCodexWriteLock } from "./codex-write-lock";
+import { CodexWriteLockSkipped, withCodexWriteLock } from "./codex-write-lock";
+import { shouldSyncCodexOnStart } from "./desired-state";
 import { resolveCodexHistoryTransition } from "./history-transition";
 import {
   buildInjectWitness,
@@ -618,6 +619,8 @@ export function chooseCatalogPathForInjection(
 export interface CodexInjectResult {
   success: boolean;
   message: string;
+  status?: "skipped";
+  skippedReason?: "desired_disabled";
   nativeSubagentDefaultsWarning?: string;
 }
 
@@ -866,6 +869,14 @@ export async function injectCodexConfig(
   if (eligibility.kind === "legacy-uncoordinated") {
     // Unchanged behavior for homes the coordinator cannot yet adopt. Stated
     // rather than implied: this is the boundary, and adoption is its own phase.
+    if (!shouldSyncCodexOnStart(loadConfig())) {
+      return {
+        success: true,
+        status: "skipped",
+        skippedReason: "desired_disabled",
+        message: "Codex integration is OFF; no Codex config, catalog, cache, or history was changed.",
+      };
+    }
     applyNativeArtifacts();
   } else {
     const coordinated = await withCodexWriteLock(
@@ -883,6 +894,9 @@ export async function injectCodexConfig(
         }),
       },
       (ctx) => {
+        if (!shouldSyncCodexOnStart(loadConfig())) {
+          throw new CodexWriteLockSkipped("desired_disabled");
+        }
         /*
          * Publish BEFORE touching the filesystem. `assertPublished` runs after this
          * callback returns and throws unless a transition was recorded, so writing
@@ -965,6 +979,7 @@ export async function injectCodexConfig(
   // handed down fixed; the Worker never takes a direction from its caller.
   const historyOutcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
+    expectedDesiredEnabled: true,
     operation: deriveCodexHistoryOperation({
       direction: "apply",
       resumeHistory: config?.syncResumeHistory !== false,
@@ -1233,10 +1248,13 @@ function failedHistoryRestore(reason?: CodexHistoryFailureReason): CodexRestoreH
 }
 
 /** Restore native Codex, running history in a Worker under H. */
-export async function restoreNativeCodexAsync(): Promise<CodexNativeRestoreResult> {
-  const inline = restoreNativeCodex({ skipHistory: true });
+export async function restoreNativeCodexAsync(
+  options: { revalidateDesiredState?: boolean } = {},
+): Promise<CodexNativeRestoreResult> {
+  const inline = restoreNativeCodex({ skipHistory: true, revalidateDesiredState: options.revalidateDesiredState });
   const outcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
+    ...(options.revalidateDesiredState ? { expectedDesiredEnabled: false } : {}),
     operation: deriveCodexHistoryOperation({ direction: "restore", resumeHistory: true, legacyMode: false }),
   });
   const history: CodexRestoreHistoryResult = outcome.kind === "converged"
@@ -1248,6 +1266,13 @@ export async function restoreNativeCodexAsync(): Promise<CodexNativeRestoreResul
       }
     : outcome.kind === "skipped"
       ? { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message: "Codex resume history was skipped." }
+      : outcome.kind === "blocked" && (outcome.reason === "desired_disabled" || outcome.reason === "desired_enabled")
+        ? {
+            state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0,
+            message: outcome.reason === "desired_disabled"
+              ? "Codex integration was disabled; history restoration was skipped."
+              : "Codex integration was enabled; history restoration was skipped.",
+          }
       : outcome.kind === "blocked" && outcome.reason === "busy"
         ? failedHistoryRestore("busy")
         : outcome.kind === "failed"
@@ -1264,7 +1289,7 @@ export async function restoreNativeCodexAsync(): Promise<CodexNativeRestoreResul
   };
 }
 
-export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): CodexNativeRestoreResult {
+export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateDesiredState?: boolean } = {}): CodexNativeRestoreResult {
   const activeProvider = currentExternalCodexModelProvider();
   if (activeProvider) {
     removeJournal();
@@ -1300,9 +1325,17 @@ export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): Cod
   const owningCodexHome = getCodexHome();
   let catalog: CodexRestoreCatalogResult;
   try {
-    const restored = withCatalogWriteSerialization(owningCodexHome, permit => restoreCodexCatalogWithPermit(permit, owningCodexHome));
-    catalog = restored.kind === "completed"
+    const restored = withCatalogWriteSerialization(owningCodexHome, permit =>
+      options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())
+        ? null
+        : restoreCodexCatalogWithPermit(permit, owningCodexHome));
+    catalog = restored.kind === "completed" && restored.value !== null
       ? { state: "ok", changed: restored.value.removed > 0, ...restored.value, message: "Codex catalog restored." }
+      : restored.kind === "completed"
+        ? {
+            state: "skipped", changed: false, removed: 0, kept: 0, path: null,
+            message: "Codex integration was re-enabled; native catalog restoration was skipped.",
+          }
       : {
           state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
           message: `Codex catalog could not be restored: ${restored.reason}.`,

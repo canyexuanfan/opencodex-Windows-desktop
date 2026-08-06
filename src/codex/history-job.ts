@@ -64,12 +64,13 @@ export interface CodexHistoryJobRequest {
   readonly canonicalStateDbPath: string;
   readonly canonicalBackupPath: string;
   readonly operation: CodexHistoryWorkerOperation;
+  readonly expectedDesiredEnabled?: boolean;
 }
 
 export type CodexHistoryJobOutcome =
   | { readonly kind: "converged"; readonly rows: number; readonly files: number }
   | { readonly kind: "skipped" }
-  | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" }
+  | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" | "desired_disabled" | "desired_enabled" }
   | { readonly kind: "failed"; readonly reason: "worker-error" | "worker-died" | "timeout";
       readonly message: string; readonly historyFailureReason?: CodexHistoryFailureReason };
 
@@ -114,7 +115,8 @@ function isPlausibleWorkerResult(
         && typeof message.rows === "number"
         && typeof message.files === "number";
     case "blocked":
-      return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path";
+      return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path"
+        || message.reason === "desired_disabled" || message.reason === "desired_enabled";
     case "error":
       return typeof message.message === "string"
         && (message.reason === undefined || message.reason === "busy" || message.reason === "permission");
@@ -255,6 +257,7 @@ export async function runCodexHistoryJob(
       canonicalCodexHome: request.canonicalCodexHome,
       canonicalStateDbPath: request.canonicalStateDbPath,
       canonicalBackupPath: request.canonicalBackupPath,
+      ...(request.expectedDesiredEnabled === undefined ? {} : { expectedDesiredEnabled: request.expectedDesiredEnabled }),
       env: {
         ...(process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {}),
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),

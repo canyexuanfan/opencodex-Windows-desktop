@@ -282,7 +282,7 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
 
     // OFF. Restore the native path; the proxy keeps serving every other client.
     const { restoreNativeCodexAsync } = await import("../../codex/inject");
-    const restored = await restoreNativeCodexAsync();
+    const restored = await restoreNativeCodexAsync({ revalidateDesiredState: true });
     return jsonResponse({
       ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
       state: restored.success ? "absent" : "unsafe",
