@@ -207,8 +207,8 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     const nextProfiles = { ...(config.routingProfiles ?? {}) };
     nextProfiles[id] = storedProfile(id, body.profile as OcxRoutingProfileConfig);
     config.routingProfiles = nextProfiles;
-    const saveConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
-    saveConfig(config);
+    const save = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
+    save(config);
     reconcileLiveStateStores();
     const catalogRefresh = await convergeCodexCatalog();
     const profile = profileDto(config, id)!;
@@ -234,8 +234,8 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     delete nextProfiles[id];
     if (Object.keys(nextProfiles).length > 0) config.routingProfiles = nextProfiles;
     else delete config.routingProfiles;
-    const saveConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
-    saveConfig(config);
+    const saveConfigPreservingClaudeCodeSafe = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
+    saveConfigPreservingClaudeCodeSafe(config);
     reconcileLiveStateStores();
     const catalogRefresh = await convergeCodexCatalog();
     return jsonResponse({ success: true, id, catalogRefresh }, 200, req, config);
