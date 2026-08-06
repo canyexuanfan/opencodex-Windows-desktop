@@ -253,7 +253,7 @@ describe("could not ask is not an answer", () => {
     // Nothing staged on disk, and the query is not asked (no run injected) —
     // the default spawn would fail on non-Windows, so this uses the injected
     // recorder to prove absence is only claimed when schtasks answers absent.
-    const { run, calls } = recorder(() => ({ status: 1, stderr: "" }));
+    const { run, calls } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("absent");
     expect(calls).toHaveLength(1);
@@ -365,7 +365,7 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1 }));
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("present");
@@ -378,7 +378,7 @@ describe("the Windows chain walk", () => {
     // Task XML points at a launcher that does not exist.
     const missing = join(home, ".opencodex", "no-such.vbs");
     writeWindowsTask(missing);
-    const { run } = recorder(() => ({ status: 1 }));
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("unknown");
@@ -399,7 +399,7 @@ describe("the Windows chain walk", () => {
       "</Task>",
     ].join("\n");
     writeFileSync(join(home, ".opencodex", "opencodex-service-task.xml"), Buffer.from(`\uFEFF${xml}`, "utf16le"));
-    const { run } = recorder(() => ({ status: 1 }));
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("present");
@@ -420,7 +420,7 @@ describe("the Windows chain walk", () => {
       '<?xml version="1.0" encoding="UTF-16"?>',
       `<Arguments>/b /nologo &quot;${launcher.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}&quot;</Arguments>`,
     ].join("\n"));
-    const { run } = recorder(() => ({ status: 1 }));
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("present");
@@ -440,6 +440,44 @@ describe("the Windows chain walk", () => {
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
     const { run } = recorder(() => ({ status: null, spawnFailed: true, stderr: "spawn ENOENT" }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+  });
+
+  /*
+   * schtasks exits 1 for BOTH "task not found" and "access denied"; only the
+   * stderr message distinguishes them. A nonzero exit whose message does NOT
+   * state the task is missing cannot be treated as absence — a locked-down Task
+   * Scheduler would otherwise read as a clean machine and an unattended write
+   * would proceed into a home another process owns.
+   */
+  test("an access-denied schtasks response is unknown, not absent", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: Access is denied. (0x80070005)" }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("could not be asked");
+  });
+
+  test("a null-status schtasks response with no stderr is unknown, not absent", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: null, stderr: "" }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("a timed-out schtasks response is unknown, not absent", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: null, timedOut: true }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
     expect(result.kind).toBe("unknown");

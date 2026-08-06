@@ -365,11 +365,32 @@ function batchSetValue(body: string, name: string): string | null {
   return match ? match[1]!.trim() : null;
 }
 
-/** Registration state of the scheduled task. `unknown` when the query fails. */
+/**
+ * The one stderr text that proves `schtasks /query /tn ...` answered "no such
+ * task". schtasks exits 1 for both "task not found" and "access denied"; only
+ * the message distinguishes them, so absence is keyed on the message, never on
+ * the exit code alone.
+ */
+const SCHTASKS_TASK_NOT_FOUND = /cannot find the file specified/i;
+
+/**
+ * Registration state of the scheduled task.
+ *
+ * `present` is exit 0. `absent` is ONLY a nonzero exit whose stderr states the
+ * task cannot be found. Everything else — access denied, other execution
+ * errors, signal termination, null status, spawn/timeout failures, any other
+ * nonzero exit — is `unknown`, because none of those prove the task is not
+ * there. Treating them as absence would let a locked-down or wedged Task
+ * Scheduler read as a clean machine.
+ */
 function windowsTaskRegistered(deps: Required<Pick<ProbeDeps, "run">>): "present" | "absent" | "unknown" {
   const queried = deps.run("schtasks", ["/query", "/tn", windowsTaskName(), "/xml"]);
   if (queried.spawnFailed || queried.timedOut) return "unknown";
-  return queried.status === 0 ? "present" : "absent";
+  if (queried.status === 0) return "present";
+  if (queried.status !== null && SCHTASKS_TASK_NOT_FOUND.test(`${queried.stdout}\n${queried.stderr}`)) {
+    return "absent";
+  }
+  return "unknown";
 }
 
 function inspectWindows(deps: Required<Pick<ProbeDeps, "run" | "home">>): ServiceManagerInstallation {
