@@ -28,3 +28,11 @@
 
 Snapshot taken 2026-08-06 ~02:20Z via `gh` per-item queries. Constraint held:
 no merges into dev anywhere in this loop; own-PR lanes ended at pushed+open.
+
+## Sweep PR
+
+Branch pushed and PR opened against dev, left unmerged per user constraint:
+https://github.com/lidge-jun/opencodex/pull/1097 (head `99b3b2120` + this
+commit). Final audit: terra PASS (finding on phantom production commit
+retracted with ancestry evidence; sweep range = 7 devlog commits + the
+#1090 test commit).
