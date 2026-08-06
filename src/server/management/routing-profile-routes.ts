@@ -182,6 +182,17 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     if (!id) {
       return jsonResponse({ error: { code: "missing_profile_id", message: "id is required" } }, 400, req, config);
     }
+    const mode = body.mode === "create" || body.mode === "update" ? body.mode : null;
+    if (!mode) {
+      return jsonResponse({ error: { code: "invalid_profile_mode", message: "mode must be create or update" } }, 400, req, config);
+    }
+    const exists = Object.hasOwn(config.routingProfiles ?? {}, id);
+    if (mode === "create" && exists) {
+      return jsonResponse({ error: { code: "profile_exists", message: `routing profile already exists: ${id}` } }, 409, req, config);
+    }
+    if (mode === "update" && !exists) {
+      return jsonResponse({ error: { code: "unknown_profile", message: `unknown routing profile: ${id}` } }, 404, req, config);
+    }
     const issues = routingProfileIssues(id, body.profile, config, { excludeProfileId: id });
     if (issues.length > 0) {
       return jsonResponse({
