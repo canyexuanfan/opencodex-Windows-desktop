@@ -1252,6 +1252,11 @@ export async function restoreNativeCodexAsync(
   options: { revalidateDesiredState?: boolean } = {},
 ): Promise<CodexNativeRestoreResult> {
   const inline = restoreNativeCodex({ skipHistory: true, revalidateDesiredState: options.revalidateDesiredState });
+  // External-provider courtesy: the inline body already reported all three
+  // artifacts as skipped and touched nothing but the stale journal. Launching
+  // the history worker here would turn a read-mostly courtesy result into a
+  // history mutation (or a spurious busy failure) on a home we do not own.
+  if (inline.externalProvider) return inline;
   const outcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
     ...(options.revalidateDesiredState ? { expectedDesiredEnabled: false } : {}),
