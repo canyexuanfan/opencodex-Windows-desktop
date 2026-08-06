@@ -366,6 +366,46 @@ function batchSetValue(body: string, name: string): string | null {
 }
 
 /**
+ * Resolve a home value the way cmd would, reversing what
+ * `windowsEnvIndirectBatchValue` + `windowsBatchValue` baked in.
+ *
+ * The builder rewrites a home under USERPROFILE/APPDATA/LOCALAPPDATA to a
+ * `%VAR%` token (so non-ASCII profile names survive the OEM-codepage parse),
+ * and doubles literal `%` as `%%` so the token itself survives the escaping.
+ * A probe that returned that batch syntax verbatim would compare it against
+ * the resolved current home and report a false disagreement. Expand known
+ * tokens via the live environment, then un-double any remaining `%%`.
+ */
+function decodeBatchPathValue(
+  value: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const tokens: Record<string, string | undefined> = {
+    USERPROFILE: env.USERPROFILE,
+    APPDATA: env.APPDATA,
+    LOCALAPPDATA: env.LOCALAPPDATA,
+    "SystemRoot": env.SystemRoot,
+  };
+  return value
+    .replace(/%([A-Za-z][A-Za-z0-9_]*)%/g, (whole, name: string) => {
+      const resolved = tokens[name];
+      return resolved ? resolved : whole;
+    })
+    .replace(/%%/g, "%");
+}
+
+/**
+ * True when the wrapper looks like one `buildWindowsServiceScript` generated:
+ * it has the `:loop` + child-launch tail. Absent `set` lines are only
+ * meaningful evidence of "deliberately omitted" when the wrapper is otherwise
+ * the generated artifact — an empty, truncated, or unrelated readable file
+ * must not read as a legitimate install that omitted both homes.
+ */
+function wrapperLooksGenerated(body: string): boolean {
+  return /:loop[\s\S]*?(?:bun|"%OCX_BUN%"|"%OCX_CLI%")/i.test(body);
+}
+
+/**
  * The one stderr text that proves `schtasks /query /tn ...` answered "no such
  * task". schtasks exits 1 for both "task not found" and "access denied"; only
  * the message distinguishes them, so absence is keyed on the message, never on
@@ -447,10 +487,22 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
   }
   let wrapperBody: string;
   try {
-    wrapperBody = readFileSync(wrapperPath, "utf-8");
+    wrapperBody = decodeWindowsText(readFileSync(wrapperPath));
   } catch (error) {
     return unknown(`the launcher wrapper could not be read: ${String(error)}`);
   }
+
+  /*
+   * A wrapper that does not look generated is not evidence of deliberate
+   * omission — it is malformed. An empty or truncated wrapper, or an unrelated
+   * readable file, must fail closed rather than read as "no homes baked".
+   */
+  if (!wrapperLooksGenerated(wrapperBody)) {
+    return unknown(`the launcher wrapper does not look like a generated opencodex service wrapper: ${wrapperPath}`);
+  }
+
+  const rawCodexHome = batchSetValue(wrapperBody, "CODEX_HOME");
+  const rawOpencodexHome = batchSetValue(wrapperBody, "OPENCODEX_HOME");
 
   return {
     kind: "present",
@@ -458,8 +510,8 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
       backend: "scheduler",
       definitionPath: taskXmlPath,
       homes: {
-        codexHome: batchSetValue(wrapperBody, "CODEX_HOME"),
-        opencodexHome: batchSetValue(wrapperBody, "OPENCODEX_HOME"),
+        codexHome: rawCodexHome === null ? null : decodeBatchPathValue(rawCodexHome),
+        opencodexHome: rawOpencodexHome === null ? null : decodeBatchPathValue(rawOpencodexHome),
       },
       registration: registered === "present" ? "present" : "absent",
     }],

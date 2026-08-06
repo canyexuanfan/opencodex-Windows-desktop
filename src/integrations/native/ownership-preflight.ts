@@ -78,6 +78,25 @@ function claimNamesDifferentHome(
   return false;
 }
 
+/**
+ * Map a service-manager claim backend to the `ServiceInstallState.backend`
+ * value it corresponds to. `scheduler` (Task Scheduler) and `winsw` (native)
+ * are the two Windows manager backends; launchd/systemd claims have no Windows
+ * backend and can never mismatch a v2 state file.
+ */
+function claimBackendToStateBackend(backend: ServiceManagerClaim["backend"]): "scheduler" | "native" | null {
+  if (backend === "scheduler") return "scheduler";
+  if (backend === "winsw") return "native";
+  return null;
+}
+
+/** True when the recorded v2 state's backend disagrees with the manager claim. */
+function claimBackendMismatchesState(claim: ServiceManagerClaim, state: { backend?: "scheduler" | "native" }): boolean {
+  const expected = claimBackendToStateBackend(claim.backend);
+  if (expected === null) return false;
+  return state.backend !== undefined && state.backend !== expected;
+}
+
 export interface OwnershipDeps extends ProbeDeps {
   /**
    * Which state paths to consult. Injectable because the default set includes
@@ -144,6 +163,16 @@ export function inspectNativeCodexOwnership(deps: OwnershipDeps = {}): Ownership
       return {
         ownership: "unknown",
         reason: `${disagreeing.backend} is installed from ${disagreeing.definitionPath}, which names different homes than the recorded service state`,
+      };
+    }
+    // A manager backend that disagrees with the recorded state (e.g. state says
+    // native/WinSW but a scheduler task is found) is an interrupted backend
+    // switch: it does not prove which manager owns the installation.
+    const stateBackendMismatch = valid.find(state => manager.claims.some(claim => claimBackendMismatchesState(claim, state.state)));
+    if (stateBackendMismatch) {
+      return {
+        ownership: "unknown",
+        reason: `the service state records backend ${stateBackendMismatch.state.backend ?? "(none)"} but ${manager.claims[0]?.backend ?? "a service manager"} is installed`,
       };
     }
     // Definition agrees. Valid state agreeing with it is ownership; no state at

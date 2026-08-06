@@ -322,6 +322,16 @@ describe("the Windows chain walk", () => {
     const lines = ["@echo off", "setlocal"];
     if (codexHome) lines.push(`set "CODEX_HOME=${codexHome}"`);
     if (opencodexHome) lines.push(`set "OPENCODEX_HOME=${opencodexHome}"`);
+    // The tail that `buildWindowsServiceScript` emits; the probe keys wrapper
+    // validity on it so an empty/unrelated wrapper cannot read as an install
+    // that deliberately omitted both homes.
+    lines.push(
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '>>"%OCX_SERVICE_LOG%" echo start',
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    );
     writeFileSync(path, lines.join("\r\n"));
     return path;
   }
@@ -347,6 +357,63 @@ describe("the Windows chain walk", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].file).toBe("schtasks");
     expect(calls[0].args).toEqual(["/query", "/tn", "opencodex-proxy", "/xml"]);
+  });
+
+  test("batch env-token homes are decoded before they are compared", () => {
+    // The real builder emits `%USERPROFILE%\.codex` and doubles `%` as `%%`.
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const wrapper = join(dir, "opencodex-service.cmd");
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      'set "CODEX_HOME=%USERPROFILE%\\.codex"',
+      'set "OPENCODEX_HOME=%%PROFILE_VAR%%\\custom"',
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    // %USERPROFILE% expands to the test's real home; %% stays a literal %.
+    const profile = process.env.USERPROFILE ?? "";
+    expect(result.claims[0].homes.codexHome).toBe(`${profile}\\.codex`);
+    expect(result.claims[0].homes.opencodexHome).toBe(`%PROFILE_VAR%\\custom`);
+  });
+
+  test("a malformed wrapper is unknown, not a deliberate omission", () => {
+    // A truncated wrapper with set lines but no generated tail is NOT a
+    // legitimate install that omitted the homes — it is residue.
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const wrapper = join(dir, "opencodex-service.cmd");
+    writeFileSync(wrapper, "@echo off\r\nsetlocal\r\nset \"CODEX_HOME=C:\\x\\.codex\"");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("wrapper");
+  });
+
+  test("an empty wrapper is unknown, not absence", () => {
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const wrapper = join(dir, "opencodex-service.cmd");
+    writeFileSync(wrapper, "");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
   });
 
   test("a staged task that was never registered is present but registration=absent", () => {
@@ -513,9 +580,12 @@ describe("ownership refuses what it cannot prove", () => {
     return { codexHome, opencodexHome };
   }
 
+  // The darwin ownership tests drive a launchd claim; a launchd install writes
+  // a v1 state file (no `backend` field — that is Windows-only). v2 without a
+  // backend would be malformed, so this writes v1.
   function writeState(dir: string, codexHome: string, opencodexHome: string): void {
     writeFileSync(join(dir, "service-state.json"), JSON.stringify({
-      version: 2, codexHome, opencodexHome, backend: "scheduler",
+      version: 1, codexHome, opencodexHome,
     }));
   }
 
@@ -601,5 +671,80 @@ describe("ownership refuses what it cannot prove", () => {
     useHomes();
     const { run } = recorder(() => ({ status: 112, stderr: "Could not find domain for user" }));
     expect(inspectNativeCodexOwnership(own({ run })).ownership).toBe("owned");
+  });
+
+  /*
+   * The interrupted-backend-switch case: a v2 state file records backend
+   * "native" (WinSW) but the probe finds a scheduler task. The homes agree, but
+   * the manager backend does not, so ownership cannot be proven.
+   */
+  test("a state backend that disagrees with the installed manager is unknown", () => {
+    const { codexHome, opencodexHome } = useHomes();
+    mkdirSync(opencodexHome, { recursive: true });
+    writeFileSync(join(opencodexHome, "service-state.json"), JSON.stringify({
+      version: 2, codexHome, opencodexHome, backend: "native",
+    }));
+    // A scheduler claim whose homes agree with the state.
+    const wrapper = join(opencodexHome, "opencodex-service.cmd");
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      `set "CODEX_HOME=${codexHome}"`,
+      `set "OPENCODEX_HOME=${opencodexHome}"`,
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const launcher = join(opencodexHome, "opencodex-service-launcher.vbs");
+    writeFileSync(launcher, `shell.Run """${wrapper}""", 0, True\r\n`);
+    writeFileSync(join(opencodexHome, "opencodex-service-task.xml"), [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      `<Arguments>/b /nologo &quot;${launcher}&quot;</Arguments>`,
+    ].join("\n"));
+
+    const result = inspectNativeCodexOwnership({
+      platform: "win32",
+      home,
+      run: () => ({ status: 1, stderr: "ERROR: The system cannot find the file specified.", stdout: "", timedOut: false, spawnFailed: false }),
+      statePaths: [join(opencodexHome, "service-state.json")],
+      currentHomes: { codexHome, opencodexHome },
+    });
+    expect(result.ownership).toBe("unknown");
+    expect(result.reason).toContain("backend");
+  });
+
+  test("a state backend that agrees with the installed manager is owned", () => {
+    const { codexHome, opencodexHome } = useHomes();
+    mkdirSync(opencodexHome, { recursive: true });
+    writeFileSync(join(opencodexHome, "service-state.json"), JSON.stringify({
+      version: 2, codexHome, opencodexHome, backend: "scheduler",
+    }));
+    const wrapper = join(opencodexHome, "opencodex-service.cmd");
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      `set "CODEX_HOME=${codexHome}"`,
+      `set "OPENCODEX_HOME=${opencodexHome}"`,
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const launcher = join(opencodexHome, "opencodex-service-launcher.vbs");
+    writeFileSync(launcher, `shell.Run """${wrapper}""", 0, True\r\n`);
+    writeFileSync(join(opencodexHome, "opencodex-service-task.xml"), [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      `<Arguments>/b /nologo &quot;${launcher}&quot;</Arguments>`,
+    ].join("\n"));
+
+    const result = inspectNativeCodexOwnership({
+      platform: "win32",
+      home,
+      run: () => ({ status: 1, stderr: "ERROR: The system cannot find the file specified.", stdout: "", timedOut: false, spawnFailed: false }),
+      statePaths: [join(opencodexHome, "service-state.json")],
+      currentHomes: { codexHome, opencodexHome },
+    });
+    expect(result.ownership).toBe("owned");
   });
 });
