@@ -66,15 +66,38 @@ function isPlaceholderOnlyValue(raw) {
  */
 function stripMediaTokens(text) {
   if (typeof text !== "string") return "";
-  const htmlStripped = text
-    // HTML media tags: <img ...> (self-closing or not), <picture>...</picture>,
-    // <video>...</video>, <audio>...</audio> (kept as whole blocks so a lone
-    // media embed does not leave stray tags behind).
-    .replace(/<picture[\s\S]*?<\/picture>/gi, " ")
-    .replace(/<video[\s\S]*?<\/video>/gi, " ")
-    .replace(/<audio[\s\S]*?<\/audio>/gi, " ")
-    .replace(/<img\b[^>]*>/gi, " ");
-  return stripMarkdownImages(htmlStripped);
+  const markdownStripped = stripMarkdownImages(stripHtmlMedia(text));
+  return stripReferenceImages(markdownStripped);
+}
+
+/**
+ * Strip HTML media blocks whose entire inner content is media markup (no
+ * substantive text). A block that contains fallback/caption prose — for
+ * example `<video controls>Route requests through the fallback provider.</video>`
+ * — is left untouched so the prose survives the empty-section check.
+ *
+ * Handles <img ...>, <picture>...</picture>, <video>...</video>, and
+ * <audio>...</audio>.
+ */
+function stripHtmlMedia(text) {
+  if (typeof text !== "string") return "";
+  let s = text
+    .replace(/<img\b[^>]*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+
+  // Whole media blocks: replace only when the inner content is not
+  // substantive text (no word characters outside tags).
+  s = s.replace(
+    /<(picture|video|audio)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+    (match, tag, inner) => {
+      const innerStripped = inner
+        .replace(/<[^>]+>/g, " ")
+        .replace(/[\s_*~`]+/g, " ")
+        .trim();
+      return innerStripped.length === 0 ? " " : match;
+    },
+  );
+  return s;
 }
 
 /**
@@ -99,6 +122,14 @@ function stripMarkdownImages(text) {
   const out = [];
   let i = 0;
   while (i < text.length) {
+    // Inside an indented code block (4+ leading spaces or a tab), image
+    // syntax is literal code, not a rendered image. Leave it untouched so a
+    // section that documents example syntax is not emptied.
+    if (isInsideIndentedCode(text, i)) {
+      out.push(text[i]);
+      i += 1;
+      continue;
+    }
     // A backslash-escaped or code-fenced `![` is not an image token. We only
     // guard the common `\!` escape here; fenced blocks are handled by the
     // section extractor upstream, which does not include them in sections.
@@ -114,6 +145,47 @@ function stripMarkdownImages(text) {
     i += 1;
   }
   return out.join("");
+}
+
+/**
+ * True when `index` sits inside an indented code block, i.e. on a line that
+ * starts with four or more spaces or a tab. Such lines render as literal
+ * code in GitHub Markdown.
+ */
+function isInsideIndentedCode(text, index) {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  const prefix = text.slice(lineStart, index);
+  return /^(?: {4,}|\t)/.test(prefix);
+}
+
+/**
+ * Strip reference-style Markdown images: inline references `![alt][ref]`
+ * and the reference definitions `[ref]: https://...` they point at. These
+ * are valid image syntax that a media-only section may use to embed a
+ * screenshot.
+ */
+function stripReferenceImages(text) {
+  if (typeof text !== "string") return "";
+  // Inline reference: ![alt][ref] or ![alt][] (implicit). Alt may contain
+  // balanced brackets.
+  let s = text.replace(/!\[(?:[^\[\]]|\[[^\]]*\])*\]\[[^\]]*\]/g, " ");
+  // Reference definitions: [ref]: url "title" — only when the reference is
+  // actually used by an image in the same text. A definition alone (or one
+  // used by a text link) is not media and must stay.
+  const refs = new Set();
+  for (const m of text.matchAll(/!\[([^\]]*)\]\[([^\]]*)\]/g)) {
+    // Explicit reference: ![alt][ref] — the ref is group 2.
+    if (m[2]) refs.add(m[2].toLowerCase());
+    // Implicit reference: ![alt][] — the ref is the alt text.
+    if (m[2] === "" && m[1]) refs.add(m[1].toLowerCase());
+  }
+  if (refs.size > 0) {
+    s = s.replace(
+      /^\s*\[([^\]]+)\]:\s*\S+(?:\s+["'(][^"')]*["')])?\s*$/gm,
+      (line, ref) => (refs.has(ref.toLowerCase()) ? " " : line),
+    );
+  }
+  return s;
 }
 
 /**

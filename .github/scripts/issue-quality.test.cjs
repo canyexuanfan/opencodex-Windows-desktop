@@ -371,6 +371,20 @@ describe("validateIssue - feature", () => {
     assert.equal(isMediaOnly('![alt](https://example.com/image_(final).png "title")'), true);
     assert.equal(isMediaOnly("![bad](https://example.com/a)b.png)"), false);
     assert.equal(isMediaOnly("\\![escaped](url)"), false);
+    // Reference-style images (Codex bot finding): inline ref + definition.
+    assert.equal(isMediaOnly("![Image][shot]\n\n[shot]: https://example.com/x.png"), true);
+    assert.equal(isMediaOnly("![Image][]\n\n[Image]: https://example.com/x.png"), true);
+    assert.equal(isMediaOnly("![Image][shot]\n\n[shot]: https://example.com/x.png\ncaption"), false);
+    // Fallback prose inside media blocks is preserved (Codex bot finding).
+    assert.equal(
+      isMediaOnly("<video controls>Route voice requests through the configured fallback provider when quota is exhausted.</video>"),
+      false,
+    );
+    assert.equal(isMediaOnly('<audio src="a.mp3"></audio>'), true);
+    assert.equal(isMediaOnly("<picture>Fallback image description</picture>"), false);
+    // Indented code blocks render as literal code, not images (Codex bot finding).
+    assert.equal(isMediaOnly("    ![provider status](https://example.com/status.png)"), false);
+    assert.equal(isMediaOnly("\t![provider status](https://example.com/status.png)"), false);
     assert.equal(isMediaOnly('<picture><source srcset="x.webp"><img src="x.png"></picture>'), true);
     assert.equal(isMediaOnly('<video src="clip.mp4"></video>'), true);
     assert.equal(isMediaOnly('<img src="x.png" />\nCaption text'), false);
