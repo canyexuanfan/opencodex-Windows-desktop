@@ -553,6 +553,8 @@ export interface OcxClientIntegrationsConfig {
   codex?: boolean;
   /** Durable desired state for Grok Build. MISSING MEANS ON. */
   grok?: boolean;
+  /** Durable desired state for Claude Desktop. MISSING MEANS ON. */
+  "claude-desktop"?: boolean;
 }
 
 export interface OcxConfig {

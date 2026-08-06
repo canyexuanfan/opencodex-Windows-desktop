@@ -143,6 +143,20 @@ export function setGrokIntegrationEnabled(enabled: boolean): CodexDesiredStateRe
   return setIntegrationEnabled("grok", enabled);
 }
 
+/** Whether Claude Desktop's managed gateway profile is wanted. */
+export function claudeDesktopIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return integrationEnabled(config, "claude-desktop");
+}
+
+/** The same question when no admitted config snapshot is in hand. */
+export function claudeDesktopIntegrationEnabledNow(): boolean {
+  return claudeDesktopIntegrationEnabled(loadConfig());
+}
+
+export function setClaudeDesktopIntegrationEnabled(enabled: boolean): CodexDesiredStateResult {
+  return setIntegrationEnabled("claude-desktop", enabled);
+}
+
 /**
  * The startup gate, as a function rather than an `if` buried in `handleStart`.
  *
