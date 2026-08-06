@@ -24,6 +24,7 @@ import type {
   HistoryWorkerResult,
 } from "./history-worker";
 import { historyBackupPathFor } from "./history-provider";
+import type { CodexHistoryFailureReason } from "./history-provider";
 import { getCodexHome } from "./paths";
 
 /** Where Codex keeps its resume history, and the manifest that shadows it. */
@@ -70,7 +71,7 @@ export type CodexHistoryJobOutcome =
   | { readonly kind: "skipped" }
   | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" }
   | { readonly kind: "failed"; readonly reason: "worker-error" | "worker-died" | "timeout";
-      readonly message: string };
+      readonly message: string; readonly historyFailureReason?: CodexHistoryFailureReason };
 
 /**
  * Derive the durable history operation from admitted intent.
@@ -115,7 +116,8 @@ function isPlausibleWorkerResult(
     case "blocked":
       return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path";
     case "error":
-      return typeof message.message === "string";
+      return typeof message.message === "string"
+        && (message.reason === undefined || message.reason === "busy" || message.reason === "permission");
     default:
       return false;
   }
@@ -134,7 +136,12 @@ export function deriveCodexHistoryOperation(intent: {
 function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutcome {
   if (result.type === "blocked") return { kind: "blocked", reason: result.reason };
   if (result.type === "error") {
-    return { kind: "failed", reason: "worker-error", message: result.message };
+    return {
+      kind: "failed",
+      reason: "worker-error",
+      message: result.message,
+      ...(result.reason ? { historyFailureReason: result.reason } : {}),
+    };
   }
   return result.outcome === "skipped"
     ? { kind: "skipped" }

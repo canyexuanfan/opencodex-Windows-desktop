@@ -34,7 +34,7 @@ import {
 } from "./journal";
 import { withCatalogWriteSerialization } from "./catalog-write-serialization";
 import { restoreCodexCatalogWithPermit } from "./catalog/sync";
-import { syncCodexHistoryProvider } from "./history-provider";
+import { syncCodexHistoryProvider, type CodexHistoryFailureReason } from "./history-provider";
 import {
   deriveCodexHistoryOperation,
   resolveCodexHistoryJobTarget,
@@ -1179,71 +1179,140 @@ export function removeCodexConfig(
   };
 }
 
-/**
- * Recover native Codex: strip opencodex from config.toml AND drop proxy-routed catalog entries,
- * so plain `codex` works when the proxy is stopped. Called by `ocx stop`, the proxy shutdown
- * handler, and `ocx restore`. Idempotent + atomic.
- */
-/**
- * Restore native Codex, running history in a Worker under H.
- *
- * Prefer this everywhere. The synchronous variant below exists only for the
- * process-exit path, where awaiting a thread is its own hazard.
- */
-export async function restoreNativeCodexAsync(): Promise<{
+export type CodexRestoreArtifactState = "ok" | "skipped" | "failed";
+
+export interface CodexRestoreConfigResult {
+  state: CodexRestoreArtifactState;
+  changed: boolean;
+  action: "journal-restored" | "owned-fields-stripped" | "external-provider-preserved" | "failed";
+  message: string;
+}
+
+export interface CodexRestoreCatalogResult {
+  state: CodexRestoreArtifactState;
+  changed: boolean;
+  removed: number;
+  kept: number;
+  path: string | null;
+  message: string;
+}
+
+export interface CodexRestoreHistoryResult {
+  state: CodexRestoreArtifactState;
+  changed: boolean;
+  reason?: CodexHistoryFailureReason;
+  rows: number;
+  files: number;
+  ejectedRows: number;
+  message: string;
+}
+
+export interface CodexNativeRestoreResult {
   success: boolean;
   message: string;
-}> {
+  externalProvider?: string;
+  artifacts: {
+    config: CodexRestoreConfigResult;
+    catalog: CodexRestoreCatalogResult;
+    history: CodexRestoreHistoryResult;
+  };
+}
+
+function failedHistoryRestore(reason?: CodexHistoryFailureReason): CodexRestoreHistoryResult {
+  return {
+    state: "failed",
+    changed: false,
+    ...(reason ? { reason } : {}),
+    rows: 0,
+    files: 0,
+    ejectedRows: 0,
+    message: reason === "permission"
+      ? "Codex resume history could NOT be restored because permission was denied."
+      : "Codex resume history could NOT be restored — the Codex app appears to be holding the history database.",
+  };
+}
+
+/** Restore native Codex, running history in a Worker under H. */
+export async function restoreNativeCodexAsync(): Promise<CodexNativeRestoreResult> {
   const inline = restoreNativeCodex({ skipHistory: true });
   const outcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
-    operation: deriveCodexHistoryOperation({
-      direction: "restore",
-      // Restore always returns history to native when it runs at all; the
-      // opt-out belongs to apply, which is what put opencodex there.
-      resumeHistory: true,
-      legacyMode: false,
-    }),
+    operation: deriveCodexHistoryOperation({ direction: "restore", resumeHistory: true, legacyMode: false }),
   });
-  const historyMsg =
-    outcome.kind === "converged"
-      ? outcome.rows > 0
-        ? ` Resume history restored from opencodex backup (${outcome.rows} thread(s)).`
-        : ""
-      : outcome.kind === "skipped"
-        ? ""
-        : // A lock we could not take is reported, never counted as nothing to do.
-          ` ⚠️ Codex resume history could NOT be restored — the Codex app appears to be holding the history database. Close Codex and run \`ocx restore\` again.`;
-  return { success: inline.success, message: `${inline.message}${historyMsg}` };
+  const history: CodexRestoreHistoryResult = outcome.kind === "converged"
+    ? {
+        state: "ok", changed: outcome.rows > 0, rows: outcome.rows, files: outcome.files, ejectedRows: 0,
+        message: outcome.rows > 0
+          ? `Resume history restored from opencodex backup (${outcome.rows} thread(s)).`
+          : "Codex resume history was already native.",
+      }
+    : outcome.kind === "skipped"
+      ? { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message: "Codex resume history was skipped." }
+      : outcome.kind === "blocked" && outcome.reason === "busy"
+        ? failedHistoryRestore("busy")
+        : outcome.kind === "failed"
+          ? failedHistoryRestore(outcome.historyFailureReason)
+          : failedHistoryRestore();
+  const success = inline.artifacts.config.state !== "failed"
+    && inline.artifacts.catalog.state !== "failed"
+    && history.state !== "failed";
+  return {
+    ...inline,
+    success,
+    message: `${inline.message}${history.state === "failed" ? ` ⚠️ ${history.message}` : ""}`,
+    artifacts: { ...inline.artifacts, history },
+  };
 }
 
-export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): {
-  success: boolean;
-  message: string;
-} {
+export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): CodexNativeRestoreResult {
   const activeProvider = currentExternalCodexModelProvider();
   if (activeProvider) {
     removeJournal();
+    const message = `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.`;
     return {
       success: true,
-      message: `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.`,
+      message,
+      externalProvider: activeProvider,
+      artifacts: {
+        config: { state: "skipped", changed: false, action: "external-provider-preserved", message },
+        catalog: { state: "skipped", changed: false, removed: 0, kept: 0, path: null, message },
+        history: { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message },
+      },
     };
   }
-  const journal = restoreJournalState();
-  const cfg = journal.configRestored
-    ? {
-        success: true,
-        message: "Codex config restored from opencodex journal.",
-      }
-    : removeCodexConfig({
-        preserveProfile: journal.profileRestored || journal.profileChanged,
-      });
+  let config: CodexRestoreConfigResult;
+  try {
+    const journal = restoreJournalState();
+    const restored = journal.configRestored
+      ? { success: true, message: "Codex config restored from opencodex journal." }
+      : removeCodexConfig({ preserveProfile: journal.profileRestored || journal.profileChanged });
+    config = restored.success
+      ? {
+          state: "ok",
+          changed: journal.configRestored || journal.profileRestored || journal.profileChanged || restored.message.startsWith("Removed"),
+          action: journal.configRestored ? "journal-restored" : "owned-fields-stripped",
+          message: restored.message,
+        }
+      : { state: "failed", changed: false, action: "failed", message: restored.message };
+  } catch (error) {
+    config = { state: "failed", changed: false, action: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
   const owningCodexHome = getCodexHome();
-  const restoredCatalog = withCatalogWriteSerialization(owningCodexHome, permit => restoreCodexCatalogWithPermit(permit, owningCodexHome));
-  const cat =
-    restoredCatalog.kind === "completed"
-      ? restoredCatalog.value
-      : { removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH };
+  let catalog: CodexRestoreCatalogResult;
+  try {
+    const restored = withCatalogWriteSerialization(owningCodexHome, permit => restoreCodexCatalogWithPermit(permit, owningCodexHome));
+    catalog = restored.kind === "completed"
+      ? { state: "ok", changed: restored.value.removed > 0, ...restored.value, message: "Codex catalog restored." }
+      : {
+          state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
+          message: `Codex catalog could not be restored: ${restored.reason}.`,
+        };
+  } catch (error) {
+    catalog = {
+      state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
   // Design B (loopback) steady state: threads are already tagged openai, so prove the
   // no-op with a readonly probe instead of write-opening a DB the Codex app may hold
   // (Windows: WAL writer lock -> seconds of stalling + a false warning on every stop).
@@ -1256,23 +1325,33 @@ export function restoreNativeCodex(options: { skipHistory?: boolean } = {}): {
   }
   // `skipHistory` is how the async wrapper takes this work for itself: the
   // native files come down here, and history runs in the Worker under H.
-  const history = options.skipHistory
+  const rawHistory = options.skipHistory
     ? { rows: 0, files: 0 }
     : syncCodexHistoryProvider("openai", undefined, undefined, {
         skipWhenProvablyNoop,
       });
-  const msg =
-    cat.removed > 0
-      ? `${cfg.message} Catalog restored to ${cat.kept} native model(s) (dropped ${cat.removed} proxy-routed).`
-      : cfg.message;
-  const historyMsg = history.failed
-    ? ` ⚠️ Codex resume history could NOT be restored — the Codex app appears to be holding the history DB. Close the Codex app/IDE and run 'ocx stop' again; until then routed threads stay hidden in the native app.`
-    : history.rows > 0
-      ? ` Resume history restored from opencodex backup (${history.rows} thread(s)).`
-      : history.ejectedRows
-        ? ` ${history.ejectedRows} opencodex history thread(s) were ejected to openai so native Codex can resume them.`
-        : "";
-  return { success: cfg.success, message: `${msg}${historyMsg}` };
+  const history: CodexRestoreHistoryResult = options.skipHistory
+    ? { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message: "History restoration runs asynchronously." }
+    : rawHistory.failed
+      ? failedHistoryRestore(rawHistory.failureReason)
+      : {
+          state: "ok",
+          changed: rawHistory.rows > 0 || (rawHistory.ejectedRows ?? 0) > 0,
+          rows: rawHistory.rows,
+          files: rawHistory.files,
+          ejectedRows: rawHistory.ejectedRows ?? 0,
+          message: rawHistory.rows > 0
+            ? `Resume history restored from opencodex backup (${rawHistory.rows} thread(s)).`
+            : "Codex resume history was already native.",
+        };
+  const message = catalog.removed > 0
+    ? `${config.message} Catalog restored to ${catalog.kept} native model(s) (dropped ${catalog.removed} proxy-routed).`
+    : config.message;
+  return {
+    success: config.state !== "failed" && catalog.state !== "failed" && history.state !== "failed",
+    message,
+    artifacts: { config, catalog, history },
+  };
 }
 
 export function getCodexConfigPath(): string {

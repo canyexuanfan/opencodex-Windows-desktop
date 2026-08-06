@@ -29,6 +29,7 @@ import {
   writeLegacyOpenaiHistoryRecovery,
   type HistoryWriteTarget,
 } from "./internal/history-writer";
+import type { CodexHistoryFailureReason } from "./history-provider";
 
 /**
  * The durable operation, mirrored into the request for diagnostics only.
@@ -64,7 +65,7 @@ export type HistoryWorkerResult =
   | { readonly type: "blocked"; readonly requestId: string; readonly jobId: string;
       readonly reason: "busy" | "database" | "unsafe-path" }
   | { readonly type: "error"; readonly requestId: string; readonly jobId: string;
-      readonly message: string };
+      readonly message: string; readonly reason?: CodexHistoryFailureReason };
 
 const OPERATIONS: ReadonlySet<string> = new Set<CodexHistoryWorkerOperation>([
   "skip",
@@ -135,7 +136,13 @@ export function runHistoryUnitUnderLock(
   }
   const result = acquired.value;
   if (result.failed === true) {
-    return { type: "error", requestId, jobId, message: "history_transition_failed" };
+    return {
+      type: "error",
+      requestId,
+      jobId,
+      message: "history_transition_failed",
+      ...(result.failureReason ? { reason: result.failureReason } : {}),
+    };
   }
   return {
     type: "done",
