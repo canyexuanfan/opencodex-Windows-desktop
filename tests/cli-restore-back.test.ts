@@ -50,6 +50,41 @@ describe("ocx restore back", () => {
     }
   });
 
+  test("restore --json emits a schema-complete envelope on the already-OFF no-op path", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-cli-json-noop-codex-"));
+    const ocxHome = mkdtempSync(join(tmpdir(), "ocx-cli-json-noop-home-"));
+    try {
+      writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+      writeFileSync(join(ocxHome, "config.json"), JSON.stringify({
+        providers: {}, defaultProvider: "openai", checkForUpdates: false,
+        clientIntegrations: { codex: false },
+      }), "utf8");
+      const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "restore", "--json"], {
+        cwd: repoRoot,
+        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      const envelope = JSON.parse(result.stdout) as {
+        success: boolean;
+        artifacts: Record<"config" | "catalog" | "history", { state: string; changed: boolean; message: string }>;
+      };
+      // Early exits must stay shape-stable with CodexNativeRestoreResult:
+      // consumers never special-case a valid outcome.
+      expect(envelope.success).toBe(true);
+      for (const key of ["config", "catalog", "history"] as const) {
+        expect(envelope.artifacts[key].state).toBe("skipped");
+        expect(envelope.artifacts[key].changed).toBe(false);
+        expect(typeof envelope.artifacts[key].message).toBe("string");
+      }
+      expect(envelope.artifacts.catalog).toHaveProperty("removed", 0);
+      expect(envelope.artifacts.history).toHaveProperty("rows", 0);
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+      rmSync(ocxHome, { recursive: true, force: true });
+    }
+  });
+
   test("sync treats durable OFF as a successful no-write policy result", () => {
     const codexHome = mkdtempSync(join(tmpdir(), "ocx-cli-sync-off-codex-"));
     const ocxHome = mkdtempSync(join(tmpdir(), "ocx-cli-sync-off-home-"));

@@ -814,16 +814,9 @@ switch (command) {
       process.exitCode = desired.reason === "conflict" ? 2 : 1;
       if (restoreJson) {
         // Machine-readable contract: every restore --json outcome emits one
-        // envelope on stdout, including failures before restore machinery runs.
-        console.log(JSON.stringify({
-          success: false,
-          message: `Codex desired state was not saved (${desired.reason}).`,
-          artifacts: {
-            config: { state: "skipped" },
-            catalog: { state: "skipped" },
-            history: { state: "skipped" },
-          },
-        }));
+        // schema-complete envelope on stdout, including pre-machinery failures.
+        const { skippedRestoreEnvelope } = await import("../codex/inject");
+        console.log(JSON.stringify(skippedRestoreEnvelope(false, `Codex desired state was not saved (${desired.reason}).`)));
       } else {
         console.error(`Codex desired state was not saved (${desired.reason}).`);
       }
@@ -837,15 +830,8 @@ switch (command) {
       if (classifyNativeRoutedResidue().kind === "clean") {
         const alreadyOff = "Codex integration is already OFF and native; no Codex files changed.";
         if (restoreJson) {
-          console.log(JSON.stringify({
-            success: true,
-            message: alreadyOff,
-            artifacts: {
-              config: { state: "skipped" },
-              catalog: { state: "skipped" },
-              history: { state: "skipped" },
-            },
-          }));
+          const { skippedRestoreEnvelope } = await import("../codex/inject");
+          console.log(JSON.stringify(skippedRestoreEnvelope(true, alreadyOff)));
         } else {
           console.log(alreadyOff);
         }

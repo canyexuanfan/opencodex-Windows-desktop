@@ -1277,8 +1277,17 @@ function foreignOwnershipRestoreRefusal(message: string): CodexNativeRestoreResu
 
 function desiredEnabledRestoreSkip(): CodexNativeRestoreResult {
   const message = "Codex integration was re-enabled; native restore was skipped.";
+  return skippedRestoreEnvelope(true, message);
+}
+
+/**
+ * A schema-complete all-skipped envelope for outcomes decided before any
+ * restore machinery runs. Every `restore --json` path must stay shape-stable
+ * with `CodexNativeRestoreResult`; consumers never special-case early exits.
+ */
+export function skippedRestoreEnvelope(success: boolean, message: string): CodexNativeRestoreResult {
   return {
-    success: true,
+    success,
     message,
     artifacts: {
       config: { state: "skipped", changed: false, action: "owned-fields-stripped", message },
