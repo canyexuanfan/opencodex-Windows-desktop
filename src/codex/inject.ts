@@ -23,6 +23,7 @@ import {
 } from "./inject-coordination";
 import { readIntegrationRecord } from "./integration-record";
 import { classifyNativeRoutedResidue } from "./native-residue";
+import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import {
   resolveCodexCoordinatorDatabasePath,
   resolveEffectiveUserIdentity,
@@ -1261,6 +1262,19 @@ function externalProviderRestoreResult(activeProvider: string): CodexNativeResto
   };
 }
 
+/** A foreign service claim is an authority boundary, including explicit CLI restore. */
+function foreignOwnershipRestoreRefusal(message: string): CodexNativeRestoreResult {
+  return {
+    success: false,
+    message: `Codex native restore refused: ${message}`,
+    artifacts: {
+      config: { state: "skipped", changed: false, action: "failed", message },
+      catalog: { state: "skipped", changed: false, removed: 0, kept: 0, path: null, message },
+      history: { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message },
+    },
+  };
+}
+
 function desiredEnabledRestoreSkip(): CodexNativeRestoreResult {
   const message = "Codex integration was re-enabled; native restore was skipped.";
   return {
@@ -1341,6 +1355,15 @@ export async function restoreNativeCodexAsync(
     // result into a history mutation on a home we do not own.
     removeJournal();
     return externalProviderRestoreResult(activeProvider);
+  }
+
+  // `restore` normally honours a human request even when an unrelated
+  // service-manager probe is unavailable. A recorded FOREIGN home is not an
+  // unrelated probe: it is positive evidence another installation owns these
+  // native artifacts, so do not create profile/claim locks before refusing.
+  if (options.revalidateDesiredState) {
+    const ownership = inspectNativeCodexOwnership();
+    if (ownership.ownership === "foreign") return foreignOwnershipRestoreRefusal(ownership.reason);
   }
 
   const eligibility = codexWriteCoordinationEligibility({

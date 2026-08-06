@@ -23,6 +23,7 @@ import { withCatalogWriteSerialization } from "../codex/catalog-write-serializat
 import { invalidateCodexModelsCacheWithPermit } from "../codex/catalog/sync";
 import { getCodexHome } from "../codex/paths";
 import { shouldSyncCodexOnStart } from "../codex/desired-state";
+import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import {
@@ -520,7 +521,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}) {
   // CODEX_HOME. When the user has disabled the Codex integration, starting the
   // proxy must not manufacture those Codex artifacts merely to serve other
   // clients; no Codex request can use this lifecycle in that state.
+  const nativeOwnership = inspectNativeCodexOwnership();
   const nativeMainLifecycle: NativeMainStartupLifecycle = shouldSyncCodexOnStart(config)
+    && nativeOwnership.ownership !== "foreign"
     ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
     : {
       homeId: null,
