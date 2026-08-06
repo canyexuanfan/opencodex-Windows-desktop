@@ -864,6 +864,47 @@ describe("provider registry parity", () => {
     // so the request still reaches Command Code as `deepseek/deepseek-v4-flash`.
     expect(entries.find(e => e.slug === "commandcode/deepseek-deepseek-v4-flash")).toBeTruthy();
   });
+  /*
+   * #1043. Zen publishes no modality metadata, so the classification below is an
+   * empirical list measured against the live endpoint on 2026-08-05, not something
+   * derived from provider data.
+   *
+   * The negative half is the part that matters. `mimo-v2.5-free` and
+   * `longcat-2.0-free` accept images; listing them would silently swap a working
+   * image for a caption, which is a worse failure than the loud 400 this fixes
+   * because nothing surfaces it. This test exists so a future "classify all the
+   * free models" patch fails here instead of shipping.
+   */
+  test("Zen text-only classification covers the measured models and excludes the vision ones", () => {
+    const measuredTextOnly = [
+      "big-pickle",
+      "nemotron-3-ultra-free",
+      "ling-3.0-flash-free",
+      "north-mini-code-free",
+      "laguna-s-2.1-free",
+      "deepseek-v4-flash-free",
+    ];
+    // Measured as ACCEPTING images. Never add these to a noVisionModels list.
+    const measuredVisionCapable = ["mimo-v2.5-free", "longcat-2.0-free"];
+
+    for (const providerId of ["opencode-zen", "opencode-free"]) {
+      const entry = PROVIDER_REGISTRY.find(p => p.id === providerId);
+      expect(entry, `registry entry ${providerId} is missing`).toBeTruthy();
+      expect(entry?.baseUrl, `${providerId} should serve the Zen roster`)
+        .toBe("https://opencode.ai/zen/v1");
+
+      const listed = entry?.noVisionModels ?? [];
+      for (const model of measuredTextOnly) {
+        expect(listed, `${providerId} must strip images for text-only ${model}`)
+          .toContain(model);
+      }
+      for (const model of measuredVisionCapable) {
+        expect(listed, `${providerId} must NOT strip images for vision-capable ${model}`)
+          .not.toContain(model);
+      }
+    }
+  });
+
 });
 
 describe("free-provider directory isolation", () => {

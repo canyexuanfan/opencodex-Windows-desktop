@@ -350,6 +350,34 @@ const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwe
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
 const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 /*
+ * Zen free models that reject `image_url` upstream (#1043, and the reproducible
+ * half of #1024).
+ *
+ * Zen publishes NO modality metadata — its `/v1/models` returns only id, object,
+ * created, owned_by — so this list is measured, not derived. Each id was probed
+ * once against https://opencode.ai/zen/v1 on 2026-08-05 with a text control first
+ * and then a 1x1 PNG; the six below failed the image request, four of them with
+ * `[404] No endpoints found that support image input` and `big-pickle` with the
+ * exact deserialize error quoted in #1043.
+ *
+ * `mimo-v2.5-free` and `longcat-2.0-free` ACCEPT images and are deliberately
+ * absent. Adding them would silently replace a working image with a caption,
+ * which is worse than the loud 400 this list exists to prevent — see the negative
+ * assertion in tests/provider-registry-parity.test.ts.
+ *
+ * Zen's roster is discovered live while this list is static, so it is a dated
+ * exception list, not a capability model. Re-probe before extending it.
+ * Evidence: devlog/_plan/260805_bug_fix_stack/002_zen_modality_probe.md
+ */
+const OPENCODE_ZEN_TEXT_ONLY_MODELS = [
+  "big-pickle",
+  "nemotron-3-ultra-free",
+  "ling-3.0-flash-free",
+  "north-mini-code-free",
+  "laguna-s-2.1-free",
+  "deepseek-v4-flash-free",
+];
+/*
  * DeepSeek's Codex ladder is low/high/max, and the two V4 models resolve it
  * DIFFERENTLY. From the official thinking-mode table (api-docs.deepseek.com,
  * EN and zh-cn agree, re-verified 2026-08-06):
@@ -1721,7 +1749,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     autoToolChoiceOnlyModels: KIMI_AUTO_TOOL_CHOICE_ONLY_MODELS,
     preserveReasoningContentModels: KIMI_THINKING_MODELS,
   },
-  { id: "opencode-zen", label: "opencode zen", baseUrl: "https://opencode.ai/zen/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://opencode.ai/auth" },
+  {
+    id: "opencode-zen",
+    label: "opencode zen",
+    baseUrl: "https://opencode.ai/zen/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://opencode.ai/auth",
+    // #1043: without this the proxy forwards image parts to text-only Zen models and
+    // the upstream rejects the whole request with a 400.
+    noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
+  },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
   {
     id: "opencode-free",
@@ -1740,7 +1778,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
-    noVisionModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+    // Same Zen roster behind the same base URL, so it carries the same measured
+    // text-only list rather than only its DeepSeek member (#1043).
+    noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
   },
   { id: "xiaomi", label: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://xiaomimimo.com", defaultModel: "mimo-v2.5-pro" },
   { id: "kilo", label: "Kilo", baseUrl: "https://api.kilo.ai/api/gateway", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://kilo.ai" },
