@@ -33,6 +33,11 @@ processes, reach those mechanisms rather than writing around them.
 
 Composed rows chosen to cross module boundaries this branch touched, one case each:
 
+Deferred workstation-safe IDs (explicit, for #1048 traceability): P01, P03,
+P11-P17, P20-P33 — deferred, not covered here; covered IDs are named per
+scenario below. The disposable-host class (P09/P10/P18/P34-P36) is excluded by
+the safety boundary as before.
+
 1. **A-reduced — entry-to-funnel for the toggle-relevant rows.** Real child
    invocations of: P02 (`ocx start`, bind port 0, then kill), P04 (`ocx ensure`),
    P05 (`ocx sync`), P07 (`ocx restore`), P08 (`ocx restore back`), P06
@@ -60,9 +65,15 @@ Composed rows chosen to cross module boundaries this branch touched, one case ea
    config; assert the Grok fence stays absent and the startup log/result reports
    the desired-state skip.
 6. **Restore truth composed.** With history DB held by a `BEGIN IMMEDIATE` holder
-   child, run `ocx restore` as a real child; assert exit code 1, the artifact
-   envelope reports history `busy` while config/catalog restored, and a rerun
-   after release converges — the original 040 defect, proven at the CLI boundary.
+   child, run `ocx restore` as a real child. The CLI prints only `{success,
+   message}` (`src/cli/index.ts:817-826`), so the envelope is not directly
+   observable from a spawned child; the case asserts the observable contract:
+   non-zero exit, a message that names the history failure class (busy) rather
+   than claiming full success, config/catalog bytes restored on disk while
+   history rows are not, and a rerun after release converging. If the message
+   contract proves too weak to discriminate, the case adds a machine-readable
+   CLI output (e.g. `--json` on restore) as part of this phase rather than
+   weakening the assertion.
 
 ## Harness rules kept verbatim from 050
 
@@ -76,9 +87,11 @@ after identity recheck; a teardown failure fails the case. The suite must pass
 inside `bun scripts/test.ts` on this workstation without touching the real homes
 or the live proxy.
 
-## Proof rule
+## Proof rule (050:37-54 applies per case)
 
-Each scenario names its RED condition (mutate the mechanism it proves — e.g.
-remove a revalidation, point a caller past the funnel — and the case must fail).
-At least one broken-change demonstration is executed and recorded for the suite
-as a whole before D closes.
+Every scenario names its RED condition (the mechanism whose removal must fail
+it — e.g. delete a revalidation re-read, point a caller past the funnel, skip
+the intent persist), and EACH of the six gets its own executed broken-change
+demonstration before D closes: mutate, show that scenario red, restore, show
+green, `git diff --stat` clean. One aggregate demo is not sufficient; a
+scenario without a demonstrated RED is not accepted as proving anything.
