@@ -53,11 +53,11 @@ and the patch is what the attribution is for.
 
 | PR | Contributor | Keep | Drop | Phase |
 |----|-------------|------|------|-------|
-| 1122 | Giulio Leone | Anthropic client-facing selector captured before upstream normalization (`core.ts:856`), used in bridge and passthrough JSON/SSE (`core.ts:2052`), one deterministic hidden alias near `src/codex/catalog/sync.ts:315` | Generalizing response identity and catalog lifecycle to every provider | 050 |
-| 1111 | Simon | Copilot-only block rewrite and its provider-dialect tests | Commit `6247d3932`, an unrelated CI permission assertion that causes the only merge conflict | 060 |
-| 1047 | Bailey | `syncRawBodyImageDescriptions` `_rawBody` synchronization | Forwarding empty/unmatched `input_image` parts — remove or replace them (`src/vision/index.ts:294,308-311`) | 080 |
+| 1122 | Giulio Leone | Anthropic client-facing selector captured before the upstream rewrite in `applyFinalRouteRequestNormalization`, then used in the bridge and passthrough JSON/SSE builders (anchors located by symbol in `src/server/responses/core.ts`, not by line — four phases edit that file) | Generalizing response identity and catalog lifecycle to every provider; the hidden compatibility alias rows | 050 |
+| 1111 | Simon | `src/server/github-copilot-responses-repair.ts` (+338) with its `src/server/relay.ts`, `src/server/responses/core.ts`, and `src/server/sse-payload-rewrite.ts` wiring, plus `tests/github-copilot-sse-rewrite.test.ts` and `tests/github-copilot-stream-contract.test.ts` | Commit `6247d3932` — the `tests/ci-workflows.test.ts` permission assertion that causes the only merge conflict | 060 |
+| 1047 | Bailey | The new `syncRawBodyImageDescriptions` (added after `renderDescription`, `src/vision/index.ts:269`) and its calls at the end of `describeImagesInPlace` (`:347`) and `stripImagesInPlace` (`:453`) | Its `descriptions.length === 0` early return and its raw-part fallback when a description is missing — both leave images in `_rawBody` | 080 |
 | 978 | Pranav Yerramaneni | Adapter gate at `src/adapters/google.ts:343-360` | Nothing; add the missing provider-wide positive case and correct the docs | 090 |
-| 985 | Pranav Yerramaneni | Parser/adapter/compaction work | Silent drop of schema-less `json_schema` at `src/adapters/openai-chat.ts:827-840` | 100 |
+| 985 | Pranav Yerramaneni | `parseTextFormat` replacing the boolean `detectStructuredOutput` (`src/responses/parser.ts:671`), `options.textFormat` on `src/types.ts`, and the new `response_format` mapping in `src/adapters/openai-chat.ts` (no such handling exists on dev) | Its `textFormat.schema !== undefined` guard, which drops a schema-less `json_schema` entirely | 100 |
 | 1036 | NexusCore | Translator and tests | Provenance derived from pre-filter `request.tools` (`src/adapters/cursor/live-transport.ts:543-560`) — derive from the final catalog | 110 |
 | 1126 | NexusCore | Empty-delta replay preservation (`src/bridge.ts:826,1558`) | Persisted chain-of-thought cache, exit hooks, global counters — the memory-only privacy contract stays | 120 |
 | 1093 | Takashi Yamashiro | Ordinary-attempt recording, explicit empty arrays (`src/usage/log.ts:323`) | Ingress-span persistence: any admitted client could forge a regex-shaped "guard-issued" span | 130 |
@@ -98,6 +98,9 @@ independent diagnosis of the same defect.
 
 ## Coverage
 
-6 adopt-verbatim, 10 adopt-adapted, 3 reimplement (1 landed in phase 070, 2
-deferred), 13 defer. Total **32** open PRs, every one accounted for, plus the
+6 adopt-verbatim, 10 adopt-adapted, 3 reimplement (1 **planned for** phase 070,
+2 deferred), 13 defer. Total **32** open PRs, every one accounted for, plus the
 already-merged #1129 recorded for completeness.
+
+Nothing in this document is landed at the time of writing — it is a roadmap.
+Landed state is recorded only in `170_dispositions.md`, with commit evidence.

@@ -25,17 +25,19 @@ Dropping that one commit removes the conflict without touching the fix.
 
 ## Change
 
-P re-reads `gh pr diff 1111` and adopts the contributor's actual module and test
-paths rather than inventing parallel ones — the file list below is confirmed
-against the PR at P before any edit, and the module name is taken from the PR,
-not chosen here.
+Paths below are the contributor's actual files, read from `gh pr diff 1111`
+against `dev` = `e9d957bf6`.
 
 | Path | Op | Content |
 |------|----|---------|
-| The Copilot normalizer module introduced by #1111 (exact path taken from `gh pr diff 1111`) | ADOPT | Provider-scoped client-facing block rewrite: stable response/item ids, strip Copilot-only encrypted/obfuscation fields, buffer tool input until the authoritative function/custom `.done` payload, then emit canonical lifecycle blocks |
-| `src/server/responses/core.ts` | MODIFY | Compose the Copilot rewrite with the existing generic rewrites at the relay rewrite composition point (located by symbol — phases 050/070/130 also edit this file), on both the eager and tee paths, under the existing translator budget |
-| #1111's Copilot test files (exact paths from the PR diff) | ADOPT | Provider-dialect fixtures: id normalization, field stripping, tool-call reconstruction, byte-preservation of the inspection path |
-| `tests/ci-workflows.test.ts` | UNTOUCHED | The conflicting commit `6247d3932` is dropped; this file must show no diff in the phase |
+| `src/server/github-copilot-responses-repair.ts` | ADOPT (NEW, +338) | Provider-scoped client-facing block rewrite: stable response/item ids, strip Copilot-only encrypted/obfuscation fields, buffer tool input until the authoritative function/custom `.done` payload, then emit canonical lifecycle blocks |
+| `src/server/responses/core.ts` | MODIFY (+33/−~4) | Compose the Copilot rewrite with the existing generic rewrites at the relay rewrite composition point (located by symbol — phases 050/070/130 also edit this file), on both the eager and tee paths, under the existing translator budget |
+| `src/server/sse-payload-rewrite.ts` | MODIFY (+39/−~32) | Rewrite hook shape the Copilot repair plugs into |
+| `src/server/relay.ts` | MODIFY (+28) | Wire the rewrite through the relay path |
+| `tests/github-copilot-sse-rewrite.test.ts` | ADOPT (NEW, +281) | Provider-dialect fixtures: id normalization, field stripping, tool-call reconstruction |
+| `tests/github-copilot-stream-contract.test.ts` | ADOPT (NEW, +248) | Endpoint-level stream contract |
+| `tests/sse-payload-rewrite.test.ts`, `tests/sse-inspector-bounds.test.ts`, `tests/passthrough-abort.test.ts` | MODIFY (+34/+37/+11) | Supporting coverage. **Conflict note:** phase 010 already changed `sse-inspector-bounds.test.ts`; this phase rebases onto that result rather than reverting it |
+| `tests/ci-workflows.test.ts` | UNTOUCHED | Commit `6247d3932` is dropped; this file must show **no diff** in the phase |
 
 Raw upstream frames stay untouched for diagnostics and continuation — the
 rewrite is client-facing only. That boundary is what keeps request-log fidelity

@@ -18,12 +18,12 @@ path that proves or refutes it. Snapshot: `.snapshot_issues.json`.
 
 | # | Reporter | Class | Proof on the current tree | Phase |
 |---|----------|-------|---------------------------|-------|
-| 1112 | lidge-jun | FIXABLE | `trackSseForRequestLog` appends without a cap and runs three string-parsing observers (`src/server/relay.ts:373`); the heartbeat relay repeats the unbounded append (`src/server/relay.ts:539`) | 010 |
-| 1120 | MarcusNeufeldt | FIXABLE | Startup and periodic maintenance always call the locked stage sweep (`src/codex/native-profile-startup.ts:131`), and `sweepStages()` takes the profile lock even with zero artifacts (`src/codex/native-profile-manager.ts:916`) | 020 |
-| 1117 | giulioleone097 | FIXABLE | Final routing overwrites `parsed.modelId` with the bare upstream id (`src/server/responses/core.ts:867`); the normal, image, and web-search bridges then emit that value (`core.ts:2562`, `src/images/loop.ts:902`, `src/web-search/loop.ts:772`) | 050 |
-| 1110 | Simon-Opopeee | FIXABLE | Copilot is routed onto Responses (`src/providers/registry.ts:2043`) but the relay composes only generic repairs (`src/server/responses/core.ts:2053`) — no Copilot normalization exists | 060 |
+| 1112 | lidge-jun | FIXABLE | `trackSseForRequestLog` (`src/server/relay.ts:353`) appends into `buffer` inside `inspectChunk` at `:382` with no cap and re-parses each payload through three string helpers; `relaySseWithHeartbeat` (`:498`) repeats the same unbounded append at `:540` | 010 |
+| 1120 | MarcusNeufeldt | FIXABLE | `runOwnedStageSweep` (`src/codex/native-profile-startup.ts:131`) always calls `entry.manager.sweepStages()`, and `sweepStages` (`src/codex/native-profile-manager.ts:916`) enters the locked path (`sweepStagesLocked`, `:828`) even with zero artifacts | 020 |
+| 1117 | giulioleone097 | FIXABLE | `applyFinalRouteRequestNormalization` (`src/server/responses/core.ts:856`, called at `:1532`) overwrites `parsed.modelId` with the bare upstream id; the image loop then emits that value (`src/images/loop.ts:903`), as do the JSON/streaming and web-search paths | 050 |
+| 1110 | Simon-Opopeee | FIXABLE | The `github-copilot` entry (`src/providers/registry.ts:2043`) declares `adapter: "openai-chat"` at `:2046`; Responses is forced per model by `modelWireDefaults` at `:2060-2067`. Those responses reach the Responses relay, which composes only generic image/id/snapshot repairs — no Copilot-specific normalization exists | 060 |
 | 1127 | 0xWinner98 | FIXABLE | `selectEagerPath` (`src/lib/bun-stream-caps.ts:99`) returns null whenever `needsClientRewrite` is set (`:106`), and its Darwin tail admits only `config-eager` (`:112`); inline payload rewrite and budget remain Win32-only in `core.ts` | 070 |
-| 1017 | Vincent-HD | FIXABLE | Codex custom `apply_patch` is a one-string function (`src/responses/parser.ts:166`); Cursor emits normalized arguments with no structured-edit conversion (`src/adapters/cursor/protobuf-events.ts:388`) | 110 |
+| 1017 | Vincent-HD | FIXABLE | Codex's freeform custom tool is exposed as a single-string `input` parameter (`src/responses/parser.ts:167-173`); the Cursor adapter emits normalized arguments with no structured-edit conversion (`src/adapters/cursor/protobuf-events.ts`, tool-call emission path) | 110 |
 | 241 | Lingchen97 | UPSTREAM (docs) | Routed rows are emitted with `visibility = "list"` (`src/codex/catalog/sync.ts:240`); the Desktop allowlist is outside this repo. Documented workaround only | 150 |
 
 ## Real but program-scale (deferred, reason recorded)
