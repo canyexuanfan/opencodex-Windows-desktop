@@ -52,11 +52,60 @@ function isPlaceholderOnlyValue(raw) {
 }
 
 /**
+ * Strip image/media-only content from a markdown or HTML fragment so that a
+ * section whose only content is a screenshot or media embed is treated as
+ * empty by the validators.
+ *
+ * Handles:
+ *   - Markdown images: `![alt](url)`, `![alt](url "title")`
+ *   - HTML <img ...> and <picture> ... </picture> blocks
+ *   - Common media embeds (video/audio) when they are the only content
+ *
+ * Text mixed with media (for example a caption or repro steps around an
+ * image) is preserved; only the media tokens themselves are removed.
+ */
+function stripMediaTokens(text) {
+  if (typeof text !== "string") return "";
+  return text
+    // HTML media tags: <img ...> (self-closing or not), <picture>...</picture>,
+    // <video>...</video>, <audio>...</audio> (kept as whole blocks so a lone
+    // media embed does not leave stray tags behind).
+    .replace(/<picture[\s\S]*?<\/picture>/gi, " ")
+    .replace(/<video[\s\S]*?<\/video>/gi, " ")
+    .replace(/<audio[\s\S]*?<\/audio>/gi, " ")
+    .replace(/<img\b[^>]*>/gi, " ")
+    // Markdown images, optionally with a title: ![alt](url "title"). Alt text
+    // may contain balanced brackets (for example ![Image [screenshot]](url)).
+    .replace(/!\[(?:[^\[\]]|\[[^\]]*\])*\]\([^)]*\)/g, " ")
+    // HTML comment tokens that may wrap media.
+    .replace(/<!--[\s\S]*?-->/g, " ");
+}
+
+/**
+ * True when a section contains no substantive text after removing media
+ * tokens and whitespace. Used to decide whether a media-only section should
+ * count as empty for quality validation.
+ */
+function isMediaOnly(text) {
+  if (typeof text !== "string") return false;
+  const stripped = stripMediaTokens(text);
+  return stripped.replace(/\s+/g, "").length === 0;
+}
+
+/**
  * Strip HTML comments, placeholder-only values, and trim whitespace.
  */
 function clean(raw) {
   if (typeof raw !== "string") return "";
   let s = raw.replace(/<!--[\s\S]*?-->/g, "");
+  // Media-only sections (a lone screenshot or embed) carry no reportable
+  // text. Strip the media tokens so the section participates in emptiness and
+  // duplicate detection like any other blank section. This closes the
+  // image-only-section bypass (see #1098: an `<img>`-only goal hid repeated
+  // prose in the other sections from duplicate detection).
+  if (isMediaOnly(s)) {
+    s = stripMediaTokens(s).replace(/\s+/g, " ").trim();
+  }
   // Whole-value placeholders first (including a single enclosing fence), so
   // line-by-line stripping cannot leave bare fence markers behind.
   if (isPlaceholderOnlyValue(s)) return "";
@@ -1290,6 +1339,8 @@ module.exports = {
   clean,
   normalise,
   canonicalise,
+  stripMediaTokens,
+  isMediaOnly,
   extractSection,
   resolveSection,
   detectIssueKind,

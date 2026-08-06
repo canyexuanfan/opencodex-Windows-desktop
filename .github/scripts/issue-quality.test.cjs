@@ -20,6 +20,8 @@ const {
   isPlaceholder,
   isRawPlaceholder,
   isUnusableVersion,
+  stripMediaTokens,
+  isMediaOnly,
   countWords,
   hasConcreteDetail,
   hasActionableReproductionDetail,
@@ -233,6 +235,115 @@ describe("validateIssue - feature", () => {
     assert.equal(result.kind, "feature");
     assert.equal(result.valid, false);
     assert.ok(result.reasons.length > 0);
+  });
+
+  it("rejects an image-only goal section that hides repeated prose (#1098)", () => {
+    // Regression for #1098: an HTML <img> in the goal section made the goal
+    // look non-empty, so the repeated identical sentences in the other three
+    // sections were not caught as duplicates and the issue passed validation.
+    const repeated =
+      "It is hoped that the usage query will support time-based queries and statistics, as well as key-based queries and statistics";
+    const img =
+      '<img width="2474" height="1071" alt="Image" src="https://github.com/user-attachments/assets/17ea27a8-cec6-4591-aa09-a0ce36f1211f" />';
+    const body = [
+      "### Area",
+      "CLI",
+      "### What are you trying to accomplish?",
+      img,
+      "### What prevents this today?",
+      repeated,
+      "### What should OpenCodex do?",
+      repeated,
+      "### Example usage or interface",
+      repeated,
+    ].join("\n");
+    const result = validateIssue({ title: repeated, body, labels: ["enhancement"] });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => /missing or empty/i.test(r)),
+      `Expected missing/empty reason, got: ${result.reasons.join("; ")}`,
+    );
+    assert.ok(
+      result.reasons.some((r) => /same content/i.test(r)),
+      `Expected duplicate-content reason, got: ${result.reasons.join("; ")}`,
+    );
+  });
+
+  it("rejects a markdown-image-only goal section with repeated prose (#1098)", () => {
+    const repeated =
+      "It is hoped that the usage query will support time-based queries and statistics, as well as key-based queries and statistics";
+    const mdImg = "![Image](https://github.com/user-attachments/assets/17ea27a8-cec6-4591-aa09-a0ce36f1211f)";
+    const body = [
+      "### What are you trying to accomplish?",
+      mdImg,
+      "### What prevents this today?",
+      repeated,
+      "### What should OpenCodex do?",
+      repeated,
+      "### Example usage or interface",
+      repeated,
+    ].join("\n");
+    const result = validateIssue({ title: repeated, body, labels: ["enhancement"] });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => /missing or empty/i.test(r)),
+      `Expected missing/empty reason, got: ${result.reasons.join("; ")}`,
+    );
+  });
+
+  it("rejects a markdown image with bracketed alt text in the goal (#1098)", () => {
+    const repeated =
+      "It is hoped that the usage query will support time-based queries and statistics, as well as key-based queries and statistics";
+    // GitHub permits balanced brackets inside image alt text, e.g.
+    // ![Image [screenshot]](url). The stripper must still treat it as
+    // media-only so it cannot hide repeated prose.
+    const mdImg = "![Image [screenshot]](https://example.com/x.png)";
+    const body = [
+      "### What are you trying to accomplish?",
+      mdImg,
+      "### What prevents this today?",
+      repeated,
+      "### What should OpenCodex do?",
+      repeated,
+      "### Example usage or interface",
+      repeated,
+    ].join("\n");
+    const result = validateIssue({ title: repeated, body, labels: ["enhancement"] });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => /missing or empty/i.test(r)),
+      `Expected missing/empty reason, got: ${result.reasons.join("; ")}`,
+    );
+  });
+
+  it("preserves a goal section that mixes an image with real text", () => {
+    const goal = [
+      "![Screenshot](https://example.com/shot.png)",
+      "Route voice requests to a configured fallback provider when the primary quota is exhausted.",
+    ].join("\n");
+    const result = validateIssue({
+      title: "Voice fallback routing",
+      body: featureBodyWithGoal(goal),
+      labels: ["enhancement"],
+    });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, true);
+  });
+
+  it("treats image/media-only sections as empty via isMediaOnly", () => {
+    assert.equal(isMediaOnly('<img src="x.png" />'), true);
+    assert.equal(isMediaOnly("![alt](https://example.com/x.png)"), true);
+    assert.equal(isMediaOnly("![alt [with bracket]](https://example.com/x.png)"), true);
+    assert.equal(isMediaOnly('<picture><source srcset="x.webp"><img src="x.png"></picture>'), true);
+    assert.equal(isMediaOnly('<video src="clip.mp4"></video>'), true);
+    assert.equal(isMediaOnly('<img src="x.png" />\nCaption text'), false);
+    assert.equal(isMediaOnly("Some real description."), false);
+    assert.equal(stripMediaTokens('<img src="x.png" />').trim(), "");
+    assert.equal(stripMediaTokens('![alt](url "title")').trim(), "");
+    assert.equal(stripMediaTokens('before ![alt](url) after').replace(/\s+/g, " ").trim(), "before after");
   });
 
   it("accepts a concise but actionable feature", () => {
