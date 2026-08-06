@@ -235,7 +235,7 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", ["low", "medium"]).reasoning).toBeUndefined();
   });
 
-  test("debug-warns once per unsupported combo default", () => {
+  test("debug-warns once per unsupported or unknown combo default", () => {
     const debug = spyOn(console, "debug").mockImplementation(() => {});
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
@@ -245,6 +245,13 @@ describe("combo request cloning", () => {
       model: "m1",
       requestedEffort: "high",
       capability: "unsupported",
+    });
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    expect(debug).toHaveBeenCalledTimes(2);
+    expect(debug.mock.calls[1]?.[1]).toMatchObject({
+      requestedEffort: "medium",
+      capability: "unknown",
     });
     debug.mockRestore();
   });
