@@ -315,11 +315,15 @@ async function fetchCommandCode(request: AdapterRequest, ctx: AdapterFetchContex
 
 function supportedCommandCodeEffort(provider: OcxProviderConfig, modelId: string, requested: string | undefined): string | undefined {
   if (!requested || requested === "none") return undefined;
-  const supported = commandCodeReasoningEfforts(modelId) ?? configuredReasoningEfforts(provider, modelId);
+  // Compatibility ids (deepseek-v4-flash / glm-5.2) must resolve to their canonical
+  // Command Code id before the effort lookup, or legacy requests silently lose the
+  // reasoning effort because the official table is keyed by the canonical ids.
+  const canonicalId = COMMAND_CODE_MODEL_ALIASES[modelId] ?? modelId;
+  const supported = commandCodeReasoningEfforts(canonicalId) ?? configuredReasoningEfforts(provider, canonicalId);
   if (!supported) return undefined;
-  // Command Code's official profiles describe xhigh as the CLI label that maps to
+  // Command Code's official profiles describe xhigh and ultra as the CLI labels that map to
   // the wire value `max`; preserve that mapping without advertising a synthetic tier.
-  const wire = requested === "xhigh" && supported.includes("max") ? "max" : requested;
+  const wire = (requested === "xhigh" || requested === "ultra") && supported.includes("max") ? "max" : requested;
   return supported.includes(wire) ? wire : undefined;
 }
 

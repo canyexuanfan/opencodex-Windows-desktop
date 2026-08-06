@@ -204,6 +204,16 @@ describe("Command Code provider", () => {
     expect(JSON.parse(built.body).params).not.toHaveProperty("reasoning_effort");
   });
 
+  test("maps ultra and xhigh to the max wire effort and honors legacy alias ids", async () => {
+    const ultra = await builtRequest({ ...parsed(), options: { reasoning: "ultra", maxOutputTokens: 100 } });
+    expect(JSON.parse(ultra.body).params.reasoning_effort).toBe("max");
+    const xhigh = await builtRequest({ ...parsed(), options: { reasoning: "xhigh", maxOutputTokens: 100 } });
+    expect(JSON.parse(xhigh.body).params.reasoning_effort).toBe("max");
+    // Legacy compatibility id resolves to the canonical effort table before the lookup.
+    const legacy = await builtRequest({ ...parsed(), modelId: "deepseek-v4-flash" });
+    expect(JSON.parse(legacy.body).params.reasoning_effort).toBe("high");
+  });
+
   test("filters tool declarations when tool_choice disables tools", async () => {
     const built = await builtRequest({ ...parsed(), options: { toolChoice: "none" } });
     expect(JSON.parse(built.body).params.tools).toEqual([]);
