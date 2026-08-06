@@ -48,6 +48,19 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
+  it("re-runs on issue_comment so a maintainer GUI waiver takes effect", () => {
+    // The GUI-screenshot gate is waived by a maintainer issue comment
+    // ("not touching gui"). `pull_request_target` types do not include issue
+    // comments, so without this trigger the waiver sits unread until a PR
+    // edit or push re-runs the gate.
+    assert.match(workflow, /^  issue_comment:/m);
+    assert.match(workflow, /- created/);
+    assert.match(workflow, /- edited/);
+    // The script resolves the PR number from the issue payload, which is what
+    // an issue_comment event delivers instead of a pull_request object.
+    assert.match(workflow, /context\.payload\.issue\?\.number/);
+  });
+
   it("does not add review events that would break the trusted-base model", () => {
     // `pull_request_review` / `pull_request_review_comment` load the workflow
     // from the PR head branch (like `pull_request`), while this workflow's
@@ -127,7 +140,14 @@ describe("enforce-pr-target workflow", () => {
       .split("- name: Checkout trusted PR-quality scripts")[1]
       .split(/\n {6}- name:/)[0];
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
-    assert.match(checkoutStep, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
+    // `pull_request_target` pins the PR's base SHA so the scripts match the
+    // event's base revision. An `issue_comment` event has no PR payload, so
+    // the ref falls back to the repository default branch — still trusted, and
+    // never the PR head.
+    assert.match(
+      checkoutStep,
+      /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\|\|\s*github\.event\.repository\.default_branch\s*\}\}/,
+    );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
