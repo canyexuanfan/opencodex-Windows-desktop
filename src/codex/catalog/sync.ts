@@ -1066,6 +1066,11 @@ export function invalidateCodexModelsCacheWithPermit(
   owningCodexHome: string,
 ): boolean {
   try {
+    // This permit is a REACQUISITION: refreshCodexModelCatalog's commit released
+    // K before this rewrite runs, so the commit-path desired-state check cannot
+    // cover it. A disable landing in that gap must not be overwritten by a
+    // routed cache write — re-read intent under this permit, same as the commit.
+    if (!shouldSyncCodexOnStart(loadConfig())) return false;
     const catalogPath = readCodexCatalogPath();
     if (!existsSync(catalogPath)) return false;
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
