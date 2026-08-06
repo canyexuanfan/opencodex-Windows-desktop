@@ -142,6 +142,12 @@ async function mountPage(): Promise<{ container: HTMLDivElement; root: Root }> {
   return { container, root };
 }
 
+function requirementSelect(container: HTMLDivElement, key: string): HTMLSelectElement | null {
+  const label = [...container.querySelectorAll<HTMLLabelElement>("label")]
+    .find(candidate => candidate.querySelector("code")?.textContent === key);
+  return label?.querySelector<HTMLSelectElement>("select") ?? null;
+}
+
 test("routing page loads profiles, analytics, and marks the dry-run selection", async () => {
   const dryRunBodies: unknown[] = [];
   installFetch((url, init) => {
@@ -272,7 +278,7 @@ test("routing refreshes the selected profile after reload", async () => {
     await act(async () => { retry!.click(); });
     await tick(3);
     expect(container.textContent).toContain("rev-def");
-    expect(container.textContent).toContain("\"imageInput\": true");
+    expect(requirementSelect(container, "imageInput")?.value).toBe("true");
   } finally {
     await act(async () => { root.unmount(); });
   }
@@ -324,7 +330,7 @@ test("routing ignores a stale load body that finishes after a newer retry", asyn
     await tick(4);
 
     expect(container.textContent).toContain("rev-def");
-    expect(container.textContent).toContain("\"imageInput\": true");
+    expect(requirementSelect(container, "imageInput")?.value).toBe("true");
 
     await act(async () => {
       releaseStale();
@@ -344,4 +350,3 @@ test("routing ignores a stale load body that finishes after a newer retry", asyn
     });
   }
 });
-
