@@ -97,7 +97,7 @@ describe("management and data-plane credential separation", () => {
   test("healthz proves the listener owns the protected runtime secret", async () => {
     const secret = "A".repeat(43);
     const challenge = "B".repeat(43);
-    const server = startServer(0, secret);
+    const server = startServer(0, { localAttestationSecret: secret });
     try {
       const health = await fetch(new URL("/healthz", server.url), {
         headers: { [LOCAL_ATTESTATION_CHALLENGE_HEADER]: challenge },
