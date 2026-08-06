@@ -1383,8 +1383,8 @@ async function handleResponsesInner(
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
   logCtx.configuredSpeedLabel = requestLogSpeedLabel(logCtx.configuredServiceTier);
 
-  // Shadow call intercept: rewrite Codex's hard-coded helper calls
-  // (gpt-5.4-mini on older clients, gpt-5.6-luna on 0.145.0+)
+  // Shadow call intercept: rewrite Codex 0.145.0+ helper calls (gpt-5.6-luna).
+  // Ancient clients using gpt-5.4-mini remain configurable via sourceModels.
   const _sci = config.shadowCallIntercept;
   if (_sci?.enabled && _sci.model && shouldInterceptShadowCall(
     parsed.modelId,
