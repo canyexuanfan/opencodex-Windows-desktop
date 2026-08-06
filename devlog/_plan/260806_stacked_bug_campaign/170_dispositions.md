@@ -49,7 +49,7 @@ The chain is linear: each PR targets the previous head, and stack 01 targets
 | #1114 | pr | landed-stack01 | #1133 | ingwannu | cherry-picked, authorship preserved; comment 5206431175 |
 | #1124 | pr | landed-stack02 | #1134 | ingwannu | cherry-picked; comment 5206431146 |
 | #1130 | pr | landed-stack03 | #1135 | luvs01 | cherry-picked; comment 5206434180 |
-| #1115 | pr | landed-stack04 | #1136 | Simon | 5 commits cherry-picked; comment 5206434197 |
+| #1115 | pr | landed-stack04 | #1136 | Simon | 5 commits cherry-picked; comment 5206434197. **Closed by the author** (`Simon-Opopeee`, 2026-08-06T15:15:19Z, not merged) after the attribution comment — their decision, not a campaign action |
 | #985 | pr | landed-stack05 | #1137 | Pranav Yerramaneni | adapted (schema-less `json_schema` guard); comment 5206933287 |
 | #978 | pr | landed-stack05 | #1137 | Pranav Yerramaneni | adapted (docs + provider-wide case); comment 5206933565 |
 | #1122 | pr | landed-stack06 | #1138 | Giulio Leone | adapted, narrowed to Anthropic; comment 5206933313 |
@@ -98,3 +98,36 @@ that was rerun. One earlier `test 3/4` failure on #1133 was a Bun runtime
 `EEXIST: epoll_ctl` between tests with **no assertion failure**, proven
 incidental by #1134 — which contains the same commit — passing that shard; it
 is green after rerun.
+
+## Final audit (independent, terra) and the two defects it found
+
+A read-only adversarial audit of the finished stack returned **FAIL** on two
+points. Both are recorded here rather than smoothed over.
+
+**1. #1144 credited NexusCore in prose but not in git.** The carried commits
+are authored by `Agent59353 <agent59353@taskmarket.dev>` — the identity on
+#1126's head — and nothing in the commit metadata named ZachDreamZ/NexusCore.
+A PR body that claims credit while git does not record it fails the campaign's
+own attribution contract, which is the entire point of this campaign.
+**Fixed:** all seven commits on `codex/260806-stack10-cursor-replay` now carry
+`Co-authored-by: NexusCore <22769595+ZachDreamZ@users.noreply.github.com>`,
+pushed with `--force-with-lease` on the campaign's own branch. The tree is
+byte-identical (`git diff --quiet` before/after), and the focused suites still
+pass 32/0.
+
+**2. #1115 is closed.** The author `Simon-Opopeee` closed it himself at
+2026-08-06T15:15:19Z (not merged), after receiving the attribution comment.
+Timeline evidence confirms the closing actor. The campaign closed no PR; a
+contributor choosing to close their own PR once the work has landed elsewhere
+is their call, and it is recorded here so the state is not mistaken for a
+campaign action later.
+
+The audit also confirmed, with evidence: `dev` is still `e9d957bf6` with no
+campaign commit on it; all three withheld-work claims are true by diff; the
+Anthropic narrowing in #1138 is genuinely gated with a non-Anthropic regression
+test; no PR body claims green where a code check is failing; and #1134-#1144
+each base exactly on the parent PR's head SHA.
+
+Force-pushes appear in several contributor PR timelines, all performed by the
+contributors themselves (and #1036 by the maintainer) before their stack PR
+existed. No campaign action force-pushed a contributor branch.
