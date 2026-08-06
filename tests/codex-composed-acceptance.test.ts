@@ -96,6 +96,25 @@ class Fixture {
       if (existsSync(path)) throw new Error(`lock preflight found pre-existing case path: ${path}`);
     }
     writeFileSync(join(this.codex, "config.toml"), 'model = "gpt-5"\n');
+    // The host may have a real service claim. Record this fixture as the active
+    // install so an acceptance writer never consults that ambient identity.
+    writeFileSync(join(this.ocx, "service-state.json"), JSON.stringify({
+      version: 2,
+      codexHome: this.codex,
+      opencodexHome: this.ocx,
+      backend: "scheduler",
+    }));
+    if (process.platform === "darwin") {
+      const launchAgents = join(this.homeA, "Library", "LaunchAgents");
+      mkdirSync(launchAgents, { recursive: true, mode: 0o700 });
+      writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
+        `<key>CODEX_HOME</key><string>${this.codex}</string>`,
+        `<key>OPENCODEX_HOME</key><string>${this.ocx}</string>`,
+        "</dict></dict></plist>",
+      ].join("\n"));
+    }
   }
 
   env(home = this.homeA, userprofile = this.userprofileA): Record<string, string> {
@@ -271,10 +290,10 @@ describe("WP13 composed toggle acceptance", () => {
       });
       expect(enabled.status).toBe(200);
       const back = await fx.runCli(["restore", "back"]);
-      // This workstation has a real launchd claim outside the fixture; P08
-      // must therefore refuse rather than bypass the production ownership
-      // preflight. The child still exercised the actual entry point.
-      expect(back.exitCode).toBe(1);
+      // The fixture records itself as the active service install, so the
+      // production ownership preflight admits this home and P08 completes the
+      // enable transition through the real CLI.
+      expect(back.exitCode).toBe(0);
       expect((await fx.request(server.runtime, "/api/native-integrations/codex", {
         method: "PUT", body: JSON.stringify({ enabled: false }),
       })).body).toMatchObject({ desiredEnabled: false });
@@ -305,15 +324,25 @@ describe("WP13 composed toggle acceptance", () => {
       },
     });
     try {
-      fx.writeConfig({ providers: { fixture: {
-        adapter: "openai-chat", baseUrl: `http://127.0.0.1:${provider.port}/v1`, apiKey: "fixture-key",
-        allowPrivateNetwork: true, liveModels: true,
-      } }, defaultProvider: "fixture" });
+      // Keep the asynchronous startup registry from becoming the held flight.
+      // The route reloads this persisted config, so enable discovery only once
+      // its own request is about to begin.
+      fx.writeConfig({ clientIntegrations: { codex: false } });
       const server = await fx.start();
       try {
+        writeFileSync(join(fx.codex, "opencodex-catalog.json"), JSON.stringify({ models: [] }));
+        fx.writeConfig({ providers: { fixture: {
+          adapter: "openai-chat", baseUrl: `http://127.0.0.1:${provider.port}/v1`, apiKey: "fixture-key",
+          allowPrivateNetwork: true, liveModels: true,
+        } }, defaultProvider: "fixture", clientIntegrations: { codex: true } });
         hold = true;
         const stale = fx.request(server.runtime, "/api/sync", { method: "POST" });
-        await enteredGather;
+        await Promise.race([
+          enteredGather,
+          stale.then(result => Promise.reject(new Error(
+            `held /api/sync completed before provider discovery: ${result.status} ${JSON.stringify(result.body)}`,
+          ))),
+        ]);
         const off = await fx.request(server.runtime, "/api/native-integrations/codex", {
           method: "PUT", body: JSON.stringify({ enabled: false }),
         });
