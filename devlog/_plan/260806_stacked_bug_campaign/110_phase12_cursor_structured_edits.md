@@ -22,12 +22,16 @@ collide with a real client tool.
 
 ## Change
 
+File list read from `gh pr diff 1036` against `dev` = `e9d957bf6`.
+
 | Path | Op | Content |
 |------|----|---------|
-| `src/adapters/cursor/live-transport.ts` | MODIFY | `:543-560` — derive the structured-edit set from the final filtered/budgeted catalog produced around `src/adapters/cursor/request-builder.ts:262-277`, not from pre-filter `request.tools` |
-| `src/adapters/cursor/protobuf-events.ts` | MODIFY | Convert exact-match replacements into a valid Codex freeform patch envelope before emitting (~`:405`); emit as `apply_patch` preserving the original call id; reject malformed/ambiguous replacements with an explicit bridge error rather than forwarding invalid patch text |
-| `src/adapters/cursor/*` | MODIFY | Tag injected tools with internal provenance; never identify a synthetic edit by wire name alone |
-| `tests/cursor-structured-edit.test.ts` | NEW/MODIFY | Conversion correctness, name-collision, and post-filter provenance cases |
+| `src/adapters/cursor/tool-definitions.ts` | ADOPT (+111) | Cursor-compatible `edit_file`/`multi_edit` definitions, injected only when Codex exposed `apply_patch`, tagged with internal provenance |
+| `src/adapters/cursor/protobuf-events.ts` | ADOPT (+180) | Convert exact-match replacements into a valid Codex freeform patch envelope, emit as `apply_patch` preserving the original call id, and reject malformed/ambiguous replacements with an explicit bridge error rather than forwarding invalid patch text |
+| `src/adapters/cursor/request-builder.ts` | ADOPT (+15/−~4) | Produce the final filtered/budgeted catalog that provenance derives from |
+| `src/adapters/cursor/live-transport.ts` | ADAPT (+15) | **Change from #1036:** derive the structured-edit set from the final filtered catalog produced by `request-builder.ts`, not from the earlier `request.tools` — after filtering or budgeting drops a tool the two disagree |
+| `src/adapters/cursor/native-exec.ts`, `src/adapters/cursor/native-exec-fs.ts` | ADOPT (+6/−~2, +15/−~7) | Supporting wiring as authored |
+| `tests/cursor-structured-edit.test.ts` | ADAPT (NEW, +449) | Authored conversion and collision cases, plus a post-filter provenance case proving the set is derived after filtering |
 
 Injection happens **only** when Codex exposed `apply_patch` — the adapter must
 not invent an editing capability the client never offered.

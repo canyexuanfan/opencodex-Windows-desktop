@@ -21,11 +21,15 @@ defect repair.
 
 ## Change
 
+File list read from `gh pr diff 1126` against `dev` = `e9d957bf6`.
+
 | Path | Op | Content |
 |------|----|---------|
-| `src/bridge.ts` | MODIFY | `:826` (streaming) and `:1558` (batch) — preserve replay candidates across empty `text_delta`/`thinking_delta` events |
-| `src/responses/reasoning-replay-cache.ts` | KEEP | Memory-only contract at `:17` unchanged |
-| `tests/*reasoning-replay*.test.ts` | MODIFY | Empty-delta sequences in both builders; assert nothing is written to disk |
+| `src/bridge.ts` | ADOPT (+14/−~4) | Preserve replay candidates across empty `text_delta`/`thinking_delta` events in the streaming and batch builders |
+| `src/responses/reasoning-replay-cache.ts` | ADAPT (#1126: +244) | Take only the empty-delta handling. **Dropped:** disk persistence, exit hooks, and global warning counters — the memory-only contract at `:17` stays |
+| `src/config.ts`, `src/lib/config-dir.ts`, `src/adapters/openai-chat.ts` | DROP | #1126 edits these only to plumb the persistence feature; none is needed for the defect |
+| `tests/bridge-reasoning-replay-batch.test.ts` | ADOPT (NEW, +92) | Batch-builder empty-delta sequences |
+| `tests/reasoning-replay-robustness.test.ts` | ADAPT (NEW, +240) | Streaming empty-delta sequences; drop the persistence cases and add an assertion that nothing is written to disk |
 
 **Dropped:** disk persistence, exit hooks, global warning metrics, and the
 associated config surface. Stated in the PR so the contributor can see exactly

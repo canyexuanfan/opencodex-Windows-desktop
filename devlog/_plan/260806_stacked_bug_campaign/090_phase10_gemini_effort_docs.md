@@ -22,7 +22,7 @@ only the image-adjacent one.
 |------|----|---------|
 | `src/adapters/google.ts` | KEEP | `:343-360` as authored |
 | `docs-site/src/content/docs/reference/configuration/providers.md` | MODIFY | `:83-84` — both ladder sources assert capability; CCA uses the envelope-specific path |
-| `tests/google-hardening.test.ts` | MODIFY | Add the provider-wide non-image positive case beside `:380-391` |
+| `tests/google-hardening.test.ts` | MODIFY | Add the provider-wide non-image positive case beside the existing direct-AI-Studio `thinkingLevel` test at `:284` (the file ends at `:346`) |
 
 ## Verification
 

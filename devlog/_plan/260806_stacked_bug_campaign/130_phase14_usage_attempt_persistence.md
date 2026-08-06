@@ -21,15 +21,17 @@ it looks authoritative. That half waits for a trusted producer boundary.
 
 ## Change
 
+File list read from `gh pr diff 1093` against `dev` = `e9d957bf6`.
+
 | Path | Op | Content |
 |------|----|---------|
-| `src/server/responses/core.ts` | MODIFY | `:1637` — create the ordinary request attempt after final adapter resolution, using the existing attempt owner |
-| `src/server/request-log.ts` | MODIFY | Use the existing owner at `:939`; no new writer |
-| `src/usage/log.ts` | MODIFY | `:323` — preserve explicit empty arrays through normalization |
-| `tests/usage-log*.test.ts`, `tests/request-log*.test.ts` | MODIFY | Attempt row presence after resolution; empty-array preservation |
-
-**Dropped:** ingress-span persistence and the client-header read at
-`src/server/index.ts:957`.
+| `src/server/responses/core.ts` | ADOPT (+13) | Create the ordinary request attempt after final adapter resolution, using the existing attempt owner (anchor located by symbol — phases 050/060/070 also edit this file) |
+| `src/server/request-log.ts` | ADOPT (+24/−~3) | Use the existing attempt owner; no new writer |
+| `src/usage/log.ts` | ADOPT (+15/−~1) | Preserve explicit empty arrays through normalization |
+| `src/server/index.ts` | DROP (#1093: +3) | The client-supplied correlation-header read at the public admitted endpoint — this is the forgeable-span surface |
+| `tests/request-log.test.ts` | ADOPT (+41) | Attempt row presence after resolution |
+| `tests/usage-log.test.ts` | ADOPT (+37) | Empty-array preservation |
+| `tests/server-auth.test.ts` | DROP (#1093: +14/−~1) | Covers the dropped ingress-span header path |
 
 ## Verification
 
