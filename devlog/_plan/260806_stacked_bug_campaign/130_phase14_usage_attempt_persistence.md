@@ -1,7 +1,7 @@
 # 130 — Phase 14: usage-log attempt persistence (PR #1093)
 
 Credit: **Takashi Yamashiro**
-(`Takashi Yamashiro <44048851+irdtechbook@users.noreply.github.com>`), PR #1093.
+(`Takashi Yamashiro <email from PR head>`), PR #1093.
 Adoption: **adapted** — attempt recording kept, forgeable ingress spans dropped.
 
 ## Defect

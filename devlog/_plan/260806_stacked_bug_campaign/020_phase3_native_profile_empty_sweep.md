@@ -1,6 +1,6 @@
 # 020 — Phase 3: skip empty native-profile stage sweeps (#1120, PR #1124)
 
-Credit: **ingwannu** (`Ingwannu <ingwannu@users.noreply.github.com>`), PR #1124.
+Credit: **ingwannu** (`Ingwannu <email from PR head>`), PR #1124.
 Reporter: **MarcusNeufeldt** (#1120). Adoption: near-verbatim cherry-pick.
 
 ## Defect

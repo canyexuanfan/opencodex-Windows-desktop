@@ -1,6 +1,6 @@
 # 040 — Phase 5: bounded oversized rollout inspection (PR #1115)
 
-Credit: **Simon** (`Simon <simonbarbier98@gmail.com>`), PR #1115.
+Credit: **Simon** (`Simon <email from PR head>`), PR #1115.
 Adoption: near-verbatim cherry-pick of 5 commits.
 
 ## Defect

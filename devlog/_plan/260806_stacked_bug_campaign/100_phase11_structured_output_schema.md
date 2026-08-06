@@ -1,6 +1,6 @@
 # 100 — Phase 11: routed structured-output schema preservation (PR #985)
 
-Credit: **Pranav Yerramaneni** (`devmello <pranavy2008@gmail.com>`), PR #985.
+Credit: **Pranav Yerramaneni** (`devmello <email from PR head>`), PR #985.
 Adoption: **adapted** — one schema-loss bug closed.
 
 ## Defect (verified on `dev` = e9d957bf6)

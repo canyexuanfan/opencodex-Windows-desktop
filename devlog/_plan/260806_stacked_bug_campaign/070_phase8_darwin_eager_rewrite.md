@@ -1,7 +1,7 @@
 # 070 — Phase 8: Darwin eager rewrite relay gate (#1127, PR #947)
 
 Credit: **0xWinner98** (reporter, #1127) and **biao**
-(`WZBbiao <16611004+WZBbiao@users.noreply.github.com>`, PR #947 — the Darwin
+(`WZBbiao <email from PR head>`, PR #947 — the Darwin
 predicate idea). Adoption: **reimplement** on current transport code.
 
 ## Defect (verified on `dev` = e9d957bf6)

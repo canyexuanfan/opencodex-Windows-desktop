@@ -1,6 +1,6 @@
 # 060 — Phase 7: GitHub Copilot Responses normalization (#1110, PR #1111)
 
-Credit: **Simon** (`Simon <simonbarbier98@gmail.com>`), PR #1111 and issue
+Credit: **Simon** (`Simon <email from PR head>`), PR #1111 and issue
 #1110. Adoption: **adapted** — the provider fix is kept, one unrelated commit
 is dropped.
 

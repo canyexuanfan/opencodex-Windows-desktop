@@ -1,7 +1,7 @@
 # 140 — Phase 15: effort-picker fail-closed + Pi loopback export (PRs #1092, #1085)
 
-Credit: **Eachann** (`关俊江 <each1024@qq.com>`, PR #1092) and **n3wr1ch**
-(`n3wr1ch <40690535+n3wr1ch@users.noreply.github.com>`, PR #1085).
+Credit: **Eachann** (`关俊江 <email from PR head>`, PR #1092) and **n3wr1ch**
+(`n3wr1ch <email from PR head>`, PR #1085).
 Adoption: **adapted** — the two bug cores are extracted from two large PRs.
 
 Both slices are small, independent, and touch different files, so they share one

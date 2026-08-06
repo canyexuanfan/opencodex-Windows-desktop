@@ -1,6 +1,6 @@
 # 030 — Phase 4: native-main ACL timeout recovery (PR #1130)
 
-Credit: **luvs01** (`luvs01 <27862058+luvs01@users.noreply.github.com>`), PR #1130.
+Credit: **luvs01** (`luvs01 <email from PR head>`), PR #1130.
 Adoption: near-verbatim cherry-pick.
 
 ## Defect

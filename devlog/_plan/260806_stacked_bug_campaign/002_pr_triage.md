@@ -14,25 +14,38 @@ Snapshot: `.snapshot_prs.json`.
 
 ## Attribution table (identity used in stack commits)
 
+Email addresses are redacted here as `<email from PR head>`: this devlog is a
+public directory and `bun run privacy:scan` fails the build on a committed
+contributor address. The **real** identity used for each `Co-authored-by:`
+trailer is read at implementation time from the contributor's own commits:
+
+```
+git fetch origin pull/<n>/head:pr-<n>
+git log -1 --format='%an <%ae>' pr-<n>
+```
+
+That keeps attribution exact in git history — where it belongs and where GitHub
+renders it — without publishing addresses in a documentation file.
+
 | PR | GitHub login | Credit as | Commit identity for `Co-authored-by:` |
 |----|--------------|-----------|----------------------------------------|
-| 1131, 1130, 1039 | `luvs01` | luvs01 | `luvs01 <27862058+luvs01@users.noreply.github.com>` |
-| 1124, 1121, 1114, 811 | `Ingwannu` | ingwannu | `Ingwannu <ingwannu@users.noreply.github.com>` |
-| 1126, 1036 | `ZachDreamZ` | NexusCore | `Agent59353 <agent59353@taskmarket.dev>` (#1126) |
-| 1122 | `giulioleone097` | Giulio Leone | `Giulio Leone <giulioleone097@gmail.com>` |
-| 1115, 1111 | `Simon-Opopeee` | Simon | `Simon <simonbarbier98@gmail.com>` |
-| 1109, 1085 | `n3wr1ch` | n3wr1ch | `n3wr1ch <40690535+n3wr1ch@users.noreply.github.com>` |
-| 1096 | `chrisae9` | Chris Alves | `chrisae9 <chrisae9@gmail.com>` |
-| 1095, 1047 | `baileyh8` | Bailey | `baileyh8 <baileyh8@gmail.com>` |
-| 1093 | `yamashirotakashi` | Takashi Yamashiro | `Takashi Yamashiro <44048851+irdtechbook@users.noreply.github.com>` |
-| 1092 | `eachann1024` | Eachann | `关俊江 <each1024@qq.com>` |
-| 1056, 947 | `WZBbiao` | biao | `WZBbiao <16611004+WZBbiao@users.noreply.github.com>` |
-| 1010 | `harryzhou2000` | Harry Zhou | `HarryZhou <2373256746@qq.com>` |
-| 1002 | `hanjianjun` | hanjianjun | `hanjianjun <jianjun.han@eeoa.com>` |
-| 999, 997 | `Yuxin-Qiao` | Yuxin Qiao | `Yuxin Qiao <104957188+Yuxin-Qiao@users.noreply.github.com>` |
-| 985, 978 | `DevMello` | Pranav Yerramaneni | `devmello <pranavy2008@gmail.com>` |
-| 812 | `theQuert` | Quert | `theQuert <ga11004@cs.nccu.edu.tw>` |
-| 581 | `letr1n1ty` | k0 | `letr1n1ty <letr1n1ty@users.noreply.github.com>` |
+| 1131, 1130, 1039 | `luvs01` | luvs01 | `luvs01 <email from PR head>` |
+| 1124, 1121, 1114, 811 | `Ingwannu` | ingwannu | `Ingwannu <email from PR head>` |
+| 1126, 1036 | `ZachDreamZ` | NexusCore | `Agent59353 <email from PR head>` (#1126) |
+| 1122 | `giulioleone097` | Giulio Leone | `Giulio Leone <email from PR head>` |
+| 1115, 1111 | `Simon-Opopeee` | Simon | `Simon <email from PR head>` |
+| 1109, 1085 | `n3wr1ch` | n3wr1ch | `n3wr1ch <email from PR head>` |
+| 1096 | `chrisae9` | Chris Alves | `chrisae9 <email from PR head>` |
+| 1095, 1047 | `baileyh8` | Bailey | `baileyh8 <email from PR head>` |
+| 1093 | `yamashirotakashi` | Takashi Yamashiro | `Takashi Yamashiro <email from PR head>` |
+| 1092 | `eachann1024` | Eachann | `关俊江 <email from PR head>` |
+| 1056, 947 | `WZBbiao` | biao | `WZBbiao <email from PR head>` |
+| 1010 | `harryzhou2000` | Harry Zhou | `HarryZhou <email from PR head>` |
+| 1002 | `hanjianjun` | hanjianjun | `hanjianjun <email from PR head>` |
+| 999, 997 | `Yuxin-Qiao` | Yuxin Qiao | `Yuxin Qiao <email from PR head>` |
+| 985, 978 | `DevMello` | Pranav Yerramaneni | `devmello <email from PR head>` |
+| 812 | `theQuert` | Quert | `theQuert <email from PR head>` |
+| 581 | `letr1n1ty` | k0 | `letr1n1ty <email from PR head>` |
 
 `#1036`'s head commits carry a maintainer-adjacent committer identity; the
 PR author `ZachDreamZ` (NexusCore) is credited, since authorship of the idea

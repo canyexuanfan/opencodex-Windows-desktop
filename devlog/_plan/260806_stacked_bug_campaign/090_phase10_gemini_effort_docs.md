@@ -1,6 +1,6 @@
 # 090 — Phase 10: Gemini/CCA reasoning-effort docs and coverage (PR #978)
 
-Credit: **Pranav Yerramaneni** (`devmello <pranavy2008@gmail.com>`), PR #978.
+Credit: **Pranav Yerramaneni** (`devmello <email from PR head>`), PR #978.
 Adoption: **adapted** — runtime kept, documentation and coverage corrected.
 
 ## Defect

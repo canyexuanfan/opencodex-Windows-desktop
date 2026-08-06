@@ -1,7 +1,7 @@
 # 120 — Phase 13: reasoning-replay empty-delta handoff (PR #1126)
 
 Credit: **NexusCore** (`@ZachDreamZ`,
-`Agent59353 <agent59353@taskmarket.dev>`), PR #1126.
+`Agent59353 <email from PR head>`), PR #1126.
 Adoption: **adapted** — the bug fix is taken, the persistence feature is not.
 
 ## Defect

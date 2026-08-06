@@ -1,7 +1,7 @@
 # 150 — Phase 16: test-home isolation + Desktop allowlist docs (PRs #997, #999)
 
 Credit: **Yuxin Qiao**
-(`Yuxin Qiao <104957188+Yuxin-Qiao@users.noreply.github.com>`), PRs #997 and
+(`Yuxin Qiao <email from PR head>`), PRs #997 and
 #999. Adoption: near-verbatim cherry-pick of both.
 
 Two small, independent, merge-clean contributions from the same author, landed

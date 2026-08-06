@@ -1,6 +1,6 @@
 # 010 — Phase 2: bounded translated-SSE inspection (#1112, PR #1114)
 
-Credit: **ingwannu** (`Ingwannu <ingwannu@users.noreply.github.com>`), PR #1114.
+Credit: **ingwannu** (`Ingwannu <email from PR head>`), PR #1114.
 Adoption: near-verbatim cherry-pick.
 
 ## Defect

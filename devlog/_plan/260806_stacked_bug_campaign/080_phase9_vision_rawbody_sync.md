@@ -1,6 +1,6 @@
 # 080 — Phase 9: vision raw-body image synchronization (PR #1047)
 
-Credit: **Bailey** (`baileyh8 <baileyh8@gmail.com>`), PR #1047.
+Credit: **Bailey** (`baileyh8 <email from PR head>`), PR #1047.
 Adoption: **adapted** — one remaining leak closed.
 
 ## Defect (verified on `dev` = e9d957bf6)

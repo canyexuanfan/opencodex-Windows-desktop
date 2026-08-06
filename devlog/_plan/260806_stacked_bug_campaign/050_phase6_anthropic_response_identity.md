@@ -1,8 +1,8 @@
 # 050 — Phase 6: Anthropic response-model identity (#1117, PRs #1122/#1121)
 
-Credit: **Giulio Leone** (`Giulio Leone <giulioleone097@gmail.com>`, PR #1122,
+Credit: **Giulio Leone** (`Giulio Leone <email from PR head>`, PR #1122,
 also the reporter of #1117) and **ingwannu**
-(`Ingwannu <ingwannu@users.noreply.github.com>`, PR #1121 — independent correct
+(`Ingwannu <email from PR head>`, PR #1121 — independent correct
 diagnosis of the same defect). Adoption: **adapted**, narrowed to Anthropic.
 
 ## Defect
