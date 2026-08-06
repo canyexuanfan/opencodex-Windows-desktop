@@ -350,6 +350,15 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
     }
 
     // OFF. Restore the native path; the proxy keeps serving every other client.
+    if (durable && persisted.status === "unchanged") {
+      const { classifyNativeRoutedResidue } = await import("../../codex/native-residue");
+      if (classifyNativeRoutedResidue().kind === "clean") {
+        return jsonResponse({
+          ok: true, clientId: "codex", changed: false, state: "absent", desiredEnabled: false,
+          message: "Codex integration is already OFF and native; no Codex files changed.",
+        } satisfies NativeToggleEnvelope);
+      }
+    }
     const { restoreNativeCodexAsync } = await import("../../codex/inject");
     const restored = await restoreNativeCodexAsync({ revalidateDesiredState: true });
     return jsonResponse({

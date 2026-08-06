@@ -41,7 +41,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
-import { setIntegrationEnabled, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import { setIntegrationEnabled, shouldSyncCodexOnStart, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
@@ -814,6 +814,16 @@ switch (command) {
       console.error(`Codex desired state was not saved (${desired.reason}).`);
       break;
     }
+    // A repeated OFF on an already-clean home is a policy no-op. Do not enter
+    // restore's native-profile machinery merely to prove there is nothing to
+    // restore: those locks live in CODEX_HOME and a skip must create nothing.
+    if (desired.status === "unchanged") {
+      const { classifyNativeRoutedResidue } = await import("../codex/native-residue");
+      if (classifyNativeRoutedResidue().kind === "clean") {
+        console.log("Codex integration is already OFF and native; no Codex files changed.");
+        break;
+      }
+    }
     let r: { success: boolean; message: string };
     try {
       r = await restoreNativeCodexAsync({ revalidateDesiredState: true });
@@ -901,6 +911,10 @@ switch (command) {
   }
   case "sync-cache": {
     const restartCodex = args.slice(1).includes("--restart-codex");
+    if (!shouldSyncCodexOnStart(loadConfig())) {
+      console.log("Codex integration is OFF; cache sync skipped and no Codex files changed.");
+      break;
+    }
     const { withCatalogWriteSerialization } = await import("../codex/catalog-write-serialization");
     const { invalidateCodexModelsCacheWithPermit } = await import("../codex/catalog/sync");
     const { getCodexHome } = await import("../codex/paths");
