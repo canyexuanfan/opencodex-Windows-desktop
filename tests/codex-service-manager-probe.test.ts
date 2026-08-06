@@ -249,11 +249,15 @@ describe("could not ask is not an answer", () => {
     expect(result.kind === "unknown" && result.reason).toContain("daemon-reload");
   });
 
-  test("Windows refuses rather than guessing at a chain it does not walk", () => {
-    // The task XML names only the launcher; the homes are in the batch wrapper.
-    // Parsing the XML and stopping would find no homes and read that as
-    // agreement, so until the chain walk exists the honest answer is unknown.
-    expect(inspectServiceManagerInstallation({ platform: "win32", home }).kind).toBe("unknown");
+  test("Windows refuses when the chain walk finds no definition", () => {
+    // Nothing staged on disk, and the query is not asked (no run injected) —
+    // the default spawn would fail on non-Windows, so this uses the injected
+    // recorder to prove absence is only claimed when schtasks answers absent.
+    const { run, calls } = recorder(() => ({ status: 1, stderr: "" }));
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("absent");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args[0]).toBe("/query");
   });
 });
 
@@ -280,6 +284,165 @@ describe("a definition that cannot supply homes is not present", () => {
     if (result.kind !== "present") return;
     expect(result.claims[0].homes.codexHome).toBeNull();
     expect(result.claims[0].homes.opencodexHome).toBe("/somewhere/.opencodex");
+  });
+});
+
+describe("the Windows chain walk", () => {
+  function writeWindowsTask(launcherPath: string): string {
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "opencodex-service-task.xml");
+    writeFileSync(path, [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      "<Task>",
+      "  <Actions Context=\"Author\">",
+      "    <Exec>",
+      `      <Command>C:\\WINDOWS\\System32\\wscript.exe</Command>`,
+      `      <Arguments>/b /nologo &quot;${launcherPath.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}&quot;</Arguments>`,
+      "    </Exec>",
+      "  </Actions>",
+      "</Task>",
+    ].join("\n"));
+    return path;
+  }
+
+  function writeWindowsLauncher(wrapperPath: string): string {
+    const path = join(home, ".opencodex", "opencodex-service-launcher.vbs");
+    mkdirSync(join(home, ".opencodex"), { recursive: true });
+    writeFileSync(path, [
+      "Set shell = CreateObject(\"WScript.Shell\")",
+      `shell.Run """${wrapperPath}""", 0, True`,
+    ].join("\r\n"));
+    return path;
+  }
+
+  function writeWindowsWrapper(codexHome?: string, opencodexHome?: string): string {
+    const path = join(home, ".opencodex", "opencodex-service.cmd");
+    mkdirSync(join(home, ".opencodex"), { recursive: true });
+    const lines = ["@echo off", "setlocal"];
+    if (codexHome) lines.push(`set "CODEX_HOME=${codexHome}"`);
+    if (opencodexHome) lines.push(`set "OPENCODEX_HOME=${opencodexHome}"`);
+    writeFileSync(path, lines.join("\r\n"));
+    return path;
+  }
+
+  test("the full chain is walked and the homes are extracted", () => {
+    const wrapper = writeWindowsWrapper("C:\\Users\\ws\\.codex", "C:\\Users\\ws\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    const taskXml = writeWindowsTask(launcher);
+    const { run, calls } = recorder(() => ({ status: 0, stdout: "<Task/>" }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims).toHaveLength(1);
+    expect(result.claims[0].backend).toBe("scheduler");
+    expect(result.claims[0].definitionPath).toBe(taskXml);
+    expect(result.claims[0].registration).toBe("present");
+    expect(result.claims[0].homes).toEqual({
+      codexHome: "C:\\Users\\ws\\.codex",
+      opencodexHome: "C:\\Users\\ws\\.opencodex",
+    });
+    // One bounded query, nothing that mutates.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].file).toBe("schtasks");
+    expect(calls[0].args).toEqual(["/query", "/tn", "opencodex-proxy", "/xml"]);
+  });
+
+  test("a staged task that was never registered is present but registration=absent", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].registration).toBe("absent");
+  });
+
+  test("an omitted home in the wrapper stays null, not empty", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1 }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].homes.codexHome).toBe("C:\\a\\.codex");
+    expect(result.claims[0].homes.opencodexHome).toBeNull();
+  });
+
+  test("a broken link in the chain is unknown, not absence", () => {
+    // Task XML points at a launcher that does not exist.
+    const missing = join(home, ".opencodex", "no-such.vbs");
+    writeWindowsTask(missing);
+    const { run } = recorder(() => ({ status: 1 }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("launcher");
+  });
+
+  test("a UTF-16LE task XML on disk is decoded before the chain is walked", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    const xml = [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      "<Task>",
+      "  <Actions Context=\"Author\">",
+      "    <Exec>",
+      `      <Arguments>/b /nologo &quot;${launcher.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}&quot;</Arguments>`,
+      "    </Exec>",
+      "  </Actions>",
+      "</Task>",
+    ].join("\n");
+    writeFileSync(join(home, ".opencodex", "opencodex-service-task.xml"), Buffer.from(`\uFEFF${xml}`, "utf16le"));
+    const { run } = recorder(() => ({ status: 1 }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].homes).toEqual({ codexHome: "C:\\a\\.codex", opencodexHome: "C:\\a\\.opencodex" });
+  });
+
+  test("a UTF-16LE VBS launcher is decoded before the chain is walked", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    // Overwrite the launcher with a UTF-16LE encoding, like the real install.
+    const launcher = join(home, ".opencodex", "opencodex-service-launcher.vbs");
+    writeFileSync(launcher, Buffer.from(
+      `\uFEFF' launcher\r\nSet shell = CreateObject("WScript.Shell")\r\nshell.Run """${wrapper}""", 0, True\r\n`,
+      "utf16le",
+    ));
+    const xml = join(home, ".opencodex", "opencodex-service-task.xml");
+    writeFileSync(xml, [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      `<Arguments>/b /nologo &quot;${launcher.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}&quot;</Arguments>`,
+    ].join("\n"));
+    const { run } = recorder(() => ({ status: 1 }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].homes).toEqual({ codexHome: "C:\\a\\.codex", opencodexHome: "C:\\a\\.opencodex" });
+  });
+
+  test("a task registered but with no XML on disk is unknown", () => {
+    const { run } = recorder(() => ({ status: 0, stdout: "<Task/>" }));
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("missing");
+  });
+
+  test("an unaskable schtasks is unknown even with a full chain", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: null, spawnFailed: true, stderr: "spawn ENOENT" }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
   });
 });
 

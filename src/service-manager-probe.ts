@@ -274,16 +274,175 @@ function inspectSystemd(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
 }
 
 /**
- * Windows is deferred to its own phase and reports `unknown` until then.
+ * Windows: walk the scheduled-task definition chain and report the homes it names.
  *
- * Not an oversight: the definition there is a chain, not a file. The task XML
- * names only the launcher, and the homes live in the batch wrapper it eventually
- * runs — a probe that parsed the XML and stopped would find no homes and read
- * that as agreement. Reporting `unknown` refuses unattended convergence on
- * Windows, which is the safe direction while the chain walk is unwritten.
+ * The chain is not one file: the task XML names only the launcher, the launcher
+ * (VBS) names only the batch wrapper, and the homes live in the wrapper's
+ * `set "CODEX_HOME=..."` / `set "OPENCODEX_HOME=..."` lines. Parsing the XML
+ * and stopping would find no homes and read that as agreement, so the walk goes
+ * all the way to the wrapper.
+ *
+ * A `set` line is OMITTED by `buildWindowsServiceScript` when the value was
+ * unset at install time (windowsBatchSet returns null for empty values), so a
+ * missing home stays `null` — the same contract the launchd/systemd probes use —
+ * and a definition that names no homes cannot be mistaken for agreement.
+ *
+ * Registration is answered by one bounded `schtasks /query /xml` call so a
+ * definition staged on disk but never registered is still visible (the
+ * interrupted-install case). Every failure to ask is `unknown`, never absence.
  */
-function inspectWindows(): ServiceManagerInstallation {
-  return unknown("the Windows definition chain is not inspected yet");
+function windowsTaskName(): string {
+  return "opencodex-proxy";
+}
+
+function windowsConfigDirPath(home: string): string {
+  // The wrapper assets live under OPENCODEX_HOME. Defaulting to `~/.opencodex`
+  // mirrors service.ts defaultOpenCodexHome(); the caller can override `home`
+  // in tests.
+  return join(home, ".opencodex");
+}
+
+/** Decode an on-disk Windows text asset (task XML, VBS), which is UTF-16LE (often BOM-prefixed). */
+function decodeWindowsText(buffer: Buffer): string {
+  if (buffer.length === 0) return "";
+  const bomUtf16Le = buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe;
+  const bomUtf16Be = buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff;
+  const looksUtf16Le = buffer.length >= 4
+    && buffer[1] === 0x00
+    && buffer[3] === 0x00
+    && buffer[0] !== 0x00;
+  if (bomUtf16Le || looksUtf16Le) {
+    return buffer.toString("utf16le").replace(/^\uFEFF/, "").trim();
+  }
+  if (bomUtf16Be) {
+    const swapped = Buffer.alloc(buffer.length - 2);
+    for (let i = 2; i + 1 < buffer.length; i += 2) {
+      swapped[i - 2] = buffer[i + 1]!;
+      swapped[i - 1] = buffer[i]!;
+    }
+    return swapped.toString("utf16le").trim();
+  }
+  return buffer.toString("utf8").replace(/^\uFEFF/, "").trim();
+}
+
+/** Pull the launcher path out of the task XML `<Arguments>` element. */
+function windowsTaskArguments(xml: string): string | null {
+  const match = /<Arguments[^>]*>\s*([^<]*?)\s*<\/Arguments>/i.exec(xml);
+  if (!match) return null;
+  // The registered document escapes `"` as `&quot;`; decode before extracting
+  // the quoted path so the same regex sees both the on-disk and /query forms.
+  const raw = match[1]!.trim()
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'");
+  return raw;
+}
+
+/**
+ * Pull the wrapper path out of a VBS `shell.Run` line.
+ *
+ * `buildWindowsLauncherVbs` escapes a `"` inside a VBS string literal by
+ * doubling it, so a wrapper `C:\...\opencodex-service.cmd` is emitted as
+ * `shell.Run """C:\...\opencodex-service.cmd""", 0, True`. Matching the
+ * whole doubled-quote span — `"""` ... `"""` — is the only form that
+ * survives both a plain quoted path and one with spaces.
+ */
+function vbsWrappedCommand(body: string): string | null {
+  const match = /\.Run\s+"""([^"]*)"""/.exec(body);
+  if (match) {
+    const unwrapped = match[1]!.trim();
+    if (unwrapped.length > 0) return unwrapped;
+  }
+  const plain = /\.Run\s+"([^"]+)"/.exec(body);
+  return plain ? plain[1]!.trim() : null;
+}
+
+/** Pull one `set "NAME=value"` out of a batch wrapper. */
+function batchSetValue(body: string, name: string): string | null {
+  const match = new RegExp(`^\\s*set\\s+"${name}=([^"]*)"\\s*$`, "im").exec(body);
+  return match ? match[1]!.trim() : null;
+}
+
+/** Registration state of the scheduled task. `unknown` when the query fails. */
+function windowsTaskRegistered(deps: Required<Pick<ProbeDeps, "run">>): "present" | "absent" | "unknown" {
+  const queried = deps.run("schtasks", ["/query", "/tn", windowsTaskName(), "/xml"]);
+  if (queried.spawnFailed || queried.timedOut) return "unknown";
+  return queried.status === 0 ? "present" : "absent";
+}
+
+function inspectWindows(deps: Required<Pick<ProbeDeps, "run" | "home">>): ServiceManagerInstallation {
+  const configDir = windowsConfigDirPath(deps.home);
+  const taskXmlPath = join(configDir, "opencodex-service-task.xml");
+  const task = artifactPresence(taskXmlPath);
+
+  let xml = "";
+  if (task !== "absent") {
+    try {
+      xml = decodeWindowsText(readFileSync(taskXmlPath));
+    } catch (error) {
+      return unknown(`the scheduled-task XML exists but could not be read: ${String(error)}`);
+    }
+  }
+
+  const registered = windowsTaskRegistered(deps);
+  if (registered === "unknown") {
+    return unknown("Task Scheduler could not be asked whether opencodex-proxy is registered");
+  }
+
+  if (task === "absent") {
+    return registered === "present"
+      ? unknown("Task Scheduler holds opencodex-proxy but its task XML is missing")
+      : { kind: "absent" };
+  }
+
+  const launcherArg = windowsTaskArguments(xml);
+  if (!launcherArg) {
+    return unknown("the scheduled-task XML names no launcher to run");
+  }
+  // The <Arguments> element is `/b /nologo "C:\...\opencodex-service-launcher.vbs"`.
+  const launcherPath = /"([^"]+)"/.exec(launcherArg)?.[1];
+  if (!launcherPath) {
+    return unknown("the scheduled-task XML launcher argument is not a quoted path");
+  }
+  const launcher = artifactPresence(launcherPath);
+  if (launcher === "absent") {
+    return unknown(`the scheduled-task launcher is missing: ${launcherPath}`);
+  }
+  let launcherBody: string;
+  try {
+    launcherBody = decodeWindowsText(readFileSync(launcherPath));
+  } catch (error) {
+    return unknown(`the scheduled-task launcher could not be read: ${String(error)}`);
+  }
+  const wrapperPath = vbsWrappedCommand(launcherBody);
+  if (!wrapperPath) {
+    return unknown(`the launcher ${launcherPath} names no wrapper to run`);
+  }
+  const wrapper = artifactPresence(wrapperPath);
+  if (wrapper === "absent") {
+    return unknown(`the launcher wrapper is missing: ${wrapperPath}`);
+  }
+  let wrapperBody: string;
+  try {
+    wrapperBody = readFileSync(wrapperPath, "utf-8");
+  } catch (error) {
+    return unknown(`the launcher wrapper could not be read: ${String(error)}`);
+  }
+
+  return {
+    kind: "present",
+    claims: [{
+      backend: "scheduler",
+      definitionPath: taskXmlPath,
+      homes: {
+        codexHome: batchSetValue(wrapperBody, "CODEX_HOME"),
+        opencodexHome: batchSetValue(wrapperBody, "OPENCODEX_HOME"),
+      },
+      registration: registered === "present" ? "present" : "absent",
+    }],
+  };
 }
 
 export function inspectServiceManagerInstallation(deps: ProbeDeps = {}): ServiceManagerInstallation {
@@ -292,6 +451,6 @@ export function inspectServiceManagerInstallation(deps: ProbeDeps = {}): Service
   const home = deps.home ?? homedir();
   if (platform === "darwin") return inspectLaunchd({ run, uid: deps.uid ?? process.getuid?.() ?? 0, home });
   if (platform === "linux") return inspectSystemd({ run, home });
-  if (platform === "win32") return inspectWindows();
+  if (platform === "win32") return inspectWindows({ run, home });
   return unknown(`no service manager probe for platform ${platform}`);
 }
