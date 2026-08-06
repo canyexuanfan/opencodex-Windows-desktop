@@ -19,7 +19,7 @@ import {
   type FileIntegrationClientId,
   type IntegrationStatus,
 } from "./integration-api";
-import type { NativeStatus } from "./native-api";
+import type { NativeIntegrationClientId, NativeStatus } from "./native-api";
 
 export type OverviewClientId =
   | "codex"
@@ -77,8 +77,12 @@ export interface OverviewRow {
   detail: string | null;
   detailKey: TKey | null;
   detailVars: Record<string, string> | null;
-  /** The client toggled by the inline switch; null means navigation only. */
-  toggle: OverviewClientId | null;
+  /**
+   * The client toggled by the inline switch; null means navigation only.
+   * Native clients use their wire ids (`claude-desktop`), which differ from the
+   * camelCase row id (`claudeDesktop`) — the toggle names the API target.
+   */
+  toggle: OverviewClientId | NativeIntegrationClientId | null;
   /** A read-time refusal that disables the switch before a doomed mutation. */
   toggleBlocked: NativeStatus["disableBlocked"];
   /** Live native path used by the consequence dialog and localized refusals. */

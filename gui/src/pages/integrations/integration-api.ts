@@ -323,6 +323,9 @@ export async function loadClaudeDesktopStatus(apiBase: string, signal?: AbortSig
     stale?: unknown;
     activeProfile?: unknown;
     appliedAt?: unknown;
+    desiredEnabled?: unknown;
+    installed?: unknown;
+    observedKind?: unknown;
   }>(fetch(`${apiBase}/api/claude-desktop/status`, { signal }));
   if (!body || typeof body.desiredEnabled !== "boolean" || typeof body.installed !== "boolean" || typeof body.observedKind !== "string") return null;
   return {
