@@ -260,12 +260,14 @@ describe("routing profile management editor API", () => {
     const config = baseConfig();
     config.disabledModels = ["ocx/fast"];
     config.subagentModels = ["ocx/fast", "a/m1"];
+    config.subagentModelFallback = ["ocx/fast", "a/m1"];
     config.injectionModel = "ocx/fast";
     config.shadowCallIntercept = { model: "ocx/fast" };
     config.claudeCode = {
       enabled: true,
       model: "ocx/fast",
       smallFastModel: "a/m1",
+      modelMap: { "ocx/fast": "a/m1", "a/m2": "ocx/fast" },
     };
     let saves = 0;
     const req = new ManagementRequest("http://localhost/api/routing-profiles", {
@@ -296,10 +298,12 @@ describe("routing profile management editor API", () => {
     expect(response?.status).toBe(200);
     expect(config.disabledModels).toEqual(["ocx/faster"]);
     expect(config.subagentModels).toEqual(["ocx/faster", "a/m1"]);
+    expect(config.subagentModelFallback).toEqual(["ocx/faster", "a/m1"]);
     expect(config.injectionModel).toBe("ocx/faster");
     expect(config.shadowCallIntercept?.model).toBe("ocx/faster");
     expect(config.claudeCode?.model).toBe("ocx/faster");
     expect(config.claudeCode?.smallFastModel).toBe("a/m1");
+    expect(config.claudeCode?.modelMap).toEqual({ "ocx/faster": "a/m1", "a/m2": "ocx/faster" });
     expect(saves).toBe(1);
   });
 

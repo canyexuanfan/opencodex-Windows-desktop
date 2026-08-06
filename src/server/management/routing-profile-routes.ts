@@ -186,6 +186,9 @@ function migrateProfileModelReferences(
   if (config.subagentModels) {
     config.subagentModels = [...new Set(config.subagentModels.map(migrateAgentReference))];
   }
+  if (config.subagentModelFallback) {
+    config.subagentModelFallback = [...new Set(config.subagentModelFallback.map(migrateAgentReference))];
+  }
   if (config.injectionModel && config.injectionModel === oldPublicModel) {
     config.injectionModel = newPublicModel;
   }
@@ -203,8 +206,13 @@ function migrateProfileModelReferences(
       );
     }
     if (claudeCode.modelMap) {
+      // Keys are the inbound ids matched for reroute (src/claude/inbound.ts);
+      // an old-alias key must follow the rename or that request stops intercepting.
       claudeCode.modelMap = Object.fromEntries(
-        Object.entries(claudeCode.modelMap).map(([source, model]) => [source, migrateAgentReference(model)]),
+        Object.entries(claudeCode.modelMap).map(([source, model]) => [
+          migrateAgentReference(source),
+          migrateAgentReference(model),
+        ]),
       );
     }
     config.claudeCode = claudeCode;
