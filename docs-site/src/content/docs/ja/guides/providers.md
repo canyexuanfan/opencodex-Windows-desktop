@@ -144,7 +144,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 72 個含まれています。キー方式 60、OAuth 8、ローカル 3、
+opencodex には組み込みプリセットが 74 個含まれています。キー方式 62、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
@@ -182,6 +182,8 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
+| DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
+| Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -244,6 +246,17 @@ CLI の login flow は公開レスポンスをキーの有効性の証拠にせ�
 ネイティブ ID と、報告された context / input modality metadata を保持し、discovery を 512 KiB と raw
 512 行に制限します。dedicated deployment のホストは対象外です。キーは
 [Nebius Token Factory](https://tokenfactory.nebius.com) で作成します。
+**DigitalOcean の discovery:** preset は model access key を固定の共有 Serverless Inference ホストで使い、
+認証済み `/v1/models` の応答と DigitalOcean の公式ドキュメントで確認した Chat Completions allowlist の
+積集合だけを公開します。未知、Responses 専用、embedding、media generation の id は fail closed で除外し、
+discovery を 256 KiB と raw 256 行に制限します。agent 固有 host と dedicated host は対象外です。キーは
+[DigitalOcean Control Panel](https://cloud.digitalocean.com/model-studio/manage-keys) で作成します。
+
+**Scaleway の discovery:** 認証済みモデル一覧と公式ドキュメントで確認した Serverless Chat Completions
+allowlist の積集合だけを公開します。未知、Responses 専用、embedding、transcription、その他の media-model
+id は fail closed で除外し、discovery を 128 KiB と raw 128 行に制限します。default Project の共有
+endpoint を使用します。Project id 付き URL と dedicated deployment は custom provider で設定してください。
+API キーは [Scaleway console](https://console.scaleway.com/generative-api) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > のみを対象とします。ローカル利用では個人の [API キー](https://docs.baseten.co/organization/api-keys)を、

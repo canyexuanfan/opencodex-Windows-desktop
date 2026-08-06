@@ -719,6 +719,62 @@ const BASETEN_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
   "moonshotai/Kimi-K2.7-Code": ["text", "image"],
   "moonshotai/Kimi-K3": ["text", "image"],
 };
+
+// 260801 DigitalOcean and Scaleway expose OpenAI-shaped `/v1/models` rows with only
+// id/object/created/owned_by, while their shared serverless catalogs also contain
+// non-chat and endpoint-specific models. Fail closed by intersecting live discovery
+// with ids that the providers' current first-party model tables establish for Chat
+// Completions. A newly listed id therefore needs a docs-backed registry refresh before
+// it can enter the Codex catalog.
+// Evidence: https://docs.digitalocean.com/products/inference/details/models/
+//           https://docs.digitalocean.com/reference/api/reference/serverless-inference/
+//           https://www.scaleway.com/en/docs/generative-apis/reference-content/supported-models/
+const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
+  "arcee-trinity-large-thinking",
+  "openai-gpt-5.6-sol",
+  "openai-gpt-5.6-terra",
+  "openai-gpt-5.6-luna",
+  "qwen3-coder-flash",
+  "qwen3.5-397b-a17b",
+  "deepseek-v4-pro",
+  "deepseek-4-flash",
+  "deepseek-3.2",
+  "gemma-4-31B-it",
+  "minimax-m2.5",
+  "kimi-k3",
+  "kimi-k2.6",
+  "kimi-k2.5",
+  "llama3.3-70b-instruct",
+  "llama-4-maverick",
+  "mistral-3-14B",
+  "nemotron-3-ultra-550b",
+  "nvidia-nemotron-3-super-120b",
+  "nemotron-3-nano-omni",
+  "nemotron-nano-12b-v2-vl",
+  "mimo-v2.5-pro",
+  "glm-5.2",
+  "glm-5.1",
+  "glm-5",
+  // The API reference uses this native slash id in its Chat Completions example.
+  "meta-llama/Meta-Llama-3.1-8B-Instruct",
+] as const;
+const SCALEWAY_SERVERLESS_CHAT_MODELS = [
+  "glm-5.2",
+  // gpt-oss-120b is intentionally omitted: Scaleway requires Responses API for tool calling,
+  // while this preset routes Codex agent tools through Chat Completions.
+  "qwen3.6-35b-a3b",
+  "qwen3.5-397b-a17b",
+  "qwen3-235b-a22b-instruct-2507",
+  "qwen3-coder-30b-a3b-instruct",
+  "gemma-4-26b-a4b-it",
+  "llama-3.3-70b-instruct",
+  "mistral-medium-3.5-128b",
+  "mistral-small-3.2-24b-instruct-2506",
+  "pixtral-12b-2409",
+] as const;
+const SCALEWAY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
+  "pixtral-12b-2409": ["text", "image"],
+};
 const UMANS_MODELS = [
   "umans-coder",
   "umans-kimi-k2.7",
@@ -1426,6 +1482,54 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       },
     },
     note: "Shared Token Factory text-output inference only; live discovery excludes embedding and image-generation rows.",
+  },
+  {
+    id: "digitalocean",
+    label: "DigitalOcean Serverless Inference",
+    baseUrl: "https://inference.do-ai.run/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://cloud.digitalocean.com/model-studio/manage-keys",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The Chat Completions contract documents function calls but not universal parallel support.
+    parallelToolCalls: false,
+    // Unknown catalog rows must not inherit Codex's full fallback reasoning ladder.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        allOf: [{ path: ["id"], equalsAny: DIGITALOCEAN_CHAT_COMPLETION_MODELS }],
+      },
+    },
+    note: "Shared Serverless Inference Chat Completions only; agent-specific, dedicated, Responses-only, embedding, and media-generation models are outside this preset.",
+  },
+  {
+    id: "scaleway",
+    label: "Scaleway Generative APIs",
+    baseUrl: "https://api.scaleway.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.scaleway.com/generative-api",
+    liveModels: true,
+    freeTier: true,
+    preserveCustomDestination: true,
+    // Parallel support varies by model; avoid advertising it as a provider-wide capability.
+    parallelToolCalls: false,
+    // The generic `/models` rows carry no trustworthy reasoning metadata.
+    reasoningEfforts: [],
+    modelInputModalities: SCALEWAY_MODEL_INPUT_MODALITIES,
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 128 * 1024,
+      maxModels: 128,
+      filter: {
+        allOf: [{ path: ["id"], equalsAny: SCALEWAY_SERVERLESS_CHAT_MODELS }],
+      },
+    },
+    note: "Shared Generative APIs Serverless Chat Completions only; project-qualified and dedicated deployment hosts require a custom provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
