@@ -149,7 +149,7 @@ ready, or `503` with `Retry-After: 1` for `pending` and terminal `failed`. Its s
 is `{service, version, uptime, pid, port, status}`. Old proxies without `/readyz` fail closed as
 `unreachable`; `/healthz` is separate liveness, not readiness. The command performs one probe by
 default; `--wait` polls until ready or timeout, but exits immediately when it observes the terminal `failed` state. The
-default timeout is 45 seconds; `--timeout <seconds>` requires `--wait` and accepts 1–300 seconds.
+default timeout is 45 seconds; `--timeout <seconds>` requires `--wait` and accepts positive integer seconds from 1–300.
 CLI JSON emits `{ready, status, pid, port}`, where `status` is `ready`, `pending`, `failed`, or
 `unreachable`. Exit codes are 0 for ready; 1 for not-ready, pending, failed, timeout, or
 unreachable; and 64 for invalid arguments.

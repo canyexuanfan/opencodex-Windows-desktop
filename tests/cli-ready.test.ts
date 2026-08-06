@@ -262,6 +262,31 @@ describe("runReady --wait (single bounded loop, deterministic)", () => {
     expect(out.join("")).toContain("not ready yet (pending)");
   });
 
+  test("a proxy that reported pending and then exits reports unreachable, not stale pending", async () => {
+    const { io, out } = captureIo();
+    let t = 0;
+    let discoveryCount = 0;
+    const code = await runReady(
+      { json: true, wait: true, timeoutSeconds: 8 },
+      {
+        ...io,
+        // First discovery finds the proxy (pending), then it vanishes: every
+        // later discovery returns null. The cached pending status must not
+        // survive to the timeout report — the honest answer is unreachable.
+        findLive: async () => (++discoveryCount === 1 ? LIVE : null),
+        probe: async () => PENDING_PROBE,
+        // 500ms steps: first read sets the deadline, then each find/probe/sleep
+        // advances past a null discovery well before the deadline so the
+        // timeout report carries the cleared unreachable state.
+        now: () => (t += 500),
+        sleep: async () => {},
+      },
+    );
+    expect(code).toBe(1);
+    const parsed = JSON.parse(out.join("")) as { ready: boolean; status: string; pid: unknown; port: unknown };
+    expect(parsed).toEqual({ ready: false, status: "unreachable", pid: null, port: null });
+  });
+
   test("failed is terminal: exits 1 immediately without polling or consuming timeout", async () => {
     const { io, out } = captureIo();
     let findCalls = 0;

@@ -168,6 +168,7 @@ describe("ocx ready real subprocess", () => {
           CODEX_HOME: homes.codexHome,
           OPENCODEX_CODEX_SHIM_AUTO_RESTORE: "1",
         },
+        10_000,
       );
 
       expect(result.timedOut).toBe(false);

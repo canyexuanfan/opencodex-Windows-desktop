@@ -246,10 +246,12 @@ interface ReadyzBody {
 export interface ReadinessProbeResult {
   /** True ONLY for a valid 200 + status="ready" body with a matching pid. */
   ready: boolean;
-  /** Fixed sanitized status when the body is ours; null when foreign/unreadable. */
-  status: "ready" | "pending" | "failed" | null;
-  pid: number | null;
-  port: number | null;
+  /** Fixed sanitized status. A foreign/unreadable body yields a `null` RESULT, never a `null` status. */
+  status: "ready" | "pending" | "failed";
+  /** Positive integer pid from a valid body. */
+  pid: number;
+  /** Integer port from a valid body. */
+  port: number;
 }
 
 export interface ReadinessProbeIo {

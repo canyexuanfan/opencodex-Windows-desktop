@@ -47,7 +47,8 @@ Exact unauthenticated `GET /readyz` returns sanitized identity fields plus pendi
 is `ocx ready [--json] [--wait [--timeout <seconds>]]`. The probe validates the service, version,
 uptime, PID, port, status, and HTTP/status pairing. The default is one probe. With `--wait`, it
 applies one absolute deadline (45 seconds by default) across discovery, readiness probes, polling,
-and sleeps, but exits immediately on terminal failed. CLI `--json` emits
+and sleeps, but exits immediately on terminal failed. `--timeout <seconds>` requires `--wait` and
+accepts positive integer seconds from 1–300. CLI `--json` emits
 `{ready, status, pid, port}`, with status in `ready|pending|failed|unreachable`. Exit 0 means ready;
 exit 1 covers not-ready, pending, failed, timeout, and unreachable; exit 64 means invalid arguments.
 Older proxies without `/readyz` fail closed as unreachable. `/healthz` remains the separate

@@ -123,7 +123,7 @@ ocx status --json
 旧プロキシは `unreachable` として fail-closed し、`/healthz` は readiness ではなく別の liveness 確認です。
 デフォルトでは 1 回だけ probe します。`--wait` は準備完了または timeout まで polling しますが、
 終端 `failed` を確認すると即座に終了します。デフォルト timeout は 45 秒で、`--timeout <seconds>` には
-`--wait` が必要です（1〜300 秒の範囲）。CLI JSON は
+`--wait` が必要です（1〜300 秒の正の整数）。CLI JSON は
 `{ready, status, pid, port}` を出力し、`status` は `ready`、`pending`、`failed`、`unreachable` の
 いずれかです。終了コードは ready が 0、not-ready/pending/failed/timeout/unreachable が 1、
 不正な引数が 64 です。

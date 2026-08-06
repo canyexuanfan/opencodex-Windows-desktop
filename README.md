@@ -162,7 +162,7 @@ It returns `200` when `status` is `ready`; `pending` and terminal `failed` retur
 
 `ocx ready [--json] [--wait [--timeout <seconds>]]` performs one probe by default. `--wait` polls
 for up to 45 seconds by default, but exits immediately when it observes terminal `failed`;
-`--timeout <seconds>` sets a 1–300 second limit and requires `--wait`. CLI `--json` output is
+`--timeout <seconds>` sets a 1–300 second limit, requires `--wait`, and accepts only positive integers. CLI `--json` output is
 `{ready, status, pid, port}`, where `status` is `ready`, `pending`, `failed`, or `unreachable`.
 
 | Exit | Result |

@@ -279,6 +279,14 @@ export async function runReady(args: ReadyArgs, io: ReadyIo = {}): Promise<numbe
         report(args, true, "ready", p.pid, live.port, stdout);
         return 0;
       }
+    } else {
+      // Discovery stopped finding the proxy: it may have exited since the last
+      // probe. Clear the cached status/identity so a stale `pending` (or its
+      // pid/port) cannot mislead a supervisor at timeout — the honest answer is
+      // `unreachable` with no identity.
+      lastStatus = "unreachable";
+      lastPid = null;
+      lastPort = null;
     }
     // Cap the sleep to the positive remaining time so we never sleep past the
     // deadline. `clock` is the latest reading (post-discovery when no live
