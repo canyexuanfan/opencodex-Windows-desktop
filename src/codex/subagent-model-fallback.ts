@@ -18,6 +18,7 @@ import {
   codexQuotaScopeForModel,
   computeCodexUsageScore,
   getCodexQuotaHealthSnapshot,
+  getEffectiveActiveCodexAccountId,
   getPoolAccountPlan,
   isCodexAccountInCooldown,
 } from "./routing";
@@ -131,8 +132,14 @@ function quotaThreshold(config: OcxConfig): number {
   return threshold > 0 ? threshold : Number.POSITIVE_INFINITY;
 }
 
+/**
+ * The account routing would actually use, not just the persisted operator
+ * selection: round-robin, fill-first, failover, and priority preemption all
+ * move the cursor in memory only, so reading the raw field would check quota
+ * against an account this request is not going to touch.
+ */
 function activeCodexAccountId(config: OcxConfig): string | null {
-  return config.activeCodexAccountId ?? null;
+  return getEffectiveActiveCodexAccountId(config) ?? null;
 }
 
 /**

@@ -368,6 +368,49 @@ describe("Codex auth context", () => {
       .resolves.toMatchObject({ kind: "pool", accountId: "pool-b" });
   });
 
+  test("selection order never bypasses an exact account selector", async () => {
+    // Regression: `codexAccountPriorities` narrows the pool to the highest tier, but it
+    // is an ordering boundary over the pool path only. A request that names an account
+    // exactly must resolve to exactly that account, no matter how another account is
+    // ordered — otherwise the selector itself would be overridden by routing metadata.
+    const cfg = config();
+    cfg.activeCodexAccountId = "pool-b";
+    cfg.codexAccountPriorities = { "pool-b": 2, "pool-a": 1 };
+    cfg.codexAccounts?.push({ id: "pool-b", email: "pool-b@example.test", isMain: false });
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_a_token",
+      refreshToken: "pool_a_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_a_acc",
+    });
+    saveCodexAccountCredential("pool-b", {
+      accessToken: "pool_b_token",
+      refreshToken: "pool_b_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_b_acc",
+    });
+
+    // The pool path honors the order: pool-b outranks pool-a, so an unbound request
+    // prefers pool-b.
+    await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", { modelId: "gpt-5.6-sol" }))
+      .resolves.toMatchObject({ kind: "pool", accountId: "pool-b" });
+
+    // An exact selector names pool-a: it must resolve to pool-a even though pool-b is
+    // ordered earlier. Selection order is a tiebreak inside the eligible pool, never a
+    // way to redirect a request that already named its account.
+    await expect(resolveCodexAuthContext(new Headers(), cfg, "pool", {
+      accountId: "pool-a",
+      modelId: "gpt-5.6-sol",
+    })).resolves.toMatchObject({
+      kind: "pool",
+      accountId: "pool-a",
+      accessToken: "pool_a_token",
+      chatgptAccountId: "pool_a_acc",
+      fixedAccount: true,
+    });
+    expect(cfg.activeCodexAccountId).toBe("pool-b");
+  });
+
   test("exact main-account resolution reads auth.json without consulting the active Pool account", async () => {
     const cfg = config();
     writeFileSync(join(testDir, "auth.json"), JSON.stringify({

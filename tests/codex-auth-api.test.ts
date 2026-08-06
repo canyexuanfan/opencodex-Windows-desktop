@@ -16,6 +16,7 @@ import {
   clearMainAccountInfoCache, maskEmail,
   clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
   type CodexAuthAccountDto,
+  listCodexAuthAccounts,
 } from "../src/codex/auth-api";
 import {
   getCodexAccountCredential,
@@ -1010,6 +1011,8 @@ describe("codex-auth API", () => {
     const data = await resp!.json() as { activeCodexAccountId: string | null; autoSwitchThreshold: number };
     expect(data).toEqual({
       activeCodexAccountId: "pool-live",
+      pinned: false,
+      pinnedAccountId: null,
       autoSwitchThreshold: 55,
       upstreamFailoverThreshold: 3,
       accountPoolStrategy: "quota",
@@ -2548,6 +2551,244 @@ describe("codex-auth API", () => {
     });
     expect(config.activeCodexAccountId).toBeUndefined();
     expect(resolveCodexAccountForThread("runtime-selection", config)).toBe("pool-runtime");
+  });
+
+  async function putPriority(config: OcxConfig, body: unknown): Promise<Response> {
+    const req = new Request("http://localhost/api/codex-auth/accounts/priority", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+    return (await handleCodexAuthAPI(req, new URL(req.url), config))!;
+  }
+
+  test("PUT /api/codex-auth/accounts/priority persists a pool account's selection order", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: 2 });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ ok: true, id: "work", priority: 2 });
+    expect(config.codexAccountPriorities).toEqual({ work: 2 });
+  });
+
+  test("PUT /api/codex-auth/accounts/priority accepts the main Codex account", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, { id: MAIN_CODEX_ACCOUNT_ID, priority: -2 });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ id: MAIN_CODEX_ACCOUNT_ID, priority: -2 });
+    expect(config.codexAccountPriorities).toEqual({ [MAIN_CODEX_ACCOUNT_ID]: -2 });
+  });
+
+  // The id guard is the one rejection branch with no coverage: the priority-value and
+  // request-body tables below already cover theirs. It is also the load-bearing guard --
+  // it is what keeps a prototype key out of the priorities map -- and neither the CLI
+  // (which validates ids before issuing the PUT) nor the dashboard (which can only name
+  // accounts it just listed) can reach it, so only a direct request exercises it.
+  test.each([
+    ["a prototype key", "__proto__"],
+    ["the prototype property", "prototype"],
+    ["the constructor property", "constructor"],
+    ["an id containing a space", "has space"],
+    ["an over-long id", "a".repeat(65)],
+    ["an empty id", ""],
+    ["a non-string id", 123],
+    ["a null id", null],
+  ] as const)("rejects %s before any write", async (_label, id) => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id, priority: 1 });
+
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toMatchObject({ error: "Invalid account id format" });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  // A pin predating any stored order would otherwise outrank it forever: it blocks
+  // preemption and caps every eligibility list at its own tier. Setting an order is the
+  // newer statement of intent, so it releases the pin rather than losing to it.
+  test("setting a selection order releases a pin, whichever account was pinned", async () => {
+    const config = makeConfig({ activeCodexAccountPinned: "side" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: 1 });
+
+    expect(resp.status).toBe(200);
+    expect(config.codexAccountPriorities).toEqual({ work: 1 });
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a null priority resets the account and drops an emptied map", async () => {
+    const config = makeConfig({ codexAccountPriorities: { work: 2 } });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: null });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ id: "work", priority: 0 });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test.each([
+    ["a fraction", 1.5],
+    ["a numeric string", "2"],
+    ["a boolean", true],
+    ["an array", []],
+    ["an object", {}],
+    ["above the range", 101],
+    ["below the range", -101],
+    // An omitted key, which JSON cannot distinguish from an explicit undefined. Only `null`
+    // means reset; a body with no priority at all is a malformed request, not a reset.
+    // Deliberately no NaN case: JSON.stringify turns NaN into null, which this route
+    // legitimately reads as a reset, so asserting a 400 would assert something unreachable.
+    // NaN is covered where it can occur, against parseAccountPriority in
+    // tests/codex-pool-rotation.test.ts.
+    ["a missing value", undefined],
+  ] as const)("rejects %s as a selection order", async (_label, priority) => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority });
+
+    expect(resp.status).toBe(400);
+    // The message too, not just the status: the id guard and the exists check also answer
+    // 400/404 here, so a status-only assertion would pass if validation order regressed.
+    expect(await resp.json()).toMatchObject({
+      error: expect.stringContaining("priority must be null or an integer"),
+    });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test.each([
+    ["a JSON array", "[1]"],
+    ["a JSON string", '"work"'],
+    ["a bare number", "7"],
+    ["JSON null", "null"],
+  ] as const)("rejects %s as a request body", async (_label, body) => {
+    const resp = await putPriority(makeConfig(), body);
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toMatchObject({ error: "body must be an object" });
+  });
+
+  test("rejects malformed JSON as a request body", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, "{not json");
+
+    expect(resp.status).toBe(400);
+    // A distinct message from the not-an-object case: the parse fails before the shape
+    // check, and collapsing the two would hide a body that parsed but was the wrong type.
+    expect(await resp.json()).toMatchObject({ error: "Invalid JSON" });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test("an unknown account id is a 404 and writes nothing", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, { id: "missing", priority: 1 });
+
+    expect(resp.status).toBe(404);
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test("selection order is independent of alias, pause, and active selection", async () => {
+    const config = makeConfig({ activeCodexAccountId: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    await putPriority(config, { id: "work", priority: 1 });
+
+    expect(config.codexAccountPriorities).toEqual({ work: 1 });
+    expect(config.pausedCodexAccountIds).toBeUndefined();
+    expect(config.activeCodexAccountId).toBe("work");
+    expect(config.codexAccounts?.[0]?.alias).toBeUndefined();
+  });
+
+  test("the account list reports selection order, defaulting to zero", async () => {
+    const config = makeConfig({ codexAccountPriorities: { work: 2 } });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const accounts = await listCodexAuthAccounts(config);
+
+    expect(accounts.find(a => a.id === "work")?.priority).toBe(2);
+    expect(accounts.find(a => a.id === "side")?.priority).toBe(0);
+    expect(accounts.find(a => a.isMain)?.priority).toBe(0);
+  });
+
+  test("GET /api/codex-auth/active reports an operator pin but not an automatic pick", async () => {
+    const config = makeConfig({ activeCodexAccountId: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const read = async () => {
+      const req = new Request("http://localhost/api/codex-auth/active");
+      return (await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json()) as { pinned: boolean };
+    };
+    expect((await read()).pinned).toBe(false);
+
+    const selectReq = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "work" }),
+    });
+    await handleCodexAuthAPI(selectReq, new URL(selectReq.url), config);
+
+    expect(config.activeCodexAccountPinned).toBe("work");
+    expect((await read()).pinned).toBe(true);
+  });
+
+  // Under round-robin the pin caps the tier while the cursor moves inside it, so `pinned`
+  // alone cannot tell a surface which card to mark. The id is reported independently.
+  test("GET /api/codex-auth/active names the pinned account even when it is not active", async () => {
+    const config = makeConfig({ activeCodexAccountId: "side", activeCodexAccountPinned: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const req = new Request("http://localhost/api/codex-auth/active");
+    const data = await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json() as
+      { pinned: boolean; pinnedAccountId: string | null };
+
+    expect(data.pinned).toBe(false);
+    expect(data.pinnedAccountId).toBe("work");
+  });
+
+  // A null id clears the selection rather than making one, so it must not leave a pin
+  // behind. Pinning the __main__ fallback would produce a pin no effective active
+  // account matches: GET reports pinned:false while selectPriorityTier still honours it
+  // as a floor, silently capping the pool at the main account's tier — the exact
+  // inverse of ordering main last, with no surface that shows or clears it.
+  test("clearing the active account releases the pin instead of pinning main", async () => {
+    const config = makeConfig({
+      activeCodexAccountId: "work",
+      codexAccountPriorities: { [MAIN_CODEX_ACCOUNT_ID]: -2 },
+    });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const select = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "work" }),
+    });
+    await handleCodexAuthAPI(select, new URL(select.url), config);
+    expect(config.activeCodexAccountPinned).toBe("work");
+
+    const clear = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: null }),
+    });
+    const resp = await handleCodexAuthAPI(clear, new URL(clear.url), config);
+
+    expect(resp!.status).toBe(200);
+    expect(config.activeCodexAccountId).toBeUndefined();
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+    const req = new Request("http://localhost/api/codex-auth/active");
+    expect(await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json())
+      .toMatchObject({ pinned: false });
   });
 
   test("PUT /api/codex-auth/accounts/pause-exhausted pauses only freshly confirmed exhausted accounts", async () => {

@@ -1642,6 +1642,16 @@ dialog.modal-overlay::backdrop {
 .startup-runtime-notice__fix code {
   color: inherit;
 }
+/* `.card` carries no padding of its own — `.card-row` and `.card-sub` each inset themselves,
+   so a card built from plain children leaves the title and controls flush against the border
+   while the hints sit 16px in. Pad the card and flatten the hints, as the auto-switch card does. */
+.codex-pool-strategy-card { padding: 14px 16px; }
+.codex-pool-strategy-card .card-sub { padding: 0; }
+/* Inline selection-order row on an account card: label and trigger share one line, and the
+   trigger is scaled down to the card's hint text so it reads as part of the card, not a form. */
+.codex-account-priority { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 16px 10px; min-width: 0; }
+.codex-account-priority-label { font-size: var(--text-label); color: var(--muted); font-weight: var(--weight-medium); white-space: nowrap; }
+.codex-account-priority .select-trigger { max-width: 100%; padding: 4px 9px; font-size: var(--text-label); }
 
 .startup-page-sub { margin-bottom: 0; }
 .startup-page-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

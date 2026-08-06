@@ -25,19 +25,22 @@ export function Notice({ tone, children }: { tone: "ok" | "err"; children: React
 
 export interface SelectOption { value: string; label: React.ReactNode }
 
-export function Select({ value, options, onChange, disabled, label, id, style, align, placement, dropdownStyle, portal = true }: {  value: string;
+export function Select({ value, options, onChange, disabled, id, label, describedBy, title, style, align, placement, dropdownStyle, portal = true }: {
+  value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
+  /** Put on the trigger, so a sibling `<label htmlFor>` can name it — a button is labelable. */
+  id?: string;
   label?: string;
+  describedBy?: string;
+  title?: string;
   style?: CSSProperties;
   align?: "left" | "right";
   placement?: "below" | "right";
   dropdownStyle?: CSSProperties;
   /** When true (default), menu is portaled and flips above the trigger if it would leave the viewport. */
   portal?: boolean;
-  /** Optional id on the trigger button (tests / labels target `#codex-pool-strategy`). */
-  id?: string;
 }) {
   const listboxId = useId();
   const [open, setOpen] = useState(false);
@@ -208,6 +211,8 @@ export function Select({ value, options, onChange, disabled, label, id, style, a
         id={id}
         type="button"
         role="combobox"
+        title={title}
+        aria-describedby={describedBy}
         className="select-trigger"
         onClick={() => {
           if (disabled) return;

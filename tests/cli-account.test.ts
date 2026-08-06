@@ -3,6 +3,18 @@ import { PassThrough, Readable } from "node:stream";
 import { cmdAccount, classifyAccount, formatAccountTable, type AccountDeps } from "../src/cli/account";
 import type { AccountStdin } from "../src/cli/account-api";
 import { printSubcommandUsage } from "../src/cli/help";
+import {
+  DEFAULT_ACCOUNT_PRIORITY,
+  MAX_ACCOUNT_PRIORITY,
+  MIN_ACCOUNT_PRIORITY,
+} from "../src/codex/pool-rotation";
+import {
+  ACCOUNT_PRIORITY_PRESETS,
+  accountPriorityPresetKey,
+  DEFAULT_ACCOUNT_PRIORITY as GUI_DEFAULT_PRIORITY,
+  MAX_ACCOUNT_PRIORITY as GUI_MAX_PRIORITY,
+  MIN_ACCOUNT_PRIORITY as GUI_MIN_PRIORITY,
+} from "../gui/src/account-priority";
 import type { OcxConfig } from "../src/types";
 
 const RAW_SENTINEL = "test-key-rawsentinel1234567890";
@@ -136,6 +148,14 @@ async function mockManagementApi(req: Request): Promise<Response> {
     if (!account) return json({ error: "account not found" }, 404);
     account.alias = payload.alias;
     return json({ ok: true, id: payload.id, alias: payload.alias || null });
+  }
+
+  if (req.method === "PUT" && url.pathname === "/api/codex-auth/accounts/priority") {
+    const payload = body as { id: string; priority: number | null };
+    const account = codexAccounts.find(entry => entry.id === payload.id);
+    if (!account) return json({ error: "account not found" }, 404);
+    account.priority = payload.priority ?? 0;
+    return json({ ok: true, id: payload.id, priority: account.priority });
   }
 
   if (url.pathname === "/api/codex-auth/active") {
@@ -377,7 +397,7 @@ beforeEach(() => {
         monthlyResetAt: 1_900_000_000,
       },
     },
-    { id: "chatgpt_1", email: "j***@example.com", plan: "pro", needsReauth: true, quota: null },
+    { id: "chatgpt_1", email: "j***@example.com", plan: "pro", needsReauth: true, priority: 1, quota: null },
   ];
   oauthAccounts = [
     { id: "acct_1", email: "a***@example.com" },
@@ -411,10 +431,14 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     const result = await run(["list"]);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}STATUS/m);
-    expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus/m);
-    expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+active/m);
-    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+test\*\*\*\*7890 \(personal\)\s+active/m);
+    expect(result.stdout).toMatch(/^PROVIDER\s{2,}TYPE\s{2,}ID\s{2,}PLAN\/LABEL\s{2,}PRIORITY\s{2,}STATUS/m);
+    expect(result.stdout).toMatch(/^openai\s+codex\s+main\s+plus\s+0/m);
+    // The sign, not just the header: an order above the default must render "+1" so the
+    // column reads as a position on an axis rather than a magnitude. Without this the
+    // whole suite passes with priorityText's `+${n}` branch collapsed to String(n).
+    expect(result.stdout).toMatch(/^openai\s+codex\s+chatgpt_1\s+\S+\s+\+1\s/m);
+    expect(result.stdout).toMatch(/^anthropic\s+oauth\s+acct_1\s+a\*\*\*@example\.com\s+-\s+active/m);
+    expect(result.stdout).toMatch(/^openrouter\s+api-key\s+key_1\s+test\*\*\*\*7890 \(personal\)\s+-\s+active/m);
     expect(result.stdout).not.toContain("__main__");
 
     const lines = result.stdout.split("\n");
@@ -611,14 +635,20 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(result.stdout).toContain("needs-reauth");
   });
 
-  test("WP2 regression: use openai main explains next-request routing and cache continuity", async () => {
+  test("WP2 regression: use openai main prints takes-effect-immediately and auto-switch override notes", async () => {
     const result = await run(["use", "openai", "main"]);
 
     expect(result.code).toBe(0);
-    expect(result.stderr).toContain("next request after clearing existing pool affinity");
-    expect(result.stderr).toContain("in-flight requests keep their captured account");
-    expect(result.stderr).toContain("failure recovery may later select another eligible account");
-    expect(result.stderr).toContain("provider-side prompt cache may be cold");
+    // A manual switch clears thread affinity outright (resetCodexRoutingForManualSelection
+    // calls clearThreadAccountMap as its first statement), so running threads do NOT keep
+    // their account -- they rebind on their next request, and the route reports
+    // appliesImmediately: true. Only requests already in flight keep what they captured.
+    // Do not reword back toward "new sessions" or "running threads keep their account":
+    // this test previously asserted that clause, which is what kept it alive.
+    expect(result.stderr).toContain("Takes effect immediately");
+    expect(result.stderr).toContain("in-flight requests keep the account they captured");
+    expect(result.stderr).not.toContain("running threads keep their current account");
+    expect(result.stderr).toContain("auto-switch (threshold 80%) may override this pin");
   });
 
   test("WP2 regression: classifyAccount routes a key-overridden OAuth provider to api-key", () => {
@@ -1005,6 +1035,209 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/codex-auth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/oauth/accounts/alias" }));
     expect(requests).toContainEqual(expect.objectContaining({ method: "PUT", path: "/api/providers/keys/alias" }));
+  });
+
+  describe("37b: account priority sets and reads Codex selection order", () => {
+    const priorityRequests = () => requests.filter(r => r.path === "/api/codex-auth/accounts/priority");
+    const unreachableDeps = (): AccountDeps => ({
+      ...defaultDeps(),
+      fetchImpl: async () => { throw new TypeError("connection refused"); },
+    });
+
+    test("a numeric value is sent as an integer and echoed back signed", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "-1"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is now -1 (later)");
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ method: "PUT", body: { id: "chatgpt_1", priority: -1 } }),
+      ]);
+    });
+
+    // The signed form is what the command itself prints back, so it has to round-trip.
+    test("a leading-plus integer parses to the same value as the bare spelling", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "+2"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is now +2 (first)");
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ method: "PUT", body: { id: "chatgpt_1", priority: 2 } }),
+      ]);
+    });
+
+    test.each([
+      ["first", 2],
+      ["Earlier", 1],
+      ["normal", 0],
+      ["later", -1],
+      ["LAST", -2],
+    ] as const)("the preset word %s maps to %d", async (word, expected) => {
+      const result = await run(["priority", "openai", "chatgpt_1", word]);
+
+      expect(result.code).toBe(0);
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ body: { id: "chatgpt_1", priority: expected } }),
+      ]);
+    });
+
+    // The five presets live in three places that cannot import one another: the dashboard
+    // select, the CLI's preset words, and the core range. Driving the CLI from the GUI's own
+    // list means a change to either side fails here instead of silently disagreeing about
+    // what "First" means.
+    test("the dashboard select and the CLI preset words describe the same five orders", async () => {
+      const presets = ACCOUNT_PRIORITY_PRESETS.map(value => ({
+        value,
+        word: accountPriorityPresetKey(value)?.replace("accountPool.priority", "").toLowerCase(),
+      }));
+      expect(presets.map(preset => preset.word)).toEqual(["first", "earlier", "normal", "later", "last"]);
+
+      for (const { value, word } of presets) {
+        requests.length = 0;
+        const result = await run(["priority", "openai", "chatgpt_1", word!]);
+
+        expect(result.code).toBe(0);
+        expect(priorityRequests()).toEqual([
+          expect.objectContaining({ body: { id: "chatgpt_1", priority: value } }),
+        ]);
+      }
+    });
+
+    test("the dashboard mirrors the core priority range", () => {
+      expect({ fallback: GUI_DEFAULT_PRIORITY, min: GUI_MIN_PRIORITY, max: GUI_MAX_PRIORITY }).toEqual({
+        fallback: DEFAULT_ACCOUNT_PRIORITY,
+        min: MIN_ACCOUNT_PRIORITY,
+        max: MAX_ACCOUNT_PRIORITY,
+      });
+    });
+
+    test("main is translated to the internal id the API expects", async () => {
+      const result = await run(["priority", "openai", "main", "last", "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "__main__",
+        priority: -2,
+        preset: "last",
+      });
+    });
+
+    test("reset sends null", async () => {
+      await run(["priority", "openai", "chatgpt_1", "reset"]);
+
+      expect(priorityRequests()).toEqual([
+        expect.objectContaining({ body: { id: "chatgpt_1", priority: null } }),
+      ]);
+    });
+
+    test("an omitted value reads the stored order without writing", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: chatgpt_1 selection order is +1 (earlier)");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("the read emits the same JSON envelope as the write", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "--json"]);
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "chatgpt_1",
+        priority: 1,
+        preset: "earlier",
+      });
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("reading main resolves the alias and reports the unset default", async () => {
+      const result = await run(["priority", "openai", "main"]);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("openai: main selection order is 0 (normal)");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("reading an unknown id exits one and names the account", async () => {
+      const result = await run(["priority", "openai", "nope"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("no openai account nope");
+      expect(result.stderr).toContain("Usage:");
+    });
+
+    // The inherited names guard the preset lookup: `word in PRIORITY_PRESETS` would
+    // resolve them off Object.prototype and send a non-number to the proxy.
+    test.each(["2.5", "abc", "101", "-101", "constructor", "__proto__", "toString"])(
+      "rejects %s before any HTTP call",
+      async value => {
+        const recording: Array<string> = [];
+        const result = await run(["priority", "openai", "chatgpt_1", value], {
+          ...defaultDeps(),
+          fetchImpl: (async (input: RequestInfo | URL) => {
+            recording.push(String(input));
+            throw new Error("must not be called");
+          }) as typeof fetch,
+        });
+
+        expect(result.code).toBe(1);
+        expect(recording).toEqual([]);
+      },
+    );
+
+    test("a trailing extra argument falls through to usage", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "first", "extra"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Usage:");
+      expect(result.stderr).toContain("ocx account priority");
+      expect(priorityRequests()).toEqual([]);
+    });
+
+    test("non-Codex providers are rejected", async () => {
+      const result = await run(["priority", "anthropic", "acct_1", "first"]);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("only applies to the openai Codex account pool");
+    });
+
+    // Both paths reach the proxy through different helpers — the read through
+    // fetchCodexRows, the write through apiJson — so each needs its own guard.
+    test.each([
+      ["the read", ["priority", "openai", "chatgpt_1"]],
+      ["the write", ["priority", "openai", "chatgpt_1", "first"]],
+    ] as const)("%s reports an unreachable proxy instead of throwing", async (_label, args) => {
+      const result = await run([...args], unreachableDeps());
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Proxy not reachable");
+      expect(result.stderr).toContain("ocx start");
+      expect(result.stderr).toContain("ocx ensure");
+    });
+
+    test("the advisory note goes to stderr so --json stdout stays parseable", async () => {
+      const result = await run(["priority", "openai", "chatgpt_1", "later", "--json"]);
+
+      expect(result.code).toBe(0);
+      // Both advisory lines, asserted exactly: the pin release is a side effect of a command
+      // that reads as purely declarative, so it has to stay stated rather than drift out.
+      expect(result.stderr).toBe([
+        "Takes effect from the next unbound request; running threads keep their current account until drained.",
+        'Also releases any manual "use this account now" pin, on any account.',
+      ].join("\n"));
+      expect(JSON.parse(result.stdout)).toEqual({
+        ok: true,
+        provider: "openai",
+        id: "chatgpt_1",
+        priority: -1,
+        preset: "later",
+      });
+    });
   });
 
   describe("38: the authorization code never has to travel through argv", () => {

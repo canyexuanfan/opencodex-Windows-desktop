@@ -89,8 +89,16 @@ Dashboard의 **Sub-agent delegation** 선택기는 `injectionModel`과 선택적
 
 **Codex Auth** 페이지는 네이티브 ChatGPT/Codex 라우트를 관리합니다.
 
-- 계정을 직접 고르면 다음 새 Codex 세션부터 바뀝니다. 이미 계정이 묶인 thread는 이 수동 전환만으로
-  중간에 이동하지 않습니다.
+- 계정을 직접 고르면 곧바로 적용됩니다. 이미 계정이 묶인 thread도 다음 요청에서 고른 계정으로
+  옮겨가고, 이미 전송 중인 요청만 가져간 계정을 그대로 씁니다. 직접 고른 계정은 고정되기도 합니다. 카드에 **고정됨** 배지가
+  붙고, 그 계정이 소진되거나, 다른 계정을 고르거나, 어느 계정의 선택 순서를 바꿀 때까지 더 높은 선택
+  순서가 끼어들지 못합니다.
+- 각 계정 카드에는 **선택 순서** 컨트롤(가장 먼저 / 먼저 / 기본 / 나중에 / 가장 마지막)이 있습니다.
+  순서가 높은 계정부터 쓰이며, 그 위의 계정이 모두 소진되거나 사용할 수 없게 된 뒤에야 낮은 순서로
+  내려갑니다. 순서를 바꾸면 **다음 미바인딩 요청** 부터 적용되며, 이미 계정에 바인딩된 thread를 옮기지
+  않습니다. Codex Desktop(메인) 계정도 똑같이 정렬되므로 **가장 마지막**으로 두어 예비로 남길 수
+  있습니다. `ocx account priority`로 프리셋 밖의 값을 지정해도 카드에서 그대로 보이고 선택할 수
+  있습니다.
 - Thread affinity가 요청마다 계정이 흔들리는 일을 막습니다. 할당량 자동 전환이 켜져 있으면 오래
   실행되는 thread도 주기적으로 다시 평가합니다. 관련 사용량이 임계값 이상이고 사용량이 확실히 더 낮은
   정상 계정이 있으면 그 계정으로 다시 묶일 수 있습니다.
@@ -147,6 +155,7 @@ GUI는 프록시의 JSON 관리 API를 사용하는 얇은 클라이언트입니
 | `POST /api/oauth/login` · `GET /api/oauth/status` | 프로바이더 OAuth 로그인을 시작하고 완료 여부를 확인합니다. |
 | `GET /api/codex-auth/accounts?refresh=1` | main 및 pool 계정을 조회하고 할당량을 강제로 갱신하며 main 계정의 `hasCredential` / terminal `needsReauth` 상태를 표시합니다. |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | 다음 요청에 사용할 계정과 풀 라우팅 정책을 설정합니다. |
+| `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | 실효 계정(고정 여부를 나타내는 `pinned`와 고정된 계정을 알려주는 `pinnedAccountId` 포함)을 읽고 계정 하나의 선택 순서를 설정합니다. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | 브라우저 로그인으로 pool 계정을 추가합니다. |
 | `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | tail, 프로바이더, 정확한 상태 코드 또는 상태 등급으로 최근 요청 메타데이터를 조회합니다. `limit`/`offset`은 최신 행에서 과거 방향으로 페이지네이션합니다(`offset=0`이 최신 페이지). 응답은 `{ timeZone, total, logs }`이며 `total`은 페이지네이션 전 필터 일치 건수입니다. |
 | `GET` / `PUT /api/subagent-models` | `spawn_agent`에 우선 노출할 모델 5개를 읽거나 설정합니다. |

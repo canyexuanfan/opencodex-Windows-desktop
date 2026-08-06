@@ -76,13 +76,14 @@ ocx login anthropic
 실행 중인 프록시를 통해 제공자 계정과 API 키 풀을 나열하고 전환합니다. 제공되는 도움말 표면은 다음과 같습니다:
 
 ```text
-Usage: ocx account <list|current|use|refresh|auto-switch|login|reauth|code|cancel|remove|add-key|reset-credits> ...
+Usage: ocx account <list|current|use|refresh|auto-switch|priority|login|reauth|code|cancel|remove|add-key|reset-credits> ...
 
 list [provider]     Codex account pool, OAuth accounts and API keys (identifiers shown masked as the API returns them).
 current <provider>  Show the active account or key.
 use <provider> <id> Switch the active credential; 'main' selects the Codex App login.
 refresh <provider>  Force-refresh Codex or provider quota reports.
 auto-switch <provider> <on|off|status|threshold N>  Control the Codex pool threshold.
+priority <provider> <id|main> [first|earlier|normal|later|last|-100..100|reset]  Selection order; omit the value to read it.
 remove <provider> <id> --yes  Remove a stored account or key after an existence check.
 add-key <provider> [--label <label>]  Add a key read only from piped stdin.
 login/reauth/code/cancel  Run browser or manual-code auth from a headless shell.
@@ -102,6 +103,7 @@ Codex pool selection applies to the next request after clearing existing affinit
   "label": "plus",
   "email": "m***@example.com",
   "plan": "plus",
+  "priority": 0,
   "masked": "sk-ab****wxyz",
   "active": true,
   "needsReauth": false,
@@ -111,7 +113,7 @@ Codex pool selection applies to the next request after clearing existing affinit
 
 ### `ocx account list [provider] [--json] [--all]`
 
-제공자를 지정하지 않으면 Codex 풀, OAuth 계정, 설정된 API 키 풀을 나열합니다. `--all`이 없으면 비어 있는 제공자는 건너뜁니다. 제공자를 지정하면 해당 자격 증명 계열만 나열합니다. 사람이 보는 출력은 `PROVIDER TYPE ID PLAN/LABEL STATUS` 형식을 사용하며, 수동으로 선택한 Codex 행에는 `selected`가 표시됩니다. 저장된 Kiro 계정이 있으면 출력에 Kiro에는 로그인 슬롯이 하나뿐이고 다시 로그인하면 현재 계정을 바꾼다는 점이 표시됩니다. 빈 결과도 성공입니다. `--json`은 다음을 반환합니다:
+제공자를 지정하지 않으면 Codex 풀, OAuth 계정, 설정된 API 키 풀을 나열합니다. `--all`이 없으면 비어 있는 제공자는 건너뜁니다. 제공자를 지정하면 해당 자격 증명 계열만 나열합니다. 사람이 보는 출력은 `PROVIDER TYPE ID PLAN/LABEL PRIORITY STATUS` 형식을 사용하며, 수동으로 선택한 Codex 행에는 `selected`가 표시됩니다. 저장된 Kiro 계정이 있으면 출력에 Kiro에는 로그인 슬롯이 하나뿐이고 다시 로그인하면 현재 계정을 바꾼다는 점이 표시됩니다. 빈 결과도 성공입니다. `--json`은 다음을 반환합니다:
 
 ```text
 { accounts: AccountRow[], notes: string[] }
@@ -152,6 +154,28 @@ OAuth 및 API 키 제공자에는 제공자의 할당량 보고 엔드포인트�
 ```text
 { provider, autoSwitchThreshold: number, enabled: boolean }
 ```
+
+### `ocx account priority <provider> <account-id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]`
+
+Codex pool 계정 하나의 선택 순서를 읽거나 설정합니다. **값이 클수록 먼저** 쓰이고 기본값은 `0`,
+범위는 `-100`부터 `100`까지입니다. 순서를 갖는 것은 `openai` Codex pool뿐이므로 다른 프로바이더는
+종료 코드 1입니다. `main`은 Codex Desktop 로그인을 가리키며 다른 pool 계정과 똑같이 정렬됩니다.
+`ocx account priority openai main last`로 예비 계정으로 남겨 둘 수 있습니다.
+
+프리셋 단어는 작은 정수의 다른 이름입니다. `first`는 `+2`, `earlier`는 `+1`, `normal`은 `0`,
+`later`는 `-1`, `last`는 `-2`입니다. `reset`은 기본값으로 되돌리고 저장된 항목을 지웁니다. **값을
+생략하면 읽기**가 되어 현재 순서를 바꾸지 않습니다.
+
+순서는 어떤 계정을 먼저 볼지 정할 뿐 어떤 계정을 쓸 수 있는지는 정하지 않습니다. 선택은 여전히
+적격한 계정 안에서 이루어지며, quota 여유가 남은 최상위 tier를 고른 뒤 그 안은
+`accountPoolStrategy`가 정합니다. 일시 중지, cooldown, 재인증에는 영향을 주지 않습니다. 변경은 새 세션뿐 아니라 **다음 미바인딩 요청** 부터 적용됩니다. 상위 순서에 여유가 돌아오면 preemption이
+미바인딩 요청을 곧바로 끌어올립니다. 이미 계정에 바인딩된 thread는 보통 그 계정이 소진될 때까지 유지하지만, 재인증 실패나 quota cooldown, 연속된 일시적 실패는 그보다 먼저 바인딩을 해제합니다. 받아들여진 쓰기는 어떤 계정에 걸려 있든 수동 "지금 이 계정 사용" 고정도 해제합니다. 이미 설정된 순서를 그대로 쓰는 경우에도 마찬가지이며, 이는 현재 선택된 계정을 그대로 두고 고정만 해제하는 유일한 방법입니다(관리 API로 활성 계정을 비우면 고정도 풀리지만 그 선택까지 사라집니다). 프록시에 연결할 수 없거나, 없는
+계정 id, 허용되지 않는 값은 모두 종료 코드 1입니다. `--json`은 다음을 반환합니다.
+
+```text
+{ ok: true, provider, id, priority: number, preset: string | null }
+```
+
 
 ### `ocx account login|reauth|code|cancel ...`
 

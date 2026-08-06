@@ -21,6 +21,8 @@ export interface AccountRow {
   masked?: string;
   active: boolean;
   needsReauth?: boolean;
+  /** Codex pool selection order, higher used earlier. Absent where ordering does not apply. */
+  priority?: number;
   quota?: CodexQuotaDto | null;
 }
 
@@ -172,6 +174,7 @@ interface CodexAccountDto {
   plan?: string;
   isMain?: boolean;
   needsReauth?: boolean;
+  priority?: number;
   quota?: CodexQuotaDto | null;
 }
 
@@ -219,6 +222,7 @@ export async function fetchCodexRows(
     plan: a.plan,
     active: a.id === activeId,
     needsReauth: a.needsReauth,
+    priority: typeof a.priority === "number" ? a.priority : 0,
     ...(forceRefresh ? { quota: projectQuota(a.quota) } : {}),
   }));
   return { rows, activeId, autoSwitchThreshold, status: 200 };

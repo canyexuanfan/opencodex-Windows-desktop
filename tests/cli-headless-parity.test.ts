@@ -342,4 +342,41 @@ describe("headless GUI parity CLI", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("config set releases the manual pin when it writes the selection order", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ocx-cli-priority-pin-"));
+    const previous = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    const configPath = join(home, "config.json");
+    const base = {
+      port: 10100,
+      providers: { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+      defaultProvider: "openai",
+      activeCodexAccountPinned: "work",
+    };
+    const readPin = () => JSON.parse(readFileSync(configPath, "utf8")).activeCodexAccountPinned;
+    try {
+      // The whole map, one entry, and a removal are all the operator restating the
+      // order, so each releases the pin -- otherwise it keeps capping the tier
+      // ceiling at "work" and the order just written has no visible effect.
+      for (const argv of [
+        ["set", "codexAccountPriorities", '{"work":1}'],
+        ["set", "codexAccountPriorities.work", "2"],
+        ["unset", "codexAccountPriorities"],
+      ]) {
+        writeFileSync(configPath, JSON.stringify({ ...base, codexAccountPriorities: { work: 0 } }));
+        expect(await handleConfigCommand([...argv, "--json"])).toBe(0);
+        expect(readPin()).toBeUndefined();
+      }
+
+      // An unrelated field is not a statement about ordering, so the pin survives.
+      writeFileSync(configPath, JSON.stringify({ ...base, codexAccountPriorities: { work: 1 } }));
+      expect(await handleConfigCommand(["set", "autoSwitchThreshold", "50", "--json"])).toBe(0);
+      expect(readPin()).toBe("work");
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
