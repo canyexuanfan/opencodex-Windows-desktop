@@ -71,6 +71,7 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(injectedPort).toBe(12345);
     expect(injectedCatalogPath).toBe("/tmp/opencodex-catalog.json");
     expect(result).toEqual({
+      status: "applied",
       ok: true,
       added: 3,
       catalogPath: "/tmp/opencodex-catalog.json",
@@ -81,6 +82,28 @@ describe("GUI/CLI Codex sync backend", () => {
     });
     expect(logs).toContain("   Target Codex home: C:\\Users\\[USER]\\.codex");
     expect(errors).toEqual([]);
+  });
+
+  test("returns a policy skip without touching the catalog or config", async () => {
+    let refreshed = false;
+    let injected = false;
+    const result = await syncModelsToCodex(12345, {
+      ...config,
+      clientIntegrations: { codex: false },
+    }, null, {
+      refreshCodexModelCatalog: async () => {
+        refreshed = true;
+        throw new Error("must not refresh");
+      },
+      injectCodexConfig: async () => {
+        injected = true;
+        throw new Error("must not inject");
+      },
+    });
+
+    expect(result).toMatchObject({ status: "skipped", skippedReason: "desired_disabled", ok: true });
+    expect(refreshed).toBe(false);
+    expect(injected).toBe(false);
   });
 
   test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
@@ -253,6 +276,7 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(refreshed).toBe(false);
     expect(injectedCatalogPath).toBeUndefined();
     expect(result).toEqual({
+      status: "applied",
       ok: true,
       added: 0,
       catalogPath: null,

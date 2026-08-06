@@ -157,5 +157,5 @@ test("the synchronous restore body is gated on skipHistory", () => {
   expect(gate).toBeLessThan(historyCall);
 
   // And the async wrapper is the thing that sets it.
-  expect(source).toContain("restoreNativeCodex({ skipHistory: true })");
+  expect(source).toContain("restoreNativeCodex({ skipHistory: true,");
 });

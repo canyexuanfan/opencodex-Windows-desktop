@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { countPendingOpencodexHistory, isRecoverableHistoryError, migrateHistoryToOpenai, restoreLegacyOpenaiHistory, setHistoryDbBusyTimeoutForTests, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex/history-provider";
+import { classifyRecoverableHistoryError, countPendingOpencodexHistory, isRecoverableHistoryError, migrateHistoryToOpenai, restoreLegacyOpenaiHistory, setHistoryDbBusyTimeoutForTests, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex/history-provider";
 
 // Windows CI: a transient file lock can consume the full production 5s busy timeout, tripping
 // bun's 5s default per-test timeout by itself. Fail fast into withHistoryRetry instead.
@@ -301,6 +301,12 @@ describe("history lock retry", () => {
     expect(isRecoverableHistoryError(new Error("permission denied"))).toBe(true);
     expect(isRecoverableHistoryError(new Error("malformed database schema"))).toBe(false);
     expect(isRecoverableHistoryError(new TypeError("undefined is not a function"))).toBe(false);
+  });
+
+  test("classifies exhausted history failures for restore callers", () => {
+    expect(classifyRecoverableHistoryError(Object.assign(new Error("x"), { code: "SQLITE_BUSY" }))).toBe("busy");
+    expect(classifyRecoverableHistoryError(Object.assign(new Error("x"), { code: "EACCES" }))).toBe("permission");
+    expect(classifyRecoverableHistoryError(new Error("malformed database schema"))).toBeNull();
   });
 
   test("withHistoryRetry succeeds after one recoverable failure, sleeping between attempts", () => {

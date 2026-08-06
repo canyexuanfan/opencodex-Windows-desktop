@@ -23,6 +23,7 @@ import { injectGrokConfig, stripGrokConfig, type GrokInjectModel } from "../../g
 import { inspectGrokConfig } from "../../grok/inspect";
 import { grokConfigPath } from "../../grok/status";
 import { assertNativeTeardownOwned } from "../../integrations/native/ownership-preflight";
+import type { CodexNativeRestoreResult } from "../../codex/inject";
 import type { OcxConfig } from "../../types";
 import { jsonResponse } from "../auth-cors";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
@@ -63,6 +64,7 @@ export interface NativeToggleEnvelope {
   message: string;
   /** Present when the outcome needs more than success/failure to be honest. */
   reason?: string;
+  artifacts?: CodexNativeRestoreResult["artifacts"];
 }
 
 export interface NativeRefusalEnvelope {
@@ -292,6 +294,7 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
       ...(restored.success
         ? (durable ? {} : { reason: "not_durable" })
         : { reason: "restore_incomplete" }),
+      artifacts: restored.artifacts,
     } satisfies NativeToggleEnvelope);
   })();
   try {
