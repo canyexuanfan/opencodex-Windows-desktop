@@ -34,3 +34,22 @@ records its comment id in the ledger table at the bottom.
 
 | Target | Action | Comment/close id | Verified |
 |--------|--------|------------------|----------|
+| PR #1036 | review REQUEST_CHANGES | posted 2026-08-06 (gh pr review) | pending C |
+| issue #919 | closed not-planned + comment | close via gh issue close | pending C |
+| issue #1091 | status comment, open | 5199487703 | pending C |
+| PR #1068 | rebase-request comment, open | 5199487780 | pending C |
+| issue #1059 | status comment, open | 5199487879 | pending C |
+| PR #1019 | split-request comment, open | 5199488679 | pending C |
+| PR #1085 | security-pass comment, open | 5199488762 | pending C |
+| PR #997 | rebase-request comment, open | 5199488854 | pending C |
+| PR #1084 | closed + defect comment | gh pr close | pending C |
+| PR #1083 | closed + defect comment | gh pr close | pending C |
+| PR #1081 | closed + defect comment | gh pr close | pending C |
+| PR #1079 | closed + defect comment | gh pr close | pending C |
+| PR #1077 | closed + defect comment | gh pr close | pending C |
+| issue #1062 | policy comment, open | 5199492623 | pending C |
+| issue #1063 | policy comment, open | 5199492696 | pending C |
+| issue #1060 | policy comment, open | 5199492785 | pending C |
+| issue #1058 | policy comment, open | 5199492864 | pending C |
+| issue #1076 | policy comment, open | 5199492948 | pending C |
+| issue #1082 | policy comment, open | 5199493056 | pending C |
