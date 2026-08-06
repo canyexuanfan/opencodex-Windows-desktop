@@ -83,7 +83,7 @@ ChatGPT 패스스루 카탈로그에는 GPT-5.6 Sol/Terra/Luna의 네임스페�
 
 ## 2. 계정 로그인 (OAuth)
 
-OAuth 로그인을 사용하는 프로바이더 프리셋은 여섯 개이며, 여기에 실험적 비공식 디바이스 플로우
+OAuth 로그인을 사용하는 프로바이더 프리셋은 일곱 개이며, 여기에 실험적 비공식 디바이스 플로우
 브리지를 쓰는 GitHub Copilot이 추가됩니다. 자격 증명은 `~/.opencodex/auth.json`에 저장되고
 자동으로 갱신됩니다. 로그인 CLI는 `chatgpt`도 받습니다. 이 명령은 ChatGPT 자격 증명을
 발급받고 `forward` 모드 프로바이더 항목을 만듭니다.
@@ -95,6 +95,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # kiro-cli 자격 증명 가져오기(토큰 폴백 지원)
 ocx login google-antigravity
 ocx login cursor       # Cursor 전용 PKCE 로그인
+ocx login command-code # Command Code 브라우저 OAuth (또는 ~/.commandcode/auth.json 가져오기)
 ocx login github-copilot  # GitHub 디바이스 플로우 → Copilot 토큰 (Copilot Pro/Business)
 ocx login chatgpt      # 별도 ChatGPT OAuth 로그인
 ocx logout <provider>

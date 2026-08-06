@@ -89,7 +89,7 @@ The ChatGPT passthrough catalog also layers in the bare GPT-5.6 Sol/Terra/Luna s
 
 ## 2. Account login (OAuth)
 
-Six provider presets use OAuth login — plus GitHub Copilot via an experimental unofficial
+Seven provider presets use OAuth login — plus GitHub Copilot via an experimental unofficial
 device-flow bridge. opencodex stores their credentials in
 `~/.opencodex/auth.json` and refreshes them automatically. `chatgpt` is also accepted by the login
 CLI; it acquires a ChatGPT credential while creating a `forward`-mode provider entry.
@@ -101,6 +101,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # import kiro-cli credentials (or token fallback)
 ocx login google-antigravity
 ocx login cursor       # standalone Cursor PKCE login
+ocx login command-code # Command Code browser OAuth (or import ~/.commandcode/auth.json)
 ocx login github-copilot  # GitHub device flow → Copilot token (Copilot Pro/Business)
 ocx login chatgpt      # standalone ChatGPT OAuth login
 ocx logout <provider>

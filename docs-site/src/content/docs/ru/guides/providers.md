@@ -93,7 +93,7 @@ account id, OpenAI beta/originator/session — см. [Адаптеры](/ru/refe
 
 ## 2. Вход по аккаунту (OAuth)
 
-Шесть пресетов провайдеров используют вход через OAuth — плюс GitHub Copilot через
+Семь пресетов провайдеров используют вход через OAuth — плюс GitHub Copilot через
 экспериментальный неофициальный мост device flow. opencodex хранит их учётные данные в
 `~/.opencodex/auth.json` и обновляет их автоматически. CLI входа также принимает `chatgpt`: эта
 команда получает учётные данные ChatGPT и одновременно создаёт запись провайдера в режиме `forward`.
@@ -105,6 +105,7 @@ ocx login kimi         # Moonshot Kimi
 ocx login kiro         # импорт учётных данных kiro-cli (с фолбэком на токен)
 ocx login google-antigravity
 ocx login cursor       # отдельный PKCE-вход Cursor
+ocx login command-code # браузерный OAuth Command Code (или импорт ~/.commandcode/auth.json)
 ocx login github-copilot  # device flow GitHub → токен Copilot (Copilot Pro/Business)
 ocx login chatgpt      # отдельный OAuth-вход ChatGPT
 ocx logout <provider>
