@@ -123,6 +123,14 @@ export interface Desktop3pLibraryInspection {
   /** Bounded reason code; never includes metadata or profile contents. */
   reason?: "metadata_unreadable" | "unsafe_applied_id" | "invalid_owned_profile";
   fingerprint?: string;
+  /**
+   * Whether Desktop's applied selection is our owned entry, by ID match alone.
+   * `null` = undeterminable (no metadata, unreadable metadata, or no appliedId);
+   * a readable appliedId with no owned entry is a KNOWN false, not unknown.
+   * Deliberately independent of profile-file health: the status contract
+   * predates this inspector and callers render tri-state.
+   */
+  ownedProfileActive: boolean | null;
 }
 
 export interface Desktop3pRemovalResult {
@@ -383,12 +391,12 @@ export function inspectDesktop3pConfigLibrary(
 ): Desktop3pLibraryInspection {
   const libraryPath = resolveDesktop3pConfigLibraryPath(options);
   if (!existsSync(libraryPath)) {
-    return { kind: "not_installed", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+    return { kind: "not_installed", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
   }
 
   const metadataPath = join(libraryPath, "_meta.json");
   if (!existsSync(metadataPath)) {
-    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
   }
 
   let metadata: Desktop3pMetadata;
@@ -396,16 +404,19 @@ export function inspectDesktop3pConfigLibrary(
     metadata = parseMetadata(metadataPath);
   } catch {
     return {
-      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], reason: "metadata_unreadable",
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], reason: "metadata_unreadable", ownedProfileActive: null,
     };
   }
   const appliedId = typeof metadata.appliedId === "string" ? metadata.appliedId : null;
   if (appliedId === null) {
-    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], ownedProfileActive: null };
   }
+  const ownedEntry = metadata.entries.find(entry => isOwnedDesktopEntry(entry));
+  // A readable appliedId with no owned entry is a KNOWN false, not unknown.
+  const ownedProfileActive = ownedEntry?.id ? appliedId === ownedEntry.id : false;
   if (!SAFE_DESKTOP_PROFILE_ID.test(appliedId)) {
     return {
-      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId, residualPaths: [], reason: "unsafe_applied_id",
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId, residualPaths: [], reason: "unsafe_applied_id", ownedProfileActive,
     };
   }
 
@@ -416,7 +427,7 @@ export function inspectDesktop3pConfigLibrary(
     .flatMap(entry => [profilePath(libraryPath, entry.id), `${profilePath(libraryPath, entry.id)}.bak`])
     .filter(existsSync);
   if (!existsSync(selectedProfilePath)) {
-    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
   }
 
   let profile: Record<string, unknown>;
@@ -424,17 +435,17 @@ export function inspectDesktop3pConfigLibrary(
   try {
     const source = readFileSync(selectedProfilePath, "utf8");
     const parsed = JSON.parse(source) as unknown;
-    if (!isRecord(parsed)) return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+    if (!isRecord(parsed)) return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
     profile = parsed;
     fingerprint = createHash("sha256").update(source).digest("hex").slice(0, 16);
   } catch {
-    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths, ownedProfileActive };
   }
   if (profile.inferenceProvider === undefined) {
-    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint };
+    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
   }
   if (!isOwnedDesktopEntry(selected)) {
-    return { kind: "foreign", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint };
+    return { kind: "foreign", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive };
   }
   const validGateway = profile.inferenceProvider === "gateway"
     && profile.inferenceCredentialKind === "static"
@@ -442,12 +453,12 @@ export function inspectDesktop3pConfigLibrary(
     && typeof profile.inferenceGatewayApiKey === "string";
   if (!validGateway) {
     return {
-      kind: "unsafe", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, reason: "invalid_owned_profile",
+      kind: "unsafe", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, reason: "invalid_owned_profile", ownedProfileActive,
     };
   }
   return {
     kind: options.appliedFingerprint && options.appliedFingerprint === fingerprint ? "gateway_ours" : "gateway_drifted",
-    libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint,
+    libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, ownedProfileActive,
   };
 }
 

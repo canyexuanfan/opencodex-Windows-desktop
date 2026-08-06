@@ -805,7 +805,10 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         onDiskFingerprint: observed.fingerprint ?? null,
         configPath: observed.selectedProfilePath,
         stale,
-        activeProfile: applied,
+        // Tri-state by ID match, independent of profile health: null =
+        // undeterminable (no/unreadable metadata or no appliedId); a readable
+        // appliedId with no owned entry is a KNOWN false. Predates the inspector.
+        activeProfile: observed.ownedProfileActive,
         drift: desiredEnabled ? !applied || stale : applied || observed.kind === "unsafe",
         driftReason: desiredEnabled ? (!applied ? "desired_on_not_current" : stale ? "profile_drift" : null) : (applied ? "desired_off_gateway_selected" : null),
         health,
