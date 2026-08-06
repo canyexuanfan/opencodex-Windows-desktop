@@ -44,7 +44,8 @@ File list read from `gh pr diff 1085` against `dev` = `e9d957bf6`.
 | `tests/client-config-export.test.ts` | ADOPT (+19/−~11) | Serializer output for Pi with no key set |
 | `tests/management-client-config-route.test.ts` | ADOPT (+76/−~2) | Route-level output |
 | `tests/client-config-export-new-clients.test.ts`, `tests/client-config-new-clients.test.ts` | ADOPT (+4 each) | Client-matrix alignment |
-| `src/cli/export-command.ts`, `src/cli/opencode.ts`, `src/server/management/model-rows.ts`, `src/combos/*`, `tests/cli-export-command.test.ts` | DROP | Combo/direct-mode filtering and cross-client contract churn |
+| `src/cli/export-command.ts` (#1085: +20/−~11), `src/cli/opencode.ts` (+13/−~4), `src/server/management/model-rows.ts` (+25/−~10), `tests/cli-export-command.test.ts` (+87/−~2) | DROP | Combo/direct-mode filtering and cross-client contract churn |
+| `src/combos/index.ts` (#1085: +1), `src/combos/types.ts` (#1085: +15) | DROP **#1085 hunks only** | These two files are also touched by #1092 in slice A above, and **those hunks are adopted**. Only #1085's additions — its direct-mode combo filtering — are excluded. When implementing, take the #1092 hunks and skip the #1085 ones rather than reverting the file |
 
 **Dropped from #1085:** combo/direct-mode filtering, cross-client contract
 changes, and generalized export-policy churn across 31 files.
