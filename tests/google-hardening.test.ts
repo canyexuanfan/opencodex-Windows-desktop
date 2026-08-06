@@ -314,6 +314,19 @@ describe("google provider hardening", () => {
     expect(JSON.parse(antigravity.body).request.generationConfig).toBeUndefined();
   });
 
+  test("provider-wide effort ladder drives thinkingLevel for a non-image model", async () => {
+    const direct = createGoogleAdapter(provider({
+      reasoningEfforts: ["low", "medium", "high"],
+    }));
+    const request = await direct.buildRequest({
+      ...parsed(),
+      modelId: "gemini-3.1-pro-preview",
+      options: { reasoning: "high" },
+    });
+
+    expect(JSON.parse(request.body).generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high" });
+  });
+
   test("effort ladder drives thinkingLevel beyond the flash slice", async () => {
     const direct = createGoogleAdapter(provider({
       modelReasoningEfforts: { "gemini-3.1-pro-preview": ["low", "medium", "high"] },
