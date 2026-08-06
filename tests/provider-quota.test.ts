@@ -832,6 +832,165 @@ describe("fetchProviderQuotaReports", () => {
     expect(seen).toEqual([]);
   });
 
+  test("Moonshot quota renders a balance window from the account balance", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        data: { available_balance: 8, voucher_balance: 2, cash_balance: 6 },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("moonshot", "https://api.moonshot.ai/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("moonshot:balance");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("$8.00");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://api.moonshot.ai/v1/users/me/balance");
+    expect(seen[0]?.authorization).toBe("Bearer moonshot-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Moonshot quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("moonshot", "https://attacker.example/v1"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("Venice quota renders a DIEM epoch allocation window when present", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        data: { balance: 250, diem_epoch_used: 30, diem_epoch_allocated: 100 },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("venice", "https://api.venice.ai/api/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("venice:billing-balance");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("DIEM balance (250)");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.percent).toBe(30);
+    expect(seen[0]?.url).toBe("https://api.venice.ai/api/v1/billing/balance");
+    expect(seen[0]?.authorization).toBe("Bearer venice-secret");
+  });
+
+  test("Synthetic quota maps rolling 5-hour and weekly token lanes", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: { rollingFiveHourLimit: 40.5, weeklyTokenLimit: 52, search: { hourly: 12 } },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("synthetic", "https://api.synthetic.new/v2"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("synthetic:quotas");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 40.5,
+      weeklyPercent: 52,
+    });
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({ label: "Search hourly", percent: 12 });
+  });
+
+  test("Synthetic quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("synthetic", "https://attacker.example/v2"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("DeepInfra quota renders a billing-cycle spend window when a limit is set", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        stripe_balance: -10, spending_limit: 50, total_amount_due: 5,
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("deepinfra", "https://api.deepinfra.com/v1/openai"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("deepinfra:billing-checklist");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("$5.00 of $50.00");
+    expect(seen[0]?.url).toContain("/payment/checklist");
+    expect(seen[0]?.authorization).toBe("Bearer deepinfra-secret");
+  });
+
+  test("DeepInfra quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("deepinfra", "https://attacker.example/v1/openai"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("Neuralwatt quota renders subscription kWh + prepaid credits windows", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: {
+        subscription: { kwh_used: 5, kwh_included: 20, current_period_end: "2026-08-31T00:00:00Z" },
+        balance: { total_credits_usd: 10, credits_remaining_usd: 7 },
+      },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("neuralwatt", "https://api.neuralwatt.com/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("neuralwatt:quota");
+    expect(result.reports[0]?.quota.fiveHourPercent).toBe(25);
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({ label: "Prepaid credits", percent: 70 });
+  });
+
+  test("Neuralwatt quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("neuralwatt", "https://attacker.example/v1"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];
