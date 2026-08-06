@@ -551,6 +551,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       markActivity(`${req.method} ${url.pathname}`);
 
       if (req.method === "OPTIONS") {
+        // /readyz is exact-GET only; OPTIONS (like POST and the trailing-slash
+        // path) must answer the deterministic JSON 404, never the generic 204
+        // preflight response that the SPA fallback would otherwise allow.
+        if (url.pathname === "/readyz" || url.pathname === "/readyz/") {
+          return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
+        }
         const managementPreflight = url.pathname.startsWith("/api/");
         const allowed = managementPreflight
           ? isAllowedManagementOrigin(req, config)

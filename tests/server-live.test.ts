@@ -969,6 +969,12 @@ describe("GET /readyz", () => {
       // Trailing slash is a distinct path and must not match either.
       const slashRes = await fetch(new URL("/readyz/", base));
       expect(slashRes.status).toBe(404);
+      // OPTIONS is a non-GET method and must not be accepted as a readiness
+      // preflight (the generic OPTIONS branch would otherwise answer 204).
+      const optionsRes = await fetch(new URL("/readyz", base), { method: "OPTIONS" });
+      expect(optionsRes.status).toBe(404);
+      const optionsSlashRes = await fetch(new URL("/readyz/", base), { method: "OPTIONS" });
+      expect(optionsSlashRes.status).toBe(404);
     } finally {
       await server.stop(true);
     }
