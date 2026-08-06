@@ -55,8 +55,13 @@ classifying inspector. WP-C adds `inspectDesktop3pConfigLibrary()` in
   fails the safe-filename shape → refuse without touching the path (no
   traversal); multiple rows matching our fingerprint after an interrupted
   cleanup → the remover prefers the SELECTED opencodex row and reports the rest
-  as residue; invalid `inferenceProvider`/credential-field shapes → classified
-  `foreign`, never parsed further, never echoed into envelopes or logs.
+  as residue; invalid `inferenceProvider`/credential-field shapes are split by
+  ownership per `050:704-715`: a profile our fingerprint/metadata claims but
+  whose provider or credential shape no longer matches is **`unsafe`** — it
+  refuses convergence without any Desktop write and is never masked as
+  `foreign`/`no_owned_state`; only a profile with NO ownership marker is
+  `foreign` (a valid user-selected third-party profile). In neither case are
+  field values parsed further or echoed into envelopes or logs.
 - The official schema is verified current (Anthropic configuration reference,
   2026-08-06, Luna lane 1): configLibrary paths per-OS, `_meta.json` + sibling
   `<id>.json`, gateway fields, `supports1m`/`prefer1m`. Missing-selected-file
