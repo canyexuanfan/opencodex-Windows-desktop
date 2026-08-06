@@ -715,7 +715,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   }
   if (url.pathname === "/api/claude-desktop/apply" && req.method === "POST") {
     try {
-      const { setIntegrationEnabled } = await import("../../codex/desired-state");
+      const { setIntegrationEnabled, claudeDesktopIntegrationEnabled } = await import("../../codex/desired-state");
       const desired = setIntegrationEnabled("claude-desktop", true);
       if (!desired.ok) return jsonResponse({ error: desired.message }, desired.retryable ? 409 : 500);
       // #859: the CLI delegates here so the registry is built in the serving
@@ -762,11 +762,24 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
           const slash = model.route.indexOf("/");
           return { provider: model.route.slice(0, slash), id: model.route.slice(slash + 1), contextWindow: model.contextWindow };
         });
+      // State construction can await catalog work; never write from the stale
+      // config captured before that await if another request turned Desktop off.
+      const latest = loadConfig();
+      if (!claudeDesktopIntegrationEnabled(latest)) {
+        return jsonResponse({
+          error: "Claude Desktop apply was cancelled because the desired state changed to off.",
+          code: "claude_desktop_apply_skipped",
+          reason: "desired_state_changed",
+          desiredEnabled: false,
+          saved: true,
+          applied: false,
+        }, 409);
+      }
       const result = writeDesktop3pConfig(
-        Number(url.port) || config.port,
-        [...desktopVisibleNativeSlugs(config)],
+        Number(url.port) || latest.port,
+        [...desktopVisibleNativeSlugs(latest)],
         routed,
-        config.apiKeys?.[0]?.key,
+        latest.apiKeys?.[0]?.key,
         mode,
         state.profile,
       );

@@ -75,7 +75,7 @@ test("the native route advertises Claude Desktop and OFF persists intent before 
 
   const status = await dispatch("/api/native-integrations");
   const clients = (await status!.json() as { clients: Array<{ clientId: string }> }).clients;
-  expect(clients.some(client => client.clientId === "claude-desktop")).toBe(true);
+  expect(clients.map(client => client.clientId)).toEqual(expect.arrayContaining(["claude", "grok", "codex", "claude-desktop"]));
 });
 
 test("OFF on a missing or empty library is an idempotent no-op with no footprint", async () => {
@@ -158,5 +158,30 @@ test("auto-apply re-reads desired state after catalog fetch and skips a concurre
   expect(setIntegrationEnabled("claude-desktop", false).ok).toBe(true);
   release();
   expect((await request)!.status).toBe(200);
+  expect(writes).toBe(0);
+});
+
+test("explicit enable re-reads desired state after catalog fetch and skips a concurrent OFF", async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const fetched = new Promise<never[]>(resolve => { release = () => resolve([]); });
+  const fetchStarted = new Promise<void>(resolve => { started = resolve; });
+  let writes = 0;
+  const request = toggle(true, {
+    fetchAllModels: () => {
+      started();
+      return fetched;
+    },
+    writeDesktop3pConfig: () => {
+      writes++;
+      return { written: true, path: join(library, "new.json"), fingerprint: "fingerprint" };
+    },
+  });
+  await fetchStarted;
+  expect(setIntegrationEnabled("claude-desktop", false).ok).toBe(true);
+  release();
+  const result = await request;
+  expect(result.status).toBe(409);
+  expect(result.body).toMatchObject({ reason: "desired_state_changed", desiredEnabled: false });
   expect(writes).toBe(0);
 });

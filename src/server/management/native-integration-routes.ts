@@ -40,7 +40,8 @@ export type NativeRefusalReason =
   | "config_busy"
   | "write_failed"
   | "metadata_unreadable"
-  | "cleanup_incomplete";
+  | "cleanup_incomplete"
+  | "desired_state_changed";
 
 export interface NativeStatus {
   clientId: NativeIntegrationClientId;
@@ -78,10 +79,14 @@ export interface NativeRefusalEnvelope {
   clientId: NativeIntegrationClientId;
   reason: NativeRefusalReason;
   message: string;
-  /** Available after intent persistence; absent only for pre-commit refusals. */
+  /** Present on every post-commit refusal; absent only for pre-commit refusals. */
   desiredEnabled?: boolean;
   residualPaths?: string[];
 }
+
+export type NativePostCommitRefusalEnvelope = Omit<NativeRefusalEnvelope, "desiredEnabled"> & {
+  desiredEnabled: boolean;
+};
 
 function refusal(
   status: number,
@@ -95,6 +100,20 @@ function refusal(
     code: status >= 500 ? "native_integration_failed" : "native_integration_refused",
     clientId, reason, message, ...extra,
   } satisfies NativeRefusalEnvelope, status);
+}
+
+function postCommitRefusal(
+  status: number,
+  clientId: NativeIntegrationClientId,
+  reason: NativeRefusalReason,
+  message: string,
+  extra: Pick<NativePostCommitRefusalEnvelope, "desiredEnabled" | "residualPaths">,
+): Response {
+  return jsonResponse({
+    error: status >= 500 ? "native integration change failed" : "native integration change refused",
+    code: status >= 500 ? "native_integration_failed" : "native_integration_refused",
+    clientId, reason, message, ...extra,
+  } satisfies NativePostCommitRefusalEnvelope, status);
 }
 
 function desktopStatus(config: ManagementContext["config"]): NativeStatus {
@@ -134,6 +153,18 @@ function claudeStatus(config: ManagementContext["config"], configPath: string): 
     configPath,
     desiredEnabled: claudeCodeEnabled(config),
     // Nothing can refuse this disable: no external file, no shared teardown.
+    disableBlocked: null,
+  };
+}
+
+function codexStatus(config: ManagementContext["config"], configPath: string): NativeStatus {
+  const desiredEnabled = config.clientIntegrations?.codex !== false;
+  return {
+    clientId: "codex",
+    state: desiredEnabled ? "current" : "absent",
+    installed: true,
+    configPath,
+    desiredEnabled,
     disableBlocked: null,
   };
 }
@@ -409,6 +440,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
       );
     }
     const durable = persisted.ok;
+    const desiredEnabled = durable ? loadConfig().clientIntegrations?.grok !== false : enabled;
 
     if (!enabled) {
       /*
@@ -417,25 +449,25 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
        * gated: writing our own fence tears nothing down.
        */
       const owned = assertNativeTeardownOwned();
-      if (!owned.ok) return refusal(409, "grok", "home_mismatch", owned.message);
+      if (!owned.ok) return postCommitRefusal(409, "grok", "home_mismatch", owned.message, { desiredEnabled });
 
       const result = stripGrokConfig();
       if (result.skippedReason === "no-grok-home") {
-        return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+        return postCommitRefusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE, { desiredEnabled });
       }
       if (result.skippedReason === "orphaned-marker" || !result.ok) {
         // Orphaned can still arrive between the preflight and the strip; the
         // writer refuses it correctly and we map the refusal, never a retry lie.
         return result.skippedReason === "orphaned-marker"
-          ? refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE)
-          : refusal(500, "grok", "write_failed", result.message);
+          ? postCommitRefusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE, { desiredEnabled })
+          : postCommitRefusal(500, "grok", "write_failed", result.message, { desiredEnabled });
       }
       // The writer's own read IS the last read within this synchronous
       // operation (012 Rev 3 N4): strip removed the fence, so absent.
       return jsonResponse({
         ok: true, clientId: "grok", changed: result.changed,
         state: "absent",
-        desiredEnabled: enabled,
+        desiredEnabled,
         message: result.changed
           ? "Grok integration disabled — the opencodex block was removed. Re-enabling regenerates it from the current model list."
           : "Grok integration is already off",
@@ -476,13 +508,13 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
     } catch (error) {
       // A catalog failure must never write an empty fence (syncGrokConfig
       // guards this; the route inherits the rule). Nothing was written.
-      return refusal(500, "grok", "write_failed",
-        `The model catalog is unavailable, so nothing was written (${error instanceof Error ? error.message : String(error)}). Try again once provider discovery recovers.`);
+      return postCommitRefusal(500, "grok", "write_failed",
+        `The model catalog is unavailable, so nothing was written (${error instanceof Error ? error.message : String(error)}). Try again once provider discovery recovers.`, { desiredEnabled });
     }
 
     const recheck = inspectGrokConfig();
-    if (recheck.kind === "not_installed") return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
-    if (recheck.kind === "orphaned_marker") return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+    if (recheck.kind === "not_installed") return postCommitRefusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE, { desiredEnabled });
+    if (recheck.kind === "orphaned_marker") return postCommitRefusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE, { desiredEnabled });
 
     const inject = deps.injectGrokConfig ?? injectGrokConfig;
     const result = inject(port, models, {
@@ -504,7 +536,7 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
       const after = inspectGrokConfig();
       switch (after.kind) {
         case "orphaned_marker":
-          return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+          return postCommitRefusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE, { desiredEnabled });
         case "present":
           // A well-formed fence arrived from elsewhere between the strip and
           // this read (`ocx ensure`, another proxy, a hand edit). It is not
@@ -513,16 +545,16 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
           return jsonResponse({
             ok: true, clientId: "grok", changed: result.changed,
             state: "current", reason: "non_loopback_superseded",
-            desiredEnabled: enabled,
+            desiredEnabled,
             message: "opencodex is bound to a non-loopback address, so this request did not write a block — but a well-formed opencodex block is present in the Grok config, written by something else. The card shows what is on disk.",
           } satisfies NativeToggleEnvelope);
         case "not_installed":
-          return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+          return postCommitRefusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE, { desiredEnabled });
         case "absent":
           return jsonResponse({
             ok: true, clientId: "grok", changed: result.changed,
             state: "absent", reason: "non_loopback_removed",
-            desiredEnabled: enabled,
+            desiredEnabled,
             message: "opencodex is bound to a non-loopback address, so Grok cannot be auto-registered. The previously generated block was removed because it pointed at a loopback address that no longer serves.",
           } satisfies NativeToggleEnvelope);
         default: {
@@ -535,18 +567,18 @@ async function handleGrokToggle(ctx: ManagementContext): Promise<Response> {
     }
 
     if (result.skippedReason === "no-grok-home") {
-      return refusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE);
+      return postCommitRefusal(404, "grok", "not_installed", NOT_INSTALLED_MESSAGE, { desiredEnabled });
     }
     if (result.skippedReason === "orphaned-marker") {
-      return refusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE);
+      return postCommitRefusal(409, "grok", "orphaned_marker", ORPHANED_MARKER_MESSAGE, { desiredEnabled });
     }
     if (!result.ok) {
-      return refusal(500, "grok", "write_failed", result.message);
+      return postCommitRefusal(500, "grok", "write_failed", result.message, { desiredEnabled });
     }
     return jsonResponse({
       ok: true, clientId: "grok", changed: result.changed,
       state: "current",
-      desiredEnabled: enabled,
+      desiredEnabled,
       message: result.changed ? "Grok integration enabled — the opencodex block was regenerated from the current model list." : "Grok integration is already on",
     } satisfies NativeToggleEnvelope);
   })();
@@ -586,12 +618,12 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
     if (!body.enabled) {
       const removed = (ctx.deps.removeDesktop3pStandardPivot ?? removeDesktop3pStandardPivot)({ appliedFingerprint: fingerprint });
       if (removed.kind === "cleanup_incomplete") {
-        return refusal(500, "claude-desktop", "cleanup_incomplete",
+        return postCommitRefusal(500, "claude-desktop", "cleanup_incomplete",
           "Claude Desktop now points at standard mode, but credential cleanup is incomplete.",
           { desiredEnabled, residualPaths: removed.residualPaths ?? [] });
       }
       if (!removed.ok) {
-        return refusal(409, "claude-desktop", removed.reason === "metadata_unreadable" ? "metadata_unreadable" : "write_failed",
+        return postCommitRefusal(409, "claude-desktop", removed.reason === "metadata_unreadable" ? "metadata_unreadable" : "write_failed",
           "Claude Desktop configuration could not be changed safely.", { desiredEnabled });
       }
       return jsonResponse({
@@ -602,25 +634,32 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
 
     const fetchModels = ctx.deps.fetchAllModels ?? defaultFetchAllModels;
     try {
-      const routed = filterCatalogVisibleModels(await fetchModels(current), current).map(model => ({
+      const fetched = await fetchModels(current);
+      const latest = loadConfig();
+      const latestDesiredEnabled = latest.clientIntegrations?.["claude-desktop"] !== false;
+      if (!latestDesiredEnabled) {
+        return postCommitRefusal(409, "claude-desktop", "desired_state_changed",
+          "Claude Desktop enable was cancelled because the desired state changed to off.", { desiredEnabled: latestDesiredEnabled });
+      }
+      const routed = filterCatalogVisibleModels(fetched, latest).map(model => ({
         provider: model.provider, id: model.id, contextWindow: model.contextWindow,
       }));
       const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
       const result = (ctx.deps.writeDesktop3pConfig ?? writeDesktop3pConfig)(
-        runtime?.port ?? current.port,
-        [...visibleNativeSlugs(current)],
+        runtime?.port ?? latest.port,
+        [...visibleNativeSlugs(latest)],
         routed,
-        current.apiKeys?.[0]?.key,
+        latest.apiKeys?.[0]?.key,
         "static",
-        current.claudeCode?.desktopProfile,
+        latest.claudeCode?.desktopProfile,
       );
-      if (!result.written) return refusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled });
+      if (!result.written) return postCommitRefusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled: latestDesiredEnabled });
       return jsonResponse({
-        ok: true, clientId: "claude-desktop", changed: true, state: "current", desiredEnabled,
+        ok: true, clientId: "claude-desktop", changed: true, state: "current", desiredEnabled: latestDesiredEnabled,
         message: "Claude Desktop integration enabled.",
       } satisfies NativeToggleEnvelope);
     } catch {
-      return refusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled });
+      return postCommitRefusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled });
     }
   })();
   try {
@@ -636,7 +675,7 @@ export async function handleNativeIntegrationRoutes(ctx: ManagementContext): Pro
   if (url.pathname === "/api/native-integrations" && req.method === "GET") {
     const { getConfigPath } = await import("../../config");
     return jsonResponse({
-      clients: [claudeStatus(config, getConfigPath()), grokStatus(config), desktopStatus(config)],
+      clients: [claudeStatus(config, getConfigPath()), grokStatus(config), codexStatus(config, getConfigPath()), desktopStatus(config)],
     } satisfies NativeStatusListEnvelope);
   }
 

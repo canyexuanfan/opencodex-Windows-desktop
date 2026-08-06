@@ -17,7 +17,8 @@ export type NativeRefusalReason =
   | "config_busy"
   | "write_failed"
   | "metadata_unreadable"
-  | "cleanup_incomplete";
+  | "cleanup_incomplete"
+  | "desired_state_changed";
 
 export interface NativeStatus {
   clientId: NativeIntegrationClientId;
@@ -77,6 +78,7 @@ const NATIVE_REFUSAL_REASONS: ReadonlySet<string> = new Set<NativeRefusalReason>
   "write_failed",
   "metadata_unreadable",
   "cleanup_incomplete",
+  "desired_state_changed",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
