@@ -115,6 +115,16 @@ ocx status --json
 
 对正在运行的代理做身份校验。人类可读输出报告 PID/端口；`--json` 输出 `{ok, pid, port}`。只有在健康时该命令才以 0 退出，否则以 1 退出，因此适合用作服务探针。
 
+### `ocx ready [--json] [--wait [--timeout <seconds>]]`
+
+通过无需认证的 `GET /readyz` 端点检查同步后的就绪状态。就绪时返回 `200`；状态为 `pending` 或
+终态 `failed` 时返回 `503`，并带有 `Retry-After: 1`。HTTP 仅返回经脱敏的身份字段
+`{service, version, uptime, pid, port, status}`。不支持 `/readyz` 的旧代理会按 `unreachable` 失败关闭；
+`/healthz` 是独立的存活检查，不是就绪检查。默认只探测一次；`--wait` 会轮询到就绪或超时，但遇到终态
+`failed` 会立即退出。默认超时为 45 秒；`--timeout <seconds>` 必须与 `--wait` 一起使用，取值范围为 1–300 秒的正整数。CLI JSON
+输出 `{ready, status, pid, port}`，其中 `status` 为 `ready`、`pending`、`failed` 或
+`unreachable`。退出码：就绪为 0；未就绪、pending、failed、超时或无法连接为 1；参数无效为 64。
+
 ### `ocx doctor`
 
 运行只读的环境与连通性诊断：状态路径和文件系统类型、WSL 双重安装、代理环境/配置、ChatGPT 可达性、Codex 插件和项目配置警告，以及待处理的历史迁移。Codex app-home 定位部分也会检测狭义的 Windows Orca 运行时 home 不匹配，并在适用时解释服务迁移。此诊断展示的路径会对操作系统用户名进行脱敏。Doctor 会输出修复提示，但不会自动应用。
