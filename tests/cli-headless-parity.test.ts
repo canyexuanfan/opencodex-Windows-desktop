@@ -354,19 +354,21 @@ describe("headless GUI parity CLI", () => {
       defaultProvider: "openai",
       activeCodexAccountPinned: "work",
     };
-    const readPin = () => JSON.parse(readFileSync(configPath, "utf8")).activeCodexAccountPinned;
+    const readConfig = () => JSON.parse(readFileSync(configPath, "utf8"));
+    const readPin = () => readConfig().activeCodexAccountPinned;
     try {
       // The whole map, one entry, and a removal are all the operator restating the
       // order, so each releases the pin -- otherwise it keeps capping the tier
       // ceiling at "work" and the order just written has no visible effect.
-      for (const argv of [
-        ["set", "codexAccountPriorities", '{"work":1}'],
-        ["set", "codexAccountPriorities.work", "2"],
-        ["unset", "codexAccountPriorities"],
+      for (const { argv, expected } of [
+        { argv: ["set", "codexAccountPriorities", '{"work":1}'], expected: { work: 1 } },
+        { argv: ["set", "codexAccountPriorities.work", "2"], expected: { work: 2 } },
+        { argv: ["unset", "codexAccountPriorities"], expected: undefined },
       ]) {
         writeFileSync(configPath, JSON.stringify({ ...base, codexAccountPriorities: { work: 0 } }));
         expect(await handleConfigCommand([...argv, "--json"])).toBe(0);
         expect(readPin()).toBeUndefined();
+        expect(readConfig().codexAccountPriorities).toEqual(expected);
       }
 
       // An unrelated field is not a statement about ordering, so the pin survives.

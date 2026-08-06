@@ -376,6 +376,10 @@ describe("Codex auth context", () => {
     const cfg = config();
     cfg.activeCodexAccountId = "pool-b";
     cfg.codexAccountPriorities = { "pool-b": 2, "pool-a": 1 };
+    // A live pin is the stronger case than priority alone: `selectPriorityTier`
+    // treats it as a hard ceiling and `pickPriorityPreemption` returns null while
+    // it has headroom. An exact selector must bypass it all the same.
+    cfg.activeCodexAccountPinned = "pool-b";
     cfg.codexAccounts?.push({ id: "pool-b", email: "pool-b@example.test", isMain: false });
     saveCodexAccountCredential("pool-a", {
       accessToken: "pool_a_token",
@@ -409,6 +413,8 @@ describe("Codex auth context", () => {
       fixedAccount: true,
     });
     expect(cfg.activeCodexAccountId).toBe("pool-b");
+    // An exact selector must not release an operator pin either.
+    expect(cfg.activeCodexAccountPinned).toBe("pool-b");
   });
 
   test("exact main-account resolution reads auth.json without consulting the active Pool account", async () => {

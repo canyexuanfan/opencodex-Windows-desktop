@@ -1158,12 +1158,12 @@ export function pickAlternateCodexAccount(
   // tier, the tier walk must be free to descend instead of selecting that tier
   // and then handing back an empty list.
   if (strategy === "round-robin") {
-    const eligible = getEligiblePoolAccounts(config, excludeId, now, quotaScope);
+    const eligible = getEligiblePoolAccounts(config, excludeId, now, quotaScope, selectionOptions);
     return pickRoundRobinAccount(codexPoolKeyForScope(quotaScope), eligible, stickyLimitForConfig(config));
   }
   if (strategy === "fill-first") {
-    const eligible = getEligiblePoolAccounts(config, excludeId, now, quotaScope);
-    return pickNextFillFirstCodexAccount(config, excludeId, eligible, now);
+    const eligible = getEligiblePoolAccounts(config, excludeId, now, quotaScope, selectionOptions);
+    return pickNextFillFirstCodexAccount(config, excludeId, eligible, now, selectionOptions);
   }
   return pickLowestUsageCodexAccount(config, excludeId, now, quotaScope, selectionOptions);
 }
@@ -1269,8 +1269,9 @@ function pickPriorityPreemption(
   active: string,
   now: number,
   quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
-  const eligible = getEligiblePoolAccounts(config, undefined, now, quotaScope);
+  const eligible = getEligiblePoolAccounts(config, undefined, now, quotaScope, selectionOptions);
   if (eligible.length === 0 || eligible.includes(active)) return null;
   const pinned = pinnedCodexAccountId(config);
   // A live pin already lowered the tier ceiling; never preempt past an explicit
@@ -1441,7 +1442,7 @@ export function previewCodexAccountForRequest(
     ) return active;
     else return null;
   }
-  active = pickPriorityPreemption(config, active, now, quotaScope) ?? active;
+  active = pickPriorityPreemption(config, active, now, quotaScope, selectionOptions) ?? active;
 
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold > 0) {
@@ -1552,7 +1553,7 @@ export function resolveCodexAccountForThreadDetailed(
   }
   // Before applyQuotaAutoSwitch: its sync disk write would otherwise persist a
   // move inside the drained tier that preemption immediately overrides.
-  const preempted = pickPriorityPreemption(config, active, now, quotaScope);
+  const preempted = pickPriorityPreemption(config, active, now, quotaScope, selectionOptions);
   if (preempted) {
     // Runtime-only, like every other automatic pick: config.activeCodexAccountId
     // stays the operator's selection and getEffectiveActiveCodexAccountId is what

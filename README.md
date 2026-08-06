@@ -61,11 +61,13 @@ Open **http://localhost:10100** and configure everything in the web dashboard �
 (40+ built-ins, or any OpenAI-compatible endpoint), pick models, manage accounts. `ocx gui`
 re-opens the dashboard at any time.
 It can also manage a **ChatGPT account pool** for Codex auth. Add multiple ChatGPT / Codex accounts,
-refresh their 5h / weekly / 30d quota in the dashboard, and let new sessions auto-route to the
-lowest-usage healthy account. Existing Codex threads stay pinned to the account that started them,
-so long SSH, tmux, or mobile-connected sessions do not jump accounts mid-conversation. Give the
-accounts a selection order when one of them — usually your Codex Desktop login — should only be
-reached for once the others are drained.
+refresh their 5h / weekly / 30d quota in the dashboard. Under quota routing, new sessions can use
+the lowest-usage healthy account; round-robin and fill-first use their own policies. Existing Codex
+threads normally retain affinity to the account that started them, so long SSH, tmux, or
+mobile-connected sessions do not jump accounts mid-conversation — but quota re-evaluation, failover,
+account exclusion, affinity expiry, or 401/403 and 429 recovery can rebind them. Give the accounts a
+selection order when one of them — usually your Codex Desktop login — should only be reached for
+once the others are drained.
 
 ### For agents
 

@@ -85,14 +85,19 @@ test("both cards expose the selection-order control, and pin writes cannot overl
   // deliberate exception: it writes the same pin an order write clears, so overlapping
   // them lets the client settle on the inverse of the server's final pin. Cross-gated
   // in both directions, since either can be the newer statement.
-  const priorityMutation = hook.slice(
-    hook.indexOf("const setAccountPriority"),
-    hook.indexOf("const pauseExhaustedAccounts"),
-  );
+  const priorityStart = hook.indexOf("const setAccountPriority");
+  const priorityEnd = hook.indexOf("const pauseExhaustedAccounts");
+  expect(priorityStart).toBeGreaterThanOrEqual(0);
+  expect(priorityEnd).toBeGreaterThan(priorityStart);
+  const priorityMutation = hook.slice(priorityStart, priorityEnd);
   expect(priorityMutation).toMatch(/if \(priorityMutationRef\.current \|\| switchingRef\.current\) return/);
   expect(priorityMutation).not.toContain("pauseMutationRef");
 
-  const switchMutation = hook.slice(hook.indexOf("const switchAccount"), hook.indexOf("const saveAlias"));
+  const switchStart = hook.indexOf("const switchAccount");
+  const switchEnd = hook.indexOf("const saveAlias");
+  expect(switchStart).toBeGreaterThanOrEqual(0);
+  expect(switchEnd).toBeGreaterThan(switchStart);
+  const switchMutation = hook.slice(switchStart, switchEnd);
   expect(switchMutation).toMatch(/if \(switchingRef\.current \|\| priorityMutationRef\.current\) return/);
 
   // A refused mutation returns "busy", which both call sites drop without a toast, so

@@ -144,9 +144,10 @@ returns:
 
 ### `ocx account current <provider> [--json]`
 
-Shows the active account or key. A Codex pool with no manual pin reports automatic lowest-usage
-selection; another family with no active credential reports that state and still exits 0. `--json`
-returns:
+Shows the active account or key. A Codex pool with no manual pin reports the priority-aware
+automatic selection: the highest-priority eligible tier is chosen, and the lowest-usage account
+within that tier is selected under quota routing; another family with no active credential reports
+that state and still exits 0. `--json` returns:
 
 ```text
 { provider, type, activeId: string | null, autoSwitchThreshold?: number, account: AccountRow | null }

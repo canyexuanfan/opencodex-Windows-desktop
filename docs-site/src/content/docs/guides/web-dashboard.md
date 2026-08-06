@@ -105,6 +105,11 @@ catalog entry.
 
 The **Codex Auth** page manages the native ChatGPT/Codex route:
 
+Pool mode selects across the main and added Codex accounts; Direct uses only the caller/main login.
+In-flight requests keep their captured credentials, and a 401/403 reauthentication or 429 cooldown
+may clear affinity and rotate to another eligible Pool account. This is separate from `openai-apikey`
+and other providers.
+
 - Manually choosing an account applies immediately: an already-bound thread moves to it on its next
   request, and only requests already in flight keep the account they captured. A manual choice is also
   pinned: the card shows a **PINNED** badge, and a higher selection order cannot preempt that account

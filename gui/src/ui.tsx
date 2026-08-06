@@ -127,6 +127,7 @@ export function Select({ value, options, onChange, disabled, id, label, describe
   }, [activeIndex, open, optionId]);
 
   const selectIndex = (index: number) => {
+    if (disabled) return;
     const option = options[index];
     if (!option) return;
     onChange(option.value);
@@ -179,7 +180,12 @@ export function Select({ value, options, onChange, disabled, id, label, describe
 
   const activeDescendant = open && options[activeIndex] ? optionId(activeIndex) : undefined;
 
-  const dropdown = open ? (
+  // A shared controller can flip `disabled` while the menu is already open (for
+  // example `priorityUpdatingId` starts an order write). The trigger alone being
+  // disabled must not leave the rendered option buttons able to call `onChange`
+  // and silently drop the second update, so the dropdown is not rendered (and the
+  // option buttons are disabled) whenever `disabled` is true.
+  const dropdown = open && !disabled ? (
     <div
       ref={menuRef}
       id={listboxId}
@@ -195,6 +201,7 @@ export function Select({ value, options, onChange, disabled, id, label, describe
           type="button"
           role="option"
           tabIndex={-1}
+          disabled={disabled}
           aria-selected={o.value === value}
           className={`select-option${o.value === value ? " active" : ""}${index === activeIndex ? " select-option-active" : ""}`}
           onMouseEnter={() => setHighlightIndex(index)}

@@ -19,15 +19,16 @@ import {
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
   CODEX_TRANSIENT_SOFT_AVOID_MS,
+  previewCodexAccountForRequest,
   getEffectiveActiveCodexAccountId,
   isCodexAccountInCooldown,
   pickAlternateCodexAccount,
-  previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
   resetCodexRoutingForManualSelection,
   resolveCodexAccountForThread,
 } from "../src/codex/routing";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/account-id";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
 import { getConfigPath } from "../src/config";
 import type { OcxConfig } from "../src/types";
@@ -994,4 +995,29 @@ describe("selection order across rotation strategies", () => {
       expect(flatPicks).toEqual([...expected]);
     },
   );
+
+  test("selection options reach the tier and alternate paths, so main draining is honored everywhere", () => {
+    // Regression for the exact-selector rebase integration: `CodexAccountUsabilityOptions`
+    // (notably `nativeMainSelectionOnly`) must reach `getEligiblePoolAccounts` through
+    // every tier-aware path. During main-profile draining the caller routes on cached
+    // main state only, and `__main__` stays a candidate without a live token read. The
+    // preemption and alternate paths must agree with the quota path about that.
+    const config = makeThreeAccountConfig({
+      activeCodexAccountId: "a",
+      codexAccountPriorities: { __main__: 2, a: 1, b: 1, c: 1 },
+    } as Partial<OcxConfig>);
+    primeAllQuota();
+    // No auth.json exists in this harness, so a live-token read for __main__ would fail.
+    const selectionOptions = { nativeMainSelectionOnly: true as const };
+
+    // Preemption sees __main__ as the highest eligible tier and moves the unbound
+    // request up to it — only possible because selectionOptions reached the tier walk.
+    expect(previewCodexAccountForRequest(null, config, Date.now(), "shared", selectionOptions))
+      .toBe(MAIN_CODEX_ACCOUNT_ID);
+
+    // The alternate path excludes the active account and still honors the option: __main__
+    // is the top remaining candidate rather than being dropped for the live-token rule.
+    expect(pickAlternateCodexAccount(config, "a", Date.now(), "shared", selectionOptions))
+      .toBe(MAIN_CODEX_ACCOUNT_ID);
+  });
 });

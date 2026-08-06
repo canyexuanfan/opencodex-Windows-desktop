@@ -121,7 +121,7 @@ Codex pool selection applies to the next request after clearing existing affinit
 
 ### `ocx account current <provider> [--json]`
 
-アクティブなアカウントまたはキーを表示します。手動ピンのない Codex プールは、自動的に最低使用量の選択を報告します。アクティブな認証情報を持たない別のファミリーは、その状態を報告し、依然として 0 を終了します。`--json` は次を返します。
+アクティブなアカウントまたはキーを表示します。手動ピンのない Codex プールは、優先度を考慮した自動選択を報告します。最も優先度の高い適格ティアが選ばれ、そのティア内でクォータルーティングのもと最低使用量のアカウントが選ばれます。アクティブな認証情報を持たない別のファミリーは、その状態を報告し、依然として 0 を終了します。`--json` は次を返します。
 
 ```text
 { provider, type, activeId: string | null, autoSwitchThreshold?: number, account: AccountRow | null }

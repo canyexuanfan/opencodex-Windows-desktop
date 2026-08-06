@@ -121,7 +121,7 @@ Codex pool selection applies to the next request after clearing existing affinit
 
 ### `ocx account current <provider> [--json]`
 
-활성 계정이나 키를 보여줍니다. 수동 고정이 없는 Codex 풀은 자동으로 가장 적게 사용한 항목을 선택한다고 보고합니다. 활성 자격 증명이 없는 다른 계열은 그 상태를 보고하고도 종료 코드 0으로 끝납니다. `--json`은 다음을 반환합니다:
+활성 계정이나 키를 보여줍니다. 수동 고정이 없는 Codex 풀은 우선순위를 고려한 자동 선택을 보고합니다. 가장 우선순위가 높은 적격 tier를 고르고, 그 tier 안에서 할당량 라우팅 기준으로 가장 적게 사용한 항목을 선택합니다. 활성 자격 증명이 없는 다른 계열은 그 상태를 보고하고도 종료 코드 0으로 끝납니다. `--json`은 다음을 반환합니다:
 
 ```text
 { provider, type, activeId: string | null, autoSwitchThreshold?: number, account: AccountRow | null }

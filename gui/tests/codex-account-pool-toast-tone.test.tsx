@@ -137,7 +137,7 @@ async function chooseOrder(selectId: string, value: string): Promise<void> {
   expect(option).toBeTruthy();
   await act(async () => {
     option!.click();
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 0));
   });
 }
 
@@ -198,8 +198,8 @@ test("picking the order an account already has writes nothing", async () => {
   await chooseOrder("codex-account-priority-pool-1", "0");
 
   expect(saved).toEqual([]);
-  expect(host.querySelector(".notice-ok")).toBeNull();
-  expect(host.querySelector(".notice-err")).toBeNull();
+  expect(host.querySelector(".codex-auth-page-head__feedback.is-ok")).toBeNull();
+  expect(host.querySelector(".codex-auth-page-head__feedback.is-err")).toBeNull();
 });
 
 test("successful redeem clears a stale error toast tone", async () => {
