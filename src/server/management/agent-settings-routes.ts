@@ -141,7 +141,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }).kind;
       if (["not_installed", "no_owned_state", "foreign", "unsafe", "broken"].includes(beforeKind)) return;
       const { filterCatalogVisibleModels, desktopVisibleNativeSlugs } = await import("../../codex/catalog");
-      const allModels = await fetchAllModels(admitted);
+      const allModels = await (deps.fetchAllModels ?? fetchAllModels)(admitted);
       const current = loadConfig();
       // This is the real guard: the catalog await admits a concurrent explicit OFF.
       if (!claudeDesktopIntegrationEnabled(current)) return;
@@ -151,7 +151,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }).kind;
       if (["not_installed", "no_owned_state", "foreign", "unsafe", "broken"].includes(afterKind)) return;
       const routed = filterCatalogVisibleModels(allModels, current).map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow }));
-      const result = writeDesktop3pConfig(
+      const result = (deps.writeDesktop3pConfig ?? writeDesktop3pConfig)(
         current.port ?? 10100,
         [...desktopVisibleNativeSlugs(current)],
         routed,

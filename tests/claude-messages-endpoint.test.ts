@@ -35,6 +35,7 @@ import {
 
 let testDir = "";
 let previousHome: string | undefined;
+let previousDesktopConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 const originalFetch = globalThis.fetch;
 
@@ -43,12 +44,16 @@ beforeEach(() => {
   isolatedCodexHome = installIsolatedCodexHome("ocx-claude-endpoint-");
   testDir = mkdtempSync(join(tmpdir(), "ocx-claude-endpoint-"));
   process.env.OPENCODEX_HOME = testDir;
+  previousDesktopConfigDir = process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+  process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = join(testDir, "claude-desktop");
   globalThis.fetch = originalFetch;
 });
 
 afterEach(() => {
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
+  if (previousDesktopConfigDir === undefined) delete process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR;
+  else process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR = previousDesktopConfigDir;
   isolatedCodexHome?.restore();
   isolatedCodexHome = null;
   globalThis.fetch = originalFetch;
@@ -181,6 +186,37 @@ test("non-streaming /v1/messages returns an Anthropic message JSON", async () =>
     expect(json.content[0].type).toBe("text");
     expect(json.content[0].text).toContain("Hello");
     expect(typeof json.usage.input_tokens).toBe("number");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("Desktop OFF leaves Claude messages and health live", async () => {
+  const upstream = mockChatUpstream();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const disabled = await fetch(new URL("/api/native-integrations/claude-desktop", server.url), {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    expect((await disabled.json()) as { desiredEnabled: boolean }).toMatchObject({ desiredEnabled: false });
+
+    const message = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        max_tokens: 16,
+        messages: [{ role: "user", content: "still live" }],
+      }),
+    });
+    expect(message.status).toBe(200);
+    expect((await message.json()) as { type: string }).toMatchObject({ type: "message" });
+    expect((await fetch(new URL("/healthz", server.url))).status).toBe(200);
   } finally {
     await server.stop(true);
     upstream.stop(true);

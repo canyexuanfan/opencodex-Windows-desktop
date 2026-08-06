@@ -584,7 +584,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
     const fingerprint = current.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
 
     if (!body.enabled) {
-      const removed = removeDesktop3pStandardPivot({ appliedFingerprint: fingerprint });
+      const removed = (ctx.deps.removeDesktop3pStandardPivot ?? removeDesktop3pStandardPivot)({ appliedFingerprint: fingerprint });
       if (removed.kind === "cleanup_incomplete") {
         return refusal(500, "claude-desktop", "cleanup_incomplete",
           "Claude Desktop now points at standard mode, but credential cleanup is incomplete.",
@@ -606,7 +606,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
         provider: model.provider, id: model.id, contextWindow: model.contextWindow,
       }));
       const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
-      const result = writeDesktop3pConfig(
+      const result = (ctx.deps.writeDesktop3pConfig ?? writeDesktop3pConfig)(
         runtime?.port ?? current.port,
         [...visibleNativeSlugs(current)],
         routed,

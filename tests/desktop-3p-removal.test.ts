@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,4 +48,48 @@ test("a selected path traversal id is refused without following it", () => {
   const result = inspectDesktop3pConfigLibrary({ env: envFor(library) });
   expect(result).toMatchObject({ kind: "unsafe", reason: "unsafe_applied_id" });
   expect(removeDesktop3pStandardPivot({ env: envFor(library) }).kind).toBe("unsafe");
+});
+
+test("a delete interruption leaves the standard pivot selected and reports only residual paths", () => {
+  const library = mkdtempSync(join(tmpdir(), "ocx-desktop-remove-"));
+  const id = "owned-profile";
+  writeFileSync(join(library, "_meta.json"), JSON.stringify({ appliedId: id, entries: [{ id, name: "opencodex" }] }));
+  writeFileSync(join(library, `${id}.json`), JSON.stringify({
+    inferenceProvider: "gateway", inferenceCredentialKind: "static",
+    inferenceGatewayBaseUrl: "http://127.0.0.1:10100", inferenceGatewayApiKey: "not-printed",
+  }));
+  writeFileSync(join(library, `${id}.json.bak`), "{}");
+
+  const result = removeDesktop3pStandardPivot({
+    env: envFor(library),
+    unlink: path => {
+      if (path.endsWith(".bak")) throw new Error("injected delete failure");
+      unlinkSync(path);
+    },
+  });
+  expect(result).toMatchObject({ ok: false, changed: true, kind: "cleanup_incomplete" });
+  expect(result.residualPaths).toEqual([join(library, `${id}.json.bak`)]);
+  const metadata = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as { appliedId: string };
+  expect(JSON.parse(readFileSync(join(library, `${metadata.appliedId}.json`), "utf8"))).toEqual({});
+});
+
+test("interrupted cleanup prefers the selected opencodex row and reports another owned row as residue", () => {
+  const library = mkdtempSync(join(tmpdir(), "ocx-desktop-remove-"));
+  const selected = "selected-owned";
+  const residual = "residual-owned";
+  writeFileSync(join(library, "_meta.json"), JSON.stringify({
+    appliedId: selected,
+    entries: [{ id: selected, name: "opencodex" }, { id: residual, name: "opencodex" }],
+  }));
+  for (const id of [selected, residual]) {
+    writeFileSync(join(library, `${id}.json`), JSON.stringify({
+      inferenceProvider: "gateway", inferenceCredentialKind: "static",
+      inferenceGatewayBaseUrl: "http://127.0.0.1:10100", inferenceGatewayApiKey: "not-printed",
+    }));
+  }
+
+  const result = removeDesktop3pStandardPivot({ env: envFor(library) });
+  expect(result).toMatchObject({ ok: false, changed: true, kind: "cleanup_incomplete" });
+  expect(existsSync(join(library, `${selected}.json`))).toBe(false);
+  expect(result.residualPaths).toContain(join(library, `${residual}.json`));
 });

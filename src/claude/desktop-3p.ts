@@ -457,7 +457,10 @@ export function inspectDesktop3pConfigLibrary(
  * profile and backup are absent.
  */
 export function removeDesktop3pStandardPivot(
-  options: Desktop3pConfigLibraryOptions & { appliedFingerprint?: string | null } = {},
+  options: Desktop3pConfigLibraryOptions & {
+    appliedFingerprint?: string | null;
+    unlink?: (path: string) => void;
+  } = {},
 ): Desktop3pRemovalResult {
   const inspected = inspectDesktop3pConfigLibrary(options);
   if (inspected.kind === "not_installed" || inspected.kind === "no_owned_state") {
@@ -505,7 +508,7 @@ export function removeDesktop3pStandardPivot(
     for (const id of targetIds) {
       for (const candidate of [profilePath(inspected.libraryPath, id), `${profilePath(inspected.libraryPath, id)}.bak`]) {
         try {
-          if (existsSync(candidate)) unlinkSync(candidate);
+          if (existsSync(candidate)) (options.unlink ?? unlinkSync)(candidate);
         } catch {
           // Only the path is allowed to leave this credential-bearing cleanup boundary.
         }
