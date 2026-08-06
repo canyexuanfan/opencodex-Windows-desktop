@@ -307,6 +307,48 @@ describe("routing profile management editor API", () => {
     expect(saves).toBe(1);
   });
 
+  test("PUT update rejects a modelMap key collision instead of silently dropping a mapping", async () => {
+    const config = baseConfig();
+    config.claudeCode = {
+      enabled: true,
+      modelMap: {
+        "ocx/fast": "a/m1",
+        "ocx/faster": "a/m2",
+      },
+    };
+    let saves = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        expectedRevision: (await (async () => {
+          const getReq = new ManagementRequest("http://localhost/api/routing-profiles", { method: "GET" });
+          const getRes = await handleManagementAPI(getReq, new URL(getReq.url), config, deps());
+          const getBody = await getRes!.json() as { profiles?: Array<{ revision: string }> };
+          return getBody.profiles![0]!.revision;
+        })()),
+        profile: {
+          alias: "ocx/faster",
+          candidates: [{ provider: "a", model: "m1" }],
+        },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }),
+    );
+
+    expect(response?.status).toBe(409);
+    expect(await response!.json()).toMatchObject({ error: { code: "alias_reference_conflict" } });
+    expect(config.routingProfiles?.fast).toMatchObject({ alias: "ocx/fast" });
+    expect(config.claudeCode?.modelMap).toEqual({ "ocx/fast": "a/m1", "ocx/faster": "a/m2" });
+    expect(saves).toBe(0);
+  });
+
   test("DELETE removes a profile, persists, and refreshes the catalog", async () => {
     const config = baseConfig();
     let saves = 0;

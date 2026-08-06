@@ -162,6 +162,33 @@ function storedProfile(
  * still names the old alias must follow it, or requests fall through to
  * ordinary routing and send the obsolete alias upstream.
  */
+/**
+ * Detect a modelMap key collision that the alias migration would silently
+ * resolve by dropping one mapping: the map already contains the new public
+ * model as a key with a different target than the old-alias key's target.
+ */
+function modelMapMigrationCollision(
+  config: OcxConfig,
+  oldPublicModel: string,
+  newPublicModel: string,
+): string | null {
+  const map = config.claudeCode?.modelMap;
+  if (!map) return null;
+  if (oldPublicModel === newPublicModel) return null;
+  const oldTarget = map[oldPublicModel];
+  if (oldTarget === undefined) return null;
+  const newTarget = map[newPublicModel];
+  if (newTarget === undefined) return null;
+  if (oldTarget === newTarget) return null;
+  return `modelMap already maps \"${newPublicModel}\" to \"${newTarget}\"; renaming \"${oldPublicModel}\" (→ \"${newTarget}\") would drop one mapping. Resolve the conflict and retry.`;
+}
+
+/**
+ * Rewrite config references from one public model id to another (alias change
+ * on update). Mirrors the /api/combos migration: model-valued config that
+ * still names the old alias must follow it, or requests fall through to
+ * ordinary routing and send the obsolete alias upstream.
+ */
 function migrateProfileModelReferences(
   config: OcxConfig,
   oldPublicModel: string,
@@ -285,6 +312,17 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     }
 
     const previousProfile = mode === "update" ? getRoutingProfile(config, id) : undefined;
+    if (mode === "update" && previousProfile) {
+      const oldPublicModel = policyPublicModelId(id, previousProfile);
+      const newProfile = normalizeRoutingProfile(id, body.profile as OcxRoutingProfileConfig);
+      const newPublicModel = policyPublicModelId(id, newProfile);
+      const collision = modelMapMigrationCollision(config, oldPublicModel, newPublicModel);
+      if (collision) {
+        return jsonResponse({
+          error: { code: "alias_reference_conflict", message: collision },
+        }, 409, req, config);
+      }
+    }
     const nextProfiles = { ...(config.routingProfiles ?? {}) };
     nextProfiles[id] = storedProfile(id, body.profile as OcxRoutingProfileConfig);
     config.routingProfiles = nextProfiles;
