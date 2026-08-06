@@ -93,8 +93,11 @@ implementable as written. What changed under them:
   semantics (`040_codex_toggle.md:222-235`) and fresh checks at irreversible
   boundaries (`:600-618`): `ocx ensure` (`src/cli/index.ts:379-424`), `ocx sync`
   (`:856-871`), restore/eject dispatch (`:774-819`), `src/cli/models.ts:102-107`,
-  `src/cli/provider.ts:232-237`, and
-  `src/server/management/config-routes.ts:261-268`. Source doc:
+  `src/cli/provider.ts:232-237`,
+  `src/server/management/config-routes.ts:261-268`, and the toggle enable path
+  itself (`src/server/management/native-integration-routes.ts:262`), which today
+  interprets only `applied.ok` and needs the same discriminated-skip handling.
+  Source doc:
   `260803_codex_desktop_toggle/040_codex_toggle.md` with the line-map above; drop its
   four-client-coordinator premise — extend the landed two-key schema instead.
 - **020 (WP-C)** Claude Desktop toggle per 050's amended contract: add
