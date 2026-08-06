@@ -26,7 +26,7 @@ import { installCrashGuards } from "../lib/crash-guard";
 import { hasHelpFlag, printSubcommandUsage, printUsage, printVersion } from "./help";
 import { findAvailablePort, isAddrInUse, PortUnavailableError, shouldPersistSelectedPort, waitForPortAvailable } from "../server/ports";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
-import { createReadinessGate, runStartupReadinessSync } from "../server/readiness";
+import { createReadinessGate } from "../server/readiness";
 import { parseReadyArgs, runReady, type ReadyArgs } from "./ready";
 import { stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";

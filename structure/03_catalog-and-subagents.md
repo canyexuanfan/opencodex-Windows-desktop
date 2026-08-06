@@ -29,12 +29,12 @@ bundled catalog never contains those rows.
 
 Codex App model picker visibility comes from this shared catalog, not from patching the App.
 
-  Provider live-model lists are cached with a configured TTL (`src/codex/model-cache.ts`). Adding,
-  deleting, or editing a provider's shape clears that per-provider cache; a disabled-only change
-  deliberately does not, because a disabled provider is already excluded from the catalog gather
-  instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
+Provider live-model lists are cached with a configured TTL (`src/codex/model-cache.ts`). Adding,
+deleting, or editing a provider's shape clears that per-provider cache; a disabled-only change
+deliberately does not, because a disabled provider is already excluded from the catalog gather
+instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
 
-  ## Startup readiness
+## Startup readiness
 
 Each `startServer` invocation owns a private, one-shot readiness gate created before the listener
 binds. `handleStart` supplies its gate and transitions it after the shared catalog sync settles.
