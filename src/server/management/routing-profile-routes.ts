@@ -1,12 +1,20 @@
 /**
  * Routing-profile management API (RI-04).
  *
- * - `GET  /api/routing-profiles` - normalized profiles with revisions
- * - `POST /api/routing-profiles/dry-run` - deterministic dry-run evaluation
+ * - `GET    /api/routing-profiles` - normalized profiles with revisions
+ * - `PUT    /api/routing-profiles` - create or replace one validated profile
+ * - `DELETE /api/routing-profiles?id=<id>` - remove one profile
+ * - `POST   /api/routing-profiles/dry-run` - deterministic dry-run evaluation
  *   (never dispatches an upstream request)
  */
 
-import { listRoutingProfileIds, getRoutingProfile, policyPublicModelId } from "../../routing/profile";
+import {
+  getRoutingProfile,
+  listRoutingProfileIds,
+  normalizeRoutingProfile,
+  policyPublicModelId,
+  routingProfileIssues,
+} from "../../routing/profile";
 import { evaluatePolicyProfile, type PolicyCandidateEvidence, type PolicyRequestEvidence } from "../../routing/evaluator";
 import { candidateCapabilityEvidence } from "../../routing/capability";
 import { policyCandidateHealthEvidence } from "../../routing/health";
@@ -16,17 +24,20 @@ import { providerCodexAccountMode } from "../../providers/registry";
 import { getEffectiveActiveCodexAccountId } from "../../codex/routing";
 import { getAccountSet } from "../../oauth/store";
 import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { saveConfigPreservingClaudeCode } from "../../config";
+import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { isPlainRecord } from "./shared";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import { jsonResponse } from "../auth-cors";
 import type { ManagementContext } from "./context";
-import type { OcxConfig } from "../../types";
+import type { OcxConfig, OcxRoutingProfileConfig } from "../../types";
 
 function profileDto(config: Parameters<typeof getRoutingProfile>[0], id: string): Record<string, unknown> | null {
   const profile = getRoutingProfile(config, id);
   if (!profile) return null;
   return {
     id,
+    alias: profile.alias,
     model: policyPublicModelId(id, profile),
     revision: profile.revision,
     candidates: profile.candidates,
@@ -131,14 +142,92 @@ function assembleCandidateEvidence(
   }));
 }
 
+function storedProfile(
+  id: string,
+  raw: OcxRoutingProfileConfig,
+): OcxRoutingProfileConfig {
+  const normalized = normalizeRoutingProfile(id, raw);
+  const {
+    id: _id,
+    revision: _revision,
+    alias,
+    ...profile
+  } = normalized;
+  return alias === null ? profile : { ...profile, alias };
+}
+
 export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config } = ctx;
+  const { req, url, config, deps, convergeCodexCatalog } = ctx;
 
   if (url.pathname === "/api/routing-profiles" && req.method === "GET") {
     const profiles = listRoutingProfileIds(config).map(id => profileDto(config, id)).filter(
       (profile): profile is Record<string, unknown> => profile !== null,
     );
     return jsonResponse({ profiles }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/routing-profiles" && req.method === "PUT") {
+    let rawBody: unknown;
+    try {
+      rawBody = await readManagementJsonBody(req);
+    } catch (error) {
+      rethrowManagementBodyTooLarge(error);
+      return jsonResponse({ error: "invalid JSON body" }, 400, req, config);
+    }
+    if (!isPlainRecord(rawBody)) {
+      return jsonResponse({ error: "request body must be an object" }, 400, req, config);
+    }
+    const body = rawBody as Record<string, unknown>;
+    const id = typeof body.id === "string" ? body.id.trim() : "";
+    if (!id) {
+      return jsonResponse({ error: { code: "missing_profile_id", message: "id is required" } }, 400, req, config);
+    }
+    const issues = routingProfileIssues(id, body.profile, config, { excludeProfileId: id });
+    if (issues.length > 0) {
+      return jsonResponse({
+        error: {
+          code: "invalid_profile",
+          message: issues[0]!.message,
+          issues,
+        },
+      }, 400, req, config);
+    }
+
+    const nextProfiles = { ...(config.routingProfiles ?? {}) };
+    nextProfiles[id] = storedProfile(id, body.profile as OcxRoutingProfileConfig);
+    config.routingProfiles = nextProfiles;
+    const saveConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
+    saveConfig(config);
+    reconcileLiveStateStores();
+    const catalogRefresh = await convergeCodexCatalog();
+    const profile = profileDto(config, id)!;
+    return jsonResponse({
+      success: true,
+      id,
+      model: profile.model,
+      profile,
+      catalogRefresh,
+    }, 200, req, config);
+  }
+
+  if (url.pathname === "/api/routing-profiles" && req.method === "DELETE") {
+    const id = url.searchParams.get("id")?.trim();
+    if (!id) {
+      return jsonResponse({ error: "id query param is required" }, 400, req, config);
+    }
+    if (!Object.hasOwn(config.routingProfiles ?? {}, id)) {
+      return jsonResponse({ error: "unknown routing profile" }, 404, req, config);
+    }
+
+    const nextProfiles = { ...(config.routingProfiles ?? {}) };
+    delete nextProfiles[id];
+    if (Object.keys(nextProfiles).length > 0) config.routingProfiles = nextProfiles;
+    else delete config.routingProfiles;
+    const saveConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
+    saveConfig(config);
+    reconcileLiveStateStores();
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ success: true, id, catalogRefresh }, 200, req, config);
   }
 
   if (url.pathname === "/api/routing-profiles/dry-run" && req.method === "POST") {
