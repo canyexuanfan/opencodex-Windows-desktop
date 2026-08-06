@@ -402,13 +402,18 @@ describe("hygiene section round-trip", () => {
       "⚠️ **Deterministic hygiene checks failed.**",
       "- `missing_regression_test` — Behavior changed under `src/` without a test change.",
     ]);
+    // The gate rebuild must consume the hygiene content the hygiene update
+    // wrote, not a hard-coded copy — otherwise the test passes even if the
+    // rebuild discards the prior update.
+    const extractedHygiene = extractHygieneSection(afterHygieneFirst);
+    assert.ok(extractedHygiene, "hygiene block must survive the hygiene update");
     const afterGateSecond = buildGateCommentBody(
       { version: 1, active: false },
       {
         status: "READY",
         statusReason: "all PR quality gates passed.",
         checklistRequired: false,
-        hygiene: ["⚠️ **Deterministic hygiene checks failed.**", "- `missing_regression_test` — Behavior changed under `src/` without a test change."],
+        hygiene: extractedHygiene.split("\n"),
       },
     ).join("\n");
     assert.ok(afterGateSecond.includes(GATE_MARKER));

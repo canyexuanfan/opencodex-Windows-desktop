@@ -2702,14 +2702,14 @@ describe("GitHub Actions hardening", () => {
         eventAction: "created",
         comments: [
           { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+          readinessComment({
+            version: 2,
+            autoDraftedByBot: false,
+            maintainersPinged: true,
+            completedAtHeadSha: null,
+          }),
         ],
         maintainersFile: MAINTAINERS_FIXTURE,
-        comments: [readinessComment({
-          version: 2,
-          autoDraftedByBot: false,
-          maintainersPinged: true,
-          completedAtHeadSha: null,
-        })],
       });
 
       // The comment-triggered rerun delivers no head SHA, so the completed
