@@ -42,3 +42,11 @@ review where needed, extend the stack with new fixes.
 - Audit-window closures NOT ours (verified): #1064 closed by its author
   hanbinnoh (superseded by #1066), #1074 and #1018 maintainer merges on
   2026-08-05, #1080 closed by issue-quality automation.
+
+## Stack extension PRs (wp3/wp4)
+
+| PR | Branch | Fixes | Evidence |
+|----|--------|-------|----------|
+| #1087 | codex/1075-shadow-call-namespaced | #1075 (+dup #1078) | gui suite 610 pass; red ablation 3 pass/1 fail; live QA screenshot in-branch |
+| #1088 | codex/1065-bounded-body-first-byte | #1065 | bounded-body 21 pass; red ablation recorded; smoke 14 pass |
+| #1089 | codex/shadow-call-drop-54mini | user request: drop 5.4-mini default | intercept suite 15 pass incl. override regression; docs en+4 locales; badge QA capture |
