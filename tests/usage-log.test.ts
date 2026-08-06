@@ -126,16 +126,16 @@ describe("usage log", () => {
   test("usage byte-prefix truncation and entry-count truncation report independent metadata", async () => {
     writeFileSync(
       usageLogPath(),
-      `${Array.from({ length: 200_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
+      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
     );
     const snapshot = await readUsageSnapshotForManagement();
-    expect(snapshot.entries).toHaveLength(200_000);
+    expect(snapshot.entries).toHaveLength(500_000);
     expect(snapshot.entries[0]?.requestId).toBe("1");
-    expect(snapshot.entries.at(-1)?.requestId).toBe("200000");
+    expect(snapshot.entries.at(-1)?.requestId).toBe("500000");
     expect(snapshot.truncatedPrefixBytes).toBe(0);
     expect(snapshot.entriesTruncated).toBe(true);
     expect(snapshot.entriesDropped).toBe(1);
-  }, STORE_BUDGET_MS); // parsing 200,001 rows IS the entry-cap assertion; windows-latest measured ~5.05s against Bun's 5s default.
+  }, STORE_BUDGET_MS); // parsing 500,001 rows IS the entry-cap assertion; the 200k-row variant measured ~5.05s on windows-latest against Bun's 5s default.
 
   test("stale usage-read flight is replaced and old completion cannot clear new owner", async () => {
     writeFileSync(

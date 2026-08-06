@@ -421,7 +421,7 @@ export type UsageLogRevision = {
 let usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
 const MANAGEMENT_USAGE_MAX_READ_BYTES = 64 * 1024 * 1024;
 const MANAGEMENT_USAGE_READ_CHUNK_BYTES = 1024 * 1024;
-const MANAGEMENT_USAGE_MAX_ENTRIES = 200_000;
+const MANAGEMENT_USAGE_MAX_ENTRIES = 500_000;
 const MANAGEMENT_USAGE_FLIGHT_STALE_MS = 30_000;
 export interface ManagementUsageSnapshot {
   entries: PersistedUsageEntry[];
