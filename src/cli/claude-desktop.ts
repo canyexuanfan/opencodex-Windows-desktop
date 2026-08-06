@@ -72,6 +72,13 @@ export async function applyProfile(
     }
   }
   const allModels = await fetchAllModels(config);
+  // The toggle can persist OFF while fetchAllModels was awaiting (same race the
+  // management writers fence). Re-read persisted intent immediately before the
+  // writer; a lost race is a discriminated skip, not a write.
+  const { claudeDesktopIntegrationEnabledNow } = await import("../codex/desired-state");
+  if (!claudeDesktopIntegrationEnabledNow()) {
+    return { ok: false, path: "", reason: "desired_state_changed" };
+  }
   const routed = filterCatalogVisibleModels(allModels, config).map(model => ({
     provider: model.provider,
     id: model.id,
