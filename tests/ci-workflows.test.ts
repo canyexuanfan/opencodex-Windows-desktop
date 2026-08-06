@@ -29,6 +29,7 @@ const lastEnforcerCommentBody = lastGateCommentBody;
 
 const root = new URL("../", import.meta.url);
 const doctorGuiIfChangedScript = fileURLToPath(new URL("../scripts/doctor-gui-if-changed.ts", import.meta.url));
+const lintGuiIfChangedScript = fileURLToPath(new URL("../scripts/lint-gui-if-changed.ts", import.meta.url));
 
 async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
@@ -675,7 +676,10 @@ describe("GitHub Actions hardening", () => {
   };
   type WorkflowJob = Record<string, unknown> & { "runs-on"?: unknown; steps?: WorkflowStep[] };
   type WorkflowShape = Record<string, unknown> & {
-    on?: { pull_request_target?: { types?: string[] } };
+    on?: {
+      pull_request_target?: { types?: string[] };
+      issue_comment?: { types?: string[] };
+    };
     permissions?: Record<string, string> | string;
     concurrency?: Record<string, unknown> & { group?: string };
     jobs?: Record<string, WorkflowJob>;
@@ -834,7 +838,16 @@ describe("GitHub Actions hardening", () => {
     // head branch (like `pull_request`), which would run head-controlled
     // workflow YAML under a write token against base-pinned scripts — a
     // mismatch that crashes the gate and breaks the trusted-base model.
-    expect(Object.keys(workflow.on ?? {})).toEqual(["pull_request_target"]);
+    //
+    // `issue_comment` is the one extra trigger: a maintainer's GUI-waiver
+    // comment ("not touching gui") must re-run the gate, and issue comments
+    // are not a `pull_request_target` activity type. It never touches PR head
+    // code — the checkout stays on the trusted base/default branch — so it
+    // does not open the escalation path review events would.
+    expect(Object.keys(workflow.on ?? {}).sort()).toEqual([
+      "issue_comment",
+      "pull_request_target",
+    ]);
 
     // And the trigger is exactly a `types:` list — nothing else.
     //
@@ -846,6 +859,7 @@ describe("GitHub Actions hardening", () => {
     // additive, both look like ordinary scoping in a diff, and neither failed a
     // single assertion.
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
+    expect(Object.keys(workflow.on?.issue_comment ?? {})).toEqual(["types"]);
 
     // Exactly the scopes this gate needs. `pull-requests: write` covers title
     // and comment updates. `contents: write` is required for the draft GraphQL
@@ -860,8 +874,11 @@ describe("GitHub Actions hardening", () => {
     // One run per PR, so two rapid events cannot race on the title/draft state,
     // and no `cancel-in-progress` — cancelling the in-flight run mid-mutation is
     // how the bot ends up having prefixed the title but not recorded that it did.
+    // `issue_comment` events carry the PR's number under `issue`, not
+    // `pull_request`, so the group resolves from whichever payload exists.
     expect(workflow.concurrency).toEqual({
-      group: "enforce-pr-target-${{ github.event.pull_request.number }}",
+      group:
+        "enforce-pr-target-${{ github.event.pull_request.number || github.event.issue.number }}",
     });
 
     // One job, and it is this one. An audit round added a `sidecar:` job that
@@ -895,7 +912,7 @@ describe("GitHub Actions hardening", () => {
       // runs this workflow from the base revision, and the scripts must match
       // it — a merged gate would otherwise run against pre-promotion `main`
       // scripts. The immutable SHA pins the checkout to the event's base commit.
-      ref: "${{ github.event.pull_request.base.sha }}",
+      ref: "${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.
@@ -946,6 +963,16 @@ describe("GitHub Actions hardening", () => {
       "reopened",
       "synchronize",
     ]);
+
+    // A maintainer's GUI-waiver comment must re-run the gate. Issue comments
+    // are delivered as the `issue_comment` event, which is the only way the
+    // waiver can take effect without a PR edit or push.
+    expect(workflow.on?.issue_comment?.types).toBeDefined();
+    expect([...(workflow.on?.issue_comment?.types ?? [])].sort()).toEqual([
+      "created",
+      "edited",
+    ]);
+
     // Review events must NOT be added: they load the workflow from the PR
     // head branch, breaking the base-pinned checkout (`pull_request_review`
     // runs head YAML + base scripts → `parseGateState is not a function`).
@@ -970,8 +997,11 @@ describe("GitHub Actions hardening", () => {
     // `Number(context.payload.pull_request.title)` — a value the PR author
     // controls, which turns the bot into a write primitive against any PR
     // number the author can name. Bind it to the immutable event field.
+    // `issue_comment` events carry the number under `issue`, so the resolution
+    // falls back from the PR object to the issue object — both are immutable
+    // event fields, never author-controlled title text.
     expect(script).toMatch(
-      /const pull_number = context\.payload\.pull_request\.number;/,
+      /const pull_number =\s*context\.payload\.pull_request\?\.number \?\?\s*context\.payload\.issue\?\.number;/,
     );
     expect(script.match(/pull_number\s*=/g) ?? []).toHaveLength(1);
 
@@ -2595,6 +2625,36 @@ describe("GitHub Actions hardening", () => {
         },
         comments: [
           { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "no gui changes needed" },
+        ],
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+      expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+    });
+
+    test("an issue_comment event re-runs the gate and the waiver takes effect", async () => {
+      // This is the scenario that PR #1119 hit: a maintainer posts the waiver
+      // as an issue comment, and the gate must re-evaluate on that event —
+      // `pull_request_target` types do not include issue comments, so the
+      // separate `issue_comment` trigger carries it. The payload has no
+      // `pull_request` object; the PR number comes from `issue.number`.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
         ],
       });
 
@@ -4339,8 +4399,9 @@ describe("GitHub Actions hardening", () => {
     expect(doctorConfig).toContain('"blocking": "warning"');
     expect(rootPkg).toContain('"doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts"');
     expect(rootPkg).toContain('"lint:gui": "cd gui && bun run lint"');
-    // Gating steps include React Doctor after privacy scan on gui/ pushes.
-    expect(rootPkg).toContain("bun run typecheck && bun run lint:gui && bun run test");
+    expect(rootPkg).toContain('"lint:gui:if-changed": "bun scripts/lint-gui-if-changed.ts"');
+    // Gating steps include lint and React Doctor only on gui/ pushes.
+    expect(rootPkg).toContain("bun run typecheck && bun run lint:gui:if-changed && bun run test");
     expect(rootPkg).toContain("bun run privacy:scan && bun run doctor:gui:if-changed");
   });
 });
@@ -4439,5 +4500,46 @@ describe("doctor-gui-if-changed", () => {
     });
     expect(run.exitCode).not.toBe(0);
     expect(run.stderr.toString()).toContain("exceeded buffer");
+  });
+});
+
+describe("lint-gui-if-changed", () => {
+  test("DRY_RUN prints the run/skip decision without spawning lint", () => {
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: { ...process.env, LINT_DRY_RUN: "1", LINT_FILES: "gui/src/App.tsx\nscripts/x.ts" },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("lint:run");
+
+    const skip = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: { ...process.env, LINT_DRY_RUN: "1", LINT_FILES: "scripts/x.ts\nREADME.md" },
+    });
+    expect(skip.exitCode).toBe(0);
+    expect(skip.stdout.toString()).toContain("lint:skip");
+  });
+
+  test("runs eslint when gui/ changed and fails the push on findings", () => {
+    // `bun run lint` in gui/ exits non-zero on findings; a fake command makes
+    // the spawn deterministic without depending on the real eslint output.
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: {
+        ...process.env,
+        LINT_FILES: "gui/src/App.tsx",
+        LINT_CMD: "bun ../scripts/fixtures/lint-findings-exit.ts",
+      },
+    });
+    expect(run.exitCode).not.toBe(0);
+  });
+
+  test("skips eslint when gui/ did not change", () => {
+    const run = Bun.spawnSync(["bun", lintGuiIfChangedScript], {
+      env: {
+        ...process.env,
+        LINT_FILES: "scripts/x.ts\nREADME.md",
+        LINT_CMD: "bun ../scripts/fixtures/lint-findings-exit.ts",
+      },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("lint:gui: skip");
   });
 });

@@ -8,6 +8,15 @@ on:
       - edited
       - ready_for_review
       - synchronize
+  # A maintainer issue comment ("not touching gui") waives the GUI-screenshot
+  # gate. `pull_request_target` types do not include issue comments, so a
+  # separate `issue_comment` trigger re-runs the gate the moment the waiver is
+  # posted. The gate is idempotent — it re-reads the live PR and updates the
+  # single consolidated comment — so a comment cannot race or double-mutate.
+  issue_comment:
+    types:
+      - created
+      - edited
 
 # pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
@@ -19,7 +28,8 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: enforce-pr-target-${{ github.event.pull_request.number }}
+  # `issue_comment` events carry the issue number, not the PR number.
+  group: enforce-pr-target-${{ github.event.pull_request.number || github.event.issue.number }}
 
 jobs:
   enforce-target:
@@ -33,8 +43,10 @@ jobs:
           # runs this workflow from the base revision, and the scripts must come
           # from the same revision or a merged gate would run against the
           # pre-promotion scripts on `main`. The immutable SHA pins the checkout
-          # to the exact base commit the event was built against.
-          ref: ${{ github.event.pull_request.base.sha }}
+          # to the exact base commit the event was built against. On an
+          # `issue_comment` event there is no PR payload, so the checkout falls
+          # back to the repository default branch — the trusted gate source.
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -115,7 +127,12 @@ jobs:
             const MAINTAINERS_FILE = "MAINTAINERS.md";
 
             const { owner, repo } = context.repo;
-            const pull_number = context.payload.pull_request.number;
+            // `issue_comment` events carry the PR's issue object, not a
+            // `pull_request` object. The issue number is the PR number either
+            // way, so resolve it from whichever payload the event delivered.
+            const pull_number =
+              context.payload.pull_request?.number ??
+              context.payload.issue?.number;
 
             const { data: pr } = await github.rest.pulls.get({
               owner,
