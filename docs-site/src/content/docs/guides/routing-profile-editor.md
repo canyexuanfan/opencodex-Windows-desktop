@@ -39,7 +39,7 @@ Unsaved edits are not used by dry-run. Save the profile first so the displayed r
 The editor uses these endpoints:
 
 - `GET /api/routing-profiles` lists normalized profiles and revisions.
-- `PUT /api/routing-profiles` creates or replaces one profile.
+- `PUT /api/routing-profiles` creates or updates one profile. Send `mode: "create"` or `mode: "update"`; create mode refuses to overwrite an existing id.
 - `DELETE /api/routing-profiles?id=<id>` removes one profile.
 - `POST /api/routing-profiles/dry-run` evaluates a saved profile without dispatching upstream.
 
@@ -48,6 +48,7 @@ Example save payload:
 ```json
 {
   "id": "fast",
+  "mode": "create",
   "profile": {
     "alias": "ocx/fast",
     "candidates": [
