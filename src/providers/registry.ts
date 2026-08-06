@@ -14,6 +14,7 @@ import {
   cursorModelInputModalities,
   cursorModelReasoningEfforts,
 } from "../adapters/cursor/discovery";
+import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "./command-code-efforts";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -800,6 +801,32 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noVisionModels: ["grok-build-0.1", "grok-composer-2.5-fast"],
   },
   {
+    id: "command-code",
+    label: "Command Code - Auth",
+    adapter: "command-code",
+    baseUrl: "https://api.commandcode.ai",
+    authKind: "oauth",
+    oauthId: "command-code",
+    featured: true,
+    note: "Log in with your Command Code account",
+    // OAuth needs one initial selection, but the exposed catalog is always discovered from the
+    // signed-in account. Do not add a static model list here.
+    defaultModel: "deepseek/deepseek-v4-flash",
+    liveModels: true,
+    modelDiscovery: {
+      url: "https://api.commandcode.ai/provider/v1/models",
+      maxResponseBytes: 262_144,
+      maxModels: 256,
+    },
+    // These are capability facts from official Command Code model profiles, not seeded models.
+    // Unknown/new live models deliberately do not advertise a reasoning picker.
+    reasoningEfforts: [],
+    modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
+    defaultMaxOutputTokens: 64_000,
+    // The proprietary generate wire has no verified per-request serialization flag.
+    parallelToolCalls: false,
+  },
+  {
     id: "anthropic",
     label: "Anthropic Claude",
     adapter: "anthropic",
@@ -1256,7 +1283,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   {
     id: "commandcode",
-    label: "Command Code",
+    label: "Command Code - API",
     adapter: "openai-chat",
     baseUrl: "https://api.commandcode.ai/provider/v1",
     authKind: "key",
@@ -1278,7 +1305,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     // Verified 2026-08-03: public /provider/v1/models returns 51 rows; /chat/completions returns
     // 401 UNAUTHORIZED without a Bearer key. Primary source: https://commandcode.ai/docs/provider.
-    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. CLI auth bridging for Go/Pro subscriptions is not yet available. Docs: https://commandcode.ai/docs/provider.",
+    note: "Command Code Provider API (OpenAI-compatible); API access requires the Provider plan. Use `ocx login command-code` for OAuth account login (imports an existing local Command Code CLI credential when present). Docs: https://commandcode.ai/docs/provider.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
