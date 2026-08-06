@@ -17,6 +17,8 @@ Schema per `160_phase17_closeout.md`. Reconciles against the frozen cutoff:
 | 08 | [#1141](https://github.com/lidge-jun/opencodex/pull/1141) | stack 07 | GitHub Copilot Responses normalization | Simon |
 | 09 | [#1142](https://github.com/lidge-jun/opencodex/pull/1142) | stack 08 | Darwin eager rewrite relay gate | biao, 0xWinner98 |
 | 10 | [#1144](https://github.com/lidge-jun/opencodex/pull/1144) | stack 09 | Cursor structured edits + reasoning replay | NexusCore, Vincent-HD |
+| 11 | [#1150](https://github.com/lidge-jun/opencodex/pull/1150) | stack 10 | Test-home isolation + Desktop allowlist docs | Yuxin Qiao |
+| 12 | [#1151](https://github.com/lidge-jun/opencodex/pull/1151) | stack 11 | Effort picker + Pi loopback export | Eachann, n3wr1ch |
 
 The chain is linear: each PR targets the previous head, and stack 01 targets
 `dev`. Merging bottom-up collapses the whole chain onto `dev`.
@@ -60,8 +62,10 @@ The chain is linear: each PR targets the previous head, and stack 01 targets
 | #947 | pr | reimplemented-stack09 | #1142 | biao | predicate ported, timing-based tests rewritten; comment 5207281733 |
 | #1036 | pr | landed-stack10 | #1144 | NexusCore | adapted (post-filter provenance); comment 5207281718 |
 | #1126 | pr | landed-stack10 (partial) | #1144 | NexusCore | empty-delta adopted; disk persistence withheld; comment 5207281904 |
-| #1092, #1085 | pr | deferred | — | Eachann, n3wr1ch | Phase 140 planned and diff-level specified; not executed this pass |
-| #997, #999 | pr | deferred | — | Yuxin Qiao | Phase 150 planned and diff-level specified; not executed this pass |
+| #1092 | pr | landed-stack12 | #1151 | Eachann | `aff0bb0b3`, picker fix extracted; catalog/copy/`imageInput`/locales dropped; comment 5207733645 |
+| #1085 | pr | landed-stack12 | #1151 | n3wr1ch | `bc796a086`, Pi loopback placeholder; cli/model-rows churn dropped; comment 5207733762 |
+| #997 | pr | landed-stack11 | #1150 | Yuxin Qiao | `5b32a5e19`, `64be20518` cherry-picked; comment 5207733648 |
+| #999 | pr | landed-stack11 | #1150 | Yuxin Qiao | `5bf99550c` cherry-picked; #241 not closed; comment 5207733780 |
 | #1095 | pr | rejected-unsafe | — | Bailey | Idle-timer completion can truncate a slow valid response; needs authoritative EOF |
 | #1056 | pr | deferred | — | biao | 54 files with backup/convergence/GUI gaps |
 | #1131, #1109, #1096, #1039, #1010, #1002, #812, #811, #581 | pr | deferred | — | various | Feature programs / security-review units, enumerated in `002` |
@@ -69,8 +73,13 @@ The chain is linear: each PR targets the previous head, and stack 01 targets
 | #1119 | pr | deferred | — | JUN | Maintainer's own contract-test PR |
 | #1129 | pr | already-merged | — | JUN | `e9d957bf6`, merged mid-triage |
 
-**PR total: 12 landed + 1 credited-only + 1 rejected + 18 deferred = 32 open,
+**PR total: 16 landed + 1 credited-only + 1 rejected + 14 deferred = 32 open,
 + #1129 already merged.**
+
+With phases 140 and 150 executed, every phase in the roadmap has run. The
+remaining 14 deferrals are feature programs, maintainer-owned in-flight PRs,
+and the two reimplementations judged not worth landing as written — each with
+its reason in `002_pr_triage.md`.
 
 ## Contributors credited
 
@@ -86,9 +95,17 @@ merged, closed, or force-pushed.
 
 - No PR merged. No issue or PR closed — including issues the stack fixes; they
   close when the stack merges, which is the maintainer's call.
-- Phases 140 and 150 are specified at diff level but not executed. They are the
-  natural next work-phases, not blockers.
 - No branch deleted, no release, no version bump.
+
+## One in-scope deviation, recorded
+
+Phase 140 marked `tests/cli-export-command.test.ts` as DROP, but the Pi change
+made two of its assertions stale: they expected the `export OPENCODEX_API_KEY=`
+output that #1085 reports as the defect. Honoring the scope line would have
+shipped a red suite, so the assertions were updated to the new contract
+(`304d0d883`). The security property they exist for — no `ocx_` token in
+stdout — is unchanged and still asserted. Recorded here because a plan
+deviation that nobody writes down is how a roadmap stops being trustworthy.
 
 ## CI state at close
 
