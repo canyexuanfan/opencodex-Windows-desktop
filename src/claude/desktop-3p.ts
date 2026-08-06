@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWriteFile } from "../config";
@@ -101,6 +101,37 @@ interface Desktop3pMetadata {
   appliedId?: string;
   entries: Desktop3pMetadataEntry[];
   [key: string]: unknown;
+}
+
+export type Desktop3pLibraryKind =
+  | "not_installed"
+  | "standard"
+  | "gateway_ours"
+  | "gateway_drifted"
+  | "foreign"
+  | "no_owned_state"
+  | "broken"
+  | "unsafe";
+
+export interface Desktop3pLibraryInspection {
+  kind: Desktop3pLibraryKind;
+  libraryPath: string;
+  selectedProfilePath: string | null;
+  appliedId: string | null;
+  /** Paths of opencodex-owned rows that are not selected by Desktop. */
+  residualPaths: string[];
+  /** Bounded reason code; never includes metadata or profile contents. */
+  reason?: "metadata_unreadable" | "unsafe_applied_id" | "invalid_owned_profile";
+  fingerprint?: string;
+}
+
+export interface Desktop3pRemovalResult {
+  ok: boolean;
+  changed: boolean;
+  kind: "removed" | "noop" | "cleanup_incomplete" | "unsafe" | "write_failed";
+  libraryPath: string;
+  residualPaths?: string[];
+  reason?: string;
 }
 
 let desktop3pRegistry = new Map<string, string>();
@@ -325,6 +356,172 @@ function parseMetadata(path: string): Desktop3pMetadata {
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<Desktop3pMetadata>;
   if (!Array.isArray(parsed.entries)) throw new Error("Claude Desktop 3P _meta.json has no entries array");
   return { ...parsed, entries: parsed.entries };
+}
+
+const SAFE_DESKTOP_PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOwnedDesktopEntry(entry: Desktop3pMetadataEntry | undefined): boolean {
+  return entry?.name === "opencodex";
+}
+
+function profilePath(libraryPath: string, id: string): string {
+  return join(libraryPath, `${id}.json`);
+}
+
+/**
+ * Read Desktop's selected config without changing its library.
+ *
+ * This is intentionally separate from the eager writer below: status probes must
+ * never manufacture a config-library directory on a machine without Desktop.
+ */
+export function inspectDesktop3pConfigLibrary(
+  options: Desktop3pConfigLibraryOptions & { appliedFingerprint?: string | null } = {},
+): Desktop3pLibraryInspection {
+  const libraryPath = resolveDesktop3pConfigLibraryPath(options);
+  if (!existsSync(libraryPath)) {
+    return { kind: "not_installed", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+  }
+
+  const metadataPath = join(libraryPath, "_meta.json");
+  if (!existsSync(metadataPath)) {
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+  }
+
+  let metadata: Desktop3pMetadata;
+  try {
+    metadata = parseMetadata(metadataPath);
+  } catch {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [], reason: "metadata_unreadable",
+    };
+  }
+  const appliedId = typeof metadata.appliedId === "string" ? metadata.appliedId : null;
+  if (appliedId === null) {
+    return { kind: "no_owned_state", libraryPath, selectedProfilePath: null, appliedId: null, residualPaths: [] };
+  }
+  if (!SAFE_DESKTOP_PROFILE_ID.test(appliedId)) {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath: null, appliedId, residualPaths: [], reason: "unsafe_applied_id",
+    };
+  }
+
+  const selectedProfilePath = profilePath(libraryPath, appliedId);
+  const selected = metadata.entries.find(entry => entry?.id === appliedId);
+  const residualPaths = metadata.entries
+    .filter(entry => isOwnedDesktopEntry(entry) && entry.id !== appliedId && SAFE_DESKTOP_PROFILE_ID.test(entry.id))
+    .flatMap(entry => [profilePath(libraryPath, entry.id), `${profilePath(libraryPath, entry.id)}.bak`])
+    .filter(existsSync);
+  if (!existsSync(selectedProfilePath)) {
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+  }
+
+  let profile: Record<string, unknown>;
+  let fingerprint: string;
+  try {
+    const source = readFileSync(selectedProfilePath, "utf8");
+    const parsed = JSON.parse(source) as unknown;
+    if (!isRecord(parsed)) return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+    profile = parsed;
+    fingerprint = createHash("sha256").update(source).digest("hex").slice(0, 16);
+  } catch {
+    return { kind: "broken", libraryPath, selectedProfilePath, appliedId, residualPaths };
+  }
+  if (profile.inferenceProvider === undefined) {
+    return { kind: "standard", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint };
+  }
+  if (!isOwnedDesktopEntry(selected)) {
+    return { kind: "foreign", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint };
+  }
+  const validGateway = profile.inferenceProvider === "gateway"
+    && profile.inferenceCredentialKind === "static"
+    && typeof profile.inferenceGatewayBaseUrl === "string"
+    && typeof profile.inferenceGatewayApiKey === "string";
+  if (!validGateway) {
+    return {
+      kind: "unsafe", libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint, reason: "invalid_owned_profile",
+    };
+  }
+  return {
+    kind: options.appliedFingerprint && options.appliedFingerprint === fingerprint ? "gateway_ours" : "gateway_drifted",
+    libraryPath, selectedProfilePath, appliedId, residualPaths, fingerprint,
+  };
+}
+
+/**
+ * Select a credential-free standard profile before deleting an owned gateway.
+ * The old metadata row intentionally remains as a retry locator until both its
+ * profile and backup are absent.
+ */
+export function removeDesktop3pStandardPivot(
+  options: Desktop3pConfigLibraryOptions & { appliedFingerprint?: string | null } = {},
+): Desktop3pRemovalResult {
+  const inspected = inspectDesktop3pConfigLibrary(options);
+  if (inspected.kind === "not_installed" || inspected.kind === "no_owned_state") {
+    return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
+  }
+  if (inspected.kind === "foreign" || inspected.kind === "broken" || inspected.kind === "unsafe") {
+    return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: inspected.reason };
+  }
+  if (inspected.kind === "standard" && inspected.residualPaths.length === 0) {
+    return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
+  }
+  if (!inspected.appliedId || !SAFE_DESKTOP_PROFILE_ID.test(inspected.appliedId)) {
+    return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath, reason: "unsafe_applied_id" };
+  }
+
+  const metadataPath = join(inspected.libraryPath, "_meta.json");
+  try {
+    const metadata = parseMetadata(metadataPath);
+    const selectedId = inspected.appliedId;
+    const selectedEntry = metadata.entries.find(entry => entry.id === selectedId);
+    if (!selectedEntry || !isOwnedDesktopEntry(selectedEntry)) {
+      // A selected standard profile with outstanding owned rows gets cleanup on
+      // retry; a selected foreign profile never grants us deletion authority.
+      if (inspected.kind !== "standard") {
+        return { ok: false, changed: false, kind: "unsafe", libraryPath: inspected.libraryPath };
+      }
+    }
+    const targetIds = inspected.kind === "standard"
+      ? metadata.entries.filter(isOwnedDesktopEntry).map(entry => entry.id).filter(id => SAFE_DESKTOP_PROFILE_ID.test(id))
+      : [selectedId];
+    if (targetIds.length === 0) return { ok: true, changed: false, kind: "noop", libraryPath: inspected.libraryPath };
+
+    if (inspected.kind !== "standard") {
+      const standardId = randomUUID();
+      const standardPath = profilePath(inspected.libraryPath, standardId);
+      atomicWriteFile(standardPath, "{}\n");
+      const standardEntry: Desktop3pMetadataEntry = { id: standardId, name: "opencodex-standard" };
+      atomicWriteFile(
+        metadataPath,
+        JSON.stringify({ ...metadata, appliedId: standardId, entries: [...metadata.entries, standardEntry] }, null, 2) + "\n",
+      );
+    }
+
+    const residualPaths: string[] = [];
+    for (const id of targetIds) {
+      for (const candidate of [profilePath(inspected.libraryPath, id), `${profilePath(inspected.libraryPath, id)}.bak`]) {
+        try {
+          if (existsSync(candidate)) unlinkSync(candidate);
+        } catch {
+          // Only the path is allowed to leave this credential-bearing cleanup boundary.
+        }
+        if (existsSync(candidate)) residualPaths.push(candidate);
+      }
+    }
+    if (residualPaths.length > 0 || inspected.residualPaths.length > 0) {
+      return {
+        ok: false, changed: true, kind: "cleanup_incomplete", libraryPath: inspected.libraryPath,
+        residualPaths: [...new Set([...residualPaths, ...inspected.residualPaths])],
+      };
+    }
+    return { ok: true, changed: true, kind: "removed", libraryPath: inspected.libraryPath };
+  } catch {
+    return { ok: false, changed: false, kind: "write_failed", libraryPath: inspected.libraryPath };
+  }
 }
 
 /** Write and apply the opencodex config in Claude Desktop 3P's config library. */
