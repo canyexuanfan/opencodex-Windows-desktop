@@ -142,11 +142,11 @@ describe("enforce-pr-target workflow", () => {
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
     // `pull_request_target` pins the PR's base SHA so the scripts match the
     // event's base revision. An `issue_comment` event has no PR payload, so
-    // the ref falls back to the repository default branch — still trusted, and
-    // never the PR head.
+    // the ref falls back to the integration branch `dev` (the gate's only
+    // allowed base) — still trusted, and never the PR head.
     assert.match(
       checkoutStep,
-      /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\|\|\s*github\.event\.repository\.default_branch\s*\}\}/,
+      /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\|\|\s*'dev'\s*\}\}/,
     );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);

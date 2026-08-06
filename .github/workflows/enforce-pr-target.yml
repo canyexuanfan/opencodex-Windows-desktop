@@ -58,8 +58,11 @@ jobs:
           # pre-promotion scripts on `main`. The immutable SHA pins the checkout
           # to the exact base commit the event was built against. On an
           # `issue_comment` event there is no PR payload, so the checkout falls
-          # back to the repository default branch — the trusted gate source.
-          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          # back to the integration branch `dev` — the branch this gate enforces
+          # and the source of the gate's own scripts. The repository default
+          # (`main`) can lag `dev`, which would make a comment-triggered run
+          # evaluate with stale helpers.
+          ref: ${{ github.event.pull_request.base.sha || 'dev' }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -536,8 +539,16 @@ jobs:
             // (see `completionIsStale`). When it is stale the gate resets the
             // boxes and the notification state, re-drafts, and tells the
             // author to re-test and re-tick against the latest code.
+            // `issue_comment` events carry no `pull_request.head.sha`, so the
+            // fallback to the live head would let a completed checklist with
+            // no recorded completion head pass as if it attested the current
+            // head. A comment-triggered run must not promote readiness: pass
+            // the live head only when the event actually delivered it.
             const eventHeadSha =
-              context.payload.pull_request?.head?.sha ?? pr.head.sha;
+              context.payload.pull_request?.head?.sha ??
+              (context.eventName === "issue_comment"
+                ? ""
+                : pr.head.sha);
             const completionHeadSha =
               gateState.completedAtHeadSha ?? null;
             const headDrifted = completionIsStale({

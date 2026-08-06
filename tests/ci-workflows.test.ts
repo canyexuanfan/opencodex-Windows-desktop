@@ -932,7 +932,7 @@ describe("GitHub Actions hardening", () => {
       // runs this workflow from the base revision, and the scripts must match
       // it — a merged gate would otherwise run against pre-promotion `main`
       // scripts. The immutable SHA pins the checkout to the event's base commit.
-      ref: "${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}",
+      ref: "${{ github.event.pull_request.base.sha || 'dev' }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.
@@ -2681,6 +2681,41 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
       expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
       expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+    });
+
+    test("an issue_comment rerun does not accept a checklist with no recorded head", async () => {
+      // `issue_comment` events carry no `pull_request.head.sha`. A contributor
+      // who ticked the readiness checklist, then pushed, must not have that
+      // stale attestation accepted by a maintainer-waiver comment rerun — the
+      // gate must reset the boxes and re-draft.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: readinessChecklistBody(4),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        comments: [
+          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [readinessComment({
+          version: 2,
+          autoDraftedByBot: false,
+          maintainersPinged: true,
+          completedAtHeadSha: null,
+        })],
+      });
+
+      // The comment-triggered rerun delivers no head SHA, so the completed
+      // checklist cannot be attributed to the live head: the gate resets the
+      // boxes and keeps the PR in draft.
+      const resetBody = callsTo(result, "pulls.update") as [{ body: string }];
+      expect(resetBody[0]!.body).toContain(CHECKLIST_START);
+      expect(resetBody[0]!.body).not.toContain("- [x]");
+      expect(resetBody[0]!.body).toContain("- [ ] All CI tests are green on my local testing.");
+      expect(resetBody[0]!.body).toContain("- [ ] My PR is ready for review.");
     });
 
     test("a non-maintainer issue_comment does not re-run the gate", async () => {
