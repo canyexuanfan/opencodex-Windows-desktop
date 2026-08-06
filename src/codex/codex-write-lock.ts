@@ -67,7 +67,7 @@ export type CodexWriteLockRefusalReason =
 export type CodexWriteLockResult<T> =
   | { status: "acquired"; value: T; waitedMs: number; lockId: string }
   | { status: "skipped"; reason: "desired_disabled" | "desired_enabled"; waitedMs: number }
-  | { status: "busy"; reason: "deadline" | "cancelled"; retryable: true; waitedMs: number }
+  | { status: "busy"; reason: "deadline" | "cancelled"; retryable: true; waitedMs: number; lockId: string }
   | {
       status: "refused";
       reason: CodexWriteLockRefusalReason;
@@ -300,7 +300,7 @@ export async function withCodexWriteLock<T>(
   const waited = (): number => Math.round(performance.now() - started);
 
   for (;;) {
-    if (signal?.aborted) return { status: "busy", reason: "cancelled", retryable: true, waitedMs: waited() };
+    if (signal?.aborted) return { status: "busy", reason: "cancelled", retryable: true, waitedMs: waited(), lockId: target.lockId };
 
     let transaction: ReturnType<typeof openCodexCoordinatorTransaction> | undefined;
     try {
@@ -315,7 +315,7 @@ export async function withCodexWriteLock<T>(
           error instanceof Error ? error.message : "The Codex write lock could not be opened.");
       }
       if (performance.now() >= deadline) {
-        return { status: "busy", reason: "deadline", retryable: true, waitedMs: waited() };
+        return { status: "busy", reason: "deadline", retryable: true, waitedMs: waited(), lockId: target.lockId };
       }
       await sleepJittered(deadline - performance.now(), signal);
       continue;
@@ -363,7 +363,7 @@ export async function withCodexWriteLock<T>(
       }
       if (isBusyError(error)) {
         if (performance.now() >= deadline) {
-          return { status: "busy", reason: "deadline", retryable: true, waitedMs: waited() };
+          return { status: "busy", reason: "deadline", retryable: true, waitedMs: waited(), lockId: target.lockId };
         }
         await sleepJittered(deadline - performance.now(), signal);
         continue;
