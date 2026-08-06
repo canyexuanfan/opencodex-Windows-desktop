@@ -1,0 +1,101 @@
+import { describe, expect, test } from "bun:test";
+import {
+  modelOptionsForProvider,
+  newRoutingProfileDraft,
+  routingProfileDraftFromDto,
+  routingProfilePutBody,
+  routingProfileResponseError,
+  routingProfileResponseSucceeded,
+  type RoutingProfileDto,
+} from "../gui/src/routing-profile-editor-data";
+
+const profile: RoutingProfileDto = {
+  id: "fast",
+  alias: "ocx/fast",
+  model: "ocx/fast",
+  revision: "abc123",
+  candidates: [
+    { provider: "anthropic", model: "claude-sonnet-5" },
+    { provider: "openai", model: "gpt-5.6" },
+  ],
+  require: {
+    minContextWindow: 128000,
+    minQuotaHeadroom: 0.2,
+    tools: true,
+    imageInput: false,
+    reasoningEffort: "high",
+  },
+  optimize: { latency: 0.55, health: 0.25, cost: 0.1, quota: 0.1 },
+  limits: { maxEstimatedCostUsd: 0.5 },
+  unknownEvidence: {
+    capability: "exclude",
+    health: "penalize",
+    quota: "allow",
+    cost: "penalize",
+  },
+};
+
+describe("routing profile editor data", () => {
+  test("creates a usable draft with one candidate and stable defaults", () => {
+    const draft = newRoutingProfileDraft("openai", "gpt-5.6");
+    expect(draft.candidates).toEqual([{ provider: "openai", model: "gpt-5.6" }]);
+    expect(draft.optimize).toEqual({ latency: "0.55", health: "0.25", cost: "0.1", quota: "0.1" });
+    expect(draft.unknownEvidence.capability).toBe("exclude");
+  });
+
+  test("round-trips normalized DTO values into a PUT payload", () => {
+    const draft = routingProfileDraftFromDto(profile);
+    const body = routingProfilePutBody(draft);
+
+    expect(body).toEqual({
+      id: "fast",
+      profile: {
+        alias: "ocx/fast",
+        candidates: profile.candidates,
+        require: {
+          minContextWindow: 128000,
+          minQuotaHeadroom: 0.2,
+          tools: true,
+          imageInput: false,
+          reasoningEffort: "high",
+        },
+        optimize: profile.optimize,
+        limits: { maxEstimatedCostUsd: 0.5 },
+        unknownEvidence: profile.unknownEvidence,
+      },
+    });
+  });
+
+  test("omits blank optional fields while retaining explicit false", () => {
+    const draft = newRoutingProfileDraft("openai", "gpt-5.6");
+    draft.id = "  balanced  ";
+    draft.require.tools = "false";
+    draft.require.serviceTier = "  ";
+    draft.limits.maxEstimatedCostUsd = "";
+
+    expect(routingProfilePutBody(draft)).toMatchObject({
+      id: "balanced",
+      profile: {
+        candidates: [{ provider: "openai", model: "gpt-5.6" }],
+        require: { tools: false },
+      },
+    });
+    expect(routingProfilePutBody(draft).profile).not.toHaveProperty("limits");
+    expect(routingProfilePutBody(draft).profile).not.toHaveProperty("alias");
+  });
+
+  test("extracts both string and structured management errors", () => {
+    expect(routingProfileResponseError({ error: "plain failure" })).toBe("plain failure");
+    expect(routingProfileResponseError({ error: { message: "validation failure" } })).toBe("validation failure");
+    expect(routingProfileResponseError({ success: true })).toBeUndefined();
+    expect(routingProfileResponseSucceeded({ success: true })).toBe(true);
+    expect(routingProfileResponseSucceeded({ success: false })).toBe(false);
+  });
+
+  test("filters model suggestions by provider", () => {
+    expect(modelOptionsForProvider([
+      { provider: "openai", id: "gpt-5.6" },
+      { provider: "anthropic", id: "claude-sonnet-5" },
+    ], "anthropic")).toEqual([{ provider: "anthropic", id: "claude-sonnet-5" }]);
+  });
+});
