@@ -81,6 +81,23 @@ function makeSandbox(prefix: string): Sandbox {
       LOCALAPPDATA: join(home, "LocalAppData"),
     },
   };
+  writeFileSync(join(opencodexHome, "service-state.json"), JSON.stringify({
+    version: 2,
+    codexHome,
+    opencodexHome,
+    backend: "scheduler",
+  }));
+  if (process.platform === "darwin") {
+    const launchAgents = join(home, "Library", "LaunchAgents");
+    mkdirSync(launchAgents, { recursive: true, mode: 0o700 });
+    writeFileSync(join(launchAgents, "com.opencodex.proxy.plist"), [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<plist version=\"1.0\"><dict><key>EnvironmentVariables</key><dict>",
+      `<key>CODEX_HOME</key><string>${codexHome}</string>`,
+      `<key>OPENCODEX_HOME</key><string>${opencodexHome}</string>`,
+      "</dict></dict></plist>",
+    ].join("\n"));
+  }
   sandboxes.push(sandbox);
   return sandbox;
 }
@@ -225,8 +242,8 @@ test("native restore cannot read-transform-write the catalog while another proce
 async function runPublisher(
   sandbox: Sandbox,
   kind: "convergence" | "retained",
+  config: Record<string, unknown>,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const config = { port: 10100, defaultProvider: "openai", providers: {}, disabledModels: ["gpt-5.5"] };
   if (kind === "retained") {
     return runChild(sandbox, `
       const { handleManagementAPI } = await import("./src/server/management-api.ts");
@@ -255,55 +272,69 @@ for (const publisher of ["convergence", "retained"] as const) {
     const initial = readFileSync(catalogPath, "utf8");
     const requested = join(sandbox.root, "provider-requested");
     const release = join(sandbox.root, "provider-release");
+    let requests = 0;
+    const provider = Bun.serve({
+      port: 0,
+      fetch: async request => {
+        if (!new URL(request.url).pathname.endsWith("/models")) return new Response("not found", { status: 404 });
+        if (requests++ === 0) {
+          writeFileSync(requested, "requested");
+          while (!existsSync(release)) await Bun.sleep(5);
+        }
+        return Response.json({ data: [{ id: "race-model" }] });
+      },
+    });
     const config = {
-      port: 10100,
-      defaultProvider: "together",
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "fixture",
       providers: {
-        together: {
+        fixture: {
           adapter: "openai-chat",
-          baseUrl: "https://api.together.xyz/v1",
-          apiKey: "race-key",
-          models: ["fallback-model"],
+          baseUrl: `http://127.0.0.1:${provider.port}/v1`,
+          apiKey: "fixture-key",
+          allowPrivateNetwork: true,
+          liveModels: true,
         },
       },
+      disabledModels: ["gpt-5.5"],
     };
-    const sync = Bun.spawn([process.execPath, "--eval", `
-      import { existsSync, writeFileSync } from "node:fs";
-      const config = ${JSON.stringify(config)};
-      config.providers.together.fetch = async () => {
-        writeFileSync(${JSON.stringify(requested)}, "requested");
-        while (!existsSync(${JSON.stringify(release)})) await Bun.sleep(5);
-        return Response.json({ data: [{ id: "race-model" }] });
-      };
-      const { handleManagementAPI } = await import("./src/server/management-api.ts");
-      const req = new Request("http://localhost/api/sync", { method: "POST", headers: { Host: "localhost" } });
-      const response = await handleManagementAPI(req, new URL(req.url), config);
-      console.log(JSON.stringify({ status: response.status, body: await response.json() }));
-    `], { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" });
+    writeFileSync(join(sandbox.opencodexHome, "config.json"), JSON.stringify(config));
+    try {
+      const sync = Bun.spawn([process.execPath, "--eval", `
+        const config = ${JSON.stringify(config)};
+        const { handleManagementAPI } = await import("./src/server/management-api.ts");
+        const req = new Request("http://localhost/api/sync", { method: "POST", headers: { Host: "localhost" } });
+        const response = await handleManagementAPI(req, new URL(req.url), config);
+        console.log(JSON.stringify({ status: response.status, body: await response.json() }));
+      `], { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" });
 
-    await Promise.race([
-      waitForPath(requested),
-      sync.exited.then(async exitCode => {
-        const stdout = await new Response(sync.stdout).text();
-        const stderr = await new Response(sync.stderr).text();
-        throw new Error(`sync exited before provider barrier (${exitCode})\nstdout=${stdout}\nstderr=${stderr}`);
-      }),
-    ]);
-    const published = await runPublisher(sandbox, publisher);
-    if (published.exitCode !== 0) {
-      throw new Error(`${publisher} publisher failed\nstdout=${published.stdout}\nstderr=${published.stderr}`);
+      await Promise.race([
+        waitForPath(requested),
+        sync.exited.then(async exitCode => {
+          const stdout = await new Response(sync.stdout).text();
+          const stderr = await new Response(sync.stderr).text();
+          throw new Error(`sync exited before provider barrier (${exitCode})\nstdout=${stdout}\nstderr=${stderr}`);
+        }),
+      ]);
+      const published = await runPublisher(sandbox, publisher, config);
+      if (published.exitCode !== 0) {
+        throw new Error(`${publisher} publisher failed\nstdout=${published.stdout}\nstderr=${published.stderr}`);
+      }
+      const newer = readFileSync(catalogPath, "utf8");
+      expect(newer).not.toBe(initial);
+
+      writeFileSync(release, "release");
+      const [exitCode, stdout, stderr] = await Promise.all([
+        sync.exited,
+        new Response(sync.stdout).text(),
+        new Response(sync.stderr).text(),
+      ]);
+      expect({ exitCode, stdout, stderr }).toMatchObject({ exitCode: 0 });
+      expect(readFileSync(catalogPath, "utf8")).toBe(newer);
+    } finally {
+      provider.stop(true);
     }
-    const newer = readFileSync(catalogPath, "utf8");
-    expect(newer).not.toBe(initial);
-
-    writeFileSync(release, "release");
-    const [exitCode, stdout, stderr] = await Promise.all([
-      sync.exited,
-      new Response(sync.stdout).text(),
-      new Response(sync.stderr).text(),
-    ]);
-    expect({ exitCode, stdout, stderr }).toMatchObject({ exitCode: 0 });
-    expect(readFileSync(catalogPath, "utf8")).toBe(newer);
   }, 20_000);
 }
 
