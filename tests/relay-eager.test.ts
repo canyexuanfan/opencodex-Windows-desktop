@@ -270,18 +270,34 @@ describe("relaySseEagerBounded — inline payload rewrite (#864)", () => {
     const budget = createTranslatorBudget();
     const up = controlledUpstream();
     const ac = new AbortController();
-    const { hooks } = makeHooks();
+    const { hooks, rec } = makeHooks();
+    let resolveDone!: () => void;
+    const done = new Promise<void>(resolve => { resolveDone = resolve; });
+    const previousOnDone = hooks.onDone;
+    hooks.onDone = () => {
+      previousOnDone();
+      resolveDone();
+    };
     hooks.rewritePayload = (payload: string) => payload;
     relaySseEagerBounded(up.stream, ac, hooks, { rewriteBudget: budget });
 
     up.push(enc.encode(`data: {"type":"unterminated"`));
-    await settle();
     // The shared terminal boundary now owns incomplete SSE framing, so the
     // downstream rewrite stage never retains an unterminated block.
     expect(budget.snapshot().currentBytes).toBe(0);
     ac.abort(new Error("test abort"));
-    await settle();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      done,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("relay cleanup timed out")), 2_000);
+      }),
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
     expect(budget.snapshot().currentBytes).toBe(0);
+    expect(rec.dones).toBe(1);
+    budget.dispose();
   });
 
   test("blocks without a data field pass through untouched before the terminal", async () => {
