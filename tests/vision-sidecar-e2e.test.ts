@@ -6,7 +6,8 @@ import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxConfig } from "../src/types";
-import { resetVisionDescriptionCache } from "../src/vision";
+import { parseRequest } from "../src/responses/parser";
+import { resetVisionDescriptionCache, stripImagesInPlace } from "../src/vision";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 
@@ -133,6 +134,21 @@ function toolImageRequest(model: string) {
 }
 
 describe("vision sidecar fallback (issue #88, end-to-end)", () => {
+  test("raw-body normalization removes an image when parsing produces zero captions", () => {
+    const parsed = parseRequest({
+      model: "textonly/blind-model",
+      input: [{
+        type: "message",
+        role: "user",
+        content: [{ type: "input_image", image_url: "" }],
+      }],
+    });
+
+    expect(stripImagesInPlace(parsed)).toBe(false);
+    expect(JSON.stringify(parsed._rawBody)).not.toContain("input_image");
+    expect(JSON.stringify(parsed._rawBody)).toContain("[image omitted:");
+  });
+
   test("noVisionModels request fires the sidecar and forwards the caption instead of the image", async () => {
     let upstreamBody = "";
     let sidecarBody = "";
@@ -205,7 +221,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
     }
   });
 
-  test("Responses passthrough does not let an empty image consume the real image caption", async () => {
+  test("Responses passthrough removes every raw image when fewer captions than images are produced", async () => {
     let upstreamBody = "";
     let sidecarHits = 0;
     upstream = serveResponsesUpstream(b => { upstreamBody = b; });
@@ -259,6 +275,7 @@ describe("vision sidecar fallback (issue #88, end-to-end)", () => {
       expect(sidecarHits).toBe(1);
       expect(upstreamBody).toContain(CAPTION);
       expect(upstreamBody).not.toContain("aGVsbG8taW1hZ2UtYnl0ZXM=");
+      expect(upstreamBody).not.toContain("input_image");
     } finally {
       await server.stop(true);
     }

@@ -275,6 +275,8 @@ function renderDescription(out: { text: string; error?: string }): OcxTextConten
   };
 }
 
+const IMAGE_OMITTED_TEXT = "[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]";
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -291,7 +293,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  */
 function syncRawBodyImageDescriptions(parsed: OcxParsedRequest, descriptions: readonly string[]): void {
   const rawBody = parsed._rawBody;
-  if (!isPlainRecord(rawBody) || !Array.isArray(rawBody.input) || descriptions.length === 0) return;
+  if (!isPlainRecord(rawBody) || !Array.isArray(rawBody.input)) return;
 
   let nextDescription = 0;
   const rewriteImages = (value: unknown, nonEmptyImageUrlsOnly: boolean): unknown => {
@@ -306,9 +308,11 @@ function syncRawBodyImageDescriptions(parsed: OcxParsedRequest, descriptions: re
     }
     if (!isPlainRecord(value)) return value;
     if (value.type === "input_image" && typeof value.image_url === "string") {
-      if (nonEmptyImageUrlsOnly && value.image_url.length === 0) return value;
+      if (nonEmptyImageUrlsOnly && value.image_url.length === 0) {
+        return { type: "input_text", text: IMAGE_OMITTED_TEXT };
+      }
       const description = descriptions[nextDescription++];
-      return description === undefined ? value : { type: "input_text", text: description };
+      return { type: "input_text", text: description ?? IMAGE_OMITTED_TEXT };
     }
     return value;
   };
@@ -431,7 +435,10 @@ export async function describeImagesInPlace(
     }
     targets.push({ msg, parts });
   }
-  if (jobs.length === 0) return;
+  if (jobs.length === 0) {
+    syncRawBodyImageDescriptions(parsed, []);
+    return;
+  }
 
   // 2. Admit misses in source order. Cache hits and same-turn waiters do not consume the cap.
   const inFlight = new Map<string, Promise<DescribeOutcome>>();
@@ -524,7 +531,7 @@ export function stripImagesInPlace(parsed: OcxParsedRequest, translatorBudget?: 
     if (!parts.some(p => p.type === "image")) continue;
     msg.content = parts.map(p => {
       if (p.type !== "image") return p;
-      const replacement = { type: "text", text: "[image omitted: this model is text-only and the vision sidecar is unavailable (no ChatGPT login)]" } as OcxContentPart;
+      const replacement = { type: "text", text: IMAGE_OMITTED_TEXT } as OcxContentPart;
       descriptions.push((replacement as OcxTextContent).text);
       const reservation = translatorBudget?.reserveTransient(
         descriptionEncoder.encode((replacement as OcxTextContent).text).byteLength,
@@ -535,6 +542,6 @@ export function stripImagesInPlace(parsed: OcxParsedRequest, translatorBudget?: 
     });
     stripped = true;
   }
-  if (stripped) syncRawBodyImageDescriptions(parsed, descriptions);
+  syncRawBodyImageDescriptions(parsed, descriptions);
   return stripped;
 }
