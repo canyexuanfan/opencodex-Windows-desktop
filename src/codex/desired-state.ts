@@ -66,6 +66,11 @@ export function codexIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrati
   return integrationEnabled(config, "codex");
 }
 
+/** Whether a Codex sync is permitted for this admitted config snapshot. */
+export function shouldSyncCodexOnStart(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return codexIntegrationEnabled(config);
+}
+
 /**
  * Grok's toggle SHIPPED without this, which is the bug: it strips the fence in
  * `~/.grok/config.toml` and records nothing, so the next `ocx start` calls
@@ -162,7 +167,7 @@ export async function syncCodexOnStartIfEnabled(
   config: Pick<OcxConfig, "clientIntegrations">,
   sync: CodexStartupSync = defaultStartupSync,
 ): Promise<{ ran: boolean; catalogWritten: boolean; cacheSynced: boolean }> {
-  if (!codexIntegrationEnabled(config)) {
+  if (!shouldSyncCodexOnStart(config)) {
     return { ran: false, catalogWritten: false, cacheSynced: false };
   }
   // The `.catch` is deliberate and stays: a failure to APPLY must not stop the

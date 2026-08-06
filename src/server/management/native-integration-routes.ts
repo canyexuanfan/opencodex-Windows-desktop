@@ -260,6 +260,14 @@ async function handleCodexToggle(ctx: ManagementContext): Promise<Response> {
       const port = runtime?.port ?? ctx.config.port;
       const { syncModelsToCodex } = await import("../../codex/sync");
       const applied = await syncModelsToCodex(port);
+      if (applied.status === "skipped") {
+        return jsonResponse({
+          ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
+          state: "absent",
+          message: "Codex integration is OFF; enable did not change Codex.",
+          reason: "apply_incomplete",
+        } satisfies NativeToggleEnvelope);
+      }
       return jsonResponse({
         ok: true, clientId: "codex", changed: durable && persisted.status === "committed",
         state: applied.ok ? "current" : "absent",

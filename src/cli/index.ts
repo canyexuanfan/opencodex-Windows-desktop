@@ -318,6 +318,7 @@ async function handleStart(options: { block?: boolean } = {}) {
 
   await maybeShowStarPrompt(); // once-only Yes/No GitHub-star prompt on first interactive start
   const startupSync = await syncCodexOnStartIfEnabled(port, config);
+  if (!startupSync.ran) console.log("   Codex integration OFF; startup left Codex native.");
   // #1046: one warning per startup, after BOTH writes. The server's cache
   // invalidation happens first and the catalog sync second, so the mtime is only
   // final here — and neither write site warns on its own, or a boot that hits
@@ -376,10 +377,12 @@ async function handleEnsure() {
     return;
   }
   const live = await findLiveProxy();
-    if (live) {
-      await syncModelsToCodex(live.port).catch(e => {
+  if (live) {
+      const synced = await syncModelsToCodex(live.port).catch(e => {
         console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
       });
+      if (synced?.status === "skipped") console.log("   Codex integration OFF; startup left Codex native.");
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       await injectSystemEnv(live.port, config).catch(() => {});
       // Refresh the Grok Build fence too (same contract as start). live.hostname is the
@@ -419,9 +422,11 @@ async function handleEnsure() {
   } catch (err) { console.error(`⚠️  ${grokSyncFailureMessage(err)}`); }
   // Always sync the LIVE port: after a fallback-port start, config.port still names the
   // busy preferred port — syncing that would point Codex at a dead listener.
-  await syncModelsToCodex(port).catch(e => {
+  const synced = await syncModelsToCodex(port).catch(e => {
     console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
   });
+  if (synced?.status === "skipped") console.log("   Codex integration OFF; startup left Codex native.");
   console.log(`✅ Proxy running on port ${port}`);
 }
 
@@ -783,6 +788,11 @@ switch (command) {
         process.exit(1);
       }
       const synced = await syncModelsToCodex(live.port);
+      if (synced.status === "skipped") {
+        process.exitCode = 2;
+        console.error("Codex integration is OFF; restore back did not change Codex. Retry after the competing integration change finishes.");
+        break;
+      }
       if (!synced.ok) {
         process.exitCode = 1;
         console.error("Plain `codex` was not switched back to opencodex. Fix the reported Codex config issue and retry.");
@@ -856,7 +866,9 @@ switch (command) {
   case "sync": {
     const restartCodex = args.slice(1).includes("--restart-codex");
     const synced = await syncModelsToCodex((await findLiveProxy())?.port);
-    if (!synced.ok) {
+    if (synced.status === "skipped") {
+      console.log("Codex integration is OFF; sync skipped and no Codex files changed.");
+    } else if (!synced.ok) {
       process.exitCode = 1;
       console.error("Codex sync did not complete. Fix the reported Codex config issue and retry.");
     }

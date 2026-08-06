@@ -262,10 +262,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
     const result = await syncModelsToCodex(undefined, config, null);
+    const status = result.status === "skipped" || result.ok ? 200 : 500;
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),
-    }, result.ok ? 200 : 500);
+    }, status);
   }
 
   if (url.pathname === "/api/update/check" && req.method === "GET") {

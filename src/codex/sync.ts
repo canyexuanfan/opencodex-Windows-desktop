@@ -5,9 +5,13 @@ import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
+import { shouldSyncCodexOnStart } from "./desired-state";
 
 export interface CodexSyncResult {
+  /** `skipped` is policy truth, never evidence that Codex was written. */
+  status: "applied" | "skipped";
   ok: boolean;
+  skippedReason?: "desired_disabled";
   added: number;
   catalogPath: string | null;
   catalogExists: boolean;
@@ -52,6 +56,19 @@ export async function syncModelsToCodex(
   log: Pick<Console, "log" | "error"> | null = console,
   deps: CodexSyncDeps = defaultDeps,
 ): Promise<CodexSyncResult> {
+  if (!shouldSyncCodexOnStart(config)) {
+    return {
+      status: "skipped",
+      skippedReason: "desired_disabled",
+      ok: true,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: "Codex integration is OFF; no Codex config, catalog, cache, or history was changed.",
+    };
+  }
   const p = port ?? config.port ?? 10100;
   const externalProvider = (deps.currentExternalCodexModelProvider ?? currentExternalCodexModelProvider)();
   if (externalProvider) {
@@ -59,6 +76,7 @@ export async function syncModelsToCodex(
     log?.log(result.message);
     reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
     return {
+      status: "applied",
       ok: result.success,
       added: 0,
       catalogPath: null,
@@ -112,6 +130,7 @@ export async function syncModelsToCodex(
   reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
   const projectConfigWarnings = printProjectCodexConfigWarnings(log, { cwd: process.cwd() });
   return {
+    status: "applied",
     ok: result.success,
     added,
     catalogPath,
