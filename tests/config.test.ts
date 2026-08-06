@@ -1516,7 +1516,7 @@ describe("opencodex config defaults", () => {
     expect(isValidProviderName("constructor")).toBe(false);
   });
 
-  test("persists an explicit Codex account selector map without enabling it by default", () => {
+  test("persists an explicit Codex account selector map without adding one to defaults", () => {
     const selectors = {
       desktop: "@main",
       work: "work-account",
@@ -1529,6 +1529,94 @@ describe("opencodex config defaults", () => {
     expect(diagnostics.error).toBeNull();
     expect(diagnostics.config.codexAccountNamespaces).toEqual(selectors);
     expect(Object.hasOwn(getDefaultConfig(), "codexAccountNamespaces")).toBe(false);
+  });
+
+  test("persists the optional picker override without adding it to defaults", () => {
+    for (const enabled of [true, false]) {
+      writeAccountNamespaceConfig({ desktop: "@main" }, { codexAccountPickerEnabled: enabled });
+
+      const diagnostics = readConfigDiagnostics();
+      expect(diagnostics.error).toBeNull();
+      expect(diagnostics.config.codexAccountPickerEnabled).toBe(enabled);
+    }
+
+    expect(Object.hasOwn(getDefaultConfig(), "codexAccountPickerEnabled")).toBe(false);
+  });
+
+  test("malformed persisted picker visibility fails closed without discarding accounts or providers", () => {
+    writeAccountNamespaceConfig({ desktop: "@main", side: "stored-account" }, {
+      codexAccountPickerEnabled: "yes",
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "stored-account", email: "side@example.test", isMain: false },
+      ],
+    });
+
+    const diagnostics = readConfigDiagnostics();
+    expect(diagnostics).toMatchObject({
+      source: "file",
+      error: null,
+      config: {
+        defaultProvider: "openai",
+        providers: { openai: { baseUrl: "https://chatgpt.com/backend-api/codex" } },
+        codexAccounts: [
+          { id: "main", email: "main@example.test", isMain: true },
+          { id: "stored-account", email: "side@example.test", isMain: false },
+        ],
+        codexAccountNamespaces: { desktop: "@main", side: "stored-account" },
+        codexAccountPickerEnabled: false,
+      },
+    });
+    expect(diagnostics.warnings).toContain(
+      "codexAccountPickerEnabled ignored: expected a boolean",
+    );
+    expect(backupNames()).toEqual([]);
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(loadConfig()).toMatchObject({
+        codexAccountPickerEnabled: false,
+        codexAccountNamespaces: { desktop: "@main", side: "stored-account" },
+        providers: { openai: { baseUrl: "https://chatgpt.com/backend-api/codex" } },
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("codexAccountPickerEnabled ignored"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    for (const invalid of [null, "false", 1]) {
+      expect(validateConfigCandidate({
+        ...getDefaultConfig(),
+        codexAccountPickerEnabled: invalid,
+      })).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("codexAccountPickerEnabled"),
+      });
+    }
+
+    const inherited = Object.assign(
+      Object.create({ codexAccountPickerEnabled: true }) as Record<string, unknown>,
+      getDefaultConfig(),
+    );
+    expect(validateConfigCandidate(inherited)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("own boolean data property"),
+    });
+
+    let getterCalls = 0;
+    const accessor = { ...getDefaultConfig() } as Record<string, unknown>;
+    Object.defineProperty(accessor, "codexAccountPickerEnabled", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return true;
+      },
+    });
+    expect(validateConfigCandidate(accessor)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("own boolean data property"),
+    });
+    expect(getterCalls).toBe(0);
   });
 
   test("validates Claude Desktop profiles and Codex account selectors independently", () => {

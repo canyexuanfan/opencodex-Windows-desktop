@@ -12,6 +12,7 @@ import {
 } from "../src/codex/account-namespace-match";
 import {
   appendDefaultCodexAccountNamespace,
+  codexAccountPickerEnabled,
   codexAccountNamespaceEntries,
   defaultCodexAccountNamespaces,
   isMainCodexAccountTarget,
@@ -304,6 +305,29 @@ describe("Codex account namespace foundations", () => {
         { id: "desktop-row", email: "third@example.test", logLabel: "p464646", isMain: true },
       ],
     })).toEqual({ "main-2": "@main", p454545: "main" });
+  });
+
+  test("keeps existing selector maps enabled unless the visibility override is false", () => {
+    expect(codexAccountPickerEnabled({ codexAccountNamespaces: { desktop: "@main" } })).toBe(true);
+    expect(codexAccountPickerEnabled({
+      codexAccountNamespaces: { desktop: "@main" },
+      codexAccountPickerEnabled: true,
+    })).toBe(true);
+    expect(codexAccountPickerEnabled({
+      codexAccountNamespaces: { desktop: "@main" },
+      codexAccountPickerEnabled: false,
+    })).toBe(false);
+    expect(codexAccountPickerEnabled({
+      codexAccountNamespaces: {},
+      codexAccountPickerEnabled: true,
+    })).toBe(false);
+    expect(codexAccountPickerEnabled({})).toBe(false);
+    for (const malformed of [null, "false", 0, {}, []]) {
+      expect(codexAccountPickerEnabled({
+        codexAccountNamespaces: { desktop: "@main" },
+        codexAccountPickerEnabled: malformed as never,
+      })).toBe(false);
+    }
   });
 
   test("matches route and account namespaces exactly but provider namespaces case-insensitively", () => {
