@@ -162,12 +162,25 @@ jobs:
               const isPrComment =
                 context.payload.issue?.pull_request != null;
               const association = context.payload.comment?.author_association;
-              const isMaintainer = ["OWNER", "COLLABORATOR", "MEMBER"].includes(
-                association
+              // The association is a cheap prefilter, but OWNER/COLLABORATOR/
+              // MEMBER is broader than this repository's canonical maintainer
+              // list. A collaborator or member who is not a maintainer must not
+              // start this write-capable gate, so require the commenter's
+              // login to be in the trusted MAINTAINERS.md list too.
+              const maintainerLogins = new Set(
+                readMaintainerLogins().map(login => login.toLowerCase())
               );
-              if (!isPrComment || !isMaintainer) {
+              const commenter = context.payload.comment?.user?.login;
+              const isCanonicalMaintainer =
+                typeof commenter === "string" &&
+                maintainerLogins.has(commenter.toLowerCase());
+              if (
+                !isPrComment ||
+                !["OWNER", "COLLABORATOR", "MEMBER"].includes(association) ||
+                !isCanonicalMaintainer
+              ) {
                 core.info(
-                  "issue_comment not from a maintainer on a PR; skipping the gate."
+                  "issue_comment not from a canonical maintainer on a PR; skipping the gate."
                 );
                 return;
               }

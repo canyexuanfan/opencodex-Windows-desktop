@@ -2784,6 +2784,42 @@ describe("GitHub Actions hardening", () => {
       expect(methodsOf(result)).not.toContain("graphql");
     });
 
+    test("a COLLABORATOR who is not in MAINTAINERS.md cannot re-run the gate", async () => {
+      // OWNER/COLLABORATOR/MEMBER association is broader than the canonical
+      // maintainer list. A collaborator or member who is absent from
+      // MAINTAINERS.md must not start the write-capable gate — no PR lookup,
+      // no comment/label/title/draft mutations.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        eventName: "issue_comment",
+        eventAction: "created",
+        commentAuthorAssociation: "COLLABORATOR",
+        commentAuthorLogin: "someone-else",
+        maintainersFile: MAINTAINERS_FIXTURE,
+        comments: [
+          { id: 1, user: { login: "someone-else" }, author_association: "COLLABORATOR", body: "not touching gui" },
+        ],
+      });
+
+      // The in-script guard reads MAINTAINERS.md and skips before pulls.get:
+      // no PR lookup, no writes, no GraphQL mutation.
+      expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).not.toContain("pulls.get");
+      expect(methodsOf(result)).not.toContain("issues.createComment");
+      expect(methodsOf(result)).not.toContain("issues.updateComment");
+      expect(methodsOf(result)).not.toContain("graphql");
+    });
+
     test("the gate comment preserves an existing hygiene section across rebuilds", async () => {
       // The hygiene workflow writes its status into the same consolidated gate
       // comment. When the gate rebuilds that comment, it must carry the

@@ -96,6 +96,12 @@ export type RunOptions = {
    */
   commentAuthorAssociation?: string;
   /**
+   * Login of the commenter on an `issue_comment` event. Defaults to
+   * `"wibias"`. The gate requires the commenter to be in the trusted
+   * MAINTAINERS.md list, so tests can set a non-maintainer login here.
+   */
+  commentAuthorLogin?: string;
+  /**
    * Whether the commented-on issue is a pull request. Defaults to `true`.
    * An `issue_comment` on a plain issue must not start this PR-only gate.
    */
@@ -860,7 +866,7 @@ export async function runEnforcePrTarget(
             comment: {
               id: 424242,
               body: "not touching gui",
-              user: { login: "wibias" },
+              user: { login: options.commentAuthorLogin ?? "wibias" },
               author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
             },
           }
