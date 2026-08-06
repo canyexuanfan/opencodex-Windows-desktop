@@ -56,3 +56,11 @@ jobs:
           comment: false
           review-comments: false
           commit-status: false
+
+      # Temporary diagnostic: React Doctor writes its detailed report only to
+      # the job summary. Echo it into the normal log so the exact findings can
+      # be addressed while this draft PR is under construction.
+      - name: Print React Doctor report
+        if: always()
+        shell: bash
+        run: cat "$GITHUB_STEP_SUMMARY"
