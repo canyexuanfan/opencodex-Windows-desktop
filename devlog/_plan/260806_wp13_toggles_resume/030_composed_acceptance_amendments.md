@@ -39,7 +39,7 @@ scenario below. The disposable-host class (P09/P10/P18/P34-P36) is excluded by
 the safety boundary as before.
 
 1. **A-reduced — entry-to-funnel for the toggle-relevant rows.** Real child
-   invocations of: P02 (`ocx start`, bind port 0, then kill), P04 (`ocx ensure`),
+   invocations of: P02 (`ocx start`, then kill), P04 (`ocx ensure`),
    P05 (`ocx sync`), P07 (`ocx restore`), P08 (`ocx restore back`), P06
    (`ocx sync-cache`); plus HTTP P19 (`POST /api/sync`) and the toggle routes
    (`PUT /api/native-integrations/{codex,grok,claude-desktop}`) against the real
@@ -61,9 +61,9 @@ the safety boundary as before.
    different HOME/USERPROFILE but same CODEX_HOME gets typed `busy` naming the same
    lock id; no lock artifact under either fake home.
 5. **Grok E2E (from 000_plan.md).** Disable Grok via the real route, then run the
-   real `ocx start` startup path (bind port 0) in a child with the persisted
-   config; assert the Grok fence stays absent and the startup log/result reports
-   the desired-state skip.
+   real `ocx start` startup path in a child with the persisted config; assert
+   the Grok fence stays absent and the startup log/result reports the
+   desired-state skip.
 6. **Restore truth composed.** With history DB held by a `BEGIN IMMEDIATE` holder
    child, run `ocx restore` as a real child. The CLI prints only `{success,
    message}` (`src/cli/index.ts:817-826`), so the envelope is not directly
@@ -80,7 +80,14 @@ the safety boundary as before.
 Temp root via `mkdtempSync`; explicit fake `HOME`/`USERPROFILE`/`CODEX_HOME`/
 `OPENCODEX_HOME`; children spawned as `Bun.spawn([process.execPath,
 resolve(repoRoot, "src/cli/index.ts"), ...])`; servers on port 0 with `/healthz`
-PID verification; local provider fixtures only; sentinel-based synchronization
+PID verification; local provider fixtures only. **Port safety is config-seeded,
+never flag-passed:** every child fixture that starts a server writes
+`"port": 0` into its temp `config.json` and invokes `ocx start` WITHOUT
+`--port` — the CLI rejects `--port 0` as an invalid flag value
+(`src/cli/index.ts:71-85`), while an unseeded temp config would default to
+10100 and collide with the live proxy. The harness discovers the actual bound
+port from the isolated runtime-port record and verifies `/healthz` reports the
+child's own PID before any request. Sentinel-based synchronization
 (no sleep-as-readiness); watchdogs per child; lock-path preflight requires the
 case's hash-derived DB absent, teardown removes only the four-name allowlist
 after identity recheck; a teardown failure fails the case. The suite must pass
