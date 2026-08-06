@@ -66,19 +66,105 @@ function isPlaceholderOnlyValue(raw) {
  */
 function stripMediaTokens(text) {
   if (typeof text !== "string") return "";
-  return text
+  const htmlStripped = text
     // HTML media tags: <img ...> (self-closing or not), <picture>...</picture>,
     // <video>...</video>, <audio>...</audio> (kept as whole blocks so a lone
     // media embed does not leave stray tags behind).
     .replace(/<picture[\s\S]*?<\/picture>/gi, " ")
     .replace(/<video[\s\S]*?<\/video>/gi, " ")
     .replace(/<audio[\s\S]*?<\/audio>/gi, " ")
-    .replace(/<img\b[^>]*>/gi, " ")
-    // Markdown images, optionally with a title: ![alt](url "title"). Alt text
-    // may contain balanced brackets (for example ![Image [screenshot]](url)).
-    .replace(/!\[(?:[^\[\]]|\[[^\]]*\])*\]\([^)]*\)/g, " ")
-    // HTML comment tokens that may wrap media.
-    .replace(/<!--[\s\S]*?-->/g, " ");
+    .replace(/<img\b[^>]*>/gi, " ");
+  return stripMarkdownImages(htmlStripped);
+}
+
+/**
+ * Remove Markdown image tokens `![alt](dest "title")` using a small
+ * balanced scanner instead of a regex, because destinations may contain
+ * balanced parentheses (for example `image_(final).png`) and alt text may
+ * contain balanced brackets (`![Image [screenshot]](url)`).
+ *
+ * A token is matched only when:
+ *   - it starts with `![` (not escaped);
+ *   - the alt text is balanced with respect to `[` / `]`;
+ *   - the destination is balanced with respect to `(`, `)` and `"` (an
+ *     optional title may follow); and
+ *   - the token closes with a `)`.
+ *
+ * Malformed tokens (unbalanced destination, e.g. `a)b.png)`) are left in
+ * place — they are not valid Markdown images and must not be silently
+ * dropped.
+ */
+function stripMarkdownImages(text) {
+  if (typeof text !== "string") return "";
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    // A backslash-escaped or code-fenced `![` is not an image token. We only
+    // guard the common `\!` escape here; fenced blocks are handled by the
+    // section extractor upstream, which does not include them in sections.
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const end = scanMarkdownImage(text, i);
+      if (end !== -1) {
+        out.push(" ");
+        i = end;
+        continue;
+      }
+    }
+    out.push(text[i]);
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
+ * Scan a Markdown image token starting at `start` (which points at `!`).
+ * Returns the index just past the closing `)` on success, or -1 when the
+ * token is malformed.
+ */
+function scanMarkdownImage(text, start) {
+  // Alt text: `![` ... `]` with balanced nested brackets.
+  let i = start + 2;
+  let bracketDepth = 0;
+  for (; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1; // skip escaped character
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+    } else if (ch === "]") {
+      if (bracketDepth === 0) break;
+      bracketDepth -= 1;
+    }
+  }
+  if (i >= text.length || text[i] !== "]") return -1;
+
+  // Destination: `(` ... `)` with balanced parentheses. An optional
+  // whitespace-separated `"title"` may follow the destination.
+  if (text[i + 1] !== "(") return -1;
+  i += 2;
+  let parenDepth = 1;
+  let inQuotes = false;
+  for (; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1; // skip escaped character
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+    if (ch === "(") {
+      parenDepth += 1;
+    } else if (ch === ")") {
+      parenDepth -= 1;
+      if (parenDepth === 0) return i + 1;
+    }
+  }
+  return -1;
 }
 
 /**

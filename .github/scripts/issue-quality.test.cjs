@@ -268,6 +268,10 @@ describe("validateIssue - feature", () => {
       result.reasons.some((r) => /same content/i.test(r)),
       `Expected duplicate-content reason, got: ${result.reasons.join("; ")}`,
     );
+    assert.ok(
+      result.reasons.some((r) => /repeat the issue title/i.test(r)),
+      `Expected repeated-title reason, got: ${result.reasons.join("; ")}`,
+    );
   });
 
   it("rejects a markdown-image-only goal section with repeated prose (#1098)", () => {
@@ -319,6 +323,32 @@ describe("validateIssue - feature", () => {
     );
   });
 
+  it("rejects a markdown image whose URL contains balanced parentheses (#1098)", () => {
+    const repeated =
+      "It is hoped that the usage query will support time-based queries and statistics, as well as key-based queries and statistics";
+    // Markdown destinations may contain balanced parentheses, e.g.
+    // ![diagram](https://example.com/image_(final).png). The stripper must
+    // still treat it as media-only so it cannot hide repeated prose.
+    const mdImg = "![diagram](https://example.com/image_(final).png)";
+    const body = [
+      "### What are you trying to accomplish?",
+      mdImg,
+      "### What prevents this today?",
+      repeated,
+      "### What should OpenCodex do?",
+      repeated,
+      "### Example usage or interface",
+      repeated,
+    ].join("\n");
+    const result = validateIssue({ title: repeated, body, labels: ["enhancement"] });
+    assert.equal(result.kind, "feature");
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.reasons.some((r) => /missing or empty/i.test(r)),
+      `Expected missing/empty reason, got: ${result.reasons.join("; ")}`,
+    );
+  });
+
   it("preserves a goal section that mixes an image with real text", () => {
     const goal = [
       "![Screenshot](https://example.com/shot.png)",
@@ -337,6 +367,10 @@ describe("validateIssue - feature", () => {
     assert.equal(isMediaOnly('<img src="x.png" />'), true);
     assert.equal(isMediaOnly("![alt](https://example.com/x.png)"), true);
     assert.equal(isMediaOnly("![alt [with bracket]](https://example.com/x.png)"), true);
+    assert.equal(isMediaOnly("![diagram](https://example.com/image_(final).png)"), true);
+    assert.equal(isMediaOnly('![alt](https://example.com/image_(final).png "title")'), true);
+    assert.equal(isMediaOnly("![bad](https://example.com/a)b.png)"), false);
+    assert.equal(isMediaOnly("\\![escaped](url)"), false);
     assert.equal(isMediaOnly('<picture><source srcset="x.webp"><img src="x.png"></picture>'), true);
     assert.equal(isMediaOnly('<video src="clip.mp4"></video>'), true);
     assert.equal(isMediaOnly('<img src="x.png" />\nCaption text'), false);
