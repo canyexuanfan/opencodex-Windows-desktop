@@ -105,7 +105,7 @@ function parseModels(raw: unknown): ModelOption[] {
       : "";
     if (!provider || !id || provider === "combo" || provider === "policy") continue;
     if ((row as { disabled?: unknown }).disabled === true) continue;
-    const key = `${provider}\u0000${id}`;
+    const key = JSON.stringify([provider, id]);
     if (seen.has(key)) continue;
     seen.add(key);
     models.push({ provider, id });
