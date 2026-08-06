@@ -270,7 +270,7 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       const response = await fetch(`${apiBase}/api/routing-profiles`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, mode: selected ? "update" : "create" }),
       });
       const data = await response.json().catch(() => null) as unknown;
       const serverError = routingProfileResponseError(data);
