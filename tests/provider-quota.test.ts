@@ -687,6 +687,151 @@ describe("fetchProviderQuotaReports", () => {
     expect(invalid.reports).toEqual([]);
   });
 
+  test("ClinePass quota maps five-hour/weekly/monthly utilization windows", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { limits: [
+          { type: "five_hour", percentUsed: 40.5 },
+          { type: "weekly", percentUsed: 52, resetsAt: "2026-08-09T00:00:00Z" },
+          { type: "monthly", percentUsed: 12.3 },
+        ] },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("cline-pass", "https://api.cline.bot/api/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("cline:plan-usage-limits");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 40.5,
+      weeklyPercent: 52,
+      monthlyPercent: 12.3,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://api.cline.bot/api/v1/users/me/plan/usage-limits");
+    expect(seen[0]?.authorization).toBe("Bearer cline-pass-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("ClinePass quota treats a 404 (no active plan) as a no-report, not terminal", async () => {
+    globalThis.fetch = (async () => new Response("no plan", { status: 404 })) as typeof fetch;
+    const config = keyQuotaConfig("cline-pass", "https://api.cline.bot/api/v1");
+
+    const result = await fetchProviderQuotaReports(config, true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("ClinePass quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("cline-pass", "https://attacker.example/api/v1"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("Z.AI quota sends the raw token (no Bearer prefix) and maps plan windows", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({
+        success: true,
+        data: { fiveHourPercent: 40.5, weeklyPercent: 52, monthlyMCPUsage: 12.3 },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("zai:quota-limit");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 40.5,
+      weeklyPercent: 52,
+      monthlyPercent: 12.3,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://api.z.ai/api/monitor/usage/quota/limit");
+    expect(seen[0]?.authorization).toBe("zai-secret"); // raw token, NO Bearer
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Z.AI quota treats an unsuccessful payload as a no-report", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      code: 1001, success: false, msg: "Authentication parameter not received",
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toEqual([]);
+  });
+
+  test("Z.AI quota never sends the token to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("zai", "https://attacker.example/api/coding/paas/v4"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("MiniMax quota renders the Token Plan remaining-time window", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      return new Response(JSON.stringify({ success: true, data: { remains_time: 1_000_000_000 } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("minimax", "https://api.minimax.io/v1"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("minimax:token-plan-remains");
+    expect(result.reports[0]?.quota.customWindows?.[0]?.label).toContain("Token Plan remaining");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://www.minimax.io/v1/token_plan/remains");
+    expect(seen[0]?.authorization).toBe("Bearer minimax-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("MiniMax quota never sends the key to a non-canonical base URL", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("minimax", "https://attacker.example/v1"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
   test("Kimi quota never sends OAuth credentials to a non-canonical base URL", async () => {
     await saveCredential("kimi", { access: "kimi-access-secret", refresh: "kimi-refresh-secret", expires: Date.now() + 3600_000 });
     const seen: string[] = [];

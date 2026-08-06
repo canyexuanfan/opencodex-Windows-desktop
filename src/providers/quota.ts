@@ -36,6 +36,9 @@ const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 const A6API_BASE_URL = "https://api.a6api.com";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const CLINE_BASE_URL = "https://api.cline.bot";
+const ZAI_BASE_URL = "https://api.z.ai";
+const MINIMAX_REMAINS_URL = "https://www.minimax.io/v1/token_plan/remains";
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
@@ -255,6 +258,21 @@ function isCanonicalDeepSeekBaseUrl(baseUrl: string): boolean {
   return normalized === DEEPSEEK_BASE_URL;
 }
 
+function isCanonicalClineBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === CLINE_BASE_URL || normalized === `${CLINE_BASE_URL}/api/v1`;
+}
+
+function isCanonicalZaiBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === ZAI_BASE_URL || normalized === `${ZAI_BASE_URL}/api/coding/paas/v4`;
+}
+
+function isCanonicalMinimaxBaseUrl(baseUrl: string): boolean {
+  const normalized = normalizedBaseUrl(baseUrl);
+  return normalized === "https://api.minimax.io/v1" || normalized === "https://api.minimaxi.com/v1";
+}
+
 function a6apiPayload(value: unknown): Record<string, unknown> | null {
   const body = asRecord(value);
   return asRecord(body?.data) ?? body;
@@ -397,6 +415,145 @@ async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): 
   if (percent === undefined) return null;
   const label = `API balance ($${totalBalance.toFixed(2)} of $${grantedBalance.toFixed(2)} granted)`;
   return report(provider, "deepseek:balance", {
+    customWindows: [{ label, percent }],
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * ClinePass `GET /api/v1/users/me/plan/usage-limits` — the subscription's
+ * rolling five-hour, weekly, and monthly utilization, matching the existing
+ * ProviderQuota windows directly. The endpoint 404s (or returns a null plan)
+ * for accounts without an active ClinePass, which is a no-report, not an error.
+ */
+async function fetchClineQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  if (!isCanonicalClineBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(`${CLINE_BASE_URL}/api/v1/users/me/plan/usage-limits`, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    // 404 = no active plan; a plain "no plan" is a no-report, everything else
+    // 4xx (except 408/429) is a credential/contract problem.
+    if (response.status === 404) return null;
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await response.json().catch(() => null));
+  const data = asRecord(body?.data) ?? body;
+  const limits = Array.isArray(data?.limits) ? data.limits : null;
+  if (!limits) return null;
+  const quota: ProviderQuota = { updatedAt: Date.now() };
+  let windows = 0;
+  for (const raw of limits) {
+    const row = asRecord(raw);
+    if (!row) continue;
+    const percent = normalizePercent(row.percentUsed);
+    if (percent === undefined) continue;
+    const resetAt = normalizeResetAt(row.resetsAt);
+    if (row.type === "five_hour") {
+      quota.fiveHourPercent = percent;
+      if (resetAt !== undefined) quota.fiveHourResetAt = resetAt;
+      windows += 1;
+    } else if (row.type === "weekly") {
+      quota.weeklyPercent = percent;
+      if (resetAt !== undefined) quota.weeklyResetAt = resetAt;
+      windows += 1;
+    } else if (row.type === "monthly") {
+      quota.monthlyPercent = percent;
+      if (resetAt !== undefined) quota.monthlyResetAt = resetAt;
+      windows += 1;
+    }
+  }
+  return windows > 0 ? report(provider, "cline:plan-usage-limits", quota) : null;
+}
+
+/**
+ * Z.AI GLM Coding Plan `GET /api/monitor/usage/quota/limit` — the coding-plan
+ * subscription's 5-hour token cycle, weekly quota, and monthly MCP usage.
+ * The token is sent RAW (no `Bearer` prefix) per Z.AI's API contract.
+ */
+async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  if (!isCanonicalZaiBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(`${ZAI_BASE_URL}/api/monitor/usage/quota/limit`, {
+    headers: { Accept: "application/json", Authorization: apiKey },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await response.json().catch(() => null));
+  if (!body || body.success === false) return null;
+  const data = asRecord(body.data) ?? body;
+  // The plugin renders a 5h token window, a weekly window, and a monthly MCP
+  // window. Look for percent fields with window identifiers.
+  const quota: ProviderQuota = { updatedAt: Date.now() };
+  let windows = 0;
+  const percentAt = (key: string): number | undefined => {
+    const value = normalizePercent(data?.[key]);
+    if (value !== undefined) return value;
+    const nested = asRecord(data?.quota);
+    return nested ? normalizePercent(nested[key]) : undefined;
+  };
+  const fiveHour = percentAt("fiveHourPercent") ?? percentAt("fiveHourUsage") ?? percentAt("fiveHourUsed");
+  const weekly = percentAt("weeklyPercent") ?? percentAt("weeklyUsage") ?? percentAt("weeklyUsed");
+  const monthly = percentAt("monthlyPercent") ?? percentAt("mcpPercent") ?? percentAt("monthlyMCPUsage");
+  if (fiveHour !== undefined) {
+    quota.fiveHourPercent = fiveHour;
+    windows += 1;
+  }
+  if (weekly !== undefined) {
+    quota.weeklyPercent = weekly;
+    windows += 1;
+  }
+  if (monthly !== undefined) {
+    quota.monthlyPercent = monthly;
+    windows += 1;
+  }
+  return windows > 0 ? report(provider, "zai:quota-limit", quota) : null;
+}
+
+/**
+ * MiniMax Token Plan `GET /v1/token_plan/remains` — the subscription's
+ * remaining quota as a countdown-time value (ms). The console shows a usage
+ * bar; this endpoint exposes the raw remaining time, so the bar is rendered
+ * from the remaining share of the plan window.
+ */
+async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  if (!isCanonicalMinimaxBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(MINIMAX_REMAINS_URL, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await response.json().catch(() => null));
+  if (!body || body.success === false) return null;
+  const data = asRecord(body.data) ?? body;
+  // `remains_time` is the remaining plan quota in ms (a countdown). The plan
+  // window (e.g. 30 days) is not exposed, so render the remaining share as a
+  // single custom window at the raw value; the label states it is remaining.
+  const remainsMs = toFiniteNumber(data.remains_time ?? data.remainsTime);
+  if (remainsMs === undefined || remainsMs < 0) return null;
+  const percent = normalizePercent(remainsMs <= 0 ? 100 : Math.min(100, (1 - remainsMs / 2_592_000_000) * 100));
+  if (percent === undefined) return null;
+  const label = `Token Plan remaining (${Math.floor(remainsMs / 3_600_000)}h)`;
+  return report(provider, "minimax:token-plan-remains", {
     customWindows: [{ label, percent }],
     updatedAt: Date.now(),
   });
@@ -1277,6 +1434,15 @@ async function maybeFetchProviderQuota(
     }
     if ((provider.authMode ?? "key") === "key" && name === "deepseek") {
       return fetchDeepSeekQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "cline-pass") {
+      return fetchClineQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "zai") {
+      return fetchZaiQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && (name === "minimax" || name === "minimax-cn")) {
+      return fetchMinimaxQuota(name, provider);
     }
     return null;
   } catch {
