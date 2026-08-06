@@ -217,7 +217,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 74 built-in presets: 62 key-based, eight OAuth, three local, and one default
+opencodex ships 76 built-in presets: 64 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
@@ -251,6 +251,8 @@ free-experimentation model.
 | Cerebras | `https://api.cerebras.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
+| Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
+| Vultr Serverless Inference | `https://api.vultrinference.com/v1` |
 | Baseten Model APIs | `https://inference.baseten.co/v1` |
 | Command Code | `https://api.commandcode.ai/provider/v1` |
 | SambaNova Cloud | `https://api.sambanova.ai/v1` |
@@ -304,6 +306,15 @@ rows. Create keys in [DeepInfra's dashboard](https://deepinfra.com/dash/api_keys
 slash-containing native model ids, and caps live discovery at 256 KiB and 256 raw rows. It covers
 serverless text and vision-language chat only; Hyperbolic's separate image, audio, and GPU endpoints
 are out of scope. Create keys at [Hyperbolic](https://app.hyperbolic.ai).
+
+**Nscale and Vultr discovery.** Both presets read the provider's authenticated `/v1/models` catalog,
+preserve native ids, and cap discovery at 256 KiB and 256 raw rows. Nscale's catalog mixes chat,
+image, and embedding models without a modality field, so the preset admits only
+`meta-llama/Llama-3.1-8B-Instruct`, the model used by Nscale's official tool-calling API example.
+Vultr currently documents tool calling only for `kimi-k2-instruct`, so its preset exposes only that
+model. Other rows remain hidden until the provider publishes equivalent agent-tool evidence. Create
+an Nscale service token in the [Nscale Console](https://console.nscale.com); copy Vultr's inference
+key from the subscription overview in the [Vultr Console](https://my.vultr.com).
 
 **Command Code discovery.** The preset reads Command Code's `/provider/v1/models` list from
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw

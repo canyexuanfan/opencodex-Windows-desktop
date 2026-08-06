@@ -1386,6 +1386,69 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Serverless text and vision-language chat models only; Hyperbolic's separate image, audio, and GPU endpoints are out of scope.",
   },
   {
+    // Primary sources checked 2026-08-03:
+    // - docs.nscale.com documents the production OpenAI-compatible endpoint, bearer service
+    //   tokens, /v1/models, and a tool-calling request using this exact Llama model id.
+    // - nscale.com/policies/terms-conditions identifies Nscale AS as the service operator and
+    //   covers customers using its public-cloud inference offering. Maintainer: @olddonkey;
+    //   no affiliation with Nscale.
+    id: "nscale",
+    label: "Nscale Serverless Inference",
+    baseUrl: "https://inference.api.nscale.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://console.nscale.com",
+    defaultModel: "meta-llama/Llama-3.1-8B-Instruct",
+    models: ["meta-llama/Llama-3.1-8B-Instruct"],
+    liveModels: true,
+    preserveCustomDestination: true,
+    // Nscale documents tools but not parallel tool calls. Keep requests serialized.
+    parallelToolCalls: false,
+    // The API schema accepts reasoning_effort, but does not publish per-model tiers.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        // Nscale's catalog mixes chat, image, and embedding rows without a modality field.
+        // Admit only the exact model used in its official tool-calling API example.
+        allOf: [{ path: ["id"], equalsAny: ["meta-llama/Llama-3.1-8B-Instruct"] }],
+      },
+    },
+    note: "Serverless OpenAI-compatible inference. Live discovery admits only the tool-capable model established by Nscale's official API example; other mixed-catalog rows remain hidden pending equivalent evidence.",
+  },
+  {
+    // Primary sources checked 2026-08-03:
+    // - docs.vultr.com documents the fixed OpenAI-compatible base URL, per-subscription bearer
+    //   key, /v1/models, and states that tool calling is currently limited to kimi-k2-instruct.
+    // - Vultr's official properties identify VULTR as a The Constant Company, LLC trademark and
+    //   document customer API integrations. Maintainer: @olddonkey; no affiliation with Vultr.
+    id: "vultr",
+    label: "Vultr Serverless Inference",
+    baseUrl: "https://api.vultrinference.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://my.vultr.com",
+    defaultModel: "kimi-k2-instruct",
+    models: ["kimi-k2-instruct"],
+    liveModels: true,
+    preserveCustomDestination: true,
+    parallelToolCalls: false,
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 256,
+      filter: {
+        // Vultr explicitly limits tool calling to this model. A coding agent must not select
+        // another chat model that cannot complete its tool loop.
+        allOf: [{ path: ["id"], equalsAny: ["kimi-k2-instruct"] }],
+      },
+    },
+    note: "Serverless Inference subscription API. Live discovery exposes only kimi-k2-instruct because Vultr documents it as the sole tool-calling model.",
+  },
+  {
     id: "baseten",
     label: "Baseten Model APIs",
     baseUrl: "https://inference.baseten.co/v1",
