@@ -147,3 +147,14 @@ export function codexAccountNamespaceEntries(
   return Object.entries(config.codexAccountNamespaces ?? {})
     .map(([namespace, accountId]) => [namespace, normalizeCodexAccountNamespaceTarget(accountId)]);
 }
+
+/**
+ * Whether generated account-qualified rows are enabled for catalog discovery.
+ * A non-empty hand-written map predating the explicit override remains enabled.
+ */
+export function codexAccountPickerEnabled(
+  config: Pick<OcxConfig, "codexAccountNamespaces" | "codexAccountPickerEnabled">,
+): boolean {
+  return (config.codexAccountPickerEnabled === undefined || config.codexAccountPickerEnabled === true)
+    && Object.keys(config.codexAccountNamespaces ?? {}).length > 0;
+}
