@@ -1712,6 +1712,7 @@ export const ru: Record<TKey, string> = {
   "claudeDesktop.applyFailed": "Профиль сохранён, но применить его не удалось.",
   "claudeDesktop.updateFailed": "Не удалось обновить Claude Desktop.",
   "claudeDesktop.savedApplied": "Профиль сохранён и применён к Claude Desktop.",
+  "claudeDesktop.appliedMarkerUnsaved": "Применено к Claude Desktop, но отметка о применении не сохранена — состояние ниже может показывать устаревшие данные до повторного применения.",
   "claudeDesktop.savedAppliedAnnounce": "Профиль Claude Desktop сохранён и применён.",
   "claudeDesktop.saved": "Профиль сохранён.",
   "claudeDesktop.savedAnnounce": "Профиль Claude Desktop сохранён.",

@@ -1789,6 +1789,7 @@ export const de: Record<TKey, string> = {
   "claudeDesktop.applyFailed": "Das Profil wurde gespeichert, konnte aber nicht angewendet werden.",
   "claudeDesktop.updateFailed": "Claude-Desktop-Aktualisierung fehlgeschlagen.",
   "claudeDesktop.savedApplied": "Profil gespeichert und auf Claude Desktop angewendet.",
+  "claudeDesktop.appliedMarkerUnsaved": "Auf Claude Desktop angewendet, aber die Anwendungsmarkierung wurde nicht gespeichert – der Status unten kann veraltet sein, bis Sie erneut anwenden.",
   "claudeDesktop.savedAppliedAnnounce": "Claude-Desktop-Profil gespeichert und angewendet.",
   "claudeDesktop.saved": "Profil gespeichert.",
   "claudeDesktop.savedAnnounce": "Claude-Desktop-Profil gespeichert.",

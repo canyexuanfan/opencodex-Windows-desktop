@@ -1670,6 +1670,7 @@ export const ja: Record<TKey, string> = {
   "claudeDesktop.applyFailed": "プロファイルは保存されましたが、適用できませんでした。",
   "claudeDesktop.updateFailed": "Claude Desktop の更新に失敗しました。",
   "claudeDesktop.savedApplied": "プロファイルを保存し、Claude Desktop に適用しました。",
+  "claudeDesktop.appliedMarkerUnsaved": "Claude Desktop への適用は完了しましたが、適用マーカーを保存できませんでした。再度適用するまで、下の保存済み／適用済み表示が実際と異なる場合があります。",
   "claudeDesktop.savedAppliedAnnounce": "Claude Desktop プロファイルを保存して適用しました。",
   "claudeDesktop.saved": "プロファイルを保存しました。",
   "claudeDesktop.savedAnnounce": "Claude Desktop プロファイルを保存しました。",

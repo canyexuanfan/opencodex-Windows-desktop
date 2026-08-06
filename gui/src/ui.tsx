@@ -14,9 +14,12 @@ export function Switch({ on, onClick, disabled, label }: { on: boolean; onClick:
   );
 }
 
-export function Notice({ tone, children }: { tone: "ok" | "err"; children: ReactNode }) {
+export function Notice({ tone, children }: { tone: "ok" | "err" | "warn"; children: ReactNode }) {
+  // `warn` is degraded-but-not-failed: the action happened, something adjacent
+  // did not. It must not render as the clean success the user did not get.
+  const toneClass = tone === "ok" ? "notice-ok" : tone === "warn" ? "notice-warn" : "notice-err";
   return (
-    <div className={`notice ${tone === "ok" ? "notice-ok" : "notice-err"}`} role="status">
+    <div className={`notice ${toneClass}`} role="status">
       {tone === "ok" ? <IconCheck /> : <IconAlert />}
       <span>{children}</span>
     </div>

@@ -1816,6 +1816,7 @@ export const ko: Record<TKey, string> = {
   "claudeDesktop.applyFailed": "프로필은 저장했지만 적용하지 못했습니다.",
   "claudeDesktop.updateFailed": "Claude Desktop 업데이트에 실패했습니다.",
   "claudeDesktop.savedApplied": "프로필을 저장하고 Claude Desktop에 적용했습니다.",
+  "claudeDesktop.appliedMarkerUnsaved": "Claude Desktop에는 적용했지만 적용 표시를 저장하지 못했습니다. 다시 적용하기 전까지 아래 저장/적용 상태가 실제와 다르게 보일 수 있습니다.",
   "claudeDesktop.savedAppliedAnnounce": "Claude Desktop 프로필 저장과 적용을 마쳤습니다.",
   "claudeDesktop.saved": "프로필을 저장했습니다.",
   "claudeDesktop.savedAnnounce": "Claude Desktop 프로필을 저장했습니다.",

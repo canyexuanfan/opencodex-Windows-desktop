@@ -1809,6 +1809,7 @@ export const zh: Record<TKey, string> = {
   "claudeDesktop.applyFailed": "配置已保存，但无法应用。",
   "claudeDesktop.updateFailed": "Claude Desktop 更新失败。",
   "claudeDesktop.savedApplied": "配置已保存并应用到 Claude Desktop。",
+  "claudeDesktop.appliedMarkerUnsaved": "已应用到 Claude Desktop，但应用标记未能保存。在再次应用之前，下方的已保存／已应用状态可能显示不准确。",
   "claudeDesktop.savedAppliedAnnounce": "Claude Desktop 配置已保存并应用。",
   "claudeDesktop.saved": "配置已保存。",
   "claudeDesktop.savedAnnounce": "Claude Desktop 配置已保存。",

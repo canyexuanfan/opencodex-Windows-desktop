@@ -1823,6 +1823,7 @@ export const en = {
   "claudeDesktop.applyFailed": "Profile was saved, but could not be applied.",
   "claudeDesktop.updateFailed": "Claude Desktop update failed.",
   "claudeDesktop.savedApplied": "Profile saved and applied to Claude Desktop.",
+  "claudeDesktop.appliedMarkerUnsaved": "Applied to Claude Desktop, but the applied marker was not saved — the saved-vs-applied state below may read stale until you apply again.",
   "claudeDesktop.savedAppliedAnnounce": "Claude Desktop profile saved and applied.",
   "claudeDesktop.saved": "Profile saved.",
   "claudeDesktop.savedAnnounce": "Claude Desktop profile saved.",
