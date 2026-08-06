@@ -70,6 +70,11 @@ export function codexIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrati
   return integrationEnabled(config, "codex");
 }
 
+/** Whether a Codex sync is permitted for this admitted config snapshot. */
+export function shouldSyncCodexOnStart(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return codexIntegrationEnabled(config);
+}
+
 /**
  * Grok's toggle SHIPPED without this, which is the bug: it strips the fence in
  * `~/.grok/config.toml` and records nothing, so the next `ocx start` calls
@@ -142,6 +147,20 @@ export function setGrokIntegrationEnabled(enabled: boolean): CodexDesiredStateRe
   return setIntegrationEnabled("grok", enabled);
 }
 
+/** Whether Claude Desktop's managed gateway profile is wanted. */
+export function claudeDesktopIntegrationEnabled(config: Pick<OcxConfig, "clientIntegrations">): boolean {
+  return integrationEnabled(config, "claude-desktop");
+}
+
+/** The same question when no admitted config snapshot is in hand. */
+export function claudeDesktopIntegrationEnabledNow(): boolean {
+  return claudeDesktopIntegrationEnabled(loadConfig());
+}
+
+export function setClaudeDesktopIntegrationEnabled(enabled: boolean): CodexDesiredStateResult {
+  return setIntegrationEnabled("claude-desktop", enabled);
+}
+
 /**
  * The startup gate, as a function rather than an `if` buried in `handleStart`.
  *
@@ -167,7 +186,7 @@ export async function syncCodexOnStartIfEnabled(
   sync: CodexStartupSync = defaultStartupSync,
   readinessGate?: ReadinessGate,
 ): Promise<{ ran: boolean; catalogWritten: boolean; cacheSynced: boolean }> {
-  if (!codexIntegrationEnabled(config)) {
+  if (!shouldSyncCodexOnStart(config)) {
     // The user explicitly turned Codex off: there is nothing to sync, so the
     // proxy is ready as soon as it is up. The gate is driven here so /readyz
     // does not stay pending forever for a deployment that deliberately disabled

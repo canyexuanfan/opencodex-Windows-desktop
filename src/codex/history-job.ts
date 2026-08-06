@@ -24,6 +24,7 @@ import type {
   HistoryWorkerResult,
 } from "./history-worker";
 import { historyBackupPathFor } from "./history-provider";
+import type { CodexHistoryFailureReason } from "./history-provider";
 import { getCodexHome } from "./paths";
 
 /** Where Codex keeps its resume history, and the manifest that shadows it. */
@@ -63,14 +64,15 @@ export interface CodexHistoryJobRequest {
   readonly canonicalStateDbPath: string;
   readonly canonicalBackupPath: string;
   readonly operation: CodexHistoryWorkerOperation;
+  readonly expectedDesiredEnabled?: boolean;
 }
 
 export type CodexHistoryJobOutcome =
   | { readonly kind: "converged"; readonly rows: number; readonly files: number }
   | { readonly kind: "skipped" }
-  | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" }
+  | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" | "desired_disabled" | "desired_enabled" }
   | { readonly kind: "failed"; readonly reason: "worker-error" | "worker-died" | "timeout";
-      readonly message: string };
+      readonly message: string; readonly historyFailureReason?: CodexHistoryFailureReason };
 
 /**
  * Derive the durable history operation from admitted intent.
@@ -113,9 +115,11 @@ function isPlausibleWorkerResult(
         && typeof message.rows === "number"
         && typeof message.files === "number";
     case "blocked":
-      return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path";
+      return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path"
+        || message.reason === "desired_disabled" || message.reason === "desired_enabled";
     case "error":
-      return typeof message.message === "string";
+      return typeof message.message === "string"
+        && (message.reason === undefined || message.reason === "busy" || message.reason === "permission");
     default:
       return false;
   }
@@ -134,7 +138,12 @@ export function deriveCodexHistoryOperation(intent: {
 function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutcome {
   if (result.type === "blocked") return { kind: "blocked", reason: result.reason };
   if (result.type === "error") {
-    return { kind: "failed", reason: "worker-error", message: result.message };
+    return {
+      kind: "failed",
+      reason: "worker-error",
+      message: result.message,
+      ...(result.reason ? { historyFailureReason: result.reason } : {}),
+    };
   }
   return result.outcome === "skipped"
     ? { kind: "skipped" }
@@ -248,6 +257,7 @@ export async function runCodexHistoryJob(
       canonicalCodexHome: request.canonicalCodexHome,
       canonicalStateDbPath: request.canonicalStateDbPath,
       canonicalBackupPath: request.canonicalBackupPath,
+      ...(request.expectedDesiredEnabled === undefined ? {} : { expectedDesiredEnabled: request.expectedDesiredEnabled }),
       env: {
         ...(process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {}),
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),

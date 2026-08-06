@@ -43,7 +43,7 @@ import { maybeShowStarPrompt } from "./star-prompt";
 import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
-import { shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import { setIntegrationEnabled, shouldSyncCodexOnStart, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
 import { collectOrcaCodexHomeDiagnostic } from "../codex/home";
 import { removeOwnedConfigState } from "../lib/config-ownership";
@@ -351,6 +351,7 @@ async function handleStart(options: { block?: boolean } = {}) {
   // observes the real sync outcome (ok/warning) so /readyz never advertises a
   // half-synced proxy as ready while /healthz stays live.
   const startupSync = await syncCodexOnStartIfEnabled(port, config, undefined, readinessGate);
+  if (!startupSync.ran) console.log("   Codex integration OFF; startup left Codex native.");
   // #1046: one warning per startup, after BOTH writes. The server's cache
   // invalidation happens first and the catalog sync second, so the mtime is only
   // final here — and neither write site warns on its own, or a boot that hits
@@ -409,10 +410,12 @@ async function handleEnsure() {
     return;
   }
   const live = await findLiveProxy();
-    if (live) {
-      await syncModelsToCodex(live.port).catch(e => {
+  if (live) {
+      const synced = await syncModelsToCodex(live.port).catch(e => {
         console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
       });
+      if (synced?.status === "skipped") console.log("   Codex integration OFF; startup left Codex native.");
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       await injectSystemEnv(live.port, config).catch(() => {});
       // Refresh the Grok Build fence too (same contract as start). live.hostname is the
@@ -452,9 +455,11 @@ async function handleEnsure() {
   } catch (err) { console.error(`⚠️  ${grokSyncFailureMessage(err)}`); }
   // Always sync the LIVE port: after a fallback-port start, config.port still names the
   // busy preferred port — syncing that would point Codex at a dead listener.
-  await syncModelsToCodex(port).catch(e => {
+  const synced = await syncModelsToCodex(port).catch(e => {
     console.error(`⚠️  Model sync skipped: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
   });
+  if (synced?.status === "skipped") console.log("   Codex integration OFF; startup left Codex native.");
   console.log(`✅ Proxy running on port ${port}`);
 }
 
@@ -817,6 +822,7 @@ switch (command) {
   }
   case "restore":
   case "eject": {
+    const restoreJson = args[1] === "--json";
     if (args[1] === "back") {
       // Reverse switch: re-point plain `codex` at the RUNNING proxy without touching its
       // lifecycle — the counterpart of `ocx restore`. Start/stop triggers are unchanged;
@@ -826,7 +832,18 @@ switch (command) {
         console.error("No running proxy found. Run 'ocx start' — it injects opencodex automatically.");
         process.exit(1);
       }
+      const desired = setIntegrationEnabled("codex", true);
+      if (!desired.ok) {
+        process.exitCode = desired.reason === "conflict" ? 2 : 1;
+        console.error(`Codex desired state was not saved (${desired.reason}).`);
+        break;
+      }
       const synced = await syncModelsToCodex(live.port);
+      if (synced.status === "skipped") {
+        process.exitCode = 2;
+        console.error("Codex integration is OFF; restore back did not change Codex. Retry after the competing integration change finishes.");
+        break;
+      }
       if (!synced.ok) {
         process.exitCode = 1;
         console.error("Plain `codex` was not switched back to opencodex. Fix the reported Codex config issue and retry.");
@@ -836,11 +853,48 @@ switch (command) {
       console.log(`Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`);
       break;
     }
+    const desired = setIntegrationEnabled("codex", false);
+    if (!desired.ok) {
+      process.exitCode = desired.reason === "conflict" ? 2 : 1;
+      if (restoreJson) {
+        // Machine-readable contract: every restore --json outcome emits one
+        // schema-complete envelope on stdout, including pre-machinery failures.
+        const { skippedRestoreEnvelope } = await import("../codex/inject");
+        console.log(JSON.stringify(skippedRestoreEnvelope(false, `Codex desired state was not saved (${desired.reason}).`)));
+      } else {
+        console.error(`Codex desired state was not saved (${desired.reason}).`);
+      }
+      break;
+    }
+    // A repeated OFF on an already-clean home is a policy no-op. Do not enter
+    // restore's native-profile machinery merely to prove there is nothing to
+    // restore: those locks live in CODEX_HOME and a skip must create nothing.
+    if (desired.status === "unchanged") {
+      const { classifyNativeRoutedResidue } = await import("../codex/native-residue");
+      if (classifyNativeRoutedResidue().kind === "clean") {
+        const alreadyOff = "Codex integration is already OFF and native; no Codex files changed.";
+        if (restoreJson) {
+          const { skippedRestoreEnvelope } = await import("../codex/inject");
+          console.log(JSON.stringify(skippedRestoreEnvelope(true, alreadyOff)));
+        } else {
+          console.log(alreadyOff);
+        }
+        break;
+      }
+    }
     let r: { success: boolean; message: string };
     try {
-      r = await restoreNativeCodexAsync();
+      r = await restoreNativeCodexAsync({ revalidateDesiredState: true });
     } catch (err) {
       r = { success: false, message: err instanceof Error ? err.message : String(err) };
+    }
+    if (restoreJson) {
+      // Spawned callers need the artifact-level result to distinguish a busy
+      // history worker from a successful native restore. Keep stdout machine
+      // readable; human framing remains the default command contract.
+      console.log(JSON.stringify(r));
+      if (!r.success) process.exitCode = 1;
+      break;
     }
     if (r.success) console.log(`✅ ${r.message}`);
     else {
@@ -856,7 +910,7 @@ switch (command) {
       }
     } catch { /* best-effort */ }
     if (r.success) {
-      console.log("Plain `codex` now runs natively (no proxy). Switch back with: ocx restore back");
+      console.log("Codex integration is OFF and plain `codex` now runs natively. Switch back with: ocx restore back");
     } else {
       console.error("Plain `codex` was not fully restored. Inspect $CODEX_HOME/config.toml before using native Codex.");
     }
@@ -900,7 +954,9 @@ switch (command) {
   case "sync": {
     const restartCodex = args.slice(1).includes("--restart-codex");
     const synced = await syncModelsToCodex((await findLiveProxy())?.port);
-    if (!synced.ok) {
+    if (synced.status === "skipped") {
+      console.log("Codex integration is OFF; sync skipped and no Codex files changed.");
+    } else if (!synced.ok) {
       process.exitCode = 1;
       console.error("Codex sync did not complete. Fix the reported Codex config issue and retry.");
     }
@@ -921,6 +977,10 @@ switch (command) {
   }
   case "sync-cache": {
     const restartCodex = args.slice(1).includes("--restart-codex");
+    if (!shouldSyncCodexOnStart(loadConfig())) {
+      console.log("Codex integration is OFF; cache sync skipped and no Codex files changed.");
+      break;
+    }
     const { withCatalogWriteSerialization } = await import("../codex/catalog-write-serialization");
     const { invalidateCodexModelsCacheWithPermit } = await import("../codex/catalog/sync");
     const { getCodexHome } = await import("../codex/paths");

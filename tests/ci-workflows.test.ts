@@ -4397,7 +4397,12 @@ describe("GitHub Actions hardening", () => {
     expect(commentApply).toContain("omitted required field(s)");
 
     // Job-scoped permissions only (no top-level issues:write; no actions:write).
+    // The Copilot migration replaced `models: read` with `copilot-requests: write`
+    // as the inference credential; the job stays contents-read + issues-write.
     expect(workflow).toMatch(
+      // dev resolved the same Copilot-migration drift with an alternation that
+      // also accepts the pre-migration `models: read`; take theirs so the gate
+      // holds on whichever branch supplies the workflow file.
       /jobs:\s*\n\s*translate:[\s\S]*?permissions:\s*\n(?:\s*#.*\n)*\s*contents: read\s*\n(?:\s*#.*\n)*\s*issues: write\s*\n(?:\s*#.*\n)*\s*(?:copilot-requests: write|models: read)/,
     );
     const translateJob = workflow.split(/\n {2}translate:\n/)[1]!.split(/\n {2}[a-zA-Z]/)[0]!;

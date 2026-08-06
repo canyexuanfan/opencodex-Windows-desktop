@@ -22,6 +22,8 @@ import { reconcileOAuthProviders } from "../oauth";
 import { withCatalogWriteSerialization } from "../codex/catalog-write-serialization";
 import { invalidateCodexModelsCacheWithPermit } from "../codex/catalog/sync";
 import { getCodexHome } from "../codex/paths";
+import { shouldSyncCodexOnStart } from "../codex/desired-state";
+import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
 import { startMemoryWatchdog } from "./memory-watchdog";
 import {
@@ -162,6 +164,7 @@ import {
   releaseNativeMainStartupLifecycle,
   startNativeMainStartupLifecycle,
   type NativeMainStartupGateDeps,
+  type NativeMainStartupLifecycle,
 } from "../codex/native-profile-startup";
 import { handleImages } from "./images";
 import { handleLive, logLiveSidebandFrame, parseLiveSidebandTarget, resolveLiveSidebandUpgrade } from "./live";
@@ -537,7 +540,19 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // field (the requested listenPort) byte-for-byte.
   let boundPort: number | null = null;
 
-  const nativeMainLifecycle = startNativeMainStartupLifecycle(deps.nativeMainStartup);
+  // Native-main startup ownership creates several SQLite coordination files in
+  // CODEX_HOME. When the user has disabled the Codex integration, starting the
+  // proxy must not manufacture those Codex artifacts merely to serve other
+  // clients; no Codex request can use this lifecycle in that state.
+  const nativeOwnership = inspectNativeCodexOwnership();
+  const nativeMainLifecycle: NativeMainStartupLifecycle = shouldSyncCodexOnStart(config)
+    && nativeOwnership.ownership !== "foreign"
+    ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
+    : {
+      homeId: null,
+      settled: Promise.resolve({ status: "ready", homeId: null }),
+      release: async () => {},
+    };
   let server: Server<WsData>;
   try {
     server = Bun.serve<WsData>({
