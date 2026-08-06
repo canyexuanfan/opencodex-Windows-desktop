@@ -25,14 +25,29 @@ Replacement design, Codex-only:
 
 1. Intent writes stay `setIntegrationEnabled` — one owner, no new mutation API.
 2. The race 040 worried about (CLI OFF vs route ON, two processes) is closed by
-   **revalidation under the artifact lock**, not by a cross-surface flight:
-   every artifact-mutating path (inject, restore, history job) re-reads the
-   persisted desired state from disk *inside* its `withCodexWriteLock` section,
-   immediately before writing, and converts a lost race into the discriminated
-   skip (`status:"skipped", skippedReason:"desired_disabled"` or
-   `"desired_enabled"` for the restore direction). The lock already provides
-   the mutual exclusion; the re-read provides the freshness 040's
-   `requirePersistedClientIntent` wanted (`040:600-618`).
+   **revalidation under each artifact's own serialization boundary**, not by a
+   cross-surface flight and not by one global lock. The three artifact families
+   already have distinct serializers, and the Codex lock is *released* before
+   the history worker launches (`inject.ts:951-966`), so "inside
+   withCodexWriteLock" cannot cover history. Concretely:
+   - config/profile writes re-read persisted desired state inside their
+     `withCodexWriteLock` transaction (`codex-write-lock.ts:315-345` — the
+     callback is synchronous, and the desired-state read is a synchronous file
+     read, so it fits);
+   - the history worker re-reads desired state inside
+     `withHistoryWriteSerialization` (`history-worker.ts:119-131`), returning
+     the existing `blocked`-style envelope with a new reason
+     `"desired_disabled"`/`"desired_enabled"` instead of mutating;
+   - catalog restore re-reads inside `withCatalogWriteSerialization`
+     (`inject.ts:1241-1246`).
+   A lost race becomes the discriminated skip (`status:"skipped"`,
+   `skippedReason:"desired_disabled"` or `"desired_enabled"` for the restore
+   direction). Each lock provides mutual exclusion for its artifact; the
+   re-read inside it provides the freshness 040's
+   `requirePersistedClientIntent` wanted (`040:600-618`). The small window
+   where different artifacts observe different intent is acceptable: each
+   artifact converges to the latest persisted intent, and the startup gate
+   re-converges the remainder on the next start.
 3. The route keeps its local flight for HTTP idempotency; the CLI needs no
    flight because the lock + revalidation is the correctness boundary.
 
@@ -43,19 +58,25 @@ hook (`040:184-205`). The CLI has since moved to `restoreNativeCodexAsync()`
 with history in a Worker (`inject.ts:1193-1218`); reverting to the inline path
 would regress the event-loop isolation the substrate campaign built. Instead:
 
-- `restoreNativeCodexAsync` gains the artifact-level result 040 demands: a
-  per-artifact envelope `{ config, profile, history }` where `history` carries
+- `restoreNativeCodexAsync` gains the artifact-level result 040 demands
+  (`040:294-329`): a per-artifact envelope `{ config, catalog, history }` —
+  catalog is a first-class member because restore performs it independently
+  (`inject.ts:1241-1246`) and a `completed`-vs-not outcome exists today that
+  the summary silently flattens. Profile restoration is reported inside the
+  `config` member (it rides the same journal transaction). `history` carries
   `CodexHistoryFailureReason` (`"busy" | "permission"`) instead of being folded
-  into `inline.success` (defect at `inject.ts:1193-1217`).
+  into `inline.success` (defect at `inject.ts:1193-1217`). Aggregate `success`
+  is false if ANY member failed.
 - Persist-OFF ordering for `ocx restore`/`eject`: `setIntegrationEnabled(false)`
   FIRST (so a crash mid-restore leaves intent durable and startup will not
   resurrect routing), then the async restore; the history job revalidates
   desired state under the lock per Amendment 1 before mutating. `restore back`/
   `eject back` persist ON first, then sync — and a sync skip caused by a
   concurrent OFF prints 040's competing-OFF error with exit 2.
-- `success` for the command means: config+profile restored AND history either
-  restored or classified (`busy` → retry advice, exit 1; `permission` → ACL
-  advice, exit 1). No path reports success with an unclassified history hole.
+- `success` for the command means: config (incl. profile) AND catalog restored
+  AND history either restored or classified (`busy` → retry advice, exit 1;
+  `permission` → ACL advice, exit 1). No path reports success with an
+  unclassified hole in any artifact.
 
 ## Test impact (from the audit, folded in)
 
