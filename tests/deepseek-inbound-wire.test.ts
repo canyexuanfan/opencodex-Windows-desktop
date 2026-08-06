@@ -13,7 +13,11 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
-import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "../src/providers/registry";
+import {
+  getProviderRegistryEntry,
+  providerModelResponsesTerminalRepair,
+  PROVIDER_REGISTRY,
+} from "../src/providers/registry";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
 import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { handleResponses } from "../src/server/responses/core";
@@ -67,6 +71,13 @@ describe("DeepSeek wire selection is scoped to the inbound protocol", () => {
       expect(resolveWireProtocolOverride("deepseek", "deepseek-chat", deepseekProvider(), inbound).adapter)
         .toBe("openai-chat");
     }
+  });
+
+  test("the official DeepSeek Responses route opts into terminal repair", () => {
+    const provider = deepseekProvider();
+    expect(providerModelResponsesTerminalRepair("deepseek", provider, MODEL)).toEqual({ graceMs: 5_000 });
+    expect(providerModelResponsesTerminalRepair("deepseek", provider, "deepseek-chat")).toBeUndefined();
+    expect(providerModelResponsesTerminalRepair("custom-deepseek", provider, MODEL)).toBeUndefined();
   });
 });
 

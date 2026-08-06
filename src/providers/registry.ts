@@ -32,6 +32,11 @@ export type InboundWire = "responses" | "chat" | "anthropic";
  */
 export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
 
+export interface ResponsesTerminalRepairPolicy {
+  /** Quiet time after a structurally complete output graph before synthesizing completion. */
+  graceMs: number;
+}
+
 export type ProviderModelDiscoveryScalar = string | number | boolean;
 
 export type ProviderModelDiscoveryPredicate =
@@ -162,6 +167,8 @@ export interface ProviderRegistryEntry {
    * can omit or indefinitely delay the terminal event.
    */
   modelResponsesUpstreamStreaming?: Record<string, boolean>;
+  /** Registry-only repair for a model whose native Responses stream may omit its terminal. */
+  modelResponsesTerminalRepair?: Record<string, ResponsesTerminalRepairPolicy>;
   /**
    * Registry-only client-facing item-id repair policy (#938), filled onto the
    * runtime provider only when the user has no explicit policy (derive.ts);
@@ -1352,6 +1359,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // for providers that need it — re-adding one line here restores the old policy.
     // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
     // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
+    // Current official streams normally carry a real terminal; retain a narrow grace
+    // repair for the historical shape that closes after a complete graph without one.
+    modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 } },
     // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
     // clients stuck on an uncommitted turn (#938). Client-facing only — raw
     // continuation snapshots keep the upstream ids.
@@ -2378,6 +2388,19 @@ export function providerModelResponsesUpstreamStreaming(
   const entry = getProviderRegistryEntry(id);
   if (!entry?.modelResponsesUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
   return entry.modelResponsesUpstreamStreaming[modelId.trim().toLowerCase()];
+}
+
+/** Resolve a registry-only terminal-repair policy for native Responses streams. */
+export function providerModelResponsesTerminalRepair(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+  modelId: string,
+): ResponsesTerminalRepairPolicy | undefined {
+  const entry = getProviderRegistryEntry(id);
+  if (!entry?.modelResponsesTerminalRepair || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  const policy = entry.modelResponsesTerminalRepair[modelId.trim().toLowerCase()];
+  if (!policy || !Number.isFinite(policy.graceMs) || policy.graceMs <= 0) return undefined;
+  return { graceMs: Math.floor(policy.graceMs) };
 }
 
 /**
