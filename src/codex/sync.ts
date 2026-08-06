@@ -129,7 +129,8 @@ export async function syncModelsToCodex(
   if (result.status === "skipped") {
     return {
       status: "skipped",
-      skippedReason: result.skippedReason ?? "desired_disabled",
+      // The apply direction's only under-lock policy skip is desired OFF.
+      skippedReason: "desired_disabled",
       ok: true,
       added: 0,
       catalogPath: null,

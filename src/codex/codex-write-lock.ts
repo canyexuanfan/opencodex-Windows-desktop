@@ -66,7 +66,7 @@ export type CodexWriteLockRefusalReason =
 
 export type CodexWriteLockResult<T> =
   | { status: "acquired"; value: T; waitedMs: number; lockId: string }
-  | { status: "skipped"; reason: "desired_disabled"; waitedMs: number }
+  | { status: "skipped"; reason: "desired_disabled" | "desired_enabled"; waitedMs: number }
   | { status: "busy"; reason: "deadline" | "cancelled"; retryable: true; waitedMs: number }
   | {
       status: "refused";
@@ -127,7 +127,7 @@ export interface CodexWriteCommitContext {
 
 /** A synchronous under-lock policy re-read proved the requested apply stale. */
 export class CodexWriteLockSkipped extends Error {
-  constructor(readonly reason: "desired_disabled") {
+  constructor(readonly reason: "desired_disabled" | "desired_enabled") {
     super(reason);
     this.name = "CodexWriteLockSkipped";
   }

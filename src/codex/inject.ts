@@ -620,7 +620,7 @@ export interface CodexInjectResult {
   success: boolean;
   message: string;
   status?: "skipped";
-  skippedReason?: "desired_disabled";
+  skippedReason?: "desired_disabled" | "desired_enabled";
   nativeSubagentDefaultsWarning?: string;
 }
 
@@ -1247,21 +1247,194 @@ function failedHistoryRestore(reason?: CodexHistoryFailureReason): CodexRestoreH
   };
 }
 
-/** Restore native Codex, running history in a Worker under H. */
+function externalProviderRestoreResult(activeProvider: string): CodexNativeRestoreResult {
+  const message = `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.`;
+  return {
+    success: true,
+    message,
+    externalProvider: activeProvider,
+    artifacts: {
+      config: { state: "skipped", changed: false, action: "external-provider-preserved", message },
+      catalog: { state: "skipped", changed: false, removed: 0, kept: 0, path: null, message },
+      history: { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message },
+    },
+  };
+}
+
+function desiredEnabledRestoreSkip(): CodexNativeRestoreResult {
+  const message = "Codex integration was re-enabled; native restore was skipped.";
+  return {
+    success: true,
+    message,
+    artifacts: {
+      config: { state: "skipped", changed: false, action: "owned-fields-stripped", message },
+      catalog: { state: "skipped", changed: false, removed: 0, kept: 0, path: null, message },
+      history: { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message },
+    },
+  };
+}
+
+/** The config/profile half of a native restore, reported as one artifact. */
+function restoreCodexConfigInline(): CodexRestoreConfigResult {
+  try {
+    const journal = restoreJournalState();
+    const restored = journal.configRestored
+      ? { success: true, message: "Codex config restored from opencodex journal." }
+      : removeCodexConfig({ preserveProfile: journal.profileRestored || journal.profileChanged });
+    return restored.success
+      ? {
+          state: "ok",
+          changed: journal.configRestored || journal.profileRestored || journal.profileChanged || restored.message.startsWith("Removed"),
+          action: journal.configRestored ? "journal-restored" : "owned-fields-stripped",
+          message: restored.message,
+        }
+      : { state: "failed", changed: false, action: "failed", message: restored.message };
+  } catch (error) {
+    return { state: "failed", changed: false, action: "failed", message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** The catalog half, always inside its own K acquisition. */
+function restoreCodexCatalogArtifact(revalidateDesiredState: boolean): CodexRestoreCatalogResult {
+  const owningCodexHome = getCodexHome();
+  try {
+    const restored = withCatalogWriteSerialization(owningCodexHome, permit =>
+      revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())
+        ? null
+        : restoreCodexCatalogWithPermit(permit, owningCodexHome));
+    return restored.kind === "completed" && restored.value !== null
+      ? { state: "ok", changed: restored.value.removed > 0, ...restored.value, message: "Codex catalog restored." }
+      : restored.kind === "completed"
+        ? {
+            state: "skipped", changed: false, removed: 0, kept: 0, path: null,
+            message: "Codex integration was re-enabled; native catalog restoration was skipped.",
+          }
+        : {
+            state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
+            message: `Codex catalog could not be restored: ${restored.reason}.`,
+          };
+  } catch (error) {
+    return {
+      state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Restore native Codex, running history in a Worker under H.
+ *
+ * On a coordinated home the config/profile restore happens INSIDE the Codex
+ * write lock, publishing a `remove` transition — the same serialization inject
+ * uses. Without it, an older restore could overwrite a config a concurrent
+ * enable had just written under the lock, and then honestly report success
+ * while desired intent said ON. The desired-state re-read under the lock turns
+ * that lost race into the discriminated `desired_enabled` skip.
+ */
 export async function restoreNativeCodexAsync(
   options: { revalidateDesiredState?: boolean } = {},
 ): Promise<CodexNativeRestoreResult> {
-  const inline = restoreNativeCodex({ skipHistory: true, revalidateDesiredState: options.revalidateDesiredState });
-  // External-provider courtesy: the inline body already reported all three
-  // artifacts as skipped and touched nothing but the stale journal. Launching
-  // the history worker here would turn a read-mostly courtesy result into a
-  // history mutation (or a spurious busy failure) on a home we do not own.
-  if (inline.externalProvider) return inline;
+  const activeProvider = currentExternalCodexModelProvider();
+  if (activeProvider) {
+    // External-provider courtesy: only the stale journal is removed. The
+    // history worker must not launch — it would turn a read-mostly courtesy
+    // result into a history mutation on a home we do not own.
+    removeJournal();
+    return externalProviderRestoreResult(activeProvider);
+  }
+
+  const eligibility = codexWriteCoordinationEligibility({
+    coordinatorPath: () =>
+      resolveCodexCoordinatorDatabasePath(resolveEffectiveUserIdentity(), getCodexHome()),
+    residue: () => classifyNativeRoutedResidue(),
+    integrationRecord: () => readIntegrationRecord(),
+  });
+
+  let config: CodexRestoreConfigResult;
+  let transitionReceipt: { nativeGeneration: number; currentTxId: string } | undefined;
+
+  if (eligibility.kind === "coordinated") {
+    // The restore has no candidate bytes to witness; freshness comes from the
+    // filesystem reads and the desired-state re-read performed under the lock.
+    const witness = { authoritySnapshotId: "codex-native-restore" };
+    const coordinated = await withCodexWriteLock(
+      {
+        timeoutMs: DEFAULT_INJECT_LOCK_TIMEOUT_MS,
+        admitted: witness,
+        readAdmissionUnderLock: () => witness,
+      },
+      (ctx) => {
+        if (options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())) {
+          throw new CodexWriteLockSkipped("desired_enabled");
+        }
+        const published = ctx.coordinator.beginTransition(
+          {
+            nativeGeneration: ctx.expectation.nativeBefore,
+            currentTxId: ctx.currentTxId,
+          },
+          {
+            txId: ctx.expectation.txId,
+            direction: "remove",
+            authoritySnapshotId: ctx.admission.authoritySnapshotId,
+            nextRetryAt: new Date().toISOString(),
+          },
+        );
+        if (published.kind !== "updated") {
+          throw new CodexWriteConflictError(
+            `The Codex transition could not be published: ${published.kind}.`,
+          );
+        }
+        const preImages = captureCodexPreImages();
+        let restored: CodexRestoreConfigResult;
+        try {
+          restored = restoreCodexConfigInline();
+        } catch (error) {
+          const compensated = restoreCodexPreImages(preImages);
+          if (!compensated.complete) throw new CodexPartialWriteError(compensated.unrestored);
+          throw error;
+        }
+        return {
+          config: restored,
+          receipt: {
+            nativeGeneration: ctx.expectation.nativeAfter,
+            currentTxId: ctx.expectation.txId,
+          },
+        };
+      },
+    );
+    if (coordinated.status === "skipped") return desiredEnabledRestoreSkip();
+    if (coordinated.status !== "acquired") {
+      config = {
+        state: "failed",
+        changed: false,
+        action: "failed",
+        message: coordinated.status === "busy"
+          ? `Another process is writing Codex configuration right now (waited ${coordinated.waitedMs}ms). Retry shortly.`
+          : `Codex configuration was not restored: ${coordinated.message}`,
+      };
+    } else {
+      config = coordinated.value.config;
+      transitionReceipt = coordinated.value.receipt;
+    }
+  } else {
+    // Legacy-uncoordinated (or unresolvable) homes keep the unserialized path
+    // they have always had; restore is the escape hatch and must not strand
+    // them. The plain re-read still honors an intervening re-enable.
+    if (options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())) {
+      return desiredEnabledRestoreSkip();
+    }
+    config = restoreCodexConfigInline();
+  }
+
+  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true);
   const outcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
     ...(options.revalidateDesiredState ? { expectedDesiredEnabled: false } : {}),
     operation: deriveCodexHistoryOperation({ direction: "restore", resumeHistory: true, legacyMode: false }),
   });
+  if (transitionReceipt) {
+    resolveCodexHistoryTransition(transitionReceipt, outcome);
+  }
   const history: CodexRestoreHistoryResult = outcome.kind === "converged"
     ? {
         state: "ok", changed: outcome.rows > 0, rows: outcome.rows, files: outcome.files, ejectedRows: 0,
@@ -1283,14 +1456,16 @@ export async function restoreNativeCodexAsync(
         : outcome.kind === "failed"
           ? failedHistoryRestore(outcome.historyFailureReason)
           : failedHistoryRestore();
-  const success = inline.artifacts.config.state !== "failed"
-    && inline.artifacts.catalog.state !== "failed"
+  const base = catalog.removed > 0
+    ? `${config.message} Catalog restored to ${catalog.kept} native model(s) (dropped ${catalog.removed} proxy-routed).`
+    : config.message;
+  const success = config.state !== "failed"
+    && catalog.state !== "failed"
     && history.state !== "failed";
   return {
-    ...inline,
     success,
-    message: `${inline.message}${history.state === "failed" ? ` ⚠️ ${history.message}` : ""}`,
-    artifacts: { ...inline.artifacts, history },
+    message: `${base}${history.state === "failed" ? ` ⚠️ ${history.message}` : ""}`,
+    artifacts: { config, catalog, history },
   };
 }
 
@@ -1298,59 +1473,13 @@ export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateD
   const activeProvider = currentExternalCodexModelProvider();
   if (activeProvider) {
     removeJournal();
-    const message = `External Codex provider ${tomlString(activeProvider)} preserved; no native restore was needed.`;
-    return {
-      success: true,
-      message,
-      externalProvider: activeProvider,
-      artifacts: {
-        config: { state: "skipped", changed: false, action: "external-provider-preserved", message },
-        catalog: { state: "skipped", changed: false, removed: 0, kept: 0, path: null, message },
-        history: { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message },
-      },
-    };
+    return externalProviderRestoreResult(activeProvider);
   }
-  let config: CodexRestoreConfigResult;
-  try {
-    const journal = restoreJournalState();
-    const restored = journal.configRestored
-      ? { success: true, message: "Codex config restored from opencodex journal." }
-      : removeCodexConfig({ preserveProfile: journal.profileRestored || journal.profileChanged });
-    config = restored.success
-      ? {
-          state: "ok",
-          changed: journal.configRestored || journal.profileRestored || journal.profileChanged || restored.message.startsWith("Removed"),
-          action: journal.configRestored ? "journal-restored" : "owned-fields-stripped",
-          message: restored.message,
-        }
-      : { state: "failed", changed: false, action: "failed", message: restored.message };
-  } catch (error) {
-    config = { state: "failed", changed: false, action: "failed", message: error instanceof Error ? error.message : String(error) };
+  if (options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())) {
+    return desiredEnabledRestoreSkip();
   }
-  const owningCodexHome = getCodexHome();
-  let catalog: CodexRestoreCatalogResult;
-  try {
-    const restored = withCatalogWriteSerialization(owningCodexHome, permit =>
-      options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())
-        ? null
-        : restoreCodexCatalogWithPermit(permit, owningCodexHome));
-    catalog = restored.kind === "completed" && restored.value !== null
-      ? { state: "ok", changed: restored.value.removed > 0, ...restored.value, message: "Codex catalog restored." }
-      : restored.kind === "completed"
-        ? {
-            state: "skipped", changed: false, removed: 0, kept: 0, path: null,
-            message: "Codex integration was re-enabled; native catalog restoration was skipped.",
-          }
-      : {
-          state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
-          message: `Codex catalog could not be restored: ${restored.reason}.`,
-        };
-  } catch (error) {
-    catalog = {
-      state: "failed", changed: false, removed: 0, kept: 0, path: DEFAULT_CATALOG_PATH,
-      message: error instanceof Error ? error.message : String(error),
-    };
-  }
+  const config = restoreCodexConfigInline();
+  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true);
   // Design B (loopback) steady state: threads are already tagged openai, so prove the
   // no-op with a readonly probe instead of write-opening a DB the Codex app may hold
   // (Windows: WAL writer lock -> seconds of stalling + a false warning on every stop).
