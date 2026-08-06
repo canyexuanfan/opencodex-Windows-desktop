@@ -52,11 +52,340 @@ function isPlaceholderOnlyValue(raw) {
 }
 
 /**
+ * Strip image/media-only content from a markdown or HTML fragment so that a
+ * section whose only content is a screenshot or media embed is treated as
+ * empty by the validators.
+ *
+ * Handles:
+ *   - Markdown images: `![alt](url)`, `![alt](url "title")`
+ *   - HTML <img ...> and <picture> ... </picture> blocks
+ *   - Common media embeds (video/audio) when they are the only content
+ *
+ * Text mixed with media (for example a caption or repro steps around an
+ * image) is preserved; only the media tokens themselves are removed.
+ */
+function stripMediaTokens(text) {
+  if (typeof text !== "string") return "";
+  // Indented code lines render as literal code in GitHub Markdown. Protect
+  // them first so neither the HTML nor the Markdown media stripper can
+  // remove example syntax; restore the lines afterwards.
+  const protectedText = protectIndentedCodeLines(text);
+  const markdownStripped = stripMarkdownImages(stripHtmlMedia(protectedText.text));
+  const referenceStripped = stripReferenceImages(markdownStripped);
+  return restoreIndentedCodeLines(referenceStripped, protectedText.lines);
+}
+
+/**
+ * Replace every indented code line (4+ leading spaces or a tab) with a
+ * placeholder of equal length so media stripping cannot touch it. Returns the
+ * masked text plus the original lines for restoration.
+ */
+function protectIndentedCodeLines(text) {
+  const lines = [];
+  const masked = text.split("\n").map((line) => {
+    if (/^(?: {4,}|\t)/.test(line)) {
+      lines.push(line);
+      return "\u0000" + line.replace(/[^\n]/g, " ").slice(1);
+    }
+    lines.push(null);
+    return line;
+  });
+  return { text: masked.join("\n"), lines };
+}
+
+/**
+ * Restore masked indented-code lines from their original content. Placeholder
+ * lines are identified by the leading \u0000 marker and matched positionally.
+ */
+function restoreIndentedCodeLines(text, lines) {
+  const out = text.split("\n").map((line, i) => {
+    if (lines[i] !== null && line.startsWith("\u0000")) {
+      return lines[i];
+    }
+    return line;
+  });
+  return out.join("\n");
+}
+
+/**
+ * Strip HTML media blocks whose entire inner content is media markup (no
+ * substantive text). A block that contains fallback/caption prose — for
+ * example `<video controls>Route requests through the fallback provider.</video>`
+ * — is left untouched so the prose survives the empty-section check.
+ *
+ * Handles <img ...>, <picture>...</picture>, <video>...</video>, and
+ * <audio>...</audio>.
+ */
+function stripHtmlMedia(text) {
+  if (typeof text !== "string") return "";
+  let s = text
+    .replace(/<img\b[^>]*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+
+  // Whole media blocks: replace only when the inner content is not
+  // substantive text (no word characters outside tags).
+  s = s.replace(
+    /<(picture|video|audio)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+    (match, tag, inner) => {
+      const innerStripped = inner
+        .replace(/<[^>]+>/g, " ")
+        .replace(/[\s_*~`]+/g, " ")
+        .trim();
+      return innerStripped.length === 0 ? " " : match;
+    },
+  );
+  return s;
+}
+
+/**
+ * Remove Markdown image tokens `![alt](dest "title")` using a small
+ * balanced scanner instead of a regex, because destinations may contain
+ * balanced parentheses (for example `image_(final).png`) and alt text may
+ * contain balanced brackets (`![Image [screenshot]](url)`).
+ *
+ * A token is matched only when:
+ *   - it starts with `![` (not escaped);
+ *   - the alt text is balanced with respect to `[` / `]`;
+ *   - the destination is balanced with respect to `(`, `)` and `"` (an
+ *     optional title may follow); and
+ *   - the token closes with a `)`.
+ *
+ * Malformed tokens (unbalanced destination, e.g. `a)b.png)`) are left in
+ * place — they are not valid Markdown images and must not be silently
+ * dropped.
+ */
+function stripMarkdownImages(text) {
+  if (typeof text !== "string") return "";
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    // Inside an indented code block (4+ leading spaces or a tab), image
+    // syntax is literal code, not a rendered image. Leave it untouched so a
+    // section that documents example syntax is not emptied.
+    if (isInsideIndentedCode(text, i)) {
+      out.push(text[i]);
+      i += 1;
+      continue;
+    }
+    // A backslash-escaped or code-fenced `![` is not an image token. We only
+    // guard the common `\!` escape here; fenced blocks are handled by the
+    // section extractor upstream, which does not include them in sections.
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const end = scanMarkdownImage(text, i);
+      if (end !== -1) {
+        out.push(" ");
+        i = end;
+        continue;
+      }
+    }
+    out.push(text[i]);
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
+ * True when `index` sits inside an indented code block, i.e. on a line that
+ * starts with four or more spaces or a tab. Such lines render as literal
+ * code in GitHub Markdown.
+ */
+function isInsideIndentedCode(text, index) {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  const prefix = text.slice(lineStart, index);
+  return /^(?: {4,}|\t)/.test(prefix);
+}
+
+/**
+ * Strip reference-style Markdown images: inline references `![alt][ref]`
+ * and the reference definitions `[ref]: https://...` they point at. These
+ * are valid image syntax that a media-only section may use to embed a
+ * screenshot.
+ */
+function stripReferenceImages(text) {
+  if (typeof text !== "string") return "";
+  // Inline reference: ![alt][ref] or ![alt][] (implicit). Alt may contain
+  // balanced brackets, so a balanced scan is used for the label part.
+  let s = stripInlineReferences(text);
+  // Reference definitions: [ref]: url "title" — only when the reference is
+  // actually used by an image in the same text. A definition alone (or one
+  // used by a text link) is not media and must stay.
+  const refs = new Set();
+  for (const ref of collectInlineReferenceLabels(text)) {
+    refs.add(ref.toLowerCase());
+  }
+  if (refs.size > 0) {
+    s = s.replace(
+      /^\s*\[([^\]]+)\]:\s*\S+(?:\s+["'(][^"')]*["')])?\s*$/gm,
+      (line, ref) => (refs.has(ref.toLowerCase()) ? " " : line),
+    );
+  }
+  return s;
+}
+
+/**
+ * Strip inline reference-style image tokens `![alt][ref]` / `![alt][]`
+ * using a balanced scan for the alt text (which may contain nested brackets).
+ */
+function stripInlineReferences(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const end = scanReferenceImage(text, i);
+      if (end !== -1) {
+        out.push(" ");
+        i = end;
+        continue;
+      }
+    }
+    out.push(text[i]);
+    i += 1;
+  }
+  return out.join("");
+}
+
+/**
+ * Scan an inline reference-style image `![alt][ref]` or `![alt][]` starting
+ * at `start`. Returns the index just past the closing `]` on success, or -1.
+ */
+function scanReferenceImage(text, start) {
+  const altEnd = scanBalancedBrackets(text, start + 2);
+  if (altEnd === -1 || text[altEnd] !== "]") return -1;
+  if (text[altEnd + 1] !== "[") return -1;
+  const refEnd = scanBalancedBrackets(text, altEnd + 2);
+  if (refEnd === -1 || text[refEnd] !== "]") return -1;
+  return refEnd + 1;
+}
+
+/**
+ * Scan balanced bracket content starting at `start` (inside the opening `[`).
+ * Returns the index of the matching closing `]`, or -1 when unbalanced.
+ */
+function scanBalancedBrackets(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1;
+      continue;
+    }
+    if (ch === "[") {
+      depth += 1;
+    } else if (ch === "]") {
+      if (depth === 0) return i;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Collect the reference labels used by inline reference-style images. For an
+ * explicit `![alt][ref]` the label is `ref`; for an implicit `![alt][]` the
+ * label is the alt text.
+ */
+function collectInlineReferenceLabels(text) {
+  const labels = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "!" && text[i + 1] === "[") {
+      const altStart = i + 2;
+      const altEnd = scanBalancedBrackets(text, altStart);
+      if (altEnd !== -1 && text[altEnd] === "]") {
+        const alt = text.slice(altStart, altEnd);
+        if (text[altEnd + 1] === "[") {
+          const refStart = altEnd + 2;
+          const refEnd = scanBalancedBrackets(text, refStart);
+          if (refEnd !== -1 && text[refEnd] === "]") {
+            const ref = text.slice(refStart, refEnd);
+            labels.push(ref ? ref : alt);
+            i = refEnd + 1;
+            continue;
+          }
+        }
+      }
+    }
+    i += 1;
+  }
+  return labels;
+}
+
+/**
+ * Scan a Markdown image token starting at `start` (which points at `!`).
+ * Returns the index just past the closing `)` on success, or -1 when the
+ * token is malformed.
+ */
+function scanMarkdownImage(text, start) {
+  // Alt text: `![` ... `]` with balanced nested brackets.
+  let i = start + 2;
+  let bracketDepth = 0;
+  for (; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1; // skip escaped character
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+    } else if (ch === "]") {
+      if (bracketDepth === 0) break;
+      bracketDepth -= 1;
+    }
+  }
+  if (i >= text.length || text[i] !== "]") return -1;
+
+  // Destination: `(` ... `)` with balanced parentheses. An optional
+  // whitespace-separated `"title"` may follow the destination.
+  if (text[i + 1] !== "(") return -1;
+  i += 2;
+  let parenDepth = 1;
+  let inQuotes = false;
+  for (; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1; // skip escaped character
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+    if (ch === "(") {
+      parenDepth += 1;
+    } else if (ch === ")") {
+      parenDepth -= 1;
+      if (parenDepth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * True when a section contains no substantive text after removing media
+ * tokens and whitespace. Used to decide whether a media-only section should
+ * count as empty for quality validation.
+ */
+function isMediaOnly(text) {
+  if (typeof text !== "string") return false;
+  const stripped = stripMediaTokens(text);
+  return stripped.replace(/\s+/g, "").length === 0;
+}
+
+/**
  * Strip HTML comments, placeholder-only values, and trim whitespace.
  */
 function clean(raw) {
   if (typeof raw !== "string") return "";
   let s = raw.replace(/<!--[\s\S]*?-->/g, "");
+  // Media-only sections (a lone screenshot or embed) carry no reportable
+  // text. Strip the media tokens so the section participates in emptiness and
+  // duplicate detection like any other blank section. This closes the
+  // image-only-section bypass (see #1098: an `<img>`-only goal hid repeated
+  // prose in the other sections from duplicate detection).
+  if (isMediaOnly(s)) {
+    s = stripMediaTokens(s).replace(/\s+/g, " ").trim();
+  }
   // Whole-value placeholders first (including a single enclosing fence), so
   // line-by-line stripping cannot leave bare fence markers behind.
   if (isPlaceholderOnlyValue(s)) return "";
@@ -1290,6 +1619,8 @@ module.exports = {
   clean,
   normalise,
   canonicalise,
+  stripMediaTokens,
+  isMediaOnly,
   extractSection,
   resolveSection,
   detectIssueKind,
