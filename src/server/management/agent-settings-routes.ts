@@ -130,23 +130,38 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   /** Best-effort Desktop 3P config auto-reconcile when providers change. */
   async function autoApplyDesktopBestEffort(): Promise<void> {
     try {
-      if (config.claudeCode?.desktopAutoApply === false) return;
-      if (!config.claudeCode?.desktopProfile) return;
-      const { writeDesktop3pConfig } = await import("../../claude/desktop-3p");
+      const { claudeDesktopIntegrationEnabled } = await import("../../codex/desired-state");
+      const admitted = loadConfig();
+      if (!claudeDesktopIntegrationEnabled(admitted)) return;
+      if (admitted.claudeCode?.desktopAutoApply === false) return;
+      if (!admitted.claudeCode?.desktopProfile) return;
+      const { inspectDesktop3pConfigLibrary, writeDesktop3pConfig } = await import("../../claude/desktop-3p");
+      const beforeKind = inspectDesktop3pConfigLibrary({
+        appliedFingerprint: admitted.claudeCode.desktopProfile.appliedFingerprint ?? null,
+      }).kind;
+      if (["not_installed", "no_owned_state", "foreign", "unsafe", "broken"].includes(beforeKind)) return;
       const { filterCatalogVisibleModels, desktopVisibleNativeSlugs } = await import("../../codex/catalog");
-      const allModels = await fetchAllModels(config);
-      const routed = filterCatalogVisibleModels(allModels, config).map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow }));
+      const allModels = await fetchAllModels(admitted);
+      const current = loadConfig();
+      // This is the real guard: the catalog await admits a concurrent explicit OFF.
+      if (!claudeDesktopIntegrationEnabled(current)) return;
+      if (current.claudeCode?.desktopAutoApply === false || !current.claudeCode?.desktopProfile) return;
+      const afterKind = inspectDesktop3pConfigLibrary({
+        appliedFingerprint: current.claudeCode.desktopProfile.appliedFingerprint ?? null,
+      }).kind;
+      if (["not_installed", "no_owned_state", "foreign", "unsafe", "broken"].includes(afterKind)) return;
+      const routed = filterCatalogVisibleModels(allModels, current).map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow }));
       const result = writeDesktop3pConfig(
-        config.port ?? 10100,
-        [...desktopVisibleNativeSlugs(config)],
+        current.port ?? 10100,
+        [...desktopVisibleNativeSlugs(current)],
         routed,
-        config.apiKeys?.[0]?.key,
+        current.apiKeys?.[0]?.key,
         "static",
-        config.claudeCode.desktopProfile,
+        current.claudeCode.desktopProfile,
       );
       if (result.written && result.fingerprint) {
-        config.claudeCode = { ...config.claudeCode, desktopProfile: { ...config.claudeCode.desktopProfile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
-        saveConfigPreservingClaudeCode(config);
+        current.claudeCode = { ...current.claudeCode, desktopProfile: { ...current.claudeCode.desktopProfile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
+        saveConfigPreservingClaudeCode(current);
       }
     } catch { /* best-effort */ }
   }
@@ -700,6 +715,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   }
   if (url.pathname === "/api/claude-desktop/apply" && req.method === "POST") {
     try {
+      const { setIntegrationEnabled } = await import("../../codex/desired-state");
+      const desired = setIntegrationEnabled("claude-desktop", true);
+      if (!desired.ok) return jsonResponse({ error: desired.message }, desired.retryable ? 409 : 500);
       // #859: the CLI delegates here so the registry is built in the serving
       // process. Accept an optional mode; default stays static for back-compat.
       let mode: "static" | "hybrid" | "discovery" = "static";
@@ -767,47 +785,29 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
   // Desktop applied-state + health status.
   if (url.pathname === "/api/claude-desktop/status" && req.method === "GET") {
     try {
-      const { readFileSync: readFile, existsSync } = await import("node:fs");
-      const { createHash } = await import("node:crypto");
-      const { join } = await import("node:path");
-      const { resolveDesktop3pConfigLibraryPath } = await import("../../claude/desktop-3p");
-      const libraryPath = resolveDesktop3pConfigLibraryPath();
-      const metaPath = join(libraryPath, "_meta.json");
-      let onDiskFingerprint: string | null = null;
-      let configPath: string | null = null;
-      // Desktop serves ONLY the profile named by _meta.json's appliedId, so an
-      // opencodex entry that merely EXISTS does not mean Desktop is using it.
-      // null = undeterminable (no metadata / unreadable / no appliedId).
-      let activeProfile: boolean | null = null;
-      if (existsSync(metaPath)) {
-        try {
-          const meta = JSON.parse(readFile(metaPath, "utf8"));
-          const entry = Array.isArray(meta.entries) ? meta.entries.find((e: { name?: string }) => e?.name === "opencodex") : undefined;
-          const appliedId = typeof meta.appliedId === "string" ? meta.appliedId : null;
-          // A readable appliedId with no opencodex entry is a KNOWN false, not unknown.
-          activeProfile = appliedId === null ? null : (entry?.id ? appliedId === entry.id : false);
-          if (entry?.id) {
-            configPath = join(libraryPath, `${entry.id}.json`);
-            if (existsSync(configPath)) {
-              const onDisk = readFile(configPath, "utf8");
-              onDiskFingerprint = createHash("sha256").update(onDisk).digest("hex").slice(0, 16);
-            }
-          }
-        } catch { /* unreadable metadata */ }
-      }
-      const savedFingerprint = config.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
-      const appliedAt = config.claudeCode?.desktopProfile?.appliedAt ?? null;
-      const stale = savedFingerprint !== null && onDiskFingerprint !== null && savedFingerprint !== onDiskFingerprint;
+      const { claudeDesktopIntegrationEnabled } = await import("../../codex/desired-state");
+      const { inspectDesktop3pConfigLibrary } = await import("../../claude/desktop-3p");
+      const persisted = loadConfig();
+      const savedFingerprint = persisted.claudeCode?.desktopProfile?.appliedFingerprint ?? null;
+      const observed = inspectDesktop3pConfigLibrary({ appliedFingerprint: savedFingerprint });
+      const desiredEnabled = claudeDesktopIntegrationEnabled(persisted);
+      const applied = observed.kind === "gateway_ours" || observed.kind === "gateway_drifted";
+      const stale = observed.kind === "gateway_drifted";
       const { getDesktopHealth } = await import("../../claude/desktop-health");
       const health = getDesktopHealth();
       return jsonResponse({
-        applied: savedFingerprint !== null,
-        appliedAt,
+        desiredEnabled,
+        installed: observed.kind !== "not_installed",
+        observedKind: observed.kind,
+        applied,
+        appliedAt: persisted.claudeCode?.desktopProfile?.appliedAt ?? null,
         savedFingerprint,
-        onDiskFingerprint,
-        configPath,
+        onDiskFingerprint: observed.fingerprint ?? null,
+        configPath: observed.selectedProfilePath,
         stale,
-        activeProfile,
+        activeProfile: applied,
+        drift: desiredEnabled ? !applied || stale : applied || observed.kind === "unsafe",
+        driftReason: desiredEnabled ? (!applied ? "desired_on_not_current" : stale ? "profile_drift" : null) : (applied ? "desired_off_gateway_selected" : null),
         health,
       });
     } catch (error) {

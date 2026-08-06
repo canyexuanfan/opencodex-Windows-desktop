@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig, saveConfigPreservingClaudeCode } from "../config";
+import { setIntegrationEnabled } from "../codex/desired-state";
 import {
   DESKTOP_FAMILIES,
   moveDesktopRoute,
@@ -42,6 +43,10 @@ export async function applyProfile(
   mode: Desktop3pConfigMode,
   deps: ApplyProfileDeps = {},
 ): Promise<{ ok: boolean; path: string; reason?: string }> {
+  // Explicit apply is an enable action. Persist intent before any Desktop write
+  // so a process crash cannot leave a gateway profile that startup immediately removes.
+  const desired = setIntegrationEnabled("claude-desktop", true);
+  if (!desired.ok) return { ok: false, path: "", reason: desired.message };
   const config = loadConfig();
   const state = await buildClaudeDesktopState(config, profile);
   config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: state.profile };
