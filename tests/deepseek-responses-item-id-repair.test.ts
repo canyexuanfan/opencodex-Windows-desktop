@@ -97,6 +97,29 @@ describe("registry-derived DeepSeek repair policy (#938)", () => {
     expect(rewrite(payload)).toBe(payload);
   });
 
+  test("part events resolve by exact raw id, so a reused output_index cannot borrow the sibling's id", () => {
+    // Audit finding (final gate): with both tables holding the same output_index, an
+    // index-first lookup handed a reasoning content_part the MESSAGE canonical id.
+    // The raw-id map makes the rewrite exact; the index fallback only serves events
+    // without a known raw id.
+    const rewrite = createResponsesItemIdPayloadRewrite(
+      deepseekProvider().responsesItemIdRepair!,
+      createTestTranslatorBudget(),
+    );
+    const frame = (payload: unknown) => JSON.parse(rewrite(JSON.stringify(payload))) as Record<string, unknown>;
+    const rsAdded = frame({ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: UUID_RS, summary: [] } });
+    const msgAdded = frame({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: UUID_MSG, role: "assistant", status: "in_progress", content: [] } });
+    const rsId = (rsAdded.item as { id: string }).id;
+    const msgId = (msgAdded.item as { id: string }).id;
+    const part = frame({ type: "response.content_part.done", item_id: UUID_RS, output_index: 0, content_index: 0, part: { type: "reasoning_text", text: "x" } });
+    expect(part.item_id).toBe(rsId);
+    expect(part.item_id).not.toBe(msgId);
+    // A function_call's part event is never rewritten even when it shares an index.
+    frame({ type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: UUID_FC, call_id: "call_abc", name: "search", arguments: "{}" } });
+    const fcPart = frame({ type: "response.content_part.added", item_id: UUID_FC, output_index: 1, content_index: 0, part: { type: "output_text", text: "" } });
+    expect(fcPart.item_id).toBe(UUID_FC);
+  });
+
   test("repairResponsesJsonItemIds normalizes a whole bounded-JSON response", () => {
     const repaired = repairResponsesJsonItemIds(
       {
