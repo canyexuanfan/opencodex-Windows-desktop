@@ -1,3 +1,5 @@
+# opencodex
+
 <h3 align="center">make codex open!</h3>
 <p align="center"><b>OpenAI Codex, Claude Code, Claude Desktop &amp; Grok Build için Evrensel Sağlayıcı Proxy'si</b><br>
 İki komut ile yönlendirdiğiniz her LLM'i çalıştırın.</p>
@@ -120,11 +122,11 @@ ocx v2 <...>                   # çoklu ajan v1/v2 yüzey kontrolleri
 ocx update [--tag preview]     # opencodex'i günceller
 ```
 
-Sabitlenmemiş başlatmalar, tercih edilen bağlantı noktası meşgulse başka bir boş bağlantı noktası seçebilir; açık bir `--port` asla atlamaz. Tam referans: [CLI dokümantasyonu](https://opencodex.me/reference/cli/).
+Bağlantı noktası açıkça belirtilmeden başlatılırsa, tercih edilen bağlantı noktası meşgul olduğunda başka bir boş bağlantı noktası seçilebilir; `--port` açıkça belirtilirse başka bir bağlantı noktasına geçilmez. Tam referans: [CLI dokümantasyonu](https://opencodex.me/reference/cli/).
 
 ### Otomatik başlatma: servis mi shim mi?
 
-Çökme durumunda yeniden başlayan ve her zaman açık bir proxy için **servisi** (`ocx service`) kullanın. Arka plan arka plan işlemi (daemon) olmadan hafif, isteğe bağlı başlatma için **shim**'i (`ocx codex-shim install`) kullanın. `ocx service uninstall` / `ocx codex-shim uninstall` ile kaldırın.
+Çökme durumunda yeniden başlayan ve her zaman açık bir proxy için **servisi** (`ocx service`) kullanın. Arka planda sürekli çalışan bir daemon olmadan hafif, isteğe bağlı başlatma için **shim**'i (`ocx codex-shim install`) kullanın. `ocx service uninstall` / `ocx codex-shim uninstall` ile kaldırın.
 
 ### Kaldırma
 
