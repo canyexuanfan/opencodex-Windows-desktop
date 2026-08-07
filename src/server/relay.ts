@@ -619,17 +619,6 @@ function delimiterLengthAt(
   return byteAt(index + 3) === 10 ? 4 : 0;
 }
 
-function joinedBytes(slices: readonly Uint8Array[], byteLength: number): Uint8Array {
-  if (slices.length === 1 && slices[0]!.byteLength === byteLength) return slices[0]!;
-  const joined = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const slice of slices) {
-    joined.set(slice, offset);
-    offset += slice.byteLength;
-  }
-  return joined;
-}
-
 /**
  * Per-chunk SSE inspection state machine shared by consumeForInspection,
  * consumeForResponseLogMetadata, and the eager bounded relay (relay-eager.ts).
@@ -650,8 +639,8 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
   let reported = false;
   let sawTerminal = false;
   let disposed = false;
-  let delimiterTail = new Uint8Array(0);
-  let candidateSlices: Uint8Array[] = [];
+  let delimiterTail: Uint8Array = new Uint8Array(0);
+  let candidate: Uint8Array = new Uint8Array(0);
   let candidateBytes = 0;
   let discardingOversizedFrame = false;
   const reportFirstOutput = createFirstOutputReporter(handlers.onFirstOutput);
@@ -665,7 +654,7 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
 
   const clearFrameState = (): void => {
     delimiterTail = new Uint8Array(0);
-    candidateSlices = [];
+    candidate = new Uint8Array(0);
     candidateBytes = 0;
     discardingOversizedFrame = false;
   };
@@ -685,6 +674,30 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
     firstResponseId = undefined;
   };
 
+  const ensureCandidateCapacity = (requiredBytes: number): void => {
+    if (candidate.byteLength >= requiredBytes) return;
+    let capacity = candidate.byteLength === 0
+      ? Math.min(MAX_INSPECTION_SSE_FRAME_BYTES, Math.max(requiredBytes, 4096))
+      : candidate.byteLength;
+    while (capacity < requiredBytes) {
+      capacity = Math.min(
+        MAX_INSPECTION_SSE_FRAME_BYTES,
+        Math.max(requiredBytes, capacity * 2),
+      );
+    }
+    const grown = new Uint8Array(capacity);
+    if (candidateBytes > 0) grown.set(candidate.subarray(0, candidateBytes));
+    candidate = grown;
+  };
+
+  const takeCandidate = (): Uint8Array => {
+    if (candidateBytes === 0) return new Uint8Array(0);
+    const frame = candidate.slice(0, candidateBytes);
+    candidate = new Uint8Array(0);
+    candidateBytes = 0;
+    return frame;
+  };
+
   const retainCandidateSlice = (slice: Uint8Array): void => {
     if (slice.byteLength === 0 || discardingOversizedFrame) return;
     const nextBytes = candidateBytes + slice.byteLength;
@@ -693,7 +706,7 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
       Math.min(nextBytes, MAX_INSPECTION_SSE_FRAME_BYTES),
     );
     if (nextBytes > MAX_INSPECTION_SSE_FRAME_BYTES) {
-      candidateSlices = [];
+      candidate = new Uint8Array(0);
       candidateBytes = 0;
       discardingOversizedFrame = true;
       inspectionCounters.frameCapOverflows += 1;
@@ -703,10 +716,8 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
       reconstructionTainted = true;
       return;
     }
-    // `subarray()` aliases the upstream chunk's backing buffer. Copy only the
-    // live candidate bytes so a tiny trailing frame cannot pin a multi-MiB
-    // chunk whose preceding frames have already been consumed.
-    candidateSlices.push(slice.slice());
+    ensureCandidateCapacity(nextBytes);
+    candidate.set(slice, candidateBytes);
     candidateBytes = nextBytes;
   };
 
@@ -842,9 +853,7 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
       return;
     }
     const sourceBytes = candidateBytes;
-    const frame = joinedBytes(candidateSlices, sourceBytes);
-    candidateSlices = [];
-    candidateBytes = 0;
+    const frame = takeCandidate();
     if (reported && !handlers.onCompletedResponse) return;
     const decoded = decoder!.decode(frame);
     scanPayload(sseDataPayload(decoded), sourceBytes);
@@ -901,7 +910,7 @@ export function createSseInspector(handlers: SseInspectorHandlers): SseInspector
         delimiterTail = new Uint8Array(0);
         if (!discardingOversizedFrame && candidateBytes > 0 && !reported) {
           const sourceBytes = candidateBytes;
-          const decoded = decoder!.decode(joinedBytes(candidateSlices, sourceBytes));
+          const decoded = decoder!.decode(takeCandidate());
           scanPayload(decoded.trim() ? sseDataPayload(decoded) : null, sourceBytes);
         }
       } finally {
