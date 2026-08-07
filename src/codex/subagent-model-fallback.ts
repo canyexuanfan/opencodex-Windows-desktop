@@ -30,11 +30,22 @@ import { isCodexAccountPaused } from "./account-pause";
 import { slugEquals } from "../providers/slug-codec";
 import { isThreadSpawnRequest } from "../server/effort-policy";
 import { PROVIDER_REGISTRY } from "../providers/registry";
-import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import {
+  CODEX_FORWARD_BASE_URL,
+  OPENAI_CODEX_PROVIDER_ID,
+  isCanonicalOpenAiForwardProvider,
+} from "../providers/openai-tiers";
 import { routeModel, type RouteResult } from "../router";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
 import { codexAccountNamespaceForModel } from "./account-namespace-match";
+import {
+  getUpstreamHostHealth,
+  normalizeUpstreamHostCircuitThreshold,
+  upstreamHostHealthKey,
+} from "./upstream-host-health";
 export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
+
+const CODEX_FORWARD_ORIGIN = new URL(CODEX_FORWARD_BASE_URL).origin.toLowerCase();
 
 type SubagentQuotaPrimeFn = (config: OcxConfig, reason: string) => Promise<void>;
 let subagentQuotaPrimeForTests: SubagentQuotaPrimeFn | null = null;
@@ -400,11 +411,19 @@ export function resolveAgentModelFallbackForPrimary(
   return merged;
 }
 
+function subagentQuotaPrimeBlockedByHostCircuit(config: OcxConfig): boolean {
+  if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) === 0) return false;
+  const key = upstreamHostHealthKey(OPENAI_CODEX_PROVIDER_ID, CODEX_FORWARD_ORIGIN);
+  return getUpstreamHostHealth(key)?.cooldownUntil !== undefined;
+}
+
 /**
  * Best-effort quota refresh before subagent model selection.
  * Concurrent callers share one in-flight promise. The success TTL is updated only
  * after a successful refresh so failures remain retryable. Errors are swallowed so
- * spawn routing can continue.
+ * spawn routing can continue. When the canonical ChatGPT origin is circuit-blocked,
+ * cached quota is used instead of sending credential-bearing usage probes to the
+ * same origin before the request's final host admission check.
  */
 export function maybePrimeSubagentQuota(
   config: OcxConfig,
@@ -412,11 +431,15 @@ export function maybePrimeSubagentQuota(
   options: { nativeMainReadsForbidden?: boolean } = {},
 ): Promise<void> {
   if (options.nativeMainReadsForbidden) return Promise.resolve();
+  if (subagentQuotaPrimeBlockedByHostCircuit(config)) return Promise.resolve();
   if (quotaPrimeInFlight) return quotaPrimeInFlight;
   if (!shouldPrimeSubagentQuota(config, now)) return Promise.resolve();
 
   quotaPrimeInFlight = (async () => {
     try {
+      // Re-check after claiming single-flight ownership so a circuit opened by
+      // a concurrent request cannot race us into a fresh usage-probe pass.
+      if (subagentQuotaPrimeBlockedByHostCircuit(config)) return;
       if (subagentQuotaPrimeForTests) {
         await subagentQuotaPrimeForTests(config, "subagent-spawn");
       } else {
