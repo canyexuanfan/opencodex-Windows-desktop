@@ -23,274 +23,189 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_exact(path, old, new, count=1):
+          def edit(path, fn):
               p = Path(path)
               text = p.read_text()
-              actual = text.count(old)
-              if actual != count:
-                  raise SystemExit(f"{path}: expected {count} occurrences, found {actual}")
-              p.write_text(text.replace(old, new))
+              new = fn(text)
+              if new == text:
+                  raise SystemExit(f"{path}: edit made no change")
+              p.write_text(new)
 
-          # Shared config bound; malformed hand edits degrade only this opt-in field,
-          # while live config writes are rejected instead of silently clamped/disabled.
-          replace_exact(
-              "src/config.ts",
-              'import { isCodexAccountPriorityKey } from "./codex/account-priority";',
-              'import { isCodexAccountPriorityKey } from "./codex/account-priority";\nimport { UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD } from "./codex/upstream-host-health";'
-          )
-          replace_exact(
-              "src/config.ts",
-              '  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),',
-              '''  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
-              // Opt-in availability policy: a malformed hand edit disables only this
-              // circuit instead of invalidating the whole config. Live writes are strict
-              // in validateConfigCandidate() so callers cannot mistake a clamp for success.
-              upstreamHostCircuitThreshold: z.number().int()
-                .min(0)
-                .max(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)
-                .optional()
-                .catch(undefined),'''
-          )
+          def one(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 occurrence, found {n}")
+              return text.replace(old, new, 1)
 
-          replace_exact(
-              "src/config.ts",
-              '''function warnDegradedCodexAccountPicker(rawParsed: unknown): void {
-            const warning = malformedCodexAccountPickerWarning(rawParsed);
-            if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
-          }''',
-              '''function warnDegradedCodexAccountPicker(rawParsed: unknown): void {
-            const warning = malformedCodexAccountPickerWarning(rawParsed);
-            if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
-          }
+          def many(text, old, new, expected, label):
+              n = text.count(old)
+              if n != expected:
+                  raise SystemExit(f"{label}: expected {expected} occurrences, found {n}")
+              return text.replace(old, new)
 
-          function malformedUpstreamHostCircuitThresholdWarning(rawParsed: unknown): string | null {
-            const raw = rawConfigRecord(rawParsed);
-            if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
-            const threshold = raw.upstreamHostCircuitThreshold;
-            if (threshold === undefined) return null;
-            if (typeof threshold === "number"
-              && Number.isInteger(threshold)
-              && threshold >= 0
-              && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
-            return `upstreamHostCircuitThreshold ignored: expected an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
-          }
+          def patch_config(text):
+              text = one(text,
+                  'import { isCodexAccountPriorityKey } from "./codex/account-priority";',
+                  'import { isCodexAccountPriorityKey } from "./codex/account-priority";\nimport { UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD } from "./codex/upstream-host-health";',
+                  'config import')
+              text = one(text,
+                  '  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),',
+                  '''  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
+  upstreamHostCircuitThreshold: z.number().int()
+    .min(0)
+    .max(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)
+    .optional()
+    .catch(undefined),''',
+                  'config schema field')
 
-          function warnDegradedUpstreamHostCircuitThreshold(rawParsed: unknown): void {
-            const warning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
-            if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
-          }'''
-          )
+              marker = 'type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";'
+              helper = '''function malformedUpstreamHostCircuitThresholdWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `upstreamHostCircuitThreshold ignored: expected an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
 
-          # Both load paths surface the degraded optional field.
-          replace_exact(
-              "src/config.ts",
-              '''      warnDegradedNativeSubagentConfig(parsed, config);
-                warnDegradedCodexAccountPicker(parsed);
-                return normalizeClaudeSubagentEffort''',
-              '''      warnDegradedNativeSubagentConfig(parsed, config);
-                warnDegradedCodexAccountPicker(parsed);
-                warnDegradedUpstreamHostCircuitThreshold(parsed);
-                return normalizeClaudeSubagentEffort''',
-              count=2
-          )
+function warnDegradedUpstreamHostCircuitThreshold(rawParsed: unknown): void {
+  const warning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+}
 
-          replace_exact(
-              "src/config.ts",
-              '''  const pickerWarning = malformedCodexAccountPickerWarning(rawParsed);
-            if (pickerWarning) warnings.push(pickerWarning);
-            if (syncDisabledReason) {''',
-              '''  const pickerWarning = malformedCodexAccountPickerWarning(rawParsed);
-            if (pickerWarning) warnings.push(pickerWarning);
-            const hostCircuitWarning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
-            if (hostCircuitWarning) warnings.push(hostCircuitWarning);
-            if (syncDisabledReason) {'''
-          )
+'''
+              text = one(text, marker, helper + marker, 'config warning helper')
+              text = many(text,
+                  '      warnDegradedCodexAccountPicker(parsed);\n',
+                  '      warnDegradedCodexAccountPicker(parsed);\n      warnDegradedUpstreamHostCircuitThreshold(parsed);\n',
+                  2,
+                  'config load warnings')
+              text = one(text,
+                  '  if (pickerWarning) warnings.push(pickerWarning);\n',
+                  '  if (pickerWarning) warnings.push(pickerWarning);\n  const hostCircuitWarning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);\n  if (hostCircuitWarning) warnings.push(hostCircuitWarning);\n',
+                  'config diagnostics warning')
 
-          replace_exact(
-              "src/config.ts",
-              '''function appOwnedMemoryBudgetError(value: unknown): string | null {
-            if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-            const budget = (value as Record<string, unknown>).appOwnedMemoryBudgetMb;
-            if (budget === undefined) return null;
-            if (typeof budget !== "number" || !Number.isInteger(budget)
-              || budget < MIN_APP_OWNED_MEMORY_BUDGET_MB || budget > MAX_APP_OWNED_MEMORY_BUDGET_MB) {
-              return `schema_invalid: appOwnedMemoryBudgetMb: must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}`;
-            }
-            return null;
-          }''',
-              '''function appOwnedMemoryBudgetError(value: unknown): string | null {
-            if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-            const budget = (value as Record<string, unknown>).appOwnedMemoryBudgetMb;
-            if (budget === undefined) return null;
-            if (typeof budget !== "number" || !Number.isInteger(budget)
-              || budget < MIN_APP_OWNED_MEMORY_BUDGET_MB || budget > MAX_APP_OWNED_MEMORY_BUDGET_MB) {
-              return `schema_invalid: appOwnedMemoryBudgetMb: must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}`;
-            }
-            return null;
-          }
+              marker = '/**\n * Same reasoning as {@link blankHostnameError}, and more urgent:'
+              boundary_helper = '''function upstreamHostCircuitThresholdError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `schema_invalid: upstreamHostCircuitThreshold: must be an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
 
-          function upstreamHostCircuitThresholdError(value: unknown): string | null {
-            const raw = rawConfigRecord(value);
-            if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
-            const threshold = raw.upstreamHostCircuitThreshold;
-            if (threshold === undefined) return null;
-            if (typeof threshold === "number"
-              && Number.isInteger(threshold)
-              && threshold >= 0
-              && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
-            return `schema_invalid: upstreamHostCircuitThreshold: must be an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
-          }'''
-          )
-          replace_exact(
-              "src/config.ts",
-              '''  const boundaryError = blankHostnameError(value)
-                ?? claudeSubagentEffortError(value)
-                ?? appOwnedMemoryBudgetError(value)
-                ?? googleAntigravityStaticCatalogVersionError(value)''',
-              '''  const boundaryError = blankHostnameError(value)
-                ?? claudeSubagentEffortError(value)
-                ?? appOwnedMemoryBudgetError(value)
-                ?? upstreamHostCircuitThresholdError(value)
-                ?? googleAntigravityStaticCatalogVersionError(value)'''
-          )
+'''
+              text = one(text, marker, boundary_helper + marker, 'config write-boundary helper')
+              text = one(text,
+                  '    ?? appOwnedMemoryBudgetError(value)\n    ?? googleAntigravityStaticCatalogVersionError(value)',
+                  '    ?? appOwnedMemoryBudgetError(value)\n    ?? upstreamHostCircuitThresholdError(value)\n    ?? googleAntigravityStaticCatalogVersionError(value)',
+                  'config boundary chain')
+              return text
 
-          # When the option is disabled while an old circuit entry exists, downgrade
-          # it to observational state. Otherwise successful traffic while disabled
-          # cannot clear the old circuit and re-enabling resurrects stale evidence.
-          replace_exact(
-              "src/codex/upstream-host-health.ts",
-              '''export function releaseUpstreamHostAdmission(
-            lease: UpstreamHostAdmissionLease | null | undefined,
-            now = Date.now(),
-          ): boolean {
-            if (!lease) return false;
-            const entry = matchingEntry(lease);
-            if (!entry) return false;
-            settleLease(entry, lease);
-            entry.lastTouch = now;
-            if (entry.activeLeaseIds.size === 0 && entry.consecutiveFailures === 0) {
-              hostHealth.delete(lease.key);
-            }
-            pruneTo(UPSTREAM_HOST_HEALTH_MAX_ENTRIES, now);
-            return true;
-          }''',
-              '''export function releaseUpstreamHostAdmission(
-            lease: UpstreamHostAdmissionLease | null | undefined,
-            now = Date.now(),
-          ): boolean {
-            if (!lease) return false;
-            const entry = matchingEntry(lease);
-            if (!entry) return false;
-            settleLease(entry, lease);
-            entry.lastTouch = now;
-            if (entry.activeLeaseIds.size === 0 && entry.consecutiveFailures === 0) {
-              hostHealth.delete(lease.key);
-            }
-            pruneTo(UPSTREAM_HOST_HEALTH_MAX_ENTRIES, now);
-            return true;
-          }
+          edit('src/config.ts', patch_config)
 
-          /**
-           * Downgrade circuit-owned state to the observational ledger when the
-           * operator disables the circuit. Existing failure evidence is retained
-           * for diagnostics, but cooldown/lease authority is revoked so ordinary
-           * disabled-mode HTTP success/failure observations can update the entry.
-           */
-          export function disableUpstreamHostCircuitForKey(key: string, now = Date.now()): boolean {
-            const entry = hostHealth.get(key);
-            if (!entry?.circuitManaged) return false;
-            entry.circuitManaged = false;
-            delete entry.cooldownUntil;
-            advanceGeneration(entry);
-            entry.lastTouch = now;
-            if (entry.consecutiveFailures === 0) hostHealth.delete(key);
-            else pruneTo(UPSTREAM_HOST_HEALTH_MAX_ENTRIES, now);
-            return true;
-          }'''
-          )
+          def patch_health(text):
+              marker = '/** Record one terminal logical `connect_neutral` failure. */'
+              helper = '''/**
+ * Downgrade circuit-owned state when the operator disables the circuit.
+ * Failure history remains observational, but cooldown and all in-flight lease
+ * authority are revoked so disabled-mode traffic can update the ledger normally.
+ */
+export function disableUpstreamHostCircuitForKey(key: string, now = Date.now()): boolean {
+  const entry = hostHealth.get(key);
+  if (!entry?.circuitManaged) return false;
+  entry.circuitManaged = false;
+  delete entry.cooldownUntil;
+  advanceGeneration(entry);
+  entry.lastTouch = now;
+  if (entry.consecutiveFailures === 0) hostHealth.delete(key);
+  else pruneTo(UPSTREAM_HOST_HEALTH_MAX_ENTRIES, now);
+  return true;
+}
 
-          for path in ["src/server/responses/core.ts", "src/server/responses/compact.ts"]:
-              replace_exact(
-                  path,
-                  '''  acquireUpstreamHostAdmission,
-            normalizeUpstreamHostCircuitThreshold,''',
-                  '''  acquireUpstreamHostAdmission,
-            disableUpstreamHostCircuitForKey,
-            normalizeUpstreamHostCircuitThreshold,'''
-              )
+'''
+              return one(text, marker, helper + marker, 'host disable helper')
 
-          replace_exact(
-              "src/server/responses/core.ts",
-              '''    const hostCircuitEnabled = hostKey !== null
-                && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
-            if (hostAdmissionLease && hostAdmissionLease.key !== hostKey) {''',
-              '''    const hostCircuitEnabled = hostKey !== null
-                && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
-            if (hostKey !== null && !hostCircuitEnabled) {
-              disableUpstreamHostCircuitForKey(actualHostKey);
-            }
-            if (hostAdmissionLease && hostAdmissionLease.key !== hostKey) {'''
-          )
-          replace_exact(
-              "src/server/responses/compact.ts",
-              '''    const compactHostCircuitEnabled = compactHostKey !== null
-                && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
-            if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {''',
-              '''    const compactHostCircuitEnabled = compactHostKey !== null
-                && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
-            if (compactHostKey !== null && !compactHostCircuitEnabled) {
-              disableUpstreamHostCircuitForKey(actualCompactHostKey);
-            }
-            if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {'''
-          )
+          edit('src/codex/upstream-host-health.ts', patch_health)
 
-          replace_exact(
-              "tests/upstream-host-circuit.test.ts",
-              '''  acquireUpstreamHostAdmission,
-            clearUpstreamHostHealth,''',
-              '''  acquireUpstreamHostAdmission,
-            clearUpstreamHostHealth,
-            disableUpstreamHostCircuitForKey,'''
-          )
-          replace_exact(
-              "tests/upstream-host-circuit.test.ts",
-              '''  test("a later physical retry without its lease cannot close a newer circuit", () => {''',
-              '''  test("disabled-mode observations can clear an old circuit instead of resurrecting stale state", () => {
-              const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
-              fail(key, 1, 11_000);
-              expect(getUpstreamHostHealth(key)?.cooldownUntil).toBe(11_000 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS);
+          def add_disable_import(text):
+              return one(text,
+                  '  acquireUpstreamHostAdmission,\n  normalizeUpstreamHostCircuitThreshold,',
+                  '  acquireUpstreamHostAdmission,\n  disableUpstreamHostCircuitForKey,\n  normalizeUpstreamHostCircuitThreshold,',
+                  'circuit disable import')
 
-              expect(disableUpstreamHostCircuitForKey(key, 11_001)).toBe(true);
-              expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
-              expect(getUpstreamHostHealth(key)?.cooldownUntil).toBeUndefined();
+          edit('src/server/responses/core.ts', add_disable_import)
+          edit('src/server/responses/compact.ts', add_disable_import)
 
-              // A real HTTP response while the circuit is disabled is now an
-              // ordinary observational reset and removes the stale streak.
-              expect(resetUpstreamHostHealth(key)).toBe(true);
-              expect(getUpstreamHostHealth(key)).toBeNull();
+          def patch_core(text):
+              return one(text,
+                  '''    const hostCircuitEnabled = hostKey !== null
+      && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (hostAdmissionLease && hostAdmissionLease.key !== hostKey) {''',
+                  '''    const hostCircuitEnabled = hostKey !== null
+      && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (hostKey !== null && !hostCircuitEnabled) {
+      disableUpstreamHostCircuitForKey(actualHostKey);
+    }
+    if (hostAdmissionLease && hostAdmissionLease.key !== hostKey) {''',
+                  'regular disabled-mode reconciliation')
+          edit('src/server/responses/core.ts', patch_core)
 
-              const admission = acquireUpstreamHostAdmission(key, 1, 11_002);
-              expect(admission.kind).toBe("admitted");
-            });
+          def patch_compact(text):
+              return one(text,
+                  '''    const compactHostCircuitEnabled = compactHostKey !== null
+      && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {''',
+                  '''    const compactHostCircuitEnabled = compactHostKey !== null
+      && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (compactHostKey !== null && !compactHostCircuitEnabled) {
+      disableUpstreamHostCircuitForKey(actualCompactHostKey);
+    }
+    if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {''',
+                  'compact disabled-mode reconciliation')
+          edit('src/server/responses/compact.ts', patch_compact)
 
-            test("a later physical retry without its lease cannot close a newer circuit", () => {'''
-          )
+          def patch_health_test(text):
+              text = one(text,
+                  '  clearUpstreamHostHealth,\n',
+                  '  clearUpstreamHostHealth,\n  disableUpstreamHostCircuitForKey,\n',
+                  'health test import')
+              marker = '  test("a later physical retry without its lease cannot close a newer circuit", () => {'
+              test = '''  test("disabled traffic can clear an old circuit before it is re-enabled", () => {
+    const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    fail(key, 1, 11_000);
+    expect(getUpstreamHostHealth(key)?.cooldownUntil).toBe(11_000 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS);
+
+    expect(disableUpstreamHostCircuitForKey(key, 11_001)).toBe(true);
+    expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
+    expect(getUpstreamHostHealth(key)?.cooldownUntil).toBeUndefined();
+
+    expect(resetUpstreamHostHealth(key)).toBe(true);
+    expect(getUpstreamHostHealth(key)).toBeNull();
+    expect(acquireUpstreamHostAdmission(key, 1, 11_002).kind).toBe("admitted");
+  });
+
+'''
+              return one(text, marker, test + marker, 'disabled-mode health regression')
+          edit('tests/upstream-host-circuit.test.ts', patch_health_test)
           PY
 
           cat > tests/upstream-host-circuit-config.test.ts <<'EOF'
           import { afterEach, describe, expect, test } from "bun:test";
-          import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+          import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
           import { tmpdir } from "node:os";
           import { join } from "node:path";
-          import {
-            getConfigPath,
-            getDefaultConfig,
-            readConfigDiagnostics,
-            validateConfigCandidate,
-          } from "../src/config";
+          import { getConfigPath, getDefaultConfig, readConfigDiagnostics, validateConfigCandidate } from "../src/config";
 
           let testDir = "";
-
           afterEach(() => {
             delete process.env.OPENCODEX_HOME;
             if (testDir && existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
@@ -298,34 +213,24 @@ jobs:
           });
 
           describe("upstreamHostCircuitThreshold config contract", () => {
-            test("live config writes accept only integer values from 0 through 20", () => {
+            test("live writes accept only integer values from 0 through 20", () => {
               for (const value of [0, 1, 20]) {
-                const result = validateConfigCandidate({
-                  ...getDefaultConfig(),
-                  upstreamHostCircuitThreshold: value,
-                });
-                expect(result.ok).toBe(true);
+                expect(validateConfigCandidate({ ...getDefaultConfig(), upstreamHostCircuitThreshold: value }).ok).toBe(true);
               }
-
               for (const value of [-1, 1.5, 21, "3", null]) {
-                const result = validateConfigCandidate({
-                  ...getDefaultConfig(),
-                  upstreamHostCircuitThreshold: value,
-                });
+                const result = validateConfigCandidate({ ...getDefaultConfig(), upstreamHostCircuitThreshold: value });
                 expect(result.ok).toBe(false);
                 if (!result.ok) expect(result.error).toContain("upstreamHostCircuitThreshold");
               }
             });
 
-            test("a malformed hand edit disables only the opt-in circuit and reports a warning", () => {
+            test("malformed hand edits disable only the circuit and report a warning", () => {
               testDir = mkdtempSync(join(tmpdir(), "ocx-host-circuit-config-"));
               process.env.OPENCODEX_HOME = testDir;
-              mkdirSync(testDir, { recursive: true });
               writeFileSync(getConfigPath(), JSON.stringify({
                 ...getDefaultConfig(),
                 upstreamHostCircuitThreshold: 999,
               }));
-
               const diagnostics = readConfigDiagnostics();
               expect(diagnostics.source).toBe("file");
               expect(diagnostics.config.upstreamHostCircuitThreshold).toBeUndefined();
@@ -336,7 +241,6 @@ jobs:
             });
           });
           EOF
-
       - name: Install
         run: bun install --frozen-lockfile
       - name: Typecheck
