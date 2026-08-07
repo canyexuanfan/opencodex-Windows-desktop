@@ -252,18 +252,22 @@ export function usesCodexForwardPoolAuth(
     && provider.authMode === "forward" && provider.adapter === "openai-responses";
 }
 
-function preAuthUpstreamHostCircuitKey(route: RouteResult, config: OcxConfig): string | null {
+export function preAuthUpstreamHostCircuitKey(
+  route: Pick<RouteResult, "provider" | "providerName" | "codexAccountMode" | "codexAccountId">,
+  config: OcxConfig,
+  options: { requireResponsesAdapter?: boolean } = {},
+): string | null {
   if (
     normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) === 0
     || route.codexAccountMode !== "pool"
     || route.codexAccountId !== undefined
     || route.provider.authMode !== "forward"
-    || route.provider.adapter !== "openai-responses"
+    || (options.requireResponsesAdapter !== false && route.provider.adapter !== "openai-responses")
   ) return null;
   return upstreamHostHealthKey(route.providerName, safeOriginLabel(route.provider.baseUrl ?? ""));
 }
 
-function upstreamHostCircuitOpenResponse(retryAfterSeconds: number): Response {
+export function upstreamHostCircuitOpenResponse(retryAfterSeconds: number): Response {
   return formatErrorResponse(
     503,
     "upstream_host_circuit_open",

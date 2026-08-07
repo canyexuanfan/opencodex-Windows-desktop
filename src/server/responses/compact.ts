@@ -120,7 +120,13 @@ import {
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
-import { decodeRequestErrorResponse, handleResponses, usesCodexForwardPoolAuth } from "./core";
+import {
+  decodeRequestErrorResponse,
+  handleResponses,
+  preAuthUpstreamHostCircuitKey,
+  upstreamHostCircuitOpenResponse,
+  usesCodexForwardPoolAuth,
+} from "./core";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
 
 export const COMPACT_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
@@ -323,17 +329,12 @@ export async function handleResponsesCompact(
     if (req.signal.aborted) {
       return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
     }
-    const preAuthCompactHostKey = normalizeUpstreamHostCircuitThreshold(
-      config.upstreamHostCircuitThreshold,
-    ) > 0
-      && route.codexAccountMode === "pool"
-      && route.codexAccountId === undefined
-      && route.provider.authMode === "forward"
-      ? upstreamHostHealthKey(
-        route.providerName,
-        safeOriginLabel(route.provider.baseUrl ?? ""),
-      )
-      : null;
+    // The enclosing native-compact guard already restricts this path to
+    // supported backends, so compact intentionally does not require the
+    // regular Responses adapter check here.
+    const preAuthCompactHostKey = preAuthUpstreamHostCircuitKey(route, config, {
+      requireResponsesAdapter: false,
+    });
     let compactHostAdmissionLease: UpstreamHostAdmissionLease | null = null;
     let authCtx: CodexAuthContext = { kind: "main", accountId: null };
     if (preAuthCompactHostKey) {
@@ -342,12 +343,7 @@ export async function handleResponsesCompact(
         config.upstreamHostCircuitThreshold,
       );
       if (admission.kind === "blocked") {
-        return formatErrorResponse(
-          503,
-          "upstream_host_circuit_open",
-          "Provider host is temporarily unavailable",
-          { retryAfter: String(admission.retryAfterSeconds) },
-        );
+        return upstreamHostCircuitOpenResponse(admission.retryAfterSeconds);
       }
       compactHostAdmissionLease = admission.lease;
     }
@@ -427,12 +423,7 @@ export async function handleResponsesCompact(
       );
       if (admission.kind === "blocked") {
         releaseCodexAuthContextProbeLease(authCtx);
-        return formatErrorResponse(
-          503,
-          "upstream_host_circuit_open",
-          "Provider host is temporarily unavailable",
-          { retryAfter: String(admission.retryAfterSeconds) },
-        );
+        return upstreamHostCircuitOpenResponse(admission.retryAfterSeconds);
       }
       compactHostAdmissionLease = admission.lease;
     }

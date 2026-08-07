@@ -4,7 +4,7 @@
  * contract; every other gateway has to be driven as a plain summarizer, or Codex
  * fatals on a compaction turn that came back as an ordinary message.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import {
 } from "../src/codex/routing";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
+import * as authContextModule from "../src/codex/auth-context";
 import {
   releaseCodexAuthContextProbeLease,
   resolveCodexAuthContext,
@@ -975,15 +976,21 @@ describe("compact alternate-account attempt (#913)", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: false }),
       });
-      const first = await handleResponses(request(), config, { model: "", provider: "" });
-      const second = await handleResponses(request(), config, { model: "", provider: "" });
-
-      expect(first.status).toBe(502);
-      expect(second.status).toBe(503);
-      expect(second.headers.get("retry-after")).toBe("30");
-      expect(sends).toBe(1);
-      expect(getCodexUpstreamHealth("pool-a")).toBeNull();
-      expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+      const authSpy = spyOn(authContextModule, "resolveCodexAuthContext");
+      try {
+        const first = await handleResponses(request(), config, { model: "", provider: "" });
+        const selectionsAfterFirst = authSpy.mock.calls.length;
+        const second = await handleResponses(request(), config, { model: "", provider: "" });
+        expect(first.status).toBe(502);
+        expect(second.status).toBe(503);
+        expect(second.headers.get("retry-after")).toBe("30");
+        expect(sends).toBe(1);
+        expect(authSpy.mock.calls.length).toBe(selectionsAfterFirst);
+        expect(getCodexUpstreamHealth("pool-a")).toBeNull();
+        expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+      } finally {
+        authSpy.mockRestore();
+      }
     });
   });
 
@@ -996,23 +1003,29 @@ describe("compact alternate-account attempt (#913)", () => {
         throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
       }) as typeof fetch;
 
-      const first = await handleResponsesCompact(
-        compactionRequest(baseCompactionBody({})),
-        config,
-        { model: "", provider: "" },
-      );
-      const second = await handleResponsesCompact(
-        compactionRequest(baseCompactionBody({})),
-        config,
-        { model: "", provider: "" },
-      );
-
-      expect(first.status).toBe(502);
-      expect(second.status).toBe(503);
-      expect(second.headers.get("retry-after")).toBe("30");
-      expect(sends).toBe(1);
-      expect(getCodexUpstreamHealth("pool-a")).toBeNull();
-      expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+      const authSpy = spyOn(authContextModule, "resolveCodexAuthContext");
+      try {
+        const first = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+        );
+        const selectionsAfterFirst = authSpy.mock.calls.length;
+        const second = await handleResponsesCompact(
+          compactionRequest(baseCompactionBody({})),
+          config,
+          { model: "", provider: "" },
+        );
+        expect(first.status).toBe(502);
+        expect(second.status).toBe(503);
+        expect(second.headers.get("retry-after")).toBe("30");
+        expect(sends).toBe(1);
+        expect(authSpy.mock.calls.length).toBe(selectionsAfterFirst);
+        expect(getCodexUpstreamHealth("pool-a")).toBeNull();
+        expect(getCodexUpstreamHealth("pool-b")).toBeNull();
+      } finally {
+        authSpy.mockRestore();
+      }
     });
   });
 });

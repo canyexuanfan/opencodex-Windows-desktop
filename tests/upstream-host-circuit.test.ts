@@ -154,6 +154,30 @@ describe("opt-in upstream host circuit", () => {
     expect(getUpstreamHostHealth(key)).toEqual(before);
   });
 
+  test("a lease cannot settle a different host key", () => {
+    const keyA = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    const keyB = upstreamHostHealthKey("openai", "https://api.openai.com");
+    const leaseA = admit(keyA, 1, 10_000);
+    expect(resetUpstreamHostHealth(keyB, leaseA, 10_001)).toBe(false);
+    recordUpstreamHostFailure(keyB, {
+      code: "ECONNREFUSED",
+      now: 10_002,
+      threshold: 1,
+      lease: leaseA,
+    });
+    expect(getUpstreamHostHealth(keyB)).toBeNull();
+    recordUpstreamHostFailure(keyA, {
+      code: "ECONNREFUSED",
+      now: 10_003,
+      threshold: 1,
+      lease: leaseA,
+    });
+    expect(getUpstreamHostHealth(keyA)).toMatchObject({
+      consecutiveFailures: 1,
+      cooldownUntil: 10_003 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS,
+    });
+  });
+
   test("a later physical retry without its lease cannot close a newer circuit", () => {
     const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
     fail(key, 1, 9_000);
