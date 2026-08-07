@@ -435,6 +435,12 @@ export const ja: Record<TKey, string> = {
   "prov.openaiApiSetup": "API キーを設定",
 
   // models
+  "models.tab.catalog": "モデル",
+  "models.tab.combos": "コンボ",
+  "models.tab.routing": "ルーティング (beta)",
+  "models.tabsLabel": "モデルサーフェス",
+  "models.subtitle.combos": "複数のモデルを 1 つの id にまとめ、順に応答させます。failover は順番に試し、round-robin は負荷を分散します。",
+  "models.subtitle.routing": "ポリシープロファイル、dry-run 評価、そして根拠の残るルーティング分析です。",
   "models.subtitle": "Codex に表示するモデルを切り替えます — ネイティブ GPT パススルーとルーティングプロバイダー、プロバイダー別(ヘッダーをクリックで折りたたみ)。非表示モデルはカタログとピッカーから外れますが、正確な id での直接呼び出しは可能です。変更は次回の Codex ターンで適用 — opencodex は Codex の 5 分間モデルキャッシュを無効化するので再起動は不要です。",
   "models.nativeGroupLabel": "OpenAI ネイティブ",
   "models.nativeHint": "パススルーモデルはプロバイダーで選択したプールまたはダイレクトアカウントオプションを使用します。一つオフにすると Codex ピッカーから隠します(カタログエントリは保持されるので、再有効化で正確に復元されます)。",

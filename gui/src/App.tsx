@@ -20,6 +20,7 @@ import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
 import { type Page } from "./app-routing";
 import { normalizeHashPath } from "./hash-routing";
+import { readModelsTab, type ModelsTab } from "./pages/models-tab";
 import { useAppRouteState } from "./use-app-route-state";
 import { requestProxyStop } from "./stop-proxy";
 
@@ -121,6 +122,20 @@ function readStoredTheme(): Theme {
 
 export default function App() {
   const { page, navigateToPage } = useAppRouteState();
+  /*
+   * App needs the Models tab for one reason only: the full-bleed combos modifier lives
+   * on `.main-inner`, which is App's element. Models owns every other tab concern.
+   */
+  const [modelsTab, setModelsTab] = useState<ModelsTab>(readModelsTab);
+  useEffect(() => {
+    const syncModelsTab = () => setModelsTab(readModelsTab());
+    window.addEventListener("hashchange", syncModelsTab);
+    window.addEventListener("popstate", syncModelsTab);
+    return () => {
+      window.removeEventListener("hashchange", syncModelsTab);
+      window.removeEventListener("popstate", syncModelsTab);
+    };
+  }, []);
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
   const { locale, setLocale } = useI18n();
   const t = useT();
@@ -324,7 +339,16 @@ export default function App() {
       </aside>
 
       <main className="main" inert={navOpen}>
-        <div className={`main-inner${page === "combos" ? " main-inner--combos" : ""}`}>
+        {/*
+          The combos workspace is full-bleed, and it is reachable two ways during the
+          tab migration: as the standalone `#combos` page and as the Models Combos tab.
+          `.main-inner` is App's element, so App is the only place that can know.
+        */}
+        <div className={`main-inner${
+          page === "combos" || (page === "models" && modelsTab === "combos")
+            ? " main-inner--combos"
+            : ""
+        }`}>
           <ErrorBoundary
             key={page}
             pageName={t(PAGE_TKEY[page])}

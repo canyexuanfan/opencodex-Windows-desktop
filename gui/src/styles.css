@@ -396,13 +396,37 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   display: flex;
   flex-direction: column;
 }
-.main-inner.main-inner--combos > .combos-workspace-shell {
+/*
+  The combos workspace is a full-bleed 100dvh shell, so whatever owns the remaining
+  height has to be a flexible, shrinkable column.
+
+  Two selectors, because the shell reaches this container by two different paths: as
+  the standalone `#combos` page it is a direct child, and as a Models tab it sits one
+  level down inside its tabpanel. The panel wrapper is what breaks a plain direct-child
+  rule — the panel becomes the flex item and the shell fills it.
+*/
+.main-inner.main-inner--combos > .combos-workspace-shell,
+.main-inner.main-inner--combos > .models-tab-panel--fill,
+.main-inner.main-inner--combos > .models-tab-panel--fill > .combos-workspace-shell {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
 }
+
+/*
+  `.main-inner--combos` zeroes the container padding, so the page chrome above the
+  workspace has to bring its own back. `flex-shrink: 0` keeps the header, tab strip,
+  and subtitle from being squeezed when the workspace wants the room.
+*/
+.main-inner.main-inner--combos > .page-head,
+.main-inner.main-inner--combos > .page-tabs,
+.main-inner.main-inner--combos > .page-sub {
+  flex-shrink: 0;
+  padding-inline: 36px;
+}
+.main-inner.main-inner--combos > .page-sub { margin-bottom: 10px; }
 
 /* ---- page header ---- */
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
@@ -2020,6 +2044,9 @@ button.prov-account-row.active { cursor: default; }
   .main-inner { padding: 22px 18px 48px; }
   /* The mobile app grid already reserves the top-bar row; fill only its remaining main row. */
   .main-inner.main-inner--combos { padding: 0; min-height: 0; height: 100%; overflow: hidden; }
+  .main-inner.main-inner--combos > .page-head,
+  .main-inner.main-inner--combos > .page-tabs,
+  .main-inner.main-inner--combos > .page-sub { padding-inline: 18px; }
   /* settings rows: copy takes the full width, controls drop underneath */
   .setting-row { flex-wrap: wrap; }
   .setting-row .setting-copy { flex: 1 1 100% !important; }

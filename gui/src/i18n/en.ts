@@ -446,6 +446,12 @@ export const en = {
   "prov.openaiApiSetup": "Set up API key",
 
   // models
+  "models.tab.catalog": "Models",
+  "models.tab.combos": "Combos",
+  "models.tab.routing": "Routing (beta)",
+  "models.tabsLabel": "Model surfaces",
+  "models.subtitle.combos": "Ordered groups of models that answer as one id. Failover tries targets in order; round-robin spreads the load.",
+  "models.subtitle.routing": "Policy profiles, dry-run evaluation, and source-backed routing analytics.",
   "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Hidden models stay off the catalog + model picker but remain directly callable by exact id. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
   "models.nativeGroupLabel": "OpenAI native",
   "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",

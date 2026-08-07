@@ -438,6 +438,12 @@ export const ko: Record<TKey, string> = {
   "prov.openaiApiSetup": "API 키 설정",
 
   // models
+  "models.tab.catalog": "모델",
+  "models.tab.combos": "콤보",
+  "models.tab.routing": "라우팅 (beta)",
+  "models.tabsLabel": "모델 표면",
+  "models.subtitle.combos": "여러 모델을 하나의 id로 묶어 순서대로 응답하게 합니다. failover는 순서대로 시도하고, round-robin은 부하를 나눕니다.",
+  "models.subtitle.routing": "정책 프로필, dry-run 평가, 그리고 근거가 남는 라우팅 분석입니다.",
   "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 숨긴 모델은 카탈로그와 선택기에서 빠지지만 정확한 id로 직접 호출할 수 있습니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
   "models.nativeGroupLabel": "OpenAI 네이티브",
   "models.nativeHint": "프로바이더에서 선택한 풀 또는 직접 계정 옵션으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",

@@ -52,7 +52,21 @@ function seedCombos(cacheKey: string): CachedCombosPage | null {
   return readSessionListCache<CachedCombosPage>(cacheKey);
 }
 
-export default function Combos({ apiBase }: { apiBase: string }) {
+export default function Combos({
+  apiBase,
+  active = true,
+  onCountChange,
+}: {
+  apiBase: string;
+  /**
+   * False while this panel is mounted but hidden behind another Models tab. It gates
+   * the NETWORK only — the rendered tree stays put so unsaved editor drafts survive a
+   * tab hop. Defaults true so the standalone page keeps its existing behaviour.
+   */
+  active?: boolean;
+  /** Reports the combo count up to the tab strip. */
+  onCountChange?: (count: number) => void;
+}) {
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
   const cached = useMemo(() => seedCombos(cacheKey), [cacheKey]);
@@ -158,11 +172,26 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     cacheKey,
     [apiBase],
     loadCombos,
-    { isEmpty: () => false, initialData: cached ?? undefined },
+    /*
+     * Gate the network, never the tree. A hidden panel must not fetch, but the rendered
+     * workspace has to stay mounted so an unsaved editor draft survives a tab hop —
+     * that retention path lands in wp03, where the disabled resource stops reporting
+     * data. Until then the panel keeps its own last render.
+     */
+    { isEmpty: () => false, initialData: cached ?? undefined, enabled: active },
   );
   const { state } = resource;
   const data = state.data;
   const combos = data?.combos ?? [];
+
+  /*
+   * Report the count up to the tab strip from an effect keyed on the list length, not
+   * during render, so a parent re-render cannot refire it.
+   */
+  useEffect(() => {
+    if (!data) return;
+    onCountChange?.(combos.length);
+  }, [combos.length, data, onCountChange]);
   const providers = data?.providers ?? [];
   const models = data?.models ?? [];
   const cataloguedComboIds = new Set(data?.cataloguedComboIds ?? []);

@@ -11,6 +11,17 @@ import { readSessionListCache, writeSessionListCache } from "../session-list-cac
 import { setClientResourceData } from "../client-resource";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
+import ErrorBoundary from "../components/ErrorBoundary";
+import Combos from "./Combos";
+import RoutingProfiles from "./RoutingProfiles";
+import { ModelsTabStrip } from "./models-tab-strip";
+import {
+  modelsPanelDomId,
+  modelsTabDomId,
+  readModelsTab,
+  selectModelsTab,
+  type ModelsTab,
+} from "./models-tab";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
@@ -64,7 +75,53 @@ function readCachedCombos(value: unknown): ComboItem[] | null {
   return parseComboList({ combos: value });
 }
 
+/** One subtitle per tab: only one panel is visible, so only one description applies. */
+const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
+  catalog: "models.subtitle",
+  combos: "models.subtitle.combos",
+  routing: "models.subtitle.routing",
+};
+
 export default function Models({ apiBase }: { apiBase: string }) {
+  /*
+   * Tab state. The hash is the source of truth, so refresh, bookmark, and
+   * Back/Forward keep the choice — same contract as `#logs` / `#logs/debug`.
+   *
+   * Panels mount lazily and then STAY mounted, hidden, so a half-typed combo draft
+   * survives a tab hop. The mounted set accumulates in the handler rather than an
+   * effect: an effect would cost a second render pass on every switch for a value both
+   * callers already know.
+   */
+  const [tab, setTab] = useState<ModelsTab>(readModelsTab);
+  const [mounted, setMounted] = useState<ReadonlySet<ModelsTab>>(() => new Set([readModelsTab()]));
+
+  const activateTab = useCallback((next: ModelsTab) => {
+    setTab(next);
+    setMounted(current => (current.has(next) ? current : new Set([...current, next])));
+  }, []);
+
+  useEffect(() => {
+    const syncFromHash = () => activateTab(readModelsTab());
+    window.addEventListener("hashchange", syncFromHash);
+    window.addEventListener("popstate", syncFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncFromHash);
+      window.removeEventListener("popstate", syncFromHash);
+    };
+  }, [activateTab]);
+
+  const selectTab = useCallback((next: ModelsTab) => {
+    // Deliberate navigation: push a history entry so Back/Forward restore the tab.
+    selectModelsTab(next);
+    activateTab(next);
+  }, [activateTab]);
+
+  const catalogActive = tab === "catalog";
+
+  /** Counts reported up by the panels that own the underlying lists. */
+  const [comboCount, setComboCount] = useState<number | null>(null);
+  const [routingCount, setRoutingCount] = useState<number | null>(null);
+
   const t: TFn = useT();
   const cacheKey = `ocx.models.catalog.v1:${apiBase}`;
   const cached = useMemo(() => readSessionListCache<CachedModelsPage>(cacheKey), [cacheKey]);
@@ -150,7 +207,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       writeSessionListCache(combosCacheKey, next);
       return next;
     },
-    { isEmpty: () => false, initialData: seededCombos ?? undefined },
+    { isEmpty: () => false, initialData: seededCombos ?? undefined, enabled: catalogActive },
   );
   const combosState = combosResource.state;
   // Keep a previously painted card on a later failure so the catalog does not yank down.
@@ -268,7 +325,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
       applyCatalog(next);
       return next;
     },
-    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined },
+    // Gated on the catalog tab: a 10-second poll that keeps running while the user
+    // reads Combos or Routing is exactly the hidden work this workspace avoids.
+    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive },
   );
   const catalogState = catalogResource.state;
 
@@ -295,6 +354,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   // Shadow/v2 controls must not wait on the models catalog (live discovery can be slow).
   useEffect(() => {
+    // Both belong to the catalog tab; a hidden panel polling /api/v2 every ten seconds
+    // is the same leak as the catalog poll above.
+    if (!catalogActive) return;
     const timeout = window.setTimeout(() => {
       void loadShadowCall();
       void loadV2();
@@ -306,12 +368,20 @@ export default function Models({ apiBase }: { apiBase: string }) {
       window.clearTimeout(timeout);
       window.clearInterval(timer);
     };
-  }, [loadShadowCall, loadV2]);
+  }, [catalogActive, loadShadowCall, loadV2]);
 
   const groups = useMemo(
     () => buildProviderModelGroups(models, providers),
     [models, providers],
   );
+
+  /*
+   * The catalog count is only honest once a seed or a real response has landed. With
+   * the catalog gated, a cold load straight to `#models/combos` never fetches it, and
+   * rendering "0/0" would present unknown as fact.
+   */
+  const catalogCountReady = models.length > 0 || catalogState.data !== undefined;
+
 
   // One-shot default collapse. It stays an effect on `groups` so CACHED groups collapse
   // immediately on first paint, even when revalidation is slow or fails; moving it into
@@ -337,6 +407,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
       disabled.has(model.namespaced),
     )).length;
   }, [disabled, models, selectedModels]);
+
+  /*
+   * Quiet per-tab counts. A count is omitted, never zeroed, while it is unknown: the
+   * panels report theirs up once mounted, and a tab that has never been opened has
+   * nothing truthful to say.
+   */
+  const tabMeta = useMemo(() => ({
+    catalog: catalogCountReady
+      ? t("models.active", { active: effectiveVisibleCount, total: models.length })
+      : undefined,
+    combos: comboCount === null ? undefined : String(comboCount),
+    routing: routingCount === null ? undefined : String(routingCount),
+  }), [catalogCountReady, comboCount, effectiveVisibleCount, models.length, routingCount, t]);
 
   const applyVisibility = async (
     scope: ModelVisibilityScope,
@@ -1354,15 +1437,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </>
   );
 
-  return (
+  /*
+   * The catalog tab body: everything this page rendered before it grew tabs. It keeps
+   * `.models-workspace-shell`, so the wider-column rule and every workspace style below
+   * it apply unchanged.
+   */
+  const catalogPanel = (
     <div className="models-workspace-shell">
-      <div className="page-head">
-        <h2>{t("nav.models")}</h2>
-        <div className="row">
-          <span className="muted mono text-label">{t("models.active", { active: effectiveVisibleCount, total: models.length })}</span>
-        </div>
-      </div>
-      <p className="page-sub">{t("models.subtitle")}</p>
       {status && (
         <div className={`action-toast notice ${ok ? "notice-ok" : "notice-err"}`} role="status" aria-live="polite">
           {ok ? <IconCheck /> : <IconAlert />}
@@ -1427,6 +1508,87 @@ export default function Models({ apiBase }: { apiBase: string }) {
       </div>
       {modalsBlock}
     </div>
+  );
+
+  return (
+    <>
+      <div className="page-head">
+        <h2>{t("nav.models")}</h2>
+      </div>
+      <ModelsTabStrip tab={tab} onSelect={selectTab} meta={tabMeta} />
+      {/*
+        One subtitle for the active tab, rendered between the strip and the panels.
+        Only one panel is visible, so a subtitle per panel would be three copies of a
+        thing the user can only ever see one of — and the catalog's five-line copy was
+        pushing the full-height Combos workspace off the viewport.
+      */}
+      <p className="page-sub">{t(SUBTITLE_TKEY[tab])}</p>
+
+      {/*
+        Panels mount lazily and then stay mounted, hidden — a half-typed combo draft
+        survives a tab hop. `hidden` matches the APG examples and the existing Logs tab.
+        Each panel owns an error boundary so one failing tab cannot take the others with
+        it; App's page-level boundary is keyed by page and would otherwise stay tripped
+        across a tab switch.
+      */}
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("catalog")}
+        aria-labelledby={modelsTabDomId("catalog")}
+        hidden={tab !== "catalog"}
+      >
+        <ErrorBoundary
+          pageName={t("models.tab.catalog")}
+          title={t("errorBoundary.title")}
+          message={t("errorBoundary.message")}
+          detailsLabel={t("errorBoundary.details")}
+          reloadLabel={t("errorBoundary.reload")}
+        >
+          {catalogPanel}
+        </ErrorBoundary>
+      </div>
+
+      {mounted.has("combos") && (
+        <div
+          className="models-tab-panel models-tab-panel--fill"
+          role="tabpanel"
+          id={modelsPanelDomId("combos")}
+          aria-labelledby={modelsTabDomId("combos")}
+          hidden={tab !== "combos"}
+        >
+          <ErrorBoundary
+            pageName={t("models.tab.combos")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <Combos apiBase={apiBase} active={tab === "combos"} onCountChange={setComboCount} />
+          </ErrorBoundary>
+        </div>
+      )}
+
+      {mounted.has("routing") && (
+        <div
+          className="models-tab-panel"
+          role="tabpanel"
+          id={modelsPanelDomId("routing")}
+          aria-labelledby={modelsTabDomId("routing")}
+          hidden={tab !== "routing"}
+        >
+          <ErrorBoundary
+            pageName={t("models.tab.routing")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <RoutingProfiles apiBase={apiBase} active={tab === "routing"} standalone={false} onCountChange={setRoutingCount} />
+          </ErrorBoundary>
+        </div>
+      )}
+    </>
   );
 
 }

@@ -141,7 +141,26 @@ function selectedAfterLoad(
   return profiles[0] ?? null;
 }
 
-export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
+export default function RoutingProfiles({
+  apiBase,
+  active = true,
+  standalone = true,
+  onCountChange,
+}: {
+  apiBase: string;
+  /**
+   * False while this panel is mounted but hidden behind another Models tab. Defaults
+   * true so the standalone page keeps its existing behaviour.
+   */
+  active?: boolean;
+  /**
+   * True on the standalone `#routing` page, which owns its own title and subtitle.
+   * False inside the Models tab, where the shell already renders both.
+   */
+  standalone?: boolean;
+  /** Reports the profile count up to the tab strip. */
+  onCountChange?: (count: number) => void;
+}) {
   const t = useT();
   const unavailable = t("routing.unavailable");
   const [profiles, setProfiles] = useState<RoutingProfileDto[]>([]);
@@ -241,9 +260,18 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   }, [apiBase, clearDryRun]);
 
   useEffect(() => {
+    if (!active) return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
-  }, [load]);
+  }, [active, load]);
+
+  /*
+   * Report the count up to the tab strip from an effect keyed on the list length, not
+   * during render. Full cancellation ownership for `load` lands with wp04.
+   */
+  useEffect(() => {
+    onCountChange?.(profiles.length);
+  }, [onCountChange, profiles.length]);
 
   const firstProvider = providerNames[0] ?? "";
   const firstModel = providerDefaults[firstProvider]
@@ -417,16 +445,27 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
 
   return (
     <div className="page" data-page="routing">
-      <div className="page-head">
-        <h2>{t("routing.title")}</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
-            <span aria-hidden="true">+</span> {t("routing.createProfile")}
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
-        </div>
+      {/*
+        Embedded as a Models tab, so the page title and subtitle belong to the shell.
+        Rendering them here too put "Routing Intelligence (beta)" and its description on
+        screen twice — visible the moment the panel was opened in a browser, invisible to
+        every static gate. The actions stay; a heading cannot carry buttons, so they sit
+        in a plain toolbar row.
+      */}
+      {standalone && (
+        <>
+          <div className="page-head">
+            <h2>{t("routing.title")}</h2>
+          </div>
+          <p className="muted">{t("routing.subtitle")}</p>
+        </>
+      )}
+      <div className="row" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 12 }}>
+        <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
+          <span aria-hidden="true">+</span> {t("routing.createProfile")}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
       </div>
-      <p className="muted">{t("routing.subtitle")}</p>
 
       {loadError ? <Notice tone="err">{t("routing.loadFailed")}: {loadError}</Notice> : null}
       {status ? <Notice tone={status.ok ? "ok" : "err"}>{status.message}</Notice> : null}
