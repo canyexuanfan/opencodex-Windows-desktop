@@ -71,6 +71,7 @@ import {
   getActiveTurnCount,
   isDraining,
   registerTurn,
+  runListenerShutdown,
   setServerRef,
   trackStreamLifetime,
   tryAdmitTurn,
@@ -1497,34 +1498,17 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   Object.defineProperty(server, "stop", {
     configurable: true,
     value: async (closeActiveConnections?: boolean): Promise<void> => {
-      // Two properties, and dropping either one breaks a caller.
-      //
-      // Cleanup must complete: a failure closing one listener cannot skip the other or the
-      // native lifecycle release.
-      //
-      // Failure must PROPAGATE: `stopServerListener` deliberately surfaces a stop rejection so
-      // every caller observes the same result before a replacement binds the port. Swallowing
-      // it with allSettled would let drainAndShutdown report success while a listener still
-      // holds its socket, and the replacement would then fail its own bind.
-      const failures: unknown[] = [];
-      try {
-        try {
-          await nativeStop(closeActiveConnections);
-        } catch (error) {
-          failures.push(error);
-        }
-        if (loopbackListenerRef) {
-          try {
-            await loopbackListenerRef.stop(closeActiveConnections);
-          } catch (error) {
-            failures.push(error);
-          }
-        }
-      } finally {
-        await releaseNativeMainStartupLifecycle(server);
-      }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) throw new AggregateError(failures, "listener shutdown failed");
+      // The orchestration lives in `runListenerShutdown` so its two competing properties —
+      // cleanup completes, failure propagates — are testable without a live socket.
+      await runListenerShutdown(
+        [
+          () => nativeStop(closeActiveConnections),
+          ...(loopbackListenerRef
+            ? [() => loopbackListenerRef.stop(closeActiveConnections)]
+            : []),
+        ],
+        () => releaseNativeMainStartupLifecycle(server),
+      );
     },
   });
   setServerRef(server);

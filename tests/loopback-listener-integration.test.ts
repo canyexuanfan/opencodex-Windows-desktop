@@ -15,6 +15,7 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { runListenerShutdown } from "../src/server/lifecycle";
 import {
   findAvailablePort,
   PortUnavailableError,
@@ -56,6 +57,25 @@ function firstNonLoopbackIPv4(): string | null {
     }
   }
   return null;
+}
+
+/** One-shot settle with a cleared timer, so a late timeout cannot fire into the next test. */
+function handshake(url: string): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    const ws = new WebSocket(url);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { ws.close(); } catch { /* already closing */ }
+      resolve(value);
+    };
+    ws.addEventListener("open", () => settle(true));
+    ws.addEventListener("error", () => settle(false));
+    timer = setTimeout(() => settle(false), 3_000);
+  });
 }
 
 beforeEach(() => {
@@ -222,29 +242,8 @@ describe("unauthenticated loopback listener", () => {
       // still correct (it is the server that received the request, and nothing documents the
       // cross-listener behaviour as supported), but the assertion below cannot defend it.
       // Saying so beats implying coverage that does not exist.
-      const opened = await new Promise<boolean>(resolve => {
-        const ws = new WebSocket(`ws://127.0.0.1:${loopbackPort}/v1/responses`);
-        const settle = (value: boolean) => {
-          try { ws.close(); } catch { /* already closing */ }
-          resolve(value);
-        };
-        ws.addEventListener("open", () => settle(true));
-        ws.addEventListener("error", () => settle(false));
-        setTimeout(() => settle(false), 3_000);
-      });
-      expect(opened).toBe(true);
-
-      const publicOpened = await new Promise<boolean>(resolve => {
-        const ws = new WebSocket(`ws://127.0.0.1:${server.port}/v1/responses`);
-        const settle = (value: boolean) => {
-          try { ws.close(); } catch { /* already closing */ }
-          resolve(value);
-        };
-        ws.addEventListener("open", () => settle(true));
-        ws.addEventListener("error", () => settle(false));
-        setTimeout(() => settle(false), 3_000);
-      });
-      expect(publicOpened).toBe(false);
+      expect(await handshake(`ws://127.0.0.1:${loopbackPort}/v1/responses`)).toBe(true);
+      expect(await handshake(`ws://127.0.0.1:${server.port}/v1/responses`)).toBe(false);
     } finally {
       await server.stop(true);
     }
@@ -293,7 +292,9 @@ describe("unauthenticated loopback listener", () => {
     // A FIXED public port, not 0. Throwing is not the property under test — a startup that
     // throws while leaving the public listener bound is exactly the failure the rollback
     // exists to prevent, and only a rebind attempt can tell the two apart.
-    const publicPort = await freePort();
+    // Reserve the loopback port during this draw: two back-to-back freePort() calls can hand
+    // back the same port, which would make the test squat its own public port.
+    const publicPort = await findAvailablePort(0, "127.0.0.1", { reservedPort: loopbackPort });
     const squatter = Bun.serve({
       port: loopbackPort,
       hostname: "127.0.0.1",
@@ -321,6 +322,80 @@ describe("unauthenticated loopback listener", () => {
   // cleanup completing across both listeners — is covered by the test above. Writing a case
   // that asserts something weaker and calls it propagation coverage would be worse than the
   // gap, because the next reader would believe the branch was defended.
+});
+
+describe("composite listener shutdown", () => {
+  // Both listeners share one `stop`, and the two properties it must hold pull against each
+  // other: keep cleaning up after a failure, yet still report that failure. A test against a
+  // live server cannot inject the rejection, so the orchestration was extracted.
+  test("a failing step does not stop the others, and still reaches the caller", async () => {
+    const ran: string[] = [];
+    const failure = new Error("primary stop failed");
+    await expect(runListenerShutdown(
+      [
+        async () => { ran.push("primary"); throw failure; },
+        async () => { ran.push("loopback"); },
+      ],
+      async () => { ran.push("lifecycle"); },
+    )).rejects.toBe(failure);
+    // The whole point: a rejected primary stop must not strand the loopback socket or skip
+    // the native lifecycle release.
+    expect(ran).toEqual(["primary", "loopback", "lifecycle"]);
+  });
+
+  test("two failures are reported together rather than one hiding the other", async () => {
+    const ran: string[] = [];
+    let caught: unknown;
+    try {
+      await runListenerShutdown(
+        [
+          async () => { ran.push("primary"); throw new Error("a"); },
+          async () => { ran.push("loopback"); throw new Error("b"); },
+        ],
+        async () => { ran.push("lifecycle"); },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toHaveLength(2);
+    expect(ran).toEqual(["primary", "loopback", "lifecycle"]);
+  });
+
+  test("a failing lifecycle release is reported too", async () => {
+    const failure = new Error("release failed");
+    await expect(runListenerShutdown(
+      [async () => {}],
+      async () => { throw failure; },
+    )).rejects.toBe(failure);
+  });
+
+  test("an all-clear shutdown resolves", async () => {
+    await expect(runListenerShutdown([async () => {}, async () => {}], async () => {}))
+      .resolves.toBeUndefined();
+  });
+});
+
+describe("seams the runtime cannot defend", () => {
+  // Two properties have no runtime oracle on this Bun version, and both would regress
+  // silently. A source assertion is a weak instrument, but a weak instrument aimed at a known
+  // blind spot beats none — the alternative is a comment nobody runs.
+  const serverSource = readFileSync(join(process.cwd(), "src", "server", "index.ts"), "utf-8");
+
+  test("the WebSocket upgrade uses the receiving server, never the captured binding", () => {
+    // Swapping in `server.upgrade` stays green at runtime here: this Bun accepts an upgrade
+    // issued from a sibling Bun.serve in the same process. Another version or platform is not
+    // promised to, and the loopback listener would then fail to upgrade at all.
+    expect(serverSource).not.toMatch(/\bif \(server\.upgrade\(req,/);
+    expect(serverSource.match(/requestServer\.upgrade\(req,/g)?.length).toBe(2);
+  });
+
+  test("the loopback listener binds 127.0.0.1 explicitly", () => {
+    // The connection-refused test above is the real oracle, but it degrades to a warning on a
+    // host with no external IPv4 — and on that host the 0.0.0.0 ablation would pass. This
+    // holds everywhere.
+    expect(serverSource).toMatch(/port: loopbackListenerPort,\s*\n\s*hostname: "127\.0\.0\.1",/);
+  });
 });
 
 describe("public port selection avoids the loopback port", () => {
