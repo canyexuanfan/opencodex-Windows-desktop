@@ -24,6 +24,7 @@ import {
 import type { OcxConfig } from "../src/types";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { enrichProviderFromCatalog } from "../src/oauth/key-providers";
 import { handleManagementAPI } from "../src/server/management-api";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 
@@ -2448,6 +2449,85 @@ describe("Codex catalog routed normalization", () => {
       ).toEqual(item.efforts);
       expect(routed?.supports_reasoning_summaries).toBe(true);
     }
+  });
+
+  test("a custom-named provider on a known vendor endpoint still gets the opt-in (#1100)", () => {
+    // The reporter's actual shape: a hand-added provider literally named "GLM". Routing worked,
+    // so the row looked healthy, but no registry id is called "GLM" and every piece of registry
+    // metadata was skipped — the ladder was advertised with summaries left false, which is the
+    // exact inconsistency that makes Codex drop the inbound reasoning object. Testing only
+    // canonical provider ids would have missed this entirely.
+    const custom: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", custom);
+    expect(custom.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Same for a renamed row pointing at the BigModel pay-as-you-go endpoint.
+    const renamed: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("my-glm", renamed);
+    expect(renamed.modelSupportsReasoningSummaries?.["glm-4.6"]).toBe(true);
+  });
+
+  test("the destination fallback never claims an unrelated custom endpoint (#1100)", () => {
+    // The fallback matches by vendor endpoint. A provider pointing somewhere we do not
+    // recognize must stay untouched — silently opting a random backend into summary delivery
+    // would produce upstream 400s the user never asked for.
+    const unknown: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.invalid/v1",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", unknown);
+    expect(unknown.modelSupportsReasoningSummaries).toBeUndefined();
+
+    // An explicit user value wins PER KEY — it does not suppress the other registry defaults.
+    // An earlier revision of this fallback bailed whenever any user map existed, which
+    // recreated the whole-record bug the per-key merge was written to avoid: setting one
+    // model's flag would silently disable the opt-in for every sibling model.
+    const opinionated: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "glm-5.2": false },
+    };
+    enrichProviderFromRegistry("GLM", opinionated);
+    expect(opinionated.modelSupportsReasoningSummaries).toEqual({
+      "glm-5.2": false,
+      "glm-5.2[1m]": true,
+    });
+  });
+
+  test("registry summary defaults are never persisted into saved config (#1100)", () => {
+    // enrichProviderFromCatalog feeds a config that is about to be written to disk. Persisting
+    // today's registry defaults would freeze them as the user's own overrides, so a later
+    // registry correction — e.g. learning a model's backend rejects summary delivery — would
+    // never reach anyone who created their provider first.
+    const created: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+    };
+    enrichProviderFromCatalog("deepseek", created);
+    expect(created.modelSupportsReasoningSummaries).toBeUndefined();
+    // Other registry seeding still reaches the saved config.
+    expect(created.models?.length).toBeGreaterThan(0);
+
+    // A value the user actually submitted is preserved verbatim.
+    const submitted: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+    enrichProviderFromCatalog("deepseek", submitted);
+    expect(submitted.modelSupportsReasoningSummaries).toEqual({ "deepseek-v4-flash": false });
   });
 
   test("explicit per-model overrides survive registry backfill", () => {
