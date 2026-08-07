@@ -79,7 +79,7 @@ function copyRange(
  */
 export class BoundedSseFrameBuffer {
   private readonly maxFrameBytes: number;
-  private delimiterTail = new Uint8Array(0);
+  private delimiterTail: Uint8Array = new Uint8Array(0);
   private candidateSlices: Uint8Array[] = [];
   private candidateBytes = 0;
   private disposed = false;
