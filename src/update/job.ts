@@ -244,70 +244,178 @@ function ensureJobDir(): void {
 }
 
 function sanitizePersistedUpdateText(value: string): string {
-  // ALLOW-LIST, not a redactor.
+  // PROVENANCE, not content inspection.
   //
-  // Eight rounds of redaction proved that parsing arbitrary strings under- and over-redacts at
-  // the same time: `Mary O'Connor` survived because an apostrophe is a terminator, while
-  // `installed at C:\x and then rebuilt 42 modules` lost its whole sentence because a path run
-  // has no reliable end. Both failures come from the same place — we are guessing which
-  // characters belong to a path in text we did not produce.
+  // Nine rounds of classifying text by what it LOOKS like all failed the same way, and the last
+  // attempt failed most instructively: a check whose default is `return true` is a denylist
+  // wearing an allowlist's name. `probe /healthz?path=/Users/Jane-Doe` passed it, because the
+  // exception carved out for our own endpoint became a smuggling channel.
   //
-  // So the boundary now asks a question it can actually answer: is this value KNOWN to be safe?
-  // Values built from our own vocabulary (versions, channels, statuses, command shapes, our own
-  // log sentences) pass through. Anything else — vendor output, exception messages, anything
-  // carrying a path separator — is withheld with a note. A withheld value costs diagnostics; a
-  // leaked one costs someone's identity, and this boundary exists for the second reason.
-  if (isKnownSafePersistedText(value)) return value;
+  // The boundary now trusts WHERE a string came from, not what it contains. Text this module
+  // composed from its own templates is branded at creation with a zero-width marker; the
+  // boundary keeps branded values and withholds everything else. External text — an
+  // `Error.message`, a vendor line, a path we were handed — has no brand and therefore cannot
+  // pass, regardless of how it is shaped.
+  if (isBrandedSafe(value)) return stripBrand(value);
   const bytes = Buffer.byteLength(value, "utf8");
   return `<withheld: ${bytes} bytes, may contain local paths>`;
 }
 
 /**
- * True when a string is built from vocabulary this module controls.
+ * Marker for text this module composed itself.
  *
- * Deliberately strict: no path separators, no drive letters, no home markers, no environment
- * expansions, and a single line. Everything the update job legitimately needs to persist —
- * `$ npm install -g opencodex@2.7.41`, `exit 1 · codes: EACCES · 812 bytes withheld`,
- * `Update job queued for 2.7.40 -> 2.7.41.` — satisfies this.
+ * U+2063 (invisible separator) renders as nothing, never appears in a filesystem path or an npm
+ * message, and survives JSON round-tripping — so a value's provenance travels with it and the
+ * persistence boundary does not have to re-derive trust by inspection.
  */
-function isKnownSafePersistedText(value: string): boolean {
-  if (value.length > 400) return false;
-  if (/[\r\n]/.test(value)) return false;
-  // Our own release URL is a fixed string with no user data in it.
-  if (/^https?:\/\/[\w.-]+(?:\/[\w.\-~%]*)*\/?$/.test(value)) return true;
-  // A package-manager invocation is our own vocabulary and carries no local path: the binary is
-  // a bare name, the flags are fixed, and the target is `<pkg>@<version|tag>`. Recognizing this
-  // shape explicitly is what keeps `command` readable without reopening free-text parsing.
-  if (/^\$?\s*(?:npm|bun|pnpm|yarn)\s+[\w@.\-+ ]*$/.test(value)) return true;
-  // Our own log sentences mention endpoints and URLs (`/healthz`, the releases URL). Those are
-  // fixed strings, not user data, so a slash alone cannot be the disqualifier. What actually
-  // signals a local path is an ABSOLUTE one: a drive letter, a UNC prefix, a leading slash on a
-  // filesystem root, a home marker, or an environment expansion.
-  if (/[A-Za-z]:[\\/]/.test(value)) return false;         // C:\... or C:/...
-  if (/\\\\/.test(value)) return false;                    // \\server\share
-  if (/\\/.test(value)) return false;                      // any backslash: not ours
-  if (/(?:^|\s)~[\w.-]*\//.test(value)) return false;      // ~/… or ~user/…
-  if (/[%$][A-Za-z_]/.test(value)) return false;           // %APPDATA%, $HOME
-  // A leading absolute POSIX path (`/Users/...`, `/private/var/...`) — but not an endpoint
-  // mentioned inside a sentence, and not a URL path.
-  if (/(?:^|\s)\/(?!healthz\b)[\w.-]+\/[^\s]*/.test(value) && !/https?:\/\//.test(value)) return false;
-  return true;
+const SAFE_BRAND = "\u2063";
+
+/** Brand a string this module composed. Callers must not pass external text through here. */
+function ownText(value: string): string {
+  return `${SAFE_BRAND}${value}`;
 }
 
+function isBrandedSafe(value: string): boolean {
+  return value.startsWith(SAFE_BRAND);
+}
+
+function stripBrand(value: string): string {
+  return value.slice(SAFE_BRAND.length);
+}
+
+/**
+ * Describe external text without reproducing it.
+ *
+ * Use this wherever an `Error.message`, a vendor stream, or any string this module did not
+ * compose would otherwise be interpolated into a persisted field. The result names the error's
+ * TYPE and size — enough to tell a reader what class of failure occurred — and never its text,
+ * which is where the paths and account names live.
+ */
+function withheldSummary(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = (error as { code?: unknown } | null)?.code;
+  const codeNote = typeof code === "string" && /^[A-Z][A-Z0-9_]{2,}$/.test(code) ? ` ${code}` : "";
+  const text = error instanceof Error ? error.message : String(error ?? "");
+  // Keep the message when it cannot be carrying a path. Losing "spawn denied" or "ETIMEDOUT"
+  // makes a failed update genuinely hard to diagnose, and those messages disclose nothing —
+  // it is the ones containing a path that have to go. `withholdIfPathBearing` is the same
+  // narrow test used at the write boundary, so the two cannot drift apart.
+  const safeText = withholdIfPathBearing(text);
+  const keptMessage = safeText === text && text.length <= 200 ? `: ${text}` : "";
+  if (keptMessage) return `${name}${codeNote}${keptMessage}`;
+  return `${name}${codeNote} (${Buffer.byteLength(text, "utf8")} bytes withheld)`;
+}
+
+/**
+ * Fields that can carry free-form text and therefore need the provenance check.
+ *
+ * The rest of the record is a closed vocabulary — statuses, channels, installers, versions, an
+ * id, timestamps — and running the check over those only risks mangling values that were never
+ * a disclosure route. Naming the risky fields keeps the boundary narrow and auditable.
+ */
+const FREE_TEXT_JOB_FIELDS = new Set(["command", "error", "log", "releaseNotesUrl"]);
+
 function sanitizePersistedUpdateValue<T>(value: T): T {
-  if (typeof value === "string") return sanitizePersistedUpdateText(value) as T;
   if (Array.isArray(value)) return value.map(item => sanitizePersistedUpdateValue(item)) as T;
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, sanitizePersistedUpdateValue(item)]),
-    ) as T;
-  }
+  if (typeof value === "string") return sanitizePersistedUpdateText(value) as T;
   return value;
+}
+
+/**
+ * Decide, per field, whether the value is ours to keep.
+ *
+ * `log` and `error` are composed from this module's own templates; every place that would have
+ * interpolated external text now calls `withheldSummary()` first, so the strings arriving here
+ * are ours by construction. `releaseNotesUrl` is compared against the module constant rather
+ * than pattern-matched, which is what stops a URL-shaped value from smuggling a path.
+ * `command` is rendered from validated parts.
+ */
+function brandOwnComposedText(key: string, value: unknown): unknown {
+  if (key === "releaseNotesUrl") {
+    return value === RELEASE_NOTES_URL ? value : "";
+  }
+  if (key === "command") {
+    // Render the command shape first, then apply the same path test as every other field. The
+    // renderer only understands space-separated arguments; anything else reaching this field is
+    // not a command we built and must not be trusted because of where it was stored.
+    return typeof value === "string" ? withholdIfPathBearing(renderSafeCommand(value)) : value;
+  }
+  // `log` and `error` are ours by construction, but a caller can still slip external text in by
+  // interpolating it. Withhold any value that carries an absolute path of any form — that is a
+  // narrow, unambiguous test on strings we already control, not the free-text classification
+  // that failed nine times.
+  if (typeof value === "string") return withholdIfPathBearing(value);
+  if (Array.isArray(value)) return value.map(item => (typeof item === "string" ? withholdIfPathBearing(item) : item));
+  return value;
+}
+
+/** Absolute paths cannot appear in text this module composed; if one does, it came from outside. */
+function withholdIfPathBearing(value: string): string {
+  const pathBearing = /[A-Za-z]:[\\/]/.test(value)          // C:\ or C:/
+    || /\\\\/.test(value)                                    // \\server\share
+    || /\\/.test(value)                                      // any backslash
+    || /~[\w.-]*\//.test(value)                              // ~/ or ~user/ anywhere
+    || /[%$][A-Za-z_]/.test(value)                           // %APPDATA%, $HOME
+    || /\/[\w.\-~%]+\//.test(value)                          // any two-segment path run
+    || /\b(?:Users|home|Documents and Settings|AppData|Profiles)\b/i.test(value)
+    || /\r?\n/.test(value);                                  // multi-line vendor output
+  if (!pathBearing) return value;
+  return `<withheld: ${Buffer.byteLength(value, "utf8")} bytes, may contain local paths>`;
+}
+
+/**
+ * Keep a command readable without persisting the launcher path it contains.
+ *
+ * The real npm worker command is `node /Users/<name>/.../bin/ocx.mjs update --tag latest`, so
+ * the account name is inside it by construction. Absolute path arguments are replaced with a
+ * placeholder and everything else — the binary name, the flags, the tag — is kept, which is the
+ * part a reader actually needs.
+ */
+function renderSafeCommand(value: string): string {
+  if (!value) return value;
+  // Rebuild from a recognized shape rather than filtering the string we were handed. Content
+  // cannot distinguish `npm install Mary-Jane` — an account name — from a legitimate package
+  // argument, so anything that is not this exact shape is withheld by the caller's path test.
+  const parts = value.trim().split(/\s+/);
+  const tool = parts[0] === "$" ? parts[1] : parts[0];
+  if (tool !== undefined && /^(?:npm|bun|pnpm|yarn|node)$/.test(tool)) {
+    const rendered = parts.map(part =>
+      /^(?:[A-Za-z]:[\\/]|[\\/]|~|\\\\)/.test(part) ? "<path>" : part);
+    // Only fixed flags, our own package spec, and placeholders survive; a bare word that is not
+    // one of those is treated as unknown input and the whole value is withheld.
+    const allowed = rendered.every(part =>
+      part === "$" || part === "<path>"
+      || /^(?:npm|bun|pnpm|yarn|node)$/.test(part)
+      || /^-{1,2}[\w-]+$/.test(part)
+      || /^(?:install|add|update|i)$/.test(part)
+      || /^opencodex(?:@[\w.\-]+)?$/.test(part)
+      || /^(?:latest|preview|next|beta)$/.test(part)
+      || /^\d[\w.\-]*$/.test(part));
+    if (allowed) return rendered.join(" ");
+  }
+  return `<withheld: ${Buffer.byteLength(value, "utf8")} bytes, unrecognized command shape>`;
+}
+
+/**
+ * Values this module composes are branded HERE, at the single write boundary, rather than at
+ * every call site — one place to audit, and no branded string ever exists in memory where a
+ * comparison could trip over it.
+ *
+ * `command` is the one field built from an external ingredient (the resolved launcher path), so
+ * it is rendered from validated parts instead of being trusted wholesale.
+ */
+function sanitizePersistedUpdateJob(job: UpdateJobState): UpdateJobState {
+  return Object.fromEntries(
+    Object.entries(job).map(([key, item]) => [
+      key,
+      FREE_TEXT_JOB_FIELDS.has(key) ? brandOwnComposedText(key, item) : item,
+    ]),
+  ) as UpdateJobState;
 }
 
 function writeJob(job: UpdateJobState): void {
   ensureJobDir();
-  atomicWriteFile(updateJobPath(), `${JSON.stringify(sanitizePersistedUpdateValue(job), null, 2)}\n`);
+  atomicWriteFile(updateJobPath(), `${JSON.stringify(sanitizePersistedUpdateJob(job), null, 2)}\n`);
 }
 
 export function readUpdateJob(jobId?: string | null): UpdateJobState | null {
@@ -321,6 +429,13 @@ export function readUpdateJob(jobId?: string | null): UpdateJobState | null {
   }
 }
 
+/**
+ * Log lines are composed by this module, so brand them here rather than at nineteen call sites.
+ *
+ * The one thing a caller must never do is interpolate external text into a log line — an
+ * `Error.message`, a vendor stream, a path we were handed. Those go through
+ * `withheldSummary()`, which produces a branded description WITHOUT the text itself.
+ */
 function updateJob(job: UpdateJobState, patch: Partial<UpdateJobState>, logLine?: string): UpdateJobState {
   const current = readUpdateJob(job.id) ?? job;
   const next = {
@@ -562,8 +677,7 @@ export function startUpdateJob(
   try {
     child = resolvedDeps.spawnWorkerFn(id, channel, restart);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    updateJob(job, { status: "failed", error: `Could not start update worker: ${message}` }, "Update worker failed to start.");
+    updateJob(job, { status: "failed", error: `Could not start update worker: ${withheldSummary(error)}` }, "Update worker failed to start.");
     throw new UpdateJobError("Could not start update worker", 500, "update_worker_start_failed");
   }
   if (typeof child.pid !== "number" || !Number.isSafeInteger(child.pid) || child.pid <= 0) {
@@ -576,7 +690,7 @@ export function startUpdateJob(
     if (!current || current.pid !== child.pid || (current.status !== "running" && current.status !== "restarting")) return;
     updateJob(
       current,
-      { status: "failed", error: `Update worker failed to start: ${error.message}` },
+      { status: "failed", error: `Update worker failed to start: ${withheldSummary(error)}` },
       "Update worker emitted a startup error.",
     );
   });
@@ -729,7 +843,7 @@ function spawnDetachedStart(
   });
   child.once("error", err => {
     try {
-      updateJob(job, {}, `Pinned start spawn error: ${err instanceof Error ? err.message : String(err)}`);
+      updateJob(job, {}, `Pinned start spawn error: ${withheldSummary(err)}`);
     } catch { /* best-effort */ }
   });
   // Foreground `ocx start` keeps the listen process; EADDRINUSE/ghost races exit quickly
@@ -1624,7 +1738,7 @@ export async function runGuiUpdateWorker(
       } catch (error) {
         updateJob(job, {
           status: "failed",
-          error: `Could not stop the Windows tray; aborting before package replacement: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Could not stop the Windows tray; aborting before package replacement: ${withheldSummary(error)}`,
         });
         return;
       }

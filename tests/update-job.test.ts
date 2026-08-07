@@ -139,6 +139,7 @@ describe("GUI update execution decisions", () => {
     // Multi-line vendor output no longer crosses the boundary at all — it is replaced by a
     // shape note. The secrets are what matter here, and none of them survive.
     expect(persisted).toContain("withheld");
+    expect(persisted).not.toContain("private.txt");
   });
 
   test("the persistence boundary survives wrapped paths and profile expansions", () => {
