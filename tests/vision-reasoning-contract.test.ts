@@ -6,7 +6,15 @@ import { handleConfigCommand } from "../src/cli/config-command";
 import { handleManagementAPI } from "../src/server/management-api";
 import { listManagementModelRows } from "../src/server/management/model-rows";
 import type { OcxConfig } from "../src/types";
+import { resolveOpenAiVisionModel } from "../src/vision";
 import { ManagementRequest as Request } from "./helpers/management-auth";
+
+async function getVision(config: OcxConfig): Promise<Response> {
+  const url = new URL("http://localhost/api/sidecar-settings");
+  const response = await handleManagementAPI(new Request(url), url, config);
+  if (!response) throw new Error("sidecar settings route did not handle request");
+  return response;
+}
 
 async function putVision(config: OcxConfig, vision: Record<string, unknown>): Promise<Response> {
   const url = new URL("http://localhost/api/sidecar-settings");
@@ -42,6 +50,24 @@ describe("vision reasoning capability contracts", () => {
     expect(efforts("gpt-5.6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(efforts("gpt-5.6-sol")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(efforts("gpt-5.6-sol")).not.toContain("ultra");
+  });
+
+  test("management GET reports the effective default model and effort for stale configs", async () => {
+    for (const model of [undefined, ""] as const) {
+      const config = {
+        port: 10100,
+        defaultProvider: "none",
+        providers: {},
+        visionSidecar: { ...(model === undefined ? {} : { model }), reasoning: "max" },
+      } as OcxConfig;
+      const response = await getVision(config);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        vision: { model: "gpt-5.4-mini", reasoning: "xhigh" },
+      });
+      // Reads report effective execution state without mutating a hand-edited config in memory.
+      expect(config.visionSidecar?.reasoning).toBe("max");
+    }
   });
 
   test("management normalizes native model/effort pairs on every relevant partial update", async () => {
@@ -117,7 +143,7 @@ describe("vision reasoning capability contracts", () => {
     }
   });
 
-  test("CLI import normalizes reasoning against the runtime model default", async () => {
+  test("CLI import normalizes reasoning against omitted and blank runtime model defaults", async () => {
     const previousHome = process.env.OPENCODEX_HOME;
     const isolatedHome = mkdtempSync(join(tmpdir(), "ocx-vision-reasoning-cli-"));
     process.env.OPENCODEX_HOME = isolatedHome;
@@ -131,9 +157,20 @@ describe("vision reasoning capability contracts", () => {
         visionSidecar: { reasoning: "max" },
       }));
       expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).toBe(0);
-      const persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
+      let persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
       expect(persisted.visionSidecar).toMatchObject({ reasoning: "xhigh" });
       expect(persisted.visionSidecar.model).toBeUndefined();
+
+      writeFileSync(importPath, JSON.stringify({
+        port: 10100,
+        defaultProvider: "none",
+        providers: {},
+        visionSidecar: { model: "", reasoning: "max" },
+      }));
+      expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).toBe(0);
+      persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
+      expect(persisted.visionSidecar).toMatchObject({ model: "", reasoning: "xhigh" });
+      expect(resolveOpenAiVisionModel({ visionSidecar: persisted.visionSidecar })).toBe("gpt-5.4-mini");
     } finally {
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;
