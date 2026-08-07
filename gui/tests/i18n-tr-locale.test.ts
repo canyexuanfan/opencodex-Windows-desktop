@@ -21,6 +21,29 @@ describe("Turkish (tr) i18n locale", () => {
     expect(missingKeys).toEqual([]);
   });
 
+  test("tr dictionary preserves all interpolation placeholders from en catalog", () => {
+    const enKeys = Object.keys(en) as Array<keyof typeof en>;
+    const placeholderRe = /\{([a-zA-Z0-9_]+)\}/g;
+    const mismatched: string[] = [];
+
+    for (const key of enKeys) {
+      const enVal = en[key];
+      const trVal = tr[key];
+      if (typeof enVal !== "string" || typeof trVal !== "string") continue;
+
+      const enPlaceholders = new Set([...enVal.matchAll(placeholderRe)].map(m => m[1]));
+      const trPlaceholders = new Set([...trVal.matchAll(placeholderRe)].map(m => m[1]));
+
+      for (const ph of enPlaceholders) {
+        if (!trPlaceholders.has(ph)) {
+          mismatched.push(`${key}: missing {${ph}}`);
+        }
+      }
+    }
+
+    expect(mismatched).toEqual([]);
+  });
+
   test("detectInitial detects tr from navigator language", () => {
     const origNav = globalThis.navigator;
     try {
