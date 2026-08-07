@@ -273,6 +273,31 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("Mary Jane");
   });
 
+  test("an error message naming a person is never persisted, path or not", () => {
+    // The leak that survived nine rounds of path-based redaction: `spawn denied for Jane Doe`
+    // contains no path, so every content test passed it through. Error text does not cross the
+    // boundary at all now — only the type, a recognized code, and a byte count.
+    expect(() => startUpdateJob("latest", false, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: "npm install -g opencodex@2.7.41",
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw new Error("spawn denied for Jane Doe"); },
+    })).toThrow("Could not start update worker");
+
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("Jane Doe");
+    expect(persisted).toContain("bytes withheld");
+    // The command shape survives: it is rendered from validated parts, not copied.
+    expect(persisted).toContain("opencodex@2.7.41");
+  });
+
   test("npm worker uses the Node launcher update path", () => {
     const cmd = updateExecutionCommand("npm", "preview", "/pkg/bin/ocx.mjs");
     expect(cmd.bin).toMatch(/^node/);
@@ -1297,7 +1322,12 @@ describe("GUI update execution decisions", () => {
       spawnWorkerFn: () => { throw new Error("spawn denied"); },
     })).toThrow("Could not start update worker");
     expect(readUpdateJob()?.status).toBe("failed");
-    expect(readUpdateJob()?.error).toContain("spawn denied");
+    // The message itself is deliberately NOT persisted: `spawn denied for Jane Doe` carries no
+    // path and still names a person, so no content test can separate diagnostic from identity.
+    // The error's type and size are what the record keeps.
+    expect(readUpdateJob()?.error).not.toContain("spawn denied");
+    expect(readUpdateJob()?.error).toContain("Error");
+    expect(readUpdateJob()?.error).toContain("bytes withheld");
   });
 });
 

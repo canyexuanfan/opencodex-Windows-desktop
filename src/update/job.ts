@@ -243,46 +243,6 @@ function ensureJobDir(): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-function sanitizePersistedUpdateText(value: string): string {
-  // PROVENANCE, not content inspection.
-  //
-  // Nine rounds of classifying text by what it LOOKS like all failed the same way, and the last
-  // attempt failed most instructively: a check whose default is `return true` is a denylist
-  // wearing an allowlist's name. `probe /healthz?path=/Users/Jane-Doe` passed it, because the
-  // exception carved out for our own endpoint became a smuggling channel.
-  //
-  // The boundary now trusts WHERE a string came from, not what it contains. Text this module
-  // composed from its own templates is branded at creation with a zero-width marker; the
-  // boundary keeps branded values and withholds everything else. External text — an
-  // `Error.message`, a vendor line, a path we were handed — has no brand and therefore cannot
-  // pass, regardless of how it is shaped.
-  if (isBrandedSafe(value)) return stripBrand(value);
-  const bytes = Buffer.byteLength(value, "utf8");
-  return `<withheld: ${bytes} bytes, may contain local paths>`;
-}
-
-/**
- * Marker for text this module composed itself.
- *
- * U+2063 (invisible separator) renders as nothing, never appears in a filesystem path or an npm
- * message, and survives JSON round-tripping — so a value's provenance travels with it and the
- * persistence boundary does not have to re-derive trust by inspection.
- */
-const SAFE_BRAND = "\u2063";
-
-/** Brand a string this module composed. Callers must not pass external text through here. */
-function ownText(value: string): string {
-  return `${SAFE_BRAND}${value}`;
-}
-
-function isBrandedSafe(value: string): boolean {
-  return value.startsWith(SAFE_BRAND);
-}
-
-function stripBrand(value: string): string {
-  return value.slice(SAFE_BRAND.length);
-}
-
 /**
  * Describe external text without reproducing it.
  *
@@ -293,32 +253,15 @@ function stripBrand(value: string): string {
  */
 function withheldSummary(error: unknown): string {
   const name = error instanceof Error ? error.name : typeof error;
+  // NO MESSAGE TEXT, ever. An earlier version kept messages that carried no path, which sounds
+  // reasonable and is wrong: `spawn denied for Jane Doe` has no path in it and still names a
+  // person. There is no test on message CONTENT that separates a diagnostic from an identity,
+  // so the message does not cross this boundary at all.
   const code = (error as { code?: unknown } | null)?.code;
-  const codeNote = typeof code === "string" && /^[A-Z][A-Z0-9_]{2,}$/.test(code) ? ` ${code}` : "";
+  // Only recognized codes — an arbitrary uppercase `error.code` can be attacker-shaped too.
+  const codeNote = typeof code === "string" && NPM_ERROR_CODES.has(code) ? ` ${code}` : "";
   const text = error instanceof Error ? error.message : String(error ?? "");
-  // Keep the message when it cannot be carrying a path. Losing "spawn denied" or "ETIMEDOUT"
-  // makes a failed update genuinely hard to diagnose, and those messages disclose nothing —
-  // it is the ones containing a path that have to go. `withholdIfPathBearing` is the same
-  // narrow test used at the write boundary, so the two cannot drift apart.
-  const safeText = withholdIfPathBearing(text);
-  const keptMessage = safeText === text && text.length <= 200 ? `: ${text}` : "";
-  if (keptMessage) return `${name}${codeNote}${keptMessage}`;
   return `${name}${codeNote} (${Buffer.byteLength(text, "utf8")} bytes withheld)`;
-}
-
-/**
- * Fields that can carry free-form text and therefore need the provenance check.
- *
- * The rest of the record is a closed vocabulary — statuses, channels, installers, versions, an
- * id, timestamps — and running the check over those only risks mangling values that were never
- * a disclosure route. Naming the risky fields keeps the boundary narrow and auditable.
- */
-const FREE_TEXT_JOB_FIELDS = new Set(["command", "error", "log", "releaseNotesUrl"]);
-
-function sanitizePersistedUpdateValue<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(item => sanitizePersistedUpdateValue(item)) as T;
-  if (typeof value === "string") return sanitizePersistedUpdateText(value) as T;
-  return value;
 }
 
 /**
@@ -397,13 +340,15 @@ function renderSafeCommand(value: string): string {
 }
 
 /**
- * Values this module composes are branded HERE, at the single write boundary, rather than at
- * every call site — one place to audit, and no branded string ever exists in memory where a
- * comparison could trip over it.
+ * Fields that can carry free-form text and therefore need checking at the write boundary.
  *
- * `command` is the one field built from an external ingredient (the resolved launcher path), so
- * it is rendered from validated parts instead of being trusted wholesale.
+ * The rest of the record is a closed vocabulary — statuses, channels, installers, versions, an
+ * id, timestamps — so checking it only risks mangling values that were never a disclosure
+ * route. Naming the risky fields keeps the boundary narrow and auditable.
  */
+const FREE_TEXT_JOB_FIELDS = new Set(["command", "error", "log", "releaseNotesUrl"]);
+
+/** Apply the per-field rule at the single point where a job reaches disk. */
 function sanitizePersistedUpdateJob(job: UpdateJobState): UpdateJobState {
   return Object.fromEntries(
     Object.entries(job).map(([key, item]) => [
@@ -745,7 +690,7 @@ const NPM_ERROR_CODES = new Set([
 ]);
 
 /** npm prints `npm ERR! code EACCES`; anchor on that position rather than scanning free text. */
-const NPM_CODE_RECORD = /(?:^|\s)code\s+([A-Z][A-Z0-9_]{2,})\b/g;
+const NPM_CODE_RECORD = /^\s*npm\s+ERR!\s+code\s+([A-Z][A-Z0-9_]{2,})\s*$/gm;
 
 /**
  * Build a structured, path-free summary of a command's result.
@@ -1792,7 +1737,7 @@ export async function runGuiUpdateWorker(
     }
     updateJob(job, {
       status: "failed",
-      error: err instanceof Error ? err.message : String(err),
+      error: withheldSummary(err),
     });
   }
 }
