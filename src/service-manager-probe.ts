@@ -21,7 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 as win32Path } from "node:path";
 import {
   resolveTrustedWindowsSchtasksExe,
   resolveTrustedWindowsSystemDirectory,
@@ -426,13 +426,16 @@ function wrapperLooksGenerated(body: string): boolean {
   return /:loop\s*[\s\S]*^"%OCX_BUN%" "%OCX_CLI%" start\b[^\r\n]*$/im.test(body);
 }
 
-/** Compare Windows paths without allowing spelling differences to fabricate a mismatch. */
-function windowsPathEqual(a: string, b: string): boolean {
-  const norm = (value: string): string => value
-    .replace(/\//g, "\\")
-    .replace(/[\\]+$/, "")
-    .toLowerCase();
-  return norm(a) === norm(b);
+function normalizeWindowsPath(value: string): string {
+  return win32Path.normalize(value.replace(/\//g, "\\")).replace(/[\\]+$/, "").toLowerCase();
+}
+
+/** True only when a definition-provided path remains inside the effective OPENCODEX_HOME. */
+function windowsPathInsideConfigDir(candidate: string, configDir: string): boolean {
+  const root = normalizeWindowsPath(configDir);
+  const path = normalizeWindowsPath(candidate);
+  const relative = win32Path.relative(root, path);
+  return relative === "" || (relative !== ".." && !relative.startsWith("..\\") && !win32Path.isAbsolute(relative));
 }
 
 /** Parse the first CSV field emitted by schtasks `/fo CSV`. */
@@ -464,13 +467,16 @@ function windowsTaskListContains(body: string, taskName: string): boolean {
   });
 }
 
+/** English hosts provide a decisive fast path; other locales fall back to a full listing. */
+const SCHTASKS_TASK_NOT_FOUND_EN = /cannot find the file specified/i;
+
 /**
  * Registration state of the scheduled task.
  *
  * The `/xml` query gives the authoritative registered definition. A nonzero
- * result is locale-dependent, so it cannot prove absence from stderr text. In
- * that case a bounded full listing is the independent, locale-neutral fallback:
- * only a successful list that does not contain our task proves absence.
+ * result is locale-dependent. English's task-not-found message is decisive; all
+ * other nonzero responses use a bounded full listing as the locale-neutral
+ * fallback, and only a successful list without our task proves absence.
  */
 function probeWindowsTaskRegistration(deps: Required<Pick<ProbeDeps, "runRaw">>): {
   registered: "present" | "absent" | "unknown";
@@ -492,13 +498,16 @@ function probeWindowsTaskRegistration(deps: Required<Pick<ProbeDeps, "runRaw">>)
       : { registered: "unknown", registeredXml: "" };
   }
 
+  const queryText = `${decodeWindowsText(queried.stdout)}\n${decodeWindowsText(queried.stderr)}`;
+  if (queried.status !== null && SCHTASKS_TASK_NOT_FOUND_EN.test(queryText)) {
+    return { registered: "absent", registeredXml: "" };
+  }
+
   const listed = deps.runRaw(schtasks, ["/query", "/fo", "CSV", "/nh"]);
   if (listed.spawnFailed || listed.timedOut || listed.status !== 0) {
     return { registered: "unknown", registeredXml: "" };
   }
   const listing = decodeWindowsText(listed.stdout) || decodeWindowsText(listed.stderr);
-  // Presence without the requested /xml definition is not enough to compare
-  // ownership safely; only the negative listing answer is decisive here.
   return windowsTaskListContains(listing, windowsTaskName())
     ? { registered: "unknown", registeredXml: "" }
     : { registered: "absent", registeredXml: "" };
@@ -644,9 +653,10 @@ function homesEqual(
 /**
  * Walk one scheduled-task definition (staged or registered XML) down to the
  * generated batch wrapper and extract the homes it names. Definition-provided
- * paths are never followed unless they equal the deterministic generated paths
- * under the effective OPENCODEX_HOME; this prevents a foreign task from turning
- * an ownership probe into an arbitrary local/UNC file read.
+ * paths are followed only inside the effective OPENCODEX_HOME, preventing a
+ * foreign task from turning this ownership probe into an arbitrary local/UNC
+ * file read while preserving interrupted-reinstall diagnostics within the
+ * generated service-asset directory.
  */
 function walkWindowsChain(
   deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps, "configDir">,
@@ -654,8 +664,6 @@ function walkWindowsChain(
   definitionPath: string,
 ): ServiceManagerInstallation {
   const configDir = windowsConfigDirPath(deps);
-  const expectedLauncher = join(configDir, "opencodex-service-launcher.vbs");
-  const expectedWrapper = join(configDir, "opencodex-service.cmd");
 
   const launcherArg = windowsTaskArguments(xml);
   if (!launcherArg) {
@@ -665,42 +673,42 @@ function walkWindowsChain(
   if (!launcherPath) {
     return unknown("the scheduled-task XML launcher argument is not a quoted path");
   }
-  if (!windowsPathEqual(launcherPath, expectedLauncher)) {
-    return unknown(`the scheduled-task XML names ${launcherPath}, not the expected launcher ${expectedLauncher}`);
+  if (!windowsPathInsideConfigDir(launcherPath, configDir)) {
+    return unknown(`the scheduled-task XML names ${launcherPath}, outside the expected launcher directory ${configDir}`);
   }
 
-  const launcher = artifactPresence(expectedLauncher);
+  const launcher = artifactPresence(launcherPath);
   if (launcher === "absent") {
-    return unknown(`the scheduled-task launcher is missing: ${expectedLauncher}`);
+    return unknown(`the scheduled-task launcher is missing: ${launcherPath}`);
   }
   let launcherBody: string;
   try {
-    launcherBody = decodeWindowsText(readFileSync(expectedLauncher));
+    launcherBody = decodeWindowsText(readFileSync(launcherPath));
   } catch (error) {
     return unknown(`the scheduled-task launcher could not be read: ${String(error)}`);
   }
 
   const wrapperPath = vbsWrappedCommand(launcherBody);
   if (!wrapperPath) {
-    return unknown(`the launcher ${expectedLauncher} names no wrapper to run`);
+    return unknown(`the launcher ${launcherPath} names no wrapper to run`);
   }
-  if (!windowsPathEqual(wrapperPath, expectedWrapper)) {
-    return unknown(`the scheduled-task launcher names ${wrapperPath}, not the expected wrapper ${expectedWrapper}`);
+  if (!windowsPathInsideConfigDir(wrapperPath, configDir)) {
+    return unknown(`the scheduled-task launcher names ${wrapperPath}, outside the expected wrapper directory ${configDir}`);
   }
 
-  const wrapper = artifactPresence(expectedWrapper);
+  const wrapper = artifactPresence(wrapperPath);
   if (wrapper === "absent") {
-    return unknown(`the launcher wrapper is missing: ${expectedWrapper}`);
+    return unknown(`the launcher wrapper is missing: ${wrapperPath}`);
   }
   let wrapperBody: string;
   try {
-    wrapperBody = decodeWindowsText(readFileSync(expectedWrapper));
+    wrapperBody = decodeWindowsText(readFileSync(wrapperPath));
   } catch (error) {
     return unknown(`the launcher wrapper could not be read: ${String(error)}`);
   }
 
   if (!wrapperLooksGenerated(wrapperBody)) {
-    return unknown(`the launcher wrapper does not look like a generated opencodex service wrapper: ${expectedWrapper}`);
+    return unknown(`the launcher wrapper does not look like a generated opencodex service wrapper: ${wrapperPath}`);
   }
 
   const rawCodexHome = batchSetValue(wrapperBody, "CODEX_HOME");
