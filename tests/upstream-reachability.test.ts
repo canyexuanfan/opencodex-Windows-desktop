@@ -22,8 +22,17 @@ import {
   upstreamHostHealthKey,
   type UpstreamHostAdmissionLease,
 } from "../src/codex/upstream-host-health";
+import {
+  maybePrimeSubagentQuota,
+  resetSubagentModelFallbackStateForTests,
+  setSubagentQuotaPrimeForTests,
+} from "../src/codex/subagent-model-fallback";
+import type { OcxConfig } from "../src/types";
 
-beforeEach(() => clearUpstreamHostHealth());
+beforeEach(() => {
+  clearUpstreamHostHealth();
+  resetSubagentModelFallbackStateForTests();
+});
 
 function coded(message: string, code: string, cause?: unknown): Error {
   return Object.assign(new Error(message), { code, ...(cause !== undefined ? { cause } : {}) });
@@ -171,6 +180,35 @@ describe("opt-in upstream host circuit", () => {
       kind: "admitted",
       lease: null,
     });
+  });
+
+  test("an open ChatGPT host circuit suppresses subagent quota priming", async () => {
+    const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    fail(key, 1, 1_500);
+    let primeCalls = 0;
+    setSubagentQuotaPrimeForTests(async () => {
+      primeCalls += 1;
+    });
+    const config = {
+      port: 10100,
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      defaultProvider: "openai",
+      upstreamHostCircuitThreshold: 1,
+    } as OcxConfig;
+
+    await maybePrimeSubagentQuota(config, 1_501);
+    expect(primeCalls).toBe(0);
+    // Even after the cooldown timestamp passes, priming stays out of the way;
+    // the logical request itself owns the one half-open admission.
+    await maybePrimeSubagentQuota(config, 1_500 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 1);
+    expect(primeCalls).toBe(0);
   });
 
   test("legacy observations cannot open the opt-in circuit without a lease", () => {
