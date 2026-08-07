@@ -128,10 +128,13 @@ export function createSseTerminalOutputBoundary(): SseTerminalOutputBoundary {
     let responsesTerminal = false;
     for (const frame of frames) {
       const payload = sseDataPayload(decoder.decode(frame.block));
-      if (!responsesTerminal) output.push(frame.block, frame.delimiter);
-      if (payload === "[DONE]") {
+      const isDone = payload === "[DONE]";
+      // Preserve every frame through the first Responses terminal. A [DONE]
+      // frame is also preserved when it immediately follows that terminal in
+      // the same upstream chunk; every later non-DONE frame is dropped.
+      if (!responsesTerminal || isDone) output.push(frame.block, frame.delimiter);
+      if (isDone) {
         done = true;
-        if (responsesTerminal) output.push(frame.block, frame.delimiter);
         continue;
       }
       if (!responsesTerminal && payload && terminalStatusFromSsePayload(payload)) {
@@ -224,7 +227,14 @@ export function relaySseWithFailedTail(
           if (result !== "buffered") return;
         }
       } catch (err) {
-        const partial = terminalBoundary.finish();
+        let partial = new Uint8Array(0);
+        try {
+          partial = terminalBoundary.finish();
+        } catch {
+          // A near-cap ambiguous delimiter tail may itself overflow at EOF.
+          // Preserve the original read/framing failure and continue emitting
+          // the bounded failed tail instead of letting cleanup throw again.
+        }
         terminalBoundary.dispose();
         if (closed) return;
         const payload = buildFailedTailPayload(err);
