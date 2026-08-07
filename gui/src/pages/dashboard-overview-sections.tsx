@@ -243,8 +243,9 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
   const visionModel = sidecar?.vision.model ?? "gpt-5.6-luna";
-  const visionReasoning = sidecar?.vision.reasoning ?? "low";
+  const persistedVisionReasoning = sidecar?.vision.reasoning ?? "low";
   const visionLadder = visionReasoningLadder(models, visionModel);
+  const visionReasoning = clampVisionReasoningToLadder(visionLadder, persistedVisionReasoning);
 
   return (
     <>
@@ -300,7 +301,15 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               <Select
                 value={visionReasoning}
                 options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: value }))}
-                onChange={reasoning => { void saveSidecar({ vision: { reasoning: reasoning as typeof visionReasoning } }); }}
+                onChange={reasoning => {
+                  void saveSidecar({
+                    vision: {
+                      model: visionModel,
+                      backend: sidecarBackendForModel(models, visionModel),
+                      reasoning: reasoning as typeof visionReasoning,
+                    },
+                  });
+                }}
                 disabled={!sidecar || sidecarSaving}
                 label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
               />
