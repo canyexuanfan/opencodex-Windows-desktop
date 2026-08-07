@@ -171,7 +171,6 @@ import {
   imageGenToolCallAliases,
   restoreImageGenCallsInJson,
 } from "../responses-image-gen-repair";
-import { composeSsePayloadRewrites, relaySseWithPayloadRewrite } from "../sse-payload-rewrite";
 import { createResponsesModelPayloadRewrite, rewriteResponsesModelJson } from "../responses-model-rewrite";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
@@ -187,9 +186,11 @@ import {
 } from "../responses-snapshot-repair";
 import {
   composeSseBlockRewrites,
+  composeSsePayloadRewrites,
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
+import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseBody } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
 
@@ -2086,14 +2087,11 @@ async function handleResponsesInner(
     if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const snapshotRepairEnabled = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair);
+      const githubCopilotRepairEnabled = route.providerName === "github-copilot";
       const responseModelRewrite = parsed._responseModelId !== undefined
         && parsed._responseModelId !== parsed.modelId
         ? createResponsesModelPayloadRewrite(parsed._responseModelId)
         : undefined;
-      const needsClientRewrite = imageGenCallAliases.size > 0
-        || hasResponsesItemIdRepair(repairConfig)
-        || snapshotRepairEnabled
-        || responseModelRewrite !== undefined;
       // Compose opt-in payload rewrites into one parse/stringify pass (image-gen restore first).
       const payloadRewrites = [
         createImageGenCallRestoreRewrite(imageGenCallAliases),
@@ -2113,12 +2111,21 @@ async function handleResponsesInner(
           return undefined;
         }
       })();
-      const clientBlockRewrite = snapshotRepairEnabled
-        ? composeSseBlockRewrites(
-          payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)),
-          createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget),
-        )
+      const blockRewrites = [
+        payloadRewrites.length > 0
+          ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
+          : undefined,
+        githubCopilotRepairEnabled
+          ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
+          : undefined,
+        snapshotRepairEnabled
+          ? createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget)
+          : undefined,
+      ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
+      const clientBlockRewrite = blockRewrites.length > 0
+        ? composeSseBlockRewrites(...blockRewrites)
         : undefined;
+      const needsClientRewrite = clientBlockRewrite !== undefined;
       // #864: win32 rewrite traffic must never enter the tee()+JS-pull chain
       // (Bun#32111 JS-sink segfault — text frames pass, the terminal block is
       // lost). The eager single reader applies the same rewrites inline.
@@ -2159,6 +2166,7 @@ async function handleResponsesInner(
           logCtx,
           onCompletedResponse: rememberPassthroughResponse,
           onFirstOutput: options.onFirstOutput,
+          pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
         const eagerBody = relaySseEagerBounded(upstreamResponse.body, turnAc, {
           inspectChunk: chunk => inspector.feed(chunk),
@@ -2167,9 +2175,6 @@ async function handleResponsesInner(
           // Stream lifetime follows the protocol terminal even when this request
           // has no outcome callback configured (reported() would stay false).
           sawTerminal: () => inspector.terminalSeen(),
-          ...(win32EagerRewrite
-            ? { rewritePayload: composeSsePayloadRewrites(...payloadRewrites) }
-            : {}),
           ...(clientBlockRewrite
             ? { rewriteBlocks: clientBlockRewrite }
             : {}),
@@ -2208,6 +2213,7 @@ async function handleResponsesInner(
         clientGoneSignal: clientGone.signal,
         drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
         upstream,
+        pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
       };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
@@ -2260,8 +2266,8 @@ async function handleResponsesInner(
       // Windows was handled by the eager terminal-aware branch above. Remaining
       // tee traffic can use the JS relay to close on a protocol terminal and to
       // convert a mid-stream reset into a clean response.failed event.
-      const rewrittenBody = clientBlockRewrite !== undefined || payloadRewrites.length > 0
-        ? relaySseWithBlockRewrite(nativeBody, clientBlockRewrite ?? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites)), translatorBudget)
+      const rewrittenBody = clientBlockRewrite !== undefined
+        ? relaySseWithBlockRewrite(nativeBody, clientBlockRewrite, translatorBudget)
         : nativeBody;
       const clientBody = relaySseWithFailedTail(rewrittenBody, upstream, reason => clientGone.abort(reason));
       return markNativePassthroughSseResponse(new Response(clientBody, {
