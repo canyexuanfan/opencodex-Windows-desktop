@@ -5,12 +5,6 @@ import type { TKey } from "../i18n/shared";
 import type { StartupHealthStatus } from "../startup-health-ui";
 
 export type DashboardSection = "overview" | "providers" | "models";
-
-/**
- * `#dashboard/update` is the sidebar's action deep link. It is not a tab, so it resolves
- * to Overview (where the maintenance panel lives) and separately asks the dashboard to
- * open the update dialog.
- */
 export const DASHBOARD_UPDATE_HASH = "dashboard/update";
 
 export function readDashboardSectionFromHash(): DashboardSection {
@@ -20,17 +14,14 @@ export function readDashboardSectionFromHash(): DashboardSection {
   return "overview";
 }
 
-/** True while the location hash is the sidebar update deep link. */
 export function hashRequestsUpdateDialog(): boolean {
   return window.location.hash.replace(/^#\/?/, "") === DASHBOARD_UPDATE_HASH;
 }
 
-/** Overview is the bare `#dashboard`; the other sections carry a suffix. */
 export function dashboardHashForSection(section: DashboardSection): string {
   return section === "overview" ? "dashboard" : `dashboard/${section}`;
 }
 
-/** Like readJsonOrThrow, but rejects empty/204 bodies that would otherwise yield undefined. */
 export async function requireJson<T>(res: Response, fallbackMessage?: string): Promise<T> {
   const data = await readJsonOrThrow<T>(res, fallbackMessage);
   if (data === undefined) throw new Error(fallbackMessage ?? "empty response");
@@ -39,12 +30,11 @@ export async function requireJson<T>(res: Response, fallbackMessage?: string): P
 
 export interface HealthData { status: string; version: string; uptime: number }
 export interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
-export interface ModelInfo { id: string; provider: string; namespaced: string; owned_by?: string }
+export interface ModelInfo { id: string; provider: string; namespaced: string; owned_by?: string; reasoningEfforts?: string[] }
 export interface SettingsData {
   codexAutoStart: boolean;
   port: number;
   hostname: string;
-  /** IANA zone of the machine running the proxy, used to render log timestamps (#725). */
   timeZone?: string;
   startupHealth?: {
     status: "native" | "protected" | "at-risk";
@@ -55,11 +45,12 @@ export interface SettingsData {
   };
 }
 export type SidecarBackend = "openai" | "anthropic";
-export interface SidecarSetting { backend?: SidecarBackend; model: string }
+export type VisionReasoning = "low" | "medium" | "high" | "xhigh" | "max";
+export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning }
 export interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
 export interface SidecarPatch {
   webSearch?: { backend?: SidecarBackend | null; model?: string };
-  vision?: { backend?: SidecarBackend | null; model?: string };
+  vision?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning };
 }
 export interface ShadowCallData { enabled: boolean; model: string; sourceModels?: string[] }
 export interface UsageSummary30d { summary: { requests: number; totalTokens: number; coverageRatio: number } }
@@ -142,13 +133,36 @@ export function updateJobLabel(status: UpdateJobStatus, t: (key: TKey) => string
 
 export function mergeSidecarSetting(
   current: SidecarSetting,
-  update?: { backend?: SidecarBackend | null; model?: string },
+  update?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning },
 ): SidecarSetting {
   const merged = { ...current };
   if (update?.model !== undefined) merged.model = update.model;
   if (update?.backend === null) delete merged.backend;
   else if (update?.backend !== undefined) merged.backend = update.backend;
+  if (update?.reasoning !== undefined) merged.reasoning = update.reasoning;
   return merged;
+}
+
+export const VISION_REASONING_LEVELS: VisionReasoning[] = ["low", "medium", "high", "xhigh", "max"];
+
+export function visionReasoningLadder(models: ModelInfo[], modelId: string): VisionReasoning[] {
+  const model = models.find(m => m.id === modelId);
+  const ladder = model?.reasoningEfforts;
+  if (!ladder || ladder.length === 0) return [...VISION_REASONING_LEVELS];
+  const supported = VISION_REASONING_LEVELS.filter(effort => ladder.includes(effort));
+  return supported.length > 0 ? supported : [...VISION_REASONING_LEVELS];
+}
+
+export function visionReasoningOptionsFor(ladder: VisionReasoning[], persisted: VisionReasoning): VisionReasoning[] {
+  return ladder.includes(persisted) ? ladder : [persisted, ...ladder];
+}
+
+/** Preserve a supported value; otherwise clamp to the highest rung the selected model advertises. */
+export function clampVisionReasoningToLadder(
+  ladder: VisionReasoning[],
+  persisted: VisionReasoning,
+): VisionReasoning {
+  return ladder.includes(persisted) ? persisted : ladder[ladder.length - 1];
 }
 
 export function sidecarModelOptions(models: ModelInfo[]) {
@@ -161,7 +175,6 @@ export function sidecarModelOptions(models: ModelInfo[]) {
   return out;
 }
 
-/** Options for shadow-call replacement models use the proxy's canonical routing id. */
 export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined) {
   const out = [{ value: "", label: "—" }, ...models.map(model => ({ value: model.namespaced, label: model.namespaced }))];
   if (current && !out.some(option => option.value === current)) out.push({ value: current, label: current });
@@ -197,12 +210,10 @@ export function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonEl
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-
     if (open) {
       if (!dialog.open) dialog.showModal();
       return;
     }
-
     if (dialog.open) dialog.close();
     focusTriggerQuietly(triggerRef.current);
   }, [open, triggerRef]);
