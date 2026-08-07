@@ -394,13 +394,19 @@ describe("GUI update execution decisions", () => {
     // The one field that still reports does so as a fixed phrase with no borrowed text.
     expect(summary).toContain("no matching version");
 
-    // A package spec is echoed only when it is OUR package. `name@version` matches an email
-    // address and any `Name@1.2.3`, so extracting "a spec" was itself a disclosure channel.
-    const ours = summarizeCommandOutput("", "npm error notarget No matching version found for @bitkyc08/opencodex@99.99.99", 1, null);
-    expect(ours).toContain("@bitkyc08/opencodex@99.99.99");
-    const email = summarizeCommandOutput("", "npm error notarget No matching version found for jane.doe@example.com", 1, null);
-    expect(email).not.toContain("jane.doe");
-    expect(email).not.toContain("example.com");
+    // No package spec is echoed at all. `name@version` matches an email address; pinning the
+    // name to our own package still left the VERSION free, and a semver prerelease identifier
+    // can encode anything (`@bitkyc08/opencodex@99.99.99-JaneDoe`). `code: ETARGET` plus the
+    // bare fact is the diagnostic that matters.
+    for (const line of [
+      "npm error notarget No matching version found for jane.doe@example.com",
+      "npm error notarget No matching version found for @bitkyc08/opencodex@99.99.99-JaneDoe",
+    ]) {
+      const out = summarizeCommandOutput("", line, 1, null);
+      expect(out).toContain("no matching version");
+      expect(out).not.toContain("JaneDoe");
+      expect(out).not.toContain("jane.doe");
+    }
 
     // Registry hosts are an allowlist, not a shape: an arbitrary hostname is a disclosure
     // channel even when it parses cleanly.

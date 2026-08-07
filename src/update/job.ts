@@ -769,17 +769,16 @@ const NPM_FIELD_VALIDATORS: Record<string, (value: string) => string | null> = {
   errno: value => (/^-?\d{1,10}$/.test(value) ? String(Number(value)) : null),
   // Version resolution: the FACT only.
   //
-  // An earlier version extracted the package spec, which looked safe and was not:
-  // `jane.doe@example.com` and `JaneDoe@2.7.41` both match "name@version". The one package
-  // this updater ever resolves is our own, so a spec is echoed only when it IS ours —
-  // everything else reports the bare fact.
-  notarget: value => {
-    // PKG is scoped (`@scope/name`), so escape it rather than interpolating raw — and anchor on
-    // a boundary that works for a leading `@`, which `\b` does not.
-    const escaped = PKG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const spec = new RegExp(String.raw`(?:^|\s)(${escaped}@[\w.\-+]+)`).exec(value);
-    return spec ? `no matching version for ${spec[1]}` : "no matching version";
-  },
+  // Two narrowing attempts failed here and the second is the instructive one. Extracting any
+  // `name@version` also matched `jane.doe@example.com`. Pinning the NAME to our own package
+  // still left the VERSION free: `@bitkyc08/opencodex@99.99.99-JaneDoe` is a valid-looking
+  // spec, and a semver prerelease identifier can encode anything — the same lesson the
+  // `/healthz` version taught in round 13.
+  //
+  // There is no trusted resolved version available at this call site, so the spec is not
+  // rendered at all. `code: ETARGET` plus this fact already tells a user their requested
+  // version does not exist, which is the diagnostic that matters.
+  notarget: () => "no matching version",
 };
 
 /**
