@@ -3,6 +3,21 @@
  * icacls accepts ("*S-1-..."). Environment values such as USERDOMAIN are not
  * an authority for the current token: on workgroup machines USERDOMAIN may be
  * the literal WORKGROUP even though the account belongs to the local computer.
+ *
+ * There is deliberately NO name-shaped fallback. A `DOMAIN\User` string has a
+ * valid shape, but shape is not evidence that the account is the current
+ * token's subject, and both environment variables are writable by whatever
+ * launched us. A wrong principal here is not cosmetic: `runIcacls` grants it
+ * Full Control and then removes inheritance, so a wrong grant either leaves a
+ * different account holding the secret or strands the file with no usable ACE.
+ * When the SID cannot be resolved, the caller declines to touch the ACL at all.
+ *
+ * Budget caveat: callers pass their REMAINING harden budget, which becomes the
+ * child process timeout. Trusted-executable resolution (a `GetSystemDirectoryW`
+ * FFI call) and spawn setup happen before that timeout starts, and the async
+ * timer only arms once `Bun.spawn` returns. Both are small in practice, but the
+ * lookup is not bounded by the deadline to the microsecond. Tightening that
+ * would mean passing an absolute deadline through the runner interface.
  */
 
 import { resolveTrustedWindowsPowerShellExe } from "./windows-elevation";
@@ -97,6 +112,39 @@ let asyncPrincipalRunner: AsyncWindowsPrincipalRunner = defaultAsyncWindowsPrinc
 let cachedPrincipal: string | null = null;
 let asyncLookupInFlight: Promise<string> | null = null;
 
+/**
+ * POSIX CI drives the Windows ACL branch through `setPlatformForTests("win32")`,
+ * on hosts that have neither System32 nor PowerShell. Those runs need SOME
+ * principal, so this seam supplies a synthetic one.
+ *
+ * It lives here rather than in `windows-secret-acl.ts` for one reason that is
+ * not cosmetic: an explicitly injected runner must be able to beat it. When the
+ * synthetic value was chosen first, in the ACL module, a test could not inject a
+ * lookup FAILURE on POSIX at all — so the fail-closed and memo-isolation cases
+ * were guarded with `if (process.platform !== "win32") return;` and never ran
+ * outside Windows. Resolution order below is what makes those cases executable
+ * on every runner.
+ */
+let syntheticPrincipalForTests: string | null = null;
+
+/**
+ * Test seam: supply the principal used when no runner was injected and the host
+ * is not really Windows. Pass null to disable.
+ */
+export function setSyntheticWindowsPrincipalForTests(principal: string | null): void {
+  syntheticPrincipalForTests = principal;
+  cachedPrincipal = null;
+}
+
+/** True when an explicit runner override is installed and must take precedence. */
+function hasSyncRunnerOverride(): boolean {
+  return principalRunner !== defaultWindowsPrincipalRunner;
+}
+
+function hasAsyncRunnerOverride(): boolean {
+  return asyncPrincipalRunner !== defaultAsyncWindowsPrincipalRunner;
+}
+
 function identityError(reason: string): NodeJS.ErrnoException {
   const error = new Error(`Windows effective-account SID lookup ${reason}`) as NodeJS.ErrnoException;
   // Keep identity lookup failures distinct from icacls timeouts. In particular,
@@ -120,7 +168,23 @@ function principalFromResult(result: WindowsPrincipalLookupResult): string {
 
 /** Resolve and process-cache the effective token SID for synchronous ACL paths. */
 export function resolveCurrentWindowsPrincipal(timeoutMs: number): string {
+  // Order matters: an explicitly injected runner outranks the synthetic value,
+  // so a test can inject a FAILURE on a POSIX host. See the seam comment above.
+  if (hasSyncRunnerOverride()) {
+    if (cachedPrincipal) return cachedPrincipal;
+    if (timeoutMs <= 0) throw identityError("had no remaining deadline");
+    let overridden: WindowsPrincipalLookupResult;
+    try {
+      overridden = principalRunner(timeoutMs);
+    } catch {
+      throw identityError("could not start");
+    }
+    const principal = principalFromResult(overridden);
+    cachedPrincipal = principal;
+    return principal;
+  }
   if (cachedPrincipal) return cachedPrincipal;
+  if (syntheticPrincipalForTests) return syntheticPrincipalForTests;
   if (timeoutMs <= 0) throw identityError("had no remaining deadline");
   let result: WindowsPrincipalLookupResult;
   try {
@@ -161,8 +225,11 @@ async function waitForExistingLookup(
  * later, longer budget deliberately does not extend an already-running child.
  */
 export async function resolveCurrentWindowsPrincipalAsync(timeoutMs: number): Promise<string> {
+  const overridden = hasAsyncRunnerOverride();
   if (cachedPrincipal) return cachedPrincipal;
   if (asyncLookupInFlight) return waitForExistingLookup(asyncLookupInFlight, timeoutMs);
+  // Same precedence rule as the sync path: an injected runner beats the synthetic.
+  if (!overridden && syntheticPrincipalForTests) return syntheticPrincipalForTests;
   if (timeoutMs <= 0) throw identityError("had no remaining deadline");
 
   const lookup = (async (): Promise<string> => {
@@ -212,4 +279,5 @@ export function resetWindowsPrincipalForTests(): void {
     throw new Error("Cannot reset the Windows principal while a lookup is in flight.");
   }
   cachedPrincipal = null;
+  syntheticPrincipalForTests = null;
 }

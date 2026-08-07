@@ -34,6 +34,7 @@ import { env, platform } from "node:process";
 import {
   resolveCurrentWindowsPrincipal,
   resolveCurrentWindowsPrincipalAsync,
+  setSyntheticWindowsPrincipalForTests,
 } from "./windows-user-principal";
 
 const hardenedDirectories = new Map<string, HardenedIdentity>();
@@ -340,9 +341,21 @@ export function setAsyncIcaclsRunnerForTests(runner: AsyncIcaclsRunner | null): 
   asyncIcaclsRunner = runner ?? defaultAsyncIcaclsRunner;
 }
 
-/** Test seam: force the platform gate (e.g. "win32") so CI on POSIX reaches the runner. */
+/**
+ * Test seam: force the platform gate (e.g. "win32") so CI on POSIX reaches the runner.
+ *
+ * Faking win32 on a host without System32 also has to supply a principal, or
+ * every forced-branch test would fail on the identity lookup instead of
+ * exercising icacls. The synthetic value is registered with the resolver, not
+ * chosen here, so a test that injects its own runner still wins.
+ */
+const SYNTHETIC_TEST_PRINCIPAL = "*S-1-5-21-1-2-3-1001";
+
 export function setPlatformForTests(value: string | null): void {
   platformOverride = value;
+  setSyntheticWindowsPrincipalForTests(
+    value === "win32" && platform !== "win32" ? SYNTHETIC_TEST_PRINCIPAL : null,
+  );
 }
 
 /** Test seam: injectable clock for deadline tests (no real sleeps). */
@@ -411,22 +424,26 @@ function icaclsError(step: string, result: IcaclsResult): NodeJS.ErrnoException 
   return err;
 }
 
-// POSIX CI deliberately drives the Windows ACL branch through platformOverride.
-// The synthetic SID exists only for that test seam; production Windows always
-// resolves the effective token and never falls back to USERDOMAIN/USERNAME.
-const FORCED_NON_WINDOWS_TEST_PRINCIPAL = "*S-1-5-21-1-2-3-1001";
-
+/**
+ * The ACL principal is the effective token SID and nothing else.
+ *
+ * There is no name-shaped fallback here, and that absence is the fix for #1149
+ * rather than an omission. `USERDOMAIN\USERNAME` has the right shape but is not
+ * evidence of the current token's subject, and both variables are writable by
+ * the process that launched us. Granting Full Control to a wrong principal and
+ * then running `/inheritance:r` is destructive in both directions: another
+ * account can be left holding the secret, or the file can be left with no ACE
+ * the current user can use. When the SID cannot be resolved we decline.
+ *
+ * Non-Windows hosts that force this branch through `setPlatformForTests` get
+ * their principal from `setSyntheticWindowsPrincipalForTests`, which lives with
+ * the resolver so an injected runner can still take precedence over it.
+ */
 function currentWindowsPrincipal(deadline: number): string {
-  if (platformOverride === "win32" && platform !== "win32") {
-    return FORCED_NON_WINDOWS_TEST_PRINCIPAL;
-  }
   return resolveCurrentWindowsPrincipal(deadline - nowFn());
 }
 
 async function currentWindowsPrincipalAsync(deadline: number): Promise<string> {
-  if (platformOverride === "win32" && platform !== "win32") {
-    return FORCED_NON_WINDOWS_TEST_PRINCIPAL;
-  }
   return resolveCurrentWindowsPrincipalAsync(deadline - nowFn());
 }
 
@@ -559,7 +576,17 @@ function sanitizedAclError(diagnostics: string, cause: unknown): NodeJS.ErrnoExc
   const code = cause && typeof cause === "object" && "code" in cause
     ? String((cause as { code?: unknown }).code)
     : "";
-  if (code === "ETIMEDOUT" || code === "EICACLS" || code === "EACCES" || code === "EPERM") {
+  // EACLIDENTITY belongs here for the same reason as the rest: a caller that
+  // catches a required-mode failure has to tell "the SID could not be resolved"
+  // apart from "icacls stalled". Without it the code was dropped and only the
+  // message carried the cause, which no caller can branch on.
+  if (
+    code === "ETIMEDOUT" ||
+    code === "EICACLS" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "EACLIDENTITY"
+  ) {
     error.code = code;
   }
   return error;

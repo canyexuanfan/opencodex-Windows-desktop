@@ -38,6 +38,7 @@ import { nativeMainClaimPath, withNativeMainSharedClaim } from "../src/codex/nat
 import { NATIVE_MAIN_OWNER_DB, retainNativeMainOwner } from "../src/codex/native-main-owner";
 import {
   resetWindowsPrincipalForTests,
+  setAsyncWindowsPrincipalRunnerForTests,
   setWindowsPrincipalRunnerForTests,
 } from "../src/lib/windows-user-principal";
 
@@ -162,8 +163,15 @@ describe("effective Windows principal integration", () => {
     }
   });
 
-  test("identity lookup failure is fail-closed but never memoized as an icacls timeout", () => {
-    if (process.platform !== "win32") return;
+  // These ran only on Windows until the resolver learned to let an injected
+  // runner outrank the synthetic POSIX principal. A case that silently returns
+  // on two of three CI platforms is not coverage of a fail-closed boundary, and
+  // the timedOutPaths isolation it asserts is the whole reason the identity
+  // failure carries its own error code.
+  const IDENTITY_DIAGNOSTIC =
+    "ACL hardening failed (EACLIDENTITY) — the effective Windows account SID could not be resolved";
+
+  test("a failed identity lookup fails closed, runs no icacls, and never enters the timeout memo", () => {
     const requiredPath = join(testDir, "identity-required.json");
     const optionalPath = join(testDir, "identity-optional.json");
     writeFileSync(requiredPath, "required", "utf-8");
@@ -181,15 +189,28 @@ describe("effective Windows principal integration", () => {
     resetHardenedStateForTests();
     setPlatformForTests("win32");
     try {
-      expect(() => hardenSecretPath(requiredPath, { required: true }))
-        .toThrow(/EACLIDENTITY/);
+      // required: throws, and the CODE survives sanitization so a caller can
+      // branch on the cause rather than parse the message.
+      let thrown: NodeJS.ErrnoException | undefined;
+      try {
+        hardenSecretPath(requiredPath, { required: true });
+      } catch (error) {
+        thrown = error as NodeJS.ErrnoException;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown).toMatchObject({ code: "EACLIDENTITY" });
+
+      // optional: soft-fails WITHOUT touching the ACL. No name-shaped fallback.
       expect(hardenSecretPath(optionalPath, { required: false })).toEqual({
         ok: false,
-        diagnostics:
-          "ACL hardening failed (EACLIDENTITY) — the effective Windows account SID could not be resolved",
+        diagnostics: IDENTITY_DIAGNOSTIC,
       });
+
+      // The injected runner actually ran — this is what regressed to 0 when the
+      // synthetic principal was chosen first.
       expect(identityCalls).toBe(2);
       expect(icaclsCalls).toBe(0);
+      // An identity failure is not an icacls timeout: the path stays retryable.
       expect(timedOutSecretPathCountForTests()).toBe(0);
     } finally {
       setIcaclsRunnerForTests(null);
@@ -197,6 +218,90 @@ describe("effective Windows principal integration", () => {
       resetHardenedStateForTests();
       setWindowsPrincipalRunnerForTests(null);
       resetWindowsPrincipalForTests();
+    }
+  });
+
+  test("the async harden path applies the same identity policy", async () => {
+    const requiredPath = join(testDir, "identity-required-async.json");
+    const optionalPath = join(testDir, "identity-optional-async.json");
+    writeFileSync(requiredPath, "required", "utf-8");
+    writeFileSync(optionalPath, "optional", "utf-8");
+    let identityCalls = 0;
+    let icaclsCalls = 0;
+    setAsyncWindowsPrincipalRunnerForTests(async () => {
+      identityCalls += 1;
+      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    setAsyncIcaclsRunnerForTests(async () => {
+      icaclsCalls += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    try {
+      let thrown: NodeJS.ErrnoException | undefined;
+      try {
+        await hardenSecretPathAsync(requiredPath, { required: true });
+      } catch (error) {
+        thrown = error as NodeJS.ErrnoException;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown).toMatchObject({ code: "EACLIDENTITY" });
+
+      expect(await hardenSecretPathAsync(optionalPath, { required: false })).toEqual({
+        ok: false,
+        diagnostics: IDENTITY_DIAGNOSTIC,
+      });
+
+      expect(identityCalls).toBe(2);
+      expect(icaclsCalls).toBe(0);
+      expect(timedOutSecretPathCountForTests()).toBe(0);
+    } finally {
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      setAsyncWindowsPrincipalRunnerForTests(null);
+      resetWindowsPrincipalForTests();
+    }
+  });
+
+  test("no name-shaped principal reaches icacls when the environment names a plausible account", () => {
+    const filePath = join(testDir, "no-name-fallback.json");
+    writeFileSync(filePath, "data", "utf-8");
+    const oldDomain = process.env.USERDOMAIN;
+    const oldUser = process.env.USERNAME;
+    // A shape a reader would accept at a glance. It is still not the token.
+    process.env.USERDOMAIN = "CORP";
+    process.env.USERNAME = "administrator";
+    const seen: string[][] = [];
+    setWindowsPrincipalRunnerForTests(() => ({
+      success: false,
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+    }));
+    setIcaclsRunnerForTests(args => {
+      seen.push(args);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    try {
+      expect(hardenSecretPath(filePath, { required: false })).toEqual({
+        ok: false,
+        diagnostics: IDENTITY_DIAGNOSTIC,
+      });
+      expect(seen).toEqual([]);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      setWindowsPrincipalRunnerForTests(null);
+      resetWindowsPrincipalForTests();
+      if (oldDomain === undefined) delete process.env.USERDOMAIN;
+      else process.env.USERDOMAIN = oldDomain;
+      if (oldUser === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = oldUser;
     }
   });
 });
