@@ -70,6 +70,7 @@ import {
   cursorToolArgNormalizeSchema,
   cursorToolWireName,
   cursorToolsForActivePrompt,
+  isCursorSyntheticStructuredEditTool,
   isGenericToolUseCountDemoPrompt,
   requestedCursorToolUseCount,
 } from "./tool-definitions";
@@ -540,10 +541,19 @@ class LiveCursorTransport implements CursorTransport {
     this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(request, this.clientToolFinalizeGraceMs);
     const cursorVisibleTools = cursorToolsForActivePrompt(request.tools, activeText, request.toolChoice);
     const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, request.toolChoice);
+    // `request.tools` is the catalog already filtered and budgeted by request-builder. Derive
+    // conversion provenance only from tagged synthetic tools that also survive this final prompt
+    // filter; a client tool with the same wire name can never opt into conversion by collision.
+    const syntheticStructuredEditToolNames = new Set(
+      (cursorVisibleTools ?? [])
+        .filter(isCursorSyntheticStructuredEditTool)
+        .map(cursorToolWireName),
+    );
     this.execContext = {
       ...this.execContext,
       clientToolDefs,
       rejectNativeFileMutations: cursorRequestAdvertisesApplyPatch(request.tools, request.toolChoice),
+      structuredEditAvailable: syntheticStructuredEditToolNames.size > 0,
     };
     const toolSchemas = new Map<string, unknown>();
     const cursorToolNameMap = new Map<string, string>();
@@ -571,6 +581,7 @@ class LiveCursorTransport implements CursorTransport {
         parallelToolCalls: request.parallelToolCalls,
         toolSchemas,
         cursorToolNameMap,
+        syntheticStructuredEditToolNames,
         translatorBudget: this.translatorBudget,
         contextUsage,
         ...(prepared.estimatedInputTokens !== undefined
