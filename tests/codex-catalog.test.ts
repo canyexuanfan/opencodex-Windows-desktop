@@ -2452,11 +2452,24 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("a custom-named provider on a known vendor endpoint still gets the opt-in (#1100)", () => {
-    // The reporter's actual shape: a hand-added provider literally named "GLM". Routing worked,
-    // so the row looked healthy, but no registry id is called "GLM" and every piece of registry
-    // metadata was skipped — the ladder was advertised with summaries left false, which is the
-    // exact inconsistency that makes Codex drop the inbound reasoning object. Testing only
-    // canonical provider ids would have missed this entirely.
+    // The reporter's ACTUAL configuration, verbatim from #1100: a hand-added provider literally
+    // named "GLM", model glm-5.2, on BigModel's Coding Plan endpoint. Routing worked, so the row
+    // looked healthy, but no registry id is called "GLM" and every piece of registry metadata was
+    // skipped — the ladder was advertised with summaries left false, which is the exact
+    // inconsistency that makes Codex drop the inbound reasoning object.
+    //
+    // This case used to substitute Z.AI's coding endpoint while claiming to be the reporter's
+    // shape. That passed while the reported configuration stayed broken: `/api/coding/paas/v4`
+    // on open.bigmodel.cn had no registry row at all, so the destination lookup found nothing.
+    const reported: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", reported);
+    expect(reported.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Z.AI's own Coding Plan endpoint is a different vendor route and keeps working.
     const custom: OcxConfig["providers"][string] = {
       adapter: "openai-chat",
       baseUrl: "https://api.z.ai/api/coding/paas/v4",

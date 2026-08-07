@@ -1707,6 +1707,42 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // false live claim yields an empty picker at runtime. Flip it on once someone verifies it.
     note: "Domestic BigModel pay-as-you-go endpoint (open.bigmodel.cn)",
   },
+  // BigModel's Coding Plan is a SEPARATE endpoint from the pay-as-you-go row above, and that is
+  // the whole reason this one exists. #1100 was reported against
+  // `https://open.bigmodel.cn/api/coding/paas/v4`; the row above covers only `/api/paas/v4`, so
+  // destination enrichment matched nothing, `modelSupportsReasoningSummaries` stayed unset, and
+  // Codex kept dropping the inbound reasoning object — effort displayed as `-`.
+  //
+  // A prefix or fuzzy endpoint match would have been the shortcut. It is also how a config
+  // pointed at one vendor route silently inherits another route's metadata, so endpoints stay
+  // exact and each one gets its own row.
+  //
+  // The id is NOT `glm-cn`, which the free-provider directory already binds to this same coding
+  // path: registering it here would let routedProviderConfig() canonicalize a saved `glm-cn`
+  // config onto this baseUrl. Same reasoning as `zhipu-bigmodel` above.
+  //
+  // Models follow Z.AI's coding-plan list rather than the pay-as-you-go one. This endpoint is
+  // the subscription product, and the reporter's `glm-5.2` is only on that side.
+  {
+    id: "zhipu-bigmodel-coding",
+    label: "Zhipu AI — BigModel Coding Plan",
+    baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
+    defaultModel: "glm-5.2",
+    models: ["glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    jawcodeBundle: "zai",
+    modelContextWindows: { "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    modelSuffixBracketStrip: true,
+    noVisionModels: ZAI_GLM_52_MODELS,
+    modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
+    preserveReasoningContentModels: ZAI_GLM_52_MODELS,
+    // No liveModels: the same reasoning as the pay-as-you-go row — an unverified live claim
+    // yields an empty picker at runtime.
+    note: "Domestic BigModel Coding Plan endpoint (open.bigmodel.cn)",
+  },
   { id: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://nano-gpt.com/api" },
   { id: "synthetic", label: "Synthetic", baseUrl: "https://api.synthetic.new/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://synthetic.new" },
   // SiliconFlow publishes an OpenAI-compatible chat endpoint and a dynamic model catalog. Do not
