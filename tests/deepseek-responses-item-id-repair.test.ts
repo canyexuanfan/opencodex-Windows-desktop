@@ -116,25 +116,39 @@ describe("registry-derived DeepSeek repair policy (#938)", () => {
   });
 });
 
-describe("bounded-JSON HTTP path carries canonical ids (#938 + #875)", () => {
+describe("streamed HTTP path carries canonical ids (#938)", () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = originalFetch; });
 
-  test("the synthesized terminal SSE contains no upstream UUID item ids (un-enriched saved seed)", async () => {
+  test("the relayed SSE contains no upstream UUID item ids (un-enriched saved seed)", async () => {
     // The live path must backfill the registry policy through routedProviderConfig —
     // no manual enrichProviderFromRegistry (the ordinary saved-config shape).
     const plainSeed = { ...providerConfigSeed(getProviderRegistryEntry("deepseek")!), apiKey: "sk-test" };
     expect(plainSeed.responsesItemIdRepair).toBeUndefined();
-    globalThis.fetch = (async () => Response.json({
-      id: "resp_deepseek",
-      object: "response",
-      status: "completed",
-      output: [
+    // DeepSeek now streams for real (no bounded-JSON force): UUID-bearing frames,
+    // terminal response.completed, and — per the official guide — NO data: [DONE].
+    const upstreamFrames = [
+      `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_deepseek", status: "in_progress", output: [] } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: UUID_RS, summary: [] } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 1, item: { type: "message", id: UUID_MSG, role: "assistant", status: "in_progress", content: [] } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", item_id: UUID_MSG, output_index: 1, delta: "hi" })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_deepseek", status: "completed", output: [
         { type: "reasoning", id: UUID_RS, summary: [] },
         { type: "message", id: UUID_MSG, role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] },
         { type: "function_call", id: UUID_FC, call_id: "call_keep", name: "search", arguments: "{}" },
-      ],
-    })) as typeof fetch;
+      ] } })}\n\n`,
+    ];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean };
+      expect(body.stream).toBe(true);
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const frame of upstreamFrames) controller.enqueue(encoder.encode(frame));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
 
     const config = { providers: { deepseek: plainSeed } } as unknown as OcxConfig;
     const response = await handleResponses(
@@ -145,7 +159,7 @@ describe("bounded-JSON HTTP path carries canonical ids (#938 + #875)", () => {
       }),
       config,
       { model: "", provider: "" },
-      {},
+      { abortSignal: AbortSignal.timeout(5_000) },
     );
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const text = await response.text();

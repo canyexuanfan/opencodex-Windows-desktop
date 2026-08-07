@@ -1307,10 +1307,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       // for no gain.
       "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
     },
-    // DeepSeek's Codex Responses stream can deliver output without closing on the
-    // terminal event. Keep Codex on WebSocket, but use the provider's bounded JSON
-    // response upstream so the bridge can synthesize a complete WS event sequence.
-    modelResponsesUpstreamStreaming: { "deepseek-v4-flash": false },
+    // The #875-era bounded-JSON force (`modelResponsesUpstreamStreaming`) is retired
+    // for this entry: the official guide documents a `response.completed` /
+    // `response.incomplete` / `response.failed` terminal with NO `data: [DONE]`
+    // sentinel, and live probes (2026-08-07, including the tool-result replay shape
+    // that originally stalled) close on the terminal. The relay's terminal boundary
+    // (src/server/relay.ts) already cuts the stream at that event and synthesizes
+    // `[DONE]`, so forcing stream:false only delayed every byte until generation
+    // finished (28-46 s of silence on long turns). The registry knob itself remains
+    // for providers that need it — re-adding one line here restores the old policy.
+    // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
+    // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
     // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
     // clients stuck on an uncommitted turn (#938). Client-facing only — raw
     // continuation snapshots keep the upstream ids.
