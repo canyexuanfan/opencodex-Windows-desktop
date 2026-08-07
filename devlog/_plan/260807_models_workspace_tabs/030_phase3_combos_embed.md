@@ -138,10 +138,29 @@ instead" — which is wrong in a way that defeats the whole point: the skeleton
 *replaces* `ComboWorkspace` (`Combos.tsx:223`), unmounting the editor and destroying the
 unsaved draft this design exists to protect (audit B3).
 
-The rule is: **gate the network, never the tree.** While inactive, keep rendering the
-last data. Concretely, hold the last non-undefined payload in a ref and feed it to
-`ComboWorkspace` when the resource reports `undefined` because it is disabled — the
-subtree never unmounts, so drafts, selection, and search all survive.
+The rule is: **gate the network, never the tree.**
+
+An earlier draft said "hold the last payload in a ref and read it during render." Audit
+round 2 rejected that mechanism, correctly: this repository avoids render-time ref reads
+under React Compiler / `react-hooks/refs` (`client-resource.ts:353`), so it can fail lint
+and is unsound under concurrent rendering. A rule is not a mechanism, and the one I wrote
+would not have survived the linter.
+
+The concrete design:
+
+```tsx
+const [retainedData, setRetainedData] = useState<CachedCombosPage | null>(() => seed);
+
+// loadCombos already assembles one coherent payload from three responses; retain there.
+const data = resource.state.data ?? retainedData;
+```
+
+- `retainedData` lives in **state**, seeded from the session cache.
+- It is written where `loadCombos` produces its coherent payload — one place, never a
+  render side effect.
+- Render `state.data ?? retainedData`.
+- The cold skeleton appears only when **both** are absent.
+- `active` going false never replaces an already-rendered `ComboWorkspace`.
 
 Proven by a mounted test: open a combo, type into the draft, switch to Models, switch
 back, expect the typed value still there. Not by a source-string assertion.
@@ -193,11 +212,13 @@ underline rules at `styles-combos-workspace.css:220-248` are removed.
 
 ## Tests
 
-No existing test references `#combos`, `main-inner--combos`, the shell classes, or a
-`page === "combos"` branch — the route move breaks nothing and is also covered by
-nothing. New assertions in `tests/models-workspace-tabs.test.ts`:
+Correcting a claim left standing in this document from the first draft: `#combos` **is**
+covered — `gui/tests/page-loading-contract.test.tsx` boots at that hash (`:136`) and
+asserts `.combos-workspace-shell-body` (`:183`). It is updated in wp02b. What follows is
+additional coverage, not first coverage.
 
-Behavioural, in `gui/tests/`:
+Behavioural, in `gui/tests/` (run with `cd gui && bun test tests` — the root
+`bun run test` does not reach that suite):
 
 - Type into a combo draft, switch tabs, switch back — the draft survives (audit B3).
 - With Combos hidden, no `/api/combos` request fires.
@@ -219,6 +240,10 @@ Fix: `Combos` takes an `onCountChange?: (n: number) => void` and calls it whenev
 list changes, including after mutations. The shell holds the count. Same shape for
 Routing in phase 4, which otherwise has no channel to report `profiles.length` at all —
 without this the promised "the tab carries a profile count" mitigation cannot ship.
+
+Call it from an **effect keyed on the authoritative list length**, never during render,
+and keep the parent callback stable with `useCallback` so the effect does not refire on
+every parent render.
 
 ## Verification
 

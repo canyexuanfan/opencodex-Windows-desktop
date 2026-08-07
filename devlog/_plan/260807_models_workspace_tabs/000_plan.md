@@ -39,10 +39,12 @@ a sibling tab.
 
 - Hash is the source of truth. Refresh, bookmark, and Back/Forward keep the tab.
   Precedent: `#logs` / `#logs/debug` in `gui/src/pages/Logs.tsx`.
-- A hidden panel must not do work. Routing polls analytics and Combos fires three
-  parallel fetches; both must be gated by an `active` prop.
+- A hidden panel must not do work. The poll is in **Models itself** — `pollMs: 10_000`
+  on the catalog resource plus a second 10-second V2 interval. Routing and Combos do not
+  poll; they fetch once on mount. Gating covers all three, and cancellation matters as
+  much as suppression: a load already in flight must be aborted, not merely ignored.
 - Combos holds unsaved editor drafts. Panels mount lazily and then stay mounted so a
-  half-typed combo survives a tab hop.
+  half-typed combo survives a tab hop. Gate the network, never the tree.
 - No `src/` runtime change. This is a GUI navigation refactor; the proxy, the routing
   engine, and every management API contract stay exactly as they are.
 
@@ -90,18 +92,22 @@ Dependency-ordered. Each phase is one full PABCD cycle and one commit series.
 
 | Phase | Doc | Deliverable | Depends on |
 |-------|-----|-------------|------------|
-| wp01 | `010_routing_layer.md` | Nested hash contract, legacy redirects, `Page` union, tests | — |
-| wp02 | `020_models_shell.md` | Union removal, tab strip, lazy-mount panels, Routing NAV row, tab i18n, full-bleed CSS, catalog poll gating, per-panel error boundaries | wp01 |
-| wp03 | `030_combos_embed.md` | Combos as a panel: draft-preserving `active` path, abort signal, inner tabs demoted, count callback | wp02 |
-| wp04 | `040_routing_embed_and_sidebar.md` | Routing as a panel, Claude row removal, remaining i18n, render grounding | wp02 |
+| wp01 | `010_routing_layer.md` | Additive hash contract + `models-tab.ts`, tests | — |
+| wp02a | `020_models_shell.md` | Nested workspace **alongside** the legacy pages: tab i18n, strip, panels, per-panel boundaries, active-aware CSS, catalog gating | wp01 |
+| wp02b | `020_models_shell.md` | Route cutover: union removal, redirects, three links, Routing NAV row + `IconRoute` | wp02a |
+| wp03 | `030_combos_embed.md` | Combos panel: `retainedData` state path, abort signal, inner tabs demoted, count callback | wp02b |
+| wp04 | `040_routing_embed_and_sidebar.md` | Routing panel: shared abort controller, heading removal + its test, Claude row, subtitles, render grounding | wp02b |
 
-wp03 and wp04 both depend on wp02 but not on each other; they are still run in order
-because they touch the same `Models.tsx` panel block.
+wp03 and wp04 both depend on wp02b but not on each other; they run in order because they
+touch the same panel block.
 
-wp02 is deliberately the largest phase. Audit round 1 (`001_audit_round1.md`) returned
-FAIL partly because the first draft spread this work across three phases, producing two
-commits that could not compile and one that knowingly shipped a broken layout. Removing
-a page and adding the tab that replaces it is one atomic change.
+**Why wp02 is two halves.** The first draft spread this work across three phases and
+produced commits that could not compile (audit round 1). The correction over-swung: one
+atomic phase that was atomic in the sense of *unreviewable* (audit round 2). The split
+the second audit proposed is better than either: wp02a builds the nested workspace while
+`#combos` and `#routing` keep working, so both routes render and every existing Routing
+test stays valid; wp02b then deletes the old form only once the new one is proven in the
+same tree.
 
 ## Out of scope
 
@@ -111,15 +117,25 @@ approval.
 
 ## Verification
 
-Every phase ends green on `bun run typecheck`, `bun run test`, `bun run lint:gui`, and
-`bun run build:gui`.
+Every phase ends green on **five** commands:
 
-`bun run test` covers **two** suites: `tests/` at the root and `gui/tests/`, which holds
-116 files including mounted happy-dom tests for page loading, the sidebar, and the
-Routing page. The first draft of this roadmap missed the second directory entirely and
-concluded no test covered the affected routes — the single biggest error the audit
-caught. Behavioural tests there are the oracle; `expect(src).toContain(...)` checks are
-supplements that can pass while the UI is broken.
+```bash
+bun run typecheck
+bun run test              # root tests/ ONLY
+cd gui && bun test tests  # the 116-file GUI suite — a SEPARATE run
+bun run lint:gui
+bun run build:gui
+```
+
+`bun run test` does **not** reach `gui/tests/`: `scripts/test.ts:122` defaults to
+`["./tests/"]`. The first draft missed that directory entirely and concluded no test
+covered the affected routes; the second draft knew it existed and still asserted the root
+command ran it. Both were wrong, and the second kind of wrong is worse — an assumption
+stated as fact inside the document that defines what "green" means.
+
+`gui/tests/` holds the mounted happy-dom tests for page loading, the sidebar, and the
+Routing page. Those are the oracle. `expect(src).toContain(...)` checks are supplements
+that pass while the UI is broken.
 
 The final phase additionally requires live browser observation
 (C-RENDER-GROUNDING-01): drive all three tabs, refresh on each, Back/Forward, and

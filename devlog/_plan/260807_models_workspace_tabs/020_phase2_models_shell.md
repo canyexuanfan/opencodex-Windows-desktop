@@ -162,37 +162,87 @@ Everything currently returned by the component — rail, controls, provider list
 inactive (`hidden` per the APG examples, matching the existing Logs code).
 
 The page header (`h2` + count) and the strip live above all three panels and stay
-visible on every tab. The `page-sub` moves inside the catalog panel and gets split per
-tab (phase 4 writes the copy).
+visible on every tab. The `page-sub` is ONE element rendered between the strip and the
+panels, carrying the active tab's copy — see the subtitle note above.
 
-## Test additions — `tests/models-workspace-tabs.test.ts`
+## wp02a tests — new, in `gui/tests/` (mounted, happy-dom)
 
-- `VALID_PAGES` no longer holds `combos` or `routing`.
-- `resolveAppHashChange("combos")` → `{ page: "models", replaceTo: "models/combos" }`;
-  same for `combos/x`, `routing`, `routing/x`.
+The oracle. Source-string checks are supplements that pass while the UI is broken.
 
-Behavioural tests in `gui/tests/` (happy-dom, mounted) — the source-string assertions
-the first draft proposed pass while the UI is broken, so they are supplements, not the
-oracle:
-
-- Cold load at `#combos` renders the **Combos** panel, not the catalog (audit B2).
-- Cold load at `#routing` renders the Routing panel.
+- Cold load at `#models/combos` renders the Combos panel; `#models/routing` renders
+  Routing.
 - Clicking each tab updates both the rendered panel and the hash.
 - Arrow Left/Right/Home/End move focus and selection together.
-- A panel that throws shows its error while the other two still render (audit B6).
-- With Combos visible, no `/api/models` or `/api/v2` request fires after the poll
-  interval elapses (audit B4).
+- A panel that throws shows its error while the other two still render.
+- With Combos visible, no `/api/models`, `/api/v2`, `/api/provider-context-caps`, or
+  `/api/providers` request fires after the poll interval elapses.
+- A cold load at `#models/combos` renders no `0/0` count.
 
-## MODIFY `gui/tests/page-loading-contract.test.tsx`
+Nothing existing changes in this half — `#combos` and `#routing` still work, so
+`page-loading-contract` and `routing-profiles` stay green untouched. That is precisely
+what splitting here buys.
 
-Boots at `#combos` (`:136`) and asserts `.combos-workspace-shell-body` (`:183`). The URL
-becomes `#models/combos`; the shell assertions stay valid because the workspace markup
-does not change.
+---
 
-## MODIFY `gui/tests/routing-profiles.test.tsx`
+# wp02b — route cutover
 
-Asserts `[data-page="routing"]` and the literal "Routing Intelligence (beta)" (`:175`).
-Both change: the panel is no longer a page, and its `h2` is gone (see `040`).
+The old form dies in one commit, with the new form already proven beside it.
+
+## MODIFY `gui/src/app-routing.ts`
+
+Remove `"combos"` and `"routing"` from the `Page` union and `VALID_PAGES`. Then the
+legacy ids in `readPageFromHash`, beside the existing `debug` line:
+
+```ts
+// Legacy: Combos and Routing used to be standalone pages; both are Models tabs now.
+if (pageId === ("combos" as Page) || pageId === ("routing" as Page)) return "models";
+```
+
+and the redirects in `resolveAppHashChange`, directly after the `debug` branch:
+
+```ts
+if (rawHash === "combos" || rawHash.startsWith("combos/")) {
+  return { page: "models", replaceTo: "models/combos" };
+}
+if (rawHash === "routing" || rawHash.startsWith("routing/")) {
+  return { page: "models", replaceTo: "models/routing" };
+}
+```
+
+The `startsWith` arm is not decoration: `#routing/foo` from an old bookmark must reach
+the Routing tab rather than be normalized to a bare page that drops the destination —
+the exact failure the file's `#api` comment documents.
+
+## MODIFY `gui/src/App.tsx`
+
+- `PAGE_TKEY` loses both keys (the record is keyed by `Page`; the compiler demands it).
+- Delete the `page === "combos"` / `page === "routing"` render branches and their imports.
+- Delete the Routing NAV row, and `IconRoute` if now unused. `NavEntry.id` is typed
+  `Page` (`App.tsx:53`), so the union change forces this rather than it being a choice.
+- Simplify the modifier to `page === "models" && modelsTab === "combos"`.
+
+The duplicate **Claude** row and `isNavEntryActive` stay until wp04 — separate concern,
+still typechecks.
+
+## MODIFY `gui/src/pages/Models.tsx`
+
+The three `href="#combos"` links (`:1104`, `:1132`, `:1143`) point at `#models/combos`.
+Missing these was audit round 1's B2: the redirect fires, rewrites the URL, and leaves
+the tab on the catalog because `replaceHash` emits no `hashchange`.
+
+## wp02b tests
+
+`tests/models-workspace-tabs.test.ts`: `VALID_PAGES` holds neither id;
+`resolveAppHashChange` maps `combos`, `combos/x`, `routing`, `routing/x`.
+
+`gui/tests/page-loading-contract.test.tsx`: boots at `#combos` (`:136`) and asserts
+`.combos-workspace-shell-body` (`:183`). The URL becomes `#models/combos`; the shell
+assertions stay valid because the workspace markup does not change.
+
+**`gui/tests/routing-profiles.test.tsx` is NOT touched here.** It asserts
+`[data-page="routing"]` and the literal "Routing Intelligence (beta)" (`:175`), and the
+heading it depends on is removed in wp04. Editing it now means either a red wp02b or
+coverage deleted two phases before the behaviour changes.
 
 ## MODIFY `tests/routing-intelligence-ui.test.ts`
 
@@ -212,12 +262,12 @@ Now genuinely stale, and the compiler cannot catch a string assertion:
 and `expect(app).toContain('page === "routing"')` becomes an assertion that
 `Models.tsx` mounts `RoutingProfiles`.
 
-## Verification
+## Verification (both halves)
 
-All four gates green — including `gui/tests/`, which is a separate 116-file suite the
-first draft of this roadmap did not know existed.
+All five commands green, including the separate `cd gui && bun test tests` — the root
+`bun run test` does not reach the GUI suite (`scripts/test.ts:122`).
 
-This is the phase where a mistake shows up as a blank page or a collapsed workspace, so
-browser observation starts here rather than waiting for phase 4: load `#models`,
+Browser observation starts here rather than waiting for wp04, because this is where a
+mistake shows up as a blank page or a collapsed workspace: load `#models`,
 `#models/combos`, `#models/routing`, confirm each paints, and confirm the Combos
 workspace fills the viewport under the header and strip.

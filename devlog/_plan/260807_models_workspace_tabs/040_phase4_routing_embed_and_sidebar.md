@@ -45,8 +45,43 @@ pointed attention away from the component that genuinely had the problem.
 That alone is **not** sufficient, and the first draft's claim that it was is false
 (audit B4). `loadGenerationRef` only advances when a *new* load starts; hiding the tab
 never bumps it, and the four fetches take no `AbortSignal`. So a load in flight when the
-user switches away still lands and writes state into a hidden panel. The cleanup must
-invalidate the generation on deactivate, and the fetches must carry a signal.
+user switches away still lands and writes state into a hidden panel.
+
+### Who owns the controller
+
+Audit round 2 pushed further: saying "add a signal" does not say *whose*. `load` has four
+entry points — the initial effect (`:243`), Retry (`:426`), post-save (`:291`), and
+post-delete (`:321`). An effect-local controller cancels only the first, so a Retry or a
+mutation reload keeps running in the background after the tab hides. Generation
+invalidation blocks the state write but not the network work.
+
+So the controller belongs to `load` itself, at component level:
+
+```tsx
+const loadAbortRef = useRef<AbortController | null>(null);
+
+const load = useCallback(async (preferredId?: string) => {
+  loadAbortRef.current?.abort();          // supersede whatever was in flight
+  const controller = new AbortController();
+  loadAbortRef.current = controller;
+  const generation = ++loadGenerationRef.current;
+  // ...every fetch takes { signal: controller.signal }
+  // clear the ref only if this request still owns it:
+  if (loadAbortRef.current === controller) loadAbortRef.current = null;
+}, [...]);
+```
+
+Deactivation aborts it and bumps the generation:
+
+```tsx
+useEffect(() => {
+  if (!active) { loadAbortRef.current?.abort(); loadGenerationRef.current++; return; }
+  const timer = window.setTimeout(() => void load(), 0);
+  return () => window.clearTimeout(timer);
+}, [active, load]);
+```
+
+Every entry point is covered because they all go through `load`.
 
 ### Header
 
@@ -110,15 +145,19 @@ and `#integrations/claude` still resolves; only the duplicate shortcut is gone.
 `en`, `ko`, `ja`, `zh`, `ru`, `de`. The tab labels and `models.tabsLabel` shipped in
 phase 2 (the strip cannot render without them). Remaining here: the split subtitles.
 
-| Key | en |
-|-----|-----|
-| `models.tab.catalog` | `Models` |
-| `models.tab.combos` | `Combos` |
-| `models.tab.routing` | `Routing (beta)` |
-| `models.tabsLabel` | `Model surfaces` |
-| `models.subtitle.catalog` | (existing `models.subtitle`, trimmed) |
-| `models.subtitle.combos` | one line on ordered failover / round-robin |
-| `models.subtitle.routing` | (from `routing.subtitle`) |
+| Key | en | Ships in |
+|-----|-----|----------|
+| `models.tab.catalog` | `Models` | wp02a |
+| `models.tab.combos` | `Combos` | wp02a |
+| `models.tab.routing` | `Routing (beta)` | wp02a |
+| `models.tabsLabel` | `Model surfaces` | wp02a |
+| `models.subtitle.catalog` | (existing `models.subtitle`, trimmed) | **wp04** |
+| `models.subtitle.combos` | one line on ordered failover / round-robin | **wp04** |
+| `models.subtitle.routing` | (from `routing.subtitle`) | **wp04** |
+
+The first four are listed for completeness only — they ship with the strip in wp02a,
+because `TKey` derives from `en` and the strip cannot render without them. Only the
+three subtitles are this phase's work.
 
 `nav.combos` stays — the rail title inside the Combos workspace uses it. `nav.routing`
 stays as the tab label source. `nav.claude` becomes unused in `App.tsx` but is still
