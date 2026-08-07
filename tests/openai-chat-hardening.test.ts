@@ -340,3 +340,61 @@ describe("openai-chat max output defaults", () => {
     expect(body.thinking_budget).toBe(15_000);
   });
 });
+
+describe("openai-chat response_format emission", () => {
+  const bodyOf = (req: { body?: unknown }): Record<string, unknown> =>
+    JSON.parse(req.body as string) as Record<string, unknown>;
+
+  test("maps textFormat json_object onto response_format", () => {
+    const req = createOpenAIChatAdapter(provider()).buildRequest({
+      ...parsed(),
+      options: { textFormat: { type: "json_object" } },
+    });
+
+    expect(bodyOf(req).response_format).toEqual({ type: "json_object" });
+  });
+
+  test("re-nests textFormat json_schema as chat response_format", () => {
+    const req = createOpenAIChatAdapter(provider()).buildRequest({
+      ...parsed(),
+      options: {
+        textFormat: { type: "json_schema", name: "answer", description: "shape", schema: { type: "object" }, strict: true },
+      },
+    });
+
+    expect(bodyOf(req).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer", description: "shape", schema: { type: "object" }, strict: true },
+    });
+  });
+
+  test("defaults the json_schema name when the Responses form omits it", () => {
+    const req = createOpenAIChatAdapter(provider()).buildRequest({
+      ...parsed(),
+      options: { textFormat: { type: "json_schema", schema: { type: "object" } } },
+    });
+
+    expect(bodyOf(req).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "response", schema: { type: "object" } },
+    });
+  });
+
+  test("omits response_format without a textFormat option", () => {
+    const plain = createOpenAIChatAdapter(provider()).buildRequest(parsed());
+
+    expect(bodyOf(plain).response_format).toBeUndefined();
+  });
+
+  test("preserves a schema-less json_schema response_format", () => {
+    const schemaless = createOpenAIChatAdapter(provider()).buildRequest({
+      ...parsed(),
+      options: { textFormat: { type: "json_schema", name: "answer" } },
+    });
+
+    expect(bodyOf(schemaless).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer" },
+    });
+  });
+});
