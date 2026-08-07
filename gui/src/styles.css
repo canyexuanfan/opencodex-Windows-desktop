@@ -404,8 +404,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   level is exactly what breaks a plain direct-child rule, so the panel becomes the flex
   item and the shell fills it.
 */
-.main-inner.main-inner--combos > .models-tab-panel--fill,
-.main-inner.main-inner--combos > .models-tab-panel--fill > .combos-workspace-shell {
+/*
+  `:not([hidden])` on the panel: panel shells stay mounted so every tab's
+  `aria-controls` resolves, and author `display: flex` would otherwise beat the UA's
+  `[hidden] { display: none }` and paint a hidden panel anyway.
+*/
+.main-inner.main-inner--combos > .models-tab-panel--fill:not([hidden]),
+.main-inner.main-inner--combos > .models-tab-panel--fill:not([hidden]) > .combos-workspace-shell {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;

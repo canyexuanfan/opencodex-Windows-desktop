@@ -243,7 +243,15 @@
   line-height: inherit;
 }
 
-.combos-workspace-tab-content {
+/*
+ `:not([hidden])`, not a bare `display: flex`.
+
+ Both panels stay in the tree so each tab's `aria-controls` resolves, and the inactive
+ one carries `hidden`. But author CSS beats the UA's `[hidden] { display: none }`, so a
+ plain `display: flex` here left BOTH panels on screen at once — Config and About
+ stacked, one of them marked hidden and rendering anyway.
+*/
+.combos-workspace-tab-content:not([hidden]) {
   display: flex;
   flex-direction: column;
   gap: 16px;

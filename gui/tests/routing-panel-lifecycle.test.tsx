@@ -166,3 +166,69 @@ test("becoming visible again loads", async () => {
     await act(async () => root.unmount());
   }
 });
+
+/*
+ * The tab meta is only useful if it follows the list. `onCountChange` fires from an
+ * effect keyed on `profiles.length`, so a reload that changes the list has to report.
+ */
+test("the profile count is reported and follows a reload", async () => {
+  const seen: number[] = [];
+  /*
+   * The real response shape: a `profiles` wrapper, and every nested object present.
+   * `parseProfiles` drops anything that omits them, so a looser fixture silently
+   * yields an empty list and the test would measure nothing.
+   */
+  const PROFILE = {
+    id: "balanced",
+    model: "policy/balanced",
+    revision: "rev-abc",
+    candidates: [{ provider: "openai", model: "gpt-5" }],
+    require: {},
+    optimize: {},
+    limits: {},
+    unknownEvidence: {},
+  };
+  let profiles: unknown[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/routing-profiles")) return Response.json({ profiles });
+    if (url.includes("/api/routing-analytics")) return Response.json(null);
+    if (url.includes("/api/config")) return Response.json({ providers: {} });
+    if (url.includes("/api/models")) return Response.json([]);
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <RoutingProfiles apiBase={API_BASE} active onCountChange={n => seen.push(n)} />
+      </LanguageProvider>,
+    );
+  });
+  await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+
+  try {
+    expect(seen.at(-1)).toBe(0);
+
+    // Stand in for a create: the list grows, then Retry reloads it.
+    profiles = [PROFILE];
+    const retry = [...container.querySelectorAll("button")]
+      .find(b => b.textContent?.includes("Retry")) as HTMLButtonElement;
+    await act(async () => { retry.click(); });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    expect(seen.at(-1)).toBe(1);
+
+    // And a delete: back to empty.
+    profiles = [];
+    await act(async () => { retry.click(); });
+    await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    expect(seen.at(-1)).toBe(0);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

@@ -12,10 +12,9 @@
   then stay mounted so drafts survive a tab hop, so a bare `:has(.models-workspace-shell)`
   keeps matching after the catalog has been opened once. Routing would then render at
   980px on a direct visit and 1200px afterwards — a width that depends on browsing
-  history. The standalone selector stays for the pages that render the shell outside a
-  tabpanel.
+  history. No surface renders the shell outside a tabpanel any more, so the old
+  direct-child arm is gone with the standalone pages it served.
 */
-.main-inner:has(> .models-workspace-shell),
 .main-inner:has(#models-panel-catalog:not([hidden]) .models-workspace-shell) {
   max-width: 1200px;
 }

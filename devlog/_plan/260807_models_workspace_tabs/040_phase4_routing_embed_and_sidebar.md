@@ -159,9 +159,13 @@ The first four are listed for completeness only — they ship with the strip in 
 because `TKey` derives from `en` and the strip cannot render without them. Only the
 three subtitles are this phase's work.
 
-`nav.combos` stays — the rail title inside the Combos workspace uses it. `nav.routing`
-stays as the tab label source. `nav.claude` becomes unused in `App.tsx` but is still
-referenced by the Integrations tab list; verify before deleting anything.
+`nav.combos` stays — the rail title inside the Combos workspace uses it.
+
+Corrected during the build: `nav.routing` and `nav.claude` are BOTH removed. The tab
+label comes from `models.tab.routing`, and the Integrations tab list uses
+`integrations.tab.claude`, not `nav.claude`. The earlier note claiming both still had
+consumers was wrong, and a reviewer caught it — "verify before deleting" was the right
+instinct and the verification changed the answer.
 
 The current `models.subtitle` is four lines and reads as a page description. A page
 with tabs has no single description, so it splits: the catalog keeps the visibility and
