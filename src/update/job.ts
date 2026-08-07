@@ -37,6 +37,10 @@ import {
 import { isNewer } from "./notify";
 import { isRealBunBinary } from "../lib/bun-binary-validator.mjs";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
+import {
+  npmCachePreflightFailureMessage,
+  runNpmCachePreflight,
+} from "./npm-cache-preflight.mjs";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
 const UPDATE_JOB_FILENAME = "update-job.json";
@@ -238,9 +242,35 @@ function ensureJobDir(): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
+function sanitizePersistedUpdateText(value: string): string {
+  return value
+    .replace(
+      /(?:[A-Za-z]:)?[\\/](?:[^\\/\r\n]+[\\/])*(?:\.npm|npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
+      "<npm-cache>",
+    )
+    .replace(
+      /\b(?:Users|Documents and Settings)[\\/][^\\/\r\n]+[\\/](?:[^\\/\r\n]+[\\/])*(?:npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
+      "<npm-cache>",
+    )
+    .replace(/(?:[A-Za-z]:[\\/])?(?:Users|Documents and Settings)[\\/][^\\/\r\n]+/gi, "<profile>")
+    .replace(/\/(?:Users|home)\/[^/\r\n]+/g, "<profile>")
+    .replace(/\b(uid|gid)(\s*(?:[=:]|\s)\s*)\d+\b/gi, "$1$2<redacted>");
+}
+
+function sanitizePersistedUpdateValue<T>(value: T): T {
+  if (typeof value === "string") return sanitizePersistedUpdateText(value) as T;
+  if (Array.isArray(value)) return value.map(item => sanitizePersistedUpdateValue(item)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizePersistedUpdateValue(item)]),
+    ) as T;
+  }
+  return value;
+}
+
 function writeJob(job: UpdateJobState): void {
   ensureJobDir();
-  atomicWriteFile(updateJobPath(), `${JSON.stringify(job, null, 2)}\n`);
+  atomicWriteFile(updateJobPath(), `${JSON.stringify(sanitizePersistedUpdateValue(job), null, 2)}\n`);
 }
 
 export function readUpdateJob(jobId?: string | null): UpdateJobState | null {
@@ -1438,6 +1468,17 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
       installer: check.installer,
       command: cmd.display,
     }, integrityLine);
+
+    if (check.installer === "npm") {
+      const cachePreflight = runNpmCachePreflight();
+      if (!cachePreflight.ok) {
+        updateJob(job, {
+          status: "failed",
+          error: npmCachePreflightFailureMessage(cachePreflight.reason),
+        }, "Update aborted before stopping the proxy because the npm cache pre-flight failed.");
+        return;
+      }
+    }
 
     if (process.platform === "win32") {
       try {

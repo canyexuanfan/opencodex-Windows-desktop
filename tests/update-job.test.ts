@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -106,6 +106,38 @@ describe("GUI update check", () => {
 });
 
 describe("GUI update execution decisions", () => {
+  test("the persistence boundary redacts profile/cache paths and UID/GID from every field", () => {
+    const privateOutput = [
+      String.raw`profile C:\Users\Mary Jane van der Berg\Documents\private.txt`,
+      String.raw`cache C:\Users\Mary Jane van der Berg\AppData\Local\npm-cache\_logs\debug.log`,
+      "/Users/Mary Jane van der Berg/.npm/_cacache/content-v2/entry",
+      "uid=501 gid: 20",
+    ].join("\n");
+
+    expect(() => startUpdateJob("latest", true, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: privateOutput,
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw new Error(privateOutput); },
+    })).toThrow("Could not start update worker");
+
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("Mary Jane van der Berg");
+    expect(persisted).not.toContain("AppData");
+    expect(persisted).not.toContain("_cacache");
+    expect(persisted).not.toMatch(/\buid\s*[=:]\s*501\b/i);
+    expect(persisted).not.toMatch(/\bgid\s*[=:]\s*20\b/i);
+    expect(persisted).toContain("<profile>");
+    expect(persisted).toContain("<npm-cache>");
+  });
+
   test("npm worker uses the Node launcher update path", () => {
     const cmd = updateExecutionCommand("npm", "preview", "/pkg/bin/ocx.mjs");
     expect(cmd.bin).toMatch(/^node/);
@@ -1180,14 +1212,20 @@ describe("immutable update target (WP160)", () => {
     const source = await Bun.file(new URL("../src/update/job.ts", import.meta.url)).text();
 
     const gateAt = source.indexOf("const integrity = checkUpdatePackageIntegrity(check.latestVersion);");
+    const cacheGateAt = source.indexOf("const cachePreflight = runNpmCachePreflight();");
+    const trayStopAt = source.indexOf("handoffWindowsTrayForUpdate(tray");
     const failAt = source.indexOf('updateJob(job, { status: "failed", error: integrity.reason });');
     const spawnAt = source.indexOf("const result = runLoggedCommand(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);");
     expect(gateAt).toBeGreaterThan(-1);
+    expect(cacheGateAt).toBeGreaterThan(-1);
+    expect(trayStopAt).toBeGreaterThan(-1);
     expect(failAt).toBeGreaterThan(-1);
     expect(spawnAt).toBeGreaterThan(-1);
     // Gate and its failure return both precede the installer spawn.
     expect(gateAt).toBeLessThan(spawnAt);
     expect(failAt).toBeLessThan(spawnAt);
+    expect(cacheGateAt).toBeLessThan(trayStopAt);
+    expect(cacheGateAt).toBeLessThan(spawnAt);
     // The job log records the verified-or-skipped integrity line at handoff.
     expect(source).toContain("integrity metadata ${integrity.integrity.slice(0, 24)}");
     expect(source).toContain("Integrity pre-flight skipped");
