@@ -40,18 +40,6 @@ function delimiterLengthAt(
   return byteAt(index + 3) === 10 ? 4 : 0;
 }
 
-function joinSlices(slices: readonly Uint8Array[], byteLength: number): Uint8Array {
-  if (byteLength === 0) return new Uint8Array(0);
-  if (slices.length === 1 && slices[0]!.byteLength === byteLength) return slices[0]!;
-  const joined = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const slice of slices) {
-    joined.set(slice, offset);
-    offset += slice.byteLength;
-  }
-  return joined;
-}
-
 function copyRange(
   start: number,
   end: number,
@@ -73,14 +61,15 @@ function copyRange(
  *
  * The delimiter scanner works on raw bytes, so fragmented UTF-8 cannot change
  * accounting and a hostile upstream cannot grow an unterminated JS string
- * without limit. Complete blocks are returned without their delimiter; the
- * exact delimiter bytes are returned separately so callers can relay bytes
- * unchanged.
+ * without limit. Candidate bytes live in one geometrically grown buffer rather
+ * than one allocation per upstream chunk, bounding both bytes and object count.
+ * Complete blocks are returned without their delimiter; the exact delimiter
+ * bytes are returned separately so callers can relay bytes unchanged.
  */
 export class BoundedSseFrameBuffer {
   private readonly maxFrameBytes: number;
   private delimiterTail: Uint8Array = new Uint8Array(0);
-  private candidateSlices: Uint8Array[] = [];
+  private candidate: Uint8Array = new Uint8Array(0);
   private candidateBytes = 0;
   private disposed = false;
 
@@ -93,8 +82,23 @@ export class BoundedSseFrameBuffer {
 
   private clear(): void {
     this.delimiterTail = new Uint8Array(0);
-    this.candidateSlices = [];
+    this.candidate = new Uint8Array(0);
     this.candidateBytes = 0;
+  }
+
+  private ensureCapacity(requiredBytes: number): void {
+    if (this.candidate.byteLength >= requiredBytes) return;
+    let capacity = this.candidate.byteLength === 0
+      ? Math.min(this.maxFrameBytes, Math.max(requiredBytes, 4096))
+      : this.candidate.byteLength;
+    while (capacity < requiredBytes) {
+      capacity = Math.min(this.maxFrameBytes, Math.max(requiredBytes, capacity * 2));
+    }
+    const grown = new Uint8Array(capacity);
+    if (this.candidateBytes > 0) {
+      grown.set(this.candidate.subarray(0, this.candidateBytes));
+    }
+    this.candidate = grown;
   }
 
   private retain(slice: Uint8Array): void {
@@ -105,9 +109,17 @@ export class BoundedSseFrameBuffer {
       this.disposed = true;
       throw new SseFrameTooLargeError(this.maxFrameBytes);
     }
-    // Never retain a view into an arbitrarily larger fetch chunk.
-    this.candidateSlices.push(slice.slice());
+    this.ensureCapacity(nextBytes);
+    this.candidate.set(slice, this.candidateBytes);
     this.candidateBytes = nextBytes;
+  }
+
+  private takeCandidate(): Uint8Array {
+    if (this.candidateBytes === 0) return new Uint8Array(0);
+    const block = this.candidate.slice(0, this.candidateBytes);
+    this.candidate = new Uint8Array(0);
+    this.candidateBytes = 0;
+    return block;
   }
 
   feed(chunk: Uint8Array): BoundedSseFrame[] {
@@ -139,9 +151,7 @@ export class BoundedSseFrameBuffer {
       if (delimiterLength === undefined) break;
       if (delimiterLength > 0) {
         retainRange(retainedThrough, index);
-        const block = joinSlices(this.candidateSlices, this.candidateBytes);
-        this.candidateSlices = [];
-        this.candidateBytes = 0;
+        const block = this.takeCandidate();
         const delimiter = copyRange(
           index,
           index + delimiterLength,
@@ -170,7 +180,7 @@ export class BoundedSseFrameBuffer {
     try {
       this.retain(this.delimiterTail);
       this.delimiterTail = new Uint8Array(0);
-      return joinSlices(this.candidateSlices, this.candidateBytes);
+      return this.takeCandidate();
     } finally {
       this.clear();
       this.disposed = true;
@@ -187,5 +197,13 @@ export class BoundedSseFrameBuffer {
 export function joinSseFrameBytes(parts: readonly Uint8Array[]): Uint8Array {
   let byteLength = 0;
   for (const part of parts) byteLength += part.byteLength;
-  return joinSlices(parts, byteLength);
+  if (byteLength === 0) return new Uint8Array(0);
+  if (parts.length === 1 && parts[0]!.byteLength === byteLength) return parts[0]!;
+  const joined = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return joined;
 }
