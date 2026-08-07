@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/scripts/issue-quality.cjs"
+      - ".github/scripts/issue-quality-core.cjs"
       - ".github/scripts/issue-quality*.test.cjs"
       - ".github/scripts/pr-quality.cjs"
       - ".github/scripts/pr-quality.test.cjs"
@@ -34,6 +35,7 @@ on:
     paths:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/scripts/issue-quality.cjs"
+      - ".github/scripts/issue-quality-core.cjs"
       - ".github/scripts/issue-quality*.test.cjs"
       - ".github/scripts/pr-quality.cjs"
       - ".github/scripts/pr-quality.test.cjs"
