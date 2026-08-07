@@ -394,6 +394,20 @@ describe("GUI update execution decisions", () => {
     // The one field that still reports does so as a fixed phrase with no borrowed text.
     expect(summary).toContain("no matching version");
 
+    // A package spec is echoed only when it is OUR package. `name@version` matches an email
+    // address and any `Name@1.2.3`, so extracting "a spec" was itself a disclosure channel.
+    const ours = summarizeCommandOutput("", "npm error notarget No matching version found for @bitkyc08/opencodex@99.99.99", 1, null);
+    expect(ours).toContain("@bitkyc08/opencodex@99.99.99");
+    const email = summarizeCommandOutput("", "npm error notarget No matching version found for jane.doe@example.com", 1, null);
+    expect(email).not.toContain("jane.doe");
+    expect(email).not.toContain("example.com");
+
+    // Registry hosts are an allowlist, not a shape: an arbitrary hostname is a disclosure
+    // channel even when it parses cleanly.
+    const foreign = summarizeCommandOutput("", "npm error 404 GET https://janedoe.example/private", 1, null);
+    expect(foreign).not.toContain("janedoe");
+    expect(foreign).toContain("HTTP 404");
+
     // Node exceptions use the same vocabulary rather than a shape check.
     const hostile = Object.assign(new Error("boom"), { syscall: "janedoe", errno: "JaneDoe" });
     expect(() => startUpdateJob("latest", false, {

@@ -753,6 +753,13 @@ const POSIX_SYSCALLS = new Set([
 ]);
 
 /** Per-field value contracts. A field is only kept when its value satisfies its own rule. */
+const KNOWN_REGISTRY_HOSTS = new Set([
+  "registry.npmjs.org",
+  "registry.yarnpkg.com",
+  "registry.npmmirror.com",
+  "npm.pkg.github.com",
+]);
+
 const NPM_FIELD_VALIDATORS: Record<string, (value: string) => string | null> = {
   // A recognized code, nothing else.
   code: value => (NPM_ERROR_CODES.has(value) ? value : null),
@@ -760,10 +767,17 @@ const NPM_FIELD_VALIDATORS: Record<string, (value: string) => string | null> = {
   syscall: value => (POSIX_SYSCALLS.has(value) ? value : null),
   // An integer, rendered from the parsed number so the original string never passes through.
   errno: value => (/^-?\d{1,10}$/.test(value) ? String(Number(value)) : null),
-  // Version resolution: keep the FACT and the package spec, never the surrounding prose.
-  // `No matching version found for left-pad@99.99.99.` -> `no matching version for left-pad@99.99.99`
+  // Version resolution: the FACT only.
+  //
+  // An earlier version extracted the package spec, which looked safe and was not:
+  // `jane.doe@example.com` and `JaneDoe@2.7.41` both match "name@version". The one package
+  // this updater ever resolves is our own, so a spec is echoed only when it IS ours —
+  // everything else reports the bare fact.
   notarget: value => {
-    const spec = /\b((?:@[\w.-]+\/)?[\w.-]+@[\w.\-+]+)/.exec(value);
+    // PKG is scoped (`@scope/name`), so escape it rather than interpolating raw — and anchor on
+    // a boundary that works for a leading `@`, which `\b` does not.
+    const escaped = PKG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const spec = new RegExp(String.raw`(?:^|\s)(${escaped}@[\w.\-+]+)`).exec(value);
     return spec ? `no matching version for ${spec[1]}` : "no matching version";
   },
 };
@@ -778,11 +792,13 @@ function npmHttpStatusValue(field: string, value: string): string | null {
   if (!url) return `HTTP ${field}`;
   let parsed: URL;
   try { parsed = new URL(url); } catch { return `HTTP ${field}`; }
-  // Registry hosts only, and only the host — the path can name a private scope, and userinfo
-  // is a credential.
-  const host = parsed.hostname;
-  if (!/^[\w.-]+$/.test(host) || parsed.username || parsed.password) return `HTTP ${field}`;
-  return `HTTP ${field} from ${host}`;
+  // Only hosts we can name in advance. A shape check (`^[\w.-]+$`) accepts
+  // `janedoe.example`, a numeric host, or a punycode host — an arbitrary hostname is a
+  // disclosure channel, not a diagnostic. Knowing it was the public registry versus "some
+  // other host" is the part that helps, and that fits in an allowlist.
+  return KNOWN_REGISTRY_HOSTS.has(parsed.hostname.toLowerCase()) && !parsed.username && !parsed.password
+    ? `HTTP ${field} from ${parsed.hostname.toLowerCase()}`
+    : `HTTP ${field}`;
 }
 
 /**
