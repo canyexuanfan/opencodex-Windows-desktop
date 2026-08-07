@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   coderabbitOutsideDiffFindingIds,
+  latestCodeRabbitReviewForHead,
   unresolvedFindingsClaim,
 } = require("./pr-quality-state.cjs");
 
@@ -77,6 +78,28 @@ describe("durable CodeRabbit outside-diff findings", () => {
         liveHeadSha: HEAD,
       }),
       { code: null, unresolved: 0, byBot: {} },
+    );
+  });
+
+  it("uses review id as a deterministic tie-breaker when timestamps are missing", () => {
+    const latest = latestCodeRabbitReviewForHead({
+      reviews: [
+        review({ id: 9001, submitted_at: undefined, body: `Outside diff range comments (1)\n<!-- ${OUTSIDE_A} -->` }),
+        review({ id: 9002, submitted_at: undefined, body: "**Actionable comments posted: 0**" }),
+      ],
+      liveHeadSha: HEAD,
+    });
+
+    assert.equal(latest?.id, 9002);
+    assert.deepEqual(
+      coderabbitOutsideDiffFindingIds({
+        reviews: [
+          review({ id: 9001, submitted_at: undefined, body: `Outside diff range comments (1)\n<!-- ${OUTSIDE_A} -->` }),
+          review({ id: 9002, submitted_at: undefined, body: "**Actionable comments posted: 0**" }),
+        ],
+        liveHeadSha: HEAD,
+      }),
+      [],
     );
   });
 
