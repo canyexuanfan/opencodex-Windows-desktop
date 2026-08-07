@@ -331,7 +331,10 @@ function sanitizePersistedUpdateText(value: string): string {
     .replace(/%(?:USERPROFILE|HOMEPATH|HOMEDRIVE|APPDATA|LOCALAPPDATA)%/gi, "<profile>")
     .replace(/\$(?:HOME|USERPROFILE)\b/g, "<profile>")
     // UNC shares carry the same account names as a local profile path.
-    .replace(/\\\\[^\\/\r\n]+\\[^\\/\r\n]+(?=[\\/])/g, "<share>")
+    // Consume the whole UNC run, not just the server\share prefix. Stopping at the share left
+    // the segment after it — which on a home share IS the account name — for later rules that
+    // could no longer recognize the mangled remainder.
+    .replace(/\\\\[^\\/\r\n]+\\[^;,"'\r\n]*/g, "<share>")
     .replace(
       /(?:[A-Za-z]:)?[\\/](?:[^\\/\r\n]+[\\/])*(?:\.npm|npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
       "<npm-cache>",
@@ -348,12 +351,20 @@ function sanitizePersistedUpdateText(value: string): string {
     .replace(/\/(?:Users|home)\/[^/\r\n]*/g, "<profile>")
     // A root-owned install has no /home entry; /root is still a local filesystem disclosure.
     .replace(/\/root(?=[/\s]|$)/g, "<profile>")
+    // Any remaining UNC share, including administrative and home shares (`\\server\home$\Jane
+    // Doe\...`). Path segments may contain spaces, so the run continues across them and stops at
+    // a delimiter that cannot appear mid-path.
+    .replace(/\\\\[^\\/\s]+\\[^;,"'\r\n]*/g, "<path>")
+    // Any remaining absolute POSIX path under a directory that commonly holds per-user data.
+    .replace(/\/(?:export\/home|var\/home|Volumes)\/[^;,"'\r\n]*/gi, "<path>")
     // Backstop. Everything above recognizes a KNOWN profile shape, and a wrap that lands inside
     // the word `Users` (`C:\Us` + `ers\Jane Doe\...`) reassembles into a path none of them match
     // — the segment after the drive letter is still somebody's account name. Rather than trying
     // to enumerate every way a path can be mangled, redact any remaining absolute Windows path:
     // an update log has no legitimate need to carry one.
-    .replace(/\b[A-Za-z]:[\\/][^\s\r\n]*/g, "<path>")
+    // Windows path segments legitimately contain spaces (`D:\Profiles\Mary Jane\...`), so this
+    // run continues past them and stops only at a delimiter that cannot appear inside a path.
+    .replace(/\b[A-Za-z]:[\\/][^;,"'\r\n]*/g, "<path>")
     .replace(/\b(uid|gid)(\s*(?:[=:]|\s)\s*)\d+\b/gi, "$1$2<redacted>");
 }
 
@@ -675,8 +686,26 @@ function runLoggedCommand(job: UpdateJobState, bin: string, args: string[], time
   return { status: result.status, signal: result.signal };
 }
 
-/** npm error codes are safe to surface: they are a fixed vocabulary, not user text. */
-const NPM_ERROR_CODE = /\b(E[A-Z]{3,}|ERR_[A-Z_]+)\b/g;
+/**
+ * Recognized npm/libc error codes, as an explicit set.
+ *
+ * A shape pattern like `E[A-Z]{3,}` is NOT a vocabulary: `C:\Users\ERROR\.npm` matches it, and
+ * the summary then re-emits the username the withheld output was protecting. Only codes on this
+ * list are surfaced, and only when they appear in npm's canonical `code <CODE>` position.
+ */
+const NPM_ERROR_CODES = new Set([
+  "EACCES", "EPERM", "ENOENT", "EEXIST", "ENOTDIR", "EISDIR", "EMFILE", "ENFILE",
+  "ENOSPC", "EROFS", "EXDEV", "ELOOP", "ENAMETOOLONG", "ENOTEMPTY", "EBUSY",
+  "EAGAIN", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN",
+  "EPROTO", "ECONNABORTED", "EHOSTUNREACH", "ENETUNREACH", "EPIPE",
+  "E401", "E403", "E404", "E409", "E429", "E500", "E503",
+  "EINTEGRITY", "ERESOLVE", "ETARGET", "EPUBLISHCONFLICT", "ENEEDAUTH",
+  "EUSAGE", "EJSONPARSE", "EOTP", "EINVALIDTYPE", "ELIFECYCLE",
+  "ERR_SOCKET_TIMEOUT", "ERR_INVALID_ARG_TYPE", "ERR_MODULE_NOT_FOUND",
+]);
+
+/** npm prints `npm ERR! code EACCES`; anchor on that position rather than scanning free text. */
+const NPM_CODE_RECORD = /(?:^|\s)code\s+([A-Z][A-Z0-9_]{2,})\b/g;
 
 /**
  * Build a structured, path-free summary of a command's result.
@@ -696,12 +725,12 @@ function summarizeCommandOutput(
   parts.push(signal ? `terminated by ${signal}` : `exit ${status ?? "null"}`);
 
   const codes = [...new Set([
-    ...stderr.matchAll(NPM_ERROR_CODE),
-    ...stdout.matchAll(NPM_ERROR_CODE),
-  ].map(match => match[0]))].slice(0, 5);
+    ...stderr.matchAll(NPM_CODE_RECORD),
+    ...stdout.matchAll(NPM_CODE_RECORD),
+  ].map(match => match[1]!).filter(code => NPM_ERROR_CODES.has(code)))].slice(0, 5);
   if (codes.length > 0) parts.push(`codes: ${codes.join(", ")}`);
 
-  const bytes = stdout.length + stderr.length;
+  const bytes = Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8");
   if (bytes > 0) parts.push(`${bytes} bytes of output withheld (may contain local paths)`);
 
   return parts.join(" · ");

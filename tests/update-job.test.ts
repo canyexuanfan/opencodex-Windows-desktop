@@ -247,6 +247,30 @@ describe("GUI update execution decisions", () => {
     rmSync(updateJobPath(), { force: true });
   });
 
+  test("single-line UNC and custom profile roots do not leak account names", () => {
+    // A shape-based code pattern let `C:\\Users\\ERROR\\.npm` echo back as a "code", and the
+    // single-line path still carried `\\\\server\\home$\\Jane Doe` and `D:\\Profiles\\Mary Jane`.
+    const oneLine = String.raw`unc \\server\home$\Jane Doe\private.txt; custom D:\Profiles\Mary Jane\private.txt`;
+
+    expect(() => startUpdateJob("latest", true, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: oneLine,
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw new Error(oneLine); },
+    })).toThrow("Could not start update worker");
+
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("Jane Doe");
+    expect(persisted).not.toContain("Mary Jane");
+  });
+
   test("npm worker uses the Node launcher update path", () => {
     const cmd = updateExecutionCommand("npm", "preview", "/pkg/bin/ocx.mjs");
     expect(cmd.bin).toMatch(/^node/);
