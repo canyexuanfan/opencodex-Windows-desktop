@@ -107,15 +107,9 @@ export const OPENCODE_API_KEY_ENV = "OPENCODEX_OPENCODE_API_KEY";
 /** Env reference shared by apiKey and the dedicated proxy admission header. */
 export const OPENCODE_API_KEY_ENV_REF = `{env:${OPENCODE_API_KEY_ENV}}`;
 
-/** Env var Pi interpolates. Pi takes bare `$NAME`, not opencode's `{env:NAME}`. */
-export const PI_API_KEY_ENV = "OPENCODEX_API_KEY";
-
-/** Pi's reference form for the admission key. Never the value. */
-export const PI_API_KEY_ENV_REF = `$${PI_API_KEY_ENV}`;
-
 /**
  * Hermes interpolates `${VAR}` anywhere in config.yaml, so the credential stays
- * in the environment exactly as it does for OpenCode and Pi.
+ * in the environment exactly as it does for OpenCode.
  */
 export const HERMES_API_KEY_ENV = "OPENCODEX_HERMES_API_KEY";
 export const HERMES_API_KEY_ENV_REF = `\${${HERMES_API_KEY_ENV}}`;
@@ -125,12 +119,12 @@ export const OPENCLAW_API_KEY_ENV = "OPENCODEX_OPENCLAW_API_KEY";
 export const OPENCLAW_API_KEY_ENV_REF = `\${${OPENCLAW_API_KEY_ENV}}`;
 
 /**
- * Kimi Code reads credentials ONLY from its config file — it never falls back
- * to the shell environment. A loopback bind needs no real admission key, so we
- * emit the same placeholder the Grok managed block uses rather than a user
- * secret; a non-loopback bind is refused by the writer instead of papered over.
+ * Placeholder credential for loopback-only clients (Kimi, Pi). A loopback
+ * bind needs no real admission key, so we emit the same placeholder the Grok
+ * managed block uses rather than a user secret. Pi resolves `apiKey` before
+ * building its model list and hides the provider when an env reference is unset.
  */
-export const KIMI_LOOPBACK_PLACEHOLDER = "opencodex-loopback";
+export const LOOPBACK_API_KEY_PLACEHOLDER = "opencodex-loopback";
 
 /**
  * Gajae's `apiKeyEnv` is env-name-only and fail-closed. Its sibling `apiKey`
@@ -728,7 +722,7 @@ function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
       [OPENCODE_PROVIDER_ID]: {
         baseUrl: ctx.baseUrl,
         api: PI_API_DIALECT,
-        apiKey: PI_API_KEY_ENV_REF,
+        apiKey: LOOPBACK_API_KEY_PLACEHOLDER,
         models,
       },
     },
@@ -808,7 +802,7 @@ function buildKimiClientConfig(ctx: ExportContext): KimiGeneratedConfig {
       [OPENCODE_PROVIDER_ID]: {
         type: "openai",
         base_url: ctx.baseUrl,
-        api_key: KIMI_LOOPBACK_PLACEHOLDER,
+        api_key: LOOPBACK_API_KEY_PLACEHOLDER,
       },
     },
     models,
@@ -949,15 +943,14 @@ export const EXPORT_CLIENTS: Record<ExportClientId, ExportClientSpec> = {
     id: "pi",
     filename: "pi-models.json",
     destination: () => join(homedir(), ".pi", "agent", "models.json"),
-    apiKeyEnv: PI_API_KEY_ENV,
-    exportHint: `export ${PI_API_KEY_ENV}=<your key>`,
+    apiKeyEnv: "",
+    exportHint: "Pi reads a non-secret placeholder from models.json; loopback needs no key.",
     build: buildPiClientConfig,
     format: "json",
     summarize: summarizePi,
     buildContribution: buildPiContribution,
-    // No header field in Pi's provider block (and the schema is unverified
-    // against a real install), so there is nowhere to put the dedicated
-    // admission header a remote bind requires.
+    // No header field in Pi's provider block, so there is nowhere to put the
+    // dedicated admission header a remote bind requires.
     loopbackOnly: true,
   },
   hermes: {
