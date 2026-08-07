@@ -133,21 +133,22 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /legacyReadinessComment/);
   });
 
-  it("checks out trusted base-branch scripts only (never PR head)", () => {
+  it("checks out scripts from the event-specific trusted boundary (never PR head)", () => {
     // Scope the assertions to the checkout step itself, so a stray `ref:` on
     // another step cannot satisfy the pin while the checkout stays mutable.
     const checkoutStep = workflow
       .split("- name: Checkout trusted PR-quality scripts")[1]
       .split(/\n {6}- name:/)[0];
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
-    // `pull_request_target` pins the PR's base SHA so the scripts match the
-    // event's base revision. An `issue_comment` event has no PR payload, so
-    // the ref falls back to the integration branch `dev` (the gate's only
-    // allowed base) — still trusted, and never the PR head.
+    // `pull_request_target` pins the PR base SHA. Privileged `issue_comment`
+    // runs must source scripts from the repository default branch, matching
+    // the branch that supplied the workflow itself; unpromoted `dev` scripts
+    // must never execute under the write-capable token.
     assert.match(
       checkoutStep,
-      /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\|\|\s*'dev'\s*\}\}/,
+      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'issue_comment'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
     );
+    assert.doesNotMatch(checkoutStep, /\|\|\s*'dev'/);
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
