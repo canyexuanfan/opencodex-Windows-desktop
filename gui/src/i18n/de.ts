@@ -10,7 +10,6 @@ export const de: Record<TKey, string> = {
   "nav.providers": "Anbieter",
   "nav.models": "Modelle",
   "nav.combos": "Combos",
-  "nav.routing": "Routing (beta)",
   "nav.subagents": "Sub-Agenten",
 
   // routing intelligence
@@ -440,10 +439,6 @@ export const de: Record<TKey, string> = {
   "models.workspace.providers": "Anbieter",
   "models.workspace.allProviders": "Alle Anbieter",
   "models.workspace.mainAria": "Modelldetails",
-  "models.combosEmpty": "Noch keine Kombos konfiguriert",
-  "models.combosSetup": "Einrichten",
-  "models.combosAdd": "Kombo hinzufügen",
-  "models.combosActive": "{count} aktiv",
   "models.allOn": "Alle an",
   "models.allOff": "Alle aus",
   "models.cap350k": "Limit 350k",

@@ -10,7 +10,6 @@ export const ru: Record<TKey, string> = {
   "nav.providers": "Провайдеры",
   "nav.models": "Модели",
   "nav.combos": "Комбо",
-  "nav.routing": "Маршрутизация (beta)",
   "nav.subagents": "Подагенты",
 
   // routing intelligence
@@ -453,10 +452,6 @@ export const ru: Record<TKey, string> = {
   "models.workspace.providers": "Провайдеры",
   "models.workspace.allProviders": "Все провайдеры",
   "models.workspace.mainAria": "Сведения о моделях",
-  "models.combosEmpty": "Комбо ещё не настроены",
-  "models.combosSetup": "Настроить",
-  "models.combosAdd": "Добавить комбо",
-  "models.combosActive": "Активно: {count}",
   "models.allOn": "Все вкл.",
   "models.allOff": "Все выкл.",
   "models.cap350k": "Лимит 350k",

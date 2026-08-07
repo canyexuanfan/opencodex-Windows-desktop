@@ -10,7 +10,6 @@ export const ja: Record<TKey, string> = {
   "nav.providers": "プロバイダー",
   "nav.models": "モデル",
   "nav.combos": "コンボ",
-  "nav.routing": "ルーティング (beta)",
   "nav.subagents": "サブエージェント",
 
   // routing intelligence
@@ -448,10 +447,6 @@ export const ja: Record<TKey, string> = {
   "models.workspace.providers": "プロバイダー",
   "models.workspace.allProviders": "すべてのプロバイダー",
   "models.workspace.mainAria": "モデルの詳細",
-  "models.combosEmpty": "まだコンボが設定されていません",
-  "models.combosSetup": "セットアップ",
-  "models.combosAdd": "コンボを追加",
-  "models.combosActive": "{count} アクティブ",
   "models.allOn": "すべてオン",
   "models.allOff": "すべてオフ",
   "models.cap350k": "350k 上限",

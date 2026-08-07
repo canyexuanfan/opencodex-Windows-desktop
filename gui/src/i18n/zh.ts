@@ -10,7 +10,6 @@ export const zh: Record<TKey, string> = {
   "nav.providers": "提供方",
   "nav.models": "模型",
   "nav.combos": "组合",
-  "nav.routing": "路由 (beta)",
   "nav.subagents": "子代理",
 
   // routing intelligence
@@ -448,10 +447,6 @@ export const zh: Record<TKey, string> = {
   "models.workspace.providers": "提供方",
   "models.workspace.allProviders": "所有提供方",
   "models.workspace.mainAria": "模型详情",
-  "models.combosEmpty": "尚未配置组合",
-  "models.combosSetup": "设置",
-  "models.combosAdd": "添加组合",
-  "models.combosActive": "{count} 个已启用",
   "models.allOn": "全部开启",
   "models.allOff": "全部关闭",
   "models.cap350k": "限制 350k",

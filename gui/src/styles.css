@@ -400,12 +400,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   The combos workspace is a full-bleed 100dvh shell, so whatever owns the remaining
   height has to be a flexible, shrinkable column.
 
-  Two selectors, because the shell reaches this container by two different paths: as
-  the standalone `#combos` page it is a direct child, and as a Models tab it sits one
-  level down inside its tabpanel. The panel wrapper is what breaks a plain direct-child
-  rule — the panel becomes the flex item and the shell fills it.
+  The shell now reaches this container inside its tabpanel, one level down. That extra
+  level is exactly what breaks a plain direct-child rule, so the panel becomes the flex
+  item and the shell fills it.
 */
-.main-inner.main-inner--combos > .combos-workspace-shell,
 .main-inner.main-inner--combos > .models-tab-panel--fill,
 .main-inner.main-inner--combos > .models-tab-panel--fill > .combos-workspace-shell {
   flex: 1 1 auto;

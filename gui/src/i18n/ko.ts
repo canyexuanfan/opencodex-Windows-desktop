@@ -10,7 +10,6 @@ export const ko: Record<TKey, string> = {
   "nav.providers": "프로바이더",
   "nav.models": "모델",
   "nav.combos": "콤보",
-  "nav.routing": "라우팅 (beta)",
   "nav.subagents": "서브에이전트",
 
   // routing intelligence
@@ -451,10 +450,6 @@ export const ko: Record<TKey, string> = {
   "models.workspace.providers": "프로바이더",
   "models.workspace.allProviders": "모든 프로바이더",
   "models.workspace.mainAria": "모델 세부정보",
-  "models.combosEmpty": "아직 설정된 콤보가 없습니다",
-  "models.combosSetup": "설정하기",
-  "models.combosAdd": "콤보 추가하기",
-  "models.combosActive": "{count}개 활성",
   "models.allOn": "모두 켜기",
   "models.allOff": "모두 끄기",
   "models.cap350k": "350k 제한",

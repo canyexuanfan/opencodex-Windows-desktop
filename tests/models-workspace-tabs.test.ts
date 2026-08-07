@@ -1,8 +1,9 @@
 /**
  * Models workspace tabs — routing contract.
  *
- * Phase 1 is additive: `#combos` and `#routing` are still first-class pages here, and
- * the nested hashes exist alongside them. The cutover assertions arrive with wp02b.
+ * `#combos` and `#routing` are no longer pages. Both resolve to the Models page and
+ * redirect to their nested tab hashes, and `readModelsTab` recognises the pre-redirect
+ * form so a cold load lands on the right tab.
  */
 import { expect, test, describe } from "bun:test";
 import {
