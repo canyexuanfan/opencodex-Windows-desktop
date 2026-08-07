@@ -56,6 +56,13 @@ export function readPageFromHash(hash?: string): Page {
 export const DASHBOARD_TAB_HASHES = ["dashboard/providers", "dashboard/models"] as const;
 
 /**
+ * Models owns three tabs: the catalog, Combos, and Routing. The catalog is the bare
+ * `#models`, so it has no suffix entry here — same convention Dashboard uses for
+ * Overview and Logs uses for the log list.
+ */
+export const MODELS_TAB_HASHES = ["models/combos", "models/routing"] as const;
+
+/**
  * `#dashboard/update` is an action deep link, not a tab: the sidebar update button uses
  * it to open the maintenance update dialog over the Overview section. It is listed as a
  * valid dashboard hash so route normalization does not strip it before the dashboard
@@ -85,6 +92,7 @@ export const INTEGRATION_TAB_HASHES = [
 export function hashBelongsToPage(rawHash: string, page: Page): boolean {
   return rawHash === page
     || (page === "logs" && rawHash === "logs/debug")
+    || (page === "models" && (MODELS_TAB_HASHES as readonly string[]).includes(rawHash))
     || (page === "dashboard"
       && (rawHash === DASHBOARD_UPDATE_HASH || (DASHBOARD_TAB_HASHES as readonly string[]).includes(rawHash)))
     || (page === "integrations"
