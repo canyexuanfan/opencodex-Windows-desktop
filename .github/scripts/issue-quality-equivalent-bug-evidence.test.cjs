@@ -1,0 +1,38 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { validateIssue } = require("./issue-quality.cjs");
+
+test("accepts #1162-shaped bug evidence without literal Reproduction/Version/OS headings", () => {
+  const result = validateIssue({
+    title: "[Bug]: Cursor Claude-family models fail after stream start while non-Claude models pass",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+Cursor Claude-family models deterministically fail through the Claude Code path after the stream starts, while non-Claude Cursor models complete normally using the same provider and installation.
+
+### Environment
+- OpenCodex: 2.10.2
+- OS: Linux (Ubuntu x64)
+- Claude Code: 1.0.88
+
+### What fails / what passes
+- \`cursor/claude-sonnet-4.5\` -> FAIL with \`resource_exhausted\` after stream start.
+- \`cursor/grok-4.5\` -> PASS using the same request path.
+
+### Debug evidence (ocx debug provider)
+Run \`ocx debug provider cursor\` and send the same request through the Claude Code integration.
+
+\`\`\`text
+Provider error: resource_exhausted after stream start
+request failed after the first streamed frame
+\`\`\`
+`,
+  });
+
+  assert.equal(result.valid, true, result.reasons.join("\n"));
+});
