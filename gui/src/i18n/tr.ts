@@ -7,6 +7,10 @@ import type { TKey } from "./en";
 export const tr: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "Gösterge Paneli",
+  "uptime.day": " gün",
+  "uptime.hour": " saat",
+  "uptime.minute": " dk",
+  "uptime.second": " sn",
   "nav.startup": "Başlatma Güvenliği",
   "nav.providers": "Sağlayıcılar",
   "nav.models": "Modeller",
