@@ -157,6 +157,10 @@ describe("GUI update execution decisions", () => {
       "unc-wrap \\\\fileserver\\share\\Us\n  ers\\Zoe [Admin]+\\notes.txt",
       "docs-wrap \\\\fileserver\\share\\Documents and Set\n\ttings\\A+B (Ops)\\notes.txt",
       "posix-wrap /Us\n  ers/\ud64d \uae38\ub3d9/private.txt",
+      // A redacted path must not swallow the lines after it: the persisted log is what a user
+      // reads when an update fails, and eating the diagnostics is its own kind of damage.
+      "unc \\\\server\\share\\Us\n  ers\\Jane\\x",
+      "KEEP diagnostic code E42",
     ].join("\n");
 
     expect(() => startUpdateJob("latest", true, {
@@ -184,6 +188,8 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("Zoe [Admin]+");
     expect(persisted).not.toContain("A+B (Ops)");
     expect(persisted).not.toContain("\ud64d \uae38\ub3d9");
+    expect(persisted).not.toContain("Jane");
+    expect(persisted).toContain("KEEP diagnostic code E42");
   });
 
   test("a failed cache pre-flight leaves the install command unrun", async () => {
