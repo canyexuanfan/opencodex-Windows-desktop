@@ -31,6 +31,11 @@
 
 import { existsSync, statSync } from "node:fs";
 import { env, platform } from "node:process";
+import {
+  resolveCurrentWindowsPrincipal,
+  resolveCurrentWindowsPrincipalAsync,
+  setSyntheticWindowsPrincipalForTests,
+} from "./windows-user-principal";
 
 const hardenedDirectories = new Map<string, HardenedIdentity>();
 const hardenedPaths = new Map<string, HardenedIdentity>();
@@ -336,9 +341,21 @@ export function setAsyncIcaclsRunnerForTests(runner: AsyncIcaclsRunner | null): 
   asyncIcaclsRunner = runner ?? defaultAsyncIcaclsRunner;
 }
 
-/** Test seam: force the platform gate (e.g. "win32") so CI on POSIX reaches the runner. */
+/**
+ * Test seam: force the platform gate (e.g. "win32") so CI on POSIX reaches the runner.
+ *
+ * Faking win32 on a host without System32 also has to supply a principal, or
+ * every forced-branch test would fail on the identity lookup instead of
+ * exercising icacls. The synthetic value is registered with the resolver, not
+ * chosen here, so a test that injects its own runner still wins.
+ */
+const SYNTHETIC_TEST_PRINCIPAL = "*S-1-5-21-1-2-3-1001";
+
 export function setPlatformForTests(value: string | null): void {
   platformOverride = value;
+  setSyntheticWindowsPrincipalForTests(
+    value === "win32" && platform !== "win32" ? SYNTHETIC_TEST_PRINCIPAL : null,
+  );
 }
 
 /** Test seam: injectable clock for deadline tests (no real sleeps). */
@@ -408,17 +425,26 @@ function icaclsError(step: string, result: IcaclsResult): NodeJS.ErrnoException 
 }
 
 /**
- * Return the current Windows username from the environment.
- * Falls back to USERDOMAIN\USERNAME if USERNAME alone is ambiguous.
- * The value is used directly in icacls arguments, so it must be present.
+ * The ACL principal is the effective token SID and nothing else.
+ *
+ * There is no name-shaped fallback here, and that absence is the fix for #1149
+ * rather than an omission. `USERDOMAIN\USERNAME` has the right shape but is not
+ * evidence of the current token's subject, and both variables are writable by
+ * the process that launched us. Granting Full Control to a wrong principal and
+ * then running `/inheritance:r` is destructive in both directions: another
+ * account can be left holding the secret, or the file can be left with no ACE
+ * the current user can use. When the SID cannot be resolved we decline.
+ *
+ * Non-Windows hosts that force this branch through `setPlatformForTests` get
+ * their principal from `setSyntheticWindowsPrincipalForTests`, which lives with
+ * the resolver so an injected runner can still take precedence over it.
  */
-function currentWindowsUser(): string | undefined {
-  const username = env["USERNAME"];
-  const domain = env["USERDOMAIN"];
-  if (!username) return undefined;
-  // USERDOMAIN is the machine/domain name; USERNAME is the account name.
-  // icacls accepts "DOMAIN\User" or just "User" for local accounts.
-  return domain ? `${domain}\\${username}` : username;
+function currentWindowsPrincipal(deadline: number): string {
+  return resolveCurrentWindowsPrincipal(deadline - nowFn());
+}
+
+async function currentWindowsPrincipalAsync(deadline: number): Promise<string> {
+  return resolveCurrentWindowsPrincipalAsync(deadline - nowFn());
 }
 
 /**
@@ -438,10 +464,7 @@ function grantAce(user: string, directory: boolean): string {
 }
 
 function runIcacls(targetPath: string, directory: boolean, deadline: number): void {
-  const user = currentWindowsUser();
-  if (!user) {
-    throw new Error("Cannot determine current Windows user for ACL hardening");
-  }
+  const principal = currentWindowsPrincipal(deadline);
 
   // The deadline is owned by hardenEntry (total budget incl. retry + verification).
   const run = (step: string, args: string[]): IcaclsResult => {
@@ -458,7 +481,7 @@ function runIcacls(targetPath: string, directory: boolean, deadline: number): vo
 
   // Step 1: grant current user full control BEFORE any destructive ACL change.
   // If this fails, inheritance is untouched and the writer keeps inherited access.
-  runOrThrow("/grant:r", [targetPath, "/grant:r", grantAce(user, directory)]);
+  runOrThrow("/grant:r", [targetPath, "/grant:r", grantAce(principal, directory)]);
 
   // Step 2: disable inheritance and remove inherited ACEs. The explicit owner ACE
   // from step 1 survives this transition, so a later failure still leaves cleanup access.
@@ -487,10 +510,7 @@ function runIcacls(targetPath: string, directory: boolean, deadline: number): vo
 
 /** Async counterpart of runIcacls — same step order and timeout/error classification (#612). */
 async function runIcaclsAsync(targetPath: string, directory: boolean, deadline: number): Promise<void> {
-  const user = currentWindowsUser();
-  if (!user) {
-    throw new Error("Cannot determine current Windows user for ACL hardening");
-  }
+  const principal = await currentWindowsPrincipalAsync(deadline);
 
   const run = async (step: string, args: string[]): Promise<IcaclsResult> => {
     const remaining = deadline - nowFn();
@@ -504,7 +524,7 @@ async function runIcaclsAsync(targetPath: string, directory: boolean, deadline: 
     if (!result.success) throw icaclsError(step, result);
   };
 
-  await runOrThrow("/grant:r", [targetPath, "/grant:r", grantAce(user, directory)]);
+  await runOrThrow("/grant:r", [targetPath, "/grant:r", grantAce(principal, directory)]);
   await runOrThrow("/inheritance:r", [targetPath, "/inheritance:r"]);
 
   const removal = await run("/remove:g", [targetPath, "/remove:g", ...BROAD_SIDS]);
@@ -538,6 +558,8 @@ function sanitizeDiagnostics(error: unknown): string {
       return `ACL hardening failed (${code}) — permission denied running icacls`;
     case "EICACLS":
       return "ACL hardening failed (EICACLS) — icacls command error; filesystem may not support per-user NTFS ACLs";
+    case "EACLIDENTITY":
+      return "ACL hardening failed (EACLIDENTITY) — the effective Windows account SID could not be resolved";
     default:
       return `ACL hardening failed${code ? ` (${code})` : ""} — filesystem may not support per-user NTFS ACLs`;
   }
@@ -554,7 +576,17 @@ function sanitizedAclError(diagnostics: string, cause: unknown): NodeJS.ErrnoExc
   const code = cause && typeof cause === "object" && "code" in cause
     ? String((cause as { code?: unknown }).code)
     : "";
-  if (code === "ETIMEDOUT" || code === "EICACLS" || code === "EACCES" || code === "EPERM") {
+  // EACLIDENTITY belongs here for the same reason as the rest: a caller that
+  // catches a required-mode failure has to tell "the SID could not be resolved"
+  // apart from "icacls stalled". Without it the code was dropped and only the
+  // message carried the cause, which no caller can branch on.
+  if (
+    code === "ETIMEDOUT" ||
+    code === "EICACLS" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "EACLIDENTITY"
+  ) {
     error.code = code;
   }
   return error;
