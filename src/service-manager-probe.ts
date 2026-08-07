@@ -22,8 +22,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { resolveTrustedWindowsSchtasksExe } from "./lib/windows-elevation";
-import { statusWinswRaw, WINSW_SERVICE_ID } from "./lib/winsw";
+import {
+  resolveTrustedWindowsSchtasksExe,
+  resolveTrustedWindowsSystemDirectory,
+} from "./lib/windows-elevation";
+import { WINSW_SERVICE_ID } from "./lib/winsw";
 
 /** Short: this runs inside admission, and a slow answer is the same as none. */
 export const SERVICE_PROBE_TIMEOUT_MS = 2_000;
@@ -107,14 +110,14 @@ export const defaultRawProbeRunner: RawProbeRunner = (file, args) => {
 
 export interface ProbeDeps {
   readonly run?: ProbeRunner;
-  /** Raw-buffer runner for Windows tasks (UTF-16LE output). Defaults to defaultRawProbeRunner. */
+  /** Raw-buffer runner for bounded Windows service-manager queries. */
   readonly runRaw?: RawProbeRunner;
   readonly platform?: NodeJS.Platform;
   readonly uid?: number;
   readonly home?: string;
   /** Effective OpenCodex config dir (OPENCODEX_HOME). Overrides `<home>/.opencodex`. */
   readonly configDir?: string;
-  /** Injectable WinSW SCM status check (defaults to statusWinswRaw). */
+  /** Test seam for WinSW SCM status. Production uses bounded trusted `sc.exe query`. */
   readonly winswStatus?: () => "started" | "stopped" | "nonexistent" | "unknown";
 }
 
@@ -322,18 +325,15 @@ function inspectSystemd(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
  * missing home stays `null` — the same contract the launchd/systemd probes use —
  * and a definition that names no homes cannot be mistaken for agreement.
  *
- * Registration is answered by one bounded `schtasks /query /xml` call so a
- * definition staged on disk but never registered is still visible (the
- * interrupted-install case). Every failure to ask is `unknown`, never absence.
+ * Registration is answered by bounded `schtasks` queries so a definition staged
+ * on disk but never registered is still visible (the interrupted-install case).
+ * Every failure to ask is `unknown`, never absence.
  */
 function windowsTaskName(): string {
   return "opencodex-proxy";
 }
 
 function windowsConfigDirPath(deps: { home: string; configDir?: string }): string {
-  // The wrapper assets live under the effective OPENCODEX_HOME (service.ts
-  // writes them via getConfigDir()). A customized OPENCODEX_HOME must be
-  // honored, not shadowed by the default-home mirror.
   if (deps.configDir) return deps.configDir;
   return join(deps.home, ".opencodex");
 }
@@ -361,19 +361,20 @@ function decodeWindowsText(buffer: Buffer): string {
   return buffer.toString("utf8").replace(/^\uFEFF/, "").trim();
 }
 
+/** Decode the XML entities emitted by the service-definition writers. */
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
 /** Pull the launcher path out of the task XML `<Arguments>` element. */
 function windowsTaskArguments(xml: string): string | null {
   const match = /<Arguments[^>]*>\s*([^<]*?)\s*<\/Arguments>/i.exec(xml);
-  if (!match) return null;
-  // The registered document escapes `"` as `&quot;`; decode before extracting
-  // the quoted path so the same regex sees both the on-disk and /query forms.
-  const raw = match[1]!.trim()
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&apos;/g, "'");
-  return raw;
+  return match ? decodeXmlEntities(match[1]!.trim()) : null;
 }
 
 /**
@@ -381,9 +382,7 @@ function windowsTaskArguments(xml: string): string | null {
  *
  * `buildWindowsLauncherVbs` escapes a `"` inside a VBS string literal by
  * doubling it, so a wrapper `C:\...\opencodex-service.cmd` is emitted as
- * `shell.Run """C:\...\opencodex-service.cmd""", 0, True`. Matching the
- * whole doubled-quote span — `"""` ... `"""` — is the only form that
- * survives both a plain quoted path and one with spaces.
+ * `shell.Run """C:\...\opencodex-service.cmd""", 0, True`.
  */
 function vbsWrappedCommand(body: string): string | null {
   const match = /\.Run\s+"""([^"]*)"""/.exec(body);
@@ -401,23 +400,11 @@ function batchSetValue(body: string, name: string): string | null {
   return match ? match[1]!.trim() : null;
 }
 
-/**
- * Resolve a home value the way cmd would, reversing what
- * `windowsEnvIndirectBatchValue` + `windowsBatchValue` baked in.
- *
- * The builder rewrites a home under USERPROFILE/APPDATA/LOCALAPPDATA to a
- * `%VAR%` token (so non-ASCII profile names survive the OEM-codepage parse),
- * and doubles literal `%` as `%%` so the token itself survives the escaping.
- * A probe that returned that batch syntax verbatim would compare it against
- * the resolved current home and report a false disagreement. Expand known
- * tokens via the live environment, then un-double any remaining `%%`.
- */
+/** Resolve generated batch env indirection before comparing homes. */
 function decodeBatchPathValue(
   value: string,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  // Sentinel that cannot appear in a decoded path; %-escapes are restored after
-  // token expansion so `%%USERPROFILE%%` stays a literal `%USERPROFILE%`.
   const escapedPercent = "\u0000";
   const tokens: Record<string, string | undefined> = {
     USERPROFILE: env.USERPROFILE,
@@ -428,83 +415,135 @@ function decodeBatchPathValue(
   return value
     .replace(/%%/g, escapedPercent)
     .replace(/%([A-Za-z][A-Za-z0-9_]*)%/g, (whole, name: string) => {
-      // cmd.exe variable names are case-insensitive; treat a defined empty
-      // value as resolved (expand to empty) rather than unresolved.
       const resolved = tokens[name.toUpperCase()];
       return resolved === undefined ? whole : resolved;
     })
     .replaceAll(escapedPercent, "%");
 }
 
-/**
- * True when the wrapper looks like one `buildWindowsServiceScript` generated:
- * a `:loop` label followed by the line-anchored `%OCX_BUN%` / `%OCX_CLI%`
- * invocation that launches `start`. Absent `set` lines are only meaningful
- * evidence of "deliberately omitted" when the wrapper is otherwise the
- * generated artifact — an empty, truncated, or unrelated readable file must
- * not read as a legitimate install that omitted both homes.
- */
+/** Validate the generated wrapper before interpreting omitted optional homes. */
 function wrapperLooksGenerated(body: string): boolean {
   return /:loop\s*[\s\S]*^"%OCX_BUN%" "%OCX_CLI%" start\b[^\r\n]*$/im.test(body);
 }
 
-/**
- * The one stderr text that proves `schtasks /query /tn ...` answered "no such
- * task". schtasks exits 1 for both "task not found" and "access denied"; only
- * the message distinguishes them, so absence is keyed on the message, never on
- * the exit code alone.
- */
-const SCHTASKS_TASK_NOT_FOUND = /cannot find the file specified/i;
+/** Compare Windows paths without allowing spelling differences to fabricate a mismatch. */
+function windowsPathEqual(a: string, b: string): boolean {
+  const norm = (value: string): string => value
+    .replace(/\//g, "\\")
+    .replace(/[\\]+$/, "")
+    .toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** Parse the first CSV field emitted by schtasks `/fo CSV`. */
+function csvFirstField(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('"')) return (trimmed.split(",", 1)[0] ?? "").trim();
+  let value = "";
+  for (let i = 1; i < trimmed.length; i += 1) {
+    const ch = trimmed[i]!;
+    if (ch !== '"') {
+      value += ch;
+      continue;
+    }
+    if (trimmed[i + 1] === '"') {
+      value += '"';
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return value;
+}
+
+function windowsTaskListContains(body: string, taskName: string): boolean {
+  const target = taskName.toLowerCase();
+  return body.split(/\r?\n/).some(line => {
+    const field = csvFirstField(line).replace(/\//g, "\\").replace(/^\\+/, "");
+    return field.toLowerCase() === target;
+  });
+}
 
 /**
  * Registration state of the scheduled task.
  *
- * `present` is exit 0. `absent` is ONLY a nonzero exit whose stderr states the
- * task cannot be found. Everything else — access denied, other execution
- * errors, signal termination, null status, spawn/timeout failures, any other
- * nonzero exit — is `unknown`, because none of those prove the task is not
- * there. Treating them as absence would let a locked-down or wedged Task
- * Scheduler read as a clean machine.
+ * The `/xml` query gives the authoritative registered definition. A nonzero
+ * result is locale-dependent, so it cannot prove absence from stderr text. In
+ * that case a bounded full listing is the independent, locale-neutral fallback:
+ * only a successful list that does not contain our task proves absence.
  */
 function probeWindowsTaskRegistration(deps: Required<Pick<ProbeDeps, "runRaw">>): {
   registered: "present" | "absent" | "unknown";
   registeredXml: string;
 } {
-  // Resolve schtasks through the trusted System32 helper so a planted binary on
-  // PATH cannot be executed from an attacker-controlled project directory. If
-  // the trusted resolver itself fails, fail closed — never fall back to PATH.
   let schtasks: string;
   try {
     schtasks = resolveTrustedWindowsSchtasksExe();
   } catch {
     return { registered: "unknown", registeredXml: "" };
   }
+
   const queried = deps.runRaw(schtasks, ["/query", "/tn", windowsTaskName(), "/xml"]);
   if (queried.spawnFailed || queried.timedOut) return { registered: "unknown", registeredXml: "" };
   if (queried.status === 0) {
-    // The registered document is UTF-16LE; decode the RAW bytes (decoding as
-    // UTF-8 first would corrupt the XML).
     const registeredXml = decodeWindowsText(queried.stdout) || decodeWindowsText(queried.stderr);
-    return { registered: "present", registeredXml };
+    return registeredXml
+      ? { registered: "present", registeredXml }
+      : { registered: "unknown", registeredXml: "" };
   }
-  const text = `${decodeWindowsText(queried.stdout)}\n${decodeWindowsText(queried.stderr)}`;
-  if (queried.status !== null && SCHTASKS_TASK_NOT_FOUND.test(text)) {
-    return { registered: "absent", registeredXml: "" };
+
+  const listed = deps.runRaw(schtasks, ["/query", "/fo", "CSV", "/nh"]);
+  if (listed.spawnFailed || listed.timedOut || listed.status !== 0) {
+    return { registered: "unknown", registeredXml: "" };
   }
-  return { registered: "unknown", registeredXml: "" };
+  const listing = decodeWindowsText(listed.stdout) || decodeWindowsText(listed.stderr);
+  // Presence without the requested /xml definition is not enough to compare
+  // ownership safely; only the negative listing answer is decisive here.
+  return windowsTaskListContains(listing, windowsTaskName())
+    ? { registered: "unknown", registeredXml: "" }
+    : { registered: "absent", registeredXml: "" };
 }
 
-function inspectWindows(deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pick<ProbeDeps, "configDir" | "winswStatus">): ServiceManagerInstallation {
+type WinswRegistration = "present" | "absent" | "unknown";
+
+/** Query WinSW registration through trusted System32 sc.exe; never execute the user-writable WinSW binary. */
+function probeWinswRegistration(
+  deps: Required<Pick<ProbeDeps, "runRaw">> & Pick<ProbeDeps, "winswStatus">,
+): WinswRegistration {
+  if (deps.winswStatus) {
+    const injected = deps.winswStatus();
+    if (injected === "started" || injected === "stopped") return "present";
+    if (injected === "nonexistent") return "absent";
+    return "unknown";
+  }
+
+  let sc: string;
+  try {
+    sc = join(resolveTrustedWindowsSystemDirectory(), "sc.exe");
+    if (artifactPresence(sc) !== "present") return "unknown";
+  } catch {
+    return "unknown";
+  }
+
+  const queried = deps.runRaw(sc, ["query", WINSW_SERVICE_ID]);
+  if (queried.spawnFailed || queried.timedOut) return "unknown";
+  if (queried.status === 0) return "present";
+
+  // ERROR_SERVICE_DOES_NOT_EXIST (1060) is locale-invariant. Search raw byte
+  // text so localized OEM output cannot affect the numeric classification.
+  const text = `${queried.stdout.toString("latin1")}\n${queried.stderr.toString("latin1")}`;
+  return /\b1060\b/.test(text) ? "absent" : "unknown";
+}
+
+function inspectWindows(
+  deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pick<ProbeDeps, "configDir" | "winswStatus">,
+): ServiceManagerInstallation {
   const configDir = windowsConfigDirPath(deps);
   const taskXmlPath = join(configDir, "opencodex-service-task.xml");
   const task = artifactPresence(taskXmlPath);
-
-  // The native WinSW backend is a separate SCM registration. If it exists, it
-  // is authoritative on its own; if BOTH the scheduler task and WinSW are
-  // present that is a conflict (an interrupted backend switch). Only a claim
-  // whose registration is "present" counts as installed.
   const winsw = walkWinswChain(deps);
   const winswInstalled = winsw.kind === "present" && winsw.claims[0].registration === "present";
+  const winswStaged = winsw.kind === "present" && winsw.claims[0].registration === "absent";
 
   let xml = "";
   if (task !== "absent") {
@@ -519,36 +558,48 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pic
   if (registration.registered === "unknown") {
     return unknown("Task Scheduler could not be asked whether opencodex-proxy is registered");
   }
+  const schedulerRegistered = registration.registered === "present";
 
-  const schedulerPresent = task !== "absent" && registration.registered !== "absent";
-  if (winswInstalled && schedulerPresent) {
-    // Walk the staged scheduler definition so the conflict carries its real
-    // homes. A broken/malformed scheduler chain cannot be fabricated into a
-    // claim — return its non-present result (unknown) rather than inventing
-    // homes; a valid staged claim is a conflict with registration present.
-    const staged = walkWindowsChain(deps, xml, taskXmlPath);
-    if (staged.kind !== "present") return staged;
+  // Two live registrations are a conflict even if the staging copy of the task
+  // XML disappeared. The authoritative `/query /xml` definition is sufficient
+  // to walk the scheduler chain without inventing homes.
+  if (winswInstalled && schedulerRegistered) {
+    if (!registration.registeredXml.trim()) {
+      return unknown("Task Scheduler is registered but its definition XML could not be read");
+    }
+    const registeredWalk = walkWindowsChain(deps, registration.registeredXml, taskXmlPath);
+    if (registeredWalk.kind !== "present") return registeredWalk;
     return {
       kind: "conflict",
       claims: [
         winsw.claims[0],
-        { ...staged.claims[0], registration: "present" },
+        { ...registeredWalk.claims[0], registration: "present" },
       ],
     };
   }
-  if (winswInstalled) return winsw;
 
-  // WinSW exists but its SCM state cannot be verified, and a scheduler task is
-  // also present: neither backend can be ruled out, so fail closed.
-  if (winsw.kind === "unknown" && task !== "absent") {
-    return unknown("cannot confirm native WinSW status alongside the scheduled task");
+  if (winswInstalled) {
+    // A staged scheduler definition beside a registered WinSW service is an
+    // interrupted backend switch, not proof that WinSW alone owns the machine.
+    if (task !== "absent") {
+      return unknown("a scheduled-task definition is staged while the native WinSW service is registered");
+    }
+    return winsw;
   }
-  if (winsw.kind === "unknown" && task === "absent" && registration.registered === "absent") {
+
+  if (winsw.kind === "unknown") return winsw;
+
+  // Staged-but-unregistered WinSW remains evidence. If Scheduler is also live
+  // or staged, neither half-finished backend switch can be chosen unattended.
+  if (winswStaged && (schedulerRegistered || task !== "absent")) {
+    return unknown("native WinSW and Task Scheduler definitions overlap during an incomplete backend switch");
+  }
+  if (winswStaged && task === "absent" && registration.registered === "absent") {
     return winsw;
   }
 
   if (task === "absent") {
-    return registration.registered === "present"
+    return schedulerRegistered
       ? unknown("Task Scheduler holds opencodex-proxy but its task XML is missing")
       : { kind: "absent" };
   }
@@ -557,16 +608,14 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pic
   if (staged.kind !== "present") return staged;
   const stagedClaim = staged.claims[0];
 
-  // A registered task whose chain disagrees with the staged one is an
-  // interrupted reinstall — Task Scheduler will launch the OLD wrapper while
-  // the staging copy claims new homes. Any failure to walk the registered
-  // definition is also unknown (it cannot be trusted).
-  if (registration.registered === "present" && registration.registeredXml.trim()) {
+  if (schedulerRegistered) {
+    if (!registration.registeredXml.trim()) {
+      return unknown("Task Scheduler is registered but its definition XML could not be read");
+    }
     const registeredWalk = walkWindowsChain(deps, registration.registeredXml, taskXmlPath);
     if (registeredWalk.kind !== "present") return registeredWalk;
     const registeredClaim = registeredWalk.claims[0];
-    const homesDisagree = !homesEqual(registeredClaim.homes, stagedClaim.homes);
-    if (homesDisagree) {
+    if (!homesEqual(registeredClaim.homes, stagedClaim.homes)) {
       return unknown("the registered scheduled task names different homes than the staged task definition");
     }
   }
@@ -575,13 +624,16 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pic
     kind: "present",
     claims: [{
       ...stagedClaim,
-      registration: registration.registered === "present" ? "present" : "absent",
+      registration: schedulerRegistered ? "present" : "absent",
     }],
   };
 }
 
 /** Compare two home pairs with Windows path normalization (case, slashes, trailing separators). */
-function homesEqual(a: { codexHome: string | null; opencodexHome: string | null }, b: { codexHome: string | null; opencodexHome: string | null }): boolean {
+function homesEqual(
+  a: { codexHome: string | null; opencodexHome: string | null },
+  b: { codexHome: string | null; opencodexHome: string | null },
+): boolean {
   const norm = (v: string | null): string | null => {
     if (v === null) return null;
     return v.replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
@@ -591,55 +643,64 @@ function homesEqual(a: { codexHome: string | null; opencodexHome: string | null 
 
 /**
  * Walk one scheduled-task definition (staged or registered XML) down to the
- * batch wrapper and extract the homes it names. Returns `absent` only when the
- * XML is absent; every broken or malformed link is `unknown`.
+ * generated batch wrapper and extract the homes it names. Definition-provided
+ * paths are never followed unless they equal the deterministic generated paths
+ * under the effective OPENCODEX_HOME; this prevents a foreign task from turning
+ * an ownership probe into an arbitrary local/UNC file read.
  */
 function walkWindowsChain(
   deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps, "configDir">,
   xml: string,
   definitionPath: string,
 ): ServiceManagerInstallation {
+  const configDir = windowsConfigDirPath(deps);
+  const expectedLauncher = join(configDir, "opencodex-service-launcher.vbs");
+  const expectedWrapper = join(configDir, "opencodex-service.cmd");
+
   const launcherArg = windowsTaskArguments(xml);
   if (!launcherArg) {
     return unknown("the scheduled-task XML names no launcher to run");
   }
-  // The <Arguments> element is `/b /nologo "C:\...\opencodex-service-launcher.vbs"`.
   const launcherPath = /"([^"]+)"/.exec(launcherArg)?.[1];
   if (!launcherPath) {
     return unknown("the scheduled-task XML launcher argument is not a quoted path");
   }
-  const launcher = artifactPresence(launcherPath);
+  if (!windowsPathEqual(launcherPath, expectedLauncher)) {
+    return unknown(`the scheduled-task XML names ${launcherPath}, not the expected launcher ${expectedLauncher}`);
+  }
+
+  const launcher = artifactPresence(expectedLauncher);
   if (launcher === "absent") {
-    return unknown(`the scheduled-task launcher is missing: ${launcherPath}`);
+    return unknown(`the scheduled-task launcher is missing: ${expectedLauncher}`);
   }
   let launcherBody: string;
   try {
-    launcherBody = decodeWindowsText(readFileSync(launcherPath));
+    launcherBody = decodeWindowsText(readFileSync(expectedLauncher));
   } catch (error) {
     return unknown(`the scheduled-task launcher could not be read: ${String(error)}`);
   }
+
   const wrapperPath = vbsWrappedCommand(launcherBody);
   if (!wrapperPath) {
-    return unknown(`the launcher ${launcherPath} names no wrapper to run`);
+    return unknown(`the launcher ${expectedLauncher} names no wrapper to run`);
   }
-  const wrapper = artifactPresence(wrapperPath);
+  if (!windowsPathEqual(wrapperPath, expectedWrapper)) {
+    return unknown(`the scheduled-task launcher names ${wrapperPath}, not the expected wrapper ${expectedWrapper}`);
+  }
+
+  const wrapper = artifactPresence(expectedWrapper);
   if (wrapper === "absent") {
-    return unknown(`the launcher wrapper is missing: ${wrapperPath}`);
+    return unknown(`the launcher wrapper is missing: ${expectedWrapper}`);
   }
   let wrapperBody: string;
   try {
-    wrapperBody = decodeWindowsText(readFileSync(wrapperPath));
+    wrapperBody = decodeWindowsText(readFileSync(expectedWrapper));
   } catch (error) {
     return unknown(`the launcher wrapper could not be read: ${String(error)}`);
   }
 
-  /*
-   * A wrapper that does not look generated is not evidence of deliberate
-   * omission — it is malformed. An empty or truncated wrapper, or an unrelated
-   * readable file, must fail closed rather than read as "no homes baked".
-   */
   if (!wrapperLooksGenerated(wrapperBody)) {
-    return unknown(`the launcher wrapper does not look like a generated opencodex service wrapper: ${wrapperPath}`);
+    return unknown(`the launcher wrapper does not look like a generated opencodex service wrapper: ${expectedWrapper}`);
   }
 
   const rawCodexHome = batchSetValue(wrapperBody, "CODEX_HOME");
@@ -660,45 +721,45 @@ function walkWindowsChain(
 }
 
 /**
- * Walk the WinSW native-backend definition (its XML embeds the homes as
- * `<env name="CODEX_HOME" .../>` / `OPENCODEX_HOME`). Returns `present` when
- * the SCM registration exists; `absent` when the XML is gone and the SCM
- * confirms no registration; `unknown` on any failure to ask.
+ * Walk the WinSW native-backend definition. SCM registration is queried via a
+ * trusted, bounded `sc.exe query`; the WinSW executable itself is never run by
+ * this read-only ownership probe.
  */
-function walkWinswChain(deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps, "configDir" | "winswStatus">): ServiceManagerInstallation {
+function walkWinswChain(
+  deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pick<ProbeDeps, "configDir" | "winswStatus">,
+): ServiceManagerInstallation {
   const configDir = windowsConfigDirPath(deps);
-  // WinSW assets live under the effective OPENCODEX_HOME (winswDir() resolves
-  // via getConfigDir()); honor the injected configDir for tests and custom homes.
   const exePath = join(configDir, "winsw", `${WINSW_SERVICE_ID}.exe`);
   const xmlPath = join(configDir, "winsw", `${WINSW_SERVICE_ID}.xml`);
   const xml = artifactPresence(xmlPath);
   const exe = artifactPresence(exePath);
-  const status = (deps.winswStatus ?? statusWinswRaw)();
+  const registration = probeWinswRegistration(deps);
 
-  if (xml === "absent" && exe === "absent" && status === "nonexistent") return { kind: "absent" };
-  if (xml === "absent" || exe === "absent" || status === "unknown") {
+  if (xml === "absent" && exe === "absent" && registration === "absent") return { kind: "absent" };
+  if (registration === "unknown") {
     return unknown("the native WinSW service registration could not be verified");
   }
+  if (xml === "absent" || exe === "absent") {
+    return unknown("the native WinSW service registration could not be verified");
+  }
+
   let body: string;
   try {
     body = decodeWindowsText(readFileSync(xmlPath));
   } catch (error) {
     return unknown(`the WinSW XML could not be read: ${String(error)}`);
   }
-  // The generated WinSW XML carries the expected launch structure; a malformed
-  // or unrelated XML must fail closed like the scheduler wrapper check.
   if (!winswXmlLooksGenerated(body)) {
     return unknown(`the WinSW XML does not look like a generated opencodex service definition: ${xmlPath}`);
   }
+
   const envValue = (name: string): string | null => {
-    // Match an <env> element carrying the target name in EITHER attribute
-    // order, single- or double-quoted, and pull its value attribute. No loose
-    // fallback: an unmatched name must stay null, never a wrong element's value.
     const tag = new RegExp(`<env\\b[^>]*\\bname=["']${name}["'][^>]*>`, "i").exec(body);
     if (!tag) return null;
     const value = /value=(["'])(.*?)\1/i.exec(tag[0]);
-    return value ? value[2] : null;
+    return value ? decodeXmlEntities(value[2]!) : null;
   };
+
   return {
     kind: "present",
     claims: [{
@@ -708,15 +769,12 @@ function walkWinswChain(deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps
         codexHome: envValue("CODEX_HOME"),
         opencodexHome: envValue("OPENCODEX_HOME"),
       },
-      registration: status === "started" || status === "stopped" ? "present" : "absent",
+      registration,
     }],
   };
 }
 
-/**
- * The generated WinSW XML embeds the SCM id and a `start --port` invocation in
- * `<arguments>`; anything else is malformed, not a deliberate omission.
- */
+/** The generated WinSW XML embeds the SCM id and a `start --port` invocation. */
 function winswXmlLooksGenerated(body: string): boolean {
   return /<id>\s*opencodex-proxy-native\s*<\/id>/i.test(body)
     && /<arguments>.*?start\s+--port\b/i.test(body);
@@ -729,6 +787,13 @@ export function inspectServiceManagerInstallation(deps: ProbeDeps = {}): Service
   const home = deps.home ?? homedir();
   if (platform === "darwin") return inspectLaunchd({ run, uid: deps.uid ?? process.getuid?.() ?? 0, home });
   if (platform === "linux") return inspectSystemd({ run, home });
-  if (platform === "win32") return inspectWindows({ runRaw, home, configDir: deps.configDir, winswStatus: deps.winswStatus });
+  if (platform === "win32") {
+    return inspectWindows({
+      runRaw,
+      home,
+      configDir: deps.configDir,
+      winswStatus: deps.winswStatus,
+    });
+  }
   return unknown(`no service manager probe for platform ${platform}`);
 }
