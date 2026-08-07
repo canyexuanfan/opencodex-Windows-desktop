@@ -522,15 +522,17 @@ function inspectWindows(deps: Required<Pick<ProbeDeps, "runRaw" | "home">> & Pic
 
   const schedulerPresent = task !== "absent" && registration.registered !== "absent";
   if (winswInstalled && schedulerPresent) {
-    // Walk the staged scheduler definition first so the conflict carries its
-    // real homes instead of null placeholders.
+    // Walk the staged scheduler definition so the conflict carries its real
+    // homes. A broken/malformed scheduler chain cannot be fabricated into a
+    // claim — return its non-present result (unknown) rather than inventing
+    // homes; a valid staged claim is a conflict with registration present.
     const staged = walkWindowsChain(deps, xml, taskXmlPath);
-    const stagedClaim = staged.kind === "present" ? staged.claims[0] : null;
+    if (staged.kind !== "present") return staged;
     return {
       kind: "conflict",
       claims: [
         winsw.claims[0],
-        stagedClaim ?? { backend: "scheduler", definitionPath: taskXmlPath, homes: { codexHome: null, opencodexHome: null }, registration: "present" },
+        { ...staged.claims[0], registration: "present" },
       ],
     };
   }
@@ -670,10 +672,11 @@ function walkWinswChain(deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps
   const exePath = join(configDir, "winsw", `${WINSW_SERVICE_ID}.exe`);
   const xmlPath = join(configDir, "winsw", `${WINSW_SERVICE_ID}.xml`);
   const xml = artifactPresence(xmlPath);
+  const exe = artifactPresence(exePath);
   const status = (deps.winswStatus ?? statusWinswRaw)();
 
-  if (xml === "absent" && status === "nonexistent") return { kind: "absent" };
-  if (xml === "absent" || status === "unknown") {
+  if (xml === "absent" && exe === "absent" && status === "nonexistent") return { kind: "absent" };
+  if (xml === "absent" || exe === "absent" || status === "unknown") {
     return unknown("the native WinSW service registration could not be verified");
   }
   let body: string;
@@ -688,10 +691,10 @@ function walkWinswChain(deps: Required<Pick<ProbeDeps, "home">> & Pick<ProbeDeps
     return unknown(`the WinSW XML does not look like a generated opencodex service definition: ${xmlPath}`);
   }
   const envValue = (name: string): string | null => {
-    // Match an <env> element with the target name in EITHER attribute order,
-    // single- or double-quoted, and pull its value attribute.
-    const tag = new RegExp(`<env\\b[^>]*\\bname=["']${name}["'][^>]*>`, "i").exec(body)
-      ?? new RegExp(`<env\\b[^>]*>[^<]*`, "i").exec(body);
+    // Match an <env> element carrying the target name in EITHER attribute
+    // order, single- or double-quoted, and pull its value attribute. No loose
+    // fallback: an unmatched name must stay null, never a wrong element's value.
+    const tag = new RegExp(`<env\\b[^>]*\\bname=["']${name}["'][^>]*>`, "i").exec(body);
     if (!tag) return null;
     const value = /value=(["'])(.*?)\1/i.exec(tag[0]);
     return value ? value[2] : null;

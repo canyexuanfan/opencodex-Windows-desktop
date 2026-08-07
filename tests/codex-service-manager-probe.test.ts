@@ -721,6 +721,26 @@ describe("the Windows chain walk", () => {
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "started" });
     expect(result.kind).toBe("conflict");
+    if (result.kind !== "conflict") return;
+    // The staged scheduler claim is real (not fabricated null homes) and
+    // registered.
+    expect(result.claims).toHaveLength(2);
+    expect(result.claims[0].backend).toBe("winsw");
+    expect(result.claims[1].backend).toBe("scheduler");
+    expect(result.claims[1].registration).toBe("present");
+    expect(result.claims[1].homes).toEqual({ codexHome: "C:\\a\\.codex", opencodexHome: "C:\\a\\.opencodex" });
+  });
+
+  test("a broken scheduler chain alongside WinSW is unknown, not a fabricated conflict", () => {
+    // WinSW is installed and a scheduler task is registered, but the staged
+    // scheduler chain is broken (launcher missing). The probe must not
+    // fabricate a null-homes scheduler claim — it fails closed.
+    writeWindowsTask(join(home, ".opencodex", "no-such.vbs"));
+    writeWinswXml(home, "C:\\winsw\\.codex", "C:\\winsw\\.opencodex");
+    const { runRaw } = recorder(() => ({ status: 0, stdout: windowsTaskXmlFor(join(home, ".opencodex", "no-such.vbs")) }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "started" });
+    expect(result.kind).toBe("unknown");
   });
 
   test("WinSW homes are parsed from the XML env entries", () => {
