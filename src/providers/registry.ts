@@ -196,6 +196,8 @@ export interface ProviderRegistryEntry {
   supportsServiceTier?: boolean;
   /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
   preserveResponsesReasoningContent?: boolean;
+  /** Registry defaults for per-model Codex reasoning propagation; explicit user keys win during enrichment. */
+  modelSupportsReasoningSummaries?: Record<string, boolean>;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -1104,6 +1106,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
       ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     },
+    modelSupportsReasoningSummaries: {
+      "glm-5.2": true,
+      "glm-5.1": true,
+      "glm-5": true,
+      ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, true])),
+    },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
@@ -1340,6 +1348,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     */
     modelReasoningEfforts: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
+    modelSupportsReasoningSummaries: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
     // Issue #88: every DeepSeek API model is text-only input (no image support upstream) — the
     // vision sidecar describes attached images for them, and the catalog advertises image input
@@ -1653,6 +1662,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelSuffixBracketStrip: true,
     noVisionModels: ZAI_GLM_52_MODELS,
     modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: ZAI_GLM_52_MODELS,
   },
   // Zhipu's domestic BigModel platform: OpenAI-compatible pay-as-you-go on open.bigmodel.cn — a
@@ -1688,6 +1698,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     ),
     modelReasoningEffortMap: Object.fromEntries(
       ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP]),
+    ),
+    modelSupportsReasoningSummaries: Object.fromEntries(
+      ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, true]),
     ),
     preserveReasoningContentModels: ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS,
     // No liveModels: GET /api/paas/v4/models has not been observed to answer on this host, and a

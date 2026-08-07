@@ -2387,6 +2387,107 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.supports_reasoning_summaries).toBe(true);
   });
 
+  test("built-in DeepSeek and GLM effort models opt into Codex reasoning propagation (#1100)", async () => {
+    const expected = [
+      { slug: "deepseek/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "deepseek/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2[1m]", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.6", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.7", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    ];
+    const models = await gatherRoutedModels({
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        },
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "glm-5.1", "glm-5"],
+        },
+        zai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-5.2", "glm-5.2[1m]"],
+        },
+        "zhipu-bigmodel": {
+          adapter: "openai-chat",
+          baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"],
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+
+    for (const item of expected) {
+      const routed = entries.find(entry => entry.slug === item.slug);
+      expect(
+        (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+      ).toEqual(item.efforts);
+      expect(routed?.supports_reasoning_summaries).toBe(true);
+    }
+  });
+
+  test("explicit per-model overrides survive registry backfill", () => {
+    const provider: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+
+    enrichProviderFromRegistry("deepseek", provider);
+
+    expect(provider.modelSupportsReasoningSummaries).toEqual({
+      "deepseek-v4-flash": false,
+      "deepseek-v4-pro": true,
+    });
+  });
+
+  test("routed effort ladders without an opt-in stay conservative about summaries (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        plain: {
+          adapter: "openai-chat",
+          baseUrl: "https://plain.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high"] },
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "plain/effort-model");
+
+    expect(
+      (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+    ).toEqual(["low", "high", "max", "ultra"]);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
+  });
+
   test("generated jawcode snapshot is restricted to mapped providers", () => {
     expect(resolveJawcodeProvider("kimi")).toBe("moonshot");
     expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();

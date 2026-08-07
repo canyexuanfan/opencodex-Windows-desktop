@@ -280,6 +280,12 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // the entry so an explicit user value stays distinguishable from the default.
   if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
+  if (entry.modelSupportsReasoningSummaries) {
+    prov.modelSupportsReasoningSummaries = {
+      ...entry.modelSupportsReasoningSummaries,
+      ...(prov.modelSupportsReasoningSummaries ?? {}),
+    };
+  }
   // Registry-only repair policy (#938): fill only when the runtime provider has
   // no explicit policy, and deep-clone so saved/user values never alias the
   // registry constant.
