@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleResponses, handleResponsesCompact } from "../src/server/responses";
+import * as adapterResolveModule from "../src/server/adapter-resolve";
 import { saveCodexAccountCredential } from "../src/codex/account-store";
 import {
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -959,6 +960,43 @@ describe("compact alternate-account attempt (#913)", () => {
       // Whichever account routing picked first carries the 429; the other carries B's 402.
       const statuses = ["pool-a", "pool-b"].map(id => health(id)?.lastFailureStatus).sort();
       expect(statuses).toEqual([402, 429]);
+    });
+  });
+
+  test("a pre-send build failure releases the Codex probe lease with host circuit disabled", async () => {
+    await withPoolEnv("ocx-regular-build-probe-release-", async config => {
+      config.upstreamHostCircuitThreshold = 0;
+      const probeAuth = {
+        kind: "pool" as const,
+        accountId: "pool-a",
+        writerGeneration: 1,
+        generation: 1,
+        accessToken: "probe-token",
+        chatgptAccountId: "pool_acc_a",
+        probeLeaseId: "probe-lease",
+        quotaScope: "shared" as const,
+      };
+      const authSpy = spyOn(authContextModule, "resolveCodexAuthContext").mockResolvedValue(probeAuth);
+      const releaseSpy = spyOn(authContextModule, "releaseCodexAuthContextProbeLease");
+      const adapterSpy = spyOn(adapterResolveModule, "resolveAdapter").mockReturnValue({
+        name: "openai-responses",
+        passthrough: true,
+        buildRequest: async () => { throw new Error("synthetic build failure"); },
+      } as ReturnType<typeof adapterResolveModule.resolveAdapter>);
+      try {
+        const request = new Request("http://localhost/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello", stream: false }),
+        });
+        await expect(handleResponses(request, config, { model: "", provider: "" }))
+          .rejects.toThrow("synthetic build failure");
+        expect(releaseSpy).toHaveBeenCalledWith(probeAuth);
+      } finally {
+        adapterSpy.mockRestore();
+        releaseSpy.mockRestore();
+        authSpy.mockRestore();
+      }
     });
   });
 

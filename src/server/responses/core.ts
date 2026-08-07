@@ -1860,7 +1860,13 @@ async function handleResponsesInner(
         + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
       );
     }
-    let request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
+    let request: Awaited<ReturnType<typeof adapter.buildRequest>>;
+    try {
+      request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
+    } catch (error) {
+      releaseCodexAuthContextProbeLease(authCtx);
+      throw error;
+    }
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
       route.providerName,

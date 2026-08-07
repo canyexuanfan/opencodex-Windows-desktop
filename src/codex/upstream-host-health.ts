@@ -37,6 +37,12 @@ type InternalUpstreamHostHealth = UpstreamHostHealthEntry & {
   generation: number;
   activeLeaseIds: Set<symbol>;
   halfOpenLeaseId?: symbol;
+  /**
+   * Leases admitted in the generation that immediately preceded the current
+   * cooldown. They are stale for failure settlement, but a real HTTP response
+   * from one still proves the origin is reachable and may close this cooldown.
+   */
+  cooldownSuccessLeaseIds?: Set<symbol>;
   /** True only when the entry is owned by opt-in circuit admissions. */
   circuitManaged: boolean;
 };
@@ -83,6 +89,7 @@ function advanceGeneration(entry: InternalUpstreamHostHealth): void {
   entry.generation = nextGeneration();
   entry.activeLeaseIds.clear();
   delete entry.halfOpenLeaseId;
+  delete entry.cooldownSuccessLeaseIds;
 }
 
 function removeExpiredUnleased(now: number): void {
@@ -301,7 +308,14 @@ export function recordUpstreamHostFailure(
 
   if (threshold > 0 && (reopens || entry.consecutiveFailures >= threshold)) {
     entry.cooldownUntil = now + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS;
+    // The failing lease was settled above. Preserve only its still-in-flight
+    // same-generation peers as one-shot reachability proofs. advanceGeneration
+    // invalidates them for every other mutation and for any later half-open generation.
+    const concurrentSuccessLeaseIds = new Set(entry.activeLeaseIds);
     advanceGeneration(entry);
+    if (concurrentSuccessLeaseIds.size > 0) {
+      entry.cooldownSuccessLeaseIds = concurrentSuccessLeaseIds;
+    }
   } else {
     delete entry.cooldownUntil;
   }
@@ -320,9 +334,18 @@ export function resetUpstreamHostHealth(
     if (entry?.circuitManaged) return false;
     return hostHealth.delete(key);
   }
-  const entry = matchingEntry(lease);
-  if (!entry || lease.key !== key) return false;
-  settleLease(entry, lease);
+  if (lease.key !== key) return false;
+  let entry = matchingEntry(lease);
+  if (!entry) {
+    const coolingEntry = hostHealth.get(key);
+    if (
+      coolingEntry?.cooldownUntil === undefined
+      || !coolingEntry.cooldownSuccessLeaseIds?.delete(lease.leaseId)
+    ) return false;
+    entry = coolingEntry;
+  } else {
+    settleLease(entry, lease);
+  }
   entry.consecutiveFailures = 0;
   entry.lastFailureAt = 0;
   entry.lastTouch = now;

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS,
   UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD,
+  UPSTREAM_HOST_FAILURE_WINDOW_MS,
+  UPSTREAM_HOST_HEALTH_MAX_ENTRIES,
   acquireUpstreamHostAdmission,
   clearUpstreamHostHealth,
   disableUpstreamHostCircuitForKey,
@@ -38,8 +40,13 @@ describe("opt-in upstream host circuit", () => {
   test("normalizes the opt-in threshold and leaves zero disabled", () => {
     expect(normalizeUpstreamHostCircuitThreshold(undefined)).toBe(0);
     expect(normalizeUpstreamHostCircuitThreshold(-1)).toBe(0);
+    expect(normalizeUpstreamHostCircuitThreshold(0)).toBe(0);
+    expect(normalizeUpstreamHostCircuitThreshold("3")).toBe(0);
     expect(normalizeUpstreamHostCircuitThreshold(1.5)).toBe(0);
     expect(normalizeUpstreamHostCircuitThreshold(3)).toBe(3);
+    expect(normalizeUpstreamHostCircuitThreshold(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)).toBe(
+      UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD,
+    );
     expect(normalizeUpstreamHostCircuitThreshold(999)).toBe(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD);
 
     const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
@@ -138,6 +145,59 @@ describe("opt-in upstream host circuit", () => {
       lease: concurrent,
     });
     expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
+  });
+
+  test("a concurrent HTTP response can close the cooldown opened by its peer", () => {
+    const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    const failing = admit(key, 1, 7_500);
+    const succeeding = admit(key, 1, 7_500);
+
+    recordUpstreamHostFailure(key, {
+      code: "ECONNREFUSED",
+      now: 7_501,
+      threshold: 1,
+      lease: failing,
+    });
+    expect(getUpstreamHostHealth(key)?.cooldownUntil).toBe(7_501 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS);
+
+    expect(resetUpstreamHostHealth(key, succeeding, 7_502)).toBe(true);
+    expect(getUpstreamHostHealth(key)).toBeNull();
+  });
+
+  test("a stale failure streak expires after the failure window", () => {
+    const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    fail(key, 3, 12_000);
+    expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
+
+    const afterWindow = 12_000 + UPSTREAM_HOST_FAILURE_WINDOW_MS + 1;
+    const lease = admit(key, 3, afterWindow);
+    expect(lease.halfOpen).toBe(false);
+    recordUpstreamHostFailure(key, {
+      code: "ECONNREFUSED",
+      now: afterWindow,
+      threshold: 3,
+      lease,
+    });
+    expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
+  });
+
+  test("the retention cap evicts the stalest unleased origin", () => {
+    for (let i = 0; i < UPSTREAM_HOST_HEALTH_MAX_ENTRIES + 8; i += 1) {
+      fail(upstreamHostHealthKey("openai", `https://h${i}.example`), 1, 13_000 + i);
+    }
+    expect(getUpstreamHostHealth(upstreamHostHealthKey("openai", "https://h0.example"))).toBeNull();
+    expect(getUpstreamHostHealth(
+      upstreamHostHealthKey("openai", `https://h${UPSTREAM_HOST_HEALTH_MAX_ENTRIES + 7}.example`),
+    )).not.toBeNull();
+  });
+
+  test("retention pressure never evicts an active admission lease", () => {
+    const leases: UpstreamHostAdmissionLease[] = [];
+    for (let i = 0; i < UPSTREAM_HOST_HEALTH_MAX_ENTRIES + 1; i += 1) {
+      leases.push(admit(upstreamHostHealthKey("openai", `https://active-${i}.example`), 1, 14_000 + i));
+    }
+    expect(releaseUpstreamHostAdmission(leases[0], 15_000)).toBe(true);
+    for (const lease of leases.slice(1)) releaseUpstreamHostAdmission(lease, 15_001);
   });
 
   test("a stale completion cannot mutate the generation that opened the circuit", () => {
