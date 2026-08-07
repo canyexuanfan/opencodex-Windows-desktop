@@ -159,14 +159,6 @@ function stripMarkdownImages(text) {
   const out = [];
   let i = 0;
   while (i < text.length) {
-    // Inside an indented code block (4+ leading spaces or a tab), image
-    // syntax is literal code, not a rendered image. Leave it untouched so a
-    // section that documents example syntax is not emptied.
-    if (isInsideIndentedCode(text, i)) {
-      out.push(text[i]);
-      i += 1;
-      continue;
-    }
     // A backslash-escaped or code-fenced `![` is not an image token. We only
     // guard the common `\!` escape here; fenced blocks are handled by the
     // section extractor upstream, which does not include them in sections.
@@ -182,17 +174,6 @@ function stripMarkdownImages(text) {
     i += 1;
   }
   return out.join("");
-}
-
-/**
- * True when `index` sits inside an indented code block, i.e. on a line that
- * starts with four or more spaces or a tab. Such lines render as literal
- * code in GitHub Markdown.
- */
-function isInsideIndentedCode(text, index) {
-  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
-  const prefix = text.slice(lineStart, index);
-  return /^(?: {4,}|\t)/.test(prefix);
 }
 
 /**
@@ -1166,7 +1147,6 @@ function isRawPlaceholder(raw) {
 const FREEFORM_BUG_NEAR_MISS_HEADINGS = [
   "Description",
   "Steps to reproduce",
-  "Steps to Reproduce",
   "How to reproduce",
   "Log",
   "Logs",
@@ -1191,7 +1171,6 @@ function looksLikeUntemplatedBugReport(issue) {
   const hasReproduction =
     extractSection(body, "Reproduction") !== null ||
     extractSection(body, "Steps to reproduce") !== null ||
-    extractSection(body, "Steps to Reproduce") !== null ||
     extractSection(body, "How to reproduce") !== null;
   const hasDescription = extractSection(body, "Description") !== null;
   const hasLogOrError =
@@ -1539,10 +1518,11 @@ function validateIssue(issue) {
 /**
  * Decide whether the bot may auto-close an invalid issue.
  *
- * After a maintainer reopens and deactivates enforcement, later `edited`
- * events must not close the issue again.
+ * Only an explicit maintainer override disables future closure enforcement.
+ * A normal `active: false` state is intentionally re-armable if a later edit
+ * makes the issue invalid again.
  *
- * @param {{ active?: boolean, maintainerOverride?: boolean }|null|undefined} botState
+ * @param {{ maintainerOverride?: boolean }|null|undefined} botState
  * @returns {boolean}
  */
 function shouldEnforceClosure(botState) {
