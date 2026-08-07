@@ -254,7 +254,7 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     usageStatus: entry.usageStatus,
     ...(entry.usage ? { usage: entry.usage } : {}),
     ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
-    ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
+    ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
     ...(routeDecision ? { routeDecision } : {}),
   };
 }
@@ -348,7 +348,7 @@ export function addRequestLog(entry: RequestLogEntry) {
       usageStatus: entry.usageStatus,
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
-      ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
+      ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
       ...failureDiagnostics,
       ...(entry.routeDecision ? { routeDecision: entry.routeDecision } : {}),
     });
@@ -838,7 +838,7 @@ export function addFinalRequestLog(
     usageStatus,
     ...(loggedUsage ? { usage: loggedUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
-    ...(attempts?.length ? { attempts } : {}),
+    ...(attempts !== undefined ? { attempts } : {}),
     ...(logCtx.affinity ? { affinity: logCtx.affinity } : {}),
     ...(logCtx.transportPhase ? { transportPhase: logCtx.transportPhase } : {}),
     ...(logCtx.terminalSource ? { terminalSource: logCtx.terminalSource } : {}),
