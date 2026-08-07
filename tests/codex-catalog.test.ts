@@ -24,6 +24,7 @@ import {
 import type { OcxConfig } from "../src/types";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { enrichProviderFromCatalog } from "../src/oauth/key-providers";
 import { handleManagementAPI } from "../src/server/management-api";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 
@@ -2385,6 +2386,199 @@ describe("Codex catalog routed normalization", () => {
 
     expect(models.find(model => model.id === "summary-model")?.supportsReasoningSummaries).toBe(true);
     expect(routed?.supports_reasoning_summaries).toBe(true);
+  });
+
+  test("built-in DeepSeek and GLM effort models opt into Codex reasoning propagation (#1100)", async () => {
+    const expected = [
+      { slug: "deepseek/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "deepseek/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2[1m]", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.6", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.7", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    ];
+    const models = await gatherRoutedModels({
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        },
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "glm-5.1", "glm-5"],
+        },
+        zai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-5.2", "glm-5.2[1m]"],
+        },
+        "zhipu-bigmodel": {
+          adapter: "openai-chat",
+          baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"],
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+
+    for (const item of expected) {
+      const routed = entries.find(entry => entry.slug === item.slug);
+      expect(
+        (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+      ).toEqual(item.efforts);
+      expect(routed?.supports_reasoning_summaries).toBe(true);
+    }
+  });
+
+  test("a custom-named provider on a known vendor endpoint still gets the opt-in (#1100)", () => {
+    // The reporter's ACTUAL configuration, verbatim from #1100: a hand-added provider literally
+    // named "GLM", model glm-5.2, on BigModel's Coding Plan endpoint. Routing worked, so the row
+    // looked healthy, but no registry id is called "GLM" and every piece of registry metadata was
+    // skipped — the ladder was advertised with summaries left false, which is the exact
+    // inconsistency that makes Codex drop the inbound reasoning object.
+    //
+    // This case used to substitute Z.AI's coding endpoint while claiming to be the reporter's
+    // shape. That passed while the reported configuration stayed broken: `/api/coding/paas/v4`
+    // on open.bigmodel.cn had no registry row at all, so the destination lookup found nothing.
+    const reported: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", reported);
+    expect(reported.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Z.AI's own Coding Plan endpoint is a different vendor route and keeps working.
+    const custom: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", custom);
+    expect(custom.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Same for a renamed row pointing at the BigModel pay-as-you-go endpoint.
+    const renamed: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("my-glm", renamed);
+    expect(renamed.modelSupportsReasoningSummaries?.["glm-4.6"]).toBe(true);
+  });
+
+  test("the destination fallback never claims an unrelated custom endpoint (#1100)", () => {
+    // The fallback matches by vendor endpoint. A provider pointing somewhere we do not
+    // recognize must stay untouched — silently opting a random backend into summary delivery
+    // would produce upstream 400s the user never asked for.
+    const unknown: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.invalid/v1",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", unknown);
+    expect(unknown.modelSupportsReasoningSummaries).toBeUndefined();
+
+    // An explicit user value wins PER KEY — it does not suppress the other registry defaults.
+    // An earlier revision of this fallback bailed whenever any user map existed, which
+    // recreated the whole-record bug the per-key merge was written to avoid: setting one
+    // model's flag would silently disable the opt-in for every sibling model.
+    const opinionated: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "glm-5.2": false },
+    };
+    enrichProviderFromRegistry("GLM", opinionated);
+    expect(opinionated.modelSupportsReasoningSummaries).toEqual({
+      "glm-5.2": false,
+      "glm-5.2[1m]": true,
+    });
+  });
+
+  test("registry summary defaults are never persisted into saved config (#1100)", () => {
+    // enrichProviderFromCatalog feeds a config that is about to be written to disk. Persisting
+    // today's registry defaults would freeze them as the user's own overrides, so a later
+    // registry correction — e.g. learning a model's backend rejects summary delivery — would
+    // never reach anyone who created their provider first.
+    const created: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+    };
+    enrichProviderFromCatalog("deepseek", created);
+    expect(created.modelSupportsReasoningSummaries).toBeUndefined();
+    // Other registry seeding still reaches the saved config.
+    expect(created.models?.length).toBeGreaterThan(0);
+
+    // A value the user actually submitted is preserved verbatim.
+    const submitted: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+    enrichProviderFromCatalog("deepseek", submitted);
+    expect(submitted.modelSupportsReasoningSummaries).toEqual({ "deepseek-v4-flash": false });
+  });
+
+  test("explicit per-model overrides survive registry backfill", () => {
+    const provider: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+
+    enrichProviderFromRegistry("deepseek", provider);
+
+    expect(provider.modelSupportsReasoningSummaries).toEqual({
+      "deepseek-v4-flash": false,
+      "deepseek-v4-pro": true,
+    });
+  });
+
+  test("routed effort ladders without an opt-in stay conservative about summaries (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        plain: {
+          adapter: "openai-chat",
+          baseUrl: "https://plain.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high"] },
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "plain/effort-model");
+
+    expect(
+      (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+    ).toEqual(["low", "high", "max", "ultra"]);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
   });
 
   test("generated jawcode snapshot is restricted to mapped providers", () => {

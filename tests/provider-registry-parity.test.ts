@@ -32,7 +32,7 @@ function nativeTemplate(): Record<string, unknown> {
 const EXPECTED_KEY_PROVIDER_IDS = [
   "anthropic-apikey", "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "cline-pass", "cline", "orcarouter", "bizrouter", "groq", "google", "google-vertex", "azure-openai",
   "deepseek", "cerebras", "deepinfra", "hyperbolic", "nscale", "vultr", "baseten", "commandcode", "sambanova", "nebius", "digitalocean", "scaleway", "together", "fireworks", "firepass", "moonshot",
-  "huggingface", "nvidia", "venice", "zai", "zhipu-bigmodel", "nanogpt", "synthetic", "siliconflow", "qwen-cloud", "tencent-coding-plan",
+  "huggingface", "nvidia", "venice", "zai", "zhipu-bigmodel", "zhipu-bigmodel-coding", "nanogpt", "synthetic", "siliconflow", "qwen-cloud", "tencent-coding-plan",
   "volcengine", "volcengine-coding-plan", "volcengine-agent-plan", "qianfan", "alibaba", "alibaba-token-plan", "alibaba-token-plan-intl", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway",
   "opencode-free", "xiaomi", "kilo", "mimo-free", "cloudflare-ai-gateway", "cloudflare-workers-ai", "gitlab-duo",
@@ -338,7 +338,9 @@ describe("provider registry parity", () => {
       .map(entry => entry.id);
     expect(zai?.modelContextWindows).toEqual({ "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
     expect(providerConfigSeed(zai!).modelSuffixBracketStrip).toBe(true);
-    expect(optedInProviders).toEqual(["kimi", "zai", "kimi-code"]);
+    // `zhipu-bigmodel-coding` opts in for the same reason `zai` does: it serves the same
+    // bracketed GLM ids, and that vendor's OpenAI path returns 400 code 1211 for them.
+    expect(optedInProviders).toEqual(["kimi", "zai", "zhipu-bigmodel-coding", "kimi-code"]);
 
     const config: OcxConfig = {
       port: 10100,
@@ -763,6 +765,7 @@ describe("provider registry parity", () => {
       minimax: "minimax",
       "minimax-cn": "minimax",
       "zhipu-bigmodel": "zai",
+      "zhipu-bigmodel-coding": "zai",
     });
     expect(resolveJawcodeProvider("gemini")).toBe("google");
     expect(resolveJawcodeProvider("minimax-cn")).toBe("minimax");

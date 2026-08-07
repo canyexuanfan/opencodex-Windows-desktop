@@ -2,6 +2,7 @@ import type { CodexAccountMode, OcxProviderConfig } from "../types";
 import {
   PROVIDER_REGISTRY,
   providerMatchesRegistryTransport,
+  registryEntryForProviderDestination,
   type ProviderRegistryEntry,
 } from "./registry";
 
@@ -243,9 +244,55 @@ export function deriveProviderPresets(): DerivedProviderPreset[] {
   return [...dedupePresets(presets), customPreset()];
 }
 
+/**
+ * Merge registry reasoning-summary defaults PER KEY, letting explicit user values win.
+ *
+ * Not a whole-Record `=== undefined` fill like the scalars around it: a user who sets one
+ * model's flag creates a defined Record, and a whole-object check would then suppress every
+ * registry default for that provider. Spreading registry-first also preserves an explicit
+ * `false` — someone who disabled summaries for a model because their backend 400s on it keeps
+ * that. The result is a fresh object, so saved config never aliases the registry constant.
+ */
+function applyReasoningSummaryDefaults(
+  prov: OcxProviderConfig,
+  defaults: Readonly<Record<string, boolean>> | undefined,
+): void {
+  if (!defaults) return;
+  prov.modelSupportsReasoningSummaries = {
+    ...defaults,
+    ...(prov.modelSupportsReasoningSummaries ?? {}),
+  };
+}
+
+/**
+ * Last-resort enrichment for a provider whose NAME matches no registry id.
+ *
+ * #1100 was reported against a hand-added provider called "GLM" pointing at a vendor endpoint
+ * we recognize. Routing worked, so the row looked healthy, but every piece of registry metadata
+ * was skipped and the reasoning ladder was advertised without summary support — exactly the
+ * inconsistency that makes Codex drop the inbound reasoning object.
+ *
+ * Deliberately narrow: only the reasoning-summary map, and only via
+ * `registryEntryForProviderDestination`, which matches fixed key destinations and refuses
+ * templated or overridable base URLs. A custom row keeps its own identity for everything else.
+ */
+function enrichReasoningSummariesByDestination(prov: OcxProviderConfig): void {
+  const destination = registryEntryForProviderDestination(prov);
+  applyReasoningSummaryDefaults(prov, destination?.modelSupportsReasoningSummaries);
+}
+
 export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig): void {
   const entry = PROVIDER_REGISTRY.find(row => row.id === name);
-  if (!entry || !providerMatchesRegistryTransport(name, prov)) return;
+  if (!entry || !providerMatchesRegistryTransport(name, prov)) {
+    // Name lookup failed, but the row may still point at a vendor route we know. #1100 was
+    // reported against a hand-added provider literally named "GLM": routing worked, yet every
+    // piece of registry metadata was skipped because no registry id is called "GLM".
+    // `registryEntryForProviderDestination` answers the question that actually matters here —
+    // which vendor endpoint is this row talking to — and is already restricted to fixed key
+    // destinations, so a templated or overridable base URL cannot be claimed by it.
+    enrichReasoningSummariesByDestination(prov);
+    return;
+  }
   const seed = providerConfigSeed(entry);
   if (prov.apiKeyTransport === undefined && seed.apiKeyTransport !== undefined) prov.apiKeyTransport = seed.apiKeyTransport;
   if (!prov.defaultModel && seed.defaultModel) prov.defaultModel = seed.defaultModel;
@@ -280,6 +327,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // the entry so an explicit user value stays distinguishable from the default.
   if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
+  applyReasoningSummaryDefaults(prov, entry.modelSupportsReasoningSummaries);
   // Registry-only repair policy (#938): fill only when the runtime provider has
   // no explicit policy, and deep-clone so saved/user values never alias the
   // registry constant.

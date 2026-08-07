@@ -495,13 +495,23 @@ test("two processes at the post-approval management seam serialize instead of in
 
   for (const result of results) {
     // A process can lose a race BEFORE approval and never reach the seam at all.
-    // Both known cases come from `saveConfigPreservingClaudeCode`: the config
-    // mutation lock is already held, or two cold processes create the ownership
-    // file at once. Neither says anything about catalog convergence, so they are
-    // excluded here — but only these two, so a genuine seam failure still fails.
+    // The known cases come from `saveConfigPreservingClaudeCode`: the config mutation
+    // lock is already held, two cold processes create the ownership file at once, or
+    // SQLite refuses the transaction outright while another process holds it. None of
+    // them say anything about catalog convergence, so they are excluded here — but only
+    // these, so a genuine seam failure still fails.
+    //
+    // The third case was found by a CI failure on macOS, not by this suite. The lock
+    // helper normally wraps busy errors in `ConfigMutationLockError`, but the raw
+    // `SQLiteError: database is locked` can still reach stderr from a path that has not
+    // wrapped it yet. `configGenerationFailureReason` already classifies that exact
+    // message as "busy" rather than a database fault, so treating it as a seam failure
+    // here contradicted the product code and turned ordinary contention into a red build.
     if (result.exitCode !== 0) {
       const preApproval = result.stderr.includes("CONFIG_MUTATION_LOCK_UNAVAILABLE")
-        || (result.stderr.includes("EEXIST") && result.stderr.includes("createOwnership"));
+        || (result.stderr.includes("EEXIST") && result.stderr.includes("createOwnership"))
+        || /database (?:is|table is) locked/i.test(result.stderr)
+        || result.stderr.includes("SQLITE_BUSY");
       expect({ preApproval, stderr: result.stderr }).toMatchObject({ preApproval: true });
       continue;
     }

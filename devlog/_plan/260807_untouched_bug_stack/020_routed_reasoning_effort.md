@@ -109,3 +109,45 @@ provider-scoped or ladder-inferred.
 
 `tests/codex-catalog.test.ts` is also touched by PR #1119. If that PR lands
 first, rebase onto it rather than duplicating its cases.
+
+## What audit changed after implementation
+
+The first implementation fixed the canonical provider ids and passed its tests,
+and was still wrong about the reported case. Recording why, because the failure
+mode generalizes.
+
+`enrichProviderFromRegistry` matches on the provider NAME. The reporter's row is
+a hand-added provider literally called `GLM`. Routing worked, so nothing looked
+broken — but no registry id is called `GLM`, so the metadata never arrived. The
+tests substituted canonical ids (`zai`, `zhipu-bigmodel`) and were green against
+a configuration no user had.
+
+Fix: on the name-lookup miss, fall back to
+`registryEntryForProviderDestination`, which matches by vendor endpoint and is
+already restricted to fixed key destinations.
+
+Two further corrections from the same audit:
+
+- The fallback originally bailed whenever the user had any map, recreating the
+  whole-record bug the per-key merge was written to prevent.
+- `enrichProviderFromCatalog` persists what it enriches, so registry defaults
+  were being frozen into saved config as user overrides.
+
+## Deferred: the reporter's exact endpoint
+
+`https://open.bigmodel.cn/api/coding/paas/v4` appears in no registry entry —
+only `/api/paas/v4` does, as `zhipu-bigmodel`. The coding path exists solely in
+`FREE_PROVIDER_DIRECTORY` as `glm-cn`.
+
+Closing that route needs a new registry entry, and the audit confirmed it would
+be safe with a distinct id (`glm` and `glm-cn` are both already bound, and
+reusing either would retarget an existing config's endpoint — the warning at
+`registry.ts:1668-1676`). It also needs `preserveCustomDestination: true`, its
+own evidence-backed model set rather than the pay-as-you-go GLM 4.6–5.1
+metadata, and updates to `EXPECTED_KEY_PROVIDER_IDS` in
+`tests/provider-registry-parity.test.ts`.
+
+That is a provider addition, not a bug fix. It stays out of this stack
+deliberately: the destination fallback already fixes every custom-named row on
+an endpoint we know, and mixing a new vendor entry into a bug-fix chain would
+expand the review surface past what a reviewer can check in one pass.
