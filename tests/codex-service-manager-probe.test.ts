@@ -699,6 +699,8 @@ describe("the Windows chain walk", () => {
     // (default <home>/.opencodex/winsw), matching winswDir() in src/lib/winsw.ts.
     const winswDir = join(dir, ".opencodex", "winsw");
     mkdirSync(winswDir, { recursive: true });
+    // The exe must be present for the SCM claim to be verifiable (fail-closed).
+    writeFileSync(join(winswDir, "opencodex-proxy-native.exe"), "placeholder");
     writeFileSync(join(winswDir, "opencodex-proxy-native.xml"), [
       '<?xml version="1.0" encoding="UTF-8"?>',
       "<service>",
@@ -737,6 +739,25 @@ describe("the Windows chain walk", () => {
     const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
     const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "unknown" });
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("WinSW XML present but exe missing is unknown (fail closed)", () => {
+    // Only the XML exists (no exe): the SCM claim cannot be verified, so the
+    // probe must refuse rather than report an owned WinSW backend.
+    const winswDir = join(home, ".opencodex", "winsw");
+    mkdirSync(winswDir, { recursive: true });
+    writeFileSync(join(winswDir, "opencodex-proxy-native.xml"), [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<service>",
+      "  <id>opencodex-proxy-native</id>",
+      '  <env name="CODEX_HOME" value="C:\\winsw\\.codex"/>',
+      '  <arguments>"C:\\cli\\index.ts" start --port 10100</arguments>',
+      "</service>",
+    ].join("\n"));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "stopped" });
     expect(result.kind).toBe("unknown");
   });
 });
