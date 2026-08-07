@@ -180,7 +180,7 @@ describe("client-facing SSE frame bounds", () => {
       },
     });
 
-    await expect(pumpResponsesSseToWebSocket(ws, source)).resolves.toBeUndefined();
+    await expect(pumpResponsesSseToWebSocket(ws, source)).rejects.toThrow("websocket send dropped");
 
     expect(sendCalls).toBe(1);
     expect(sourceCancelled).toBe(true);
