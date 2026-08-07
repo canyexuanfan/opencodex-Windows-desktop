@@ -278,8 +278,8 @@ function Update-TrayState {
         $commandFailed = $true
       }
     }
-    if ($reached) { Complete-PendingAction $true }
-    elseif ($commandFailed) { Complete-PendingAction $false }
+    if ($commandFailed) { Complete-PendingAction $false }
+    elseif ($reached) { Complete-PendingAction $true }
     elseif ($now -gt $script:pendingDeadline) { Complete-PendingAction $false }
   }
 }
