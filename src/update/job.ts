@@ -1432,18 +1432,22 @@ export function npmSelfUpdateRestartEvidence(
     }
     if (livePid !== null) {
       if (expected !== null && identity.version && identity.version !== expected) {
-        return { ok: false, reason: `new pid but version ${identity.version} !== expected ${expected}` };
+        // Never echo the REPORTED version: `/healthz` is answered by whatever holds the port,
+        // and `2.7.41-JaneDoe` is valid semver. Say that it mismatched, and name only the
+        // version we expected — which is ours.
+        return { ok: false, reason: `new pid but reported version did not match expected ${expected}` };
       }
       return { ok: true, detail: `pid changed ${oldPid}→${livePid}` };
     }
     // Pre-update PID known but healthz omitted pid — only accept matching target version.
-    if (versionMatches) return { ok: true, detail: `version ${identity.version}` };
+    // On a match the reported value equals `expected`, so render the trusted one.
+    if (versionMatches) return { ok: true, detail: `version ${expected}` };
     return { ok: false, reason: "no PID in healthz and version did not match the update target" };
   }
 
-  if (versionMatches) return { ok: true, detail: `version ${identity.version}` };
+  if (versionMatches) return { ok: true, detail: `version ${expected}` };
   if (expected !== null && identity.version && identity.version !== expected) {
-    return { ok: false, reason: `version ${identity.version} !== expected ${expected}` };
+    return { ok: false, reason: `reported version did not match expected ${expected}` };
   }
   return { ok: false, reason: "no pre-update PID capture and no expected-version match" };
 }

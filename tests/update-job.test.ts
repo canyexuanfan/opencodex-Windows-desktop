@@ -1224,6 +1224,28 @@ describe("GUI update execution decisions", () => {
     expect(readUpdateJob(job.id)?.log.some(line => line.includes("skipping redundant restart"))).toBe(false);
   });
 
+  test("a hostile /healthz version never reaches a persisted reason", () => {
+    // `2.7.41-JaneDoe` is valid semver, so shape validation alone let it through — and the
+    // mismatch reason echoed it. /healthz is answered by whatever holds the port, so its
+    // version is external input: we report THAT it mismatched and name only our own expectation.
+    const hostile = npmSelfUpdateRestartEvidence(
+      { latestVersion: "2.7.41" },
+      { oldPid: 111 },
+      { pid: 222, version: "2.7.41-JaneDoe" },
+    );
+    expect(hostile.ok).toBe(false);
+    expect(JSON.stringify(hostile)).not.toContain("JaneDoe");
+    expect(JSON.stringify(hostile)).toContain("2.7.41");
+
+    // A genuine match still reports the version, rendered from the trusted expectation.
+    const matched = npmSelfUpdateRestartEvidence(
+      { latestVersion: "2.7.41" },
+      {},
+      { pid: 222, version: "2.7.41" },
+    );
+    expect(matched.ok).toBe(true);
+  });
+
   test("npmSelfUpdateRestartEvidence requires a PID change or target version", () => {
     expect(npmSelfUpdateRestartEvidence(
       { latestVersion: "2.7.41" },
