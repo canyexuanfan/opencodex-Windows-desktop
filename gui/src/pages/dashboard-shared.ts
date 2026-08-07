@@ -163,8 +163,10 @@ export function visionReasoningLadder(models: ModelInfo[], modelId: string): Vis
   return supported.length > 0 ? supported : [...VISION_REASONING_LEVELS];
 }
 
+/** Do not keep an unsupported persisted rung in the picker; runtime will not honor it. */
 export function visionReasoningOptionsFor(ladder: VisionReasoning[], persisted: VisionReasoning): VisionReasoning[] {
-  return ladder.includes(persisted) ? ladder : [persisted, ...ladder];
+  const effective = clampVisionReasoningToLadder(ladder, persisted);
+  return ladder.includes(effective) ? ladder : [effective, ...ladder];
 }
 
 /** Match server normalization: never escalate when a lower/equal supported rung exists. */
