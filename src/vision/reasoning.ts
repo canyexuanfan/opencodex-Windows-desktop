@@ -1,4 +1,4 @@
-import { NATIVE_OPENAI_MODELS, nativeReasoningEfforts } from "../codex/catalog";
+import { NATIVE_OPENAI_MODELS, nativeReasoningEfforts } from "../codex/catalog/metadata";
 import {
   VISION_REASONING_EFFORTS,
   sanitizeVisionReasoning,
