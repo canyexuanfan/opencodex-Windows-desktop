@@ -135,6 +135,60 @@ export function deriveCodexHistoryOperation(intent: {
   return intent.legacyMode ? "apply-opencodex" : "migrate-openai";
 }
 
+/**
+ * The honest failure clause for one history job outcome.
+ *
+ * The caller adds its own framing ("sync SKIPPED", "could NOT be restored").
+ * The point of the surface argument is that a genuine lock keeps today's
+ * actionable wording, while every other reason stops blaming the Codex app:
+ * an unsafe-path refusal, an unavailable coordinator database, a permission
+ * denial, or a dead worker is a different problem with a different remedy.
+ */
+export function describeHistoryJobFailure(
+  outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
+  surface: "apply" | "restore" | "recover-legacy",
+  legacyMode = false,
+): string {
+  if (outcome.kind === "blocked") {
+    switch (outcome.reason) {
+      case "busy":
+        if (surface === "apply") {
+          return legacyMode
+            ? "the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'."
+            : "the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'.";
+        }
+        if (surface === "recover-legacy") {
+          return "the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command.";
+        }
+        return "the Codex app appears to be holding the history database. Close Codex and run `ocx restore` again.";
+      case "unsafe-path":
+        return "opencodex refused its history lock path (unsafe coordinator namespace); this is not a Codex app lock. Run 'ocx doctor' and check the opencodex runtime directory.";
+      case "database":
+        return "the history coordinator database is unavailable; this is not a Codex app lock. Run 'ocx doctor'.";
+      case "desired_disabled":
+        return "Codex integration is disabled, so the history operation was skipped.";
+      case "desired_enabled":
+        return "Codex integration is enabled, so the history operation was skipped.";
+    }
+  }
+  if (outcome.historyFailureReason === "busy") {
+    return surface === "restore"
+      ? "the Codex app appears to be holding the history database. Close Codex and run `ocx restore` again."
+      : "the history DB is locked (Codex app/IDE open?).";
+  }
+  if (outcome.historyFailureReason === "permission") {
+    return "permission was denied while writing Codex history; this is not a Codex app lock. Run 'ocx doctor'.";
+  }
+  switch (outcome.reason) {
+    case "worker-error":
+      return `the history worker failed (${outcome.message}). Run 'ocx doctor'.`;
+    case "worker-died":
+      return "the history worker exited unexpectedly; this is not a Codex app lock. Run 'ocx doctor'.";
+    case "timeout":
+      return "the history worker timed out; this is not a Codex app lock. Run 'ocx doctor'.";
+  }
+}
+
 function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutcome {
   if (result.type === "blocked") return { kind: "blocked", reason: result.reason };
   if (result.type === "error") {

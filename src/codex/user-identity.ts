@@ -160,7 +160,35 @@ function resolveWindowsRuntimeRoot(identity: Extract<UserIdentity, { platform: "
   } catch (cause) {
     refuse("The Windows coordinator namespace cannot be created.", cause);
   }
-  return root;
+  // Canonicalize before anything is keyed on the path: a junctioned or
+  // differently-cased LocalAppData must land on ONE namespace, or two processes
+  // that share the real directory would build different lock paths and never
+  // contend. The lock modules also compare this path against realpath, so a
+  // non-canonical spelling here would read as "unsafe" on every acquisition.
+  try {
+    return realpathSync.native(root);
+  } catch (cause) {
+    refuse("The Windows coordinator namespace cannot be resolved.", cause);
+  }
+}
+
+/**
+ * Windows path identity is case-insensitive; everywhere else it is exact.
+ *
+ * The lock modules compare a requested lock path against its own realpath, and
+ * byte equality refuses legitimate Windows spellings (drive-letter case, mixed
+ * component casing) as "unsafe". This is the same semantics
+ * `history-provider.ts` already applies to manifest paths; the platform
+ * argument exists so both branches are testable on any host.
+ */
+export function samePathIdentity(
+  a: string,
+  b: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 export const resolveCodexCoordinatorDatabasePath: ResolveCodexCoordinatorDatabasePath = (

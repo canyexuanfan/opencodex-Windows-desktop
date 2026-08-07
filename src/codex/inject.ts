@@ -38,9 +38,11 @@ import { withCatalogWriteSerialization } from "./catalog-write-serialization";
 import { restoreCodexCatalogWithPermit } from "./catalog/sync";
 import { syncCodexHistoryProvider, type CodexHistoryFailureReason } from "./history-provider";
 import {
+  describeHistoryJobFailure,
   deriveCodexHistoryOperation,
   resolveCodexHistoryJobTarget,
   runCodexHistoryJob,
+  type CodexHistoryJobOutcome,
 } from "./history-job";
 import {
   OCX_SECTION_MARKER,
@@ -1034,11 +1036,7 @@ export async function injectCodexConfig(
     config?.syncResumeHistory === false
       ? `  Codex resume history: left unchanged (syncResumeHistory=false).\n`
       : history.failed
-        ? legacyMode
-          ? `  ⚠️ Codex resume history sync SKIPPED: the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'.\n`
-          : // Honest in every caller context: the daemon retries in the background while it runs,
-            // and this inject path re-runs the migration on every future start/sync anyway.
-            `  ⚠️ Codex resume history migration deferred: the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'.\n`
+        ? formatApplyHistoryFailure(historyOutcome, legacyMode)
         : legacyMode
           ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
           : migratedRows > 0
@@ -1250,7 +1248,7 @@ export interface CodexNativeRestoreResult {
   };
 }
 
-function failedHistoryRestore(reason?: CodexHistoryFailureReason): CodexRestoreHistoryResult {
+function failedHistoryRestore(reason?: CodexHistoryFailureReason, detail?: string): CodexRestoreHistoryResult {
   return {
     state: "failed",
     changed: false,
@@ -1260,8 +1258,60 @@ function failedHistoryRestore(reason?: CodexHistoryFailureReason): CodexRestoreH
     ejectedRows: 0,
     message: reason === "permission"
       ? "Codex resume history could NOT be restored because permission was denied."
-      : "Codex resume history could NOT be restored — the Codex app appears to be holding the history database.",
+      : reason === "busy"
+        ? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
+        : detail
+          ? `Codex resume history could NOT be restored: ${detail}`
+          : "Codex resume history could NOT be restored — the Codex app appears to be holding the history database.",
   };
+}
+
+/**
+ * Restore failure wording for a Worker outcome.
+ *
+ * Only a genuine busy result blames the Codex app. An unsafe-path refusal, an
+ * unavailable coordinator database, a permission denial, or a dead/timed-out
+ * worker is a different problem; the old collapse made every one of those read
+ * as "the Codex app is holding the database" (issue #1191).
+ */
+function failedHistoryRestoreFromOutcome(
+  outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
+): CodexRestoreHistoryResult {
+  if (outcome.kind === "blocked") {
+    switch (outcome.reason) {
+      case "busy":
+        return failedHistoryRestore("busy");
+      case "unsafe-path":
+        return failedHistoryRestore(
+          undefined,
+          "opencodex refused its history lock path (unsafe coordinator namespace); this is not a Codex app lock. Run 'ocx doctor' and check the opencodex runtime directory.",
+        );
+      case "database":
+        return failedHistoryRestore(
+          undefined,
+          "the history coordinator database is unavailable; this is not a Codex app lock. Run 'ocx doctor'.",
+        );
+      case "desired_disabled":
+      case "desired_enabled":
+        return failedHistoryRestore();
+    }
+  }
+  if (outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
+  if (outcome.historyFailureReason === "permission") return failedHistoryRestore("permission");
+  switch (outcome.reason) {
+    case "worker-error":
+      return failedHistoryRestore(undefined, `the history worker failed (${outcome.message}). Run 'ocx doctor'.`);
+    case "worker-died":
+      return failedHistoryRestore(
+        undefined,
+        "the history worker exited unexpectedly; this is not a Codex app lock. Run 'ocx doctor'.",
+      );
+    case "timeout":
+      return failedHistoryRestore(
+        undefined,
+        "the history worker timed out; this is not a Codex app lock. Run 'ocx doctor'.",
+      );
+  }
 }
 
 function externalProviderRestoreResult(activeProvider: string): CodexNativeRestoreResult {
@@ -1499,10 +1549,10 @@ export async function restoreNativeCodexAsync(
               ? "Codex integration was disabled; history restoration was skipped."
               : "Codex integration was enabled; history restoration was skipped.",
           }
-      : outcome.kind === "blocked" && outcome.reason === "busy"
-        ? failedHistoryRestore("busy")
+      : outcome.kind === "blocked"
+        ? failedHistoryRestoreFromOutcome(outcome)
         : outcome.kind === "failed"
-          ? failedHistoryRestore(outcome.historyFailureReason)
+          ? failedHistoryRestoreFromOutcome(outcome)
           : failedHistoryRestore();
   const base = catalog.removed > 0
     ? `${config.message} Catalog restored to ${catalog.kept} native model(s) (dropped ${catalog.removed} proxy-routed).`
@@ -1571,4 +1621,20 @@ export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateD
 
 export function getCodexConfigPath(): string {
   return CODEX_CONFIG_PATH;
+}
+
+/**
+ * Frame one failed apply history job honestly.
+ *
+ * A genuine lock keeps the established deferred/SKIPPED wording; any other
+ * reason names itself instead of blaming the Codex app/IDE.
+ */
+function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legacyMode: boolean): string {
+  const failure = outcome as Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>;
+  const headline = legacyMode
+    ? "Codex resume history sync SKIPPED"
+    : outcome.kind === "blocked" && outcome.reason === "busy"
+      ? "Codex resume history migration deferred"
+      : "Codex resume history NOT changed";
+  return `  ⚠️ ${headline}: ${describeHistoryJobFailure(failure, "apply", legacyMode)}\n`;
 }

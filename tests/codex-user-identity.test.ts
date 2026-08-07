@@ -9,6 +9,7 @@ import {
   resolveCodexCatalogSerializationDatabasePath,
   resolveCodexHistorySerializationDatabasePath,
   resolveEffectiveUserIdentity,
+  samePathIdentity,
 } from "../src/codex/user-identity";
 
 let codexHome = "";
@@ -65,6 +66,15 @@ async function runIdentityProbe(
 beforeEach(() => {
   previousHome = process.env.HOME;
   codexHome = mkdtempSync(join(tmpdir(), "ocx-user-identity-codex-home-"));
+});
+
+test("samePathIdentity is case-insensitive on Windows and exact elsewhere", () => {
+  const winPath = "C:\\Users\\Alice\\AppData\\Local\\OpenCodex\\Runtime\\v1\\S-1-5-21\\history-write-locks\\abc.sqlite";
+  expect(samePathIdentity(winPath, winPath.toLowerCase(), "win32")).toBe(true);
+  expect(samePathIdentity(winPath, winPath.toLowerCase(), "linux")).toBe(false);
+  expect(samePathIdentity(winPath, "D:\\Users\\Alice\\AppData\\Local\\OpenCodex\\Runtime\\v1\\S-1-5-21\\history-write-locks\\abc.sqlite", "win32")).toBe(false);
+  expect(samePathIdentity("/tmp/a/b.sqlite", "/tmp/a/b.sqlite", "linux")).toBe(true);
+  expect(samePathIdentity("/tmp/a/b.sqlite", "/tmp/A/b.sqlite", "linux")).toBe(false);
 });
 
 afterEach(() => {

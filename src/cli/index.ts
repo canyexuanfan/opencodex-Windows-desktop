@@ -2,7 +2,12 @@
 import { spawn } from "node:child_process";
 import { currentExternalCodexModelProvider, restoreNativeCodex, restoreNativeCodexAsync, shouldInjectApiAuthHeader } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
-import { resolveCodexHistoryJobTarget, runCodexHistoryJob } from "../codex/history-job";
+import {
+  describeHistoryJobFailure,
+  resolveCodexHistoryJobTarget,
+  runCodexHistoryJob,
+  type CodexHistoryJobOutcome,
+} from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
 import {
   codexAutoStartEnabled,
@@ -899,7 +904,10 @@ async function handleRecoverHistory() {
     : { rows: 0, files: 0, failed: true as const };
   if (r.failed) {
     console.error(
-      "⚠️  Recovery SKIPPED: the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command.",
+      `⚠️  Recovery SKIPPED: ${describeHistoryJobFailure(
+        outcome as Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
+        "recover-legacy",
+      )}`,
     );
     process.exit(1);
   }
