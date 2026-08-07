@@ -14,11 +14,19 @@ export interface VisionSettings {
   timeoutMs: number;
 }
 
+/** A description, or an `error` string when it couldn't run (caller injects a graceful marker). */
 export type DescribeOutcome = { text: string; error?: string };
 
 const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"]);
+/** ~20 MB — generous enough for screenshots; rejects pathological payloads before forwarding. */
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
+/**
+ * Validate an image URL before forwarding. Data URLs are checked for an allowed media type and a sane
+ * decoded size (a malformed/huge/unsupported one would otherwise 400 at the backend or waste tokens).
+ * Remote https URLs are passed through — the ChatGPT backend fetches them, not this proxy (so there's
+ * no SSRF surface here). Returns an error string when the URL must be rejected, else null.
+ */
 function validateImageUrl(url: string): string | null {
   if (url.startsWith("data:")) {
     const m = /^data:([^;,]+?)(;base64)?,(.*)$/s.exec(url);
@@ -35,6 +43,11 @@ function validateImageUrl(url: string): string | null {
   return "unsupported image URL scheme (expected data: or https:)";
 }
 
+/**
+ * Describe ONE image via a gpt vision model through the ChatGPT forward backend — the path that has
+ * native image input. Reuses selected forwarded OAuth headers. The user's own request text is
+ * passed as context so the description is focused. Never throws — returns `{error}` on failure.
+ */
 export async function describeImage(
   imageUrl: string,
   detail: string | undefined,
@@ -67,6 +80,8 @@ export async function describeImage(
       "what's relevant to the user's request. Output only the description.",
     input: [{ type: "message", role: "user", content }],
     reasoning: { effort: settings.reasoning },
+    // The ChatGPT (codex) backend rejects `max_output_tokens` ("Unsupported parameter"); the
+    // description is clamped downstream (DESC_MAX_CHARS) instead.
     store: false,
     stream: true,
   };
@@ -96,6 +111,8 @@ export async function describeImage(
     } finally {
       detachBodyGuard();
     }
+    // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
+    // surface that as a describe error instead of an empty (silently-blank) description.
     if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };
     return { text: parsed.text };
   } catch (e) {
