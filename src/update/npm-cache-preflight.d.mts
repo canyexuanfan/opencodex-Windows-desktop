@@ -23,6 +23,8 @@ export interface NpmCacheInspectionOptions {
   maxDepth?: number;
   maxEntries?: number;
   nowMs?: () => number;
+  /** Test seam: resolve a symlinked cache root. Defaults to realpathSync. */
+  realpathFn?: (path: string) => string;
   /** Test seam: resolve an entry's owner uid. Defaults to the lstat result. */
   uidOf?: (path: string, stat: { uid: number }) => number;
   timeoutMs?: number;

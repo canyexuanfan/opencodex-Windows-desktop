@@ -152,6 +152,11 @@ describe("GUI update execution decisions", () => {
       // Wraps that do NOT land on a separator — these defeated the first collapse.
       "midsegment C:\\Us\\\nners\\Zoe [Admin]+\\Documents\\private.txt",
       "midname C:\\Users\\Zo\\\ne Admin\\Documents\\private.txt",
+      // Indented continuations: the wrap leaves leading whitespace, which blocked keyword
+      // reconstruction until the scan copy learned to drop it too.
+      "unc-wrap \\\\fileserver\\share\\Us\n  ers\\Zoe [Admin]+\\notes.txt",
+      "docs-wrap \\\\fileserver\\share\\Documents and Set\n\ttings\\A+B (Ops)\\notes.txt",
+      "posix-wrap /Us\n  ers/\ud64d \uae38\ub3d9/private.txt",
     ].join("\n");
 
     expect(() => startUpdateJob("latest", true, {
@@ -176,6 +181,9 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toMatch(/\$HOME/);
     expect(persisted).not.toContain("Zoe [Admin]+");
     expect(persisted).not.toContain("e Admin");
+    expect(persisted).not.toContain("Zoe [Admin]+");
+    expect(persisted).not.toContain("A+B (Ops)");
+    expect(persisted).not.toContain("\ud64d \uae38\ub3d9");
   });
 
   test("a failed cache pre-flight leaves the install command unrun", async () => {

@@ -143,6 +143,26 @@ describe("npm cache access pre-flight", () => {
     })).toEqual({ ok: false, reason: "worker_output_malformed" });
   });
 
+  test("a cache root symlinked to another volume is inspected, not rejected", () => {
+    // Pointing ~/.npm at another volume is ordinary npm configuration. Rejecting it outright was
+    // the same class of false positive as failing on a large cache: it blocks updates for users
+    // whose setup is fine. The root is resolved once; nested links are still never followed.
+    const realCache = tempRoot("symlinked-root-target");
+    mkdirSync(join(realCache, "_cacache", "content-v2"), { recursive: true });
+    writeFileSync(join(realCache, "_cacache", "content-v2", "entry"), "cached");
+
+    const linkHome = tempRoot("symlinked-root-home");
+    const linkedRoot = join(linkHome, ".npm");
+    symlinkSync(realCache, linkedRoot, "dir");
+
+    expect(inspectNpmCacheDirectory(linkedRoot)).toEqual({ ok: true, reason: "cache_accessible" });
+
+    // An unresolvable root is still a hard stop.
+    expect(inspectNpmCacheDirectory(linkedRoot, {
+      realpathFn: () => { throw new Error("ELOOP"); },
+    })).toEqual({ ok: false, reason: "cache_entry_inaccessible" });
+  });
+
   test("fails closed on worker timeout", () => {
     const timeoutSpawn = (() => ({ status: null, signal: "SIGTERM", stdout: "", stderr: "" })) as never;
     expect(runNpmCachePreflight({ platform: "linux", spawnSyncFn: timeoutSpawn })).toEqual({

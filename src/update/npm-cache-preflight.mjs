@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,7 @@ export function inspectNpmCacheDirectory(cachePath, options = {}) {
   const uidOf = options.uidOf ?? ((_path, stat) => stat.uid);
   const stack = [{ path: cachePath, depth: 0 }];
   let inspected = 0;
+  let rootResolved = false;
 
   while (stack.length > 0) {
     // Budget exhausted is NOT a failure. A mature npm cache legitimately holds hundreds of
@@ -68,9 +69,24 @@ export function inspectNpmCacheDirectory(cachePath, options = {}) {
     }
     inspected += 1;
 
-    // A symlinked cache ROOT is a real problem: we cannot vouch for where the install writes.
+    // A symlinked cache ROOT used to be rejected outright, but pointing ~/.npm at another volume
+    // is ordinary npm configuration, and blocking those users would be the same false-positive
+    // failure this preflight exists to avoid. Resolve the root once and inspect the target;
+    // only an unresolvable root is a real problem. Nested links are still never followed.
     if (current.depth === 0 && stat.isSymbolicLink()) {
-      return { ok: false, reason: "cache_entry_inaccessible" };
+      // Resolve exactly once. realpath already collapses a chain, so a second pass would only
+      // happen if the target is itself reported as a link — treat that as unresolvable rather
+      // than looping.
+      if (rootResolved) return { ok: false, reason: "cache_entry_inaccessible" };
+      rootResolved = true;
+      let resolved;
+      try {
+        resolved = (options.realpathFn ?? realpathSync)(current.path);
+      } catch {
+        return { ok: false, reason: "cache_entry_inaccessible" };
+      }
+      stack.push({ path: resolved, depth: 0 });
+      continue;
     }
     // A nested symlink is not. npm creates them constantly below _npx, node_modules and .bin,
     // and we never follow them — so its owner is irrelevant and must not abort the update.

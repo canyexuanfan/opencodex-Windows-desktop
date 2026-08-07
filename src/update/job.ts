@@ -269,9 +269,16 @@ function redactWrappedProfilePaths(value: string): string {
   let scan = "";
   for (let i = 0; i < value.length; i += 1) {
     const ch = value[i]!;
-    if (ch === "\n" || ch === "\r") continue;
-    scan += ch;
-    scanToSource.push(i);
+    if (ch !== "\n" && ch !== "\r") {
+      scan += ch;
+      scanToSource.push(i);
+      continue;
+    }
+    // Drop the break AND the indentation that continues it. A wrapped log line is usually
+    // indented, and keeping those spaces left `Us` + `  ers` unreconstructable — the keyword
+    // never reformed, so the profile rules did not fire and the account name survived.
+    while (i + 1 < value.length && (value[i + 1] === "\n" || value[i + 1] === "\r")) i += 1;
+    while (i + 1 < value.length && (value[i + 1] === " " || value[i + 1] === "\t")) i += 1;
   }
 
   // Two shapes, in priority order. The first is the precise one. The second is the backstop for a
@@ -279,7 +286,16 @@ function redactWrappedProfilePaths(value: string): string {
   // is what `C:\Us` + wrap + `ners\...` collapses to, and the segment after it is still somebody's
   // account name. An update log has no legitimate need to carry an absolute Windows path, so
   // redacting the whole run is the safe answer rather than trying to enumerate every mangling.
-  const profile = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*|[A-Za-z]:[\\/][^\r\n]*/gi;
+  const profile = new RegExp([
+    // Precise: a profile keyword followed by the account segment. Covers drive-letter paths,
+    // UNC shares, and POSIX roots, since the scan copy has already healed the wrap.
+    String.raw`(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*`,
+    // Backstop 1: any absolute Windows path a wrap mangled past recognition.
+    String.raw`[A-Za-z]:[\\/][^\r\n]*`,
+    // Backstop 2: a UNC share. `\\server\share\...` carries the same account names, and a wrap
+    // inside the keyword can leave a shape the precise rule no longer matches.
+    String.raw`\\\\[^\\/\r\n]+\\[^\r\n]*`,
+  ].join("|"), "gi");
   const cuts: Array<{ start: number; end: number }> = [];
   for (const match of scan.matchAll(profile)) {
     const start = scanToSource[match.index!]!;
