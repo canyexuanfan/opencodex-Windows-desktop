@@ -7,7 +7,6 @@ const core = require("./issue-quality-core.cjs");
 
 const REPRODUCTION_ALIASES = [
   "Steps to reproduce",
-  "Steps to Reproduce",
   "How to reproduce",
   "What fails / what passes",
   "Debug evidence (ocx debug provider)",
@@ -25,7 +24,8 @@ function extractEnvironmentField(environment, names) {
     const line = rawLine.replace(/^\s*[-*+]\s+/, "").trim();
     const match = line.match(/^([^:]+):\s*(.+)$/);
     if (!match) continue;
-    if (wanted.has(match[1].trim().toLowerCase())) return match[2].trim();
+    const key = match[1].replace(/[*_`~]/g, "").trim().toLowerCase();
+    if (wanted.has(key)) return match[2].trim();
   }
 
   return null;
