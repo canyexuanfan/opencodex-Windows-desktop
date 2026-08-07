@@ -1639,9 +1639,16 @@ export function getCodexConfigPath(): string {
  * reason names itself instead of blaming the Codex app/IDE.
  */
 function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legacyMode: boolean): string {
+  // A busy database is a deferral no matter which half observed it: the lock
+  // contended (blocked/busy), or the worker acquired the lock and then found
+  // SQLite busy (failed with a busy history reason). Only those keep the
+  // deferred headline; every other failure is a real "NOT changed".
+  const busy =
+    (outcome.kind === "blocked" && outcome.reason === "busy") ||
+    (outcome.kind === "failed" && outcome.historyFailureReason === "busy");
   const headline = legacyMode
     ? "Codex resume history sync SKIPPED"
-    : outcome.kind === "blocked" && outcome.reason === "busy"
+    : busy
       ? "Codex resume history migration deferred"
       : "Codex resume history NOT changed";
   return `  ⚠️ ${headline}: ${describeHistoryJobFailure(outcome, "apply", legacyMode)}\n`;

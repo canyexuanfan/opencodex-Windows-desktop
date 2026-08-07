@@ -25,6 +25,12 @@ import { NativeProfileError } from "../codex/native-profile-types";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
+import { getCodexHome } from "../codex/paths";
+import {
+  CodexUserIdentityRefusal,
+  resolveCodexHistorySerializationDatabasePath,
+  resolveEffectiveUserIdentity,
+} from "../codex/user-identity";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
 import { collectStartupHealth, startupHealthSummary } from "../codex/autostart-health";
 import {
@@ -902,6 +908,18 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   // Codex app until the one-time migration lands. Read-only probe (readonly sqlite, 100ms
   // busy timeout) — reports state, never mutates.
   console.log("\nCodex history migration");
+  // The history failure messages point here; make the visit worthwhile by
+  // probing the coordinator namespace the locks live in. Resolution exercises
+  // identity, runtime-root, and permission checks without taking any lock.
+  try {
+    const identity = resolveEffectiveUserIdentity();
+    const codexHome = getCodexHome();
+    resolveCodexHistorySerializationDatabasePath(identity, codexHome, join(codexHome, "state_5.sqlite"));
+    console.log("  ok     history coordinator namespace resolves");
+  } catch (cause) {
+    const reason = cause instanceof CodexUserIdentityRefusal ? cause.message : String(cause);
+    console.log(`  --     history coordinator namespace refused: ${reason}`);
+  }
   const pending = countPendingOpencodexHistory();
   if (pending.failed) {
     console.log("  --     state DB locked or unreadable (Codex app open?) — migration state unknown");

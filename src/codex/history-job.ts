@@ -17,6 +17,7 @@
  * Design record: devlog/_fin/260804_codex_write_substrate/020_history_isolation.md.
  */
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type {
@@ -158,18 +159,20 @@ export function describeHistoryJobFailure(
   if (outcome.kind === "converged") {
     return "the history job reported no failure; run 'ocx doctor' if this is unexpected.";
   }
+  // A busy database reaches here two ways: the lock itself was contended
+  // (blocked/busy), or the lock was acquired and the worker then found SQLite
+  // busy (failed with historyFailureReason "busy"). Both are the same user
+  // situation and deserve the same surface-specific guidance.
+  const busyText = surface === "apply"
+    ? legacyMode
+      ? "the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'."
+      : "the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'."
+    : surface === "recover-legacy"
+      ? "the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command."
+      : "the Codex app appears to be holding the history database. Close Codex and run `ocx restore` again.";
   if (outcome.kind === "blocked") {
+    if (outcome.reason === "busy") return busyText;
     switch (outcome.reason) {
-      case "busy":
-        if (surface === "apply") {
-          return legacyMode
-            ? "the history DB is locked (Codex app/IDE open?). Close it and rerun 'ocx start'."
-            : "the history DB is locked (Codex app/IDE open?). It is retried automatically (while the proxy runs and on every 'ocx start'); to force it now, close the Codex app and run 'ocx sync'.";
-        }
-        if (surface === "recover-legacy") {
-          return "the Codex history DB is locked (Codex app/IDE open?). Close it and rerun this command.";
-        }
-        return "the Codex app appears to be holding the history database. Close Codex and run `ocx restore` again.";
       case "unsafe-path":
         return "opencodex refused its history lock path (unsafe coordinator namespace); this is not a Codex app lock. Run 'ocx doctor' and check the opencodex runtime directory.";
       case "database":
@@ -180,11 +183,7 @@ export function describeHistoryJobFailure(
         return "Codex integration is enabled, so the history operation was skipped.";
     }
   }
-  if (outcome.historyFailureReason === "busy") {
-    return surface === "restore"
-      ? "the Codex app appears to be holding the history database. Close Codex and run `ocx restore` again."
-      : "the history DB is locked (Codex app/IDE open?).";
-  }
+  if (outcome.historyFailureReason === "busy") return busyText;
   if (outcome.historyFailureReason === "permission") {
     return "permission was denied while writing Codex history; this is not a Codex app lock. Run 'ocx doctor'.";
   }
@@ -198,13 +197,24 @@ export function describeHistoryJobFailure(
   }
 }
 
+/**
+ * Worker exceptions travel into user-facing CLI output, and a raw filesystem
+ * error carries absolute paths — on every platform that includes the account
+ * name (`/Users/x`, `/home/x`, `C:\Users\x`). Folding the home directory to
+ * `~` keeps the diagnostic value and drops the identifier.
+ */
+function redactWorkerMessage(message: string): string {
+  const home = homedir();
+  return home.length > 1 ? message.split(home).join("~") : message;
+}
+
 function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutcome {
   if (result.type === "blocked") return { kind: "blocked", reason: result.reason };
   if (result.type === "error") {
     return {
       kind: "failed",
       reason: "worker-error",
-      message: result.message,
+      message: redactWorkerMessage(result.message),
       ...(result.reason ? { historyFailureReason: result.reason } : {}),
     };
   }

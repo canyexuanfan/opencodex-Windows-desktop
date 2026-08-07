@@ -165,9 +165,19 @@ function resolveWindowsRuntimeRoot(identity: Extract<UserIdentity, { platform: "
   // that share the real directory would build different lock paths and never
   // contend. The lock modules also compare this path against realpath, so a
   // non-canonical spelling here would read as "unsafe" on every acquisition.
+  //
+  // Canonicalizing must only ever fold spelling (case, separators). If the
+  // realpath lands somewhere else entirely, a component of the namespace is a
+  // junction/reparse redirect; accepting the target would convert the old
+  // refusal into silently opening the redirected location, so refuse instead.
   try {
-    return realpathSync.native(root);
+    const real = realpathSync.native(root);
+    if (!samePathIdentity(real, root, "win32")) {
+      refuse("The Windows coordinator namespace is redirected by a junction or reparse point.");
+    }
+    return real;
   } catch (cause) {
+    if (cause instanceof CodexUserIdentityRefusal) throw cause;
     refuse("The Windows coordinator namespace cannot be resolved.", cause);
   }
 }

@@ -88,6 +88,20 @@ test("the failure wording names the real reason instead of always blaming the Co
   expect(describeHistoryJobFailure(busy, "restore")).toContain("holding the history database");
   expect(describeHistoryJobFailure(busy, "recover-legacy")).toContain("Close it and rerun this command");
 
+  // A busy SQLite database can also surface as a worker failure once the lock
+  // was already acquired; it must keep the same lock guidance, not degrade to
+  // a generic worker error.
+  const workerBusy = {
+    kind: "failed",
+    reason: "worker-error",
+    message: "database is locked",
+    historyFailureReason: "busy",
+  } as const;
+  expect(describeHistoryJobFailure(workerBusy, "apply", false)).toContain("history DB is locked");
+  expect(describeHistoryJobFailure(workerBusy, "apply", false)).toContain("retried automatically");
+  expect(describeHistoryJobFailure(workerBusy, "restore")).toContain("holding the history database");
+  expect(describeHistoryJobFailure(workerBusy, "recover-legacy")).toContain("locked");
+
   const unsafe = { kind: "blocked", reason: "unsafe-path" } as const;
   const unsafeText = describeHistoryJobFailure(unsafe, "apply");
   expect(unsafeText).toContain("not a Codex app lock");
