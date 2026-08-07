@@ -153,6 +153,11 @@ export function mergeSidecarSetting(
   return merged;
 }
 
+/** Effort-only edits must not rewrite a custom model or its explicitly selected backend. */
+export function visionReasoningPatch(reasoning: VisionReasoning): SidecarPatch {
+  return { vision: { reasoning } };
+}
+
 export const VISION_REASONING_LEVELS: VisionReasoning[] = ["low", "medium", "high", "xhigh", "max"];
 
 export function visionReasoningLadder(models: ModelInfo[], modelId: string): VisionReasoning[] {
