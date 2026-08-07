@@ -72,6 +72,7 @@ import {
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
 import {
   acquireUpstreamHostAdmission,
+  disableUpstreamHostCircuitForKey,
   normalizeUpstreamHostCircuitThreshold,
   recordUpstreamHostFailure,
   releaseUpstreamHostAdmission,
@@ -408,6 +409,9 @@ export async function handleResponsesCompact(
       : null;
     const compactHostCircuitEnabled = compactHostKey !== null
       && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (compactHostKey !== null && !compactHostCircuitEnabled) {
+      disableUpstreamHostCircuitForKey(actualCompactHostKey);
+    }
     if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {
       releaseCodexAuthContextProbeLease(authCtx);
       return formatErrorResponse(502, "upstream_error", "Provider host changed after circuit admission");

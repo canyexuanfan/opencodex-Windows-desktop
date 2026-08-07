@@ -225,6 +225,23 @@ export function releaseUpstreamHostAdmission(
   return true;
 }
 
+/**
+ * Downgrade circuit-owned state when the operator disables the circuit.
+ * Failure history remains observational, but cooldown and all in-flight lease
+ * authority are revoked so disabled-mode traffic can update the ledger normally.
+ */
+export function disableUpstreamHostCircuitForKey(key: string, now = Date.now()): boolean {
+  const entry = hostHealth.get(key);
+  if (!entry?.circuitManaged) return false;
+  entry.circuitManaged = false;
+  delete entry.cooldownUntil;
+  advanceGeneration(entry);
+  entry.lastTouch = now;
+  if (entry.consecutiveFailures === 0) hostHealth.delete(key);
+  else pruneTo(UPSTREAM_HOST_HEALTH_MAX_ENTRIES, now);
+  return true;
+}
+
 /** Record one terminal logical `connect_neutral` failure. */
 export function recordUpstreamHostFailure(
   key: string,

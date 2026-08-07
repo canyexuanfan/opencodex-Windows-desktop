@@ -180,6 +180,7 @@ import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel }
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
 import {
   acquireUpstreamHostAdmission,
+  disableUpstreamHostCircuitForKey,
   normalizeUpstreamHostCircuitThreshold,
   recordUpstreamHostFailure,
   releaseUpstreamHostAdmission,
@@ -1870,6 +1871,9 @@ async function handleResponsesInner(
       : null;
     const hostCircuitEnabled = hostKey !== null
       && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (hostKey !== null && !hostCircuitEnabled) {
+      disableUpstreamHostCircuitForKey(actualHostKey);
+    }
     if (hostAdmissionLease && hostAdmissionLease.key !== hostKey) {
       return formatErrorResponse(502, "upstream_error", "Provider host changed after circuit admission");
     }

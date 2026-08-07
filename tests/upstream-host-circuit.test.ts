@@ -4,6 +4,7 @@ import {
   UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD,
   acquireUpstreamHostAdmission,
   clearUpstreamHostHealth,
+  disableUpstreamHostCircuitForKey,
   getUpstreamHostHealth,
   normalizeUpstreamHostCircuitThreshold,
   recordUpstreamHostFailure,
@@ -176,6 +177,20 @@ describe("opt-in upstream host circuit", () => {
       consecutiveFailures: 1,
       cooldownUntil: 10_003 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS,
     });
+  });
+
+  test("disabled traffic can clear an old circuit before it is re-enabled", () => {
+    const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
+    fail(key, 1, 11_000);
+    expect(getUpstreamHostHealth(key)?.cooldownUntil).toBe(11_000 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS);
+
+    expect(disableUpstreamHostCircuitForKey(key, 11_001)).toBe(true);
+    expect(getUpstreamHostHealth(key)).toMatchObject({ consecutiveFailures: 1 });
+    expect(getUpstreamHostHealth(key)?.cooldownUntil).toBeUndefined();
+
+    expect(resetUpstreamHostHealth(key)).toBe(true);
+    expect(getUpstreamHostHealth(key)).toBeNull();
+    expect(acquireUpstreamHostAdmission(key, 1, 11_002).kind).toBe("admitted");
   });
 
   test("a later physical retry without its lease cannot close a newer circuit", () => {
