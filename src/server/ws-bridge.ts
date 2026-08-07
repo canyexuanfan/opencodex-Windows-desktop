@@ -274,6 +274,7 @@ export async function pumpResponsesSseToWebSocket(
     }
   } catch (err) {
     framer.dispose();
+    if (err instanceof WsSendDroppedError) throw err;
     if (!terminalSeen
       && isCurrent()
       && ws.readyState === OPEN
