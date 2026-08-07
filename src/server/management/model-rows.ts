@@ -9,7 +9,7 @@
  * Bodies are unchanged from their previous home; only `export` was added.
  */
 import type { CatalogModel } from "../../codex/catalog";
-import { catalogModelSlug, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { catalogModelSlug, nativeModelRows, nativeReasoningEfforts, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import type { ExportModel } from "../../clients/config-export";
 import { providerContextCap } from "../../providers/context-cap";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
@@ -47,6 +47,7 @@ export async function listManagementModelRows(config: OcxConfig): Promise<Manage
     namespaced: row.slug,
     disabled: row.disabled,
     native: true,
+    reasoningEfforts: nativeReasoningEfforts(row.slug),
     ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
   }));
   const customModels: ManagementModelRow[] = (config.customModels ?? []).map(cm => {
