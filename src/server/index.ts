@@ -539,23 +539,28 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
 
   // Codex treats empty / non-JSON 503 bodies as "Unknown error" (#452). Keep Retry-After and
   // the server_is_overloaded code so clients can back off, but always return a JSON envelope.
-  function drainingResponse(req: Request): Response {
+  // These two run BEFORE the auth/origin checks, so they need the receiving listener's policy
+  // explicitly (#1102). Reaching for the shared `config` here would attach public-policy CORS
+  // headers to a 503 on the loopback listener — no model runs and no credential is spent, but
+  // it is the one error path that would answer a rebinding origin with its own origin echoed
+  // back.
+  function drainingResponse(req: Request, policy: RequestPolicyView = config): Response {
     const response = formatErrorResponse(503, "server_error", "Service shutting down");
     const headers = new Headers(response.headers);
-    for (const [name, value] of Object.entries(corsHeaders(req, config))) {
+    for (const [name, value] of Object.entries(corsHeaders(req, policy))) {
       headers.set(name, value);
     }
     headers.set("Retry-After", "5");
     return new Response(response.body, { status: 503, headers });
   }
 
-  function serverBusyResponse(req: Request, resource: string): Response {
+  function serverBusyResponse(req: Request, resource: string, policy: RequestPolicyView = config): Response {
     return withCors(new Response(JSON.stringify({
       error: { type: "server_error", code: "server_busy", message: `${resource} capacity reached` },
     }), {
       status: 503,
       headers: { "Content-Type": "application/json", "Retry-After": "1" },
-    }), req, config);
+    }), req, policy);
   }
 
   async function runAdmittedHttpTurn(req: Request, work: (lease: ActiveTurnLease) => Promise<Response>): Promise<Response> {
@@ -659,7 +664,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // handshake-time only, so capture inbound headers and thread them into the pipeline.
       if (url.pathname === "/v1/responses" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveResponsesApiAuth(req, policy);
         if (!admission) {
@@ -677,7 +682,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           return withCors(formatErrorResponse(426, "upgrade_required", "Responses WebSocket transport is disabled; use HTTP"), req, policy);
         }
         const websocketLease = tryReserveCodexWebSocket();
-        if (!websocketLease) return serverBusyResponse(req, "Codex WebSockets");
+        if (!websocketLease) return serverBusyResponse(req, "Codex WebSockets", policy);
         // Upgrade on the server that RECEIVED this request, not the captured `server`
         // binding. They are the same object for the public listener, but the
         // unauthenticated loopback listener (#1102) is a second Bun.serve, and handing its
@@ -907,7 +912,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // before the /v1/* 404 guard below.
       if (url.pathname === "/v1/responses/compact" && req.method === "POST") {
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveResponsesApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -941,7 +946,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -996,7 +1001,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (url.pathname === "/v1/alpha/search" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -1021,7 +1026,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (url.pathname === "/v1/responses" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveResponsesApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -1068,7 +1073,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       // Claude Code posts `/v1/messages?beta=true` — pathname match ignores the query (003 G9).
       if (url.pathname === "/v1/messages/count_tokens" && req.method === "POST") {
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) {
@@ -1083,7 +1088,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (url.pathname === "/v1/messages" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) {
@@ -1115,7 +1120,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveResponsesApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -1146,7 +1151,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       ) {
         disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -1180,7 +1185,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         : null;
       if (liveSidebandTarget) {
         if (isDraining()) {
-          return drainingResponse(req);
+          return drainingResponse(req, policy);
         }
         const admission = resolveApiAuth(req, policy);
         if (!admission) return withCors(formatErrorResponse(401, "authentication_error", "opencodex API key required"), req, policy);
@@ -1195,7 +1200,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
         };
         const turnAdmissionLease = tryAdmitTurn();
-        if (!turnAdmissionLease) return serverBusyResponse(req, "active turns");
+        if (!turnAdmissionLease) return serverBusyResponse(req, "active turns", policy);
         let resolved;
         try {
           resolved = await resolveLiveSidebandUpgrade(req, config, logCtx, liveSidebandTarget, turnAdmissionLease);

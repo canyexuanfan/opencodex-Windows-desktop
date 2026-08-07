@@ -17,7 +17,7 @@ import {
   requestPolicyView,
   resolveResponsesApiAuth,
 } from "../src/server/auth-cors";
-import { shouldInjectApiAuthHeader } from "../src/codex/inject";
+import { buildProviderTableBlock, shouldInjectApiAuthHeader } from "../src/codex/inject";
 import { validateConfigCandidate } from "../src/config";
 import type { OcxConfig } from "../src/types";
 
@@ -164,5 +164,14 @@ describe("injected Codex provider block", () => {
       hostname: "0.0.0.0",
       unauthenticatedLoopbackListener: { enabled: false },
     })).toBe(true);
+  });
+
+  test("the emitted block points at the loopback port and carries no auth header", () => {
+    // shouldInjectApiAuthHeader alone does not prove the injected TOML is usable. Assert the
+    // rendered block, because that is what a directly spawned app-server actually reads: a
+    // base_url on the public port, or an env header it cannot populate, both reproduce #1102.
+    const block = buildProviderTableBlock(10200, false, false, "0.0.0.0");
+    expect(block).toContain('base_url = "http://127.0.0.1:10200/v1"');
+    expect(block).not.toContain("env_http_headers");
   });
 });

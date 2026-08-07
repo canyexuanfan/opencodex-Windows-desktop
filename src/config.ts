@@ -2001,6 +2001,13 @@ function loopbackListenerPortError(value: unknown): string | null {
     return "schema_invalid: unauthenticatedLoopbackListener: must be an object or omitted";
   }
   const entry = listener as Record<string, unknown>;
+  // `enabled` must be a real boolean. The schema's `.catch(undefined)` would otherwise DELETE
+  // a `"true"` string entry and report success, leaving an operator convinced they enabled an
+  // unauthenticated listener that is in fact off. Load-time still degrades quietly — a hand
+  // edit must not reset the file — but a live caller gets told.
+  if (typeof entry.enabled !== "boolean") {
+    return "schema_invalid: unauthenticatedLoopbackListener.enabled: must be a boolean";
+  }
   if (entry.enabled !== true) return null;
   const listenerPort = entry.port;
   if (typeof listenerPort !== "number" || !Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535) {

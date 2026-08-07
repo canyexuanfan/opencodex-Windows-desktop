@@ -170,6 +170,13 @@ async function chooseListenPort(requestedPort?: number): Promise<number> {
       preferRetryMs: hardPin ? 5_000 : 750,
       preferRetryIntervalMs: 50,
       allowEphemeralFallback: !hardPin,
+      // Never hand the public listener the port the loopback listener is configured to
+      // bind (#1102). Without this, `--port <loopback port>` binds the public listener
+      // first and the loopback bind then fails, rolling back a startup that was only
+      // ever a config collision.
+      ...(config.unauthenticatedLoopbackListener?.enabled
+        ? { reservedPort: config.unauthenticatedLoopbackListener.port }
+        : {}),
     });
     if (preferred > 0 && selected !== preferred) {
       console.log(`⚠️  Port ${preferred} is busy; starting opencodex on ${selected}.`);

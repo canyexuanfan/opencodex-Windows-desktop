@@ -57,6 +57,16 @@ export type FindAvailablePortOptions = {
    * update restart cannot hop to a random ephemeral listener (PR #152 gap).
    */
   allowEphemeralFallback?: boolean;
+  /**
+   * A port this selection must never return, even when it is free (#1102).
+   *
+   * The unauthenticated loopback listener binds a fixed port from config. If the public
+   * listener took that port first — via an explicit `--port`, a `config.port` of 0, or the
+   * ephemeral fallback happening to land on it — the loopback bind would then fail with
+   * EADDRINUSE, and the startup transaction would roll back a public listener that had
+   * nothing wrong with it. Excluding the port here fails the right thing at the right time.
+   */
+  reservedPort?: number;
 };
 
 export class PortUnavailableError extends Error {
@@ -75,6 +85,12 @@ export async function findAvailablePort(
 ): Promise<number> {
   const preferRetryMs = opts.preferRetryMs ?? 0;
   const allowEphemeral = opts.allowEphemeralFallback !== false;
+  const reserved = opts.reservedPort;
+  // An explicit preference for the reserved port is a configuration mistake, not a busy
+  // socket: retrying or hopping would hide it. Refuse before probing anything.
+  if (reserved !== undefined && preferredPort === reserved) {
+    throw new PortUnavailableError(preferredPort, hostname);
+  }
   // Port 0 asks the OS to select an ephemeral port. Resolve it to that concrete
   // port here so callers never persist or advertise an unusable `:0` endpoint.
   if (preferredPort > 0 && preferRetryMs > 0) {
@@ -99,7 +115,12 @@ export async function findAvailablePort(
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
       server.close(() => {
-        if (port > 0) resolve(port);
+        // The OS can hand back the reserved port. Retry rather than accept it; the pool is
+        // large enough that a second draw practically always differs.
+        if (port > 0 && port !== reserved) resolve(port);
+        else if (port === reserved) {
+          findAvailablePort(0, hostname, opts).then(resolve, reject);
+        }
         else reject(new Error("failed to allocate an available port"));
       });
     });
