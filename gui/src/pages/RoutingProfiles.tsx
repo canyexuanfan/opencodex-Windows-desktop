@@ -141,7 +141,20 @@ function selectedAfterLoad(
   return profiles[0] ?? null;
 }
 
-export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
+export default function RoutingProfiles({
+  apiBase,
+  active = true,
+  onCountChange,
+}: {
+  apiBase: string;
+  /**
+   * False while this panel is mounted but hidden behind another Models tab. Defaults
+   * true so a direct render (tests) behaves like a visible panel.
+   */
+  active?: boolean;
+  /** Reports the profile count up to the tab strip. */
+  onCountChange?: (count: number) => void;
+}) {
   const t = useT();
   const unavailable = t("routing.unavailable");
   const [profiles, setProfiles] = useState<RoutingProfileDto[]>([]);
@@ -163,6 +176,31 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   const [running, setRunning] = useState(false);
   const selectedRef = useRef<RoutingProfileDto | null>(null);
   const loadGenerationRef = useRef(0);
+  /** Owned by `load` so every entry point — mount, Retry, save, delete — is cancellable. */
+  const loadAbortRef = useRef<AbortController | null>(null);
+  /*
+   * Cancelling in-flight work is not enough on its own. A save or delete can resolve
+   * AFTER the panel is hidden or unmounted and then call `load()`, which would open a
+   * fresh controller and four requests that the deactivation effect has already run
+   * past — and whose generation is current, so its writes would land in a panel nobody
+   * is looking at. `load` checks this before it starts anything.
+   */
+  const loadEnabledRef = useRef(true);
+
+  /*
+   * Stop loading and cancel whatever is running.
+   *
+   * A stable callback rather than inline cleanup: reading the refs at cleanup time is
+   * the point — whatever load is in flight NOW is what must be cancelled, and the
+   * generation has to move past the value that load captured. Inline, that reads as a
+   * stale-ref mistake to both the linter and the next reader. Naming it says the
+   * latest-value read is deliberate, and it works for deactivation and unmount alike.
+   */
+  const cancelActiveLoad = useCallback(() => {
+    loadEnabledRef.current = false;
+    loadAbortRef.current?.abort();
+    loadGenerationRef.current++;
+  }, []);
   const dryRunGenerationRef = useRef(0);
 
   const notify = useCallback((message: string, ok: boolean) => {
@@ -191,14 +229,27 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
   }, [clearDryRun]);
 
   const load = useCallback(async (preferredId?: string) => {
+    if (!loadEnabledRef.current) return;
+    /*
+     * `load` owns the controller, not the effect that happens to call it.
+     *
+     * There are four entry points — the mount effect, Retry, post-save, and
+     * post-delete — so an effect-local controller would cancel only the first and let
+     * a Retry or a mutation reload keep running after the tab hides. Generation
+     * invalidation stops the state write but not the network work.
+     */
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const { signal } = controller;
     const generation = ++loadGenerationRef.current;
     setLoadError("");
     try {
       const [profilesRes, analyticsRes, configRes, modelsRes] = await Promise.all([
-        fetch(`${apiBase}/api/routing-profiles`),
-        fetch(`${apiBase}/api/routing-analytics`),
-        fetch(`${apiBase}/api/config`),
-        fetch(`${apiBase}/api/models`),
+        fetch(`${apiBase}/api/routing-profiles`, { signal }),
+        fetch(`${apiBase}/api/routing-analytics`, { signal }),
+        fetch(`${apiBase}/api/config`, { signal }),
+        fetch(`${apiBase}/api/models`, { signal }),
       ]);
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
       const [profilesJson, analyticsJson, configJson, modelsJson] = await Promise.all([
@@ -236,14 +287,38 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
       }
     } catch (error) {
       if (generation !== loadGenerationRef.current) return;
+      // An aborted supersede or deactivate is not a failure worth showing.
+      if (signal.aborted) return;
       setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      // Clear only if this request still owns the ref; a newer load may have replaced it.
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [apiBase, clearDryRun]);
 
   useEffect(() => {
+    if (!active) {
+      // Hidden: stop new loads, cancel work in flight, and invalidate its generation so
+      // a late resolve cannot write into a panel nobody is looking at.
+      cancelActiveLoad();
+      return;
+    }
+    loadEnabledRef.current = true;
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
+    // Unmounting counts too — leaving Models entirely must not strand a request.
+    return () => {
+      window.clearTimeout(timer);
+      cancelActiveLoad();
+    };
+  }, [active, cancelActiveLoad, load]);
+
+  /*
+   * Report the count up to the tab strip from an effect keyed on the list length, not
+   * during render.
+   */
+  useEffect(() => {
+    onCountChange?.(profiles.length);
+  }, [onCountChange, profiles.length]);
 
   const firstProvider = providerNames[0] ?? "";
   const firstModel = providerDefaults[firstProvider]
@@ -417,16 +492,19 @@ export default function RoutingProfiles({ apiBase }: { apiBase: string }) {
 
   return (
     <div className="page" data-page="routing">
-      <div className="page-head">
-        <h2>{t("routing.title")}</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
-            <span aria-hidden="true">+</span> {t("routing.createProfile")}
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
-        </div>
+      {/*
+        Embedded as a Models tab, so the page title and subtitle belong to the shell.
+        Rendering them here too put "Routing Intelligence (beta)" and its description on
+        screen twice — visible the moment the panel was opened in a browser, invisible to
+        every static gate. The actions stay; a heading cannot carry buttons, so they sit
+        in a plain toolbar row.
+      */}
+      <div className="row" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 12 }}>
+        <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
+          <span aria-hidden="true">+</span> {t("routing.createProfile")}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void load()}>{t("common.retry")}</button>
       </div>
-      <p className="muted">{t("routing.subtitle")}</p>
 
       {loadError ? <Notice tone="err">{t("routing.loadFailed")}: {loadError}</Notice> : null}
       {status ? <Notice tone={status.ok ? "ok" : "err"}>{status.message}</Notice> : null}

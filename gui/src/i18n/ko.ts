@@ -10,7 +10,6 @@ export const ko: Record<TKey, string> = {
   "nav.providers": "프로바이더",
   "nav.models": "모델",
   "nav.combos": "콤보",
-  "nav.routing": "라우팅 (beta)",
   "nav.subagents": "서브에이전트",
 
   // routing intelligence
@@ -438,6 +437,12 @@ export const ko: Record<TKey, string> = {
   "prov.openaiApiSetup": "API 키 설정",
 
   // models
+  "models.tab.catalog": "모델",
+  "models.tab.combos": "콤보",
+  "models.tab.routing": "라우팅 (beta)",
+  "models.tabsLabel": "모델 표면",
+  "models.subtitle.combos": "여러 모델을 하나의 id로 묶어 순서대로 응답하게 합니다. failover는 순서대로 시도하고, round-robin은 부하를 나눕니다.",
+  "models.subtitle.routing": "정책 프로필, dry-run 평가, 그리고 근거가 남는 라우팅 분석입니다.",
   "models.subtitle": "Codex가 보는 모델을 켜고 끕니다 — 네이티브 GPT passthrough와 라우팅된 모델을 프로바이더별로 묶어 보여줍니다(헤더를 클릭하면 접힘). 숨긴 모델은 카탈로그와 선택기에서 빠지지만 정확한 id로 직접 호출할 수 있습니다. 변경 사항은 다음 Codex 턴에 적용됩니다 — opencodex가 Codex의 5분 모델 캐시를 무효화하므로 재시작이 필요 없습니다.",
   "models.nativeGroupLabel": "OpenAI 네이티브",
   "models.nativeHint": "프로바이더에서 선택한 풀 또는 직접 계정 옵션으로 서빙되는 passthrough 모델입니다. 끄면 Codex 선택기에서 숨겨지고, 카탈로그 항목은 유지되므로 다시 켜면 그대로 복원됩니다.",
@@ -445,10 +450,6 @@ export const ko: Record<TKey, string> = {
   "models.workspace.providers": "프로바이더",
   "models.workspace.allProviders": "모든 프로바이더",
   "models.workspace.mainAria": "모델 세부정보",
-  "models.combosEmpty": "아직 설정된 콤보가 없습니다",
-  "models.combosSetup": "설정하기",
-  "models.combosAdd": "콤보 추가하기",
-  "models.combosActive": "{count}개 활성",
   "models.allOn": "모두 켜기",
   "models.allOff": "모두 끄기",
   "models.cap350k": "350k 제한",
@@ -1204,7 +1205,6 @@ export const ko: Record<TKey, string> = {
   "api.attribution.ambiguous": "두 키가 같은 ID를 쓰고 있어 어느 쪽 사용량인지 가릴 수 없습니다. 설정 파일에서 키마다 다른 ID를 주세요.",
   "api.attribution.railAmbiguous": "ID 중복",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Claude Code에서 GPT, Gemini 등 다른 모델도 쓸 수 있게 해줍니다.",
   "claude.enabledLabel": "Claude 연결",
   "claude.enabledHint": "끄면 Claude Code가 이 프록시를 사용할 수 없습니다.",
@@ -1742,6 +1742,7 @@ export const ko: Record<TKey, string> = {
   "cws.allCombos": "모든 콤보",
   "cws.copyModel": "ID 복사",
   "cws.copied": "복사됨",
+  "cws.tabsLabel": "콤보 상세 섹션",
   "cws.tab.config": "설정",
   "cws.tab.about": "정보",
   "cws.strategy": "전략",

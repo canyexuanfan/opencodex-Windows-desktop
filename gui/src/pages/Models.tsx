@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
-import { IconChevron, IconBoxes, IconInfo, IconShuffle, IconCheck, IconAlert } from "../icons";
+import { IconChevron, IconBoxes, IconInfo, IconCheck, IconAlert } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { formatNamespacedModelId, formatProviderDisplayName, providerDisplaySlug } from "../provider-icons";
-import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { setClientResourceData } from "../client-resource";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
+import ErrorBoundary from "../components/ErrorBoundary";
+import Combos from "./Combos";
+import RoutingProfiles from "./RoutingProfiles";
+import { ModelsTabStrip } from "./models-tab-strip";
+import {
+  modelsPanelDomId,
+  modelsTabDomId,
+  readModelsTab,
+  selectModelsTab,
+  type ModelsTab,
+} from "./models-tab";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
@@ -34,11 +44,9 @@ import {
   fmtK,
   PAGE,
   readCollapsedProviders,
-  readCombosOpen,
   THREAD_OPTION_SET,
   THREAD_OPTIONS,
   writeCollapsedProviders,
-  writeCombosOpen,
   discoveryFailureLabel,
   type ModelRow,
   type ProviderContextCapsResponse,
@@ -58,13 +66,53 @@ type CachedModelsPage = {
   contextCapValue: number;
 };
 
-/** Session JSON is untrusted — only seed rows that survive parseComboList (targets always arrays). */
-function readCachedCombos(value: unknown): ComboItem[] | null {
-  if (!Array.isArray(value)) return null;
-  return parseComboList({ combos: value });
-}
+/** One subtitle per tab: only one panel is visible, so only one description applies. */
+const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
+  catalog: "models.subtitle",
+  combos: "models.subtitle.combos",
+  routing: "models.subtitle.routing",
+};
 
 export default function Models({ apiBase }: { apiBase: string }) {
+  /*
+   * Tab state. The hash is the source of truth, so refresh, bookmark, and
+   * Back/Forward keep the choice — same contract as `#logs` / `#logs/debug`.
+   *
+   * Panels mount lazily and then STAY mounted, hidden, so a half-typed combo draft
+   * survives a tab hop. The mounted set accumulates in the handler rather than an
+   * effect: an effect would cost a second render pass on every switch for a value both
+   * callers already know.
+   */
+  const [tab, setTab] = useState<ModelsTab>(readModelsTab);
+  const [mounted, setMounted] = useState<ReadonlySet<ModelsTab>>(() => new Set([readModelsTab()]));
+
+  const activateTab = useCallback((next: ModelsTab) => {
+    setTab(next);
+    setMounted(current => (current.has(next) ? current : new Set([...current, next])));
+  }, []);
+
+  useEffect(() => {
+    const syncFromHash = () => activateTab(readModelsTab());
+    window.addEventListener("hashchange", syncFromHash);
+    window.addEventListener("popstate", syncFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncFromHash);
+      window.removeEventListener("popstate", syncFromHash);
+    };
+  }, [activateTab]);
+
+  const selectTab = useCallback((next: ModelsTab) => {
+    // Deliberate navigation: push a history entry so Back/Forward restore the tab.
+    selectModelsTab(next);
+    activateTab(next);
+  }, [activateTab]);
+
+  const catalogActive = tab === "catalog";
+
+  /** Counts reported up by the panels that own the underlying lists. */
+  const [comboCount, setComboCount] = useState<number | null>(null);
+  const [routingCount, setRoutingCount] = useState<number | null>(null);
+
   const t: TFn = useT();
   const cacheKey = `ocx.models.catalog.v1:${apiBase}`;
   const cached = useMemo(() => readSessionListCache<CachedModelsPage>(cacheKey), [cacheKey]);
@@ -130,42 +178,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [shadowCall, setShadowCall] = useState<ShadowCallData | null>(null);
   const [shadowCallSaving, setShadowCallSaving] = useState(false);
-  // Combo summary section. null = cold load with no seed (pending strut). Failed reads stay
-  // null + combosError so an API error never masquerades as "no combos configured".
-  const combosCacheKey = `ocx.models.combos.v1:${apiBase}`;
-  const seededCombos = useMemo(() => {
-    const own = readCachedCombos(readSessionListCache<unknown>(combosCacheKey));
-    if (own !== null) return own;
-    // Reuse the Combos workspace session snapshot when Models opens first in the session.
-    const workspace = readSessionListCache<{ combos?: unknown }>(`ocx.combos.workspace.v1:${apiBase}`);
-    return readCachedCombos(workspace?.combos);
-  }, [apiBase, combosCacheKey]);
-  const combosResource = useDataSurface<ComboItem[]>(
-    `models-combos:${apiBase}`,
-    [apiBase],
-    async (signal) => {
-      const r = await fetch(`${apiBase}/api/combos`, { signal });
-      const j = await readJsonOrThrow<unknown>(r);
-      const next = parseComboList(j);
-      writeSessionListCache(combosCacheKey, next);
-      return next;
-    },
-    { isEmpty: () => false, initialData: seededCombos ?? undefined },
-  );
-  const combosState = combosResource.state;
-  // Keep a previously painted card on a later failure so the catalog does not yank down.
-  const combos = combosState.data ?? seededCombos;
-  // Announce failures even when stale/seeded rows remain (layout kept; freshness not faked).
-  const combosError = combosState.showError;
-  const [combosOpen, setCombosOpen] = useState(readCombosOpen);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-  const toggleCombosOpen = () => {
-    const next = !combosOpen;
-    writeCombosOpen(next);
-    setCombosOpen(next);
-  };
 
   useEffect(() => () => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -211,10 +226,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const fetchCatalog = useCallback(async (signal: AbortSignal): Promise<CachedModelsPage> => {
     const [modelsRes, capsRes, providersRes, selectionData] = await Promise.all([
-      fetch(`${apiBase}/api/models`),
-      fetch(`${apiBase}/api/provider-context-caps`),
-      fetch(`${apiBase}/api/providers`),
-      fetchSelectedModels(apiBase),
+      // Every request carries the resource signal, so leaving the catalog tab cancels
+      // the work rather than only discarding its result.
+      fetch(`${apiBase}/api/models`, { signal }),
+      fetch(`${apiBase}/api/provider-context-caps`, { signal }),
+      fetch(`${apiBase}/api/providers`, { signal }),
+      fetchSelectedModels(apiBase, fetch, signal),
     ]);
     const [data, capsData, providerData] = await Promise.all([
       readJsonOrThrow<ModelRow[]>(modelsRes),
@@ -268,7 +285,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
       applyCatalog(next);
       return next;
     },
-    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined },
+    // Gated on the catalog tab: a 10-second poll that keeps running while the user
+    // reads Combos or Routing is exactly the hidden work this workspace avoids.
+    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive },
   );
   const catalogState = catalogResource.state;
 
@@ -295,6 +314,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   // Shadow/v2 controls must not wait on the models catalog (live discovery can be slow).
   useEffect(() => {
+    // Both belong to the catalog tab; a hidden panel polling /api/v2 every ten seconds
+    // is the same leak as the catalog poll above.
+    if (!catalogActive) return;
     const timeout = window.setTimeout(() => {
       void loadShadowCall();
       void loadV2();
@@ -306,12 +328,20 @@ export default function Models({ apiBase }: { apiBase: string }) {
       window.clearTimeout(timeout);
       window.clearInterval(timer);
     };
-  }, [loadShadowCall, loadV2]);
+  }, [catalogActive, loadShadowCall, loadV2]);
 
   const groups = useMemo(
     () => buildProviderModelGroups(models, providers),
     [models, providers],
   );
+
+  /*
+   * The catalog count is only honest once a seed or a real response has landed. With
+   * the catalog gated, a cold load straight to `#models/combos` never fetches it, and
+   * rendering "0/0" would present unknown as fact.
+   */
+  const catalogCountReady = models.length > 0 || catalogState.data !== undefined;
+
 
   // One-shot default collapse. It stays an effect on `groups` so CACHED groups collapse
   // immediately on first paint, even when revalidation is slow or fails; moving it into
@@ -337,6 +367,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
       disabled.has(model.namespaced),
     )).length;
   }, [disabled, models, selectedModels]);
+
+  /*
+   * Quiet per-tab counts. A count is omitted, never zeroed, while it is unknown: the
+   * panels report theirs up once mounted, and a tab that has never been opened has
+   * nothing truthful to say.
+   */
+  const tabMeta = useMemo(() => ({
+    catalog: catalogCountReady
+      ? t("models.active", { active: effectiveVisibleCount, total: models.length })
+      : undefined,
+    combos: comboCount === null ? undefined : String(comboCount),
+    routing: routingCount === null ? undefined : String(routingCount),
+  }), [catalogCountReady, comboCount, effectiveVisibleCount, models.length, routingCount, t]);
 
   const applyVisibility = async (
     scope: ModelVisibilityScope,
@@ -658,22 +701,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const catalog = catalogState.data ?? cached;
 
-  // A session seed keeps the workspace usable during the first shared-resource revalidation.
-  // Without a catalog, the skeleton owns the only live region for this transition.
-  if (catalogState.showSkeleton && !catalog) {
-    return (
-      <DataSurfaceSkeleton label={t("models.loading")} rows={5} />
-    );
-  }
-  if (catalogState.kind === "failed-cold") {
-    const reason = catalogState.error instanceof Error ? catalogState.error.message : t("models.loadFail");
-    return (
-      <>
-        <Notice tone="err">{reason}</Notice>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => catalogResource.refresh()}>{t("common.retry")}</button>
-      </>
-    );
-  }
+  /*
+   * Catalog loading and cold failure belong to the CATALOG PANEL, not the page.
+   *
+   * These used to be component-level early returns, which is correct for a page that is
+   * only a catalog and wrong for a page that owns three tabs: a slow or failed catalog
+   * would unmount the whole workspace, tab strip included, taking every sibling panel
+   * and any unsaved combo draft with it — and on a cold failure the user could not even
+   * reach Combos or Routing. Rendered below inside the catalog panel instead.
+   */
+  const catalogColdFailure = catalogState.kind === "failed-cold"
+    ? (catalogState.error instanceof Error ? catalogState.error.message : t("models.loadFail"))
+    : null;
+  const catalogCold = catalogState.showSkeleton && !catalog;
 
   const selectedModelMap = selectedModels ?? {};
 
@@ -1059,97 +1099,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </>
   );
 
-  const combosBlock = (
-    <>
-      {/* Silent height strut: reserves the empty-card slot so a late /api/combos
-          cannot insert a row, without a bordered "Combos · Loading…" placeholder. */}
-      {combos === null && !combosError && (
-        <div className="models-combos-card models-combos-card--pending" aria-busy="true">
-          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-            {t("common.loading")}
-          </span>
-        </div>
-      )}
-      {combos === null && combosError && (
-        <div className="card models-combos-card">
-          <div className="row models-combos-empty-head">
-            <div className="row models-field-row" style={{ minWidth: 0 }}>
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-            </div>
-            <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-              {t("common.retry")}
-            </button>
-          </div>
-        </div>
-      )}
-      {combos !== null && combos.length === 0 && (
-        <div className="card models-combos-card">
-          <div className="row models-combos-empty-head">
-            <div className="row models-field-row" style={{ minWidth: 0 }}>
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              {combosError ? (
-                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-              ) : (
-                <span className="muted text-label">{t("models.combosEmpty")}</span>
-              )}
-            </div>
-            {combosError ? (
-              <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-                {t("common.retry")}
-              </button>
-            ) : (
-              <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
-            )}
-          </div>
-        </div>
-      )}
-      {combos !== null && combos.length > 0 && (
-        <div className="card models-combos-card">
-          <div className={`row group-head models-field-row${combosOpen ? " open" : ""}`}>
-            <button
-              type="button"
-              className="row models-field-row"
-              aria-expanded={combosOpen}
-              onClick={toggleCombosOpen}
-              style={{ flex: 1, background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left", minWidth: 0 }}
-            >
-              <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", flexShrink: 0, transform: combosOpen ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              <span className="muted mono text-label">{t("models.combosActive", { count: combos.length })}</span>
-              {combosError && (
-                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-              )}
-            </button>
-            {combosError ? (
-              <button type="button" className="btn btn-sm btn-ghost" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-                {t("common.retry")}
-              </button>
-            ) : (
-              <a className="btn btn-sm btn-ghost" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
-            )}
-          </div>
-          {combosOpen && (
-            <div>
-              {combos.map(c => (
-                <div key={c.id} className="row models-combo-row">
-                  <span className="mono leading-ui">{c.model}</span>
-                  <span className="muted text-label">{c.strategy} · {c.targets.length}</span>
-                </div>
-              ))}
-              <a className="row muted models-combos-add" href="#combos">
-                + {t("models.combosAdd")}
-              </a>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-
   const collapseControls = (
     <div className="row models-collapse-controls">
       <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(true)} disabled={busy}>
@@ -1354,15 +1303,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </>
   );
 
-  return (
+  /*
+   * The catalog tab body: everything this page rendered before it grew tabs. It keeps
+   * `.models-workspace-shell`, so the wider-column rule and every workspace style below
+   * it apply unchanged.
+   */
+  const catalogPanel = (
     <div className="models-workspace-shell">
-      <div className="page-head">
-        <h2>{t("nav.models")}</h2>
-        <div className="row">
-          <span className="muted mono text-label">{t("models.active", { active: effectiveVisibleCount, total: models.length })}</span>
-        </div>
-      </div>
-      <p className="page-sub">{t("models.subtitle")}</p>
       {status && (
         <div className={`action-toast notice ${ok ? "notice-ok" : "notice-err"}`} role="status" aria-live="polite">
           {ok ? <IconCheck /> : <IconAlert />}
@@ -1414,7 +1361,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
         </aside>
         <section className="models-workspace-main" aria-label={t("models.workspace.mainAria")}>
           {controlsBlock}
-          {combosBlock}
           {collapseControls}
           <div className="models-provider-list">
             {
@@ -1427,6 +1373,101 @@ export default function Models({ apiBase }: { apiBase: string }) {
       </div>
       {modalsBlock}
     </div>
+  );
+
+  return (
+    <>
+      <div className="page-head">
+        <h2>{t("nav.models")}</h2>
+      </div>
+      <ModelsTabStrip tab={tab} onSelect={selectTab} meta={tabMeta} />
+      {/*
+        One subtitle for the active tab, rendered between the strip and the panels.
+        Only one panel is visible, so a subtitle per panel would be three copies of a
+        thing the user can only ever see one of — and the catalog's five-line copy was
+        pushing the full-height Combos workspace off the viewport.
+      */}
+      <p className="page-sub">{t(SUBTITLE_TKEY[tab])}</p>
+
+      {/*
+        Panels mount lazily and then stay mounted, hidden — a half-typed combo draft
+        survives a tab hop. `hidden` matches the APG examples and the existing Logs tab.
+        Each panel owns an error boundary so one failing tab cannot take the others with
+        it; App's page-level boundary is keyed by page and would otherwise stay tripped
+        across a tab switch.
+      */}
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("catalog")}
+        aria-labelledby={modelsTabDomId("catalog")}
+        hidden={tab !== "catalog"}
+      >
+        <ErrorBoundary
+          pageName={t("models.tab.catalog")}
+          title={t("errorBoundary.title")}
+          message={t("errorBoundary.message")}
+          detailsLabel={t("errorBoundary.details")}
+          reloadLabel={t("errorBoundary.reload")}
+        >
+          {catalogCold
+            ? <DataSurfaceSkeleton label={t("models.loading")} rows={5} />
+            : catalogColdFailure !== null
+              ? (
+                <>
+                  <Notice tone="err">{catalogColdFailure}</Notice>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => catalogResource.refresh()}>{t("common.retry")}</button>
+                </>
+              )
+              : catalogPanel}
+        </ErrorBoundary>
+      </div>
+
+      {/*
+        The panel SHELL is always present; only its contents mount lazily. A conditional
+        wrapper left the tab's `aria-controls` pointing at an element that did not exist
+        until the tab had been visited once.
+      */}
+      <div
+        className="models-tab-panel models-tab-panel--fill"
+        role="tabpanel"
+        id={modelsPanelDomId("combos")}
+        aria-labelledby={modelsTabDomId("combos")}
+        hidden={tab !== "combos"}
+      >
+        {mounted.has("combos") && (
+          <ErrorBoundary
+            pageName={t("models.tab.combos")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <Combos apiBase={apiBase} active={tab === "combos"} onCountChange={setComboCount} />
+          </ErrorBoundary>
+        )}
+      </div>
+
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("routing")}
+        aria-labelledby={modelsTabDomId("routing")}
+        hidden={tab !== "routing"}
+      >
+        {mounted.has("routing") && (
+          <ErrorBoundary
+            pageName={t("models.tab.routing")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <RoutingProfiles apiBase={apiBase} active={tab === "routing"} onCountChange={setRoutingCount} />
+          </ErrorBoundary>
+        )}
+      </div>
+    </>
   );
 
 }

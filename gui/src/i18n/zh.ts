@@ -10,7 +10,6 @@ export const zh: Record<TKey, string> = {
   "nav.providers": "提供方",
   "nav.models": "模型",
   "nav.combos": "组合",
-  "nav.routing": "路由 (beta)",
   "nav.subagents": "子代理",
 
   // routing intelligence
@@ -435,6 +434,12 @@ export const zh: Record<TKey, string> = {
   "prov.openaiApiSetup": "设置 API 密钥",
 
   // models
+  "models.tab.catalog": "模型",
+  "models.tab.combos": "组合",
+  "models.tab.routing": "路由 (beta)",
+  "models.tabsLabel": "模型界面",
+  "models.subtitle.combos": "把多个模型合成一个 id 依次应答。failover 按顺序尝试，round-robin 分摊负载。",
+  "models.subtitle.routing": "策略配置、dry-run 评估，以及有据可查的路由分析。",
   "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。隐藏的模型不会出现在目录和模型选择器中，但仍可按精确 id 直接调用。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
   "models.nativeGroupLabel": "OpenAI 原生",
   "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
@@ -442,10 +447,6 @@ export const zh: Record<TKey, string> = {
   "models.workspace.providers": "提供方",
   "models.workspace.allProviders": "所有提供方",
   "models.workspace.mainAria": "模型详情",
-  "models.combosEmpty": "尚未配置组合",
-  "models.combosSetup": "设置",
-  "models.combosAdd": "添加组合",
-  "models.combosActive": "{count} 个已启用",
   "models.allOn": "全部开启",
   "models.allOff": "全部关闭",
   "models.cap350k": "限制 350k",
@@ -1197,7 +1198,6 @@ export const zh: Record<TKey, string> = {
   "api.attribution.ambiguous": "两个密钥共用同一个 ID，无法判断用量属于哪一个。请在配置文件中为每个密钥设置唯一 ID。",
   "api.attribution.railAmbiguous": "ID 重复",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "在 Claude Code 中使用 GPT、Gemini 等其他模型。",
   "claude.enabledLabel": "Claude 连接",
   "claude.enabledHint": "关闭后 Claude Code 无法使用此代理。",
@@ -1735,6 +1735,7 @@ export const zh: Record<TKey, string> = {
   "cws.allCombos": "全部组合",
   "cws.copyModel": "复制 ID",
   "cws.copied": "已复制",
+  "cws.tabsLabel": "组合详情分区",
   "cws.tab.config": "配置",
   "cws.tab.about": "关于",
   "cws.strategy": "策略",

@@ -10,7 +10,6 @@ export const ru: Record<TKey, string> = {
   "nav.providers": "Провайдеры",
   "nav.models": "Модели",
   "nav.combos": "Комбо",
-  "nav.routing": "Маршрутизация (beta)",
   "nav.subagents": "Подагенты",
 
   // routing intelligence
@@ -440,6 +439,12 @@ export const ru: Record<TKey, string> = {
   "prov.openaiApiSetup": "Настроить API-ключ",
 
   // models
+  "models.tab.catalog": "Модели",
+  "models.tab.combos": "Комбо",
+  "models.tab.routing": "Маршрутизация (beta)",
+  "models.tabsLabel": "Поверхности моделей",
+  "models.subtitle.combos": "Упорядоченные группы моделей, отвечающие под одним id. Failover пробует цели по порядку, round-robin распределяет нагрузку.",
+  "models.subtitle.routing": "Профили политик, оценка в режиме dry-run и аналитика маршрутизации с подтверждением источников.",
   "models.subtitle": "Управляйте тем, какие модели видит Codex — нативные GPT (сквозной проброс) и модели маршрутизируемых провайдеров, сгруппированные по провайдеру (нажмите на заголовок, чтобы свернуть группу). Скрытые модели исчезают из каталога и селектора, но остаются вызываемыми по точному id. Изменения применяются на следующем ходе Codex — opencodex сбрасывает 5-минутный кэш моделей Codex, поэтому перезапуск не требуется.",
   "models.nativeGroupLabel": "Нативные OpenAI",
   "models.nativeHint": "Модели сквозного проброса используют режим аккаунта (пул или прямое подключение), выбранный на странице «Провайдеры». Отключение модели скрывает её из селектора Codex (запись в каталоге сохраняется, поэтому при повторном включении она восстанавливается в точности).",
@@ -447,10 +452,6 @@ export const ru: Record<TKey, string> = {
   "models.workspace.providers": "Провайдеры",
   "models.workspace.allProviders": "Все провайдеры",
   "models.workspace.mainAria": "Сведения о моделях",
-  "models.combosEmpty": "Комбо ещё не настроены",
-  "models.combosSetup": "Настроить",
-  "models.combosAdd": "Добавить комбо",
-  "models.combosActive": "Активно: {count}",
   "models.allOn": "Все вкл.",
   "models.allOff": "Все выкл.",
   "models.cap350k": "Лимит 350k",
@@ -1627,7 +1628,6 @@ export const ru: Record<TKey, string> = {
   "api.attribution.ambiguous": "Два ключа используют один и тот же ID, поэтому нельзя определить, чьё это использование. Задайте каждому ключу уникальный ID в файле конфигурации.",
   "api.attribution.railAmbiguous": "дубль ID",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Используйте GPT, Gemini и другие модели внутри Claude Code.",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "Настройки",
@@ -1825,6 +1825,7 @@ export const ru: Record<TKey, string> = {
   "cws.allCombos": "Все комбо",
   "cws.copyModel": "Копировать id",
   "cws.copied": "Скопировано",
+  "cws.tabsLabel": "Разделы деталей комбо",
   "cws.tab.config": "Конфигурация",
   "cws.tab.about": "О комбо",
   "cws.strategy": "Стратегия",

@@ -3,7 +3,7 @@ title: Routing Profile Editor
 description: Create, edit, validate, dry-run, and remove routing policy profiles from the OpenCodex dashboard.
 ---
 
-The **Routing** page in the OpenCodex dashboard can manage `config.routingProfiles` without editing `config.json` by hand.
+The **Models → Routing** tab in the OpenCodex dashboard can manage `config.routingProfiles` without editing `config.json` by hand.
 
 ## Create a profile
 

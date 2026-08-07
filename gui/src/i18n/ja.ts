@@ -10,7 +10,6 @@ export const ja: Record<TKey, string> = {
   "nav.providers": "プロバイダー",
   "nav.models": "モデル",
   "nav.combos": "コンボ",
-  "nav.routing": "ルーティング (beta)",
   "nav.subagents": "サブエージェント",
 
   // routing intelligence
@@ -435,6 +434,12 @@ export const ja: Record<TKey, string> = {
   "prov.openaiApiSetup": "API キーを設定",
 
   // models
+  "models.tab.catalog": "モデル",
+  "models.tab.combos": "コンボ",
+  "models.tab.routing": "ルーティング (beta)",
+  "models.tabsLabel": "モデルサーフェス",
+  "models.subtitle.combos": "複数のモデルを 1 つの id にまとめ、順に応答させます。failover は順番に試し、round-robin は負荷を分散します。",
+  "models.subtitle.routing": "ポリシープロファイル、dry-run 評価、そして根拠の残るルーティング分析です。",
   "models.subtitle": "Codex に表示するモデルを切り替えます — ネイティブ GPT パススルーとルーティングプロバイダー、プロバイダー別(ヘッダーをクリックで折りたたみ)。非表示モデルはカタログとピッカーから外れますが、正確な id での直接呼び出しは可能です。変更は次回の Codex ターンで適用 — opencodex は Codex の 5 分間モデルキャッシュを無効化するので再起動は不要です。",
   "models.nativeGroupLabel": "OpenAI ネイティブ",
   "models.nativeHint": "パススルーモデルはプロバイダーで選択したプールまたはダイレクトアカウントオプションを使用します。一つオフにすると Codex ピッカーから隠します(カタログエントリは保持されるので、再有効化で正確に復元されます)。",
@@ -442,10 +447,6 @@ export const ja: Record<TKey, string> = {
   "models.workspace.providers": "プロバイダー",
   "models.workspace.allProviders": "すべてのプロバイダー",
   "models.workspace.mainAria": "モデルの詳細",
-  "models.combosEmpty": "まだコンボが設定されていません",
-  "models.combosSetup": "セットアップ",
-  "models.combosAdd": "コンボを追加",
-  "models.combosActive": "{count} アクティブ",
   "models.allOn": "すべてオン",
   "models.allOff": "すべてオフ",
   "models.cap350k": "350k 上限",
@@ -1585,7 +1586,6 @@ export const ja: Record<TKey, string> = {
   "api.attribution.ambiguous": "2 つのキーが同じ ID を共有しているため、どちらの使用状況か判別できません。設定ファイルでキーごとに一意の ID を指定してください。",
   "api.attribution.railAmbiguous": "ID 重複",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Claude Code 内で GPT、Gemini などのモデルを使用します。",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "設定",
@@ -1783,6 +1783,7 @@ export const ja: Record<TKey, string> = {
   "cws.copyModel": "ID をコピー",
   "cws.copied": "コピーしました",
   "cws.renamed": "{from} を {to} に変更しました。",
+  "cws.tabsLabel": "コンボ詳細セクション",
   "cws.tab.config": "設定",
   "cws.tab.about": "概要",
   "cws.strategy": "ストラテジー",

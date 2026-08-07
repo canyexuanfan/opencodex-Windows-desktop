@@ -161,7 +161,7 @@ combo 失败分为 **跳转** 失败和 **终止** 失败。
 
 ### Dashboard
 
-打开本地 dashboard 并选择 **Combos**。该工作区可以创建、编辑、重命名和删除 combo，其目标选择器会排除已禁用的模型和嵌套 combo。
+打开本地 dashboard 并选择 **Models → Combos**。该工作区可以创建、编辑、重命名和删除 combo，其目标选择器会排除已禁用的模型和嵌套 combo。
 
 ### CLI
 

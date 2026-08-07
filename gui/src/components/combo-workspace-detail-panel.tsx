@@ -16,6 +16,16 @@ import { clampedNumberInput } from "./combo-workspace-utils";
 
 type DetailTab = "config" | "about";
 
+const DETAIL_TABS: readonly DetailTab[] = ["config", "about"];
+
+/*
+ * A combo id can be any string, so it cannot go in a DOM id without escaping. These
+ * ids only have to be unique within one mounted DetailPanel — the workspace renders a
+ * single detail at a time, keyed by combo id — so the tab name alone is enough.
+ */
+const detailTabDomId = (tab: DetailTab) => `cws-detail-tab-${tab}`;
+const detailPanelDomId = (tab: DetailTab) => `cws-detail-panel-${tab}`;
+
 export function DetailPanel({
   baseline,
   isCreate = false,
@@ -47,6 +57,24 @@ export function DetailPanel({
 }) {
   const t = useT();
   const [tab, setTab] = useState<DetailTab>("config");
+
+  /*
+   * Arrow/Home/End traversal, matching ProviderDetails. Without it the tablist is two
+   * ordinary tab stops, which is not what a `tablist` role promises.
+   */
+  const onDetailTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number;
+    if (event.key === "ArrowRight") next = (index + 1) % DETAIL_TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + DETAIL_TABS.length) % DETAIL_TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = DETAIL_TABS.length - 1;
+    else return;
+    event.preventDefault();
+    setTab(DETAIL_TABS[next]!);
+    event.currentTarget.parentElement
+      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]
+      ?.focus();
+  }, []);
   const [draft, setDraft] = useState<ComboItem>(baseline);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -162,17 +190,49 @@ export function DetailPanel({
 
       {msg && <Notice tone={msg.ok ? "ok" : "err"}>{msg.text}</Notice>}
 
-      <div className="combos-workspace-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === "config"} className={`combos-workspace-tab${tab === "config" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("config")}>
-          {t("cws.tab.config")}
-        </button>
-        <button type="button" role="tab" aria-selected={tab === "about"} className={`combos-workspace-tab${tab === "about" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("about")}>
-          {t("cws.tab.about")}
-        </button>
+      {/*
+        Pills, not an underline row. Combos is a tab of the Models page now, so an
+        underline strip here would sit directly under the page strip — two rows of the
+        same visual language stacked, which reads as two navigation levels rather than
+        one page's facets.
+
+        The roles stay `tablist`/`tab`/`aria-selected`: these control a real tabpanel
+        below, so this is a tab set wearing pill styling, not a filter. The
+        `radiogroup` shape used by `.models-segmented` would misdescribe the widget.
+      */}
+      <div className="segmented combos-workspace-segmented" role="tablist" aria-label={t("cws.tabsLabel")}>
+        {DETAIL_TABS.map((candidate, index) => (
+          <button
+            key={candidate}
+            type="button"
+            role="tab"
+            id={detailTabDomId(candidate)}
+            aria-selected={tab === candidate}
+            aria-controls={detailPanelDomId(candidate)}
+            // Roving tabindex: the tablist is one tab stop, and arrows move within it.
+            tabIndex={tab === candidate ? 0 : -1}
+            className={`btn btn-sm ${tab === candidate ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setTab(candidate)}
+            onKeyDown={event => onDetailTabKeyDown(event, index)}
+          >
+            {t(candidate === "config" ? "cws.tab.config" : "cws.tab.about")}
+          </button>
+        ))}
       </div>
 
-      <div className="combos-workspace-tab-content" role="tabpanel">
-        {tab === "config" ? (
+      {/*
+        Both panels stay in the tree, the inactive one `hidden`. A single panel whose id
+        followed the active tab left the OTHER tab's `aria-controls` pointing at an
+        element that did not exist — a broken IDREF on whichever tab was not selected.
+      */}
+      <div
+        className="combos-workspace-tab-content"
+        role="tabpanel"
+        id={detailPanelDomId("config")}
+        aria-labelledby={detailTabDomId("config")}
+        hidden={tab !== "config"}
+      >
+        {(
           <div className="cwi-form-grid">
             <div className="cwi-field">
               <label htmlFor="cwi-edit-id">{t("cws.field.id")}</label>
@@ -268,12 +328,25 @@ export function DetailPanel({
               </p>
             </div>
           </div>
-        ) : (
-          <section className="pwi-section">
-            <h3 className="pwi-section-title">{t("cws.aboutTitle")}</h3>
-            <p className="muted" style={{ margin: 0, maxWidth: "70ch", overflowWrap: "anywhere" }}>{t("cws.aboutBody")}</p>
-          </section>
         )}
+      </div>
+
+      {/*
+        `tabIndex={0}` because this panel holds no focusable descendants: without it,
+        Tab out of the tablist would skip the content the tab just revealed.
+      */}
+      <div
+        className="combos-workspace-tab-content"
+        role="tabpanel"
+        id={detailPanelDomId("about")}
+        aria-labelledby={detailTabDomId("about")}
+        hidden={tab !== "about"}
+        tabIndex={0}
+      >
+        <section className="pwi-section">
+          <h3 className="pwi-section-title">{t("cws.aboutTitle")}</h3>
+          <p className="muted" style={{ margin: 0, maxWidth: "70ch", overflowWrap: "anywhere" }}>{t("cws.aboutBody")}</p>
+        </section>
       </div>
     </div>
   );
