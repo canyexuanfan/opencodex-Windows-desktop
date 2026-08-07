@@ -44,7 +44,6 @@ const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
 const SYNTHETIC_BASE_URL = "https://api.synthetic.new/v2";
 const DEEPINFRA_BASE_URL = "https://api.deepinfra.com";
 const NEURALWATT_BASE_URL = "https://api.neuralwatt.com/v1";
-const COMMAND_CODE_BASE_URL = "https://api.commandcode.ai";
 /** Keep a failed probe's previous row at most this long before dropping it. */
 const LAST_GOOD_MAX_AGE_MS = CODEX_CAPACITY_MAX_QUOTA_AGE_MS;
 const nativeMainReportGenerations = new WeakMap<ProviderQuotaReport, number>();
@@ -300,11 +299,6 @@ function isCanonicalDeepInfraBaseUrl(baseUrl: string): boolean {
 
 function isCanonicalNeuralwattBaseUrl(baseUrl: string): boolean {
   return normalizedBaseUrl(baseUrl) === NEURALWATT_BASE_URL;
-}
-
-function isCanonicalCommandCodeBaseUrl(baseUrl: string): boolean {
-  const normalized = normalizedBaseUrl(baseUrl);
-  return normalized === COMMAND_CODE_BASE_URL || normalized === `${COMMAND_CODE_BASE_URL}/provider/v1`;
 }
 
 function a6apiPayload(value: unknown): Record<string, unknown> | null {
@@ -835,84 +829,6 @@ async function fetchNeuralwattQuota(provider: string, config: OcxProviderConfig)
     }
   }
   return windows > 0 ? report(provider, "neuralwatt:quota", quota) : null;
-}
-
-/**
- * Command Code billing — `GET /internal/billing/credits` (+ subscriptions for
- * the monthly plan total). The API key (from `ocx login command-code`) is
- * sent as a Bearer token. The credits payload reports rolling 5-hour and
- * weekly utilization windows plus monthly credit balances; the subscription
- * names the plan whose catalog holds the monthly grant total, so the monthly
- * bar is consumed-share of the grant when the plan is known.
- */
-async function fetchCommandCodeQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
-  // Never send the Command Code credential to a lookalike or non-canonical host.
-  if (!isCanonicalCommandCodeBaseUrl(config.baseUrl)) return null;
-  let apiKey: string;
-  try {
-    apiKey = await getValidAccessToken("command-code");
-  } catch {
-    return null;
-  }
-  if (!apiKey) return null;
-  const headers = { Accept: "application/json", Authorization: `Bearer ${apiKey}` } as const;
-  const [creditsRes, subsRes] = await Promise.all([
-    fetch(`${COMMAND_CODE_BASE_URL}/internal/billing/credits`, {
-      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    }),
-    fetch(`${COMMAND_CODE_BASE_URL}/internal/billing/subscriptions`, {
-      headers, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    }),
-  ]);
-  // 4xx (except 408/429) is a credential/contract problem → terminal; 5xx/network → transient.
-  for (const res of [creditsRes, subsRes]) {
-    if (!res.ok) {
-      return res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429
-        ? TERMINAL_QUOTA_FAILURE
-        : null;
-    }
-  }
-  const creditsBody = asRecord(await creditsRes.json().catch(() => null));
-  const credits = asRecord(creditsBody?.data) ?? creditsBody;
-  if (!credits) return null;
-  const quota: ProviderQuota = { updatedAt: Date.now() };
-  let windows = 0;
-  const windowFrom = (raw: unknown): { percent?: number; resetAt?: number } | null => {
-    const row = asRecord(raw);
-    if (!row) return null;
-    const percent = normalizePercent(row.usedPercent ?? row.used_percent ?? row.percentUsed);
-    const resetAt = normalizeResetAt(row.resetsAt ?? row.resetAt ?? row.reset_at);
-    return percent !== undefined || resetAt !== undefined ? { ...(percent !== undefined ? { percent } : {}), ...(resetAt !== undefined ? { resetAt } : {}) } : null;
-  };
-  const fiveHour = windowFrom(credits.fiveHourWindow ?? credits.five_hour_window);
-  const weekly = windowFrom(credits.weeklyWindow ?? credits.weekly_window);
-  if (fiveHour?.percent !== undefined) {
-    quota.fiveHourPercent = fiveHour.percent;
-    if (fiveHour.resetAt !== undefined) quota.fiveHourResetAt = fiveHour.resetAt;
-    windows += 1;
-  }
-  if (weekly?.percent !== undefined) {
-    quota.weeklyPercent = weekly.percent;
-    if (weekly.resetAt !== undefined) quota.weeklyResetAt = weekly.resetAt;
-    windows += 1;
-  }
-  // Monthly: consumed share of the plan grant when the subscription names a plan.
-  const monthlyCredits = toFiniteNumber(credits.monthlyCredits ?? credits.monthly_credits);
-  const subsBody = asRecord(await subsRes.json().catch(() => null));
-  const subs = Array.isArray(subsBody?.data) ? subsBody.data as unknown[] : Array.isArray(subsBody) ? subsBody as unknown[] : null;
-  const sub = subs?.map(asRecord).find((r): r is Record<string, unknown> => r !== null && String(r.status ?? "").toLowerCase() === "active");
-  const monthlyTotal = sub ? toFiniteNumber(sub.monthlyCreditsTotal ?? sub.monthly_credits_total ?? sub.allowance) : undefined;
-  if (monthlyCredits !== undefined && monthlyTotal !== undefined && monthlyTotal > 0) {
-    const used = Math.max(0, Math.min(monthlyTotal, monthlyTotal - monthlyCredits));
-    const percent = normalizePercent((used / monthlyTotal) * 100);
-    if (percent !== undefined) {
-      quota.monthlyPercent = percent;
-      const periodEnd = sub ? normalizeResetAt(sub.currentPeriodEnd ?? sub.current_period_end ?? sub.periodEnd) : undefined;
-      if (periodEnd !== undefined) quota.monthlyResetAt = periodEnd;
-      windows += 1;
-    }
-  }
-  return windows > 0 ? report(provider, "commandcode:billing", quota) : null;
 }
 
 function report(
@@ -1779,7 +1695,6 @@ async function maybeFetchProviderQuota(
     // Kimi Code `/usages` accepts OAuth or coding-plan API keys, but only on the canonical
     // host and only for real key auth — forward/local modes carry no credential of ours.
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
-    if (provider.authMode === "oauth" && name === "command-code") return fetchCommandCodeQuota(name, provider);
     if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
     }

@@ -493,7 +493,7 @@ The bars show how much of a window (5-hour, weekly, monthly, or
 provider-specific) is already consumed.
 
 Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
-Google Antigravity, Command Code, OpenRouter, DeepSeek, ClinePass, Z.AI,
-MiniMax, Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, and any
-a6api-backed custom provider.
+Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
+Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, and any a6api-backed
+custom provider.
 
