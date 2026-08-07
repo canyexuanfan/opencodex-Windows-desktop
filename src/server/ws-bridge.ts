@@ -6,6 +6,7 @@ import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
 import type { DataPlaneAdmission } from "./auth-cors";
 import type { AdmissionLease, AdmissionReservation } from "../lib/admission";
+import { BoundedSseFrameBuffer } from "./sse-frame-buffer";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -163,15 +164,6 @@ function parseSseBlock(block: string): string | null {
   return data.length > 0 ? data.join("\n") : null;
 }
 
-function nextSseBlock(buffer: string): { block: string; rest: string } | null {
-  const match = buffer.match(/\r?\n\r?\n/);
-  if (!match || match.index === undefined) return null;
-  return {
-    block: buffer.slice(0, match.index),
-    rest: buffer.slice(match.index + match[0].length),
-  };
-}
-
 function payloadType(payload: string): string | null {
   try {
     const json = JSON.parse(payload) as { type?: unknown };
@@ -231,7 +223,7 @@ export async function pumpResponsesSseToWebSocket(
   ws.data.cancel = cancel;
 
   const decoder = new TextDecoder();
-  let buffer = "";
+  const framer = new BoundedSseFrameBuffer();
   let terminalSeen = false;
 
   const handlePayload = (payload: string): boolean => {
@@ -266,17 +258,14 @@ export async function pumpResponsesSseToWebSocket(
     while (!terminalSeen) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let next: { block: string; rest: string } | null;
-      while ((next = nextSseBlock(buffer))) {
-        buffer = next.rest;
-        const payload = parseSseBlock(next.block);
+      for (const frame of framer.feed(value)) {
+        const payload = parseSseBlock(decoder.decode(frame.block));
         if (payload && handlePayload(payload)) break;
       }
     }
-    buffer += decoder.decode();
-    if (!terminalSeen && buffer.trim()) {
-      const payload = parseSseBlock(buffer);
+    const tail = framer.finish();
+    if (!terminalSeen && tail.byteLength > 0) {
+      const payload = parseSseBlock(decoder.decode(tail));
       if (payload) handlePayload(payload);
     }
     if (!terminalSeen && isCurrent() && !clientCancelled) {
@@ -284,11 +273,13 @@ export async function pumpResponsesSseToWebSocket(
       sendProtocolError(ws, 502, "Upstream stream ended before response terminal event");
     }
   } catch (err) {
+    framer.dispose();
     if (!terminalSeen && isCurrent() && ws.readyState === OPEN) {
       if (!(err instanceof WsSendDroppedError)) reportTerminal("incomplete");
       sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
     }
   } finally {
+    framer.dispose();
     if (ws.data.cancel === cancel) ws.data.cancel = undefined;
   }
 }
