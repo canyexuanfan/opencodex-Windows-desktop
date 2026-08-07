@@ -1,5 +1,9 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
-import { PROVIDER_REGISTRY, providerMatchesRegistryTransport, type ProviderRegistryEntry } from "./registry";
+import {
+  PROVIDER_REGISTRY,
+  providerMatchesRegistryTransport,
+  type ProviderRegistryEntry,
+} from "./registry";
 
 export interface DerivedKeyLoginProvider {
   label: string;
