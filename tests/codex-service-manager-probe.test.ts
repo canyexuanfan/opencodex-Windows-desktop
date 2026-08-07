@@ -18,11 +18,13 @@ import {
   type RawProbeRunner,
 } from "../src/service-manager-probe";
 import { inspectNativeCodexOwnership } from "../src/integrations/native/ownership-preflight";
+import { setTrustedWindowsSystemDirectoryResolverForTests } from "../src/lib/windows-elevation";
 
 let home = "";
 const cleanup: string[] = [];
 let previousCodexHome: string | undefined;
 let previousOpencodexHome: string | undefined;
+let trustedSystem32 = "";
 
 /** Records exactly what production asked for, so the allowlist is observed. */
 function recorder(reply: (file: string, args: readonly string[]) => Partial<ReturnType<ProbeRunner>>) {
@@ -45,13 +47,22 @@ function recorder(reply: (file: string, args: readonly string[]) => Partial<Retu
   return { run, runRaw, calls };
 }
 
+// Linux CI fakes win32 but has no kernel32/System32, so the trusted schtasks
+// resolver throws unless pointed at a fake system directory with schtasks.exe
+// present. Mirror windows-elevation.test.ts: wire the resolver seam for every
+// test so the Windows chain-walk suites run anywhere.
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ocx-probe-"));
   cleanup.push(home);
+  trustedSystem32 = join(home, "System32");
+  mkdirSync(trustedSystem32, { recursive: true });
+  writeFileSync(join(trustedSystem32, "schtasks.exe"), "");
+  setTrustedWindowsSystemDirectoryResolverForTests(() => trustedSystem32);
   previousCodexHome = process.env.CODEX_HOME;
   previousOpencodexHome = process.env.OPENCODEX_HOME;
 });
 afterEach(() => {
+  setTrustedWindowsSystemDirectoryResolverForTests(null);
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = previousCodexHome;
   if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
