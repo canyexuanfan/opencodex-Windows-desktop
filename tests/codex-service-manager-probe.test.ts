@@ -225,7 +225,23 @@ describe("could not ask is not an answer", () => {
    * two produced it is not observable from outside, so claiming to test it
    * would be claiming more than this proves.
    */
-  test("a dangling plist symlink does not read as a clean machine", () => {
+  // Windows without Developer Mode / elevated privileges cannot create
+  // symlinks (EPERM). Detect once so this test reports a visible skip there
+  // instead of a spurious failure. Mirrors the probe in claude-agents-inject.
+  const canSymlink = (() => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-symlink-probe-"));
+    try {
+      symlinkSync(join(dir, "probe-target"), join(dir, "probe-link"));
+      return true;
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code === "EPERM") return false;
+      throw e;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  })();
+
+  test.skipIf(!canSymlink)("a dangling plist symlink does not read as a clean machine", () => {
     const agents = join(home, "Library", "LaunchAgents");
     mkdirSync(agents, { recursive: true });
     symlinkSync(join(home, "nothing-here.plist"), join(agents, "com.opencodex.proxy.plist"));
