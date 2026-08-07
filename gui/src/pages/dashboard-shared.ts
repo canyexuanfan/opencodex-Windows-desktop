@@ -5,6 +5,12 @@ import type { TKey } from "../i18n/shared";
 import type { StartupHealthStatus } from "../startup-health-ui";
 
 export type DashboardSection = "overview" | "providers" | "models";
+
+/**
+ * `#dashboard/update` is the sidebar's action deep link. It is not a tab, so it resolves
+ * to Overview (where the maintenance panel lives) and separately asks the dashboard to
+ * open the update dialog.
+ */
 export const DASHBOARD_UPDATE_HASH = "dashboard/update";
 
 export function readDashboardSectionFromHash(): DashboardSection {
@@ -14,14 +20,17 @@ export function readDashboardSectionFromHash(): DashboardSection {
   return "overview";
 }
 
+/** True while the location hash is the sidebar update deep link. */
 export function hashRequestsUpdateDialog(): boolean {
   return window.location.hash.replace(/^#\/?/, "") === DASHBOARD_UPDATE_HASH;
 }
 
+/** Overview is the bare `#dashboard`; the other sections carry a suffix. */
 export function dashboardHashForSection(section: DashboardSection): string {
   return section === "overview" ? "dashboard" : `dashboard/${section}`;
 }
 
+/** Like readJsonOrThrow, but rejects empty/204 bodies that would otherwise yield undefined. */
 export async function requireJson<T>(res: Response, fallbackMessage?: string): Promise<T> {
   const data = await readJsonOrThrow<T>(res, fallbackMessage);
   if (data === undefined) throw new Error(fallbackMessage ?? "empty response");
@@ -35,6 +44,7 @@ export interface SettingsData {
   codexAutoStart: boolean;
   port: number;
   hostname: string;
+  /** IANA zone of the machine running the proxy, used to render log timestamps (#725). */
   timeZone?: string;
   startupHealth?: {
     status: "native" | "protected" | "at-risk";
@@ -157,12 +167,24 @@ export function visionReasoningOptionsFor(ladder: VisionReasoning[], persisted: 
   return ladder.includes(persisted) ? ladder : [persisted, ...ladder];
 }
 
-/** Preserve a supported value; otherwise clamp to the highest rung the selected model advertises. */
+/** Match server normalization: never escalate when a lower/equal supported rung exists. */
 export function clampVisionReasoningToLadder(
   ladder: VisionReasoning[],
   persisted: VisionReasoning,
 ): VisionReasoning {
-  return ladder.includes(persisted) ? persisted : ladder[ladder.length - 1];
+  if (ladder.length === 0 || ladder.includes(persisted)) return persisted;
+  const requestedRank = VISION_REASONING_LEVELS.indexOf(persisted);
+  let best = ladder[0];
+  let bestRank = VISION_REASONING_LEVELS.indexOf(best);
+  for (const effort of ladder) {
+    const rank = VISION_REASONING_LEVELS.indexOf(effort);
+    if (rank <= requestedRank && rank >= bestRank) {
+      best = effort;
+      bestRank = rank;
+    }
+  }
+  // When every supported rung is above the request, use the lowest supported rung.
+  return best;
 }
 
 export function sidecarModelOptions(models: ModelInfo[]) {
@@ -175,6 +197,7 @@ export function sidecarModelOptions(models: ModelInfo[]) {
   return out;
 }
 
+/** Options for shadow-call replacement models use the proxy's canonical routing id. */
 export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined) {
   const out = [{ value: "", label: "—" }, ...models.map(model => ({ value: model.namespaced, label: model.namespaced }))];
   if (current && !out.some(option => option.value === current)) out.push({ value: current, label: current });
@@ -210,10 +233,12 @@ export function useModalDialog(open: boolean, triggerRef: RefObject<HTMLButtonEl
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+
     if (open) {
       if (!dialog.open) dialog.showModal();
       return;
     }
+
     if (dialog.open) dialog.close();
     focusTriggerQuietly(triggerRef.current);
   }, [open, triggerRef]);
