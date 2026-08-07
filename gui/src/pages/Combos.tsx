@@ -70,6 +70,20 @@ export default function Combos({
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
   const cached = useMemo(() => seedCombos(cacheKey), [cacheKey]);
+
+  /*
+   * The last coherent payload, kept so a hidden panel can keep rendering.
+   *
+   * While `active` is false the resource is disabled and reports `data: undefined` with
+   * no skeleton and no error. Falling back to empty arrays there swaps the whole
+   * ComboWorkspace for a first-run empty state and takes every unsaved draft with it —
+   * proven in a browser: type into a combo, switch tabs, come back, field blank.
+   *
+   * State rather than a ref: this repo avoids render-time ref reads under React
+   * Compiler, and a ref would not re-render when the retained payload changes. Written
+   * on the load success path, never during render and never from an effect.
+   */
+  const [retainedData, setRetainedData] = useState<CachedCombosPage | null>(cached ?? null);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -89,12 +103,13 @@ export default function Combos({
     return () => window.clearTimeout(timer);
   }, [status, statusOk]);
 
-  const loadCombos = useCallback(async (): Promise<CachedCombosPage> => {
+  const loadCombos = useCallback(async (signal?: AbortSignal): Promise<CachedCombosPage> => {
     // Keep all three requests parallel: this workspace is only coherent once every input arrives.
     const [combosRes, configRes, modelsRes] = await Promise.all([
-      fetch(`${apiBase}/api/combos`),
-      fetch(`${apiBase}/api/config`),
-      fetch(`${apiBase}/api/models`),
+      // Signals were missing entirely, so resource cleanup could not cancel these.
+      fetch(`${apiBase}/api/combos`, { signal }),
+      fetch(`${apiBase}/api/config`, { signal }),
+      fetch(`${apiBase}/api/models`, { signal }),
     ]);
     if (!combosRes.ok || !configRes.ok || !modelsRes.ok) {
       throw new Error("combo workspace load failed");
@@ -165,6 +180,9 @@ export default function Combos({
 
     const next = { combos, providers, models, cataloguedComboIds: [...catalogued] } satisfies CachedCombosPage;
     writeSessionListCache(cacheKey, next);
+    // Retain the coherent payload here — one place, on the success path, never during
+    // render. See the `retainedData` note below.
+    setRetainedData(next);
     return next;
   }, [apiBase, cacheKey]);
 
@@ -174,14 +192,15 @@ export default function Combos({
     loadCombos,
     /*
      * Gate the network, never the tree. A hidden panel must not fetch, but the rendered
-     * workspace has to stay mounted so an unsaved editor draft survives a tab hop —
-     * that retention path lands in wp03, where the disabled resource stops reporting
-     * data. Until then the panel keeps its own last render.
+     * workspace has to stay mounted so an unsaved editor draft survives a tab hop.
+     * Disabling reports `data: undefined`, so `retainedData` below keeps the last good
+     * payload and the subtree never unmounts.
      */
     { isEmpty: () => false, initialData: cached ?? undefined, enabled: active },
   );
   const { state } = resource;
-  const data = state.data;
+
+  const data = state.data ?? retainedData ?? undefined;
   const combos = data?.combos ?? [];
 
   /*

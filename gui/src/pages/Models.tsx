@@ -268,10 +268,12 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const fetchCatalog = useCallback(async (signal: AbortSignal): Promise<CachedModelsPage> => {
     const [modelsRes, capsRes, providersRes, selectionData] = await Promise.all([
-      fetch(`${apiBase}/api/models`),
-      fetch(`${apiBase}/api/provider-context-caps`),
-      fetch(`${apiBase}/api/providers`),
-      fetchSelectedModels(apiBase),
+      // Every request carries the resource signal, so leaving the catalog tab cancels
+      // the work rather than only discarding its result.
+      fetch(`${apiBase}/api/models`, { signal }),
+      fetch(`${apiBase}/api/provider-context-caps`, { signal }),
+      fetch(`${apiBase}/api/providers`, { signal }),
+      fetchSelectedModels(apiBase, fetch, signal),
     ]);
     const [data, capsData, providerData] = await Promise.all([
       readJsonOrThrow<ModelRow[]>(modelsRes),
@@ -741,22 +743,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const catalog = catalogState.data ?? cached;
 
-  // A session seed keeps the workspace usable during the first shared-resource revalidation.
-  // Without a catalog, the skeleton owns the only live region for this transition.
-  if (catalogState.showSkeleton && !catalog) {
-    return (
-      <DataSurfaceSkeleton label={t("models.loading")} rows={5} />
-    );
-  }
-  if (catalogState.kind === "failed-cold") {
-    const reason = catalogState.error instanceof Error ? catalogState.error.message : t("models.loadFail");
-    return (
-      <>
-        <Notice tone="err">{reason}</Notice>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => catalogResource.refresh()}>{t("common.retry")}</button>
-      </>
-    );
-  }
+  /*
+   * Catalog loading and cold failure belong to the CATALOG PANEL, not the page.
+   *
+   * These used to be component-level early returns, which is correct for a page that is
+   * only a catalog and wrong for a page that owns three tabs: a slow or failed catalog
+   * would unmount the whole workspace, tab strip included, taking every sibling panel
+   * and any unsaved combo draft with it — and on a cold failure the user could not even
+   * reach Combos or Routing. Rendered below inside the catalog panel instead.
+   */
+  const catalogColdFailure = catalogState.kind === "failed-cold"
+    ? (catalogState.error instanceof Error ? catalogState.error.message : t("models.loadFail"))
+    : null;
+  const catalogCold = catalogState.showSkeleton && !catalog;
 
   const selectedModelMap = selectedModels ?? {};
 
@@ -1545,7 +1544,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
           detailsLabel={t("errorBoundary.details")}
           reloadLabel={t("errorBoundary.reload")}
         >
-          {catalogPanel}
+          {catalogCold
+            ? <DataSurfaceSkeleton label={t("models.loading")} rows={5} />
+            : catalogColdFailure !== null
+              ? (
+                <>
+                  <Notice tone="err">{catalogColdFailure}</Notice>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => catalogResource.refresh()}>{t("common.retry")}</button>
+                </>
+              )
+              : catalogPanel}
         </ErrorBoundary>
       </div>
 
