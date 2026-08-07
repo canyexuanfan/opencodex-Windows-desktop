@@ -30,6 +30,13 @@ describe("CodeRabbit readiness revalidation", () => {
     expect(job?.if).toContain("github.event.issue.pull_request != null");
     expect(job?.if).toContain("github.event.comment.user.login == 'coderabbitai[bot]'");
 
+    const checkoutStep = job?.steps?.find(
+      step => step.name === "Checkout trusted PR-quality scripts",
+    );
+    expect(checkoutStep?.with?.ref).toBe(
+      "${{ github.event_name == 'issue_comment' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
+    );
+
     const gateStep = job?.steps?.find(
       step => step.name === "Enforce PR target, ancestry, and description",
     );
