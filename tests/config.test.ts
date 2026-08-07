@@ -2321,26 +2321,4 @@ describe("codex account selection order", () => {
     expect(degraded.config.codexAccountPriorities).toEqual({ work: 1 });
     expect(degraded.warnings).toContainEqual(expect.stringContaining("no longer pinned"));
   });
-
-  test("safeConfigDTO attaches documented limits by destination, not name", async () => {
-    const { safeConfigDTO } = await import("../src/server/auth-cors");
-    const base = getDefaultConfig();
-    // A renamed Groq preset keeps its destination's limits.
-    const renamed = safeConfigDTO({
-      ...base,
-      providers: {
-        "my-groq": { adapter: "openai-chat", authMode: "key", baseUrl: "https://api.groq.com/openai/v1" },
-      },
-    } as never) as { providers: Record<string, { rateLimits?: { rpm?: number } }> };
-    expect(renamed.providers["my-groq"]?.rateLimits?.rpm).toBe(30);
-
-    // A provider named groq but with an edited transport must NOT inherit groq's limits.
-    const edited = safeConfigDTO({
-      ...base,
-      providers: {
-        groq: { adapter: "openai-chat", authMode: "key", baseUrl: "https://custom.example/v1" },
-      },
-    } as never) as { providers: Record<string, { rateLimits?: unknown }> };
-    expect(edited.providers.groq?.rateLimits).toBeUndefined();
-  });
 });

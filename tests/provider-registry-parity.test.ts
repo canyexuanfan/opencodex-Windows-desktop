@@ -1022,26 +1022,4 @@ describe("free-provider directory isolation", () => {
       expect(map?.max, `${provider}/${model} max`).toBe("max");
     }
   });
-
-  test("documented rate limits carry provenance (source + updatedAt)", () => {
-    const withLimits = PROVIDER_REGISTRY.filter(entry => entry.rateLimits);
-    expect(withLimits.length).toBeGreaterThan(0);
-    for (const entry of withLimits) {
-      expect(entry.rateLimits?.source, `${entry.id} rateLimits.source`).toBeTruthy();
-      expect(entry.rateLimits?.updatedAt, `${entry.id} rateLimits.updatedAt`).toBeTruthy();
-      // A rateLimits object with no numeric fields and no freeTier prose is an
-      // empty shell — it would render as "Documented" with nothing after it.
-      const hasNumber = entry.rateLimits?.rpm !== undefined
-        || entry.rateLimits?.tpm !== undefined
-        || entry.rateLimits?.rpd !== undefined;
-      expect(hasNumber || !!entry.rateLimits?.freeTier, `${entry.id} rateLimits is empty`).toBe(true);
-    }
-  });
-
-  test("documented rate limits survive the preset round-trip", () => {
-    const preset = deriveProviderPresets().find(p => p.id === "groq");
-    expect(preset?.rateLimits).toBeTruthy();
-    expect(preset?.rateLimits?.rpm).toBe(30);
-    expect(preset?.rateLimits?.source).toContain("groq.com");
-  });
 });

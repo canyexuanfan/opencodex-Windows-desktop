@@ -26,7 +26,6 @@ import { ProviderIcon } from "./ProviderRail";
 import { formatProviderDisplayName } from "../../provider-icons";
 import QuotaBars from "../QuotaBars";
 import { ProviderCapacityQuota } from "./ProviderCapacityQuota";
-import { ProviderDocumentedLimits } from "./ProviderDocumentedLimits";
 
 export default function ProviderOverviewDashboard({
   sections,
@@ -77,14 +76,6 @@ export default function ProviderOverviewDashboard({
     }
     return result.sort((a, b) => b.urgency - a.urgency || a.item.name.localeCompare(b.item.name));
   }, [allItems, quotaReports]);
-
-  /* Documented-reference rows: providers with registry rate limits but no live bar. */
-  const documentedLimitProviders = useMemo(() => {
-    const withLiveBar = new Set(quotaProviders.map(p => p.item.name));
-    return allItems
-      .filter(item => !withLiveBar.has(item.name) && item.rateLimits)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allItems, quotaProviders]);
 
   /* Recently-used: filter to known provider names and cap at 4 (PR #139 parity) */
   const mostUsed = useMemo(() => {
@@ -197,28 +188,8 @@ export default function ProviderOverviewDashboard({
                 </div>
               ))}
             </div>
-          ) : documentedLimitProviders.length === 0 ? (
+          ) : (
             <p className="muted pws-dashboard-empty">{t("pws.dashboard.noRateLimits")}</p>
-          ) : null}
-          {documentedLimitProviders.length > 0 && (
-            <div className="pws-dashboard-rows pws-dashboard-rows--documented">
-              <div className="pws-dashboard-documented-heading">{t("pws.rateLimits.documented")}</div>
-              {documentedLimitProviders.map(item => (
-                <button
-                  key={item.name}
-                  type="button"
-                  className="pws-dashboard-row"
-                  onClick={() => onSelectProvider(item.name)}
-                >
-                  <ProviderIcon name={item.name} adapter={item.adapter} baseUrl={item.baseUrl} cls="pws-dashboard-row-icon" />
-                  <div className="pws-dashboard-row-info">
-                    <span className="pws-dashboard-row-name">{formatProviderDisplayName(item.name, t)}</span>
-                    {item.rateLimits && <ProviderDocumentedLimits rateLimits={item.rateLimits} t={t} />}
-                  </div>
-                  <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
-                </button>
-              ))}
-            </div>
           )}
         </section>
 

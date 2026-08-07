@@ -34,15 +34,6 @@ export interface CatalogPreset {
   baseUrlChoices?: Array<{ id: string; label: string; baseUrl?: string }>;
   codexAccountMode?: "direct" | "pool";
   provider?: ProviderPayload;
-  /** Documented rate limits (official docs, not probed); shown as reference in the overview. */
-  rateLimits?: {
-    rpm?: number;
-    tpm?: number;
-    rpd?: number;
-    freeTier?: string;
-    source?: string;
-    updatedAt?: string;
-  };
 }
 
 /**

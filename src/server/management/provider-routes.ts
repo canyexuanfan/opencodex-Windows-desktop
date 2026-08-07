@@ -48,7 +48,7 @@ import { readUsageEntries } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
-import { getProviderRegistryEntry, registryEntryForProviderDestination } from "../../providers/registry";
+import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -241,33 +241,20 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   }
 
   if (url.pathname === "/api/providers" && req.method === "GET") {
-    return jsonResponse(Object.entries(config.providers).map(([name, p]) => {
-      // Documented limits follow the DESTINATION, not the config key: a preset
-      // saved under a custom name (e.g. "my-groq") must still surface Groq's
-      // limits, while a key provider whose transport was edited to a custom
-      // host must NOT inherit the registry id's limits. Key providers resolve
-      // purely by destination; forward/oauth/local presets (which the
-      // destination resolver skips) resolve by id.
-      const isKeyAuth = (p.authMode ?? "key") === "key";
-      const registry = isKeyAuth
-        ? registryEntryForProviderDestination(p)
-        : getProviderRegistryEntry(name);
-      return {
-        name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
-        hasApiKey: !!p.apiKey,
-        // Presence only (#959 review): header names and values never leave the process.
-        hasHeaders: !!p.headers && Object.keys(p.headers).length > 0,
-        allowPrivateNetwork: p.allowPrivateNetwork === true,
-        liveModels: p.liveModels !== false,
-        models: p.models ?? [],
-        authMode: p.authMode,
-        apiKeyTransport: p.apiKeyTransport,
-        disabled: p.disabled === true,
-        codexAccountMode: providerCodexAccountMode(name, p),
-        discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
-        ...(registry?.rateLimits ? { rateLimits: { ...registry.rateLimits } } : {}),
-      };
-    }));
+    return jsonResponse(Object.entries(config.providers).map(([name, p]) => ({
+      name, adapter: p.adapter, baseUrl: publicProviderBaseUrl(p.baseUrl), defaultModel: p.defaultModel,
+      hasApiKey: !!p.apiKey,
+      // Presence only (#959 review): header names and values never leave the process.
+      hasHeaders: !!p.headers && Object.keys(p.headers).length > 0,
+      allowPrivateNetwork: p.allowPrivateNetwork === true,
+      liveModels: p.liveModels !== false,
+      models: p.models ?? [],
+      authMode: p.authMode,
+      apiKeyTransport: p.apiKeyTransport,
+      disabled: p.disabled === true,
+      codexAccountMode: providerCodexAccountMode(name, p),
+      discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
+    })));
   }
 
   // Add (or overwrite) a single provider. Merges into the live in-memory config and

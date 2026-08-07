@@ -15,15 +15,6 @@ export interface ProvidersConfig {
     disabled?: boolean;
     note?: string;
     codexAccountMode?: "direct" | "pool";
-    /** Documented rate limits (official docs, not probed); shown as reference in the overview. */
-    rateLimits?: {
-      rpm?: number;
-      tpm?: number;
-      rpd?: number;
-      freeTier?: string;
-      source?: string;
-      updatedAt?: string;
-    };
   }>;
 }
 
