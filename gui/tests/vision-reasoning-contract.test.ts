@@ -4,6 +4,7 @@ import {
   clampVisionReasoningToLadder,
   visionReasoningLadder,
   visionReasoningOptionsFor,
+  visionReasoningPatch,
   type ModelInfo,
 } from "../src/pages/dashboard-shared";
 
@@ -29,4 +30,8 @@ test("vision reasoning clamp matches the server for non-prefix ladders", () => {
 
 test("unknown vision model metadata stays permissive", () => {
   expect(visionReasoningLadder([], "custom/vision-model")).toEqual(VISION_REASONING_LEVELS);
+});
+
+test("effort-only edits cannot rewrite the selected vision model or backend", () => {
+  expect(visionReasoningPatch("high")).toEqual({ vision: { reasoning: "high" } });
 });
