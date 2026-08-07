@@ -353,10 +353,39 @@ describe("the Windows chain walk", () => {
       codexHome: "C:\\Users\\ws\\.codex",
       opencodexHome: "C:\\Users\\ws\\.opencodex",
     });
-    // One bounded query, nothing that mutates.
+    // One bounded query via the trusted System32 schtasks, nothing that mutates.
     expect(calls).toHaveLength(1);
-    expect(calls[0].file).toBe("schtasks");
+    expect(calls[0].file.toLowerCase()).toContain("schtasks");
     expect(calls[0].args).toEqual(["/query", "/tn", "opencodex-proxy", "/xml"]);
+  });
+
+  test("a registered task whose chain disagrees with the staged definition is unknown", () => {
+    const wrapper = writeWindowsWrapper("C:\\Users\\ws\\.codex", "C:\\Users\\ws\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    // The registered task (from /query /xml) points at a COMPLETE foreign chain
+    // whose homes differ from the staged on-disk definition — interrupted reinstall.
+    const foreignWrapper = join(home, ".opencodex", "foreign-wrapper.cmd");
+    writeFileSync(foreignWrapper, [
+      "@echo off",
+      "setlocal",
+      'set "CODEX_HOME=C:\\foreign\\.codex"',
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const foreignLauncher = join(home, ".opencodex", "foreign-launcher.vbs");
+    writeFileSync(foreignLauncher, `shell.Run """${foreignWrapper}""", 0, True\r\n`);
+    const registeredXml = [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      `<Arguments>/b /nologo &quot;${foreignLauncher}&quot;</Arguments>`,
+    ].join("\n");
+    const { run } = recorder(() => ({ status: 0, stdout: registeredXml }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("different homes");
   });
 
   test("batch env-token homes are decoded before they are compared", () => {
@@ -385,6 +414,81 @@ describe("the Windows chain walk", () => {
     const profile = process.env.USERPROFILE ?? "";
     expect(result.claims[0].homes.codexHome).toBe(`${profile}\\.codex`);
     expect(result.claims[0].homes.opencodexHome).toBe(`%PROFILE_VAR%\\custom`);
+  });
+
+  test("escaped and lowercase env tokens decode correctly with a controlled env", () => {
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const wrapper = join(dir, "opencodex-service.cmd");
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      'set "CODEX_HOME=%%USERPROFILE%%\\literal"',
+      'set "OPENCODEX_HOME=%userprofile%\\lower"',
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    // %%USERPROFILE%% is an escaped literal (stays %USERPROFILE%), while the
+    // lowercase %userprofile% is a real token and expands (case-insensitive).
+    expect(result.claims[0].homes.codexHome).toBe(`%USERPROFILE%\\literal`);
+    expect(result.claims[0].homes.opencodexHome).toBe(`${process.env.USERPROFILE ?? ""}\\lower`);
+  });
+
+  test("a wrapper with :loop and rem bun is not a generated wrapper", () => {
+    const dir = join(home, ".opencodex");
+    mkdirSync(dir, { recursive: true });
+    const wrapper = join(dir, "opencodex-service.cmd");
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      'set "CODEX_HOME=C:\\x\\.codex"',
+      ":loop",
+      "rem bun start --port 10100",
+    ].join("\r\n"));
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("scheduler assets are located under the effective OPENCODEX_HOME", () => {
+    // A custom config dir (customized OPENCODEX_HOME) must be honored instead
+    // of the default <home>/.opencodex mirror.
+    const custom = join(home, "custom-home");
+    const wrapper = join(custom, "opencodex-service.cmd");
+    mkdirSync(custom, { recursive: true });
+    writeFileSync(wrapper, [
+      "@echo off",
+      "setlocal",
+      'set "CODEX_HOME=C:\\custom\\.codex"',
+      'set "OCX_BUN=C:\\bun\\bun.exe"',
+      'set "OCX_CLI=C:\\opencodex\\src\\cli\\index.ts"',
+      ":loop",
+      '"%OCX_BUN%" "%OCX_CLI%" start --port 10100',
+    ].join("\r\n"));
+    const launcher = join(custom, "opencodex-service-launcher.vbs");
+    writeFileSync(launcher, `shell.Run """${wrapper}""", 0, True\r\n`);
+    writeFileSync(join(custom, "opencodex-service-task.xml"), [
+      '<?xml version="1.0" encoding="UTF-16"?>',
+      `<Arguments>/b /nologo &quot;${launcher}&quot;</Arguments>`,
+    ].join("\n"));
+    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, run, configDir: custom });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].homes.codexHome).toBe("C:\\custom\\.codex");
   });
 
   test("a malformed wrapper is unknown, not a deliberate omission", () => {
