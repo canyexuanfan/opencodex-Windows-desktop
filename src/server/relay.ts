@@ -11,11 +11,16 @@ import {
   type RequestLogContext,
   type RequestLogEntry,
 } from "./request-log";
+import {
+  BoundedSseFrameBuffer,
+  joinSseFrameBytes,
+  MAX_CLIENT_SSE_FRAME_BYTES,
+} from "./sse-frame-buffer";
 
 const nativePassthroughSseResponses = new WeakSet<Response>();
 const eagerRelaySseResponses = new WeakSet<Response>();
 
-export const MAX_INSPECTION_SSE_FRAME_BYTES = 4 * 1024 * 1024;
+export const MAX_INSPECTION_SSE_FRAME_BYTES = MAX_CLIENT_SSE_FRAME_BYTES;
 export const MAX_COMPLETED_OUTPUT_ITEMS = 256;
 export const MAX_COMPLETED_OUTPUT_ITEM_SOURCE_BYTES = 8 * 1024 * 1024;
 export const MAX_TAIL_ERROR_MESSAGE_CHARS = 512;
@@ -104,30 +109,29 @@ export type SseTerminalOutputBoundary = {
 
 /**
  * Frame-aware client output boundary shared by both native Responses relays.
- * It buffers only the current incomplete SSE block, forwards complete blocks
- * through the first Responses terminal, and drops every later block/byte.
+ * It buffers only the current incomplete SSE block under the same hard byte
+ * cap as inspection, forwards complete blocks through the first Responses
+ * terminal, and drops every later block/byte.
  */
 export function createSseTerminalOutputBoundary(): SseTerminalOutputBoundary {
-  let decoder: TextDecoder | null = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffer = "";
+  const decoder = new TextDecoder();
+  const framer = new BoundedSseFrameBuffer(MAX_INSPECTION_SSE_FRAME_BYTES);
   let terminal = false;
   let done = false;
   let disposed = false;
 
-  const process = (flush: boolean): Uint8Array => {
-    if (disposed || terminal) return new Uint8Array(0);
-    let output = "";
+  const processFrames = (
+    frames: ReturnType<BoundedSseFrameBuffer["feed"]>,
+  ): Uint8Array => {
+    if (disposed || terminal || frames.length === 0) return new Uint8Array(0);
+    const output: Uint8Array[] = [];
     let responsesTerminal = false;
-    for (;;) {
-      const next = nextSseBlock(buffer);
-      if (!next) break;
-      buffer = next.rest;
-      const payload = sseDataPayload(next.block);
-      if (!responsesTerminal) output += next.block + next.delimiter;
+    for (const frame of frames) {
+      const payload = sseDataPayload(decoder.decode(frame.block));
+      if (!responsesTerminal) output.push(frame.block, frame.delimiter);
       if (payload === "[DONE]") {
         done = true;
-        if (responsesTerminal) output += next.block + next.delimiter;
+        if (responsesTerminal) output.push(frame.block, frame.delimiter);
         continue;
       }
       if (!responsesTerminal && payload && terminalStatusFromSsePayload(payload)) {
@@ -136,33 +140,26 @@ export function createSseTerminalOutputBoundary(): SseTerminalOutputBoundary {
     }
     if (responsesTerminal) {
       terminal = true;
-      buffer = "";
+      framer.dispose();
     }
-    if (flush && !terminal && buffer.length > 0) {
-      output += buffer;
-      buffer = "";
-    }
-    return encoder.encode(output);
+    return joinSseFrameBytes(output);
   };
 
   return {
     feed(chunk) {
       if (disposed || terminal) return new Uint8Array(0);
-      buffer += decoder!.decode(chunk, { stream: true });
-      return process(false);
+      return processFrames(framer.feed(chunk));
     },
     finish() {
       if (disposed || terminal) return new Uint8Array(0);
-      buffer += decoder!.decode();
-      return process(true);
+      return framer.finish();
     },
     terminalSeen: () => terminal,
     doneSeen: () => done,
     dispose() {
       if (disposed) return;
       disposed = true;
-      decoder = null;
-      buffer = "";
+      framer.dispose();
     },
   };
 }
