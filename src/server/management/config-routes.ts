@@ -189,7 +189,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     let body: { action?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install", "start", "stop", "uninstall"].includes(String(body.action))) {
-      return jsonResponse({ error: "action must be install, start, stop, or uninstall" }, 400);
+      return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
     }
     if (process.platform !== "win32") return jsonResponse({ error: "Windows tray is only supported on Windows" }, 400);
     try {
@@ -317,7 +317,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: vs.model ?? "gpt-5.4-mini",
         backend: vs.backend,
         reasoning: vs.reasoning ?? "low",
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
@@ -360,8 +360,8 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (body.vision && (body.vision.model !== undefined || body.vision.reasoning !== undefined)) {
       visionReasoningTouched = true;
       const model = typeof body.vision.model === "string"
-        ? (body.vision.model === "" ? "gpt-5.6-luna" : body.vision.model)
-        : (config.visionSidecar?.model ?? "gpt-5.6-luna");
+        ? (body.vision.model === "" ? "gpt-5.4-mini" : body.vision.model)
+        : (config.visionSidecar?.model ?? "gpt-5.4-mini");
       const sourceReasoning = body.vision.reasoning ?? config.visionSidecar?.reasoning;
       normalizedVisionReasoning = sourceReasoning === undefined
         ? undefined
@@ -405,7 +405,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: vs.model ?? "gpt-5.4-mini",
         backend: vs.backend,
         reasoning: vs.reasoning ?? "low",
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
