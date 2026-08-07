@@ -36,3 +36,74 @@ request failed after the first streamed frame
 
   assert.equal(result.valid, true, result.reasons.join("\n"));
 });
+
+test("does not treat vague alternative headings as actionable reproduction", () => {
+  const result = validateIssue({
+    title: "[Bug]: Cursor model does not work",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+The selected Cursor model does not complete a request through the Claude Code integration.
+
+### Environment
+- OpenCodex: 2.10.2
+- OS: Linux
+
+### What fails / what passes
+It does not work.
+`,
+  });
+
+  assert.equal(result.valid, false);
+  assert.match(result.reasons.join("\n"), /Reproduction/i);
+});
+
+test("still rejects an unknown OpenCodex version from Environment", () => {
+  const result = validateIssue({
+    title: "[Bug]: Cursor request fails",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+A Cursor request fails after the proxy starts streaming a response through Claude Code.
+
+### Environment
+- OpenCodex: unknown
+- OS: Linux
+
+### Debug evidence
+Run \`ocx debug provider cursor\`; it returns \`resource_exhausted\` after stream start.
+`,
+  });
+
+  assert.equal(result.valid, false);
+  assert.match(result.reasons.join("\n"), /Version/i);
+});
+
+test("still rejects missing OS metadata from Environment", () => {
+  const result = validateIssue({
+    title: "[Bug]: Cursor request fails",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+A Cursor request fails after the proxy starts streaming a response through Claude Code.
+
+### Environment
+- OpenCodex: 2.10.2
+
+### Debug evidence
+Run \`ocx debug provider cursor\`; it returns \`resource_exhausted\` after stream start.
+`,
+  });
+
+  assert.equal(result.valid, false);
+  assert.match(result.reasons.join("\n"), /Operating system/i);
+});
