@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const { latestCodeRabbitReviewForHead } = require("./pr-quality-state.cjs");
 
 describe("enforce-pr-target workflow", () => {
   const workflowPath = path.join(__dirname, "../workflows/enforce-pr-target.yml");
@@ -153,6 +154,28 @@ describe("enforce-pr-target workflow", () => {
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
     assert.doesNotMatch(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/);
+  });
+
+  it("orders same-head CodeRabbit reviews deterministically without timestamps", () => {
+    const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const latest = latestCodeRabbitReviewForHead({
+      reviews: [
+        {
+          id: 41,
+          commit_id: head,
+          user: { login: "coderabbitai[bot]" },
+          body: "older",
+        },
+        {
+          id: 42,
+          commit_id: head,
+          user: { login: "coderabbitai[bot]" },
+          body: "newer",
+        },
+      ],
+      liveHeadSha: head,
+    });
+    assert.equal(latest?.id, 42);
   });
 
   it("loads pr-quality via require from the checked-out scripts", () => {
