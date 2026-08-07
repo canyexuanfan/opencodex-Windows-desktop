@@ -61,6 +61,60 @@ describe("npm cache access pre-flight", () => {
     expect(inspectNpmCacheDirectory(cache)).toEqual({ ok: true, reason: "cache_accessible" });
   });
 
+  test("a foreign-owned nested symlink does not block the update", () => {
+    // The distinction that decides whether this feature is usable. A real npm cache is full of
+    // symlinks below _npx/node_modules/.bin, and their owner is irrelevant because we never
+    // follow them. Rejecting on ownership before skipping the link would abort updates for
+    // ordinary users — worse than the bug the preflight exists to prevent.
+    // Bind the assertion to ownership specifically. A real foreign-owned symlink cannot be
+    // created in a unit test (that needs a second uid), so the uid is supplied through the
+    // injected seam: report the link as foreign-owned and everything else as ours. If the
+    // symlink skip is moved back below the ownership check, this aborts.
+    const cache = tempRoot("foreign-symlink");
+    const nodeModules = join(cache, "_npx", "abc", "node_modules");
+    mkdirSync(nodeModules, { recursive: true });
+    const linkPath = join(nodeModules, "pkg");
+    symlinkSync(join(tempRoot("foreign-symlink-target"), "nowhere"), linkPath, "dir");
+
+    const ours = process.getuid?.() ?? 0;
+    expect(inspectNpmCacheDirectory(cache, {
+      expectedUid: ours,
+      uidOf: path => (path === linkPath ? ours + 1 : ours),
+    })).toEqual({ ok: true, reason: "cache_accessible" });
+
+    // A foreign-owned REAL directory is still a hard stop — the skip is for links only.
+    expect(inspectNpmCacheDirectory(cache, {
+      expectedUid: ours,
+      uidOf: path => (path === nodeModules ? ours + 1 : ours),
+    })).toEqual({ ok: false, reason: "cache_entry_foreign_owner" });
+  });
+
+  test("an inspection budget that runs out lets the update proceed", () => {
+    // A mature npm cache legitimately holds hundreds of thousands of entries. "We ran out of
+    // budget looking" is not evidence of a broken cache, and treating it as failure locked
+    // ordinary users out of updating entirely.
+    const cache = tempRoot("budget");
+    const deep = join(cache, "_cacache", "content-v2", "sha512");
+    mkdirSync(deep, { recursive: true });
+    for (let i = 0; i < 8; i += 1) writeFileSync(join(deep, `entry-${i}`), "cached");
+
+    expect(inspectNpmCacheDirectory(cache, { maxEntries: 2 })).toEqual({
+      ok: true,
+      reason: "inspection_incomplete",
+    });
+    expect(inspectNpmCacheDirectory(cache, { maxDepth: 1 })).toEqual({
+      ok: true,
+      reason: "inspection_incomplete",
+    });
+
+    // A deadline that has already passed is the same class of answer, not a failure.
+    let clock = 0;
+    expect(inspectNpmCacheDirectory(cache, { nowMs: () => (clock += 10_000), timeoutMs: 1 })).toEqual({
+      ok: true,
+      reason: "inspection_incomplete",
+    });
+  });
+
   test("fails closed on worker timeout", () => {
     const timeoutSpawn = (() => ({ status: null, signal: "SIGTERM", stdout: "", stderr: "" })) as never;
     expect(runNpmCachePreflight({ platform: "linux", spawnSyncFn: timeoutSpawn })).toEqual({

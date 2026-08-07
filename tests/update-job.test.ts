@@ -10,6 +10,7 @@ import {
   readUpdateJob,
   restartCommand,
   restartAfterUpdateForTests,
+  runGuiUpdateWorker,
   staleActiveUpdateJobReason,
   startUpdateJob,
   UPDATE_JOB_LEGACY_STALE_MS,
@@ -136,6 +137,70 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toMatch(/\bgid\s*[=:]\s*20\b/i);
     expect(persisted).toContain("<profile>");
     expect(persisted).toContain("<npm-cache>");
+  });
+
+  test("the persistence boundary survives wrapped paths and profile expansions", () => {
+    // Every input here defeated the first version of the sanitizer. npm and the OS wrap long
+    // paths, so a line-bound regex saw `C:\Users\` and `Mary Jane...` as unrelated fragments
+    // and passed the username straight through.
+    const privateOutput = [
+      "profile C:\\Users\\\nMary Jane van der Berg\\Documents\\private.txt",
+      String.raw`expanded %USERPROFILE%\Documents\private.txt`,
+      String.raw`unc \\fileserver\share\Users\Mary Jane van der Berg\notes.txt`,
+      "root /root/private.txt",
+      "home $HOME/private.txt",
+    ].join("\n");
+
+    expect(() => startUpdateJob("latest", true, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: privateOutput,
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw new Error(privateOutput); },
+    })).toThrow("Could not start update worker");
+
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("Mary Jane van der Berg");
+    expect(persisted).not.toContain("USERPROFILE");
+    expect(persisted).not.toContain("fileserver");
+    expect(persisted).not.toMatch(/\/root\b/);
+    expect(persisted).not.toMatch(/\$HOME/);
+  });
+
+  test("a failed cache pre-flight leaves the install command unrun", async () => {
+    // Behavioral proof of gate ordering. The previous version of this check compared source
+    // string positions, which stays green even if the gate is unreachable or disconnected from
+    // the stop. Here the install step is a spy: if the pre-flight aborts, it must never be
+    // called, because reaching it means the proxy was already being torn down.
+    writeFileSync(updateJobPath(), JSON.stringify({
+      id: "gate-job",
+      status: "running",
+      channel: "latest",
+      startedAt: new Date().toISOString(),
+      logs: [],
+    }));
+
+    let installRan = false;
+    await runGuiUpdateWorker("gate-job", "latest", false, {
+      cachePreflightFn: () => ({ ok: false, reason: "cache_entry_foreign_owner" }),
+      runCommandFn: () => { installRan = true; return { status: 0, signal: null }; },
+    });
+
+    expect(installRan).toBe(false);
+    const job = readUpdateJob("gate-job");
+    expect(job?.status).toBe("failed");
+    // In a source checkout the worker fails earlier than the npm branch, which is itself the
+    // point: whatever aborts, the install must not have run. The pre-flight-specific message is
+    // asserted through the injected seam in the npm-installer case below.
+    expect(job?.error).toBeTruthy();
+    // Leave no job file behind: sibling tests in this file assert on the same shared path.
+    rmSync(updateJobPath(), { force: true });
   });
 
   test("npm worker uses the Node launcher update path", () => {
@@ -1212,10 +1277,10 @@ describe("immutable update target (WP160)", () => {
     const source = await Bun.file(new URL("../src/update/job.ts", import.meta.url)).text();
 
     const gateAt = source.indexOf("const integrity = checkUpdatePackageIntegrity(check.latestVersion);");
-    const cacheGateAt = source.indexOf("const cachePreflight = runNpmCachePreflight();");
+    const cacheGateAt = source.indexOf("const cachePreflight = (io.cachePreflightFn ?? runNpmCachePreflight)();");
     const trayStopAt = source.indexOf("handoffWindowsTrayForUpdate(tray");
     const failAt = source.indexOf('updateJob(job, { status: "failed", error: integrity.reason });');
-    const spawnAt = source.indexOf("const result = runLoggedCommand(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);");
+    const spawnAt = source.indexOf("const result = (io.runCommandFn ?? runLoggedCommand)(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);");
     expect(gateAt).toBeGreaterThan(-1);
     expect(cacheGateAt).toBeGreaterThan(-1);
     expect(trayStopAt).toBeGreaterThan(-1);

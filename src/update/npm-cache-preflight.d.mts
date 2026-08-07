@@ -5,6 +5,7 @@ export type NpmCachePreflightReason =
   | "cache_entry_foreign_owner"
   | "cache_entry_inaccessible"
   | "cache_path_malformed"
+  | "inspection_incomplete"
   | "inspection_limit"
   | "npm_config_failed"
   | "npm_unavailable"
@@ -23,6 +24,8 @@ export interface NpmCacheInspectionOptions {
   maxDepth?: number;
   maxEntries?: number;
   nowMs?: () => number;
+  /** Test seam: resolve an entry's owner uid. Defaults to the lstat result. */
+  uidOf?: (path: string, stat: { uid: number }) => number;
   timeoutMs?: number;
 }
 

@@ -17,6 +17,7 @@ const RESULT_REASONS = new Set([
   "cache_entry_foreign_owner",
   "cache_entry_inaccessible",
   "cache_path_malformed",
+  "inspection_incomplete",
   "inspection_limit",
   "npm_config_failed",
   "npm_unavailable",
@@ -40,12 +41,21 @@ export function inspectNpmCacheDirectory(cachePath, options = {}) {
   const maxEntries = options.maxEntries ?? MAX_ENTRIES;
   const maxDepth = options.maxDepth ?? MAX_DEPTH;
   const nowMs = options.nowMs ?? Date.now;
+  // Injected uid seam. A test cannot create a genuinely foreign-owned file without a second
+  // account, and without this the symlink-before-ownership rule cannot be pinned: `!isDirectory`
+  // skips a link anyway, so removing the rule leaves every assertion green.
+  const uidOf = options.uidOf ?? ((_path, stat) => stat.uid);
   const stack = [{ path: cachePath, depth: 0 }];
   let inspected = 0;
 
   while (stack.length > 0) {
+    // Budget exhausted is NOT a failure. A mature npm cache legitimately holds hundreds of
+    // thousands of entries — this machine's has ~256k — and treating "we ran out of time to
+    // look" as "your cache is broken" would block updates for ordinary users, which is worse
+    // than the bug this preflight exists to prevent. We looked at a bounded prefix, found
+    // nothing wrong, and let the update proceed.
     if (inspected >= maxEntries || nowMs() > deadline) {
-      return { ok: false, reason: "inspection_limit" };
+      return { ok: true, reason: "inspection_incomplete" };
     }
     const current = stack.pop();
     let stat;
@@ -59,19 +69,25 @@ export function inspectNpmCacheDirectory(cachePath, options = {}) {
     }
     inspected += 1;
 
-    if (expectedUid !== undefined && stat.uid !== expectedUid) {
-      return { ok: false, reason: "cache_entry_foreign_owner" };
-    }
+    // A symlinked cache ROOT is a real problem: we cannot vouch for where the install writes.
     if (current.depth === 0 && stat.isSymbolicLink()) {
       return { ok: false, reason: "cache_entry_inaccessible" };
+    }
+    // A nested symlink is not. npm creates them constantly below _npx, node_modules and .bin,
+    // and we never follow them — so its owner is irrelevant and must not abort the update.
+    // This has to come BEFORE the ownership check: a foreign-owned but never-followed link is
+    // exactly the false positive that made the previous attempt at this feature unusable.
+    if (stat.isSymbolicLink()) continue;
+
+    if (expectedUid !== undefined && uidOf(current.path, stat) !== expectedUid) {
+      return { ok: false, reason: "cache_entry_foreign_owner" };
     }
     if (inaccessibleByMode(stat)) {
       return { ok: false, reason: "cache_entry_inaccessible" };
     }
-    // Ownership was checked with lstat. Never follow a cache symlink: npm commonly
-    // creates them below _npx/node_modules and .bin, and their targets are unrelated.
-    if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-    if (current.depth >= maxDepth) return { ok: false, reason: "inspection_limit" };
+    if (!stat.isDirectory()) continue;
+    // Same reasoning as the entry budget: too deep to finish is not evidence of a bad cache.
+    if (current.depth >= maxDepth) return { ok: true, reason: "inspection_incomplete" };
 
     let entries;
     try {

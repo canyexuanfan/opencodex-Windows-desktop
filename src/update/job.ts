@@ -40,6 +40,7 @@ import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-updat
 import {
   npmCachePreflightFailureMessage,
   runNpmCachePreflight,
+  type NpmCachePreflightReason,
 } from "./npm-cache-preflight.mjs";
 
 const RELEASE_NOTES_URL = "https://github.com/lidge-jun/opencodex/releases/latest";
@@ -243,7 +244,19 @@ function ensureJobDir(): void {
 }
 
 function sanitizePersistedUpdateText(value: string): string {
-  return value
+  // Redaction runs on a newline-normalized copy first. npm and the OS wrap long paths, and a
+  // line-bound regex silently let `C:\Users\<newline>Jane Doe\...` through with the username
+  // intact — the exact leak this boundary exists to stop. Collapse the continuation, redact,
+  // then keep the redacted form: a persisted log that reads slightly differently is a fair
+  // price for one that cannot carry someone's account name.
+  const collapsed = value.replace(/([\\/])[ \t]*\r?\n[ \t]*/g, "$1");
+  return collapsed
+    // Profile environment expansions, before the path rules: %USERPROFILE%\Documents\... and
+    // $HOME/... would otherwise survive as a literal prefix plus a real tail.
+    .replace(/%(?:USERPROFILE|HOMEPATH|HOMEDRIVE|APPDATA|LOCALAPPDATA)%/gi, "<profile>")
+    .replace(/\$(?:HOME|USERPROFILE)\b/g, "<profile>")
+    // UNC shares carry the same account names as a local profile path.
+    .replace(/\\\\[^\\/\r\n]+\\[^\\/\r\n]+(?=[\\/])/g, "<share>")
     .replace(
       /(?:[A-Za-z]:)?[\\/](?:[^\\/\r\n]+[\\/])*(?:\.npm|npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
       "<npm-cache>",
@@ -254,6 +267,8 @@ function sanitizePersistedUpdateText(value: string): string {
     )
     .replace(/(?:[A-Za-z]:[\\/])?(?:Users|Documents and Settings)[\\/][^\\/\r\n]+/gi, "<profile>")
     .replace(/\/(?:Users|home)\/[^/\r\n]+/g, "<profile>")
+    // A root-owned install has no /home entry; /root is still a local filesystem disclosure.
+    .replace(/\/root(?=[/\s]|$)/g, "<profile>")
     .replace(/\b(uid|gid)(\s*(?:[=:]|\s)\s*)\d+\b/gi, "$1$2<redacted>");
 }
 
@@ -1405,7 +1420,30 @@ async function confirmNpmExplicitRestart(
   return true;
 }
 
-export async function runGuiUpdateWorker(jobId: string, channel: Channel, restart: boolean): Promise<void> {
+/**
+ * Test seams for the GUI update worker.
+ *
+ * The cache pre-flight and the install/stop step were previously reached only through module
+ * globals, so "the gate runs before the stop" could only be asserted by comparing source-string
+ * positions — a test that stays green even if the call is unreachable. These make the ordering
+ * observable: a failed pre-flight must leave `runCommand` untouched.
+ */
+export interface GuiUpdateWorkerIo {
+  cachePreflightFn?: () => { ok: boolean; reason: string };
+  runCommandFn?: (
+    job: UpdateJobState,
+    bin: string,
+    args: string[],
+    timeout: number,
+  ) => { status: number | null; signal: NodeJS.Signals | null };
+}
+
+export async function runGuiUpdateWorker(
+  jobId: string,
+  channel: Channel,
+  restart: boolean,
+  io: GuiUpdateWorkerIo = {},
+): Promise<void> {
   let job = readUpdateJob(jobId);
   const check = checkForUpdate(channel);
   const now = new Date().toISOString();
@@ -1470,11 +1508,11 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     }, integrityLine);
 
     if (check.installer === "npm") {
-      const cachePreflight = runNpmCachePreflight();
+      const cachePreflight = (io.cachePreflightFn ?? runNpmCachePreflight)();
       if (!cachePreflight.ok) {
         updateJob(job, {
           status: "failed",
-          error: npmCachePreflightFailureMessage(cachePreflight.reason),
+          error: npmCachePreflightFailureMessage(cachePreflight.reason as NpmCachePreflightReason),
         }, "Update aborted before stopping the proxy because the npm cache pre-flight failed.");
         return;
       }
@@ -1507,7 +1545,7 @@ export async function runGuiUpdateWorker(jobId: string, channel: Channel, restar
     - 대안 분석: (1) 서버에서 runUpdate 직접 호출: process.exit/stdio/실행 파일 교체 위험. (2) GUI에서 CLI 명령 안내만 제공: 자동 업데이트 UX 부족. (3) 숨은 worker가 Node launcher/Bun 전역 명령을 실행: 상태 추적과 안전한 재시작이 가능.
     - 선택 근거: 현재 CLI의 npm self-update 우회를 재사용하면서도 GUI 서버 요청 생명주기와 설치 작업을 분리할 수 있어 가장 안정적이다.
     */
-    const result = runLoggedCommand(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);
+    const result = (io.runCommandFn ?? runLoggedCommand)(job, cmd.bin, cmd.args, UPDATE_TIMEOUT_MS);
     if (result.status !== 0) {
       if (trayWasRunning) {
         try {
