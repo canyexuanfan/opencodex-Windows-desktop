@@ -83,8 +83,11 @@ function validateCandidate(value: unknown): ReturnType<typeof validateConfigCand
 
 function normalizeVisionConfig(config: OcxConfig): OcxConfig {
   const vision = config.visionSidecar;
-  if (!vision?.model || vision.reasoning === undefined) return config;
-  const normalized = normalizeVisionReasoningForModel(vision.model, vision.reasoning);
+  if (!vision || vision.reasoning === undefined) return config;
+  // Keep CLI import/set semantics aligned with the execution path: an omitted model means the
+  // bounded OpenAI vision default, gpt-5.4-mini, not the Dashboard's web-search default.
+  const model = vision.model ?? "gpt-5.4-mini";
+  const normalized = normalizeVisionReasoningForModel(model, vision.reasoning);
   if (normalized === undefined) delete vision.reasoning;
   else vision.reasoning = normalized;
   return config;
