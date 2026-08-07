@@ -171,10 +171,13 @@ function applyProviderPatchFields(
     const value = rawBody.contextWindow;
     if (value === null) {
       delete next.contextWindow;
-    } else if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0) {
+    // `Number.isInteger(1e100)` is true, so an integer check alone admits a value that
+    // serializes into the catalog as an enormous number and can make Codex reject the whole
+    // file. Safe-integer is the real bound for something that ends up in a JSON int field.
+    } else if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
       next.contextWindow = value;
     } else {
-      return { error: "contextWindow must be a positive finite integer or null" };
+      return { error: "contextWindow must be a positive safe integer or null" };
     }
     touched = true;
   }
@@ -191,8 +194,8 @@ function applyProviderPatchFields(
           delete windows[model];
           continue;
         }
-        if (typeof window !== "number" || !Number.isFinite(window) || !Number.isInteger(window) || window <= 0) {
-          return { error: "modelContextWindows values must be positive finite integers or null" };
+        if (typeof window !== "number" || !Number.isSafeInteger(window) || window <= 0) {
+          return { error: "modelContextWindows values must be positive safe integers or null" };
         }
         windows[model] = window;
       }

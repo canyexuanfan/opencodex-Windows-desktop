@@ -484,6 +484,7 @@ export const ko: Record<TKey, string> = {
   "models.contextHint": "업스트림 메타데이터가 없을 때 사용하며, 메타데이터가 있으면 더 큰 보고값의 상한으로 적용합니다. 자동 검색을 사용하려면 비워 두세요.",
   "models.contextAutomatic": "자동 검색",
   "models.contextSaved": "컨텍스트 윈도우가 업데이트되었습니다 — 다음 Codex 턴부터 적용됩니다.",
+  "models.contextUnchanged": "저장할 컨텍스트 윈도우 변경이 없습니다.",
   "models.contextSaveFailed": "컨텍스트 윈도우를 저장하지 못했습니다",
   "models.contextInvalid": "컨텍스트 윈도우는 양의 정수여야 합니다",
   "models.contextCappedValue": "{value} 제한",

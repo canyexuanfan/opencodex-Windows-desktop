@@ -492,6 +492,7 @@ export const en = {
   "models.contextHint": "Used when upstream metadata is missing; otherwise limits a larger reported window. Leave blank for automatic discovery.",
   "models.contextAutomatic": "Automatic discovery",
   "models.contextSaved": "Context windows updated — takes effect on the next Codex turn.",
+  "models.contextUnchanged": "No context window changes to save.",
   "models.contextSaveFailed": "Failed to save context windows",
   "models.contextInvalid": "Context windows must be positive whole numbers",
   "models.contextCappedValue": "{value} cap",

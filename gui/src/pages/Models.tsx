@@ -179,6 +179,17 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [contextModelId, setContextModelId] = useState("");
   const [contextDefaultDraft, setContextDefaultDraft] = useState("");
   const [contextModelDrafts, setContextModelDrafts] = useState<Record<string, string>>({});
+  // What the modal showed when it opened. Every payload decision compares against THIS, not
+  // against the live `groups`, because the 10s poll can refresh a value mid-modal: diffing
+  // against current state would mark an untouched field dirty and revert someone else's change.
+  const [contextSnapshot, setContextSnapshot] = useState<{
+    contextWindow: number | null;
+    modelContextWindows: Record<string, number | null>;
+  }>({ contextWindow: null, modelContextWindows: {} });
+  // Which fields the USER typed into. Touch alone is not enough to send — a value typed and
+  // then restored is not a change — but it is what makes an untouched field ineligible.
+  const [contextTouchedModels, setContextTouchedModels] = useState<Set<string>>(new Set());
+  const [contextDefaultTouched, setContextDefaultTouched] = useState(false);
   const [contextSaving, setContextSaving] = useState(false);
   const [contextError, setContextError] = useState("");
   const [hoveredModel, setHoveredModel] = useState<{ namespaced: string; rect: DOMRect } | null>(null);
@@ -353,16 +364,32 @@ export default function Models({ apiBase }: { apiBase: string }) {
     const modelIds = [...new Set([
       ...group.rows.map(model => model.id),
       ...group.configuredModels,
+      // A model that vanished from live discovery can still hold an override. Without this it
+      // would sit in the drafts map, invisible in the picker, with no way to inspect or clear it.
+      ...Object.keys(group.modelContextWindows ?? {}),
     ])].sort();
     const modelId = modelIds[0] ?? "";
     setContextModalProvider(group.provider);
     setContextModalModels(modelIds);
     setContextModelId(modelId);
-    setContextDefaultDraft(group.contextWindow ? String(group.contextWindow) : "");
-    setContextModelDrafts(Object.fromEntries(
+    const defaultDraft = group.contextWindow ? String(group.contextWindow) : "";
+    const modelDrafts = Object.fromEntries(
       Object.entries(group.modelContextWindows ?? {})
         .map(([model, window]) => [model, String(window)]),
-    ));
+    );
+    setContextDefaultDraft(defaultDraft);
+    setContextModelDrafts(modelDrafts);
+    // Canonical numbers, not the raw strings. "64,000" and "64_000" and "64000" are the same
+    // value, and comparing text would treat a reformat as an edit — then Apply would send a
+    // stale number over whatever changed while the modal was open.
+    setContextSnapshot({
+      contextWindow: group.contextWindow ?? null,
+      modelContextWindows: Object.fromEntries(
+        Object.entries(group.modelContextWindows ?? {}).map(([model, window]) => [model, window]),
+      ),
+    });
+    setContextTouchedModels(new Set());
+    setContextDefaultTouched(false);
     setContextError("");
   };
 
@@ -374,7 +401,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
     const normalized = raw.replace(/[_,\s]/g, "");
     if (!normalized) return null;
     const value = Number(normalized);
-    return Number.isFinite(value) && Number.isInteger(value) && value > 0
+    // Safe-integer, not just integer: `Number.isInteger(1e100)` is true, and the server now
+    // rejects it, so accepting it here would only turn a typo into a round-trip error.
+    return Number.isSafeInteger(value) && value > 0
       ? value
       : undefined;
   };
@@ -382,24 +411,59 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const saveContextSettings = async () => {
     if (!contextModalProvider) return;
     const providerWindow = parseContextWindowDraft(contextDefaultDraft);
-    const modelWindow = parseContextWindowDraft(contextModelDrafts[contextModelId] ?? "");
-    if (providerWindow === undefined || modelWindow === undefined) {
-      setContextError(t("models.contextInvalid"));
-      return;
-    }
     const group = groups.find(candidate => candidate.provider === contextModalProvider);
     if (!group) {
       setContextError(t("models.contextSaveFailed"));
       return;
     }
 
+    // A field is sent only when the user touched it AND its value actually differs from what
+    // the modal opened with. Both halves matter, and each one alone is wrong.
+    //
+    // Sending only the selected model — what this did before — silently dropped any model
+    // edited before switching the picker. No error, no warning, the value just did not save.
+    //
+    // Sending everything that differs from the LIVE state is wrong the other way: the 10s poll
+    // can refresh a field mid-modal, and a stale draft would then look dirty and revert a
+    // change the user never made. Comparing against the opening snapshot instead means a value
+    // typed and then restored sends nothing at all.
+    // Only validate the default when the user touched it. A malformed value inherited from a
+    // hand-edited config would otherwise block a save that never intended to touch it.
+    if (contextDefaultTouched && providerWindow === undefined) {
+      setContextError(t("models.contextInvalid"));
+      return;
+    }
+    const modelWindows: Record<string, number | null> = {};
+    for (const modelId of contextTouchedModels) {
+      const draft = contextModelDrafts[modelId] ?? "";
+      const parsed = parseContextWindowDraft(draft);
+      if (parsed === undefined) {
+        setContextError(t("models.contextInvalid"));
+        return;
+      }
+      // Compare VALUES, not text. Retyping 64000 as "64,000" is not a change.
+      if (parsed === (contextSnapshot.modelContextWindows[modelId] ?? null)) continue;
+      modelWindows[modelId] = parsed;
+    }
+    const defaultChanged = contextDefaultTouched
+      && providerWindow !== contextSnapshot.contextWindow;
+
+    // Nothing survived the comparison: every edit was reverted before Apply. Writing an
+    // unchanged payload would still stamp over concurrent edits.
+    if (!defaultChanged && Object.keys(modelWindows).length === 0) {
+      setContextModalProvider(null);
+      // Not "updated" — nothing was. Saying otherwise would be a small lie the user could
+      // act on, e.g. believing a value they typed and reverted had been written.
+      publishFeedback(true, t("models.contextUnchanged"));
+      return;
+    }
+
     setContextSaving(true);
     setContextError("");
     try {
-      const body: Record<string, unknown> = { contextWindow: providerWindow };
-      if (contextModelId) {
-        body.modelContextWindows = { [contextModelId]: modelWindow };
-      }
+      const body: Record<string, unknown> = {};
+      if (defaultChanged) body.contextWindow = providerWindow;
+      if (Object.keys(modelWindows).length > 0) body.modelContextWindows = modelWindows;
       const response = await fetch(
         `${apiBase}/api/providers?name=${encodeURIComponent(contextModalProvider)}`,
         {
@@ -409,14 +473,20 @@ export default function Models({ apiBase }: { apiBase: string }) {
         },
       );
       await readJsonOrThrow(response, t("models.contextSaveFailed"));
-      setContextModalProvider(null);
-      publishFeedback(true, t("models.contextSaved"));
-      await load(true);
     } catch (error) {
       setContextError(error instanceof Error ? error.message : t("models.contextSaveFailed"));
+      return;
     } finally {
       setContextSaving(false);
     }
+
+    // Past the write boundary: the values ARE saved. A refresh that fails afterwards is a
+    // display problem, and reporting it through `contextError` would set an error on a modal
+    // that is already closed — invisible to the user, and it contradicts the success they just
+    // saw. Let the ordinary load error surface handle it.
+    setContextModalProvider(null);
+    publishFeedback(true, t("models.contextSaved"));
+    await load(true);
   };
 
   // One-shot default collapse. It stays an effect on `groups` so CACHED groups collapse
@@ -1263,7 +1333,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
                   className="input"
                   inputMode="numeric"
                   value={contextDefaultDraft}
-                  onChange={event => setContextDefaultDraft(event.target.value)}
+                  onChange={event => {
+                    setContextDefaultDraft(event.target.value);
+                    setContextDefaultTouched(true);
+                  }}
                   disabled={contextSaving}
                   placeholder={t("models.contextAutomatic")}
                   autoFocus
@@ -1288,10 +1361,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
                       className="input"
                       inputMode="numeric"
                       value={contextModelDrafts[contextModelId] ?? ""}
-                      onChange={event => setContextModelDrafts(current => ({
-                        ...current,
-                        [contextModelId]: event.target.value,
-                      }))}
+                      onChange={event => {
+                        setContextModelDrafts(current => ({
+                          ...current,
+                          [contextModelId]: event.target.value,
+                        }));
+                        setContextTouchedModels(current => new Set(current).add(contextModelId));
+                      }}
                       disabled={contextSaving}
                       placeholder={t("models.contextAutomatic")}
                     />

@@ -486,6 +486,7 @@ export const ru: Record<TKey, string> = {
   "models.contextHint": "Используется, если вышестоящие метаданные отсутствуют; иначе ограничивает большее заявленное окно. Оставьте поле пустым для автоматического определения.",
   "models.contextAutomatic": "Автоматическое определение",
   "models.contextSaved": "Контекстные окна обновлены — изменения вступят в силу на следующем ходе Codex.",
+  "models.contextUnchanged": "Нет изменений контекстных окон для сохранения.",
   "models.contextSaveFailed": "Не удалось сохранить контекстные окна",
   "models.contextInvalid": "Контекстные окна должны быть положительными целыми числами",
   "models.contextCappedValue": "Лимит {value}",

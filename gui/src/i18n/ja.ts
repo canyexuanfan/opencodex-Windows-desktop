@@ -481,6 +481,7 @@ export const ja: Record<TKey, string> = {
   "models.contextHint": "上流メタデータがない場合に使われ、メタデータがある場合は報告値の上限になります。自動検出に戻すには空欄にします。",
   "models.contextAutomatic": "自動検出",
   "models.contextSaved": "コンテキストウィンドウを更新しました — 次回の Codex ターンから有効です。",
+  "models.contextUnchanged": "保存するコンテキストウィンドウの変更はありません。",
   "models.contextSaveFailed": "コンテキストウィンドウを保存できませんでした",
   "models.contextInvalid": "コンテキストウィンドウは正の整数で指定してください",
   "models.contextCappedValue": "{value} 上限",

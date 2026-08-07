@@ -70,8 +70,8 @@ cross-route credential fallback не существует. Строки API GPT-
 | `models?` | `string[]` | Seed/fallback-список моделей. При `liveModels: false` это и есть единственный список обнаруженных моделей. |
 | `liveModels?` | `boolean` | Получать live-каталог на start/sync (по умолчанию `true`). Custom-провайдеры используют `${baseUrl}/models`; built-in могут использовать registry URL и дополнительно фильтровать результат. |
 | `selectedModels?` | `string[]` | Allowlist каталога после discovery. Непустой список показывает только эти id; пустой или отсутствующий показывает всё, что было обнаружено. |
-| `contextWindow?` | `number` | Provider-wide context cap, видимый Codex. Более маленькая live-metadata сохраняется. |
-| `modelContextWindows?` | `Record<string, number>` | Context cap'ы по отдельным моделям. Они перекрывают `contextWindow` и никогда не поднимают более маленькую live-metadata. |
+| `contextWindow?` | `number` | Значение контекста для всего провайдера, применяемое когда upstream не отдаёт metadata; при наличии metadata работает как cap и сохраняет более маленькое live-значение. Панель Models настраивает его отдельно от `providerContextCaps`. |
+| `modelContextWindows?` | `Record<string, number>` | Значения и cap'ы контекста по отдельным моделям. Перекрывают `contextWindow`: если окно неизвестно, берётся заданное значение, а более маленькая live-metadata остаётся авторитетной. |
 | `modelInputModalities?` | `Record<string, string[]>` | Подсказки modality по модели, например `["text"]` или `["text", "image"]`. |
 | `modelMaxInputTokens?` | `Record<string, number>` | Положительные лимиты max input по моделям, используемые для подсказок auto-compaction в каталоге. |
 | `defaultMaxOutputTokens?` | `number` | Provider-wide fallback для `openai-chat`, когда клиент не передал `max_output_tokens`. |

@@ -481,6 +481,7 @@ export const zh: Record<TKey, string> = {
   "models.contextHint": "上游缺少元数据时使用该值；上游已有元数据时，它只限制更大的报告值。留空则恢复自动发现。",
   "models.contextAutomatic": "自动发现",
   "models.contextSaved": "上下文窗口已更新 — 将在下一个 Codex 回合生效。",
+  "models.contextUnchanged": "没有需要保存的上下文窗口更改。",
   "models.contextSaveFailed": "保存上下文窗口失败",
   "models.contextInvalid": "上下文窗口必须为正整数",
   "models.contextCappedValue": "{value} 限制",

@@ -473,6 +473,7 @@ export const de: Record<TKey, string> = {
   "models.contextHint": "Wird verwendet, wenn Upstream-Metadaten fehlen; andernfalls begrenzt der Wert ein größeres gemeldetes Fenster. Leer lassen für automatische Erkennung.",
   "models.contextAutomatic": "Automatische Erkennung",
   "models.contextSaved": "Kontextfenster aktualisiert — gilt ab der nächsten Codex-Runde.",
+  "models.contextUnchanged": "Keine Änderungen am Kontextfenster zu speichern.",
   "models.contextSaveFailed": "Kontextfenster konnten nicht gespeichert werden",
   "models.contextInvalid": "Kontextfenster müssen positive ganze Zahlen sein",
   "models.contextCappedValue": "{value}-Limit",

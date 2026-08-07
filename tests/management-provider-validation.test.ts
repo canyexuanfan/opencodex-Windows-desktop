@@ -2037,6 +2037,11 @@ describe("provider management validation", () => {
     for (const invalid of [
       { contextWindow: 0 },
       { contextWindow: 1.5 },
+      // `Number.isInteger(1e100)` is true, so an integer check alone lets this through. It
+      // would then serialize into the catalog as an enormous number and can make Codex reject
+      // the whole file — the failure surfaces far from the PATCH that caused it.
+      { contextWindow: 1e100 },
+      { modelContextWindows: { wide: 1e100 } },
       { modelContextWindows: { "": 100_000 } },
       { modelContextWindows: { wide: -1 } },
     ]) {
