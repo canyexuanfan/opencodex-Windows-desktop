@@ -67,6 +67,20 @@ describe("vision reasoning capability contracts", () => {
       expect(response.status).toBe(200);
       expect(reasoningOnly.visionSidecar?.reasoning).toBe("xhigh");
 
+      const unsetModel = {
+        port: 10100,
+        defaultProvider: "none",
+        providers: {},
+        visionSidecar: { reasoning: "low" },
+      } as OcxConfig;
+      response = await putVision(unsetModel, { reasoning: "max" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        vision: { model: "gpt-5.4-mini", reasoning: "xhigh" },
+      });
+      expect(unsetModel.visionSidecar?.model).toBeUndefined();
+      expect(unsetModel.visionSidecar?.reasoning).toBe("xhigh");
+
       const modelOnly = {
         port: 10100,
         defaultProvider: "none",
@@ -85,8 +99,11 @@ describe("vision reasoning capability contracts", () => {
       } as OcxConfig;
       response = await putVision(reset, { model: "" });
       expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        vision: { model: "gpt-5.4-mini", reasoning: "xhigh" },
+      });
       expect(reset.visionSidecar?.model).toBeUndefined();
-      expect(reset.visionSidecar?.reasoning).toBe("max");
+      expect(reset.visionSidecar?.reasoning).toBe("xhigh");
 
       const custom = { port: 10100, defaultProvider: "none", providers: {} } as OcxConfig;
       response = await putVision(custom, { model: "custom-vision", reasoning: "max" });
