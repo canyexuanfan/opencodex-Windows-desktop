@@ -2135,6 +2135,8 @@ async function handleResponsesInner(
         needsClientRewrite,
         config.streamMode ?? "auto",
       );
+      const inlineEagerRewrite = needsClientRewrite
+        && (win32EagerRewrite || eagerPath?.useEagerRelay === true);
       if (eagerPath?.useEagerRelay || win32EagerRewrite) {
         const turnAc = new AbortController();
         linkAbortSignal(upstream, turnAc.signal);
@@ -2191,11 +2193,11 @@ async function handleResponsesInner(
           },
           onClientCancel: () => options.onNativePassthroughCancel?.(),
           onDone: () => unregisterTurn(turnAc),
-        }, win32EagerRewrite ? { rewriteBudget: translatorBudget } : undefined);
+        }, inlineEagerRewrite ? { rewriteBudget: translatorBudget } : undefined);
         // When selected, this relay closes response.completed even if upstream
-        // keeps the connection alive. Windows rewrite traffic applies its
-        // payload transform inline — never via the Bun#32111-unsafe
-        // tee()+JS-pull chain (#864).
+        // keeps the connection alive. Windows forced-rewrite traffic and Darwin
+        // explicit eager traffic apply client rewrites inline rather than via
+        // the tee()+JS-pull chain.
         if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
         return markEagerRelaySseResponse(
           markNativePassthroughSseResponse(new Response(eagerBody, {
