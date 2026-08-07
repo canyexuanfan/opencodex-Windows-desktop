@@ -284,7 +284,8 @@ function withheldSummary(error: unknown): string {
   // an errno is an integer, so neither can carry arbitrary text.
   const parts = [`${name}${codeNote}`];
   const syscall = (error as { syscall?: unknown } | null)?.syscall;
-  if (typeof syscall === "string" && /^[a-z][a-z0-9_]{1,20}$/.test(syscall)) parts.push(`syscall: ${syscall}`);
+  // Same explicit vocabulary as the npm field: a shape check accepts `janedoe`.
+  if (typeof syscall === "string" && POSIX_SYSCALLS.has(syscall)) parts.push(`syscall: ${syscall}`);
   const errno = (error as { errno?: unknown } | null)?.errno;
   if (typeof errno === "number" && Number.isInteger(errno)) parts.push(`errno: ${errno}`);
   parts.push(`${Buffer.byteLength(text, "utf8")} bytes withheld`);
@@ -736,7 +737,53 @@ const NPM_CODE_RECORD = /^\s*npm\s+ERR!\s+code\s+([A-Z][A-Z0-9_]{2,})\s*$/gm;
  * found in: <path>` is dropped for the same reason.
  */
 const NPM_FIELD_LINE = /^\s*npm\s+(?:error|ERR!)\s+([a-z0-9]+)\s+(.*)$/gim;
-const NPM_SAFE_FIELDS = new Set(["code", "syscall", "errno", "notarget", "404", "401", "403", "409", "429"]);
+
+/**
+ * POSIX syscall names npm actually reports. An explicit vocabulary, not a shape.
+ *
+ * `^[a-z][a-z0-9_]{1,20}$` accepts `janedoe`, which is the whole problem: allowlisting the
+ * FIELD NAME while leaving its VALUE free-form just moves the leak one level in.
+ */
+const POSIX_SYSCALLS = new Set([
+  "open", "openat", "close", "read", "write", "stat", "lstat", "fstat", "mkdir", "rmdir",
+  "unlink", "rename", "symlink", "readlink", "link", "chmod", "chown", "utimes", "access",
+  "scandir", "readdir", "copyfile", "realpath", "futime", "ftruncate", "fchmod", "fchown",
+  "connect", "getaddrinfo", "getnameinfo", "socket", "bind", "listen", "accept", "send",
+  "recv", "shutdown", "spawn", "spawnSync", "kill", "watch", "lchown", "lutimes", "mkdtemp",
+]);
+
+/** Per-field value contracts. A field is only kept when its value satisfies its own rule. */
+const NPM_FIELD_VALIDATORS: Record<string, (value: string) => string | null> = {
+  // A recognized code, nothing else.
+  code: value => (NPM_ERROR_CODES.has(value) ? value : null),
+  // A known syscall name, nothing else.
+  syscall: value => (POSIX_SYSCALLS.has(value) ? value : null),
+  // An integer, rendered from the parsed number so the original string never passes through.
+  errno: value => (/^-?\d{1,10}$/.test(value) ? String(Number(value)) : null),
+  // Version resolution: keep the FACT and the package spec, never the surrounding prose.
+  // `No matching version found for left-pad@99.99.99.` -> `no matching version for left-pad@99.99.99`
+  notarget: value => {
+    const spec = /\b((?:@[\w.-]+\/)?[\w.-]+@[\w.\-+]+)/.exec(value);
+    return spec ? `no matching version for ${spec[1]}` : "no matching version";
+  },
+};
+
+/**
+ * HTTP status lines carry a registry URL. Render it from parsed parts rather than echoing the
+ * line: a URL can embed userinfo (`https://Jane:pw@host/`) or a path, and the raw text also
+ * defeats the path test because `https:/` looks like a drive letter.
+ */
+function npmHttpStatusValue(field: string, value: string): string | null {
+  const url = /\bhttps?:\/\/[^\s]+/.exec(value)?.[0];
+  if (!url) return `HTTP ${field}`;
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return `HTTP ${field}`; }
+  // Registry hosts only, and only the host — the path can name a private scope, and userinfo
+  // is a credential.
+  const host = parsed.hostname;
+  if (!/^[\w.-]+$/.test(host) || parsed.username || parsed.password) return `HTTP ${field}`;
+  return `HTTP ${field} from ${host}`;
+}
 
 /**
  * Extract the diagnostic fields npm names explicitly.
@@ -750,13 +797,16 @@ function npmDiagnosticFields(text: string): string[] {
   for (const match of text.matchAll(NPM_FIELD_LINE)) {
     const field = match[1]!.toLowerCase();
     const value = match[2]!.trim();
-    if (!NPM_SAFE_FIELDS.has(field) || seen.has(field)) continue;
-    if (!value || value.length > 160) continue;
-    // `code` is additionally pinned to the recognized vocabulary; the rest only have to prove
-    // they carry no path.
-    if (field === "code" && !NPM_ERROR_CODES.has(value)) continue;
-    if (withholdIfPathBearing(value) !== value) continue;
-    seen.set(field, value);
+    if (seen.has(field) || !value || value.length > 160) continue;
+    // Every kept field is RENDERED from a validated value, never echoed. Allowlisting the field
+    // name alone left the value free-form, so `npm error syscall janedoe` walked straight
+    // through — the field was recognized and the value was never checked against anything.
+    const validate = NPM_FIELD_VALIDATORS[field];
+    const rendered = validate
+      ? validate(value)
+      : (/^(?:404|401|403|409|429)$/.test(field) ? npmHttpStatusValue(field, value) : null);
+    if (rendered === null) continue;
+    seen.set(field, rendered);
   }
   return [...seen].map(([field, value]) => `${field}: ${value}`);
 }

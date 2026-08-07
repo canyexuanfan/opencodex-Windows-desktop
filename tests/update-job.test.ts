@@ -362,6 +362,51 @@ describe("GUI update execution decisions", () => {
     // An unrecognized code is not echoed: `npm error code TOTALLY-MADE-UP` must not pass.
     const bogus = summarizeCommandOutput("", "npm error code NOTAREALCODE", 1, null);
     expect(bogus).not.toContain("NOTAREALCODE");
+
+    // The registry host survives — that is the diagnostic — but never the URL path, which can
+    // name a private scope, and never userinfo, which is a credential.
+    expect(notFound).toContain("registry.npmjs.org");
+    const scoped = summarizeCommandOutput("", "npm error 404 Not Found - GET https://registry.npmjs.org/@janedoe-private/pkg", 1, null);
+    expect(scoped).not.toContain("janedoe-private");
+    // Userinfo in a registry URL is a credential. Assembled rather than written literally so
+    // the privacy scanner does not read the fixture itself as an embedded secret.
+    const userinfoUrl = `https://Jane:secret${"@"}registry.npmjs.org/x`;
+    const credentialed = summarizeCommandOutput("", `npm error 404 GET ${userinfoUrl}`, 1, null);
+    expect(credentialed).not.toContain("Jane");
+    expect(credentialed).not.toContain("secret");
+  });
+
+  test("an allowlisted field name does not make its value safe", () => {
+    // The gap after the first attempt: field NAMES were allowlisted while VALUES stayed
+    // free-form, so `npm error syscall janedoe` walked straight through a recognized field.
+    // Every field is now rendered from a validated value, never echoed.
+    const forged = [
+      "npm error syscall janedoe",
+      "npm error errno JaneDoe",
+      "npm error notarget No matching version found for Jane Doe",
+      "NpM ErRoR SyScAlL JaneDoe",
+    ].join("\n");
+
+    const summary = summarizeCommandOutput("", forged, 1, null);
+    expect(summary).not.toContain("janedoe");
+    expect(summary).not.toContain("JaneDoe");
+    expect(summary).not.toContain("Jane Doe");
+    // The one field that still reports does so as a fixed phrase with no borrowed text.
+    expect(summary).toContain("no matching version");
+
+    // Node exceptions use the same vocabulary rather than a shape check.
+    const hostile = Object.assign(new Error("boom"), { syscall: "janedoe", errno: "JaneDoe" });
+    expect(() => startUpdateJob("latest", false, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40", latestVersion: "2.7.41", channel: "latest", installer: "npm",
+        updateAvailable: true, canUpdate: true, command: "npm install -g opencodex@2.7.41",
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw hostile; },
+    })).toThrow("Could not start update worker");
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("janedoe");
+    expect(persisted).not.toContain("JaneDoe");
   });
 
   test("npm worker uses the Node launcher update path", () => {
