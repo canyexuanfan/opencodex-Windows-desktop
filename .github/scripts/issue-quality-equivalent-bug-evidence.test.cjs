@@ -53,7 +53,7 @@ The Cursor request fails after streaming starts through the Claude Code integrat
 - **OS**: Linux (Ubuntu x64)
 
 ### Debug evidence
-Run \`ocx debug provider cursor\`; it returns \`resource_exhausted\` after stream start.
+Run ocx debug provider cursor; the request fails with \`resource_exhausted\` after stream start.
 `,
   });
 
