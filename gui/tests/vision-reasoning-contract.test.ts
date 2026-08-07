@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { visionReasoningLabel } from "../src/i18n/vision-reasoning-labels";
 import {
   VISION_REASONING_LEVELS,
   clampVisionReasoningToLadder,
@@ -28,8 +29,28 @@ test("vision reasoning clamp matches the server for non-prefix ladders", () => {
   expect(clampVisionReasoningToLadder(["low", "medium", "max"], "xhigh")).toBe("medium");
 });
 
-test("unknown vision model metadata stays permissive", () => {
+test("missing or unusable vision capability metadata stays permissive", () => {
+  const models: ModelInfo[] = [
+    { id: "missing", provider: "openai", namespaced: "missing" },
+    { id: "empty", provider: "openai", namespaced: "empty", reasoningEfforts: [] },
+    { id: "unsupported-only", provider: "openai", namespaced: "unsupported-only", reasoningEfforts: ["ultra"] },
+  ];
+
   expect(visionReasoningLadder([], "custom/vision-model")).toEqual(VISION_REASONING_LEVELS);
+  for (const model of models) {
+    expect(visionReasoningLadder(models, model.id)).toEqual(VISION_REASONING_LEVELS);
+  }
+});
+
+test("vision reasoning labels are localized for every supported locale and effort", () => {
+  const locales = ["en", "de", "ko", "zh", "ru", "ja"] as const;
+  for (const locale of locales) {
+    for (const level of VISION_REASONING_LEVELS) {
+      const label = visionReasoningLabel(locale, level);
+      expect(label.length).toBeGreaterThan(0);
+      expect(label).not.toBe(level);
+    }
+  }
 });
 
 test("effort-only edits cannot rewrite the selected vision model or backend", () => {
