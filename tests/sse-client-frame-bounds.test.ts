@@ -55,7 +55,12 @@ describe("client-facing SSE frame bounds", () => {
 
     const framer = new BoundedSseFrameBuffer(1024);
     expect(framer.feed(bytes.slice(0, euroStart + 1))).toEqual([]);
-    const frames = framer.feed(enc.encode(`${dec.decode(bytes.slice(euroStart + 1))}\n\n`));
+    const remainder = bytes.slice(euroStart + 1);
+    const delimiter = enc.encode("\n\n");
+    const secondChunk = new Uint8Array(remainder.byteLength + delimiter.byteLength);
+    secondChunk.set(remainder, 0);
+    secondChunk.set(delimiter, remainder.byteLength);
+    const frames = framer.feed(secondChunk);
 
     expect(frames).toHaveLength(1);
     expect(dec.decode(frames[0]!.block)).toBe(text);
