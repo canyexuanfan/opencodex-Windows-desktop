@@ -18,7 +18,6 @@ const RESULT_REASONS = new Set([
   "cache_entry_inaccessible",
   "cache_path_malformed",
   "inspection_incomplete",
-  "inspection_limit",
   "npm_config_failed",
   "npm_unavailable",
 ]);
@@ -121,13 +120,24 @@ function workerResult() {
   return inspectNpmCacheDirectory(output);
 }
 
+// Reasons that legitimately accompany `ok: true`. The parser below cross-checks the flag against
+// this set so a worker cannot claim success with a failure reason (or the reverse). It is a SET,
+// not a single value: a bounded inspection that ran out of budget without finding a problem is a
+// pass, and hardcoding `cache_accessible` here silently rejected exactly that — the pass never
+// reached the caller and every large cache still failed, as `worker_output_malformed`.
+const OK_REASONS = new Set([
+  "cache_accessible",
+  "inspection_incomplete",
+  "windows_skip",
+]);
+
 function parseWorkerOutput(stdout) {
   if (typeof stdout !== "string" || stdout.length > 1024) return null;
   try {
     const parsed = JSON.parse(stdout);
     if (!parsed || parsed.protocol !== PROTOCOL_VERSION || typeof parsed.ok !== "boolean") return null;
     if (typeof parsed.reason !== "string" || !RESULT_REASONS.has(parsed.reason)) return null;
-    if (parsed.ok !== (parsed.reason === "cache_accessible")) return null;
+    if (parsed.ok !== OK_REASONS.has(parsed.reason)) return null;
     if (Object.keys(parsed).sort().join(",") !== "ok,protocol,reason") return null;
     return { ok: parsed.ok, reason: parsed.reason };
   } catch {

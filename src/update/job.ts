@@ -243,14 +243,67 @@ function ensureJobDir(): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
+/**
+ * Redact profile paths that a line wrap has split apart.
+ *
+ * Trying to REJOIN wrapped lines turned out to be the wrong shape: joining aggressively enough to
+ * catch a wrap inside the username also merged genuinely separate log entries, and joining
+ * conservatively enough to keep them apart let the username through. Both were attempts to
+ * reconstruct the original text before matching it.
+ *
+ * This matches across the break instead. `\s*` between every path element lets one pattern cover
+ * `C:\Users\Jane`, `C:\Users\<newline>Jane`, and `C:\Us<newline>ers\Jane` alike, so the redaction
+ * never depends on where the wrap landed. Runs on top of the single-line rules, which stay as the
+ * precise ones.
+ */
+function redactWrappedProfilePaths(value: string): string {
+  // Character-by-character keyword patterns became unreadable and still missed cases, because a
+  // wrap inserts BOTH a separator and a newline (`Us\` + newline + `ners`), so a single optional
+  // gap between letters is not enough.
+  //
+  // Work on a scan copy instead: strip the wrap noise entirely, match the profile shape there,
+  // and map the hit back to the original text by counting the characters it consumed. The
+  // redaction decision is made on clean text; the output keeps everything the match did not
+  // cover.
+  const scanToSource: number[] = [];
+  let scan = "";
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i]!;
+    if (ch === "\n" || ch === "\r") continue;
+    scan += ch;
+    scanToSource.push(i);
+  }
+
+  // Two shapes, in priority order. The first is the precise one. The second is the backstop for a
+  // path this scan copy could not resolve into a known profile shape — `C:\Us\ners\Zoe [Admin]+`
+  // is what `C:\Us` + wrap + `ners\...` collapses to, and the segment after it is still somebody's
+  // account name. An update log has no legitimate need to carry an absolute Windows path, so
+  // redacting the whole run is the safe answer rather than trying to enumerate every mangling.
+  const profile = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*|[A-Za-z]:[\\/][^\r\n]*/gi;
+  const cuts: Array<{ start: number; end: number }> = [];
+  for (const match of scan.matchAll(profile)) {
+    const start = scanToSource[match.index!]!;
+    const end = scanToSource[match.index! + match[0].length - 1]! + 1;
+    cuts.push({ start, end });
+  }
+  if (cuts.length === 0) return value;
+
+  let out = "";
+  let cursor = 0;
+  for (const cut of cuts) {
+    if (cut.start < cursor) continue;
+    out += value.slice(cursor, cut.start) + "<profile>";
+    cursor = cut.end;
+  }
+  return out + value.slice(cursor);
+}
+
 function sanitizePersistedUpdateText(value: string): string {
-  // Redaction runs on a newline-normalized copy first. npm and the OS wrap long paths, and a
-  // line-bound regex silently let `C:\Users\<newline>Jane Doe\...` through with the username
-  // intact — the exact leak this boundary exists to stop. Collapse the continuation, redact,
-  // then keep the redacted form: a persisted log that reads slightly differently is a fair
-  // price for one that cannot carry someone's account name.
-  const collapsed = value.replace(/([\\/])[ \t]*\r?\n[ \t]*/g, "$1");
-  return collapsed
+  // Wrap-tolerant profile redaction runs FIRST: npm and the OS break long paths at arbitrary
+  // points, and a rule anchored to a single line let `C:\Us<newline>ers\Jane Doe\...` through
+  // with the account name intact. The single-line rules below then handle the ordinary cases
+  // precisely.
+  return redactWrappedProfilePaths(value)
     // Profile environment expansions, before the path rules: %USERPROFILE%\Documents\... and
     // $HOME/... would otherwise survive as a literal prefix plus a real tail.
     .replace(/%(?:USERPROFILE|HOMEPATH|HOMEDRIVE|APPDATA|LOCALAPPDATA)%/gi, "<profile>")
@@ -265,10 +318,20 @@ function sanitizePersistedUpdateText(value: string): string {
       /\b(?:Users|Documents and Settings)[\\/][^\\/\r\n]+[\\/](?:[^\\/\r\n]+[\\/])*(?:npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
       "<npm-cache>",
     )
-    .replace(/(?:[A-Za-z]:[\\/])?(?:Users|Documents and Settings)[\\/][^\\/\r\n]+/gi, "<profile>")
-    .replace(/\/(?:Users|home)\/[^/\r\n]+/g, "<profile>")
+    // `[^\\/\r\n]+` stops at the next separator, which is right — but a username containing a
+    // space or bracket (`Zoe [Admin]+`) only partly matched when the path had already been
+    // mangled by a wrap, leaving a readable tail. Consume the whole segment up to the next
+    // separator or end of line, whitespace included.
+    .replace(/(?:[A-Za-z]:[\\/])?(?:Users|Documents and Settings)[\\/][^\\/\r\n]*/gi, "<profile>")
+    .replace(/\/(?:Users|home)\/[^/\r\n]*/g, "<profile>")
     // A root-owned install has no /home entry; /root is still a local filesystem disclosure.
     .replace(/\/root(?=[/\s]|$)/g, "<profile>")
+    // Backstop. Everything above recognizes a KNOWN profile shape, and a wrap that lands inside
+    // the word `Users` (`C:\Us` + `ers\Jane Doe\...`) reassembles into a path none of them match
+    // — the segment after the drive letter is still somebody's account name. Rather than trying
+    // to enumerate every way a path can be mangled, redact any remaining absolute Windows path:
+    // an update log has no legitimate need to carry one.
+    .replace(/\b[A-Za-z]:[\\/][^\s\r\n]*/g, "<path>")
     .replace(/\b(uid|gid)(\s*(?:[=:]|\s)\s*)\d+\b/gi, "$1$2<redacted>");
 }
 
@@ -1430,6 +1493,10 @@ async function confirmNpmExplicitRestart(
  */
 export interface GuiUpdateWorkerIo {
   cachePreflightFn?: () => { ok: boolean; reason: string };
+  /** Force the resolved update target. A source checkout otherwise aborts before the npm branch. */
+  checkForUpdateFn?: (channel: Channel) => ReturnType<typeof checkForUpdate>;
+  /** Bypass the registry integrity probe, which runs before the cache gate and needs network. */
+  integrityFn?: (version: string | null) => ReturnType<typeof checkUpdatePackageIntegrity>;
   runCommandFn?: (
     job: UpdateJobState,
     bin: string,
@@ -1445,7 +1512,7 @@ export async function runGuiUpdateWorker(
   io: GuiUpdateWorkerIo = {},
 ): Promise<void> {
   let job = readUpdateJob(jobId);
-  const check = checkForUpdate(channel);
+  const check = (io.checkForUpdateFn ?? checkForUpdate)(channel);
   const now = new Date().toISOString();
   // Capture the live listen target BEFORE the update command runs: the stop-first update
   // flow clears pid/runtime state, so this is the last moment the real port is knowable.
@@ -1490,7 +1557,7 @@ export async function runGuiUpdateWorker(
     // Pre-flight integrity metadata check (same lanes as the CLI): anomalous registry
     // metadata for a resolved version fails the job BEFORE anything is spawned or the
     // proxy is stopped; transient registry failure degrades to a logged skip.
-    const integrity = checkUpdatePackageIntegrity(check.latestVersion);
+    const integrity = (io.integrityFn ?? checkUpdatePackageIntegrity)(check.latestVersion);
     if (integrity.ok === false) {
       updateJob(job, { status: "failed", error: integrity.reason });
       return;

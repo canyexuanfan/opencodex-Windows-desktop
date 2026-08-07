@@ -115,6 +115,34 @@ describe("npm cache access pre-flight", () => {
     });
   });
 
+  test("the worker protocol accepts an incomplete-but-clean inspection", () => {
+    // The gap that made the budget fix inert: `inspectNpmCacheDirectory` returned ok:true with
+    // `inspection_incomplete`, and the protocol parser then rejected it because it only accepted
+    // `cache_accessible` alongside ok:true. Every large cache still failed — as
+    // `worker_output_malformed`, which hid the real cause. Assert the wire contract directly.
+    const emit = (payload: Record<string, unknown>) => (() => ({
+      status: 0,
+      signal: null,
+      stdout: JSON.stringify(payload),
+      stderr: "",
+    })) as never;
+
+    expect(runNpmCachePreflight({
+      platform: "linux",
+      spawnSyncFn: emit({ protocol: 1, ok: true, reason: "inspection_incomplete" }),
+    })).toEqual({ ok: true, reason: "inspection_incomplete" });
+
+    // The cross-check still holds in both directions: a reason cannot lie about its flag.
+    expect(runNpmCachePreflight({
+      platform: "linux",
+      spawnSyncFn: emit({ protocol: 1, ok: false, reason: "inspection_incomplete" }),
+    })).toEqual({ ok: false, reason: "worker_output_malformed" });
+    expect(runNpmCachePreflight({
+      platform: "linux",
+      spawnSyncFn: emit({ protocol: 1, ok: true, reason: "cache_entry_foreign_owner" }),
+    })).toEqual({ ok: false, reason: "worker_output_malformed" });
+  });
+
   test("fails closed on worker timeout", () => {
     const timeoutSpawn = (() => ({ status: null, signal: "SIGTERM", stdout: "", stderr: "" })) as never;
     expect(runNpmCachePreflight({ platform: "linux", spawnSyncFn: timeoutSpawn })).toEqual({

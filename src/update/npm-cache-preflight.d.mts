@@ -6,7 +6,6 @@ export type NpmCachePreflightReason =
   | "cache_entry_inaccessible"
   | "cache_path_malformed"
   | "inspection_incomplete"
-  | "inspection_limit"
   | "npm_config_failed"
   | "npm_unavailable"
   | "windows_skip"

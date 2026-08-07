@@ -149,6 +149,9 @@ describe("GUI update execution decisions", () => {
       String.raw`unc \\fileserver\share\Users\Mary Jane van der Berg\notes.txt`,
       "root /root/private.txt",
       "home $HOME/private.txt",
+      // Wraps that do NOT land on a separator — these defeated the first collapse.
+      "midsegment C:\\Us\\\nners\\Zoe [Admin]+\\Documents\\private.txt",
+      "midname C:\\Users\\Zo\\\ne Admin\\Documents\\private.txt",
     ].join("\n");
 
     expect(() => startUpdateJob("latest", true, {
@@ -171,6 +174,8 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("fileserver");
     expect(persisted).not.toMatch(/\/root\b/);
     expect(persisted).not.toMatch(/\$HOME/);
+    expect(persisted).not.toContain("Zoe [Admin]+");
+    expect(persisted).not.toContain("e Admin");
   });
 
   test("a failed cache pre-flight leaves the install command unrun", async () => {
@@ -183,22 +188,35 @@ describe("GUI update execution decisions", () => {
       status: "running",
       channel: "latest",
       startedAt: new Date().toISOString(),
-      logs: [],
+      log: [],
     }));
 
     let installRan = false;
+    let preflightRan = false;
     await runGuiUpdateWorker("gate-job", "latest", false, {
-      cachePreflightFn: () => ({ ok: false, reason: "cache_entry_foreign_owner" }),
+      // Force the npm installer: this worktree is a source checkout, so the real
+      // checkForUpdate aborts before the npm branch and the gate would never be reached.
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: "npm i -g opencodex@latest",
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      integrityFn: () => ({ ok: true as const, integrity: "sha512-testfixturevalue000000000" }),
+      cachePreflightFn: () => { preflightRan = true; return { ok: false, reason: "cache_entry_foreign_owner" }; },
       runCommandFn: () => { installRan = true; return { status: 0, signal: null }; },
     });
 
+    expect(preflightRan).toBe(true);
     expect(installRan).toBe(false);
     const job = readUpdateJob("gate-job");
     expect(job?.status).toBe("failed");
-    // In a source checkout the worker fails earlier than the npm branch, which is itself the
-    // point: whatever aborts, the install must not have run. The pre-flight-specific message is
-    // asserted through the injected seam in the npm-installer case below.
-    expect(job?.error).toBeTruthy();
+    expect(job?.error ?? "").toMatch(/cache/i);
+    expect(JSON.stringify(job?.log ?? [])).toContain("before stopping the proxy");
     // Leave no job file behind: sibling tests in this file assert on the same shared path.
     rmSync(updateJobPath(), { force: true });
   });
@@ -1276,7 +1294,7 @@ describe("immutable update target (WP160)", () => {
   test("GUI worker gates integrity before spawning and fails the job on anomalous metadata", async () => {
     const source = await Bun.file(new URL("../src/update/job.ts", import.meta.url)).text();
 
-    const gateAt = source.indexOf("const integrity = checkUpdatePackageIntegrity(check.latestVersion);");
+    const gateAt = source.indexOf("const integrity = (io.integrityFn ?? checkUpdatePackageIntegrity)(check.latestVersion);");
     const cacheGateAt = source.indexOf("const cachePreflight = (io.cachePreflightFn ?? runNpmCachePreflight)();");
     const trayStopAt = source.indexOf("handoffWindowsTrayForUpdate(tray");
     const failAt = source.indexOf('updateJob(job, { status: "failed", error: integrity.reason });');
