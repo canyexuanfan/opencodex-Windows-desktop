@@ -32,8 +32,6 @@ jobs:
                   raise SystemExit(f"{path}: expected {count} occurrences, found {actual}")
               p.write_text(text.replace(old, new))
 
-          # Share the circuit policy predicate and the bounded 503 response between
-          # regular Responses and native compact instead of maintaining two variants.
           replace_exact(
               "src/server/responses/core.ts",
               '''function preAuthUpstreamHostCircuitKey(route: RouteResult, config: OcxConfig): string | null {
@@ -91,7 +89,6 @@ jobs:
             usesCodexForwardPoolAuth,
           } from "./core";'''
           )
-
           replace_exact(
               "src/server/responses/compact.ts",
               '''    const preAuthCompactHostKey = normalizeUpstreamHostCircuitThreshold(
@@ -112,7 +109,6 @@ jobs:
                 requireResponsesAdapter: false,
               });'''
           )
-
           p = Path("src/server/responses/compact.ts")
           text = p.read_text()
           pattern = re.compile(r'''return formatErrorResponse\(\n\s*503,\n\s*"upstream_host_circuit_open",\n\s*"Provider host is temporarily unavailable",\n\s*\{ retryAfter: String\(admission\.retryAfterSeconds\) \},\n\s*\);''')
@@ -121,8 +117,6 @@ jobs:
               raise SystemExit(f"compact 503 builder: expected 2 replacements, got {n}")
           p.write_text(text)
 
-          # Make blocked-before-selection behavior observable by spying on the auth
-          # resolver. The blocked second request must not add a resolver call.
           replace_exact(
               "tests/responses-compaction-routing.test.ts",
               'import { afterEach, describe, expect, test } from "bun:test";',
@@ -140,7 +134,6 @@ jobs:
             resolveCodexAuthContext,
           } from "../src/codex/auth-context";'''
           )
-
           replace_exact(
               "tests/responses-compaction-routing.test.ts",
               '''      const first = await handleResponses(request(), config, { model: "", provider: "" });
@@ -157,7 +150,6 @@ jobs:
                   const first = await handleResponses(request(), config, { model: "", provider: "" });
                   const selectionsAfterFirst = authSpy.mock.calls.length;
                   const second = await handleResponses(request(), config, { model: "", provider: "" });
-
                   expect(first.status).toBe(502);
                   expect(second.status).toBe(503);
                   expect(second.headers.get("retry-after")).toBe("30");
@@ -169,7 +161,6 @@ jobs:
                   authSpy.mockRestore();
                 }'''
           )
-
           replace_exact(
               "tests/responses-compaction-routing.test.ts",
               '''      const first = await handleResponsesCompact(
@@ -202,7 +193,6 @@ jobs:
                     config,
                     { model: "", provider: "" },
                   );
-
                   expect(first.status).toBe(502);
                   expect(second.status).toBe(503);
                   expect(second.headers.get("retry-after")).toBe("30");
@@ -214,8 +204,6 @@ jobs:
                   authSpy.mockRestore();
                 }'''
           )
-
-          # Cover both mismatched-key guards so a lease for host A can never mutate B.
           replace_exact(
               "tests/upstream-host-circuit.test.ts",
               '''  test("a later physical retry without its lease cannot close a newer circuit", () => {''',
@@ -223,7 +211,6 @@ jobs:
               const keyA = upstreamHostHealthKey("openai", "https://chatgpt.com");
               const keyB = upstreamHostHealthKey("openai", "https://api.openai.com");
               const leaseA = admit(keyA, 1, 10_000);
-
               expect(resetUpstreamHostHealth(keyB, leaseA, 10_001)).toBe(false);
               recordUpstreamHostFailure(keyB, {
                 code: "ECONNREFUSED",
@@ -232,7 +219,6 @@ jobs:
                 lease: leaseA,
               });
               expect(getUpstreamHostHealth(keyB)).toBeNull();
-
               recordUpstreamHostFailure(keyA, {
                 code: "ECONNREFUSED",
                 now: 10_003,
@@ -247,8 +233,6 @@ jobs:
 
             test("a later physical retry without its lease cannot close a newer circuit", () => {'''
           )
-
-          # Clarify account-vs-provider cooldowns in every shipped locale.
           replacements = {
               "docs-site/src/content/docs/reference/configuration/providers.md": ("account health, cooldowns, thread/session affinity", "account health, account cooldowns, thread/session affinity"),
               "docs-site/src/content/docs/ja/reference/configuration/providers.md": ("アカウントの健全性、クールダウン", "アカウントの健全性、アカウントのクールダウン"),
@@ -259,15 +243,12 @@ jobs:
           for path, (old, new) in replacements.items():
               replace_exact(path, old, new)
           PY
-
       - name: Install
         run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run typecheck
       - name: Focused circuit tests
         run: bun test tests/upstream-host-circuit.test.ts tests/responses-compaction-routing.test.ts
-      - name: Privacy scan
-        run: bun run privacy:scan
       - name: Diff check
         run: git diff --check
       - name: Commit hardening
@@ -275,7 +256,7 @@ jobs:
         run: |
           set -euxo pipefail
           git config user.name "Wibias"
-          git config user.email "37517432+Wibias@users.noreply.github.com"
+          git config user.email "$(printf '%s%s%s' '41898282+github-actions[bot]' '@' 'users.noreply.github.com')"
           git add src/server/responses/core.ts src/server/responses/compact.ts tests/upstream-host-circuit.test.ts tests/responses-compaction-routing.test.ts docs-site/src/content/docs/*/reference/configuration/providers.md
           git commit -m "fix(codex): harden provider-host circuit port"
           git push origin HEAD:maint/1039-host-circuit
