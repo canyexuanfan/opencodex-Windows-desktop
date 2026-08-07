@@ -1002,7 +1002,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
                {capOn && (
                  <>
                    <Select
-                     value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : (CAP_OPTION_SET.has(providerCap) ? String(providerCap) : CUSTOM_OPTION)}
+                     // A saved cap outside CAP_OPTIONS is still a real selectable option
+                     // (inserted below), so select it instead of falling back to "Custom";
+                     // otherwise the trigger hides the persisted 128k value behind the
+                     // custom-editor label.
+                     value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(providerCap)}
                      options={[
                        ...(!CAP_OPTION_SET.has(providerCap) && !providerCapCustomOpen[provider]
                          ? [{ value: String(providerCap), label: fmtK(providerCap) }] : []),
@@ -1271,7 +1275,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       <div className="row models-cap-row">
         <span className="muted text-control">{t("models.contextCapLabel")}</span>
         <Select
-          value={showCustom ? CUSTOM_OPTION : (CAP_OPTION_SET.has(contextCapValue) ? String(contextCapValue) : CUSTOM_OPTION)}
+          value={showCustom ? CUSTOM_OPTION : String(contextCapValue)}
           options={[
             ...(!CAP_OPTION_SET.has(contextCapValue) && !showCustom
               ? [{ value: String(contextCapValue), label: fmtK(contextCapValue) }] : []),
