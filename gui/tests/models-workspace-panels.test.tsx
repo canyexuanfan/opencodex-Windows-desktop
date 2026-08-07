@@ -8,7 +8,7 @@
  * destroyed an unsaved draft. Both passed typecheck, lint, and every source-string
  * assertion. Only mounting the thing catches them.
  */
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
@@ -227,7 +227,7 @@ test("every rendered panel is wired to its tab", async () => {
  * all three tabs are now one page, so without per-panel boundaries one broken tab would
  * take the whole workspace down and stay broken across a switch.
  */
-test("a panel that throws does not take its siblings with it", async () => {
+test("a panel load failure does not take its siblings with it", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/models")) return Response.json([]);
@@ -249,7 +249,10 @@ test("a panel that throws does not take its siblings with it", async () => {
     });
     await act(async () => { await Promise.resolve(); });
 
-    // Whatever Combos did, the strip and the other tabs must still be usable.
+    // Whatever Combos did, the strip and the other tabs must still be usable. This is a
+    // failed LOAD, not a render throw — the boundary mechanism itself is covered by
+    // error-boundary.test.tsx; what matters here is that one panel's failure is
+    // contained.
     expect(tabs(container)).toHaveLength(3);
     await act(async () => {
       (container.querySelector("#models-tab-routing") as HTMLButtonElement).click();
@@ -264,13 +267,14 @@ test("a panel that throws does not take its siblings with it", async () => {
 /*
  * The whole point of gating: a hidden catalog must stop polling.
  *
- * The first version of this test waited 60ms against a 10-SECOND poll interval, so it
- * passed whether or not the poll was gated — a green assertion proving nothing. Real
- * time is what the interval reads, so this waits past one full period and counts a
- * catalog-exclusive endpoint rather than `/api/models`, which several panels request.
+ * The first version waited 60ms against a 10-SECOND poll interval, so it passed whether
+ * or not the poll was gated — a green assertion proving nothing. Fake timers advance
+ * past a full period without spending it, following `logs-auto-refresh.test.tsx`. The
+ * counted endpoint is catalog-exclusive; `/api/models` is requested by several panels.
  */
 test("a hidden catalog stops polling across a full interval", async () => {
   const { hits } = installFetch();
+  jest.useFakeTimers({ now: 1_700_000_000_000 });
   const { container, root } = await mountModels();
   try {
     await act(async () => { await Promise.resolve(); });
@@ -282,14 +286,16 @@ test("a hidden catalog stops polling across a full interval", async () => {
     await act(async () => { await Promise.resolve(); });
     const afterSwitch = hits.get("/api/provider-context-caps") ?? 0;
 
-    // One full poll period plus slack. Slow, but a shorter wait cannot tell a gated
-    // poll from an ungated one.
-    await act(async () => { await new Promise(r => setTimeout(r, 11_000)); });
+    // Past one full poll period. A shorter advance cannot tell a gated poll from an
+    // ungated one, which is exactly how the first version of this test lied.
+    await act(async () => { jest.advanceTimersByTime(11_000); });
+    await act(async () => { await Promise.resolve(); });
     expect(hits.get("/api/provider-context-caps") ?? 0).toBe(afterSwitch);
   } finally {
     await act(async () => root.unmount());
+    jest.useRealTimers();
   }
-}, 30_000);
+});
 
 /*
  * The failure that actually shipped: an unsaved draft vanished on a tab switch. The
