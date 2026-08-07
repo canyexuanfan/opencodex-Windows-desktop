@@ -463,6 +463,7 @@ export const tr: Record<TKey, string> = {
   "models.contextCapped": "350k sınırı",
   "models.contextCapLabel": "Bağlam sınırı",
   "models.v2Label": "Alt Ajan",
+  "models.shadowCallOriginal": "⚠ {models} →",
   "models.v2DocsLink": "v1 / v2 nedir?",
   "models.v2Mode_v1": "v1",
   "models.v2Mode_default": "taban",

@@ -31,7 +31,7 @@ export function detectInitial(): Locale {
     const stored = localStorage.getItem(LANG_KEY);
     if (stored === "en" || stored === "de" || stored === "ko" || stored === "zh" || stored === "ru" || stored === "ja" || stored === "tr") return stored;
   } catch { /* ignore */ }
-  const nav = typeof navigator !== "undefined" ? navigator.language.toLowerCase() : "en";
+  const nav = typeof navigator !== "undefined" && navigator?.language ? navigator.language.toLowerCase() : "en";
   if (nav.startsWith("de")) return "de";
   if (nav.startsWith("ko")) return "ko";
   if (nav.startsWith("zh")) return "zh";
