@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   inspectServiceManagerInstallation,
   type ProbeRunner,
+  type RawProbeRunner,
 } from "../src/service-manager-probe";
 import { inspectNativeCodexOwnership } from "../src/integrations/native/ownership-preflight";
 
@@ -30,7 +31,18 @@ function recorder(reply: (file: string, args: readonly string[]) => Partial<Retu
     calls.push({ file, args });
     return { status: 0, stdout: "", stderr: "", timedOut: false, spawnFailed: false, ...reply(file, args) };
   };
-  return { run, calls };
+  const runRaw: RawProbeRunner = (file, args) => {
+    calls.push({ file, args });
+    const r = { status: 0, stdout: "", stderr: "", timedOut: false, spawnFailed: false, ...reply(file, args) };
+    return {
+      status: r.status,
+      stdout: Buffer.from(r.stdout, "utf8"),
+      stderr: Buffer.from(r.stderr, "utf8"),
+      timedOut: r.timedOut,
+      spawnFailed: r.spawnFailed,
+    };
+  };
+  return { run, runRaw, calls };
 }
 
 beforeEach(() => {
@@ -253,8 +265,8 @@ describe("could not ask is not an answer", () => {
     // Nothing staged on disk, and the query is not asked (no run injected) —
     // the default spawn would fail on non-Windows, so this uses the injected
     // recorder to prove absence is only claimed when schtasks answers absent.
-    const { run, calls } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const { runRaw, calls } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("absent");
     expect(calls).toHaveLength(1);
     expect(calls[0].args[0]).toBe("/query");
@@ -292,7 +304,12 @@ describe("the Windows chain walk", () => {
     const dir = join(home, ".opencodex");
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "opencodex-service-task.xml");
-    writeFileSync(path, [
+    writeFileSync(path, windowsTaskXmlFor(launcherPath));
+    return path;
+  }
+
+  function windowsTaskXmlFor(launcherPath: string): string {
+    return [
       '<?xml version="1.0" encoding="UTF-16"?>',
       "<Task>",
       "  <Actions Context=\"Author\">",
@@ -302,8 +319,7 @@ describe("the Windows chain walk", () => {
       "    </Exec>",
       "  </Actions>",
       "</Task>",
-    ].join("\n"));
-    return path;
+    ].join("\n");
   }
 
   function writeWindowsLauncher(wrapperPath: string): string {
@@ -340,9 +356,11 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\Users\\ws\\.codex", "C:\\Users\\ws\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     const taskXml = writeWindowsTask(launcher);
-    const { run, calls } = recorder(() => ({ status: 0, stdout: "<Task/>" }));
+    // The registered task points at the SAME launcher as the staged definition,
+    // so the two chains agree and the staged homes are reported.
+    const { runRaw, calls } = recorder(() => ({ status: 0, stdout: windowsTaskXmlFor(launcher) }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     expect(result.claims).toHaveLength(1);
@@ -355,7 +373,8 @@ describe("the Windows chain walk", () => {
     });
     // One bounded query via the trusted System32 schtasks, nothing that mutates.
     expect(calls).toHaveLength(1);
-    expect(calls[0].file.toLowerCase()).toContain("schtasks");
+    const schtasksPath = calls[0].file;
+    expect(schtasksPath.toLowerCase().replace(/\\/g, "/")).toContain("system32/schtasks.exe");
     expect(calls[0].args).toEqual(["/query", "/tn", "opencodex-proxy", "/xml"]);
   });
 
@@ -381,9 +400,9 @@ describe("the Windows chain walk", () => {
       '<?xml version="1.0" encoding="UTF-16"?>',
       `<Arguments>/b /nologo &quot;${foreignLauncher}&quot;</Arguments>`,
     ].join("\n");
-    const { run } = recorder(() => ({ status: 0, stdout: registeredXml }));
+    const { runRaw } = recorder(() => ({ status: 0, stdout: registeredXml }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
     expect(result.kind === "unknown" && result.reason).toContain("different homes");
   });
@@ -405,9 +424,9 @@ describe("the Windows chain walk", () => {
     ].join("\r\n"));
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     // %USERPROFILE% expands to the test's real home; %% stays a literal %.
@@ -432,9 +451,9 @@ describe("the Windows chain walk", () => {
     ].join("\r\n"));
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     // %%USERPROFILE%% is an escaped literal (stays %USERPROFILE%), while the
@@ -456,15 +475,20 @@ describe("the Windows chain walk", () => {
     ].join("\r\n"));
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
   });
 
   test("scheduler assets are located under the effective OPENCODEX_HOME", () => {
-    // A custom config dir (customized OPENCODEX_HOME) must be honored instead
-    // of the default <home>/.opencodex mirror.
+    // A decoy chain in the DEFAULT <home>/.opencodex location must NOT win over
+    // the customized OPENCODEX_HOME passed as configDir.
+    const decoyWrapper = writeWindowsWrapper("C:\\decoy\\.codex", "C:\\decoy\\.opencodex");
+    const decoyLauncher = writeWindowsLauncher(decoyWrapper);
+    writeWindowsTask(decoyLauncher);
+
+    // The real custom config dir (customized OPENCODEX_HOME) holds the actual chain.
     const custom = join(home, "custom-home");
     const wrapper = join(custom, "opencodex-service.cmd");
     mkdirSync(custom, { recursive: true });
@@ -483,11 +507,12 @@ describe("the Windows chain walk", () => {
       '<?xml version="1.0" encoding="UTF-16"?>',
       `<Arguments>/b /nologo &quot;${launcher}&quot;</Arguments>`,
     ].join("\n"));
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run, configDir: custom });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent", configDir: custom });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
+    // The custom chain's homes win over the default-mirror decoy.
     expect(result.claims[0].homes.codexHome).toBe("C:\\custom\\.codex");
   });
 
@@ -500,11 +525,12 @@ describe("the Windows chain walk", () => {
     writeFileSync(wrapper, "@echo off\r\nsetlocal\r\nset \"CODEX_HOME=C:\\x\\.codex\"");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
-    expect(result.kind === "unknown" && result.reason).toContain("wrapper");
+    expect(result.kind === "unknown" && result.reason)
+      .toContain("the launcher wrapper does not look like a generated opencodex service wrapper");
   });
 
   test("an empty wrapper is unknown, not absence", () => {
@@ -514,9 +540,9 @@ describe("the Windows chain walk", () => {
     writeFileSync(wrapper, "");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
   });
 
@@ -524,9 +550,9 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     expect(result.claims[0].registration).toBe("absent");
@@ -536,9 +562,9 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     expect(result.claims[0].homes.codexHome).toBe("C:\\a\\.codex");
@@ -549,9 +575,9 @@ describe("the Windows chain walk", () => {
     // Task XML points at a launcher that does not exist.
     const missing = join(home, ".opencodex", "no-such.vbs");
     writeWindowsTask(missing);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
     expect(result.kind === "unknown" && result.reason).toContain("launcher");
   });
@@ -570,9 +596,9 @@ describe("the Windows chain walk", () => {
       "</Task>",
     ].join("\n");
     writeFileSync(join(home, ".opencodex", "opencodex-service-task.xml"), Buffer.from(`\uFEFF${xml}`, "utf16le"));
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     expect(result.claims[0].homes).toEqual({ codexHome: "C:\\a\\.codex", opencodexHome: "C:\\a\\.opencodex" });
@@ -591,17 +617,17 @@ describe("the Windows chain walk", () => {
       '<?xml version="1.0" encoding="UTF-16"?>',
       `<Arguments>/b /nologo &quot;${launcher.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}&quot;</Arguments>`,
     ].join("\n"));
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("present");
     if (result.kind !== "present") return;
     expect(result.claims[0].homes).toEqual({ codexHome: "C:\\a\\.codex", opencodexHome: "C:\\a\\.opencodex" });
   });
 
   test("a task registered but with no XML on disk is unknown", () => {
-    const { run } = recorder(() => ({ status: 0, stdout: "<Task/>" }));
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const { runRaw } = recorder(() => ({ status: 0, stdout: "<Task/>" }));
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
     expect(result.kind === "unknown" && result.reason).toContain("missing");
   });
@@ -610,9 +636,9 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: null, spawnFailed: true, stderr: "spawn ENOENT" }));
+    const { runRaw } = recorder(() => ({ status: null, spawnFailed: true, stderr: "spawn ENOENT" }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
   });
 
@@ -627,9 +653,9 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: 1, stderr: "ERROR: Access is denied. (0x80070005)" }));
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: Access is denied. (0x80070005)" }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
     expect(result.kind === "unknown" && result.reason).toContain("could not be asked");
   });
@@ -638,9 +664,9 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: null, stderr: "" }));
+    const { runRaw } = recorder(() => ({ status: null, stderr: "" }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
     expect(result.kind).toBe("unknown");
   });
 
@@ -648,9 +674,69 @@ describe("the Windows chain walk", () => {
     const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
     const launcher = writeWindowsLauncher(wrapper);
     writeWindowsTask(launcher);
-    const { run } = recorder(() => ({ status: null, timedOut: true }));
+    const { runRaw } = recorder(() => ({ status: null, timedOut: true }));
 
-    const result = inspectServiceManagerInstallation({ platform: "win32", home, run });
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
+    expect(result.kind).toBe("unknown");
+  });
+
+  test("a registered task whose launcher is missing is unknown", () => {
+    const wrapper = writeWindowsWrapper("C:\\Users\\ws\\.codex", "C:\\Users\\ws\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    // The registered task points at a launcher that does not exist — the
+    // registered definition cannot be trusted, so the probe fails closed.
+    const missingLauncher = join(home, ".opencodex", "no-such.vbs");
+    const { runRaw } = recorder(() => ({ status: 0, stdout: windowsTaskXmlFor(missingLauncher) }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "nonexistent" });
+    expect(result.kind).toBe("unknown");
+    expect(result.kind === "unknown" && result.reason).toContain("launcher");
+  });
+
+  function writeWinswXml(dir: string, codexHome: string, opencodexHome: string): void {
+    // The probe resolves the winsw dir under the effective config dir
+    // (default <home>/.opencodex/winsw), matching winswDir() in src/lib/winsw.ts.
+    const winswDir = join(dir, ".opencodex", "winsw");
+    mkdirSync(winswDir, { recursive: true });
+    writeFileSync(join(winswDir, "opencodex-proxy-native.xml"), [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<service>",
+      "  <id>opencodex-proxy-native</id>",
+      `  <env name="CODEX_HOME" value="${codexHome}"/>`,
+      `  <env name="OPENCODEX_HOME" value="${opencodexHome}"/>`,
+      '  <arguments>"C:\\cli\\index.ts" start --port 10100</arguments>',
+      "</service>",
+    ].join("\n"));
+  }
+
+  test("WinSW and Task Scheduler both present is a conflict", () => {
+    const wrapper = writeWindowsWrapper("C:\\a\\.codex", "C:\\a\\.opencodex");
+    const launcher = writeWindowsLauncher(wrapper);
+    writeWindowsTask(launcher);
+    writeWinswXml(home, "C:\\winsw\\.codex", "C:\\winsw\\.opencodex");
+    const { runRaw } = recorder(() => ({ status: 0, stdout: windowsTaskXmlFor(launcher) }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "started" });
+    expect(result.kind).toBe("conflict");
+  });
+
+  test("WinSW homes are parsed from the XML env entries", () => {
+    writeWinswXml(home, "C:\\winsw\\.codex", "C:\\winsw\\.opencodex");
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "stopped" });
+    expect(result.kind).toBe("present");
+    if (result.kind !== "present") return;
+    expect(result.claims[0].backend).toBe("winsw");
+    expect(result.claims[0].homes).toEqual({ codexHome: "C:\\winsw\\.codex", opencodexHome: "C:\\winsw\\.opencodex" });
+  });
+
+  test("WinSW with unverifiable SCM state is unknown", () => {
+    writeWinswXml(home, "C:\\winsw\\.codex", "C:\\winsw\\.opencodex");
+    const { runRaw } = recorder(() => ({ status: 1, stderr: "ERROR: The system cannot find the file specified." }));
+
+    const result = inspectServiceManagerInstallation({ platform: "win32", home, runRaw, winswStatus: () => "unknown" });
     expect(result.kind).toBe("unknown");
   });
 });
@@ -810,7 +896,8 @@ describe("ownership refuses what it cannot prove", () => {
     const result = inspectNativeCodexOwnership({
       platform: "win32",
       home,
-      run: () => ({ status: 1, stderr: "ERROR: The system cannot find the file specified.", stdout: "", timedOut: false, spawnFailed: false }),
+      runRaw: () => ({ status: 1, stderr: Buffer.from("ERROR: The system cannot find the file specified."), stdout: Buffer.alloc(0), timedOut: false, spawnFailed: false }),
+      winswStatus: () => "nonexistent",
       statePaths: [join(opencodexHome, "service-state.json")],
       currentHomes: { codexHome, opencodexHome },
     });
@@ -845,7 +932,8 @@ describe("ownership refuses what it cannot prove", () => {
     const result = inspectNativeCodexOwnership({
       platform: "win32",
       home,
-      run: () => ({ status: 1, stderr: "ERROR: The system cannot find the file specified.", stdout: "", timedOut: false, spawnFailed: false }),
+      runRaw: () => ({ status: 1, stderr: Buffer.from("ERROR: The system cannot find the file specified."), stdout: Buffer.alloc(0), timedOut: false, spawnFailed: false }),
+      winswStatus: () => "nonexistent",
       statePaths: [join(opencodexHome, "service-state.json")],
       currentHomes: { codexHome, opencodexHome },
     });
