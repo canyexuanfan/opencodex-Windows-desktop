@@ -3,6 +3,7 @@ import type { ServerWebSocket } from "bun";
 import {
   BoundedSseFrameBuffer,
   MAX_CLIENT_SSE_FRAME_BYTES,
+  SseFrameCountLimitError,
   SseFrameTooLargeError,
 } from "../src/server/sse-frame-buffer";
 import { relaySseWithFailedTail } from "../src/server/relay";
@@ -39,6 +40,13 @@ describe("client-facing SSE frame bounds", () => {
     const framer = new BoundedSseFrameBuffer(8);
 
     expect(() => framer.feed(enc.encode("123456789"))).toThrow(SseFrameTooLargeError);
+    expect(framer.finish().byteLength).toBe(0);
+  });
+
+  test("delimiter-only input cannot amplify one chunk into unbounded frame objects", () => {
+    const framer = new BoundedSseFrameBuffer(4096);
+
+    expect(() => framer.feed(enc.encode("\n\n".repeat(5)))).toThrow(SseFrameCountLimitError);
     expect(framer.finish().byteLength).toBe(0);
   });
 
@@ -81,9 +89,37 @@ describe("client-facing SSE frame bounds", () => {
     expect(upstream.signal.aborted).toBe(true);
   });
 
-  test("WebSocket pump emits one bounded protocol error for an oversized unterminated frame", async () => {
+  test("HTTP failed-tail cleanup preserves the original failure when finish also overflows", async () => {
+    const upstream = new AbortController();
+    const nearCapWithAmbiguousTail = new Uint8Array(MAX_CLIENT_SSE_FRAME_BYTES + 1);
+    nearCapWithAmbiguousTail.fill(120, 0, MAX_CLIENT_SSE_FRAME_BYTES);
+    nearCapWithAmbiguousTail[MAX_CLIENT_SSE_FRAME_BYTES] = 10;
+    let reads = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) {
+          controller.enqueue(nearCapWithAmbiguousTail);
+          return;
+        }
+        controller.error(new Error("socket reset after partial frame"));
+      },
+    });
+    const relayed = relaySseWithFailedTail(source, upstream);
+
+    const text = await new Response(relayed).text();
+
+    expect(text.length).toBeLessThan(2048);
+    expect(text).toContain("response.failed");
+    expect(text).toContain("socket reset after partial frame");
+    expect(text).toContain("data: [DONE]");
+    expect(upstream.signal.aborted).toBe(true);
+  });
+
+  test("WebSocket pump emits one bounded protocol error and cancels upstream on overflow", async () => {
     const sent: string[] = [];
     const terminals: string[] = [];
+    let sourceCancelled = false;
     const ws = {
       readyState: 1,
       data: {} as WsData,
@@ -94,8 +130,16 @@ describe("client-facing SSE frame bounds", () => {
     } as unknown as ServerWebSocket<WsData>;
     const oversized = new Uint8Array(MAX_CLIENT_SSE_FRAME_BYTES + 1);
     oversized.fill(120);
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(oversized);
+      },
+      cancel() {
+        sourceCancelled = true;
+      },
+    });
 
-    await pumpResponsesSseToWebSocket(ws, streamFromChunks([oversized]), {
+    await pumpResponsesSseToWebSocket(ws, source, {
       onTerminal: status => terminals.push(status),
     });
 
@@ -112,6 +156,34 @@ describe("client-facing SSE frame bounds", () => {
     expect(error.error?.message).toBe(
       `upstream SSE frame exceeded ${MAX_CLIENT_SSE_FRAME_BYTES} bytes`,
     );
+    expect(sourceCancelled).toBe(true);
+    expect(ws.data.cancel).toBeUndefined();
+  });
+
+  test("WebSocket send drops do not trigger a second failing protocol-error send", async () => {
+    let sourceCancelled = false;
+    let sendCalls = 0;
+    const ws = {
+      readyState: 1,
+      data: {} as WsData,
+      send() {
+        sendCalls += 1;
+        return 0;
+      },
+    } as unknown as ServerWebSocket<WsData>;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(enc.encode('data: {"type":"response.created"}\n\n'));
+      },
+      cancel() {
+        sourceCancelled = true;
+      },
+    });
+
+    await expect(pumpResponsesSseToWebSocket(ws, source)).resolves.toBeUndefined();
+
+    expect(sendCalls).toBe(1);
+    expect(sourceCancelled).toBe(true);
     expect(ws.data.cancel).toBeUndefined();
   });
 });
