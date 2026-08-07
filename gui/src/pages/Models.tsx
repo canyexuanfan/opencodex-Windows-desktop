@@ -73,6 +73,22 @@ const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
   routing: "models.subtitle.routing",
 };
 
+/**
+ * Parse a context-window field: a number, `null` for "unset", or `undefined` when the text is
+ * not usable. Separators are cosmetic, so "64,000" and "64_000" and "64000" are one value.
+ *
+ * Safe-integer rather than integer: `Number.isInteger(1e100)` is true, the server rejects it,
+ * and accepting it here would turn a typo into a round-trip error instead of inline feedback.
+ *
+ * Module scope because it closes over nothing — rebuilding it every render is wasted work.
+ */
+function parseContextWindowDraft(raw: string): number | null | undefined {
+  const normalized = raw.replace(/[_,\s]/g, "");
+  if (!normalized) return null;
+  const value = Number(normalized);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 export default function Models({ apiBase }: { apiBase: string }) {
   /*
    * Tab state. The hash is the source of truth, so refresh, bookmark, and
@@ -174,6 +190,24 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [customFormModalities, setCustomFormModalities] = useState<string[]>(["text"]);
   const [customSaving, setCustomSaving] = useState(false);
   const [customError, setCustomError] = useState("");
+  const [contextModalProvider, setContextModalProvider] = useState<string | null>(null);
+  const [contextModalModels, setContextModalModels] = useState<string[]>([]);
+  const [contextModelId, setContextModelId] = useState("");
+  const [contextDefaultDraft, setContextDefaultDraft] = useState("");
+  const [contextModelDrafts, setContextModelDrafts] = useState<Record<string, string>>({});
+  // What the modal showed when it opened. Every payload decision compares against THIS, not
+  // against the live `groups`, because the 10s poll can refresh a value mid-modal: diffing
+  // against current state would mark an untouched field dirty and revert someone else's change.
+  const [contextSnapshot, setContextSnapshot] = useState<{
+    contextWindow: number | null;
+    modelContextWindows: Record<string, number | null>;
+  }>({ contextWindow: null, modelContextWindows: {} });
+  // Which fields the USER typed into. Touch alone is not enough to send — a value typed and
+  // then restored is not a change — but it is what makes an untouched field ineligible.
+  const [contextTouchedModels, setContextTouchedModels] = useState<Set<string>>(new Set());
+  const [contextDefaultTouched, setContextDefaultTouched] = useState(false);
+  const [contextSaving, setContextSaving] = useState(false);
+  const [contextError, setContextError] = useState("");
   const [hoveredModel, setHoveredModel] = useState<{ namespaced: string; rect: DOMRect } | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [shadowCall, setShadowCall] = useState<ShadowCallData | null>(null);
@@ -342,6 +376,123 @@ export default function Models({ apiBase }: { apiBase: string }) {
    */
   const catalogCountReady = models.length > 0 || catalogState.data !== undefined;
 
+  const openContextSettings = (group: ProviderModelGroup<ModelRow>) => {
+    const modelIds = [...new Set([
+      ...group.rows.map(model => model.id),
+      ...group.configuredModels,
+      // A model that vanished from live discovery can still hold an override. Without this it
+      // would sit in the drafts map, invisible in the picker, with no way to inspect or clear it.
+      ...Object.keys(group.modelContextWindows ?? {}),
+    ])].sort();
+    const modelId = modelIds[0] ?? "";
+    setContextModalProvider(group.provider);
+    setContextModalModels(modelIds);
+    setContextModelId(modelId);
+    const defaultDraft = group.contextWindow ? String(group.contextWindow) : "";
+    const modelDrafts = Object.fromEntries(
+      Object.entries(group.modelContextWindows ?? {})
+        .map(([model, window]) => [model, String(window)]),
+    );
+    setContextDefaultDraft(defaultDraft);
+    setContextModelDrafts(modelDrafts);
+    // Canonical numbers, not the raw strings. "64,000" and "64_000" and "64000" are the same
+    // value, and comparing text would treat a reformat as an edit — then Apply would send a
+    // stale number over whatever changed while the modal was open.
+    setContextSnapshot({
+      contextWindow: group.contextWindow ?? null,
+      modelContextWindows: Object.fromEntries(
+        Object.entries(group.modelContextWindows ?? {}).map(([model, window]) => [model, window]),
+      ),
+    });
+    setContextTouchedModels(new Set());
+    setContextDefaultTouched(false);
+    setContextError("");
+  };
+
+  const selectContextModel = (modelId: string) => {
+    setContextModelId(modelId);
+  };
+
+  const saveContextSettings = async () => {
+    if (!contextModalProvider) return;
+    const providerWindow = parseContextWindowDraft(contextDefaultDraft);
+    const group = groups.find(candidate => candidate.provider === contextModalProvider);
+    if (!group) {
+      setContextError(t("models.contextSaveFailed"));
+      return;
+    }
+
+    // A field is sent only when the user touched it AND its value actually differs from what
+    // the modal opened with. Both halves matter, and each one alone is wrong.
+    //
+    // Sending only the selected model — what this did before — silently dropped any model
+    // edited before switching the picker. No error, no warning, the value just did not save.
+    //
+    // Sending everything that differs from the LIVE state is wrong the other way: the 10s poll
+    // can refresh a field mid-modal, and a stale draft would then look dirty and revert a
+    // change the user never made. Comparing against the opening snapshot instead means a value
+    // typed and then restored sends nothing at all.
+    // Only validate the default when the user touched it. A malformed value inherited from a
+    // hand-edited config would otherwise block a save that never intended to touch it.
+    if (contextDefaultTouched && providerWindow === undefined) {
+      setContextError(t("models.contextInvalid"));
+      return;
+    }
+    const modelWindows: Record<string, number | null> = {};
+    for (const modelId of contextTouchedModels) {
+      const draft = contextModelDrafts[modelId] ?? "";
+      const parsed = parseContextWindowDraft(draft);
+      if (parsed === undefined) {
+        setContextError(t("models.contextInvalid"));
+        return;
+      }
+      // Compare VALUES, not text. Retyping 64000 as "64,000" is not a change.
+      if (parsed === (contextSnapshot.modelContextWindows[modelId] ?? null)) continue;
+      modelWindows[modelId] = parsed;
+    }
+    const defaultChanged = contextDefaultTouched
+      && providerWindow !== contextSnapshot.contextWindow;
+
+    // Nothing survived the comparison: every edit was reverted before Apply. Writing an
+    // unchanged payload would still stamp over concurrent edits.
+    if (!defaultChanged && Object.keys(modelWindows).length === 0) {
+      setContextModalProvider(null);
+      // Not "updated" — nothing was. Saying otherwise would be a small lie the user could
+      // act on, e.g. believing a value they typed and reverted had been written.
+      publishFeedback(true, t("models.contextUnchanged"));
+      return;
+    }
+
+    setContextSaving(true);
+    setContextError("");
+    try {
+      const body: Record<string, unknown> = {};
+      if (defaultChanged) body.contextWindow = providerWindow;
+      if (Object.keys(modelWindows).length > 0) body.modelContextWindows = modelWindows;
+      const response = await fetch(
+        `${apiBase}/api/providers?name=${encodeURIComponent(contextModalProvider)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      await readJsonOrThrow(response, t("models.contextSaveFailed"));
+    } catch (error) {
+      setContextError(error instanceof Error ? error.message : t("models.contextSaveFailed"));
+      return;
+    } finally {
+      setContextSaving(false);
+    }
+
+    // Past the write boundary: the values ARE saved. A refresh that fails afterwards is a
+    // display problem, and reporting it through `contextError` would set an error on a modal
+    // that is already closed — invisible to the user, and it contradicts the success they just
+    // saw. Let the ordinary load error surface handle it.
+    setContextModalProvider(null);
+    publishFeedback(true, t("models.contextSaved"));
+    await load(true);
+  };
 
   // One-shot default collapse. It stays an effect on `groups` so CACHED groups collapse
   // immediately on first paint, even when revalidation is slow or fails; moving it into
@@ -787,6 +938,14 @@ export default function Models({ apiBase }: { apiBase: string }) {
                <button
                  type="button"
                  className="btn btn-ghost btn-sm text-caption"
+                 onClick={() => openContextSettings(group)}
+                 aria-haspopup="dialog"
+               >{t("models.contextSettings")}</button>
+             )}
+             {!isNative && (
+               <button
+                 type="button"
+                 className="btn btn-ghost btn-sm text-caption"
                  onClick={(e) => {
                    e.stopPropagation();
                    setCustomModalMode("add");
@@ -1139,6 +1298,104 @@ export default function Models({ apiBase }: { apiBase: string }) {
             </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-primary" onClick={() => setV2HelpOpen(false)}>{t("common.ok")}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contextModalProvider && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("models.contextSettings")}
+          onClick={() => { if (!contextSaving) setContextModalProvider(null); }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !contextSaving) setContextModalProvider(null);
+          }}
+        >
+          <div className="modal-card" onClick={event => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{t("models.contextSettingsTitle", {
+                provider: formatProviderDisplayName(contextModalProvider, t),
+              })}</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setContextModalProvider(null)}
+                disabled={contextSaving}
+                aria-label={t("common.close")}
+              >&times;</button>
+            </div>
+
+            {contextError && <Notice tone="err">{contextError}</Notice>}
+            <p className="modal-desc leading-relaxed">{t("models.contextHint")}</p>
+
+            <div className="models-context-fields">
+              <label className="text-label models-field">
+                {t("models.contextDefault")}
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  value={contextDefaultDraft}
+                  onChange={event => {
+                    setContextDefaultDraft(event.target.value);
+                    setContextDefaultTouched(true);
+                  }}
+                  disabled={contextSaving}
+                  placeholder={t("models.contextAutomatic")}
+                  autoFocus
+                />
+              </label>
+
+              {contextModalModels.length > 0 && (
+                <>
+                  <div className="text-label models-field">
+                    {t("models.contextModel")}
+                    <Select
+                      value={contextModelId}
+                      options={contextModalModels.map(model => ({ value: model, label: model }))}
+                      onChange={selectContextModel}
+                      disabled={contextSaving}
+                      label={t("models.contextModel")}
+                    />
+                  </div>
+                  <label className="text-label models-field">
+                    {t("models.contextModelOverride")}
+                    <input
+                      className="input"
+                      inputMode="numeric"
+                      value={contextModelDrafts[contextModelId] ?? ""}
+                      onChange={event => {
+                        setContextModelDrafts(current => ({
+                          ...current,
+                          [contextModelId]: event.target.value,
+                        }));
+                        setContextTouchedModels(current => new Set(current).add(contextModelId));
+                      }}
+                      disabled={contextSaving}
+                      placeholder={t("models.contextAutomatic")}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setContextModalProvider(null)}
+                disabled={contextSaving}
+              >{t("common.cancel")}</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void saveContextSettings()}
+                disabled={contextSaving}
+              >
+                {contextSaving ? t("models.customSaving") : t("models.customApply")}
+              </button>
             </div>
           </div>
         </div>

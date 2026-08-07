@@ -2614,6 +2614,117 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.input_modalities).toEqual(["text", "image"]);
   });
 
+  // #1073's exact reproduction: a provider whose /models returns nothing but ids. Two cases,
+  // deliberately not one — a single test that sets `modelContextWindows` would keep passing
+  // with the provider-wide `?? prov.contextWindow` fallback deleted, because the per-model
+  // value is chosen first. Each ablation needs its own oracle.
+  //
+  // No `modelMaxInputTokens` in either fixture: auto_compact_token_limit is
+  // min(floor(contextWindow * 0.9), maxInputTokens), so setting one would move the expectation.
+  test("an id-only /models honors the provider-wide contextWindow fallback (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 350_000,
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    expect(routed?.context_window).toBe(350_000);
+    expect(routed?.max_context_window).toBe(350_000);
+    expect(routed?.auto_compact_token_limit).toBe(315_000);
+  });
+
+  test("a per-model contextWindow outranks the provider-wide one (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }, { id: "other-model" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 256_000,
+          modelContextWindows: { "gpt-5.6-luna": 350_000 },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+
+    expect(entries.find(e => e.slug === "sub2api/gpt-5.6-luna")?.context_window).toBe(350_000);
+    // The model without an override still gets the provider default, which is what makes this
+    // a comparison rather than a restatement of the previous test.
+    expect(entries.find(e => e.slug === "sub2api/other-model")?.context_window).toBe(256_000);
+  });
+
+  test("an id-only model with no configured window keeps the conservative fallback (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.auto_compact_token_limit).toBe(115_200);
+  });
+
+  test("upstream metadata smaller than the configured window wins (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna", context_length: 64_000 }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 350_000,
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    // The configured value supplies capacity when upstream has none; it never inflates a
+    // capacity upstream actually reported.
+    expect(routed?.context_window).toBe(64_000);
+  });
+
   test("liveModels false preserves configured catalog metadata without live fetch", async () => {
     let fetchCalls = 0;
     globalThis.fetch = (() => {
