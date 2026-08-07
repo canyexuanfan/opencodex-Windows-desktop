@@ -1,5 +1,10 @@
 export const MAX_CLIENT_SSE_FRAME_BYTES = 4 * 1024 * 1024;
 
+const LF_LF = Uint8Array.of(10, 10);
+const LF_CR_LF = Uint8Array.of(10, 13, 10);
+const CR_LF_LF = Uint8Array.of(13, 10, 10);
+const CR_LF_CR_LF = Uint8Array.of(13, 10, 13, 10);
+
 export class SseFrameTooLargeError extends Error {
   readonly maxBytes: number;
 
@@ -10,16 +15,32 @@ export class SseFrameTooLargeError extends Error {
   }
 }
 
+export class SseFrameCountLimitError extends Error {
+  readonly maxFrames: number;
+
+  constructor(maxFrames: number) {
+    super(`upstream SSE chunk exceeded ${maxFrames} frame limit`);
+    this.name = "SseFrameCountLimitError";
+    this.maxFrames = maxFrames;
+  }
+}
+
 export type BoundedSseFrame = {
   block: Uint8Array;
   delimiter: Uint8Array;
 };
 
+/**
+ * Classify the bytes at `index` as an SSE block delimiter.
+ *
+ * Returns the delimiter length in bytes, `0` when `index` does not start a
+ * delimiter, and `undefined` when more bytes are required to decide.
+ */
 function delimiterLengthAt(
   index: number,
   length: number,
   byteAt: (index: number) => number,
-): number | 0 | undefined {
+): number | undefined {
   const first = byteAt(index);
   if (first === 10) {
     if (index + 1 >= length) return undefined;
@@ -38,6 +59,16 @@ function delimiterLengthAt(
   if (third !== 13) return 0;
   if (index + 3 >= length) return undefined;
   return byteAt(index + 3) === 10 ? 4 : 0;
+}
+
+function delimiterBytesAt(
+  index: number,
+  delimiterLength: number,
+  byteAt: (index: number) => number,
+): Uint8Array {
+  if (delimiterLength === 2) return LF_LF;
+  if (delimiterLength === 4) return CR_LF_CR_LF;
+  return byteAt(index) === 10 ? LF_CR_LF : CR_LF_LF;
 }
 
 function copyRange(
@@ -68,6 +99,7 @@ function copyRange(
  */
 export class BoundedSseFrameBuffer {
   private readonly maxFrameBytes: number;
+  private readonly maxFramesPerFeed: number;
   private delimiterTail: Uint8Array = new Uint8Array(0);
   private candidate: Uint8Array = new Uint8Array(0);
   private candidateBytes = 0;
@@ -78,6 +110,10 @@ export class BoundedSseFrameBuffer {
       throw new RangeError("maxFrameBytes must be a positive safe integer");
     }
     this.maxFrameBytes = maxFrameBytes;
+    // Delimiter-only input otherwise creates an object-amplification path that
+    // is independent of candidate bytes. Keep frame count proportional to the
+    // configured byte budget while leaving ample room for real Responses events.
+    this.maxFramesPerFeed = Math.max(1, Math.ceil(maxFrameBytes / 1024));
   }
 
   private clear(): void {
@@ -88,6 +124,9 @@ export class BoundedSseFrameBuffer {
 
   private ensureCapacity(requiredBytes: number): void {
     if (this.candidate.byteLength >= requiredBytes) return;
+    if (requiredBytes > this.maxFrameBytes) {
+      throw new SseFrameTooLargeError(this.maxFrameBytes);
+    }
     let capacity = this.candidate.byteLength === 0
       ? Math.min(this.maxFrameBytes, Math.max(requiredBytes, 4096))
       : this.candidate.byteLength;
@@ -117,6 +156,9 @@ export class BoundedSseFrameBuffer {
   private takeCandidate(): Uint8Array {
     if (this.candidateBytes === 0) return new Uint8Array(0);
     const block = this.candidate.slice(0, this.candidateBytes);
+    // Release the working allocation after each complete frame. This avoids
+    // retaining a rare multi-MiB frame allocation for the rest of a long-lived
+    // stream; normal small-frame allocation remains bounded by feed's frame cap.
     this.candidate = new Uint8Array(0);
     this.candidateBytes = 0;
     return block;
@@ -150,15 +192,14 @@ export class BoundedSseFrameBuffer {
       const delimiterLength = delimiterLengthAt(index, totalLength, byteAt);
       if (delimiterLength === undefined) break;
       if (delimiterLength > 0) {
+        if (frames.length >= this.maxFramesPerFeed) {
+          this.clear();
+          this.disposed = true;
+          throw new SseFrameCountLimitError(this.maxFramesPerFeed);
+        }
         retainRange(retainedThrough, index);
         const block = this.takeCandidate();
-        const delimiter = copyRange(
-          index,
-          index + delimiterLength,
-          tailLength,
-          previousTail,
-          chunk,
-        );
+        const delimiter = delimiterBytesAt(index, delimiterLength, byteAt);
         frames.push({ block, delimiter });
         index += delimiterLength;
         retainedThrough = index;
