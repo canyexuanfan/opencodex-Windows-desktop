@@ -44,6 +44,24 @@ describe("Turkish (tr) i18n locale", () => {
     expect(mismatched).toEqual([]);
   });
 
+  test("tr.ts has no duplicate key declarations", async () => {
+    const text = await Bun.file(new URL("../src/i18n/tr.ts", import.meta.url)).text();
+    const keyRe = /^\s*"([^"]+)":/gm;
+    const seen = new Set<string>();
+    const duplicates: string[] = [];
+
+    for (const match of text.matchAll(keyRe)) {
+      const key = match[1];
+      if (seen.has(key)) {
+        duplicates.push(key);
+      } else {
+        seen.add(key);
+      }
+    }
+
+    expect(duplicates).toEqual([]);
+  });
+
   test("detectInitial detects tr from navigator language", () => {
     const origNav = globalThis.navigator;
     try {
