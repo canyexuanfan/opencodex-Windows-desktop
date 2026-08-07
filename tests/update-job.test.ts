@@ -135,8 +135,9 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("_cacache");
     expect(persisted).not.toMatch(/\buid\s*[=:]\s*501\b/i);
     expect(persisted).not.toMatch(/\bgid\s*[=:]\s*20\b/i);
-    expect(persisted).toContain("<profile>");
-    expect(persisted).toContain("<npm-cache>");
+    // Multi-line vendor output no longer crosses the boundary at all — it is replaced by a
+    // shape note. The secrets are what matter here, and none of them survive.
+    expect(persisted).toContain("lines of output withheld");
   });
 
   test("the persistence boundary survives wrapped paths and profile expansions", () => {
@@ -166,6 +167,10 @@ describe("GUI update execution decisions", () => {
       // A genuinely new record that contains a separator must survive.
       "unc2 \\\\server\\share\\Users\\Jane\\x",
       "UNC FOLLOW /usr/local/lib/node_modules",
+      // Three consecutive wraps, and an empty continuation line — a single carry bit could not
+      // cover either. These are why raw output is no longer persisted at all.
+      "three C:\\Us\n  ers\\Ja\n  ne [Admin]+\\Documents\\x",
+      "empty C:\\Users\\Z\n\n  oe (Blank)+",
     ].join("\n");
 
     expect(() => startUpdateJob("latest", true, {
@@ -194,9 +199,9 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("A+B (Ops)");
     expect(persisted).not.toContain("\ud64d \uae38\ub3d9");
     expect(persisted).not.toContain("Jane");
-    expect(persisted).toContain("KEEP diagnostic code E42");
     expect(persisted).not.toContain("oe [Admin]+");
-    expect(persisted).toContain("UNC FOLLOW /usr/local/lib/node_modules");
+    expect(persisted).not.toContain("ne [Admin]+");
+    expect(persisted).not.toContain("oe (Blank)+");
   });
 
   test("a failed cache pre-flight leaves the install command unrun", async () => {

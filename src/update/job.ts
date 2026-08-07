@@ -283,8 +283,18 @@ function redactWrappedProfilePaths(value: string): string {
       // Continuation of an open account name: redact the whole line, keeping its indentation so
       // the log still reads as wrapped output.
       const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
-      lines[i] = line.trim().length > 0 ? `${indent}<profile>` : line;
-      carry = false;
+      if (line.trim().length === 0) {
+        // A blank continuation does not end the wrap — npm can emit one — so hold the carry
+        // rather than spending it here and letting the real continuation through.
+        continue;
+      }
+      lines[i] = `${indent}<profile>`;
+      // A wrap can span several lines (`...\Us` / `ers\Ja` / `ne [Admin]+\...`), and every rule
+      // for "has this one ended?" that was tried here broke a case it had previously fixed —
+      // the text simply does not say. Keep carrying while the line still looks like path
+      // fragments (no spaces around separators, no sentence-like content) and stop at the first
+      // line that reads as ordinary prose. Over-redacting a fragment line is the safe error.
+      carry = /[\\/]/.test(line) ? !/[\\/]\s|\s[\\/]/.test(line) && line.trim().split(/\s+/).length <= 3 : true;
       continue;
     }
 
@@ -296,10 +306,25 @@ function redactWrappedProfilePaths(value: string): string {
 }
 
 function sanitizePersistedUpdateText(value: string): string {
+  // Free-form vendor text cannot be made safe by redaction, and six rounds of trying is the
+  // evidence: a wrap inside the keyword, inside the account name, an indented continuation,
+  // three consecutive wraps, an empty continuation — each fix surfaced the next leak, because
+  // the leak surface is whatever npm chooses to print and however the terminal wraps it.
+  //
+  // So multi-line text does not cross this boundary at all. A value that still contains a line
+  // break after the single-line rules below is replaced wholesale; single-line values keep the
+  // precise redaction, which is enough for the structured fields (command, error, log entries)
+  // that legitimately need to stay readable.
   // Wrap-tolerant profile redaction runs FIRST: npm and the OS break long paths at arbitrary
   // points, and a rule anchored to a single line let `C:\Us<newline>ers\Jane Doe\...` through
   // with the account name intact. The single-line rules below then handle the ordinary cases
   // precisely.
+  // Multi-line values are vendor output, not a structured field. Reduce them to a shape and size
+  // note rather than trying to redact text whose wrapping we do not control.
+  if (/\r?\n/.test(value)) {
+    const lines = value.split(/\r?\n/).length;
+    return `<${lines} lines of output withheld (may contain local paths)>`;
+  }
   return redactWrappedProfilePaths(value)
     // Profile environment expansions, before the path rules: %USERPROFILE%\Documents\... and
     // $HOME/... would otherwise survive as a literal prefix plus a real tail.
@@ -622,6 +647,20 @@ export function startUpdateJob(
   return startedJob;
 }
 
+/**
+ * Run an update step and record WHAT HAPPENED, not what the tool printed.
+ *
+ * Raw installer output used to be persisted verbatim, which put local paths and account names
+ * into a stored file. Six rounds of trying to sanitize it after the fact each produced a new
+ * leak — a wrap inside the keyword, a wrap inside the account name, an indented continuation,
+ * three consecutive wraps, an empty continuation line. Every fix was an attempt to reconstruct
+ * arbitrary multi-line text well enough to match it, and that is not a problem a redactor can
+ * win: the leak surface is whatever npm decides to print.
+ *
+ * So the raw stream is no longer persisted at all. The job keeps the command, its exit status,
+ * and a bounded, structured summary — enough to tell a user which step failed and how, with no
+ * free-form vendor text passing through the boundary. Detailed output stays ephemeral.
+ */
 function runLoggedCommand(job: UpdateJobState, bin: string, args: string[], timeout: number): { status: number | null; signal: NodeJS.Signals | null } {
   job = updateJob(job, {}, `$ ${formatCommand(bin, args)}`);
   const result = spawnSync(bin, args, {
@@ -631,9 +670,41 @@ function runLoggedCommand(job: UpdateJobState, bin: string, args: string[], time
   });
   const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
   const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-  if (stdout) job = updateJob(job, {}, stdout.slice(-4000));
-  if (stderr) updateJob(job, {}, stderr.slice(-4000));
+  const summary = summarizeCommandOutput(stdout, stderr, result.status, result.signal);
+  if (summary) updateJob(job, {}, summary);
   return { status: result.status, signal: result.signal };
+}
+
+/** npm error codes are safe to surface: they are a fixed vocabulary, not user text. */
+const NPM_ERROR_CODE = /\b(E[A-Z]{3,}|ERR_[A-Z_]+)\b/g;
+
+/**
+ * Build a structured, path-free summary of a command's result.
+ *
+ * Only three things cross the boundary: how the process ended, how much it printed, and any
+ * recognized error codes. None of those can carry a filesystem path or an account name.
+ */
+function summarizeCommandOutput(
+  stdout: string,
+  stderr: string,
+  status: number | null,
+  signal: NodeJS.Signals | null,
+): string | null {
+  if (!stdout && !stderr && status === 0) return null;
+
+  const parts: string[] = [];
+  parts.push(signal ? `terminated by ${signal}` : `exit ${status ?? "null"}`);
+
+  const codes = [...new Set([
+    ...stderr.matchAll(NPM_ERROR_CODE),
+    ...stdout.matchAll(NPM_ERROR_CODE),
+  ].map(match => match[0]))].slice(0, 5);
+  if (codes.length > 0) parts.push(`codes: ${codes.join(", ")}`);
+
+  const bytes = stdout.length + stderr.length;
+  if (bytes > 0) parts.push(`${bytes} bytes of output withheld (may contain local paths)`);
+
+  return parts.join(" · ");
 }
 
 /**
