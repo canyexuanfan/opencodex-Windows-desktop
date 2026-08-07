@@ -10,7 +10,7 @@ interface ResponsesItemIdRepairState {
   readonly repairInvalidIds: boolean;
   readonly placeholders: Record<RepairableItemType, ReadonlySet<string>>;
   readonly outputIds: Record<RepairableItemType, Map<number, string>>;
-  /** Raw upstream item id -> canonical id, for exact item_id rewrites on part/delta events. */
+  /** JSON [outputIndex, rawId] -> canonical id, for exact item_id rewrites on part/delta events. */
   readonly rawIds: Map<string, string>;
   readonly scope: string;
   readonly budget?: TranslatorBudget;
@@ -100,7 +100,9 @@ function rememberMappedId(
   if (!mapped) return null;
   state.budget?.chargeRetained(new TextEncoder().encode(JSON.stringify([outputIndex, rawId, mapped])).byteLength, { kind: "item_ids" });
   state.outputIds[type].set(outputIndex, mapped);
-  if (rawId !== mapped) state.rawIds.set(rawId, mapped);
+  // Keyed by (index, rawId): an upstream that reuses one placeholder id across
+  // several items must not collapse them into the last item's canonical id.
+  if (rawId !== mapped) state.rawIds.set(JSON.stringify([outputIndex, rawId]), mapped);
   return mapped;
 }
 
@@ -127,16 +129,21 @@ function rewriteItemIdField(
   const currentId = typeof event.item_id === "string" ? event.item_id : undefined;
   // content_part.* events are shared between message and reasoning items (DeepSeek's
   // streamed reasoning wraps its text in content parts), so the static event-type map
-  // can point at the wrong id table. The raw-id lookup is exact — it rewrites the
-  // event only when its item_id names an id the item stream already repaired — so a
-  // reused output_index can never borrow the sibling item's canonical id. Falling
-  // back to the index table covers placeholder-id upstreams whose part events echo
-  // the placeholder (already in rawIds) or omit item_id entirely.
-  const mapped = (currentId !== undefined ? state.rawIds.get(currentId) : undefined)
-    ?? state.outputIds[eventType].get(outputIndex);
+  // can point at the wrong id table. The rewrite is therefore exact-only when the
+  // event carries an item_id: it fires when (output_index, item_id) names an id the
+  // item stream already repaired, and otherwise leaves the event alone — an unknown
+  // id belongs to an item this repair never touched (function_call, already-canonical
+  // ids), and guessing by index could borrow a sibling item's identity. The index
+  // table serves only events with NO item_id, where repairMissingTerminalIds
+  // explicitly opts into the positional guess (the pre-existing contract).
+  if (currentId !== undefined) {
+    const mapped = state.rawIds.get(JSON.stringify([outputIndex, currentId]));
+    if (!mapped || currentId === mapped) return { event, changed: false };
+    return { event: { ...event, item_id: mapped }, changed: true };
+  }
+  if (!state.repairMissingTerminalIds) return { event, changed: false };
+  const mapped = state.outputIds[eventType].get(outputIndex);
   if (!mapped) return { event, changed: false };
-  if (currentId === mapped) return { event, changed: false };
-  if (currentId === undefined && !state.repairMissingTerminalIds) return { event, changed: false };
   return { event: { ...event, item_id: mapped }, changed: true };
 }
 

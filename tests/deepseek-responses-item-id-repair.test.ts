@@ -118,6 +118,31 @@ describe("registry-derived DeepSeek repair policy (#938)", () => {
     frame({ type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: UUID_FC, call_id: "call_abc", name: "search", arguments: "{}" } });
     const fcPart = frame({ type: "response.content_part.added", item_id: UUID_FC, output_index: 1, content_index: 0, part: { type: "output_text", text: "" } });
     expect(fcPart.item_id).toBe(UUID_FC);
+    // …including when the function_call REUSES an index the message table holds
+    // (final-audit reproduction: the index fallback borrowed the message id).
+    const fcPartReused = frame({ type: "response.content_part.added", item_id: UUID_FC, output_index: 0, content_index: 0, part: { type: "output_text", text: "" } });
+    expect(fcPartReused.item_id).toBe(UUID_FC);
+    // An already-canonical part id at a repaired index is never double-rewritten.
+    const canonicalPart = frame({ type: "response.content_part.done", item_id: rsId, output_index: 0, content_index: 0, part: { type: "reasoning_text", text: "y" } });
+    expect(canonicalPart.item_id).toBe(rsId);
+  });
+
+  test("one placeholder id reused across items maps each index to its own canonical id", () => {
+    // Final-audit reproduction: a flat raw-id map collapsed two items sharing the
+    // placeholder "shared" into the LAST item's canonical id. The (index, rawId)
+    // key keeps them distinct.
+    const rewrite = createResponsesItemIdPayloadRewrite(
+      { message: ["shared"], reasoning: [] },
+      createTestTranslatorBudget(),
+    );
+    const frame = (payload: unknown) => JSON.parse(rewrite(JSON.stringify(payload))) as Record<string, unknown>;
+    const first = frame({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "shared", role: "assistant", status: "in_progress", content: [] } });
+    const second = frame({ type: "response.output_item.added", output_index: 1, item: { type: "message", id: "shared", role: "assistant", status: "in_progress", content: [] } });
+    const firstId = (first.item as { id: string }).id;
+    const secondId = (second.item as { id: string }).id;
+    expect(firstId).not.toBe(secondId);
+    const lateDelta = frame({ type: "response.output_text.delta", item_id: "shared", output_index: 0, delta: "hi" });
+    expect(lateDelta.item_id).toBe(firstId);
   });
 
   test("repairResponsesJsonItemIds normalizes a whole bounded-JSON response", () => {
