@@ -209,6 +209,11 @@ describe("opt-in upstream host circuit", () => {
     // the logical request itself owns the one half-open admission.
     await maybePrimeSubagentQuota(config, 1_500 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 1);
     expect(primeCalls).toBe(0);
+
+    // Positive control: with no host circuit, the same config primes exactly once.
+    clearUpstreamHostHealth();
+    await maybePrimeSubagentQuota(config, 1_500 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 2);
+    expect(primeCalls).toBe(1);
   });
 
   test("legacy observations cannot open the opt-in circuit without a lease", () => {
@@ -351,8 +356,9 @@ describe("opt-in upstream host circuit", () => {
     for (let i = 0; i < UPSTREAM_HOST_HEALTH_MAX_ENTRIES + 1; i += 1) {
       leases.push(admit(upstreamHostHealthKey("openai", `https://active-${i}.example`), 1, 14_000 + i));
     }
-    expect(releaseUpstreamHostAdmission(leases[0], 15_000)).toBe(true);
-    for (const lease of leases.slice(1)) releaseUpstreamHostAdmission(lease, 15_001);
+    for (const [index, lease] of leases.entries()) {
+      expect(releaseUpstreamHostAdmission(lease, index === 0 ? 15_000 : 15_001)).toBe(true);
+    }
   });
 
   test("a stale completion cannot mutate the generation that opened the circuit", () => {
