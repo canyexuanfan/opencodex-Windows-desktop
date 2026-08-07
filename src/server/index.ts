@@ -544,7 +544,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // headers to a 503 on the loopback listener — no model runs and no credential is spent, but
   // it is the one error path that would answer a rebinding origin with its own origin echoed
   // back.
-  function drainingResponse(req: Request, policy: RequestPolicyView = config): Response {
+  function drainingResponse(req: Request, policy: RequestPolicyView): Response {
     const response = formatErrorResponse(503, "server_error", "Service shutting down");
     const headers = new Headers(response.headers);
     for (const [name, value] of Object.entries(corsHeaders(req, policy))) {
@@ -554,7 +554,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     return new Response(response.body, { status: 503, headers });
   }
 
-  function serverBusyResponse(req: Request, resource: string, policy: RequestPolicyView = config): Response {
+  function serverBusyResponse(req: Request, resource: string, policy: RequestPolicyView): Response {
     return withCors(new Response(JSON.stringify({
       error: { type: "server_error", code: "server_busy", message: `${resource} capacity reached` },
     }), {
@@ -563,9 +563,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     }), req, policy);
   }
 
-  async function runAdmittedHttpTurn(req: Request, work: (lease: ActiveTurnLease) => Promise<Response>): Promise<Response> {
+  async function runAdmittedHttpTurn(
+    req: Request,
+    policy: RequestPolicyView,
+    work: (lease: ActiveTurnLease) => Promise<Response>,
+  ): Promise<Response> {
     const lease = tryAdmitTurn();
-    if (!lease) return serverBusyResponse(req, "active turns");
+    if (!lease) return serverBusyResponse(req, "active turns", policy);
     let response: Response;
     try {
       response = await work(lease);
@@ -927,7 +931,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           let response: Response;
           try {
             response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease);
@@ -961,7 +965,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
         };
         const endpoint = url.pathname.endsWith("/edits") ? "edits" as const : "generations" as const;
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleImages(req, config, endpoint, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status, response.status === 499 ? { closeReason: "client_cancel" } : undefined);
           return withCors(response, req, policy);
@@ -1015,7 +1019,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleSearch(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(requestId, start, logCtx, response.status,
             response.status === 499 ? { closeReason: "client_cancel" } : undefined);
@@ -1050,7 +1054,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           logged = true;
           addFinalRequestLog(requestId, start, logCtx, status, meta);
         };
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleResponses(req, config, logCtx, {
             turnAdmissionLease,
             abortSignal: req.signal,
@@ -1082,7 +1086,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         if (!isAllowedRequestOrigin(req, policy)) {
           return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, policy);
         }
-        return runAdmittedHttpTurn(req, async () => withCors(await handleClaudeCountTokens(req, config), req, policy));
+        return runAdmittedHttpTurn(req, policy, async () => withCors(await handleClaudeCountTokens(req, config), req, policy));
       }
 
       if (url.pathname === "/v1/messages" && req.method === "POST") {
@@ -1108,7 +1112,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // Logging is finalized inside handleClaudeMessages (Responses-vocab tap on the
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => withCors(
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
           await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease }),
           req,
           config,
@@ -1135,7 +1139,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
           inboundProtocol: "chat",
         };
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => withCors(
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
           await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease }),
           req,
           config,
@@ -1165,7 +1169,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           provider: "unknown",
           ...admissionFields(admission),
         };
-        return runAdmittedHttpTurn(req, async turnAdmissionLease => {
+        return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleLive(req, config, logCtx, turnAdmissionLease);
           addFinalRequestLog(
             requestId,

@@ -108,19 +108,38 @@ export async function findAvailablePort(
     throw new PortUnavailableError(preferredPort, hostname);
   }
 
-  return await new Promise((resolve, reject) => {
+  // Bounded, not recursive. The OS can hand back the reserved port, and a redraw practically
+  // always differs — but "practically always" is not a termination argument, and an unbounded
+  // async recursion has no way to stop if the assumption is ever wrong.
+  for (let attempt = 0; attempt < EPHEMERAL_REDRAW_LIMIT; attempt += 1) {
+    const port = await allocateEphemeralPort(hostname);
+    if (port !== reserved) return port;
+  }
+  throw new Error("failed to allocate an available port");
+}
+
+/** How many times an ephemeral draw may come back reserved before we give up. */
+const EPHEMERAL_REDRAW_LIMIT = 8;
+
+/** Test seam: replace the OS ephemeral allocator so the redraw path is reachable. */
+let ephemeralAllocator: ((hostname: string) => Promise<number>) | null = null;
+
+export function setEphemeralPortAllocatorForTests(
+  allocator: ((hostname: string) => Promise<number>) | null,
+): void {
+  ephemeralAllocator = allocator;
+}
+
+async function allocateEphemeralPort(hostname: string): Promise<number> {
+  if (ephemeralAllocator) return ephemeralAllocator(hostname);
+  return await new Promise<number>((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
     server.once("listening", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
       server.close(() => {
-        // The OS can hand back the reserved port. Retry rather than accept it; the pool is
-        // large enough that a second draw practically always differs.
-        if (port > 0 && port !== reserved) resolve(port);
-        else if (port === reserved) {
-          findAvailablePort(0, hostname, opts).then(resolve, reject);
-        }
+        if (port > 0) resolve(port);
         else reject(new Error("failed to allocate an available port"));
       });
     });
