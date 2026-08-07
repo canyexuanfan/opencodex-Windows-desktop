@@ -316,7 +316,7 @@ export function sendResponsesJsonAsEvents(
     ? response.status
     : "completed";
   for (const frame of responsesJsonEventSequence(response)) {
-    sendObservedFrame(ws ? frame : frame);
+    sendObservedFrame(frame);
   }
   onTerminal?.(finalStatus);
 }
