@@ -172,6 +172,7 @@ import {
   restoreImageGenCallsInJson,
 } from "../responses-image-gen-repair";
 import { composeSsePayloadRewrites, relaySseWithPayloadRewrite } from "../sse-payload-rewrite";
+import { createResponsesModelPayloadRewrite, rewriteResponsesModelJson } from "../responses-model-rewrite";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
 import { buildToolBridgeMaps, collabSurface, injectDeveloperMessage, multiAgentGuidanceText } from "./collaboration";
@@ -864,6 +865,12 @@ async function applyFinalRouteRequestNormalization(args: {
 }): Promise<void> {
   const { parsed, route, config, req, logCtx, inboundWire, inboundTransport } = args;
 
+  // Only Anthropic message routes retain the Codex-facing selector. Other providers must keep
+  // their existing response.model contract even when their public and wire model ids differ.
+  const responseModelId = parsed.modelId;
+  const preserveAnthropicResponseModel = route.providerName === "anthropic"
+    || route.provider.adapter === "anthropic";
+
   // Apply the routed model id upstream: routing may strip a "<provider>/" namespace.
   if (route.modelId !== parsed.modelId) {
     if (parsed._rawBody && typeof parsed._rawBody === "object") {
@@ -882,6 +889,7 @@ async function applyFinalRouteRequestNormalization(args: {
   // Settle the wire once so logging, fast-mode, auth, and sidecars read the adapter
   // this request will actually use (#404).
   route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+  if (preserveAnthropicResponseModel) parsed._responseModelId = responseModelId;
   logCtx.model = route.modelId;
   logCtx.provider = route.providerName;
   logCtx.providerAdapter = route.provider.adapter;
@@ -899,6 +907,10 @@ async function applyFinalRouteRequestNormalization(args: {
 
   // Virtual model rewriting: Pro aliases → base model + reasoning.mode="pro".
   applyOpenAiVirtualModel(parsed, route, logCtx);
+  if (parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId) {
+    logCtx.resolvedModel = route.modelId;
+    logCtx.preserveResolvedModelFromRoute = true;
+  }
 
   // Fast mode override for OpenAI-routed models, only where the provider's Responses
   // route documents `service_tier` support (capability gate below strips everywhere else).
@@ -2061,13 +2073,21 @@ async function handleResponsesInner(
     if (isEventStream && upstreamResponse.body) {
       const repairConfig = route.provider.responsesItemIdRepair;
       const snapshotRepairEnabled = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair);
-      const needsClientRewrite = imageGenCallAliases.size > 0 || hasResponsesItemIdRepair(repairConfig) || snapshotRepairEnabled;
+      const responseModelRewrite = parsed._responseModelId !== undefined
+        && parsed._responseModelId !== parsed.modelId
+        ? createResponsesModelPayloadRewrite(parsed._responseModelId)
+        : undefined;
+      const needsClientRewrite = imageGenCallAliases.size > 0
+        || hasResponsesItemIdRepair(repairConfig)
+        || snapshotRepairEnabled
+        || responseModelRewrite !== undefined;
       // Compose opt-in payload rewrites into one parse/stringify pass (image-gen restore first).
       const payloadRewrites = [
         createImageGenCallRestoreRewrite(imageGenCallAliases),
         hasResponsesItemIdRepair(repairConfig)
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
+        responseModelRewrite,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       // #893: sparse-snapshot gateways get field backfills AND lifecycle event
       // injection at the block level, after payload rewrites. Defaults come
@@ -2259,14 +2279,19 @@ async function handleResponsesInner(
       }
       const clientJson = (() => {
         const restored = restoreImageGenCallsInJson(text, imageGenCallAliases);
-        if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
-        let outbound: unknown;
-        try {
-          outbound = JSON.parse(request.body);
-        } catch {
-          outbound = undefined;
-        }
-        return repairResponsesSnapshotJson(restored, outbound);
+        const repaired = (() => {
+          if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
+          let outbound: unknown;
+          try {
+            outbound = JSON.parse(request.body);
+          } catch {
+            outbound = undefined;
+          }
+          return repairResponsesSnapshotJson(restored, outbound);
+        })();
+        return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
+          ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
+          : repaired;
       })();
       // #875: the transport-neutral reliability policy forced a bounded JSON
       // upstream for a client that asked for SSE. Reframe the completed JSON
@@ -2569,7 +2594,7 @@ async function handleResponsesInner(
         eventSource = preflight.stream;
       }
       const sseStream = bridgeToResponsesSSE(
-        eventSource, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
+        eventSource, parsed._responseModelId ?? parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
         () => {
           runTurnAbort.abort();
           queue.close();
@@ -2621,7 +2646,7 @@ async function handleResponsesInner(
       }
     }
     let providerState: OcxProviderContinuationState | undefined;
-    const json = buildResponseJSON(events, parsed.modelId, {
+    const json = buildResponseJSON(events, parsed._responseModelId ?? parsed.modelId, {
       translatorBudget,
       replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
@@ -3263,7 +3288,7 @@ async function handleResponsesInner(
       : initialEventStream;
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     const sseStream = bridgeToResponsesSSE(
-      eventStream, parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
+      eventStream, parsed._responseModelId ?? parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
       () => upstream.abort(), 2_000,
       {
         translatorBudget,
@@ -3323,7 +3348,7 @@ async function handleResponsesInner(
     }
     const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     let providerState: OcxProviderContinuationState | undefined;
-    const json = buildResponseJSON(events, parsed.modelId, {
+    const json = buildResponseJSON(events, parsed._responseModelId ?? parsed.modelId, {
       translatorBudget,
       replayCacheScope: parsed._clientThreadId ?? "global",
       hideThinkingSummary: parsed.options.hideThinkingSummary,
