@@ -206,9 +206,12 @@ jobs:
   # The suite, split by file across four Linux runners.
   #
   # `bun test --shard=i/N` sorts test files by path and deals them round-robin,
-  # so the split is deterministic: shard 3 of 4 covers the same files on every
-  # run, and the four shards together cover the suite exactly once. Measured on
-  # this suite: 120 files per shard, union 480, no file in two shards.
+  # so the split is deterministic for the files that remain in this lane.
+  # Storage-policy API tests are deliberately excluded here and run in the
+  # dedicated `storage-policy` job below. Bun 1.3.14 can corrupt the Linux
+  # isolate/epoll state around that Worker-heavy harness; keeping it out of the
+  # general shards prevents one runtime failure from wedging ~150 unrelated
+  # files while preserving the same coverage in a fresh Bun process.
   #
   # Only the suite lives here. Typecheck, lint, build, and the scans run once in
   # `gates` rather than four times — they are fixed cost, and paying it per shard
@@ -261,7 +264,45 @@ jobs:
           bun run build
 
       - name: Test
-        run: bun test --isolate tests --shard=${{ matrix.shard }}/4
+        run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --shard=${{ matrix.shard }}/4
+
+  # Bun 1.3.14 has shown a Linux isolate/epoll race around the storage-policy
+  # harness. Keep the entire five-file family in one fresh process so a runtime
+  # failure is bounded to this job instead of poisoning a general test shard.
+  storage-policy:
+    name: storage policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          cd gui
+          bun install --frozen-lockfile
+
+      - name: Build GUI
+        run: |
+          cd gui
+          bun run build
+
+      - name: Test storage policy API
+        run: |
+          bun test --isolate \
+            ./tests/api-storage-policy-already-running.test.ts \
+            ./tests/api-storage-policy-mutation-busy.test.ts \
+            ./tests/api-storage-policy-put-race.test.ts \
+            ./tests/api-storage-policy-run.test.ts \
+            ./tests/api-storage-policy.test.ts
 
   # Everything that is not the suite: type safety, privacy, lint, build, smoke.
   # One runner, once per push. Splitting these across the shards would repeat a
@@ -332,7 +373,7 @@ jobs:
   platform-macos:
     name: macos
     runs-on: macos-latest
-    # The unsharded control for the sharded lanes: the only place the whole
+    # The unsharded control for the sharded Linux lane: the only place the whole
     # suite runs in one pool, so it is the place that catches what sharding
     # hides. The flakes it keeps surfacing are timing, not logic, and the fix
     # is the tests, not a fourth lane.
@@ -592,7 +633,7 @@ jobs:
     # direct dependencies only, so a failing `select-windows-runner` would
     # otherwise reach this gate as nothing at all while its dependents report
     # `skipped` — which the gate is required to read as a deliberate skip.
-    needs: [changes, select-windows-runner, test, gates, platform-macos, platform-windows, keyring-smoke, npm-global-smoke]
+    needs: [changes, select-windows-runner, test, storage-policy, gates, platform-macos, platform-windows, keyring-smoke, npm-global-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
