@@ -189,7 +189,7 @@ export function resolveVisionBackend(
 
 /** Native model used by the OpenAI vision helper, including its bounded default. */
 export function resolveOpenAiVisionModel(config: Pick<OcxConfig, "visionSidecar">): string {
-  return config.visionSidecar?.model ?? DEFAULT_VISION_MODEL;
+  return config.visionSidecar?.model || DEFAULT_VISION_MODEL;
 }
 
 /** A user/developer/toolResult message can carry images (toolResult: e.g. Codex view_image output). */
@@ -245,7 +245,7 @@ export function planVisionSidecar(
 
   if (backend === "anthropic") {
     if (!anthropicSidecar) return undefined;
-    const model = cfg.model ?? DEFAULT_ANTHROPIC_VISION_MODEL;
+    const model = cfg.model || DEFAULT_ANTHROPIC_VISION_MODEL;
     return {
       backend,
       anthropicSidecar,
