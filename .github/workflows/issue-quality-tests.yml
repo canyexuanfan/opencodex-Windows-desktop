@@ -5,7 +5,8 @@ on:
     paths:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/scripts/issue-quality.cjs"
-      - ".github/scripts/issue-quality.test.cjs"
+      - ".github/scripts/issue-quality-core.cjs"
+      - ".github/scripts/issue-quality*.test.cjs"
       - ".github/scripts/pr-quality.cjs"
       - ".github/scripts/pr-quality.test.cjs"
       - ".github/scripts/pr-quality-messages.cjs"
@@ -34,7 +35,8 @@ on:
     paths:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/scripts/issue-quality.cjs"
-      - ".github/scripts/issue-quality.test.cjs"
+      - ".github/scripts/issue-quality-core.cjs"
+      - ".github/scripts/issue-quality*.test.cjs"
       - ".github/scripts/pr-quality.cjs"
       - ".github/scripts/pr-quality.test.cjs"
       - ".github/scripts/pr-quality-messages.cjs"
@@ -75,7 +77,7 @@ jobs:
 
       - name: Run validator tests
         run: |
-          node --test .github/scripts/issue-quality.test.cjs
+          node --test .github/scripts/issue-quality*.test.cjs
           node --test .github/scripts/pr-quality.test.cjs
           node --test .github/scripts/pr-labeler.test.cjs
           node --test .github/scripts/enforce-pr-target.test.cjs
