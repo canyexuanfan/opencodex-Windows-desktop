@@ -641,21 +641,49 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       catalogRefresh,
     });
 
-    // Branch 1: set the global cap value and re-point every enabled provider to it.
+    // Branch 1: per-provider toggle (checked first: a per-provider request may carry an
+    // explicit `value`, which must never fall through to the global-value branch). Enable
+    // writes the current global default unless an explicit per-provider value is supplied;
+    // that value is never copied to other providers.
+    if (typeof body.provider === "string" && typeof body.enabled === "boolean") {
+      const provider = body.provider.trim();
+      if (!isValidProviderName(provider)) {
+        return jsonResponse({ error: "provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key" }, 400);
+      }
+      if (!hasOwnProvider(config.providers, provider)) {
+        return jsonResponse({ error: "unknown provider" }, 404);
+      }
+      const perProviderValue = typeof body.value === "number" && Number.isFinite(body.value) && body.value > 0
+        ? Math.floor(body.value)
+        : undefined;
+      setProviderContextCap(config, provider, body.enabled, perProviderValue);
+      save(config);
+      reconcileLiveStateStores();
+      clearModelCache(provider);
+      const catalogRefresh = await convergeCodexCatalog();
+      return respond(catalogRefresh);
+    }
+
+    // Branch 2: set the global cap value. When `setAll` accompanies it (dashboard "apply to
+    // every routed provider" toggle), re-point every enabled provider; otherwise keep each
+    // provider's own cap value and only change the default for future toggles.
     if (body.value !== undefined) {
       if (typeof body.value !== "number" || !Number.isFinite(body.value) || body.value <= 0) {
         return jsonResponse({ error: "value must be a positive number" }, 400);
       }
       const affected = Object.keys(providerContextCaps(config));
-      setGlobalContextCapValue(config, body.value);
+      const applyToAll = body.setAll === true;
+      setGlobalContextCapValue(config, body.value, applyToAll);
       save(config);
       reconcileLiveStateStores();
-      for (const provider of affected) clearModelCache(provider);
+      if (applyToAll) {
+        for (const provider of affected) clearModelCache(provider);
+      }
       const catalogRefresh = await convergeCodexCatalog();
       return respond(catalogRefresh);
     }
 
-    // Branch 2: enable/clear the cap for every provider at once.
+    // Branch 3: enable/clear the cap for every provider at once.
     if (body.setAll !== undefined) {
       if (typeof body.setAll !== "boolean") {
         return jsonResponse({ error: "setAll must be a boolean" }, 400);
@@ -670,23 +698,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       return respond(catalogRefresh);
     }
 
-    // Branch 3: existing per-provider toggle (enable writes the current global value).
-    if (typeof body.provider !== "string" || typeof body.enabled !== "boolean") {
-      return jsonResponse({ error: "provider string and enabled boolean are required" }, 400);
-    }
-    const provider = body.provider.trim();
-    if (!isValidProviderName(provider)) {
-      return jsonResponse({ error: "provider name must use letters, numbers, dot, underscore, or hyphen and cannot be a reserved object key" }, 400);
-    }
-    if (!hasOwnProvider(config.providers, provider)) {
-      return jsonResponse({ error: "unknown provider" }, 404);
-    }
-    setProviderContextCap(config, provider, body.enabled);
-    save(config);
-    reconcileLiveStateStores();
-    clearModelCache(provider);
-    const catalogRefresh = await convergeCodexCatalog();
-    return respond(catalogRefresh);
+    // Unrecognized payload: reject rather than silently succeeding.
+    return jsonResponse({ error: "provider string and enabled boolean are required" }, 400);
   }
 
   // Complete GUI picker presets, derived from the canonical provider registry. The GUI is a
