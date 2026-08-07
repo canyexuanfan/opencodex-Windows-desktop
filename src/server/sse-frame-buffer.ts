@@ -88,6 +88,34 @@ function copyRange(
 }
 
 /**
+ * True when a complete SSE block already commits a Responses terminal event.
+ *
+ * Framing errors in bytes *after* such a block must not retroactively turn an
+ * already-completed/failed/incomplete model turn into a transport failure. This
+ * helper is used only on the exceptional path, so decoding/JSON parsing has no
+ * cost on ordinary framing.
+ */
+function isResponsesTerminalFrame(block: Uint8Array): boolean {
+  const data: string[] = [];
+  for (const line of new TextDecoder().decode(block).split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const value = line.slice(5);
+    data.push(value.startsWith(" ") ? value.slice(1) : value);
+  }
+  if (data.length === 0) return false;
+  const payload = data.join("\n");
+  if (payload === "[DONE]") return false;
+  try {
+    const parsed = JSON.parse(payload) as { type?: unknown };
+    return parsed.type === "response.completed"
+      || parsed.type === "response.failed"
+      || parsed.type === "response.incomplete";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Byte-bounded SSE block framer for client-facing protocol paths.
  *
  * The delimiter scanner works on raw bytes, so fragmented UTF-8 cannot change
@@ -186,33 +214,47 @@ export class BoundedSseFrameBuffer {
       }
     };
 
-    let index = 0;
-    let retainedThrough = 0;
-    while (index < totalLength) {
-      const delimiterLength = delimiterLengthAt(index, totalLength, byteAt);
-      if (delimiterLength === undefined) break;
-      if (delimiterLength > 0) {
-        if (frames.length >= this.maxFramesPerFeed) {
-          this.clear();
-          this.disposed = true;
-          throw new SseFrameCountLimitError(this.maxFramesPerFeed);
+    try {
+      let index = 0;
+      let retainedThrough = 0;
+      while (index < totalLength) {
+        const delimiterLength = delimiterLengthAt(index, totalLength, byteAt);
+        if (delimiterLength === undefined) break;
+        if (delimiterLength > 0) {
+          if (frames.length >= this.maxFramesPerFeed) {
+            this.clear();
+            this.disposed = true;
+            throw new SseFrameCountLimitError(this.maxFramesPerFeed);
+          }
+          retainRange(retainedThrough, index);
+          const block = this.takeCandidate();
+          const delimiter = delimiterBytesAt(index, delimiterLength, byteAt);
+          frames.push({ block, delimiter });
+          index += delimiterLength;
+          retainedThrough = index;
+          continue;
         }
-        retainRange(retainedThrough, index);
-        const block = this.takeCandidate();
-        const delimiter = delimiterBytesAt(index, delimiterLength, byteAt);
-        frames.push({ block, delimiter });
-        index += delimiterLength;
-        retainedThrough = index;
-        continue;
+        index += 1;
       }
-      index += 1;
-    }
 
-    retainRange(retainedThrough, index);
-    if (index < totalLength) {
-      this.delimiterTail = copyRange(index, totalLength, tailLength, previousTail, chunk);
+      retainRange(retainedThrough, index);
+      if (index < totalLength) {
+        this.delimiterTail = copyRange(index, totalLength, tailLength, previousTail, chunk);
+      }
+      return frames;
+    } catch (err) {
+      const framingError = err instanceof SseFrameTooLargeError
+        || err instanceof SseFrameCountLimitError;
+      if (framingError && frames.some(frame => isResponsesTerminalFrame(frame.block))) {
+        // A terminal frame is the Responses protocol boundary. Ignore malformed
+        // or oversized bytes that occur later in the same upstream chunk rather
+        // than retroactively replacing the committed terminal with a 502.
+        this.clear();
+        this.disposed = true;
+        return frames;
+      }
+      throw err;
     }
-    return frames;
   }
 
   /** Return the final unterminated block bytes and release all retained state. */
