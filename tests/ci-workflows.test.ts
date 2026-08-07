@@ -914,6 +914,7 @@ describe("GitHub Actions hardening", () => {
     expect(job["runs-on"]).toBe("ubuntu-latest");
     expect(job["if"]).toContain("github.event_name != 'issue_comment'");
     expect(job["if"]).toContain("github.event.issue.pull_request != null");
+    expect(job["if"]).toContain("coderabbitai[bot]");
     expect(job["if"]).toContain("'OWNER'");
     expect(job["if"]).toContain("'COLLABORATOR'");
     expect(job["if"]).toContain("'MEMBER'");
@@ -936,7 +937,8 @@ describe("GitHub Actions hardening", () => {
       // runs this workflow from the base revision, and the scripts must match
       // it — a merged gate would otherwise run against pre-promotion `main`
       // scripts. The immutable SHA pins the checkout to the event's base commit.
-      ref: "${{ github.event.pull_request.base.sha || 'dev' }}",
+      ref:
+        "${{ github.event_name == 'issue_comment' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.

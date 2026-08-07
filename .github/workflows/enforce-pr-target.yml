@@ -9,10 +9,10 @@ on:
       - ready_for_review
       - synchronize
   # A maintainer issue comment ("not touching gui") waives the GUI-screenshot
-  # gate. `pull_request_target` types do not include issue comments, so a
-  # separate `issue_comment` trigger re-runs the gate the moment the waiver is
-  # posted. The gate is idempotent — it re-reads the live PR and updates the
-  # single consolidated comment — so a comment cannot race or double-mutate.
+  # gate. CodeRabbit also edits its normal PR status comment when a review
+  # finishes, which gives this privileged workflow a safe signal to re-check
+  # review findings even for fork PRs. `pull_request_target` types do not
+  # include issue comments, so both cases use this separate trigger.
   issue_comment:
     types:
       - created
@@ -36,14 +36,16 @@ concurrency:
 
 jobs:
   enforce-target:
-    # `issue_comment` fires for comments on ANY issue, PR or not, from ANY
-    # user. This gate is PR-only and write-capable, so a comment on a plain
-    # issue — or from a non-maintainer — must not start it. Only a maintainer
-    # comment on a PR (the GUI-waiver case) may re-run the gate.
+    # `issue_comment` fires for comments on ANY issue or PR. This gate is
+    # write-capable, so only two trusted sources may start that path: a
+    # canonical maintainer (GUI-waiver case) or CodeRabbit's own PR status
+    # comment, whose create/edit event is used only as a signal to re-read the
+    # live review threads. All other pull_request_target events run normally.
     if: >-
       github.event_name != 'issue_comment' ||
       (github.event.issue.pull_request != null &&
-       (github.event.comment.author_association == 'OWNER' ||
+       (github.event.comment.user.login == 'coderabbitai[bot]' ||
+        github.event.comment.author_association == 'OWNER' ||
         github.event.comment.author_association == 'COLLABORATOR' ||
         github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
@@ -52,17 +54,13 @@ jobs:
       - name: Checkout trusted PR-quality scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # The event's base commit, not the repository default: pull_request_target
-          # runs this workflow from the base revision, and the scripts must come
-          # from the same revision or a merged gate would run against the
-          # pre-promotion scripts on `main`. The immutable SHA pins the checkout
-          # to the exact base commit the event was built against. On an
-          # `issue_comment` event there is no PR payload, so the checkout falls
-          # back to the integration branch `dev` — the branch this gate enforces
-          # and the source of the gate's own scripts. The repository default
-          # (`main`) can lag `dev`, which would make a comment-triggered run
-          # evaluate with stale helpers.
-          ref: ${{ github.event.pull_request.base.sha || 'dev' }}
+          # `pull_request_target` runs from the PR base revision, so use that
+          # immutable base SHA for the trusted scripts. `issue_comment` runs the
+          # privileged workflow from the repository default branch; source its
+          # scripts and MAINTAINERS.md from that same promoted trust boundary.
+          # This prevents unpromoted `dev` script changes from executing with
+          # the workflow's write-capable token.
+          ref: ${{ github.event_name == 'issue_comment' && github.event.repository.default_branch || github.event.pull_request.base.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -145,6 +143,7 @@ jobs:
             const LEGACY_COMMENT_MARKER = "<!-- wrong-branch-enforcer -->";
             const REVIEW_READY_LABEL = "review-ready";
             const MAINTAINERS_FILE = "MAINTAINERS.md";
+            const CODE_RABBIT_LOGIN = "coderabbitai[bot]";
 
             const { owner, repo } = context.repo;
             // `issue_comment` events carry the PR's issue object, not a
@@ -155,32 +154,39 @@ jobs:
               context.payload.issue?.number;
 
             // Defensive re-check of the job-level guard. `issue_comment` events
-            // carry a `comment` object with the author's association; a comment
-            // on a plain issue has no `issue.pull_request`, and a comment from
-            // anyone but a maintainer must not re-run this write-capable gate.
+            // carry a `comment` object with the author's association. A normal
+            // user comment is trusted only when it comes from a canonical
+            // maintainer; CodeRabbit's own PR status comment is separately
+            // allowed as a signal to re-read live review threads. The comment
+            // body itself is never trusted as gate evidence.
             if (context.eventName === "issue_comment") {
               const isPrComment =
                 context.payload.issue?.pull_request != null;
               const association = context.payload.comment?.author_association;
+              const commenter = context.payload.comment?.user?.login;
+              const isCodeRabbit = commenter === CODE_RABBIT_LOGIN;
               // The association is a cheap prefilter, but OWNER/COLLABORATOR/
               // MEMBER is broader than this repository's canonical maintainer
               // list. A collaborator or member who is not a maintainer must not
-              // start this write-capable gate, so require the commenter's
-              // login to be in the trusted MAINTAINERS.md list too.
+              // start this write-capable gate.
               const maintainerLogins = new Set(
                 readMaintainerLogins().map(login => login.toLowerCase())
               );
-              const commenter = context.payload.comment?.user?.login;
               const isCanonicalMaintainer =
                 typeof commenter === "string" &&
                 maintainerLogins.has(commenter.toLowerCase());
               if (
                 !isPrComment ||
-                !["OWNER", "COLLABORATOR", "MEMBER"].includes(association) ||
-                !isCanonicalMaintainer
+                (!isCodeRabbit &&
+                 (![
+                   "OWNER",
+                   "COLLABORATOR",
+                   "MEMBER"
+                 ].includes(association) ||
+                  !isCanonicalMaintainer))
               ) {
                 core.info(
-                  "issue_comment not from a canonical maintainer on a PR; skipping the gate."
+                  "issue_comment is neither CodeRabbit nor a canonical maintainer on a PR; skipping the gate."
                 );
                 return;
               }
