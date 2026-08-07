@@ -186,6 +186,21 @@ export default function RoutingProfiles({
    * is looking at. `load` checks this before it starts anything.
    */
   const loadEnabledRef = useRef(true);
+
+  /*
+   * Stop loading and cancel whatever is running.
+   *
+   * A stable callback rather than inline cleanup: reading the refs at cleanup time is
+   * the point — whatever load is in flight NOW is what must be cancelled, and the
+   * generation has to move past the value that load captured. Inline, that reads as a
+   * stale-ref mistake to both the linter and the next reader. Naming it says the
+   * latest-value read is deliberate, and it works for deactivation and unmount alike.
+   */
+  const cancelActiveLoad = useCallback(() => {
+    loadEnabledRef.current = false;
+    loadAbortRef.current?.abort();
+    loadGenerationRef.current++;
+  }, []);
   const dryRunGenerationRef = useRef(0);
 
   const notify = useCallback((message: string, ok: boolean) => {
@@ -285,28 +300,17 @@ export default function RoutingProfiles({
     if (!active) {
       // Hidden: stop new loads, cancel work in flight, and invalidate its generation so
       // a late resolve cannot write into a panel nobody is looking at.
-      loadEnabledRef.current = false;
-      loadAbortRef.current?.abort();
-      loadGenerationRef.current++;
+      cancelActiveLoad();
       return;
     }
     loadEnabledRef.current = true;
     const timer = window.setTimeout(() => void load(), 0);
+    // Unmounting counts too — leaving Models entirely must not strand a request.
     return () => {
       window.clearTimeout(timer);
-      // Unmounting counts too — leaving Models entirely must not strand a request.
-      /*
-       * Reading the refs at cleanup time is the point, not a mistake: whatever load is
-       * in flight NOW is what has to be cancelled, and the generation counter has to
-       * move past whatever value that load captured. A snapshot taken when the effect
-       * ran would cancel a stale controller and leave the live one running.
-       */
-      loadEnabledRef.current = false;
-      loadAbortRef.current?.abort();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: the latest generation is what must be invalidated
-      loadGenerationRef.current++;
+      cancelActiveLoad();
     };
-  }, [active, load]);
+  }, [active, cancelActiveLoad, load]);
 
   /*
    * Report the count up to the tab strip from an effect keyed on the list length, not
