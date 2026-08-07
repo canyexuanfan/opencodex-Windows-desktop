@@ -11,6 +11,7 @@ import {
   restartCommand,
   restartAfterUpdateForTests,
   runGuiUpdateWorker,
+  summarizeCommandOutput,
   staleActiveUpdateJobReason,
   startUpdateJob,
   UPDATE_JOB_LEGACY_STALE_MS,
@@ -321,6 +322,46 @@ describe("GUI update execution decisions", () => {
     const persisted = readFileSync(updateJobPath(), "utf8");
     expect(persisted).not.toContain("Jane Doe");
     expect(persisted).toContain("bytes withheld");
+  });
+
+  test("npm failures stay diagnosable: named fields survive, paths do not", () => {
+    // Captured from real `npm install` failures. npm's output is STRUCTURED —
+    // `npm error <field> <value>`, one field per line — so the useful parts can be read by
+    // name instead of reproduced as text. Withholding the whole stream made a failed update
+    // undebuggable; this keeps the cause and drops the paths.
+    const eacces = [
+      "npm error code EACCES",
+      "npm error syscall mkdir",
+      "npm error path /Users/Jane Doe/.npm/_cacache/tmp/x",
+      "npm error errno -13",
+      "npm error Error: EACCES: permission denied, mkdir '/Users/Jane Doe/.npm/x'",
+      "npm error     at async mkdir (node:internal/fs/promises:859:10)",
+    ].join("\n");
+
+    const summary = summarizeCommandOutput("", eacces, 1, null);
+
+    // The cause is legible.
+    expect(summary).toContain("code: EACCES");
+    expect(summary).toContain("syscall: mkdir");
+    expect(summary).toContain("errno: -13");
+    // The paths and the account name are not.
+    expect(summary).not.toContain("Jane Doe");
+    expect(summary).not.toContain("_cacache");
+    expect(summary).not.toContain("promises:859");
+
+    // A registry URL is a legitimate diagnostic and carries no local path.
+    const e404 = [
+      "npm error code E404",
+      "npm error 404 Not Found - GET https://registry.npmjs.org/nope - Not found",
+      "npm error A complete log of this run can be found in: /Users/Jane Doe/.npm/_logs/x.log",
+    ].join("\n");
+    const notFound = summarizeCommandOutput("", e404, 1, null);
+    expect(notFound).toContain("code: E404");
+    expect(notFound).not.toContain("Jane Doe");
+
+    // An unrecognized code is not echoed: `npm error code TOTALLY-MADE-UP` must not pass.
+    const bogus = summarizeCommandOutput("", "npm error code NOTAREALCODE", 1, null);
+    expect(bogus).not.toContain("NOTAREALCODE");
   });
 
   test("npm worker uses the Node launcher update path", () => {

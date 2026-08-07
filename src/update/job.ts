@@ -277,7 +277,18 @@ function withheldSummary(error: unknown): string {
   // Only recognized codes — an arbitrary uppercase `error.code` can be attacker-shaped too.
   const codeNote = typeof code === "string" && NPM_ERROR_CODES.has(code) ? ` ${code}` : "";
   const text = error instanceof Error ? error.message : String(error ?? "");
-  return `${name}${codeNote} (${Buffer.byteLength(text, "utf8")} bytes withheld)`;
+  // Node's own errors are structured the same way npm's output is: `syscall` and `errno` are
+  // named properties, not prose. Reading those gives a user the actual cause —
+  // `Error EACCES · syscall: mkdir · errno: -13` — without repeating a message that could name
+  // a person or a path. Both are shape-validated: a syscall is a short lowercase identifier and
+  // an errno is an integer, so neither can carry arbitrary text.
+  const parts = [`${name}${codeNote}`];
+  const syscall = (error as { syscall?: unknown } | null)?.syscall;
+  if (typeof syscall === "string" && /^[a-z][a-z0-9_]{1,20}$/.test(syscall)) parts.push(`syscall: ${syscall}`);
+  const errno = (error as { errno?: unknown } | null)?.errno;
+  if (typeof errno === "number" && Number.isInteger(errno)) parts.push(`errno: ${errno}`);
+  parts.push(`${Buffer.byteLength(text, "utf8")} bytes withheld`);
+  return parts.join(" · ");
 }
 
 /**
@@ -709,12 +720,54 @@ const NPM_ERROR_CODES = new Set([
 const NPM_CODE_RECORD = /^\s*npm\s+ERR!\s+code\s+([A-Z][A-Z0-9_]{2,})\s*$/gm;
 
 /**
+ * npm's failure output is STRUCTURED, not prose: `npm error <field> <value>`, one field per
+ * line (`npm ERR!` on npm 9 and earlier). That is what makes a useful summary possible without
+ * reproducing text — we can read named fields and keep the ones whose value cannot be a path.
+ *
+ * Fields kept, with a real example of each:
+ *   code     E404, EACCES, ETARGET      the single most useful line for diagnosis
+ *   syscall  mkdir, open, getaddrinfo   what npm was doing
+ *   errno    -13                        the OS errno
+ *   notarget No matching version ...    version-resolution explanation, no path
+ *   404      404 Not Found - GET <url>  registry URL, no local path
+ *
+ * Deliberately NOT kept: `path`, `dest`, `file`, `stack`, and the bare `Error: ...` line —
+ * every one of those is a filesystem path by definition. `A complete log of this run can be
+ * found in: <path>` is dropped for the same reason.
+ */
+const NPM_FIELD_LINE = /^\s*npm\s+(?:error|ERR!)\s+([a-z0-9]+)\s+(.*)$/gim;
+const NPM_SAFE_FIELDS = new Set(["code", "syscall", "errno", "notarget", "404", "401", "403", "409", "429"]);
+
+/**
+ * Extract the diagnostic fields npm names explicitly.
+ *
+ * Each kept value still passes `withholdIfPathBearing` before it is used: a registry URL is
+ * fine, but `syscall` and friends are only safe by convention, and a convention is not a
+ * guarantee. Values are length-capped so a hostile responder cannot pad the record.
+ */
+function npmDiagnosticFields(text: string): string[] {
+  const seen = new Map<string, string>();
+  for (const match of text.matchAll(NPM_FIELD_LINE)) {
+    const field = match[1]!.toLowerCase();
+    const value = match[2]!.trim();
+    if (!NPM_SAFE_FIELDS.has(field) || seen.has(field)) continue;
+    if (!value || value.length > 160) continue;
+    // `code` is additionally pinned to the recognized vocabulary; the rest only have to prove
+    // they carry no path.
+    if (field === "code" && !NPM_ERROR_CODES.has(value)) continue;
+    if (withholdIfPathBearing(value) !== value) continue;
+    seen.set(field, value);
+  }
+  return [...seen].map(([field, value]) => `${field}: ${value}`);
+}
+
+/**
  * Build a structured, path-free summary of a command's result.
  *
  * Only three things cross the boundary: how the process ended, how much it printed, and any
  * recognized error codes. None of those can carry a filesystem path or an account name.
  */
-function summarizeCommandOutput(
+export function summarizeCommandOutput(
   stdout: string,
   stderr: string,
   status: number | null,
@@ -725,14 +778,18 @@ function summarizeCommandOutput(
   const parts: string[] = [];
   parts.push(signal ? `terminated by ${signal}` : `exit ${status ?? "null"}`);
 
-  const codes = [...new Set([
-    ...stderr.matchAll(NPM_CODE_RECORD),
-    ...stdout.matchAll(NPM_CODE_RECORD),
-  ].map(match => match[1]!).filter(code => NPM_ERROR_CODES.has(code)))].slice(0, 5);
-  if (codes.length > 0) parts.push(`codes: ${codes.join(", ")}`);
+  // Read npm's own named fields rather than reproducing its text. This is what makes a failed
+  // update diagnosable again: `code: E404 · 404: 404 Not Found - GET https://registry...` tells
+  // a user exactly what happened, and none of it can be a local path.
+  const fields = npmDiagnosticFields(`${stderr}\n${stdout}`);
+  if (fields.length > 0) parts.push(...fields);
 
   const bytes = Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8");
-  if (bytes > 0) parts.push(`${bytes} bytes of output withheld (may contain local paths)`);
+  if (bytes > 0) {
+    parts.push(fields.length > 0
+      ? `${bytes} bytes of full output withheld`
+      : `${bytes} bytes of output withheld (no recognized diagnostic fields)`);
+  }
 
   return parts.join(" · ");
 }
