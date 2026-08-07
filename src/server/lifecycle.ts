@@ -292,6 +292,42 @@ export function getServerListenPort(): number | undefined {
  * ordinary drain's finally block; both callers must observe the same stop result
  * before any replacement process is allowed to bind the port.
  */
+/**
+ * Run every shutdown step, then report whether any of them failed.
+ *
+ * Extracted from `startServer`'s composite `stop` because the two properties it has to hold
+ * pull in opposite directions and neither is testable in place:
+ *
+ * - Cleanup COMPLETES. A listener whose stop rejects cannot prevent the other listener, or the
+ *   native lifecycle release, from running.
+ * - Failure PROPAGATES. `stopServerListener` deliberately surfaces a stop rejection so every
+ *   caller sees the same result before a replacement binds the port. Swallowing it would let
+ *   `drainAndShutdown` report success while a socket is still held.
+ *
+ * `always` runs after the listeners regardless of their outcome, and its own failure joins the
+ * reported set rather than replacing it.
+ */
+export async function runListenerShutdown(
+  steps: Array<() => Promise<void>>,
+  always: () => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  try {
+    await always();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "listener shutdown failed");
+}
+
 export function stopServerListener(
   server: ReturnType<typeof Bun.serve> | undefined = _serverRef,
 ): Promise<void> {

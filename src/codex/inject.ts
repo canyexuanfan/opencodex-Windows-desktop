@@ -189,8 +189,13 @@ export function providerBaseHost(hostname: string | undefined): string {
 }
 
 export function shouldInjectApiAuthHeader(
-  config: Pick<OcxConfig, "hostname"> | undefined,
+  config: Pick<OcxConfig, "hostname" | "unauthenticatedLoopbackListener"> | undefined,
 ): boolean {
+  // The unauthenticated loopback listener is a loopback bind, so it admits without a
+  // credential (#1102). Emitting the env header anyway would be worse than useless: the
+  // directly-spawned app-server this exists for has no OPENCODEX_API_AUTH_TOKEN in its
+  // environment, and Codex would send an empty header value.
+  if (config?.unauthenticatedLoopbackListener?.enabled) return false;
   return !isLoopbackHostname(config?.hostname);
 }
 
@@ -630,6 +635,17 @@ export async function injectCodexConfig(
   config?: OcxConfig,
   options: InjectCodexOptions = {},
 ): Promise<CodexInjectResult> {
+  // Point Codex at the unauthenticated loopback listener when it is enabled (#1102).
+  //
+  // Resolved here rather than at the call sites because every caller already passes the proxy
+  // port and the config together: startup sync, `ocx sync`, and the ensure path would each
+  // need the same two-line change, and a caller that missed it would silently emit a base_url
+  // requiring a credential the directly-spawned app-server does not have.
+  //
+  // The listener port is fixed in config, never OS-assigned, so this value survives restarts
+  // and matches what an already-running app-server read at startup.
+  const loopback = config?.unauthenticatedLoopbackListener;
+  if (loopback?.enabled) port = loopback.port;
   if (!existsSync(CODEX_CONFIG_PATH)) {
     return {
       success: false,

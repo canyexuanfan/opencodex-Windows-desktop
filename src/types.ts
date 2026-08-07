@@ -729,6 +729,30 @@ export interface OcxConfig {
   /** Bind hostname. Default "127.0.0.1" (loopback only). Set "0.0.0.0" to expose on all interfaces. */
   hostname?: string;
   /**
+   * Optional second listener bound to 127.0.0.1 that admits data-plane requests without a
+   * credential (issue #1102).
+   *
+   * Why a separate listener rather than an exemption on the main one: when `hostname` is a
+   * wildcard, every caller needs `x-opencodex-api-key`, but a `codex app-server` spawned
+   * directly from the resolved entrypoint never goes through the generated shim and so never
+   * inherits the token. Exempting "loopback-looking peers" on the public listener would be
+   * unsound — `requestIP()` only proves the last transport hop, and Docker Desktop port
+   * forwarding, host-network containers, WSL mirrored networking and tunnels all terminate
+   * remote connections locally. Binding a second socket to 127.0.0.1 makes the kernel refuse
+   * remote connections outright, so there is no address to judge.
+   *
+   * The public listener's admission policy is unchanged. This adds an explicit local trust
+   * surface: every process on the machine can reach it, spend account quota, and consume paid
+   * provider credentials. Off by default; not for multi-tenant hosts.
+   *
+   * The port is required when enabled and must differ from the proxy port. An OS-assigned port
+   * would change across restarts, which would break already-running app-servers holding the
+   * previous `base_url` — the exact symptom #1102 reported and we disproved for token rotation.
+   */
+  unauthenticatedLoopbackListener?:
+    | { enabled: false }
+    | { enabled: true; port: number };
+  /**
    * Outbound HTTP(S) proxy URL for provider requests (e.g. "http://user:pass@proxy:8080", or
    * "${HTTPS_PROXY}"-style env reference). Mirrored into HTTP_PROXY/HTTPS_PROXY at startup when
    * those are unset — Bun's fetch honors them for all outbound calls; localhost is excluded.
