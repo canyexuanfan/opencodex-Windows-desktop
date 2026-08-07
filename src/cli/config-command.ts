@@ -3,6 +3,7 @@ import { clearCodexAccountPin } from "../codex/account-priority";
 import { getConfigPath, readConfigDiagnostics, saveConfig, validateConfigCandidate } from "../config";
 import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../reasoning-effort";
 import type { OcxConfig } from "../types";
+import { normalizeVisionReasoningForModel } from "../vision/reasoning";
 import { CliUsageError, printData, rejectArgs, runCliAction, takeFlag } from "./runtime-api";
 
 const USAGE = `Usage:
@@ -80,10 +81,19 @@ function validateCandidate(value: unknown): ReturnType<typeof validateConfigCand
   return error ? { ok: false, error } : validateConfigCandidate(value);
 }
 
+function normalizeVisionConfig(config: OcxConfig): OcxConfig {
+  const vision = config.visionSidecar;
+  if (!vision?.model || vision.reasoning === undefined) return config;
+  const normalized = normalizeVisionReasoningForModel(vision.model, vision.reasoning);
+  if (normalized === undefined) delete vision.reasoning;
+  else vision.reasoning = normalized;
+  return config;
+}
+
 function validate(value: unknown): OcxConfig {
   const result = validateCandidate(value);
   if (!result.ok) throw new CliUsageError(result.error);
-  return result.config;
+  return normalizeVisionConfig(result.config);
 }
 
 export async function handleConfigCommand(argv: string[]): Promise<number> {
