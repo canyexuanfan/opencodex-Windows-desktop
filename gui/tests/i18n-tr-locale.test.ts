@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DICTS, LOCALES, detectInitial } from "../src/i18n/shared";
 import { en } from "../src/i18n/en";
 import { tr } from "../src/i18n/tr";
+import { formatUptime } from "../src/formatUptime";
 
 describe("Turkish (tr) i18n locale", () => {
   test("registers tr in LOCALES array with correct metadata", () => {
@@ -31,13 +32,14 @@ describe("Turkish (tr) i18n locale", () => {
       const trVal = tr[key];
       if (typeof enVal !== "string" || typeof trVal !== "string") continue;
 
-      const enPlaceholders = new Set([...enVal.matchAll(placeholderRe)].map(m => m[1]));
-      const trPlaceholders = new Set([...trVal.matchAll(placeholderRe)].map(m => m[1]));
+      const enPlaceholders = [...enVal.matchAll(placeholderRe)].map(m => m[1]).sort();
+      const trPlaceholders = [...trVal.matchAll(placeholderRe)].map(m => m[1]).sort();
 
-      for (const ph of enPlaceholders) {
-        if (!trPlaceholders.has(ph)) {
-          mismatched.push(`${key}: missing {${ph}}`);
-        }
+      if (
+        enPlaceholders.length !== trPlaceholders.length ||
+        enPlaceholders.some((ph, index) => ph !== trPlaceholders[index])
+      ) {
+        mismatched.push(`${key}: placeholder parity mismatch (en: [${enPlaceholders}], tr: [${trPlaceholders}])`);
       }
     }
 
@@ -62,14 +64,31 @@ describe("Turkish (tr) i18n locale", () => {
     expect(duplicates).toEqual([]);
   });
 
-  test("detectInitial detects tr from navigator language", () => {
+  test("formatUptime correctly formats seconds, minutes, hours, and days in Turkish", () => {
+    expect(formatUptime(45, "tr")).toBe("45 sn");
+    expect(formatUptime(300, "tr")).toBe("5 dk");
+    expect(formatUptime(3600, "tr")).toBe("1 saat");
+    expect(formatUptime(3660, "tr")).toBe("1 saat 1 dk");
+    expect(formatUptime(86400, "tr")).toBe("1 gün");
+    expect(formatUptime(90000, "tr")).toBe("1 gün 1 saat");
+  });
+
+  test("detectInitial detects tr from navigator language cleanly isolated from localStorage", () => {
     const origNav = globalThis.navigator;
+    const origStorage = globalThis.localStorage;
     try {
       // @ts-expect-error test isolation mock
       globalThis.navigator = { language: "tr-TR" };
+      // @ts-expect-error test isolation mock
+      globalThis.localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+      };
       expect(detectInitial()).toBe("tr");
     } finally {
       globalThis.navigator = origNav;
+      globalThis.localStorage = origStorage;
     }
   });
 
