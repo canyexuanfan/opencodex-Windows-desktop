@@ -274,12 +274,25 @@ export async function pumpResponsesSseToWebSocket(
     }
   } catch (err) {
     framer.dispose();
-    if (!terminalSeen && isCurrent() && ws.readyState === OPEN) {
-      if (!(err instanceof WsSendDroppedError)) reportTerminal("incomplete");
-      sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
+    if (!terminalSeen
+      && isCurrent()
+      && ws.readyState === OPEN
+      && !(err instanceof WsSendDroppedError)) {
+      reportTerminal("incomplete");
+      try {
+        sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
+      } catch (sendErr) {
+        // If delivery is already dropped, there is no useful error frame left
+        // to send. Swallow only that expected transport signal; other failures
+        // still surface to the caller after the upstream reader is released.
+        if (!(sendErr instanceof WsSendDroppedError)) throw sendErr;
+      }
     }
   } finally {
     framer.dispose();
+    // Framing errors can occur while the upstream body is still live. Always
+    // release the reader, even when terminal/send paths already cancelled it.
+    void reader.cancel().catch(() => {});
     if (ws.data.cancel === cancel) ws.data.cancel = undefined;
   }
 }
@@ -303,7 +316,7 @@ export function sendResponsesJsonAsEvents(
     ? response.status
     : "completed";
   for (const frame of responsesJsonEventSequence(response)) {
-    sendObservedFrame(frame);
+    sendObservedFrame(ws ? frame : frame);
   }
   onTerminal?.(finalStatus);
 }
