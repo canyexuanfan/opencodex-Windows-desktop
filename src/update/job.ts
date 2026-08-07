@@ -244,91 +244,55 @@ function ensureJobDir(): void {
 }
 
 /**
- * Redact profile paths that a line wrap has split apart.
+ * Redact profile paths, including ones a line wrap has split apart.
  *
- * Trying to REJOIN wrapped lines turned out to be the wrong shape: joining aggressively enough to
- * catch a wrap inside the username also merged genuinely separate log entries, and joining
- * conservatively enough to keep them apart let the username through. Both were attempts to
- * reconstruct the original text before matching it.
+ * Three earlier shapes failed, and the reason is worth recording because it is not a tuning
+ * problem. Rejoining wrapped lines either merged unrelated log entries or let the username
+ * through. Stripping every boundary let one redacted path swallow the diagnostics after it.
+ * Deciding "is this line a continuation or a new record?" from separators cannot work either:
+ * `oë [Admin]+` is a continuation with no separator, and `npm ERR! /usr/local/lib` is a new
+ * record with one. Nothing in the text distinguishes them.
  *
- * This matches across the break instead. `\s*` between every path element lets one pattern cover
- * `C:\Users\Jane`, `C:\Users\<newline>Jane`, and `C:\Us<newline>ers\Jane` alike, so the redaction
- * never depends on where the wrap landed. Runs on top of the single-line rules, which stay as the
- * precise ones.
+ * So this stops trying. It works line by line, and when a line ends on an INCOMPLETE profile
+ * prefix — a profile keyword whose account segment has not been closed by a separator — the
+ * NEXT line is treated as the continuation of that account name and redacted whole. That is
+ * conservative: it can redact a following line that was actually unrelated, which costs one line
+ * of diagnostics. Getting it wrong the other way costs someone's account name, and the whole
+ * point of this boundary is that it never does.
  */
 function redactWrappedProfilePaths(value: string): string {
-  // Character-by-character keyword patterns became unreadable and still missed cases, because a
-  // wrap inserts BOTH a separator and a newline (`Us\` + newline + `ners`), so a single optional
-  // gap between letters is not enough.
-  //
-  // Work on a scan copy instead: strip the wrap noise entirely, match the profile shape there,
-  // and map the hit back to the original text by counting the characters it consumed. The
-  // redaction decision is made on clean text; the output keeps everything the match did not
-  // cover.
-  const scanToSource: number[] = [];
-  let scan = "";
-  for (let i = 0; i < value.length; i += 1) {
-    const ch = value[i]!;
-    if (ch !== "\n" && ch !== "\r") {
-      scan += ch;
-      scanToSource.push(i);
+  const PROFILE_ANYWHERE = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*/gi;
+  // The line ends mid-account-name: keyword, separator, then a segment never closed.
+  const OPEN_PROFILE_TAIL = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*$/i;
+  // A wrap can also split the keyword itself, leaving a dangling head. Any prefix of the three
+  // keywords counts — `...\Us`, `...\Documents and Set`, `...\hom`, or a bare trailing separator.
+  const KEYWORDS = ["Users", "Documents and Settings", "home"];
+  const keywordPrefixes = KEYWORDS
+    .flatMap(word => Array.from({ length: word.length }, (_, n) => word.slice(0, n + 1)))
+    .sort((a, b) => b.length - a.length)
+    .map(prefix => prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const OPEN_KEYWORD_TAIL = new RegExp(String.raw`[\\/](?:${keywordPrefixes.join("|")})?$`, "i");
+
+  const lines = value.split(/(\r?\n)/);
+  let carry = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (line === "\n" || line === "\r\n") continue;
+
+    if (carry) {
+      // Continuation of an open account name: redact the whole line, keeping its indentation so
+      // the log still reads as wrapped output.
+      const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
+      lines[i] = line.trim().length > 0 ? `${indent}<profile>` : line;
+      carry = false;
       continue;
     }
-    // Drop the break AND the indentation that continues it. A wrapped log line is usually
-    // indented, and keeping those spaces left `Us` + `  ers` unreconstructable — the keyword
-    // never reformed, so the profile rules did not fire and the account name survived.
-    while (i + 1 < value.length && (value[i + 1] === "\n" || value[i + 1] === "\r")) i += 1;
-    while (i + 1 < value.length && (value[i + 1] === " " || value[i + 1] === "\t")) i += 1;
-    // Mark the boundary ONLY when the next line starts a new log entry rather than continuing a
-    // path. Without a marker the scan copy is one long line, so the backstops below run to the
-    // end and swallow every following entry — redaction stayed correct but the diagnostics were
-    // destroyed. Marking every boundary is equally wrong: it blocks the reconstruction that
-    // catches a username split across the break. A continuation has no space in its head; a new
-    // entry looks like `label something`.
-    // A continuation carries path structure — it contains a separator, or the line before it
-    // ended on one. A new entry is a label with no separator at all (`KEEP diagnostic code E42`).
-    // Keying on "contains a separator" rather than "contains a space" is what lets a username
-    // with spaces (`Mary Jane van der Berg\Documents\...`) still reconstruct.
-    const nextLine = value.slice(i + 1).split(/\r?\n/, 1)[0] ?? "";
-    const previousEndsOnSeparator = /[\\/]$/.test(scan);
-    const startsNewEntry = !previousEndsOnSeparator && !/[\\/]/.test(nextLine);
-    if (startsNewEntry) {
-      scan += "\u0000";
-      scanToSource.push(i + 1);
-    }
-  }
 
-  // Two shapes, in priority order. The first is the precise one. The second is the backstop for a
-  // path this scan copy could not resolve into a known profile shape — `C:\Us\ners\Zoe [Admin]+`
-  // is what `C:\Us` + wrap + `ners\...` collapses to, and the segment after it is still somebody's
-  // account name. An update log has no legitimate need to carry an absolute Windows path, so
-  // redacting the whole run is the safe answer rather than trying to enumerate every mangling.
-  const profile = new RegExp([
-    // Precise: a profile keyword followed by the account segment. Covers drive-letter paths,
-    // UNC shares, and POSIX roots, since the scan copy has already healed the wrap.
-    String.raw`(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n\u0000]*`,
-    // Backstop 1: any absolute Windows path a wrap mangled past recognition.
-    String.raw`[A-Za-z]:[\\/][^\r\n\u0000]*`,
-    // Backstop 2: a UNC share. `\\server\share\...` carries the same account names, and a wrap
-    // inside the keyword can leave a shape the precise rule no longer matches.
-    String.raw`\\\\[^\\/\r\n\u0000]+\\[^\r\n\u0000]*`,
-  ].join("|"), "gi");
-  const cuts: Array<{ start: number; end: number }> = [];
-  for (const match of scan.matchAll(profile)) {
-    const start = scanToSource[match.index!]!;
-    const end = scanToSource[match.index! + match[0].length - 1]! + 1;
-    cuts.push({ start, end });
+    const redacted = line.replace(PROFILE_ANYWHERE, "<profile>");
+    lines[i] = redacted;
+    carry = OPEN_PROFILE_TAIL.test(line) || OPEN_KEYWORD_TAIL.test(line);
   }
-  if (cuts.length === 0) return value;
-
-  let out = "";
-  let cursor = 0;
-  for (const cut of cuts) {
-    if (cut.start < cursor) continue;
-    out += value.slice(cursor, cut.start) + "<profile>";
-    cursor = cut.end;
-  }
-  return out + value.slice(cursor);
+  return lines.join("");
 }
 
 function sanitizePersistedUpdateText(value: string): string {

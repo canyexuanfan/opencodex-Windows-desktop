@@ -161,6 +161,11 @@ describe("GUI update execution decisions", () => {
       // reads when an update fails, and eating the diagnostics is its own kind of damage.
       "unc \\\\server\\share\\Us\n  ers\\Jane\\x",
       "KEEP diagnostic code E42",
+      // Ends INSIDE the account name with no separator on the continuation.
+      "terminal C:\\Users\\Z\n  oe [Admin]+",
+      // A genuinely new record that contains a separator must survive.
+      "unc2 \\\\server\\share\\Users\\Jane\\x",
+      "UNC FOLLOW /usr/local/lib/node_modules",
     ].join("\n");
 
     expect(() => startUpdateJob("latest", true, {
@@ -190,6 +195,8 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("\ud64d \uae38\ub3d9");
     expect(persisted).not.toContain("Jane");
     expect(persisted).toContain("KEEP diagnostic code E42");
+    expect(persisted).not.toContain("oe [Admin]+");
+    expect(persisted).toContain("UNC FOLLOW /usr/local/lib/node_modules");
   });
 
   test("a failed cache pre-flight leaves the install command unrun", async () => {
