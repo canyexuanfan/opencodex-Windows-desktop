@@ -266,8 +266,10 @@ function latestCodeRabbitReviewForHead({ reviews = [], liveHeadSha }) {
         review?.user?.login === CODE_RABBIT_LOGIN
     )
     .sort((a, b) => {
-      const byTime = submittedAt(b) - submittedAt(a);
-      if (byTime !== 0) return byTime;
+      const aTime = submittedAt(a);
+      const bTime = submittedAt(b);
+      if (aTime > bTime) return -1;
+      if (aTime < bTime) return 1;
       return Number(b?.id ?? -1) - Number(a?.id ?? -1);
     })[0] ?? null;
 }
