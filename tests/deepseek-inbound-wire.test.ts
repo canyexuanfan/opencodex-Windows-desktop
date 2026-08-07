@@ -198,6 +198,10 @@ describe("the inbound scope survives the handleResponses replay", () => {
     const upstreamFrames = [
       `data: ${JSON.stringify({ type: "response.created", response: { id: "resp_ds", status: "in_progress", output: [] } })}\n\n`,
       `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: UUID_RS, summary: [] } })}\n\n`,
+      // DeepSeek wraps streamed reasoning in content parts; content_part.* is mapped
+      // as a "message" event type, so this only repairs through the cross-table
+      // fallback (the live-probe leak this test pins).
+      `data: ${JSON.stringify({ type: "response.content_part.added", item_id: UUID_RS, output_index: 0, content_index: 0, part: { type: "reasoning_text", text: "" } })}\n\n`,
       `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 1, item: { type: "message", id: UUID_MSG, role: "assistant", status: "in_progress", content: [] } })}\n\n`,
       `data: ${JSON.stringify({ type: "response.output_text.delta", item_id: UUID_MSG, output_index: 1, delta: "hi" })}\n\n`,
       `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_ds", status: "completed", output: [
