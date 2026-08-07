@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fallbackCodexAccountLogLabel } from "../src/codex/account-label";
 import { handleManagementAPI } from "../src/server/management-api";
 import { ManagementRequest } from "./helpers/management-auth";
 import type { OcxConfig } from "../src/types";
@@ -143,6 +144,53 @@ describe("routing profile management editor API", () => {
     expect(body.error?.issues?.length).toBeGreaterThan(0);
     expect(config.routingProfiles).not.toHaveProperty("broken");
     expect(saves).toBe(0);
+  });
+
+  test("PUT create rejects an account-selector namespace without side effects or private ids", async () => {
+    const config = baseConfig();
+    const privateAccountId = "private-stored-account-id";
+    const privateEmail = "private-account@example.test";
+    config.codexAccounts = [{ id: privateAccountId, email: privateEmail, isMain: false }];
+    config.codexAccountNamespaces = { side: privateAccountId };
+    const before = structuredClone(config);
+    const profiles = config.routingProfiles;
+    let saves = 0;
+    let refreshes = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "colliding",
+        mode: "create",
+        profile: {
+          alias: "side/gpt-5.5",
+          candidates: [{ provider: "a", model: "m1" }],
+        },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }, () => { refreshes += 1; }),
+    );
+
+    expect(response?.status).toBe(400);
+    const body = await response!.json();
+    expect(body).toMatchObject({
+      error: {
+        code: "invalid_profile",
+        message: expect.stringContaining("codex account namespace"),
+      },
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(privateAccountId);
+    expect(serialized).not.toContain(privateEmail);
+    expect(serialized).not.toContain(fallbackCodexAccountLogLabel(privateAccountId));
+    expect(config).toEqual(before);
+    expect(config.routingProfiles).toBe(profiles);
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
   });
 
   test("PUT create refuses to overwrite an existing profile", async () => {
@@ -305,6 +353,62 @@ describe("routing profile management editor API", () => {
     expect(config.claudeCode?.smallFastModel).toBe("a/m1");
     expect(config.claudeCode?.modelMap).toEqual({ "ocx/faster": "a/m1", "a/m2": "ocx/faster" });
     expect(saves).toBe(1);
+  });
+
+  test("PUT update rejects an account-selector namespace before reference migration", async () => {
+    const config = baseConfig();
+    const privateAccountId = "private-stored-account-id";
+    const privateEmail = "private-account@example.test";
+    config.codexAccounts = [{ id: privateAccountId, email: privateEmail, isMain: false }];
+    config.codexAccountNamespaces = { side: privateAccountId };
+    const disabledModels = ["ocx/fast"];
+    const subagentModels = ["ocx/fast", "a/m1"];
+    config.disabledModels = disabledModels;
+    config.subagentModels = subagentModels;
+    config.injectionModel = "ocx/fast";
+    const before = structuredClone(config);
+    const profiles = config.routingProfiles;
+    const fastProfile = config.routingProfiles!.fast;
+    let saves = 0;
+    let refreshes = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        profile: {
+          alias: "side/gpt-5.5",
+          candidates: [{ provider: "a", model: "m1" }],
+        },
+      }),
+    });
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }, () => { refreshes += 1; }),
+    );
+
+    expect(response?.status).toBe(400);
+    const body = await response!.json();
+    expect(body).toMatchObject({
+      error: {
+        code: "invalid_profile",
+        message: expect.stringContaining("codex account namespace"),
+      },
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(privateAccountId);
+    expect(serialized).not.toContain(privateEmail);
+    expect(serialized).not.toContain(fallbackCodexAccountLogLabel(privateAccountId));
+    expect(config).toEqual(before);
+    expect(config.routingProfiles).toBe(profiles);
+    expect(config.routingProfiles!.fast).toBe(fastProfile);
+    expect(config.disabledModels).toBe(disabledModels);
+    expect(config.subagentModels).toBe(subagentModels);
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
   });
 
   test("PUT update rejects a modelMap key collision instead of silently dropping a mapping", async () => {
