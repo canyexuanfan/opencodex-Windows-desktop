@@ -40,9 +40,15 @@ test("Linux shards isolate the storage-policy API family into its own gated job"
     "tests/api-storage-policy.test.ts",
   ];
 
-  for (const file of dedicatedFiles) {
-    expect(storageRun).toContain(`./${file}`);
-  }
+  // Extract all test file paths from the run command
+  const testPathPattern = /\.\/tests\/[a-z0-9-]+\.test\.ts/g;
+  const actualFiles = (storageRun.match(testPathPattern) || [])
+    .map(path => path.slice(2)) // Remove leading "./"
+    .sort();
+
+  const expectedFiles = [...dedicatedFiles].sort();
+  expect(actualFiles).toEqual(expectedFiles);
+
   expect(storageRun).not.toContain("--shard");
 
   expect(workflow.jobs?.ci?.needs).toContain("storage-policy");
