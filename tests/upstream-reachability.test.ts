@@ -184,7 +184,8 @@ describe("opt-in upstream host circuit", () => {
 
   test("an open ChatGPT host circuit suppresses subagent quota priming", async () => {
     const key = upstreamHostHealthKey("openai", "https://chatgpt.com");
-    fail(key, 1, 1_500);
+    const openedAt = 100_000;
+    fail(key, 1, openedAt);
     let primeCalls = 0;
     setSubagentQuotaPrimeForTests(async () => {
       primeCalls += 1;
@@ -203,16 +204,16 @@ describe("opt-in upstream host circuit", () => {
       upstreamHostCircuitThreshold: 1,
     } as OcxConfig;
 
-    await maybePrimeSubagentQuota(config, 1_501);
+    await maybePrimeSubagentQuota(config, openedAt + 1);
     expect(primeCalls).toBe(0);
     // Even after the cooldown timestamp passes, priming stays out of the way;
     // the logical request itself owns the one half-open admission.
-    await maybePrimeSubagentQuota(config, 1_500 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 1);
+    await maybePrimeSubagentQuota(config, openedAt + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 1);
     expect(primeCalls).toBe(0);
 
     // Positive control: with no host circuit, the same config primes exactly once.
     clearUpstreamHostHealth();
-    await maybePrimeSubagentQuota(config, 1_500 + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 2);
+    await maybePrimeSubagentQuota(config, openedAt + UPSTREAM_HOST_CIRCUIT_COOLDOWN_MS + 2);
     expect(primeCalls).toBe(1);
   });
 
