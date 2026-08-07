@@ -1628,7 +1628,6 @@ export const ru: Record<TKey, string> = {
   "api.attribution.ambiguous": "Два ключа используют один и тот же ID, поэтому нельзя определить, чьё это использование. Задайте каждому ключу уникальный ID в файле конфигурации.",
   "api.attribution.railAmbiguous": "дубль ID",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Используйте GPT, Gemini и другие модели внутри Claude Code.",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "Настройки",

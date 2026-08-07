@@ -173,7 +173,13 @@ test("routing page loads profiles, analytics, and marks the dry-run selection", 
   const { container, root } = await mountPage();
   try {
     expect(container.querySelector('[data-page="routing"]')).toBeTruthy();
-    expect(container.textContent).toContain("Routing Intelligence (beta)");
+    /*
+     * The panel no longer renders its own title: it is a Models tab now, and the shell
+     * above it owns the page heading and subtitle. Rendering them here put both on
+     * screen twice. The string still exists in the product — as the tab label.
+     */
+    expect(container.textContent).not.toContain("Routing Intelligence (beta)");
+    expect(container.textContent).toContain("Create profile");
     expect(container.textContent).toContain("balanced");
     expect(container.textContent).toContain("policy/balanced");
     expect(container.textContent).toContain("rev-abc");

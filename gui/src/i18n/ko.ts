@@ -1205,7 +1205,6 @@ export const ko: Record<TKey, string> = {
   "api.attribution.ambiguous": "두 키가 같은 ID를 쓰고 있어 어느 쪽 사용량인지 가릴 수 없습니다. 설정 파일에서 키마다 다른 ID를 주세요.",
   "api.attribution.railAmbiguous": "ID 중복",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Claude Code에서 GPT, Gemini 등 다른 모델도 쓸 수 있게 해줍니다.",
   "claude.enabledLabel": "Claude 연결",
   "claude.enabledHint": "끄면 Claude Code가 이 프록시를 사용할 수 없습니다.",

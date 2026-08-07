@@ -1198,7 +1198,6 @@ export const zh: Record<TKey, string> = {
   "api.attribution.ambiguous": "两个密钥共用同一个 ID，无法判断用量属于哪一个。请在配置文件中为每个密钥设置唯一 ID。",
   "api.attribution.railAmbiguous": "ID 重复",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "在 Claude Code 中使用 GPT、Gemini 等其他模型。",
   "claude.enabledLabel": "Claude 连接",
   "claude.enabledHint": "关闭后 Claude Code 无法使用此代理。",

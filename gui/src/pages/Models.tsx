@@ -1423,14 +1423,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
         </ErrorBoundary>
       </div>
 
-      {mounted.has("combos") && (
-        <div
-          className="models-tab-panel models-tab-panel--fill"
-          role="tabpanel"
-          id={modelsPanelDomId("combos")}
-          aria-labelledby={modelsTabDomId("combos")}
-          hidden={tab !== "combos"}
-        >
+      {/*
+        The panel SHELL is always present; only its contents mount lazily. A conditional
+        wrapper left the tab's `aria-controls` pointing at an element that did not exist
+        until the tab had been visited once.
+      */}
+      <div
+        className="models-tab-panel models-tab-panel--fill"
+        role="tabpanel"
+        id={modelsPanelDomId("combos")}
+        aria-labelledby={modelsTabDomId("combos")}
+        hidden={tab !== "combos"}
+      >
+        {mounted.has("combos") && (
           <ErrorBoundary
             pageName={t("models.tab.combos")}
             title={t("errorBoundary.title")}
@@ -1440,17 +1445,17 @@ export default function Models({ apiBase }: { apiBase: string }) {
           >
             <Combos apiBase={apiBase} active={tab === "combos"} onCountChange={setComboCount} />
           </ErrorBoundary>
-        </div>
-      )}
+        )}
+      </div>
 
-      {mounted.has("routing") && (
-        <div
-          className="models-tab-panel"
-          role="tabpanel"
-          id={modelsPanelDomId("routing")}
-          aria-labelledby={modelsTabDomId("routing")}
-          hidden={tab !== "routing"}
-        >
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("routing")}
+        aria-labelledby={modelsTabDomId("routing")}
+        hidden={tab !== "routing"}
+      >
+        {mounted.has("routing") && (
           <ErrorBoundary
             pageName={t("models.tab.routing")}
             title={t("errorBoundary.title")}
@@ -1458,10 +1463,10 @@ export default function Models({ apiBase }: { apiBase: string }) {
             detailsLabel={t("errorBoundary.details")}
             reloadLabel={t("errorBoundary.reload")}
           >
-            <RoutingProfiles apiBase={apiBase} active={tab === "routing"} standalone={false} onCountChange={setRoutingCount} />
+            <RoutingProfiles apiBase={apiBase} active={tab === "routing"} onCountChange={setRoutingCount} />
           </ErrorBoundary>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 

@@ -144,20 +144,14 @@ function selectedAfterLoad(
 export default function RoutingProfiles({
   apiBase,
   active = true,
-  standalone = true,
   onCountChange,
 }: {
   apiBase: string;
   /**
    * False while this panel is mounted but hidden behind another Models tab. Defaults
-   * true so the standalone page keeps its existing behaviour.
+   * true so a direct render (tests) behaves like a visible panel.
    */
   active?: boolean;
-  /**
-   * True on the standalone `#routing` page, which owns its own title and subtitle.
-   * False inside the Models tab, where the shell already renders both.
-   */
-  standalone?: boolean;
   /** Reports the profile count up to the tab strip. */
   onCountChange?: (count: number) => void;
 }) {
@@ -184,6 +178,14 @@ export default function RoutingProfiles({
   const loadGenerationRef = useRef(0);
   /** Owned by `load` so every entry point — mount, Retry, save, delete — is cancellable. */
   const loadAbortRef = useRef<AbortController | null>(null);
+  /*
+   * Cancelling in-flight work is not enough on its own. A save or delete can resolve
+   * AFTER the panel is hidden or unmounted and then call `load()`, which would open a
+   * fresh controller and four requests that the deactivation effect has already run
+   * past — and whose generation is current, so its writes would land in a panel nobody
+   * is looking at. `load` checks this before it starts anything.
+   */
+  const loadEnabledRef = useRef(true);
   const dryRunGenerationRef = useRef(0);
 
   const notify = useCallback((message: string, ok: boolean) => {
@@ -212,6 +214,7 @@ export default function RoutingProfiles({
   }, [clearDryRun]);
 
   const load = useCallback(async (preferredId?: string) => {
+    if (!loadEnabledRef.current) return;
     /*
      * `load` owns the controller, not the effect that happens to call it.
      *
@@ -280,12 +283,14 @@ export default function RoutingProfiles({
 
   useEffect(() => {
     if (!active) {
-      // Hidden: cancel work in flight and invalidate its generation so a late resolve
-      // cannot write into a panel nobody is looking at.
+      // Hidden: stop new loads, cancel work in flight, and invalidate its generation so
+      // a late resolve cannot write into a panel nobody is looking at.
+      loadEnabledRef.current = false;
       loadAbortRef.current?.abort();
       loadGenerationRef.current++;
       return;
     }
+    loadEnabledRef.current = true;
     const timer = window.setTimeout(() => void load(), 0);
     return () => {
       window.clearTimeout(timer);
@@ -296,6 +301,7 @@ export default function RoutingProfiles({
        * move past whatever value that load captured. A snapshot taken when the effect
        * ran would cancel a stale controller and leave the live one running.
        */
+      loadEnabledRef.current = false;
       loadAbortRef.current?.abort();
       // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: the latest generation is what must be invalidated
       loadGenerationRef.current++;
@@ -489,14 +495,6 @@ export default function RoutingProfiles({
         every static gate. The actions stay; a heading cannot carry buttons, so they sit
         in a plain toolbar row.
       */}
-      {standalone && (
-        <>
-          <div className="page-head">
-            <h2>{t("routing.title")}</h2>
-          </div>
-          <p className="muted">{t("routing.subtitle")}</p>
-        </>
-      )}
       <div className="row" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 12 }}>
         <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
           <span aria-hidden="true">+</span> {t("routing.createProfile")}

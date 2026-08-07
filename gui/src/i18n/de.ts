@@ -1178,7 +1178,6 @@ export const de: Record<TKey, string> = {
   "api.attribution.ambiguous": "Zwei Schlüssel teilen sich diese ID, daher lässt sich die Nutzung keinem davon zuordnen. Vergib in der Konfigurationsdatei je Schlüssel eine eindeutige ID.",
   "api.attribution.railAmbiguous": "doppelte ID",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "GPT, Gemini und andere Modelle in Claude Code verwenden.",
   "claude.enabledLabel": "Claude-Verbindung",
   "claude.enabledHint": "Wenn aus, kann Claude Code diesen Proxy nicht verwenden.",

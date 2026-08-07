@@ -220,13 +220,19 @@ export function DetailPanel({
         ))}
       </div>
 
+      {/*
+        Both panels stay in the tree, the inactive one `hidden`. A single panel whose id
+        followed the active tab left the OTHER tab's `aria-controls` pointing at an
+        element that did not exist — a broken IDREF on whichever tab was not selected.
+      */}
       <div
         className="combos-workspace-tab-content"
         role="tabpanel"
-        id={detailPanelDomId(tab)}
-        aria-labelledby={detailTabDomId(tab)}
+        id={detailPanelDomId("config")}
+        aria-labelledby={detailTabDomId("config")}
+        hidden={tab !== "config"}
       >
-        {tab === "config" ? (
+        {(
           <div className="cwi-form-grid">
             <div className="cwi-field">
               <label htmlFor="cwi-edit-id">{t("cws.field.id")}</label>
@@ -322,12 +328,25 @@ export function DetailPanel({
               </p>
             </div>
           </div>
-        ) : (
-          <section className="pwi-section">
-            <h3 className="pwi-section-title">{t("cws.aboutTitle")}</h3>
-            <p className="muted" style={{ margin: 0, maxWidth: "70ch", overflowWrap: "anywhere" }}>{t("cws.aboutBody")}</p>
-          </section>
         )}
+      </div>
+
+      {/*
+        `tabIndex={0}` because this panel holds no focusable descendants: without it,
+        Tab out of the tablist would skip the content the tab just revealed.
+      */}
+      <div
+        className="combos-workspace-tab-content"
+        role="tabpanel"
+        id={detailPanelDomId("about")}
+        aria-labelledby={detailTabDomId("about")}
+        hidden={tab !== "about"}
+        tabIndex={0}
+      >
+        <section className="pwi-section">
+          <h3 className="pwi-section-title">{t("cws.aboutTitle")}</h3>
+          <p className="muted" style={{ margin: 0, maxWidth: "70ch", overflowWrap: "anywhere" }}>{t("cws.aboutBody")}</p>
+        </section>
       </div>
     </div>
   );

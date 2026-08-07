@@ -171,19 +171,24 @@ test("a cold catalog failure still lets the user reach another tab", async () =>
   }
 });
 
-test("panels mount lazily and then stay mounted, hidden", async () => {
+test("panel shells are always present; contents mount lazily and then stay", async () => {
   installFetch();
   const { container, root } = await mountModels();
   try {
-    // Never visited: not in the tree at all.
-    expect(panel(container, "combos")).toBeNull();
-    expect(panel(container, "routing")).toBeNull();
+    /*
+     * The SHELL exists from the first render so every tab's `aria-controls` resolves;
+     * a conditional wrapper left the unvisited tab pointing at nothing. The shell is
+     * empty until visited, which is what keeps the lazy part lazy.
+     */
+    expect(panel(container, "combos")).toBeTruthy();
+    expect(panel(container, "combos")?.children).toHaveLength(0);
+    expect(panel(container, "routing")?.children).toHaveLength(0);
 
     await act(async () => {
       (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
     });
     await act(async () => { await Promise.resolve(); });
-    expect(panel(container, "combos")).toBeTruthy();
+    expect(panel(container, "combos")!.children.length).toBeGreaterThan(0);
     expect(panel(container, "catalog")?.hasAttribute("hidden")).toBe(true);
 
     await act(async () => {
@@ -191,9 +196,26 @@ test("panels mount lazily and then stay mounted, hidden", async () => {
     });
     await act(async () => { await Promise.resolve(); });
     // Still mounted, just hidden — this is what lets an unsaved draft survive.
-    expect(panel(container, "combos")).toBeTruthy();
+    expect(panel(container, "combos")!.children.length).toBeGreaterThan(0);
     expect(panel(container, "combos")?.hasAttribute("hidden")).toBe(true);
     expect(panel(container, "catalog")?.hasAttribute("hidden")).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+/*
+ * Every tab's `aria-controls` must resolve from the first render, including for tabs
+ * that have never been opened. A conditional panel wrapper broke this silently.
+ */
+test("every tab controls an element that exists before it is visited", async () => {
+  installFetch();
+  const { container, root } = await mountModels();
+  try {
+    for (const tabEl of tabs(container)) {
+      const target = tabEl.getAttribute("aria-controls")!;
+      expect(container.querySelector(`#${target}`)).toBeTruthy();
+    }
   } finally {
     await act(async () => root.unmount());
   }

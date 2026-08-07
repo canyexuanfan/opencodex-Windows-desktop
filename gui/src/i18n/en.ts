@@ -1641,7 +1641,6 @@ export const en = {
   "api.attribution.ambiguous": "Two keys share this ID, so usage cannot be attributed to one of them. Give each key a unique ID in the config file.",
   "api.attribution.railAmbiguous": "duplicate ID",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Use GPT, Gemini, and other models inside Claude Code.",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "Settings",

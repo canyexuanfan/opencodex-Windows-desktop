@@ -1586,7 +1586,6 @@ export const ja: Record<TKey, string> = {
   "api.attribution.ambiguous": "2 つのキーが同じ ID を共有しているため、どちらの使用状況か判別できません。設定ファイルでキーごとに一意の ID を指定してください。",
   "api.attribution.railAmbiguous": "ID 重複",
   // Claude Code inbound
-  "nav.claude": "Claude",
   "claude.subtitle": "Claude Code 内で GPT、Gemini などのモデルを使用します。",
   "claude.pageTitle": "Claude Code",
   "claude.workspace.settings": "設定",
