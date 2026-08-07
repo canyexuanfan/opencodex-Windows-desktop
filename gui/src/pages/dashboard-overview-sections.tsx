@@ -4,7 +4,7 @@ import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
 import { formatNamespacedModelId } from "../provider-icons";
 import { navigateHash } from "../hash-routing";
-import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor } from "./dashboard-shared";
+import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch } from "./dashboard-shared";
 import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
@@ -242,7 +242,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
     sidecar, sidecarSaving, sidecarModels, models, saveSidecar,
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
-  const visionModel = sidecar?.vision.model ?? "gpt-5.6-luna";
+  const visionModel = sidecar?.vision.model ?? "gpt-5.4-mini";
   const persistedVisionReasoning = sidecar?.vision.reasoning ?? "low";
   const visionLadder = visionReasoningLadder(models, visionModel);
   const visionReasoning = clampVisionReasoningToLadder(visionLadder, persistedVisionReasoning);
@@ -302,13 +302,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
                 value={visionReasoning}
                 options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: value }))}
                 onChange={reasoning => {
-                  void saveSidecar({
-                    vision: {
-                      model: visionModel,
-                      backend: sidecarBackendForModel(models, visionModel),
-                      reasoning: reasoning as typeof visionReasoning,
-                    },
-                  });
+                  void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
                 }}
                 disabled={!sidecar || sidecarSaving}
                 label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
