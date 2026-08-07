@@ -3,6 +3,7 @@ import {
   VISION_REASONING_LEVELS,
   clampVisionReasoningToLadder,
   visionReasoningLadder,
+  visionReasoningOptionsFor,
   type ModelInfo,
 } from "../src/pages/dashboard-shared";
 
@@ -17,6 +18,7 @@ test("vision reasoning uses advertised model ladders and clamps unsupported pers
   expect(mini).toEqual(["low", "medium", "high", "xhigh"]);
   expect(clampVisionReasoningToLadder(mini, "max")).toBe("xhigh");
   expect(clampVisionReasoningToLadder(mini, "high")).toBe("high");
+  expect(visionReasoningOptionsFor(mini, "max")).toEqual(mini);
 });
 
 test("vision reasoning clamp matches the server for non-prefix ladders", () => {
