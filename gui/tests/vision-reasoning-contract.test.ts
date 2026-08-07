@@ -19,6 +19,12 @@ test("vision reasoning uses advertised model ladders and clamps unsupported pers
   expect(clampVisionReasoningToLadder(mini, "high")).toBe("high");
 });
 
+test("vision reasoning clamp matches the server for non-prefix ladders", () => {
+  expect(clampVisionReasoningToLadder(["low", "high"], "medium")).toBe("low");
+  expect(clampVisionReasoningToLadder(["high", "max"], "low")).toBe("high");
+  expect(clampVisionReasoningToLadder(["low", "medium", "max"], "xhigh")).toBe("medium");
+});
+
 test("unknown vision model metadata stays permissive", () => {
   expect(visionReasoningLadder([], "custom/vision-model")).toEqual(VISION_REASONING_LEVELS);
 });
