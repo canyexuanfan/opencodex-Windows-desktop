@@ -629,8 +629,12 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
   }
 
   if (url.pathname === "/api/provider-context-caps" && req.method === "PUT") {
-    let body: { provider?: unknown; enabled?: unknown; value?: unknown; setAll?: unknown };
-    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let rawBody: unknown;
+    try { rawBody = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    // Reject non-object payloads (e.g. `{"provider": true}` or a bare array) before any
+    // property access, with the route's consistent 400 response.
+    if (!isPlainRecord(rawBody)) return jsonResponse({ error: "provider-context-caps body must be a plain object" }, 400);
+    const body = rawBody as { provider?: unknown; enabled?: unknown; value?: unknown; setAll?: unknown };
     const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     const { clearModelCache } = await import("../../codex/model-cache");
     const respond = (catalogRefresh: Awaited<ReturnType<typeof convergeCodexCatalog>>) => jsonResponse({
@@ -666,11 +670,16 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!hasOwnProvider(config.providers, provider)) {
         return jsonResponse({ error: "unknown provider" }, 404);
       }
-      if (body.value !== undefined
-        && (typeof body.value !== "number" || !Number.isFinite(body.value) || body.value <= 0)) {
+      // Validate a supplied per-provider value before mutating anything: it must be a
+      // finite number, and after flooring it must still be >= 1 — a value like 0.5 would
+      // otherwise floor to 0 and silently fall back to the global default.
+      if (body.value !== undefined && (typeof body.value !== "number" || !Number.isFinite(body.value))) {
         return jsonResponse({ error: "value must be a positive number" }, 400);
       }
       const perProviderValue = typeof body.value === "number" ? Math.floor(body.value) : undefined;
+      if (perProviderValue !== undefined && perProviderValue < 1) {
+        return jsonResponse({ error: "value must be a positive number" }, 400);
+      }
       setProviderContextCap(config, provider, body.enabled, perProviderValue);
       save(config);
       reconcileLiveStateStores();
@@ -683,7 +692,13 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // every routed provider" toggle), re-point every enabled provider; otherwise keep each
     // provider's own cap value and only change the default for future toggles.
     if (body.value !== undefined) {
-      if (typeof body.value !== "number" || !Number.isFinite(body.value) || body.value <= 0) {
+      // Same normalization as the per-provider branch: floor before validating so a value
+      // that floors to zero is rejected rather than silently stored.
+      if (typeof body.value !== "number" || !Number.isFinite(body.value)) {
+        return jsonResponse({ error: "value must be a positive number" }, 400);
+      }
+      const normalizedValue = Math.floor(body.value);
+      if (normalizedValue < 1) {
         return jsonResponse({ error: "value must be a positive number" }, 400);
       }
       if (body.setAll !== undefined && typeof body.setAll !== "boolean") {
@@ -691,7 +706,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       }
       const affected = Object.keys(providerContextCaps(config));
       const applyToAll = body.setAll === true;
-      setGlobalContextCapValue(config, body.value, applyToAll);
+      setGlobalContextCapValue(config, normalizedValue, applyToAll);
       save(config);
       reconcileLiveStateStores();
       if (applyToAll) {

@@ -2496,6 +2496,38 @@ describe("provider management validation", () => {
       expect(mixedPayload.status).toBe(400);
       const afterMixedPayload = await fetch(new URL("/api/provider-context-caps", server.url));
       expect(await afterMixedPayload.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A per-provider value that floors to zero (0.5) is rejected without mutating config:
+      // it must not silently fall back to the global default.
+      const floorZeroPerProvider = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 0.5 }),
+      });
+      expect(floorZeroPerProvider.status).toBe(400);
+      const afterFloorZeroPerProvider = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterFloorZeroPerProvider.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A global value that floors to zero is rejected the same way.
+      const floorZeroGlobal = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: 0.5 }),
+      });
+      expect(floorZeroGlobal.status).toBe(400);
+      const afterFloorZeroGlobal = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterFloorZeroGlobal.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A non-object body (valid JSON) is rejected with 400 instead of crashing on
+      // property access.
+      const nonObject = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([1, 2, 3]),
+      });
+      expect(nonObject.status).toBe(400);
+      const afterNonObject = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterNonObject.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
     } finally {
       await server.stop(true);
     }
