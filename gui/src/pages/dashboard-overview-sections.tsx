@@ -302,7 +302,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
                 options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: value }))}
                 onChange={reasoning => { void saveSidecar({ vision: { reasoning: reasoning as typeof visionReasoning } }); }}
                 disabled={!sidecar || sidecarSaving}
-                label={t("dash.searchReasoning")}
+                label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
               />
             </div>
           </div>
