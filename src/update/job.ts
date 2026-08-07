@@ -251,8 +251,24 @@ function ensureJobDir(): void {
  * TYPE and size — enough to tell a reader what class of failure occurred — and never its text,
  * which is where the paths and account names live.
  */
+/**
+ * A version string we are willing to repeat in a persisted field.
+ *
+ * Semver plus an optional prerelease/build tail, capped in length. Anything else is dropped
+ * rather than logged: `/healthz` is answered by whatever holds the port, so its `version` is
+ * external input on the same footing as an error message.
+ */
+function isVersionLike(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= 64
+    && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+}
+
 function withheldSummary(error: unknown): string {
-  const name = error instanceof Error ? error.name : typeof error;
+  // `error.name` is writable, so it is external text like the message. A fixed classification
+  // is the only part of an unknown error we can state without repeating something we were
+  // handed: `new Error(...)` with `error.name = "Jane Doe"` was persisting the name verbatim.
+  const name = error instanceof Error ? "Error" : typeof error;
   // NO MESSAGE TEXT, ever. An earlier version kept messages that carried no path, which sounds
   // reasonable and is wrong: `spawn denied for Jane Doe` has no path in it and still names a
   // person. There is no test on message CONTENT that separates a diagnostic from an identity,
@@ -1377,7 +1393,11 @@ async function defaultProbeProxyIdentity(
     if (!isOpencodexHealthz(body)) return null;
     return {
       pid: typeof body?.pid === "number" ? body.pid : null,
-      ...(typeof body?.version === "string" ? { version: body.version } : {}),
+      // Validate the shape at the boundary where the value ENTERS, not where it is logged.
+      // `/healthz` is answered by whatever is listening on that port, so a hostile or confused
+      // responder can return any string here — and the restart-evidence reasons below
+      // interpolate it into a persisted field. A version is a version or it is nothing.
+      ...(isVersionLike(body?.version) ? { version: body.version } : {}),
     };
   } catch {
     return null;

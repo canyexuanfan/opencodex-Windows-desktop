@@ -298,6 +298,31 @@ describe("GUI update execution decisions", () => {
     expect(persisted).toContain("opencodex@2.7.41");
   });
 
+  test("a renamed error cannot smuggle a name through the type field", () => {
+    // `Error.name` is writable, so it is external text exactly like the message. Reporting it
+    // verbatim put the caller's chosen string straight into the persisted record.
+    const renamed = new Error("spawn denied for Jane Doe");
+    renamed.name = "Jane Doe";
+
+    expect(() => startUpdateJob("latest", false, {
+      checkForUpdateFn: () => ({
+        currentVersion: "2.7.40",
+        latestVersion: "2.7.41",
+        channel: "latest",
+        installer: "npm",
+        updateAvailable: true,
+        canUpdate: true,
+        command: "npm install -g opencodex@2.7.41",
+        releaseNotesUrl: "https://github.com/lidge-jun/opencodex/releases/latest",
+      }),
+      spawnWorkerFn: () => { throw renamed; },
+    })).toThrow("Could not start update worker");
+
+    const persisted = readFileSync(updateJobPath(), "utf8");
+    expect(persisted).not.toContain("Jane Doe");
+    expect(persisted).toContain("bytes withheld");
+  });
+
   test("npm worker uses the Node launcher update path", () => {
     const cmd = updateExecutionCommand("npm", "preview", "/pkg/bin/ocx.mjs");
     expect(cmd.bin).toMatch(/^node/);
