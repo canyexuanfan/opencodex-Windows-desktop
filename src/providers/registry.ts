@@ -2066,6 +2066,34 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: ["mimo-auto"],
     note: "No key needed — uses Xiaomi MiMo's free public tier (limited-time offer). A JWT is bootstrapped automatically with an anonymous random client id stored locally. The endpoint contract mirrors the official MiMoCode client and is not publicly documented — Xiaomi may change or restrict it at any time. Prompts may be processed/retained by Xiaomi; do not send confidential material.",
   },
+  // Xiaomi MiMo paid token plan. Separate host and wire from both `xiaomi` (Anthropic) and
+  // `mimo-free` (free tier, bespoke adapter), so it needs its own entry rather than a variant.
+  //
+  // Pinned to openai-chat deliberately (#1158). The endpoint answers the Responses wire for
+  // plain turns, which is why users configuring it by hand pick `openai-responses` — MiMo
+  // documents Responses support. But its gateway rejects `type: "custom"` tools with
+  // `400 responses_feature_not_supported`, and `apply_patch` is a custom tool, so every agentic
+  // turn fails while chat turns succeed. The Chat path lowers custom tools to `{input: string}`
+  // functions and restores them as `custom_tool_call`, so the capability survives intact.
+  // Stripping the tools instead would stop the 400 and disable the agent loop.
+  {
+    id: "mimo",
+    label: "Xiaomi MiMo (token plan)",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://xiaomimimo.com",
+    defaultModel: "mimo-v2.5-pro",
+    models: ["mimo-v2.5-pro", "mimo-v2.5"],
+    // The gateway validates the ladder strictly and rejects anything above `high`.
+    reasoningEfforts: ["low", "medium", "high"],
+    reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
+    // A user may already have hand-rolled a provider under this id against a different host;
+    // without this, routedProviderConfig() would canonicalize their base URL onto ours and send
+    // their key somewhere they did not choose.
+    preserveCustomDestination: true,
+    note: "Xiaomi MiMo paid token plan. Pinned to the Chat wire: the Responses endpoint rejects freeform (custom) tools such as apply_patch with 400 responses_feature_not_supported, so agentic turns fail there while plain turns succeed. Reasoning tiers above high are clamped.",
+  },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },
   {
     // Cloudflare Workers AI: OpenAI-compatible endpoint. The base URL contains {account_id}
