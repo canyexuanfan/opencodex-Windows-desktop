@@ -133,11 +133,12 @@ describe("GUI update execution decisions", () => {
     expect(persisted).not.toContain("Mary Jane van der Berg");
     expect(persisted).not.toContain("AppData");
     expect(persisted).not.toContain("_cacache");
+    expect(persisted).not.toContain("Users");
     expect(persisted).not.toMatch(/\buid\s*[=:]\s*501\b/i);
     expect(persisted).not.toMatch(/\bgid\s*[=:]\s*20\b/i);
     // Multi-line vendor output no longer crosses the boundary at all — it is replaced by a
     // shape note. The secrets are what matter here, and none of them survive.
-    expect(persisted).toContain("lines of output withheld");
+    expect(persisted).toContain("withheld");
   });
 
   test("the persistence boundary survives wrapped paths and profile expansions", () => {

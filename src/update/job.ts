@@ -243,129 +243,55 @@ function ensureJobDir(): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-/**
- * Redact profile paths, including ones a line wrap has split apart.
- *
- * Three earlier shapes failed, and the reason is worth recording because it is not a tuning
- * problem. Rejoining wrapped lines either merged unrelated log entries or let the username
- * through. Stripping every boundary let one redacted path swallow the diagnostics after it.
- * Deciding "is this line a continuation or a new record?" from separators cannot work either:
- * `oë [Admin]+` is a continuation with no separator, and `npm ERR! /usr/local/lib` is a new
- * record with one. Nothing in the text distinguishes them.
- *
- * So this stops trying. It works line by line, and when a line ends on an INCOMPLETE profile
- * prefix — a profile keyword whose account segment has not been closed by a separator — the
- * NEXT line is treated as the continuation of that account name and redacted whole. That is
- * conservative: it can redact a following line that was actually unrelated, which costs one line
- * of diagnostics. Getting it wrong the other way costs someone's account name, and the whole
- * point of this boundary is that it never does.
- */
-function redactWrappedProfilePaths(value: string): string {
-  const PROFILE_ANYWHERE = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*/gi;
-  // The line ends mid-account-name: keyword, separator, then a segment never closed.
-  const OPEN_PROFILE_TAIL = /(?:[A-Za-z]:)?[\\/]{1,2}(?:Users|Documents and Settings|home)[\\/]{1,2}[^\\/\r\n]*$/i;
-  // A wrap can also split the keyword itself, leaving a dangling head. Any prefix of the three
-  // keywords counts — `...\Us`, `...\Documents and Set`, `...\hom`, or a bare trailing separator.
-  const KEYWORDS = ["Users", "Documents and Settings", "home"];
-  const keywordPrefixes = KEYWORDS
-    .flatMap(word => Array.from({ length: word.length }, (_, n) => word.slice(0, n + 1)))
-    .sort((a, b) => b.length - a.length)
-    .map(prefix => prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const OPEN_KEYWORD_TAIL = new RegExp(String.raw`[\\/](?:${keywordPrefixes.join("|")})?$`, "i");
-
-  const lines = value.split(/(\r?\n)/);
-  let carry = false;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    if (line === "\n" || line === "\r\n") continue;
-
-    if (carry) {
-      // Continuation of an open account name: redact the whole line, keeping its indentation so
-      // the log still reads as wrapped output.
-      const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
-      if (line.trim().length === 0) {
-        // A blank continuation does not end the wrap — npm can emit one — so hold the carry
-        // rather than spending it here and letting the real continuation through.
-        continue;
-      }
-      lines[i] = `${indent}<profile>`;
-      // A wrap can span several lines (`...\Us` / `ers\Ja` / `ne [Admin]+\...`), and every rule
-      // for "has this one ended?" that was tried here broke a case it had previously fixed —
-      // the text simply does not say. Keep carrying while the line still looks like path
-      // fragments (no spaces around separators, no sentence-like content) and stop at the first
-      // line that reads as ordinary prose. Over-redacting a fragment line is the safe error.
-      carry = /[\\/]/.test(line) ? !/[\\/]\s|\s[\\/]/.test(line) && line.trim().split(/\s+/).length <= 3 : true;
-      continue;
-    }
-
-    const redacted = line.replace(PROFILE_ANYWHERE, "<profile>");
-    lines[i] = redacted;
-    carry = OPEN_PROFILE_TAIL.test(line) || OPEN_KEYWORD_TAIL.test(line);
-  }
-  return lines.join("");
+function sanitizePersistedUpdateText(value: string): string {
+  // ALLOW-LIST, not a redactor.
+  //
+  // Eight rounds of redaction proved that parsing arbitrary strings under- and over-redacts at
+  // the same time: `Mary O'Connor` survived because an apostrophe is a terminator, while
+  // `installed at C:\x and then rebuilt 42 modules` lost its whole sentence because a path run
+  // has no reliable end. Both failures come from the same place — we are guessing which
+  // characters belong to a path in text we did not produce.
+  //
+  // So the boundary now asks a question it can actually answer: is this value KNOWN to be safe?
+  // Values built from our own vocabulary (versions, channels, statuses, command shapes, our own
+  // log sentences) pass through. Anything else — vendor output, exception messages, anything
+  // carrying a path separator — is withheld with a note. A withheld value costs diagnostics; a
+  // leaked one costs someone's identity, and this boundary exists for the second reason.
+  if (isKnownSafePersistedText(value)) return value;
+  const bytes = Buffer.byteLength(value, "utf8");
+  return `<withheld: ${bytes} bytes, may contain local paths>`;
 }
 
-function sanitizePersistedUpdateText(value: string): string {
-  // Free-form vendor text cannot be made safe by redaction, and six rounds of trying is the
-  // evidence: a wrap inside the keyword, inside the account name, an indented continuation,
-  // three consecutive wraps, an empty continuation — each fix surfaced the next leak, because
-  // the leak surface is whatever npm chooses to print and however the terminal wraps it.
-  //
-  // So multi-line text does not cross this boundary at all. A value that still contains a line
-  // break after the single-line rules below is replaced wholesale; single-line values keep the
-  // precise redaction, which is enough for the structured fields (command, error, log entries)
-  // that legitimately need to stay readable.
-  // Wrap-tolerant profile redaction runs FIRST: npm and the OS break long paths at arbitrary
-  // points, and a rule anchored to a single line let `C:\Us<newline>ers\Jane Doe\...` through
-  // with the account name intact. The single-line rules below then handle the ordinary cases
-  // precisely.
-  // Multi-line values are vendor output, not a structured field. Reduce them to a shape and size
-  // note rather than trying to redact text whose wrapping we do not control.
-  if (/\r?\n/.test(value)) {
-    const lines = value.split(/\r?\n/).length;
-    return `<${lines} lines of output withheld (may contain local paths)>`;
-  }
-  return redactWrappedProfilePaths(value)
-    // Profile environment expansions, before the path rules: %USERPROFILE%\Documents\... and
-    // $HOME/... would otherwise survive as a literal prefix plus a real tail.
-    .replace(/%(?:USERPROFILE|HOMEPATH|HOMEDRIVE|APPDATA|LOCALAPPDATA)%/gi, "<profile>")
-    .replace(/\$(?:HOME|USERPROFILE)\b/g, "<profile>")
-    // UNC shares carry the same account names as a local profile path.
-    // Consume the whole UNC run, not just the server\share prefix. Stopping at the share left
-    // the segment after it — which on a home share IS the account name — for later rules that
-    // could no longer recognize the mangled remainder.
-    .replace(/\\\\[^\\/\r\n]+\\[^;,"'\r\n]*/g, "<share>")
-    .replace(
-      /(?:[A-Za-z]:)?[\\/](?:[^\\/\r\n]+[\\/])*(?:\.npm|npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
-      "<npm-cache>",
-    )
-    .replace(
-      /\b(?:Users|Documents and Settings)[\\/][^\\/\r\n]+[\\/](?:[^\\/\r\n]+[\\/])*(?:npm-cache|_cacache)(?:[\\/][^\r\n]*)?/gi,
-      "<npm-cache>",
-    )
-    // `[^\\/\r\n]+` stops at the next separator, which is right — but a username containing a
-    // space or bracket (`Zoe [Admin]+`) only partly matched when the path had already been
-    // mangled by a wrap, leaving a readable tail. Consume the whole segment up to the next
-    // separator or end of line, whitespace included.
-    .replace(/(?:[A-Za-z]:[\\/])?(?:Users|Documents and Settings)[\\/][^\\/\r\n]*/gi, "<profile>")
-    .replace(/\/(?:Users|home)\/[^/\r\n]*/g, "<profile>")
-    // A root-owned install has no /home entry; /root is still a local filesystem disclosure.
-    .replace(/\/root(?=[/\s]|$)/g, "<profile>")
-    // Any remaining UNC share, including administrative and home shares (`\\server\home$\Jane
-    // Doe\...`). Path segments may contain spaces, so the run continues across them and stops at
-    // a delimiter that cannot appear mid-path.
-    .replace(/\\\\[^\\/\s]+\\[^;,"'\r\n]*/g, "<path>")
-    // Any remaining absolute POSIX path under a directory that commonly holds per-user data.
-    .replace(/\/(?:export\/home|var\/home|Volumes)\/[^;,"'\r\n]*/gi, "<path>")
-    // Backstop. Everything above recognizes a KNOWN profile shape, and a wrap that lands inside
-    // the word `Users` (`C:\Us` + `ers\Jane Doe\...`) reassembles into a path none of them match
-    // — the segment after the drive letter is still somebody's account name. Rather than trying
-    // to enumerate every way a path can be mangled, redact any remaining absolute Windows path:
-    // an update log has no legitimate need to carry one.
-    // Windows path segments legitimately contain spaces (`D:\Profiles\Mary Jane\...`), so this
-    // run continues past them and stops only at a delimiter that cannot appear inside a path.
-    .replace(/\b[A-Za-z]:[\\/][^;,"'\r\n]*/g, "<path>")
-    .replace(/\b(uid|gid)(\s*(?:[=:]|\s)\s*)\d+\b/gi, "$1$2<redacted>");
+/**
+ * True when a string is built from vocabulary this module controls.
+ *
+ * Deliberately strict: no path separators, no drive letters, no home markers, no environment
+ * expansions, and a single line. Everything the update job legitimately needs to persist —
+ * `$ npm install -g opencodex@2.7.41`, `exit 1 · codes: EACCES · 812 bytes withheld`,
+ * `Update job queued for 2.7.40 -> 2.7.41.` — satisfies this.
+ */
+function isKnownSafePersistedText(value: string): boolean {
+  if (value.length > 400) return false;
+  if (/[\r\n]/.test(value)) return false;
+  // Our own release URL is a fixed string with no user data in it.
+  if (/^https?:\/\/[\w.-]+(?:\/[\w.\-~%]*)*\/?$/.test(value)) return true;
+  // A package-manager invocation is our own vocabulary and carries no local path: the binary is
+  // a bare name, the flags are fixed, and the target is `<pkg>@<version|tag>`. Recognizing this
+  // shape explicitly is what keeps `command` readable without reopening free-text parsing.
+  if (/^\$?\s*(?:npm|bun|pnpm|yarn)\s+[\w@.\-+ ]*$/.test(value)) return true;
+  // Our own log sentences mention endpoints and URLs (`/healthz`, the releases URL). Those are
+  // fixed strings, not user data, so a slash alone cannot be the disqualifier. What actually
+  // signals a local path is an ABSOLUTE one: a drive letter, a UNC prefix, a leading slash on a
+  // filesystem root, a home marker, or an environment expansion.
+  if (/[A-Za-z]:[\\/]/.test(value)) return false;         // C:\... or C:/...
+  if (/\\\\/.test(value)) return false;                    // \\server\share
+  if (/\\/.test(value)) return false;                      // any backslash: not ours
+  if (/(?:^|\s)~[\w.-]*\//.test(value)) return false;      // ~/… or ~user/…
+  if (/[%$][A-Za-z_]/.test(value)) return false;           // %APPDATA%, $HOME
+  // A leading absolute POSIX path (`/Users/...`, `/private/var/...`) — but not an endpoint
+  // mentioned inside a sentence, and not a URL path.
+  if (/(?:^|\s)\/(?!healthz\b)[\w.-]+\/[^\s]*/.test(value) && !/https?:\/\//.test(value)) return false;
+  return true;
 }
 
 function sanitizePersistedUpdateValue<T>(value: T): T {
