@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
-import { IconChevron, IconBoxes, IconInfo, IconShuffle, IconCheck, IconAlert } from "../icons";
+import { IconChevron, IconBoxes, IconInfo, IconCheck, IconAlert } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
 import { formatNamespacedModelId, formatProviderDisplayName, providerDisplaySlug } from "../provider-icons";
-import { type ComboItem, parseComboList } from "../combo-workspace-data";
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { setClientResourceData } from "../client-resource";
@@ -45,11 +44,9 @@ import {
   fmtK,
   PAGE,
   readCollapsedProviders,
-  readCombosOpen,
   THREAD_OPTION_SET,
   THREAD_OPTIONS,
   writeCollapsedProviders,
-  writeCombosOpen,
   discoveryFailureLabel,
   type ModelRow,
   type ProviderContextCapsResponse,
@@ -68,12 +65,6 @@ type CachedModelsPage = {
   contextCaps: Record<string, number>;
   contextCapValue: number;
 };
-
-/** Session JSON is untrusted — only seed rows that survive parseComboList (targets always arrays). */
-function readCachedCombos(value: unknown): ComboItem[] | null {
-  if (!Array.isArray(value)) return null;
-  return parseComboList({ combos: value });
-}
 
 /** One subtitle per tab: only one panel is visible, so only one description applies. */
 const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
@@ -187,42 +178,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [shadowCall, setShadowCall] = useState<ShadowCallData | null>(null);
   const [shadowCallSaving, setShadowCallSaving] = useState(false);
-  // Combo summary section. null = cold load with no seed (pending strut). Failed reads stay
-  // null + combosError so an API error never masquerades as "no combos configured".
-  const combosCacheKey = `ocx.models.combos.v1:${apiBase}`;
-  const seededCombos = useMemo(() => {
-    const own = readCachedCombos(readSessionListCache<unknown>(combosCacheKey));
-    if (own !== null) return own;
-    // Reuse the Combos workspace session snapshot when Models opens first in the session.
-    const workspace = readSessionListCache<{ combos?: unknown }>(`ocx.combos.workspace.v1:${apiBase}`);
-    return readCachedCombos(workspace?.combos);
-  }, [apiBase, combosCacheKey]);
-  const combosResource = useDataSurface<ComboItem[]>(
-    `models-combos:${apiBase}`,
-    [apiBase],
-    async (signal) => {
-      const r = await fetch(`${apiBase}/api/combos`, { signal });
-      const j = await readJsonOrThrow<unknown>(r);
-      const next = parseComboList(j);
-      writeSessionListCache(combosCacheKey, next);
-      return next;
-    },
-    { isEmpty: () => false, initialData: seededCombos ?? undefined, enabled: catalogActive },
-  );
-  const combosState = combosResource.state;
-  // Keep a previously painted card on a later failure so the catalog does not yank down.
-  const combos = combosState.data ?? seededCombos;
-  // Announce failures even when stale/seeded rows remain (layout kept; freshness not faked).
-  const combosError = combosState.showError;
-  const [combosOpen, setCombosOpen] = useState(readCombosOpen);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-  const toggleCombosOpen = () => {
-    const next = !combosOpen;
-    writeCombosOpen(next);
-    setCombosOpen(next);
-  };
 
   useEffect(() => () => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -1141,97 +1099,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
     </>
   );
 
-  const combosBlock = (
-    <>
-      {/* Silent height strut: reserves the empty-card slot so a late /api/combos
-          cannot insert a row, without a bordered "Combos · Loading…" placeholder. */}
-      {combos === null && !combosError && (
-        <div className="models-combos-card models-combos-card--pending" aria-busy="true">
-          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-            {t("common.loading")}
-          </span>
-        </div>
-      )}
-      {combos === null && combosError && (
-        <div className="card models-combos-card">
-          <div className="row models-combos-empty-head">
-            <div className="row models-field-row" style={{ minWidth: 0 }}>
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-            </div>
-            <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-              {t("common.retry")}
-            </button>
-          </div>
-        </div>
-      )}
-      {combos !== null && combos.length === 0 && (
-        <div className="card models-combos-card">
-          <div className="row models-combos-empty-head">
-            <div className="row models-field-row" style={{ minWidth: 0 }}>
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              {combosError ? (
-                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-              ) : (
-                <span className="muted text-label">{t("models.combosEmpty")}</span>
-              )}
-            </div>
-            {combosError ? (
-              <button type="button" className="btn btn-sm" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-                {t("common.retry")}
-              </button>
-            ) : (
-              <a className="btn btn-sm" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
-            )}
-          </div>
-        </div>
-      )}
-      {combos !== null && combos.length > 0 && (
-        <div className="card models-combos-card">
-          <div className={`row group-head models-field-row${combosOpen ? " open" : ""}`}>
-            <button
-              type="button"
-              className="row models-field-row"
-              aria-expanded={combosOpen}
-              onClick={toggleCombosOpen}
-              style={{ flex: 1, background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "inherit", textAlign: "left", minWidth: 0 }}
-            >
-              <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", flexShrink: 0, transform: combosOpen ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
-              <IconShuffle width={14} height={14} aria-hidden="true" style={{ flexShrink: 0 }} />
-              <strong>{t("nav.combos")}</strong>
-              <span className="muted mono text-label">{t("models.combosActive", { count: combos.length })}</span>
-              {combosError && (
-                <span className="muted text-label" role="alert">{t("models.loadFail")}</span>
-              )}
-            </button>
-            {combosError ? (
-              <button type="button" className="btn btn-sm btn-ghost" style={{ flexShrink: 0 }} onClick={() => combosResource.refresh()}>
-                {t("common.retry")}
-              </button>
-            ) : (
-              <a className="btn btn-sm btn-ghost" href="#combos" style={{ flexShrink: 0 }}>{t("models.combosSetup")}</a>
-            )}
-          </div>
-          {combosOpen && (
-            <div>
-              {combos.map(c => (
-                <div key={c.id} className="row models-combo-row">
-                  <span className="mono leading-ui">{c.model}</span>
-                  <span className="muted text-label">{c.strategy} · {c.targets.length}</span>
-                </div>
-              ))}
-              <a className="row muted models-combos-add" href="#combos">
-                + {t("models.combosAdd")}
-              </a>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-
   const collapseControls = (
     <div className="row models-collapse-controls">
       <button type="button" className="btn btn-ghost btn-sm text-caption" onClick={() => setAllCollapsed(true)} disabled={busy}>
@@ -1494,7 +1361,6 @@ export default function Models({ apiBase }: { apiBase: string }) {
         </aside>
         <section className="models-workspace-main" aria-label={t("models.workspace.mainAria")}>
           {controlsBlock}
-          {combosBlock}
           {collapseControls}
           <div className="models-provider-list">
             {

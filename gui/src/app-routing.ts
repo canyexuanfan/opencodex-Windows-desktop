@@ -7,28 +7,24 @@ export type Page =
   | "startup"
   | "providers"
   | "models"
-  | "combos"
   | "subagents"
   | "logs"
   | "usage"
   | "storage"
   | "codex-auth"
-  | "integrations"
-  | "routing";
+  | "integrations";
 
 export const VALID_PAGES = new Set<Page>([
   "dashboard",
   "startup",
   "providers",
   "models",
-  "combos",
   "subagents",
   "logs",
   "usage",
   "storage",
   "codex-auth",
   "integrations",
-  "routing",
 ]);
 
 export function readPageFromHash(hash?: string): Page {
@@ -39,6 +35,8 @@ export function readPageFromHash(hash?: string): Page {
   const pageId = raw.split("/")[0] as Page;
   // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
   if (pageId === ("debug" as Page)) return "logs";
+  // Legacy: Combos and Routing used to be standalone pages; both are Models tabs now.
+  if (pageId === ("combos" as Page) || pageId === ("routing" as Page)) return "models";
   // Legacy integration pages now live below one Integrations route. Returning
   // the destination page here keeps the initial hook state aligned until the
   // resolver replaces the hash with the exact nested destination.
@@ -118,6 +116,20 @@ export function resolveAppHashChange(rawHash: string): AppHashChangeAction {
   // Legacy: Debug used to be a standalone page.
   if (rawHash === "debug" || rawHash.startsWith("debug/")) {
     return { page: "logs", replaceTo: "logs/debug" };
+  }
+
+  /*
+   * Legacy: Combos and Routing used to be standalone pages, now Models tabs.
+   *
+   * The `startsWith` arm is not decoration. Without it the generic normalization below
+   * would rewrite `#routing/anything` to the bare page and drop the destination — the
+   * same bug the `#api` comment below documents.
+   */
+  if (rawHash === "combos" || rawHash.startsWith("combos/")) {
+    return { page: "models", replaceTo: "models/combos" };
+  }
+  if (rawHash === "routing" || rawHash.startsWith("routing/")) {
+    return { page: "models", replaceTo: "models/routing" };
   }
 
   /*

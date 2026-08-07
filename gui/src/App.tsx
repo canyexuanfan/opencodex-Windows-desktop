@@ -3,18 +3,16 @@ import { useKeyedClientResource } from "./client-resource";
 import Dashboard from "./pages/Dashboard";
 import Providers from "./pages/Providers";
 import Models from "./pages/Models";
-import Combos from "./pages/Combos";
 import Subagents from "./pages/Subagents";
 import Logs from "./pages/Logs";
 import Usage from "./pages/Usage";
-import RoutingProfiles from "./pages/RoutingProfiles";
 import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import Integrations from "./pages/Integrations";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { SidebarGithubRow } from "./components/sidebar-github-row";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconTerminal, IconX, IconRoute } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconTerminal, IconX } from "./icons";
 import { useI18n, useT, LOCALES, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -33,14 +31,12 @@ const PAGE_TKEY: Record<Page, TKey> = {
   startup: "nav.startup",
   providers: "nav.providers",
   models: "nav.models",
-  combos: "nav.combos",
   subagents: "nav.subagents",
   logs: "nav.logs",
   usage: "nav.usage",
   storage: "nav.storage",
   "codex-auth": "nav.codexAuth",
   integrations: "nav.integrations",
-  routing: "nav.routing",
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
@@ -69,7 +65,6 @@ const NAV: NavEntry[] = [
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
-  { id: "routing", tkey: "nav.routing", Icon: IconRoute },
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
   /*
    * Claude sits directly above Integrations because it is a shortcut into that
@@ -340,14 +335,12 @@ export default function App() {
 
       <main className="main" inert={navOpen}>
         {/*
-          The combos workspace is full-bleed, and it is reachable two ways during the
-          tab migration: as the standalone `#combos` page and as the Models Combos tab.
-          `.main-inner` is App's element, so App is the only place that can know.
+          Combos is full-bleed, unlike every other surface, and it is reachable only as
+          a Models tab. `.main-inner` is App's element, so App is the only place that
+          can know which tab is showing.
         */}
         <div className={`main-inner${
-          page === "combos" || (page === "models" && modelsTab === "combos")
-            ? " main-inner--combos"
-            : ""
+          page === "models" && modelsTab === "combos" ? " main-inner--combos" : ""
         }`}>
           <ErrorBoundary
             key={page}
@@ -360,12 +353,10 @@ export default function App() {
             {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} />}
-            {page === "models" && <Models apiBase={API_BASE} />}
-            {page === "combos" && <Combos key={API_BASE} apiBase={API_BASE} />}
+            {page === "models" && <Models key={API_BASE} apiBase={API_BASE} />}
             {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
             {page === "usage" && <Usage apiBase={API_BASE} />}
-            {page === "routing" && <RoutingProfiles key={API_BASE} apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "integrations" && <Integrations apiBase={API_BASE} />}
