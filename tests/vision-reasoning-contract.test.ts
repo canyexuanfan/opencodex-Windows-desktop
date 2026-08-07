@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { handleConfigCommand } from "../src/cli/config-command";
 import { handleManagementAPI } from "../src/server/management-api";
 import { listManagementModelRows } from "../src/server/management/model-rows";
 import type { OcxConfig } from "../src/types";
@@ -109,6 +110,30 @@ describe("vision reasoning capability contracts", () => {
       response = await putVision(custom, { model: "custom-vision", reasoning: "max" });
       expect(response.status).toBe(200);
       expect(custom.visionSidecar).toMatchObject({ model: "custom-vision", reasoning: "max" });
+    } finally {
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  });
+
+  test("CLI import normalizes reasoning against the runtime model default", async () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const isolatedHome = mkdtempSync(join(tmpdir(), "ocx-vision-reasoning-cli-"));
+    process.env.OPENCODEX_HOME = isolatedHome;
+    const importPath = join(isolatedHome, "import.json");
+
+    try {
+      writeFileSync(importPath, JSON.stringify({
+        port: 10100,
+        defaultProvider: "none",
+        providers: {},
+        visionSidecar: { reasoning: "max" },
+      }));
+      expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).toBe(0);
+      const persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
+      expect(persisted.visionSidecar).toMatchObject({ reasoning: "xhigh" });
+      expect(persisted.visionSidecar.model).toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;
