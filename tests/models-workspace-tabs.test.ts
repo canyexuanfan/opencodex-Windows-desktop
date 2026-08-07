@@ -75,8 +75,27 @@ describe("readModelsTab", () => {
     expect(readModelsTab("#dashboard")).toBe("catalog");
     expect(readModelsTab("#")).toBe("catalog");
     expect(readModelsTab("")).toBe("catalog");
-    // Guard the prefix match: `combosomething` is not the combos hash.
+  });
+
+  /*
+   * The legacy arms match on a `/` delimiter, not a bare prefix. Without these a
+   * later "simplification" to `startsWith("routing")` would hijack any future page
+   * whose id merely begins with one of these words.
+   */
+  test("legacy matching is delimiter-aware, not prefix-aware", () => {
     expect(readModelsTab("#combosomething")).toBe("catalog");
+    expect(readModelsTab("#routings")).toBe("catalog");
+    expect(readModelsTab("#routingthing")).toBe("catalog");
+    expect(readModelsTab("#combos-legacy")).toBe("catalog");
+  });
+
+  /*
+   * `models/combos/extra` is not a registered hash: the resolver normalises it away,
+   * so the tab reader must agree rather than treating it as the Combos tab.
+   */
+  test("a deeper nested hash is not mistaken for a tab", () => {
+    expect(readModelsTab("#models/combos/extra")).toBe("catalog");
+    expect(readModelsTab("#models/routing/extra")).toBe("catalog");
   });
 });
 
@@ -102,4 +121,16 @@ describe("modelsTabHash", () => {
 test("tab and panel dom ids are distinct per tab, so aria-controls cannot collide", () => {
   const ids = MODELS_TABS.flatMap(tab => [modelsTabDomId(tab), modelsPanelDomId(tab)]);
   expect(new Set(ids).size).toBe(ids.length);
+  // Pin the exact shape: the rendered aria-controls/aria-labelledby pair is asserted
+  // against these ids once the strip exists, so a silent rename would desync them.
+  expect(modelsTabDomId("combos")).toBe("models-tab-combos");
+  expect(modelsPanelDomId("combos")).toBe("models-panel-combos");
+});
+
+test("an unregistered deep hash normalises to the bare page, matching readModelsTab", () => {
+  for (const stray of ["models/combos/extra", "models/routing/extra"]) {
+    expect(hashBelongsToPage(stray, "models")).toBe(false);
+    expect(resolveAppHashChange(stray)).toEqual({ page: "models", replaceTo: "models" });
+    expect(readModelsTab(`#${stray}`)).toBe("catalog");
+  }
 });
