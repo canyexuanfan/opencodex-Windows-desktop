@@ -189,7 +189,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     let body: { action?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install", "start", "stop", "uninstall"].includes(String(body.action))) {
-      return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
+      return jsonResponse({ error: "action must be install, start, stop, or uninstall" }, 400);
     }
     if (process.platform !== "win32") return jsonResponse({ error: "Windows tray is only supported on Windows" }, 400);
     try {
