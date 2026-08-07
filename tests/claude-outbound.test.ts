@@ -46,6 +46,11 @@ function dataOnlySse(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
+/** Unspaced counterparts of `sse` / `dataOnlySse` — `data:{...}` is as valid as `data: {...}` (#1170). */
+function unspacedSse(name: string, data: Record<string, unknown>): string {
+  return `event:${name}\ndata:${JSON.stringify(data)}\n\n`;
+}
+
 const DONE_SSE = "data: [DONE]\n\n";
 
 function streamFrom(text: string): ReadableStream<Uint8Array> {
@@ -147,6 +152,48 @@ describe("claude outbound SSE", () => {
       },
     }]);
     expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("#1170: the budgeted raw-frame parser accepts unspaced event/data fields and still balances the budget", async () => {
+    // This drives the offset-based parser inside responsesSseToAnthropicSse, which reserves and
+    // releases translator budget by offset rather than by slicing each line. A spaced-only prefix
+    // check dropped every frame here, producing an empty translation.
+    const frames = [
+      { name: "response.created", data: { response: { id: "resp_1" } } },
+      { name: "response.output_item.added", data: { output_index: 0, item: { type: "message", id: "msg_1", role: "assistant" } } },
+      { name: "response.content_part.added", data: { item_id: "msg_1", output_index: 0, content_index: 0, part: { type: "output_text" } } },
+      { name: "response.output_text.delta", data: { item_id: "msg_1", output_index: 0, content_index: 0, delta: "unspaced" } },
+      { name: "response.output_item.done", data: { output_index: 0, item: { type: "message", id: "msg_1" } } },
+      { name: "response.completed", data: { response: { status: "completed", usage: { input_tokens: 5, output_tokens: 2 } } } },
+    ];
+
+    const spacedBudget = createTestTranslatorBudget();
+    const spaced = await collectEvents(responsesSseToAnthropicSse(
+      streamFrom(frames.map(f => sse(f.name, f.data)).join("")),
+      "claude-ocx-test",
+      { translatorBudget: spacedBudget },
+    ));
+
+    const unspacedBudget = createTestTranslatorBudget();
+    const unspaced = await collectEvents(responsesSseToAnthropicSse(
+      streamFrom(frames.map(f => unspacedSse(f.name, f.data)).join("")),
+      "claude-ocx-test",
+      { translatorBudget: unspacedBudget },
+    ));
+
+    const textOf = (events: { name: string; data: Record<string, any> }[]) => events
+      .filter(e => e.name === "content_block_delta")
+      .map(e => e.data?.delta?.text ?? "")
+      .join("");
+
+    expect(textOf(spaced)).toBe("unspaced");
+    expect(unspaced.map(e => e.name)).toEqual(spaced.map(e => e.name));
+    expect(textOf(unspaced)).toBe(textOf(spaced));
+    // The offset arithmetic must not change accounting: the unspaced path retains exactly what
+    // the spaced path retains. (Both leave a small non-zero residue at stream end; that is
+    // pre-existing behavior of this translator, not something this fix introduces — asserting
+    // equality is the contract that matters here.)
+    expect(unspacedBudget.snapshot().currentBytes).toBe(spacedBudget.snapshot().currentBytes);
   });
 
   test("text + thinking + tool call + completed w/ usage -> exact Anthropic sequence", async () => {
