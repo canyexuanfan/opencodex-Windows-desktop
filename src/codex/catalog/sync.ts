@@ -621,6 +621,11 @@ export function mergeCatalogEntriesFromObservedState({
     if (policy.warningPolicy === "emit") warnComboUnrestorableShadowOnce(slug);
     return false;
   });
+  const freshExactComboEntries = new Set(admittedRoutedEntries.filter(entry => (
+    isExactComboCatalogEntry(entry, exactComboSlugs)
+    && typeof entry.description === "string"
+    && entry.description.startsWith(`Routed via opencodex → ${COMBO_NAMESPACE} (`)
+  )));
   const rank = new Map(featured.map((slug, i) => [slug, i] as const));
   const freshEquivalentKeys = new Set(admittedRoutedEntries.flatMap(entry => (
     typeof entry.slug === "string" ? [slugEquivalenceKey(entry.slug)] : []
@@ -752,6 +757,10 @@ export function mergeCatalogEntriesFromObservedState({
     const slug = typeof entry.slug === "string" ? entry.slug : "";
     if (!slug.includes("/")) return true;
     if (disabledModelKeys.has(slugEquivalenceKey(slug))) return false;
+    // Provider allowlists own provider rows, not a current combo's public alias. Exempt only an
+    // identity from this gather's generated combo projection: provider discovery may supply a
+    // spoofed `owned_by`, and persisted combo-shaped rows are not fresh authority.
+    if (freshExactComboEntries.has(entry)) return true;
     const slash = slug.indexOf("/");
     const provider = slug.slice(0, slash);
     const selected = selectedModelKeysByProvider.get(provider);
@@ -943,7 +952,10 @@ function loadCatalogForRetainedSync(path: string): RawCatalog | null {
   const bundled = isDefaultCatalogPath(path) ? loadBundledCodexCatalog() : null;
   if (bundled) return JSON.parse(JSON.stringify(bundled)) as RawCatalog;
   const active = readCatalog(path);
-  if (active && findNativeTemplate(active)) return active;
+  // A valid configured custom file remains the content authority even when it has no bare native
+  // template. The null-template builder is deliberate; a stale backup must not replace active
+  // custom root metadata merely because the current file contains only routed rows.
+  if (active && (!isDefaultCatalogPath(path) || findNativeTemplate(active))) return active;
   return readCatalog(catalogBackupPathFor(path))
     ?? (isDefaultCatalogPath(path) ? readCatalog(legacyCatalogBackupPath()) : null)
     ?? readCatalog(activeCodexModelsCachePath())

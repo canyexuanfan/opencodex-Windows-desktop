@@ -303,6 +303,42 @@ describe("combo catalog capability intersection", () => {
     }
   });
 
+  test("provider allowlists do not remove a current slashed combo alias", () => {
+    const row = (slug: string, ownedBy: string, sourceProvider = ownedBy) => ({
+      ...nativeTemplate(),
+      slug,
+      owned_by: ownedBy,
+      description: `Routed via opencodex → ${sourceProvider} (${ownedBy}).`,
+      input_modalities: ["text"],
+    });
+    const merged = mergeObservedForTest({
+      catalogModels: [row("vendor/persisted", "combo")],
+      routedEntries: [
+        row("vendor/flash", "combo"),
+        row("vendor/allowed", "vendor"),
+        row("vendor/blocked", "vendor"),
+        row("vendor/spoofed", "combo", "vendor"),
+        row("vendor/stale", "combo"),
+      ],
+      selectedModelsByProvider: new Map([["vendor", new Set(["allowed"])]]),
+      gatheredProviderNames: new Set(["vendor"]),
+      degradedProviderNames: new Set(["vendor"]),
+      exactComboSlugs: new Set([
+        "vendor/flash",
+        "vendor/persisted",
+        "vendor/spoofed",
+      ]),
+      hasPhysicalComboProvider: true,
+    });
+
+    expect(merged.map(entry => entry.slug)).toContain("vendor/flash");
+    expect(merged.map(entry => entry.slug)).toContain("vendor/allowed");
+    expect(merged.map(entry => entry.slug)).not.toContain("vendor/blocked");
+    expect(merged.map(entry => entry.slug)).not.toContain("vendor/spoofed");
+    expect(merged.map(entry => entry.slug)).not.toContain("vendor/persisted");
+    expect(merged.map(entry => entry.slug)).not.toContain("vendor/stale");
+  });
+
   test("preserves exact combo capabilities under an alias", () => {
     const alias = "deepseek-v4-flash";
     const model = deriveComboCatalogModel(

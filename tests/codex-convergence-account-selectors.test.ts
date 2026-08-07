@@ -462,6 +462,58 @@ test("custom-catalog convergence reports network degradation without a fallback 
   }
 });
 
+test("routed-only custom catalogs remain authoritative across convergence and retained sync", async () => {
+  catalogPath = join(codexHome, "custom-catalog.json");
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    'model_catalog_json = "custom-catalog.json"\n',
+  );
+  primeCodexRuntimeFixture();
+  writeFileSync(catalogPath, `${JSON.stringify({
+    root_marker: "active-custom",
+    models: [generatedRoutedEntry("static/old")],
+  }, null, 2)}\n`);
+  const nextConfig: OcxConfig = {
+    port: 10100,
+    defaultProvider: "static",
+    providers: {
+      static: {
+        adapter: "openai-chat",
+        baseUrl: "https://static.example.test/v1",
+        liveModels: false,
+        models: ["fresh"],
+      },
+    },
+  };
+
+  const first = await convergeCatalogDisposition(nextConfig);
+  expect(first).toMatchObject({ status: "committed", notices: [] });
+  let catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as RawCatalog;
+  expect(catalog.root_marker).toBe("active-custom");
+  expect(catalog.models?.some(entry => entry.slug === "static/old")).toBe(false);
+  expect(catalog.models?.some(entry => entry.slug === "static/fresh")).toBe(true);
+  expect(catalog.models?.some(entry => (
+    typeof entry.slug === "string" && !entry.slug.includes("/")
+  ))).toBe(false);
+  expect(existsSync(catalogBackupPathFor(catalogPath))).toBe(false);
+
+  writeFileSync(catalogBackupPathFor(catalogPath), `${JSON.stringify({
+    root_marker: "stale-backup",
+    models: [nativeEntry()],
+  }, null, 2)}\n`);
+  nextConfig.providers.static!.models = ["newer"];
+  const second = await convergeCatalogDisposition(nextConfig);
+  expect(second).toMatchObject({ status: "committed", notices: [] });
+  catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as RawCatalog;
+  expect(catalog.root_marker).toBe("active-custom");
+  expect(catalog.models?.some(entry => entry.slug === "static/fresh")).toBe(false);
+  expect(catalog.models?.some(entry => entry.slug === "static/newer")).toBe(true);
+
+  const convergenceBytes = readFileSync(catalogPath, "utf8");
+  expect((await syncCatalogModels(nextConfig)).catalogWritten).toBe(true);
+  expect(readFileSync(catalogPath, "utf8")).toBe(convergenceBytes);
+});
+
 test("OAuth admission degradation is auth-only and does not masquerade as a network failure", async () => {
   catalogPath = join(codexHome, "custom-catalog.json");
   writeFileSync(

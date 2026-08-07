@@ -468,7 +468,11 @@ export function resolveCatalogSourceForGather(
     const bytes = evidenceSession.readSource(role);
     if (bytes === null) continue;
     const catalog = parseCatalogJson(Buffer.from(bytes).toString("utf8"));
-    if (!catalog || !findNativeTemplate(catalog)) continue;
+    if (!catalog) continue;
+    // Custom catalogs may intentionally contain only routed rows. Keep their existing source
+    // priority (active, then backup/cache) without imposing the default catalog's native-template
+    // requirement; a valid active custom file therefore remains authoritative over stale fallbacks.
+    if (pathKind === "default" && !findNativeTemplate(catalog)) continue;
     return cloneAndDeepFreeze({
       kind: "available" as const,
       source: role,

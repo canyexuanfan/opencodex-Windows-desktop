@@ -236,6 +236,62 @@ describe("observe-only Codex catalog gather caches", () => {
     }
   });
 
+  test("a routed-only active custom catalog stays authoritative over a native backup", () => {
+    const runtime = { command: "/tmp/codex", version: "0.145.0", source: "environment" as const };
+    resetBundledCatalogCacheForTests();
+    setBundledCatalogCacheForTests(runtime, {
+      models: [{
+        slug: "gpt-5.5",
+        base_instructions: "bundled runtime metadata",
+      }],
+    });
+    const evidence = gatherEvidence({
+      "runtime-selection": persistedRuntimeBytes(runtime.command, runtime.version),
+      "active-catalog-merge": Buffer.from(JSON.stringify({
+        root_marker: "active-custom",
+        models: [{
+          slug: "vendor/routed-only",
+          base_instructions: "active routed metadata",
+        }],
+      })),
+      "hashed-backup-fallback": Buffer.from(JSON.stringify({
+        root_marker: "stale-backup",
+        models: [{
+          slug: "gpt-5.5",
+          base_instructions: "backup native metadata",
+        }],
+      })),
+    });
+
+    try {
+      const source = resolveCatalogSourceForGather(evidence, "custom");
+      expect(source.kind).toBe("available");
+      if (source.kind !== "available") return;
+      expect(source.source).toBe("active-catalog-merge");
+      expect(source.catalog.root_marker).toBe("active-custom");
+      expect(source.catalog.models?.map(entry => entry.slug)).toEqual(["vendor/routed-only"]);
+      expect(source.runtimeSupport.kind).toBe("available");
+
+      const fallback = resolveCatalogSourceForGather(gatherEvidence({
+        "runtime-selection": persistedRuntimeBytes(runtime.command, runtime.version),
+        "hashed-backup-fallback": Buffer.from(JSON.stringify({
+          root_marker: "routed-backup",
+          models: [{
+            slug: "vendor/backup-only",
+            base_instructions: "routed backup metadata",
+          }],
+        })),
+      }), "custom");
+      expect(fallback.kind).toBe("available");
+      if (fallback.kind === "available") {
+        expect(fallback.source).toBe("hashed-backup-fallback");
+        expect(fallback.catalog.root_marker).toBe("routed-backup");
+      }
+    } finally {
+      resetBundledCatalogCacheForTests();
+    }
+  });
+
   test("gather consumes a persisted runtime observation and observed disk fallback", () => {
     resetCodexRuntimeResolveCacheForTests();
     resetBundledCatalogCacheForTests();
