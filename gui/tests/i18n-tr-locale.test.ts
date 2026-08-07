@@ -21,9 +21,30 @@ describe("Turkish (tr) i18n locale", () => {
     expect(missingKeys).toEqual([]);
   });
 
-  test("detectInitial handles locale fallback cleanly", () => {
-    const initial = detectInitial();
-    expect(initial).toBeDefined();
-    expect(typeof initial).toBe("string");
+  test("detectInitial detects tr from navigator language", () => {
+    const origNav = globalThis.navigator;
+    try {
+      // @ts-expect-error test isolation mock
+      globalThis.navigator = { language: "tr-TR" };
+      expect(detectInitial()).toBe("tr");
+    } finally {
+      globalThis.navigator = origNav;
+    }
+  });
+
+  test("detectInitial detects tr from stored preference", () => {
+    const origStorage = globalThis.localStorage;
+    try {
+      const store = new Map<string, string>([["ocx-lang", "tr"]]);
+      // @ts-expect-error test isolation mock
+      globalThis.localStorage = {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => store.set(k, v),
+        removeItem: (k: string) => store.delete(k),
+      };
+      expect(detectInitial()).toBe("tr");
+    } finally {
+      globalThis.localStorage = origStorage;
+    }
   });
 });
