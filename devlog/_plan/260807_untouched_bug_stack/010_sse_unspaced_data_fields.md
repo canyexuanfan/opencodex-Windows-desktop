@@ -17,7 +17,7 @@ Strict call sites on `origin/dev@6d04574d0`:
   and `startsWith("data: ", ...)` against a raw frame with byte-budget
   accounting interleaved
 - `src/web-search/parse.ts:190`
-- `src/server/claude-messages.ts:174` — a fifth site, not named in the report
+- `src/server/claude-messages.ts:174` — another site, not named in the report
 
 Lenient call sites that prove the intended behavior:
 

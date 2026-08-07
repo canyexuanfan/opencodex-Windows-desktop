@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
 import { sseFieldOffset, sseFieldValue } from "../src/lib/sse-decoder";
 import { parseSidecarSSE } from "../src/web-search/parse";
+import { collectChatCompletion } from "../src/chat/outbound";
+import { collectAnthropicMessage } from "../src/claude/outbound";
+import { createTranslatorBudget } from "../src/lib/translator-budget";
 import type { AdapterEvent } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -13,6 +16,17 @@ const createOpenAIChatAdapter = (...args: Parameters<typeof createOpenAIChatAdap
   withTestTranslatorBudget(createOpenAIChatAdapterProduction(...args));
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
+
+const sseEncoder = new TextEncoder();
+
+function streamOf(body: string): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(sseEncoder.encode(body));
+      controller.close();
+    },
+  });
+}
 
 async function collect(gen: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
   const out: AdapterEvent[] = [];
@@ -32,11 +46,17 @@ describe("sseFieldValue", () => {
     expect(sseFieldValue("data:  two-spaces", "data")).toBe(" two-spaces");
   });
 
-  test("returns null for a different field, a bare prefix, or a comment", () => {
+  test("returns null for a different field or a comment", () => {
     expect(sseFieldValue("event: x", "data")).toBeNull();
     expect(sseFieldValue("database: x", "data")).toBeNull();
-    expect(sseFieldValue("data", "data")).toBeNull();
     expect(sseFieldValue(": keepalive", "data")).toBeNull();
+  });
+
+  test("a colonless field line is an empty value, matching the decoder", () => {
+    // decodeServerSentEvents treats `colon < 0` as valueStart = line.length, i.e. an empty
+    // value rather than a non-match. These helpers must not disagree with it.
+    expect(sseFieldValue("data", "data")).toBe("");
+    expect(sseFieldValue("event", "event")).toBe("");
   });
 
   test("an empty value is a value, not an absent field", () => {
@@ -61,8 +81,14 @@ describe("sseFieldOffset", () => {
     expect(sseFieldOffset(frame, 25, frame.length, "data")).toBe(-1);
   });
 
+  test("a colonless field line yields the end-of-line offset (empty value)", () => {
+    const bare = "data";
+    expect(sseFieldOffset(bare, 0, bare.length, "data")).toBe(bare.length);
+    expect(bare.slice(sseFieldOffset(bare, 0, bare.length, "data"), bare.length)).toBe("");
+  });
+
   test("agrees with sseFieldValue on the same line", () => {
-    for (const line of ["data: x", "data:x", "data:", "data:  y", "event:z"]) {
+    for (const line of ["data: x", "data:x", "data:", "data:  y", "event:z", "data", "database: x"]) {
       const offset = sseFieldOffset(line, 0, line.length, "data");
       const value = sseFieldValue(line, "data");
       if (value === null) expect(offset).toBe(-1);
@@ -122,5 +148,45 @@ describe("web-search sidecar parser (#1170)", () => {
     const unspaced = await parseSidecarSSE(sseStream(frames("data:")));
     expect(spaced.text).toContain("answer");
     expect(unspaced.text).toBe(spaced.text);
+  });
+});
+
+describe("chat/outbound collectChatCompletion (#1170)", () => {
+  const frames = (prefix: string) => [
+    `${prefix}{"choices":[{"index":0,"delta":{"content":"collected"}}]}\n\n`,
+    `${prefix}{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n`,
+    `${prefix}[DONE]\n\n`,
+  ].join("");
+
+  test("accepts unspaced data frames", async () => {
+    const spaced = await collectChatCompletion(streamOf(frames("data: ")), "m", createTranslatorBudget());
+    const unspaced = await collectChatCompletion(streamOf(frames("data:")), "m", createTranslatorBudget());
+
+    const textOf = (r: Record<string, unknown>) =>
+      ((r.choices as { message?: { content?: string } }[] | undefined)?.[0]?.message?.content) ?? "";
+    expect(textOf(spaced)).toBe("collected");
+    expect(textOf(unspaced)).toBe(textOf(spaced));
+  });
+});
+
+describe("claude/outbound collectAnthropicMessage (#1170)", () => {
+  // sep is "" for the unspaced variant and " " for the spaced one, applied to BOTH fields.
+  const frames = (sep: string) => [
+    `event:${sep}message_start\ndata:${sep}{"type":"message_start","message":{"usage":{"input_tokens":2}}}\n\n`,
+    `event:${sep}content_block_start\ndata:${sep}{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n`,
+    `event:${sep}content_block_delta\ndata:${sep}{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"claude"}}\n\n`,
+    `event:${sep}content_block_stop\ndata:${sep}{"type":"content_block_stop","index":0}\n\n`,
+    `event:${sep}message_stop\ndata:${sep}{"type":"message_stop"}\n\n`,
+  ].join("");
+
+  test("accepts unspaced event and data fields", async () => {
+    const spaced = await collectAnthropicMessage(streamOf(frames(" ")), "claude-test", createTranslatorBudget());
+    const unspaced = await collectAnthropicMessage(streamOf(frames("")), "claude-test", createTranslatorBudget());
+
+    const textOf = (r: Record<string, unknown>) =>
+      ((r.content as { type?: string; text?: string }[] | undefined) ?? [])
+        .filter(p => p.type === "text").map(p => p.text ?? "").join("");
+    expect(textOf(spaced)).toBe("claude");
+    expect(textOf(unspaced)).toBe(textOf(spaced));
   });
 });

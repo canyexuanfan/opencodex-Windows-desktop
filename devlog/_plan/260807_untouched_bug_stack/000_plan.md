@@ -64,7 +64,7 @@ Fixing only the reported site would leave five live paths broken.
 
 Implementation phases, one decade doc each, one PABCD cycle each:
 
-- `010` — #1170 unspaced SSE field parsing (5 call sites, 1 shared primitive)
+- `010` — #1170 unspaced SSE field parsing (6 call sites, 2 shared primitives)
 - `020` — #1100 routed reasoning-effort propagation
 - `030` — #1156 Windows ACL harden envelope
 - `040` — #557 replacement: npm cache preflight + log sanitization

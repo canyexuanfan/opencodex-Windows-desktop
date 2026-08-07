@@ -27,6 +27,10 @@ export type SseRecord =
 export function sseFieldValue(line: string, field: string): string | null {
   if (!line.startsWith(field)) return null;
   const rest = line.slice(field.length);
+  // A colonless field line is the field with an empty value per the SSE rules, and
+  // `decodeServerSentEvents` below treats it that way (`colon < 0` -> valueStart = line.length).
+  // These helpers must not disagree with the decoder they mirror.
+  if (rest.length === 0) return "";
   if (!rest.startsWith(":")) return null;
   return rest.startsWith(": ") ? rest.slice(2) : rest.slice(1);
 }
@@ -42,7 +46,9 @@ export function sseFieldValue(line: string, field: string): string | null {
 export function sseFieldOffset(text: string, lineStart: number, lineEnd: number, field: string): number {
   if (!text.startsWith(field, lineStart)) return -1;
   let valueStart = lineStart + field.length;
-  if (valueStart >= lineEnd || text[valueStart] !== ":") return -1;
+  // Colonless field line: empty value, positioned at end-of-line (matches the decoder).
+  if (valueStart >= lineEnd) return lineEnd;
+  if (text[valueStart] !== ":") return -1;
   valueStart += 1;
   if (valueStart < lineEnd && text[valueStart] === " ") valueStart += 1;
   return valueStart;
