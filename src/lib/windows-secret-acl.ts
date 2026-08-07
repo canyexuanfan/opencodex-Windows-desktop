@@ -229,9 +229,23 @@ export interface HardenOptions {
  * timeout retry and the diagnostic verification pass (no per-attempt fresh budget:
  * loadConfig hardens dir+config+auth sequentially, so per-attempt budgets stack
  * into multi-minute startup stalls). Override with OPENCODEX_ACL_TIMEOUT_MS
- * (integer ms, clamped to [1000, 60000]; invalid values fall back to 5000).
+ * (integer ms, clamped to [1000, 60000]; invalid values fall back to 30000).
+ *
+ * The default was 5s until #1156. One envelope has to cover the whole sequence —
+ * `/grant:r`, `/inheritance:r`, `/remove:g`, plus the conditional `/findsid`
+ * verification — and on machines where icacls is slow (Defender real-time scanning,
+ * roaming profiles, a domain-controller round trip) 5s ran out mid-sequence. The
+ * harden then failed closed, the native-main owner published a permanent
+ * `unavailable`, and every native request returned 503 until restart. A slow start
+ * is recoverable; that is not.
+ *
+ * The cost is honest and worth stating: because loadConfig hardens three paths
+ * sequentially, the timeout-path worst case at load is ~90s, and the owner path
+ * (initial call + one recovery) is ~60.25s. Both require icacls to be
+ * pathologically slow on every call; a healthy machine finishes in milliseconds
+ * and sees no change. Operators who prefer the old bound can set the env override.
  */
-const HARDEN_DEADLINE_DEFAULT_MS = 5_000;
+const HARDEN_DEADLINE_DEFAULT_MS = 30_000;
 const HARDEN_DEADLINE_MIN_MS = 1_000;
 const HARDEN_DEADLINE_MAX_MS = 60_000;
 
