@@ -1,38 +1,13 @@
 name: Maintainer port PR 1039
 
 on:
-  push:
-    branches:
-      - maint/1039-host-circuit
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  port:
-    if: github.actor != 'github-actions[bot]'
+  noop:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Port original PR commit
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin pull/1039/head:refs/remotes/origin/pr-1039
-          if git cherry-pick 199382912964810cb16dc3995f3ad76b831faaf0; then
-            git push origin HEAD:maint/1039-host-circuit
-          else
-            echo '--- CHERRY-PICK CONFLICTS ---'
-            git status --short
-            git diff --name-only --diff-filter=U
-            for f in $(git diff --name-only --diff-filter=U); do
-              echo "--- $f ---"
-              git checkout --conflict=merge -- "$f" || true
-              grep -n -C 8 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
-            done
-            exit 1
-          fi
+      - run: echo "Port completed; this one-shot workflow is disabled."
