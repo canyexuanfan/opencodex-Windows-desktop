@@ -1750,6 +1750,7 @@ export const en = {
   "cws.allCombos": "All combos",
   "cws.copyModel": "Copy id",
   "cws.copied": "Copied",
+  "cws.tabsLabel": "Combo detail sections",
   "cws.tab.config": "Config",
   "cws.tab.about": "About",
   "cws.strategy": "Strategy",

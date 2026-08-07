@@ -182,6 +182,8 @@ export default function RoutingProfiles({
   const [running, setRunning] = useState(false);
   const selectedRef = useRef<RoutingProfileDto | null>(null);
   const loadGenerationRef = useRef(0);
+  /** Owned by `load` so every entry point — mount, Retry, save, delete — is cancellable. */
+  const loadAbortRef = useRef<AbortController | null>(null);
   const dryRunGenerationRef = useRef(0);
 
   const notify = useCallback((message: string, ok: boolean) => {
@@ -210,14 +212,26 @@ export default function RoutingProfiles({
   }, [clearDryRun]);
 
   const load = useCallback(async (preferredId?: string) => {
+    /*
+     * `load` owns the controller, not the effect that happens to call it.
+     *
+     * There are four entry points — the mount effect, Retry, post-save, and
+     * post-delete — so an effect-local controller would cancel only the first and let
+     * a Retry or a mutation reload keep running after the tab hides. Generation
+     * invalidation stops the state write but not the network work.
+     */
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const { signal } = controller;
     const generation = ++loadGenerationRef.current;
     setLoadError("");
     try {
       const [profilesRes, analyticsRes, configRes, modelsRes] = await Promise.all([
-        fetch(`${apiBase}/api/routing-profiles`),
-        fetch(`${apiBase}/api/routing-analytics`),
-        fetch(`${apiBase}/api/config`),
-        fetch(`${apiBase}/api/models`),
+        fetch(`${apiBase}/api/routing-profiles`, { signal }),
+        fetch(`${apiBase}/api/routing-analytics`, { signal }),
+        fetch(`${apiBase}/api/config`, { signal }),
+        fetch(`${apiBase}/api/models`, { signal }),
       ]);
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
       const [profilesJson, analyticsJson, configJson, modelsJson] = await Promise.all([
@@ -255,19 +269,42 @@ export default function RoutingProfiles({
       }
     } catch (error) {
       if (generation !== loadGenerationRef.current) return;
+      // An aborted supersede or deactivate is not a failure worth showing.
+      if (signal.aborted) return;
       setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      // Clear only if this request still owns the ref; a newer load may have replaced it.
+      if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [apiBase, clearDryRun]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Hidden: cancel work in flight and invalidate its generation so a late resolve
+      // cannot write into a panel nobody is looking at.
+      loadAbortRef.current?.abort();
+      loadGenerationRef.current++;
+      return;
+    }
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      // Unmounting counts too — leaving Models entirely must not strand a request.
+      /*
+       * Reading the refs at cleanup time is the point, not a mistake: whatever load is
+       * in flight NOW is what has to be cancelled, and the generation counter has to
+       * move past whatever value that load captured. A snapshot taken when the effect
+       * ran would cancel a stale controller and leave the live one running.
+       */
+      loadAbortRef.current?.abort();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: the latest generation is what must be invalidated
+      loadGenerationRef.current++;
+    };
   }, [active, load]);
 
   /*
    * Report the count up to the tab strip from an effect keyed on the list length, not
-   * during render. Full cancellation ownership for `load` lands with wp04.
+   * during render.
    */
   useEffect(() => {
     onCountChange?.(profiles.length);

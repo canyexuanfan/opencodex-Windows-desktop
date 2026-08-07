@@ -1743,6 +1743,7 @@ export const ko: Record<TKey, string> = {
   "cws.allCombos": "모든 콤보",
   "cws.copyModel": "ID 복사",
   "cws.copied": "복사됨",
+  "cws.tabsLabel": "콤보 상세 섹션",
   "cws.tab.config": "설정",
   "cws.tab.about": "정보",
   "cws.strategy": "전략",

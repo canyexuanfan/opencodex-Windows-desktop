@@ -1826,6 +1826,7 @@ export const ru: Record<TKey, string> = {
   "cws.allCombos": "Все комбо",
   "cws.copyModel": "Копировать id",
   "cws.copied": "Скопировано",
+  "cws.tabsLabel": "Разделы деталей комбо",
   "cws.tab.config": "Конфигурация",
   "cws.tab.about": "О комбо",
   "cws.strategy": "Стратегия",

@@ -1784,6 +1784,7 @@ export const ja: Record<TKey, string> = {
   "cws.copyModel": "ID をコピー",
   "cws.copied": "コピーしました",
   "cws.renamed": "{from} を {to} に変更しました。",
+  "cws.tabsLabel": "コンボ詳細セクション",
   "cws.tab.config": "設定",
   "cws.tab.about": "概要",
   "cws.strategy": "ストラテジー",

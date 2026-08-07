@@ -16,6 +16,16 @@ import { clampedNumberInput } from "./combo-workspace-utils";
 
 type DetailTab = "config" | "about";
 
+const DETAIL_TABS: readonly DetailTab[] = ["config", "about"];
+
+/*
+ * A combo id can be any string, so it cannot go in a DOM id without escaping. These
+ * ids only have to be unique within one mounted DetailPanel — the workspace renders a
+ * single detail at a time, keyed by combo id — so the tab name alone is enough.
+ */
+const detailTabDomId = (tab: DetailTab) => `cws-detail-tab-${tab}`;
+const detailPanelDomId = (tab: DetailTab) => `cws-detail-panel-${tab}`;
+
 export function DetailPanel({
   baseline,
   isCreate = false,
@@ -47,6 +57,24 @@ export function DetailPanel({
 }) {
   const t = useT();
   const [tab, setTab] = useState<DetailTab>("config");
+
+  /*
+   * Arrow/Home/End traversal, matching ProviderDetails. Without it the tablist is two
+   * ordinary tab stops, which is not what a `tablist` role promises.
+   */
+  const onDetailTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number;
+    if (event.key === "ArrowRight") next = (index + 1) % DETAIL_TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + DETAIL_TABS.length) % DETAIL_TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = DETAIL_TABS.length - 1;
+    else return;
+    event.preventDefault();
+    setTab(DETAIL_TABS[next]!);
+    event.currentTarget.parentElement
+      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]
+      ?.focus();
+  }, []);
   const [draft, setDraft] = useState<ComboItem>(baseline);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -172,28 +200,32 @@ export function DetailPanel({
         below, so this is a tab set wearing pill styling, not a filter. The
         `radiogroup` shape used by `.models-segmented` would misdescribe the widget.
       */}
-      <div className="segmented combos-workspace-segmented" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "config"}
-          className={`btn btn-sm ${tab === "config" ? "btn-primary" : "btn-ghost"}`}
-          onClick={() => setTab("config")}
-        >
-          {t("cws.tab.config")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "about"}
-          className={`btn btn-sm ${tab === "about" ? "btn-primary" : "btn-ghost"}`}
-          onClick={() => setTab("about")}
-        >
-          {t("cws.tab.about")}
-        </button>
+      <div className="segmented combos-workspace-segmented" role="tablist" aria-label={t("cws.tabsLabel")}>
+        {DETAIL_TABS.map((candidate, index) => (
+          <button
+            key={candidate}
+            type="button"
+            role="tab"
+            id={detailTabDomId(candidate)}
+            aria-selected={tab === candidate}
+            aria-controls={detailPanelDomId(candidate)}
+            // Roving tabindex: the tablist is one tab stop, and arrows move within it.
+            tabIndex={tab === candidate ? 0 : -1}
+            className={`btn btn-sm ${tab === candidate ? "btn-primary" : "btn-ghost"}`}
+            onClick={() => setTab(candidate)}
+            onKeyDown={event => onDetailTabKeyDown(event, index)}
+          >
+            {t(candidate === "config" ? "cws.tab.config" : "cws.tab.about")}
+          </button>
+        ))}
       </div>
 
-      <div className="combos-workspace-tab-content" role="tabpanel">
+      <div
+        className="combos-workspace-tab-content"
+        role="tabpanel"
+        id={detailPanelDomId(tab)}
+        aria-labelledby={detailTabDomId(tab)}
+      >
         {tab === "config" ? (
           <div className="cwi-form-grid">
             <div className="cwi-field">
