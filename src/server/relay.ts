@@ -227,7 +227,7 @@ export function relaySseWithFailedTail(
           if (result !== "buffered") return;
         }
       } catch (err) {
-        let partial = new Uint8Array(0);
+        let partial: Uint8Array = new Uint8Array(0);
         try {
           partial = terminalBoundary.finish();
         } catch {
