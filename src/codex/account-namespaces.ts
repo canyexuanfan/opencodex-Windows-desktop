@@ -73,6 +73,7 @@ function claimNamespace(requested: string, used: Set<string>): string {
   return namespace;
 }
 
+/** Collect every public namespace that a generated account selector must not claim. */
 function occupiedNamespaces(
   config: Pick<OcxConfig, "combos" | "providers" | "routingProfiles">,
 ): Set<string> {

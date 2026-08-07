@@ -1,5 +1,6 @@
 import type { OcxRoutingProfileConfig } from "../types";
 
+/** Canonical public namespace reserved for routing-policy model ids. */
 export const POLICY_NAMESPACE = "policy";
 
 /** Public namespace prefixes claimed by slash-qualified routing-profile aliases. */
