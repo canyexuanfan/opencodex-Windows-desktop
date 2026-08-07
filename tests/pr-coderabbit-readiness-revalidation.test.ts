@@ -39,6 +39,9 @@ describe("CodeRabbit readiness revalidation", () => {
     expect(script).toContain("const isCodeRabbit = commenter === CODE_RABBIT_LOGIN");
     expect(script).toContain("!isCodeRabbit");
     expect(script).toContain("isCanonicalMaintainer");
+    expect(script).toMatch(
+      /!isPrComment\s*\|\|\s*\(\s*!isCodeRabbit\s*&&\s*\(\s*!\[[\s\S]{0,300}?\.includes\(association\)\s*\|\|\s*!isCanonicalMaintainer\s*\)\s*\)/,
+    );
     expect(script).toContain("unresolvedFindingsClaim");
   });
 });
