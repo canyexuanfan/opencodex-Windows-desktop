@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
+import { visionReasoningLabel } from "../i18n/vision-reasoning-labels";
 import { Select } from "../ui";
 import { formatNamespacedModelId } from "../provider-icons";
 import { navigateHash } from "../hash-routing";
@@ -238,7 +239,7 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
 
 export function DashboardSidecarPanels({ d }: { d: Dash }) {
   const {
-    t, settings, settingsSaving, toggleCodexAutoStart,
+    locale, t, settings, settingsSaving, toggleCodexAutoStart,
     sidecar, sidecarSaving, sidecarModels, models, saveSidecar,
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
@@ -300,7 +301,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               />
               <Select
                 value={visionReasoning}
-                options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: value }))}
+                options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: visionReasoningLabel(locale, value) }))}
                 onChange={reasoning => {
                   void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
                 }}
