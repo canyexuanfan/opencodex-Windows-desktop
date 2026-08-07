@@ -2475,6 +2475,27 @@ describe("provider management validation", () => {
       expect(badSetAll.status).toBe(400);
       const afterBadSetAll = await fetch(new URL("/api/provider-context-caps", server.url));
       expect(await afterBadSetAll.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A provider field with a wrongly-typed enabled must not fall through to the global
+      // value branch and change the global default.
+      const badEnabled = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: "yes", value: 700_000 }),
+      });
+      expect(badEnabled.status).toBe(400);
+      const afterBadEnabled = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadEnabled.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A provider update combined with setAll is rejected instead of silently ignoring setAll.
+      const mixedPayload = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, setAll: true }),
+      });
+      expect(mixedPayload.status).toBe(400);
+      const afterMixedPayload = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterMixedPayload.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
     } finally {
       await server.stop(true);
     }

@@ -641,6 +641,19 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       catalogRefresh,
     });
 
+    // Reject malformed and mixed payloads before branch selection: `provider` and `enabled`
+    // must appear together with their expected types, and provider updates cannot be
+    // combined with `setAll` (which would otherwise be silently ignored).
+    const hasProviderFields = Object.hasOwn(body, "provider") || Object.hasOwn(body, "enabled");
+    if (hasProviderFields) {
+      if (typeof body.provider !== "string" || typeof body.enabled !== "boolean") {
+        return jsonResponse({ error: "provider and enabled are required together" }, 400);
+      }
+      if (Object.hasOwn(body, "setAll")) {
+        return jsonResponse({ error: "setAll cannot be combined with provider updates" }, 400);
+      }
+    }
+
     // Branch 1: per-provider toggle (checked first: a per-provider request may carry an
     // explicit `value`, which must never fall through to the global-value branch). Enable
     // writes the current global default unless an explicit per-provider value is supplied;
