@@ -162,11 +162,33 @@ export function DetailPanel({
 
       {msg && <Notice tone={msg.ok ? "ok" : "err"}>{msg.text}</Notice>}
 
-      <div className="combos-workspace-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === "config"} className={`combos-workspace-tab${tab === "config" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("config")}>
+      {/*
+        Pills, not an underline row. Combos is a tab of the Models page now, so an
+        underline strip here would sit directly under the page strip — two rows of the
+        same visual language stacked, which reads as two navigation levels rather than
+        one page's facets.
+
+        The roles stay `tablist`/`tab`/`aria-selected`: these control a real tabpanel
+        below, so this is a tab set wearing pill styling, not a filter. The
+        `radiogroup` shape used by `.models-segmented` would misdescribe the widget.
+      */}
+      <div className="segmented combos-workspace-segmented" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "config"}
+          className={`btn btn-sm ${tab === "config" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setTab("config")}
+        >
           {t("cws.tab.config")}
         </button>
-        <button type="button" role="tab" aria-selected={tab === "about"} className={`combos-workspace-tab${tab === "about" ? " combos-workspace-tab--active" : ""}`} onClick={() => setTab("about")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "about"}
+          className={`btn btn-sm ${tab === "about" ? "btn-primary" : "btn-ghost"}`}
+          onClick={() => setTab("about")}
+        >
           {t("cws.tab.about")}
         </button>
       </div>

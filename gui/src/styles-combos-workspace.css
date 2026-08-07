@@ -217,34 +217,30 @@
   flex-wrap: wrap;
 }
 
-.combos-workspace-tabs {
-  display: flex;
-  gap: 4px;
+/*
+  Pill group for the detail panel's Config/About switch. Mirrors `.models-segmented`;
+  `.segmented` has no standalone declaration in this codebase, so every use pairs it
+  with a concrete class. It replaced an underline row that would have stacked under the
+  Models page tab strip.
+*/
+.combos-workspace-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  padding: 2px;
+  gap: 2px;
   margin-bottom: 16px;
-  border-bottom: 1px solid var(--border-soft);
 }
 
-.combos-workspace-tab {
-  appearance: none;
+.combos-workspace-segmented .btn {
+  border-radius: var(--radius-pill);
+  min-width: 0;
+  min-height: 0;
+  padding: 4px 12px;
   border: none;
-  background: none;
-  font: inherit;
-  font-size: var(--text-control);
-  font-weight: 500;
-  color: var(--muted);
-  padding: 8px 12px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-}
-
-.combos-workspace-tab:hover {
-  color: var(--text);
-}
-
-.combos-workspace-tab.combos-workspace-tab--active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
+  font-size: var(--text-label);
+  line-height: inherit;
 }
 
 .combos-workspace-tab-content {
