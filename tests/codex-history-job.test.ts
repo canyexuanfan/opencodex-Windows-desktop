@@ -114,6 +114,13 @@ test("the failure wording names the real reason instead of always blaming the Co
 
   const timeout = { kind: "failed", reason: "timeout", message: "history_worker_timeout" } as const;
   expect(describeHistoryJobFailure(timeout, "restore")).toContain("timed out");
+
+  // Callers flag failure as "not converged", which also covers these two
+  // kinds; the wording must name them rather than returning undefined.
+  const skipped = { kind: "skipped" } as const;
+  expect(describeHistoryJobFailure(skipped, "recover-legacy")).toContain("skipped");
+  const converged = { kind: "converged", rows: 0, files: 0 } as const;
+  expect(describeHistoryJobFailure(converged, "apply")).toContain("no failure");
 });
 
 test("skip resolves without spawning a thread and writes nothing", async () => {

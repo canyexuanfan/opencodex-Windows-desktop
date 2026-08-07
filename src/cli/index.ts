@@ -6,7 +6,6 @@ import {
   describeHistoryJobFailure,
   resolveCodexHistoryJobTarget,
   runCodexHistoryJob,
-  type CodexHistoryJobOutcome,
 } from "../codex/history-job";
 import { reconcileJournal } from "../codex/journal";
 import {
@@ -904,10 +903,7 @@ async function handleRecoverHistory() {
     : { rows: 0, files: 0, failed: true as const };
   if (r.failed) {
     console.error(
-      `⚠️  Recovery SKIPPED: ${describeHistoryJobFailure(
-        outcome as Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
-        "recover-legacy",
-      )}`,
+      `⚠️  Recovery SKIPPED: ${describeHistoryJobFailure(outcome, "recover-legacy")}`,
     );
     process.exit(1);
   }

@@ -145,10 +145,19 @@ export function deriveCodexHistoryOperation(intent: {
  * denial, or a dead worker is a different problem with a different remedy.
  */
 export function describeHistoryJobFailure(
-  outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
+  outcome: CodexHistoryJobOutcome,
   surface: "apply" | "restore" | "recover-legacy",
   legacyMode = false,
 ): string {
+  // Callers only invoke this after observing a failure flag, but that flag is
+  // derived from "not converged", which also covers "skipped". Naming those
+  // two kinds keeps a widened or miscast call site from printing `undefined`.
+  if (outcome.kind === "skipped") {
+    return "the history operation was skipped; no failure was recorded.";
+  }
+  if (outcome.kind === "converged") {
+    return "the history job reported no failure; run 'ocx doctor' if this is unexpected.";
+  }
   if (outcome.kind === "blocked") {
     switch (outcome.reason) {
       case "busy":

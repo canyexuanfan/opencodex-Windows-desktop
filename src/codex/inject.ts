@@ -1293,7 +1293,16 @@ function failedHistoryRestoreFromOutcome(
         );
       case "desired_disabled":
       case "desired_enabled":
-        return failedHistoryRestore();
+        // Unreachable today: the async restore caller intercepts both desired-
+        // state reasons before this mapper runs. If that ever changes, name
+        // the actual cause instead of falling back to the lock wording this
+        // function exists to get rid of (issue #1191).
+        return failedHistoryRestore(
+          undefined,
+          outcome.reason === "desired_disabled"
+            ? "Codex integration is disabled, so the history operation was skipped."
+            : "Codex integration is enabled, so the history operation was skipped.",
+        );
     }
   }
   if (outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
@@ -1630,11 +1639,10 @@ export function getCodexConfigPath(): string {
  * reason names itself instead of blaming the Codex app/IDE.
  */
 function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legacyMode: boolean): string {
-  const failure = outcome as Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>;
   const headline = legacyMode
     ? "Codex resume history sync SKIPPED"
     : outcome.kind === "blocked" && outcome.reason === "busy"
       ? "Codex resume history migration deferred"
       : "Codex resume history NOT changed";
-  return `  ⚠️ ${headline}: ${describeHistoryJobFailure(failure, "apply", legacyMode)}\n`;
+  return `  ⚠️ ${headline}: ${describeHistoryJobFailure(outcome, "apply", legacyMode)}\n`;
 }
