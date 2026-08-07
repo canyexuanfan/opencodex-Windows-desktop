@@ -30,7 +30,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # 1) GUI and server use the same rank-aware clamp semantics.
           p = Path('gui/src/pages/dashboard-shared.ts')
           s = p.read_text()
           old = '''/** Preserve a supported value; otherwise clamp to the highest rung the selected model advertises. */
@@ -64,7 +63,6 @@ jobs:
               raise SystemExit('dashboard clamp block not found')
           p.write_text(s.replace(old, new))
 
-          # 2) Pin gapped/high-floor ladders in GUI tests.
           p = Path('gui/tests/vision-reasoning-contract.test.ts')
           s = p.read_text()
           marker = '''test("unknown vision model metadata stays permissive", () => {
@@ -85,58 +83,50 @@ jobs:
               raise SystemExit('gui test marker not found')
           p.write_text(s.replace(marker, addition))
 
-          # 3) Native management rows expose only the vision-supported subset (never ultra).
           p = Path('src/server/management/model-rows.ts')
           s = p.read_text()
           import_marker = 'import { providerContextCap } from "../../providers/context-cap";\n'
           if 'isVisionReasoningEffort' not in s:
               s = s.replace(import_marker, import_marker + 'import { isVisionReasoningEffort } from "../../reasoning-effort";\n')
-          s = s.replace(
-              'reasoningEfforts: nativeReasoningEfforts(row.slug),',
-              'reasoningEfforts: nativeReasoningEfforts(row.slug).filter(isVisionReasoningEffort),',
-          )
-          p.write_text(s)
+          old_row = 'reasoningEfforts: nativeReasoningEfforts(row.slug),'
+          if old_row not in s:
+              raise SystemExit('native reasoning row not found')
+          p.write_text(s.replace(old_row, 'reasoningEfforts: nativeReasoningEfforts(row.slug).filter(isVisionReasoningEffort),'))
 
-          # 4) Backend regression: Sol/Terra must not advertise ultra, and management request reaches route.
           p = Path('tests/vision-reasoning-contract.test.ts')
           s = p.read_text()
-          s = s.replace(
-              '''    const luna = rows.find(row => row.native === true && row.id === "gpt-5.6-luna") as
-                | { reasoningEfforts?: string[] }
-                | undefined;
+          old_rows = '''    const luna = rows.find(row => row.native === true && row.id === "gpt-5.6-luna") as
+              | { reasoningEfforts?: string[] }
+              | undefined;
 
-              expect(mini?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
-              expect(luna?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);''',
-              '''    const luna = rows.find(row => row.native === true && row.id === "gpt-5.6-luna") as
-                | { reasoningEfforts?: string[] }
-                | undefined;
-              const sol = rows.find(row => row.native === true && row.id === "gpt-5.6-sol") as
-                | { reasoningEfforts?: string[] }
-                | undefined;
+            expect(mini?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+            expect(luna?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);'''
+          new_rows = '''    const luna = rows.find(row => row.native === true && row.id === "gpt-5.6-luna") as
+              | { reasoningEfforts?: string[] }
+              | undefined;
+            const sol = rows.find(row => row.native === true && row.id === "gpt-5.6-sol") as
+              | { reasoningEfforts?: string[] }
+              | undefined;
 
-              expect(mini?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
-              expect(luna?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
-              expect(sol?.reasoningEfforts).not.toContain("ultra");'''
-          )
-          s = s.replace(
-              'headers: { "content-type": "application/json" },',
-              'headers: { "content-type": "application/json", host: "localhost" },',
-              1,
-          )
+            expect(mini?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+            expect(luna?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+            expect(sol?.reasoningEfforts).not.toContain("ultra");'''
+          if old_rows not in s:
+              raise SystemExit('backend row assertions not found')
+          s = s.replace(old_rows, new_rows)
+          header = 'headers: { "content-type": "application/json" },'
+          if header not in s:
+              raise SystemExit('management request headers not found')
+          s = s.replace(header, 'headers: { "content-type": "application/json", host: "localhost" },', 1)
           p.write_text(s)
 
-          # 5) Dedicated accessible/localized label for the vision selector.
           p = Path('gui/src/pages/dashboard-overview-sections.tsx')
           s = p.read_text()
-          needle = '''                value={visionReasoning}
-                options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: value }))}
-                onChange={reasoning => { void saveSidecar({ vision: { reasoning: reasoning as typeof visionReasoning } }); }}
-                disabled={!sidecar || sidecarSaving}
-                label={t("dash.searchReasoning")}'''
-          repl = needle.replace('t("dash.searchReasoning")', 't("dash.visionReasoning")')
-          if needle not in s:
-              raise SystemExit('vision selector block not found')
-          p.write_text(s.replace(needle, repl))
+          anchor = 'value={visionReasoning}'
+          start = s.index(anchor)
+          old_label = 'label={t("dash.searchReasoning")}'
+          label_at = s.index(old_label, start)
+          p.write_text(s[:label_at] + 'label={t("dash.visionReasoning")}' + s[label_at + len(old_label):])
 
           translations = {
               'gui/src/i18n/en.ts': 'Vision reasoning effort',
@@ -161,12 +151,9 @@ jobs:
                   raise SystemExit(f'searchReasoning key not found in {path}')
               p.write_text(''.join(lines))
 
-          # 6) Product-name nit.
           p = Path('docs-site/src/content/docs/zh-cn/guides/vision-sidecar-reasoning.md')
-          s = p.read_text()
-          p.write_text(s.replace('opencodex', 'OpenCodex'))
+          p.write_text(p.read_text().replace('opencodex', 'OpenCodex'))
 
-          # One-shot runner must not survive the fix commit.
           Path('.github/workflows/maintainer-vision-reasoning-fix.yml').unlink()
           PY
 
