@@ -314,12 +314,14 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.4-mini",
+        model: visionModel,
         backend: vs.backend,
-        reasoning: vs.reasoning ?? "low",
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
@@ -361,7 +363,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       visionReasoningTouched = true;
       const model = typeof body.vision.model === "string"
         ? (body.vision.model === "" ? "gpt-5.4-mini" : body.vision.model)
-        : (config.visionSidecar?.model ?? "gpt-5.4-mini");
+        : (config.visionSidecar?.model || "gpt-5.4-mini");
       const sourceReasoning = body.vision.reasoning ?? config.visionSidecar?.reasoning;
       normalizedVisionReasoning = sourceReasoning === undefined
         ? undefined
@@ -401,13 +403,15 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.4-mini",
+        model: visionModel,
         backend: vs.backend,
-        reasoning: vs.reasoning ?? "low",
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
