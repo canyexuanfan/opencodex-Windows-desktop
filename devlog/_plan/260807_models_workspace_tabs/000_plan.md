@@ -91,12 +91,17 @@ Dependency-ordered. Each phase is one full PABCD cycle and one commit series.
 | Phase | Doc | Deliverable | Depends on |
 |-------|-----|-------------|------------|
 | wp01 | `010_routing_layer.md` | Nested hash contract, legacy redirects, `Page` union, tests | — |
-| wp02 | `020_models_shell.md` | Tab strip, lazy-mount panels, catalog tab body | wp01 |
-| wp03 | `030_combos_embed.md` | Combos as a panel: full-bleed reconciliation, inner tabs demoted, `active` gating | wp02 |
-| wp04 | `040_routing_embed_and_sidebar.md` | Routing as a panel, sidebar cleanup, i18n, closing gates | wp02 |
+| wp02 | `020_models_shell.md` | Union removal, tab strip, lazy-mount panels, Routing NAV row, tab i18n, full-bleed CSS, catalog poll gating, per-panel error boundaries | wp01 |
+| wp03 | `030_combos_embed.md` | Combos as a panel: draft-preserving `active` path, abort signal, inner tabs demoted, count callback | wp02 |
+| wp04 | `040_routing_embed_and_sidebar.md` | Routing as a panel, Claude row removal, remaining i18n, render grounding | wp02 |
 
 wp03 and wp04 both depend on wp02 but not on each other; they are still run in order
 because they touch the same `Models.tsx` panel block.
+
+wp02 is deliberately the largest phase. Audit round 1 (`001_audit_round1.md`) returned
+FAIL partly because the first draft spread this work across three phases, producing two
+commits that could not compile and one that knowingly shipped a broken layout. Removing
+a page and adding the tab that replaces it is one atomic change.
 
 ## Out of scope
 
@@ -107,7 +112,16 @@ approval.
 ## Verification
 
 Every phase ends green on `bun run typecheck`, `bun run test`, `bun run lint:gui`, and
-`bun run build:gui`. The final phase additionally requires live browser observation
+`bun run build:gui`.
+
+`bun run test` covers **two** suites: `tests/` at the root and `gui/tests/`, which holds
+116 files including mounted happy-dom tests for page loading, the sidebar, and the
+Routing page. The first draft of this roadmap missed the second directory entirely and
+concluded no test covered the affected routes — the single biggest error the audit
+caught. Behavioural tests there are the oracle; `expect(src).toContain(...)` checks are
+supplements that can pass while the UI is broken.
+
+The final phase additionally requires live browser observation
 (C-RENDER-GROUNDING-01): drive all three tabs, refresh on each, Back/Forward, and
 arrow-key traversal against the running dashboard, read the screenshots back, and fix
 what observation reveals. Static gates passing is not the same as the thing working.

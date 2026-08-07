@@ -1,9 +1,15 @@
 # Phase 3 — Combos as a panel
 
-The hard phase. Combos is the only surface in the GUI that opts out of the normal
-980px scrolling column: it is a full-bleed `100dvh` workspace whose rail and detail
-pane scroll independently. Making it a tab means reconciling that with a page header
-and a tab strip that must stay visible above it.
+Combos is the only surface in the GUI that opts out of the normal 980px scrolling
+column: it is a full-bleed `100dvh` workspace whose rail and detail pane scroll
+independently. Making it a tab means reconciling that with a page header and a tab
+strip that must stay visible above it.
+
+**Scope changed after audit round 1.** The CSS below **ships in phase 2**, in the same
+commit that inserts the wrapper — repairing it a phase later would mean phase 2
+knowingly ships a broken layout. It stays documented here because this is where the
+reasoning belongs. What remains phase-3 work: the draft-preserving `active` path, the
+abort signal, the inner-tab demotion, and the count callback.
 
 ## The selector that actually breaks
 
@@ -55,15 +61,30 @@ the container's:
 
 ```css
 .main-inner--combos > .page-head,
-.main-inner--combos > .page-tabs { padding-inline: 36px; flex-shrink: 0; }
+.main-inner--combos > .page-tabs,
+.main-inner--combos > .page-sub { padding-inline: 36px; flex-shrink: 0; }
 @media (max-width: 760px) {
   .main-inner--combos > .page-head,
-  .main-inner--combos > .page-tabs { padding-inline: 18px; }
+  .main-inner--combos > .page-tabs,
+  .main-inner--combos > .page-sub { padding-inline: 18px; }
 }
 ```
 
 `flex-shrink: 0` matters: without it the header is a flex item in a fixed-height column
 and gets squeezed when the workspace wants room.
+
+`.page-sub` is in that list because phase 2 moves the subtitle per tab. The first draft
+padded only the header and strip, which would have left the Combos subtitle flush
+against the viewport edge (audit B5).
+
+### The 1200px selector
+
+`.main-inner:has(.models-workspace-shell)` (`styles-models-workspace.css:8`) widens the
+column, and a lazily-mounted **hidden** catalog panel still satisfies `:has()`. So
+Routing would render at 980px on a direct visit and 1200px after the catalog had been
+opened once — a width that depends on browsing history. The selector must require a
+visible catalog panel (`:has(.models-tab-panel:not([hidden]) .models-workspace-shell)`
+or equivalent). Ships in phase 2 with the rest of the CSS.
 
 The two mobile rules (`gui/src/styles.css:1983`, `2020`) need no change — they set the
 container height and padding, and both still apply.
@@ -108,10 +129,22 @@ panel is a wasted cold load, not a background traffic leak. Still worth gating:
  );
 ```
 
-Care needed on the disabled render: a disabled resource yields `data: undefined` with
-no skeleton and no error, and the existing fallback arrays would make `ComboWorkspace`
-paint as a first-run empty state. So the disabled case must return the skeleton, not
-the empty workspace. This is the one real trap in the phase.
+### The trap the first draft walked into
+
+A disabled resource yields `data: undefined` with no skeleton and no error
+(`data-surface.ts:59`), and the existing fallback arrays would make `ComboWorkspace`
+paint as a first-run empty state. The first draft's answer was "render the skeleton
+instead" — which is wrong in a way that defeats the whole point: the skeleton
+*replaces* `ComboWorkspace` (`Combos.tsx:223`), unmounting the editor and destroying the
+unsaved draft this design exists to protect (audit B3).
+
+The rule is: **gate the network, never the tree.** While inactive, keep rendering the
+last data. Concretely, hold the last non-undefined payload in a ref and feed it to
+`ComboWorkspace` when the resource reports `undefined` because it is disabled — the
+subtree never unmounts, so drafts, selection, and search all survive.
+
+Proven by a mounted test: open a combo, type into the draft, switch to Models, switch
+back, expect the typed value still there. Not by a source-string assertion.
 
 ### Pre-existing defect found while reading
 
@@ -164,12 +197,28 @@ No existing test references `#combos`, `main-inner--combos`, the shell classes, 
 `page === "combos"` branch — the route move breaks nothing and is also covered by
 nothing. New assertions in `tests/models-workspace-tabs.test.ts`:
 
-- `Combos.tsx` accepts `active` and passes `enabled` to its data surface.
-- `Combos.tsx` forwards a signal into `loadCombos`.
-- `combo-workspace-detail-panel.tsx` no longer contains `combos-workspace-tab--active`
-  and does contain `segmented`.
-- `styles.css` contains the `models-tab-panel--fill` rule (the layout contract is CSS,
-  so this is the only place a test can hold it).
+Behavioural, in `gui/tests/`:
+
+- Type into a combo draft, switch tabs, switch back — the draft survives (audit B3).
+- With Combos hidden, no `/api/combos` request fires.
+- The detail panel renders no element carrying both `role="tab"` and an underline class.
+- After creating or deleting a combo, the tab count updates (audit B7).
+
+Source-string checks (`segmented` present, `models-tab-panel--fill` in the CSS) are kept
+as cheap supplements only. The CSS one is unavoidable — a stylesheet rule has no other
+unit-testable surface — which is exactly why the browser observation below is required
+rather than optional.
+
+## Tab count plumbing (audit B7)
+
+Models' combo summary uses a different resource key than the Combos workspace
+(`Models.tsx:143` vs `Combos.tsx:157`), and combo mutations refresh only their own
+(`Combos.tsx:186`). So a create or delete leaves the tab count stale.
+
+Fix: `Combos` takes an `onCountChange?: (n: number) => void` and calls it whenever its
+list changes, including after mutations. The shell holds the count. Same shape for
+Routing in phase 4, which otherwise has no channel to report `profiles.length` at all —
+without this the promised "the tab carries a profile count" mitigation cannot ship.
 
 ## Verification
 

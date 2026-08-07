@@ -73,8 +73,12 @@ export function modelsTabHash(tab: ModelsTab): string {
 
 export function readModelsTab(hash = window.location.hash): ModelsTab {
   const raw = normalizeHashPath(hash);
-  if (raw === "models/combos") return "combos";
-  if (raw === "models/routing") return "routing";
+  // Legacy top-level hashes resolve here too. The redirect that rewrites `#combos` to
+  // `#models/combos` runs via replaceState and emits NO hashchange, so tab state is
+  // initialized from the ORIGINAL hash. Recognising only the nested form would land a
+  // cold load at `#combos` on the catalog with the URL claiming Combos (audit B2).
+  if (raw === "models/combos" || raw === "combos" || raw.startsWith("combos/")) return "combos";
+  if (raw === "models/routing" || raw === "routing" || raw.startsWith("routing/")) return "routing";
   return "catalog";
 }
 
@@ -95,6 +99,8 @@ code never has to disambiguate `models` the page from `models` the tab.
 Phase-1 half (routing only — component assertions land in later phases):
 
 - `readModelsTab` maps all three hashes and defaults unknown input to `catalog`.
+- `readModelsTab` also maps the legacy `combos`, `combos/x`, `routing`, `routing/x`
+  forms — the cold-load case from audit B2.
 - `modelsTabHash` round-trips every tab through `readModelsTab`.
 - `hashBelongsToPage("models/combos", "models")` and `("models/routing", "models")`
   are both true.

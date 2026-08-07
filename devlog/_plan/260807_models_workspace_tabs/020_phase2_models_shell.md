@@ -4,6 +4,13 @@ The atomic phase: the `Page` union loses `combos` and `routing`, the tab strip a
 and the panels that replace those pages mount. Splitting any of it out would leave a
 commit where a page has been deleted but its replacement does not exist.
 
+**Scope grew after audit round 1** (`001_audit_round1.md`). Four things that were
+deferred to later phases cannot be: the Routing NAV row (typed `Page`, so the union
+removal breaks it), the tab-shell i18n keys (`TKey` derives from `en`), the full-bleed
+CSS (phase 2 inserts the wrapper that breaks the selector), and the catalog poll gating.
+Deferring them meant shipping a commit that does not compile or knowingly renders a
+broken layout. This is the big phase, and that is correct.
+
 ## MODIFY `gui/src/app-routing.ts` — remove the two pages
 
 ```diff
@@ -72,8 +79,48 @@ where `modelsTab` comes from a `readModelsTab()` state synced on `hashchange` /
 > Models: the `.main-inner` element is App's, and phase 3 explains why the modifier
 > cannot simply move inside the page.
 
-NAV rows and `isNavEntryActive` are **not** touched here — that is phase 4, so the
-sidebar keeps working while the page is rebuilt.
+### NAV: the Routing row goes now
+
+```diff
+-  { id: "routing", tkey: "nav.routing", Icon: IconRoute },
+```
+
+plus the `IconRoute` import if unused elsewhere. Not optional and not deferrable:
+`NavEntry.id` is typed `Page` (`App.tsx:53`), so a NAV entry naming a removed page is a
+type error the moment the union shrinks.
+
+The duplicate **Claude** row and `isNavEntryActive` stay until phase 4 — they are a
+separate concern (Integrations, not Models) and they still typecheck.
+
+### Per-panel error boundaries
+
+`ErrorBoundary` is keyed on `page` (`App.tsx:328`). With three tabs on one page, an
+error thrown in Combos survives a switch to Routing, because the key never changes.
+Adding the tab to the key is worse: every ordinary switch remounts the workspace and
+destroys drafts.
+
+So each tabpanel gets its own boundary inside `Models.tsx`, and App's page-level
+boundary stays as the outer net. A failing panel then shows its error in its own panel
+and the other two keep working.
+
+### Full-bleed CSS moves here
+
+The wrapper this phase introduces is what breaks
+`.main-inner--combos > .combos-workspace-shell`, so the repair ships in the same
+commit. Full detail in `030`; the rules land here.
+
+Including the one the first draft missed: `.main-inner:has(.models-workspace-shell)`
+(`styles-models-workspace.css:8`) widens the column to 1200px, and a lazily-mounted
+hidden catalog still matches it. Left alone, Routing renders at 980px on a direct visit
+and 1200px once the catalog has been opened — width that depends on history. The
+selector must match only a **visible** catalog panel.
+
+### Catalog work stops when the catalog is hidden
+
+`Models` polls: `pollMs: 10_000` on the catalog resource (`Models.tsx:271`) and a
+separate 10-second `setInterval` for V2 (`Models.tsx:302`). Both keep running while the
+user is on Combos or Routing unless gated on `tab === "catalog"` — the leak the plan
+claimed to prevent while overlooking the only panel that actually had one.
 
 ## MODIFY `gui/src/pages/Models.tsx`
 
@@ -123,8 +170,29 @@ tab (phase 4 writes the copy).
 - `VALID_PAGES` no longer holds `combos` or `routing`.
 - `resolveAppHashChange("combos")` → `{ page: "models", replaceTo: "models/combos" }`;
   same for `combos/x`, `routing`, `routing/x`.
-- `Models.tsx` contains `role="tablist"`, three `page-tab` entries, and `hidden={`.
-- `App.tsx` no longer contains `page === "combos"` or `page === "routing"`.
+
+Behavioural tests in `gui/tests/` (happy-dom, mounted) — the source-string assertions
+the first draft proposed pass while the UI is broken, so they are supplements, not the
+oracle:
+
+- Cold load at `#combos` renders the **Combos** panel, not the catalog (audit B2).
+- Cold load at `#routing` renders the Routing panel.
+- Clicking each tab updates both the rendered panel and the hash.
+- Arrow Left/Right/Home/End move focus and selection together.
+- A panel that throws shows its error while the other two still render (audit B6).
+- With Combos visible, no `/api/models` or `/api/v2` request fires after the poll
+  interval elapses (audit B4).
+
+## MODIFY `gui/tests/page-loading-contract.test.tsx`
+
+Boots at `#combos` (`:136`) and asserts `.combos-workspace-shell-body` (`:183`). The URL
+becomes `#models/combos`; the shell assertions stay valid because the workspace markup
+does not change.
+
+## MODIFY `gui/tests/routing-profiles.test.tsx`
+
+Asserts `[data-page="routing"]` and the literal "Routing Intelligence (beta)" (`:175`).
+Both change: the panel is no longer a page, and its `h2` is gone (see `040`).
 
 ## MODIFY `tests/routing-intelligence-ui.test.ts`
 
@@ -146,6 +214,10 @@ and `expect(app).toContain('page === "routing"')` becomes an assertion that
 
 ## Verification
 
-All four gates green. This is the phase where a mistake shows up as a blank page, so
-the browser check starts here even though the formal render-grounding gate is phase 4:
-load `#models`, `#models/combos`, `#models/routing` and confirm each paints.
+All four gates green — including `gui/tests/`, which is a separate 116-file suite the
+first draft of this roadmap did not know existed.
+
+This is the phase where a mistake shows up as a blank page or a collapsed workspace, so
+browser observation starts here rather than waiting for phase 4: load `#models`,
+`#models/combos`, `#models/routing`, confirm each paints, and confirm the Combos
+workspace fills the viewport under the header and strip.

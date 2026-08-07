@@ -1,29 +1,30 @@
-# Phase 4 — Routing panel, sidebar cleanup, i18n, close-out
+# Phase 4 — Routing panel, Claude row, i18n, close-out
 
-The easy panel and the payoff. Routing is an ordinary scrolling page, so it drops into
-the third slot with no layout negotiation. Then the sidebar loses its two rows and the
-correction function that existed only to serve them.
+Routing is an ordinary scrolling page, so it drops into the third slot with no layout
+negotiation. Then the duplicate Claude row goes and takes `isNavEntryActive` with it.
+
+**Scope shrank after audit round 1.** The Routing NAV row and the tab-shell i18n keys
+moved to phase 2 — a NAV entry is typed `Page`, so it cannot outlive the union member it
+names. What is left here: the Routing panel itself, the Claude row, the remaining i18n,
+and render grounding.
 
 ## MODIFY `gui/src/pages/RoutingProfiles.tsx`
 
-### Correction to an earlier assumption
+### Two corrections about who actually polls
 
-The goal statement for this unit claimed Routing "keeps fetching analytics" and that a
-hidden panel would leak background traffic. **That is wrong.** `load()` runs exactly
-once, from a zero-delay timeout in a `useEffect` keyed on `load`
-(`RoutingProfiles.tsx:243-246`); every other call is user-initiated (Retry, save,
-create, delete). There is no interval and no `pollMs`. Combos is the same: three
-parallel fetches on subscription, no poll.
+The goal statement claimed Routing "keeps fetching analytics." **Wrong.** `load()` runs
+once from a zero-delay timeout (`RoutingProfiles.tsx:243-246`); everything else is
+user-initiated. No interval, no `pollMs`. Combos is the same — three fetches on
+subscription, no poll.
 
-So the `active` prop's real job is **not** stopping a traffic leak. It is stopping a
-*cold load the user never asked for*: without it, opening `#models` would immediately
-fetch `/api/routing-profiles`, `/api/routing-analytics`, `/api/config`, `/api/models`,
-plus the three Combos endpoints, for two panels that are not on screen. Lazy mounting
-already prevents most of that; `active` closes the gap for the panel that was mounted
-earlier and then hidden.
+But the audit found the leak was real and in the panel neither the goal nor the first
+draft examined: **Models itself polls**, `pollMs: 10_000` (`Models.tsx:271`) plus a
+second 10-second `setInterval` for V2 (`Models.tsx:302`). That gating moved to phase 2.
 
-Stating the smaller true reason rather than the larger false one, because the false one
-would justify machinery this phase does not need.
+So `active` here has a smaller job: stopping a cold load the user never asked for, and
+cancelling one already in flight. Stating the smaller true reason rather than the larger
+false one — the false one would justify machinery this phase does not need, and it also
+pointed attention away from the component that genuinely had the problem.
 
 ### Props
 
@@ -41,20 +42,38 @@ would justify machinery this phase does not need.
 +}, [active, load]);
 ```
 
-The existing `loadGenerationRef` already discards responses from a superseded load, so
-a fetch in flight when the tab is hidden cannot write stale state.
+That alone is **not** sufficient, and the first draft's claim that it was is false
+(audit B4). `loadGenerationRef` only advances when a *new* load starts; hiding the tab
+never bumps it, and the four fetches take no `AbortSignal`. So a load in flight when the
+user switches away still lands and writes state into a hidden panel. The cleanup must
+invalidate the generation on deactivate, and the fetches must carry a signal.
 
 ### Header
 
-`RoutingProfiles` renders its own `page-head` with an `h2` (`routing.title`). Inside a
-panel that is a second page title under the Models header, so the `h2` becomes an `h3`
-carrying only the action buttons, and `routing.subtitle` moves into the tab's `page-sub`.
+`RoutingProfiles` renders its own `page-head` with an `h2` (`routing.title`) — a second
+page title under the Models header. The first draft said it "becomes an `h3` carrying
+only the action buttons," which is incoherent: a heading cannot carry buttons.
+
+Decision: **the panel heading is removed.** Create/Retry move into a plain toolbar row,
+and `routing.subtitle` becomes the tab's `page-sub`. The Models header is the only title
+on the page.
+
+`gui/tests/routing-profiles.test.tsx:175` asserts the literal "Routing Intelligence
+(beta)" and `[data-page="routing"]`; both change with this decision. The test follows the
+design, not the reverse — but the string does not vanish from the product, it becomes the
+tab label and the subtitle.
+
+### Count callback
+
+`onCountChange` (same shape as Combos, phase 3) reports `profiles.length` to the shell.
+Without it the tab has no profile count and the discoverability mitigation below is
+undeliverable.
 
 ## MODIFY `gui/src/App.tsx` — the sidebar payoff
 
+The Routing row already went in phase 2. What is left is the duplicate:
+
 ```diff
--  { id: "routing", tkey: "nav.routing", Icon: IconRoute },
-   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
 -  {
 -    id: "integrations",
 -    tkey: "nav.claude",
@@ -88,7 +107,8 @@ and `#integrations/claude` still resolves; only the duplicate shortcut is gone.
 
 ## i18n — six locales
 
-`en`, `ko`, `ja`, `zh`, `ru`, `de`. New keys:
+`en`, `ko`, `ja`, `zh`, `ru`, `de`. The tab labels and `models.tabsLabel` shipped in
+phase 2 (the strip cannot render without them). Remaining here: the split subtitles.
 
 | Key | en |
 |-----|-----|
@@ -110,11 +130,13 @@ cache-invalidation sentences; combos and routing get one line each.
 
 ## Tests
 
-- NAV has nine entries; no `activeHashes`; `isNavEntryActive` is gone from `App.tsx`.
-- Every new i18n key exists in all six locales (extend the existing parity test if one
-  covers this; otherwise assert directly).
-- `RoutingProfiles.tsx` accepts `active` and guards its load effect.
-- `Models.tsx` mounts both `Combos` and `RoutingProfiles`.
+- NAV has nine entries; no `activeHashes`; `isNavEntryActive` is gone.
+- **`gui/tests/sidebar-claude-entry.test.ts` is deleted.** It asserts the exact row this
+  phase removes (`:18`), so it cannot be amended — the behaviour it guards is gone. Any
+  still-valid part (the sidebar carries no mutation) moves into the NAV test.
+- Every new i18n key exists in all six locales.
+- Hiding the Routing tab mid-load leaves no state written by the in-flight request.
+- The Routing tab count matches the profile list after a create and a delete.
 
 ## Render grounding (C-RENDER-GROUNDING-01)
 
