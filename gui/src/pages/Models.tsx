@@ -641,8 +641,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
 
   const allCapped = useMemo(
     () => {
-      // Cap aggregate counts routed providers only; the single native group has no cap switch.
-      const routed = groups.filter(group => !group.native && group.rows.length > 0);
+      // Cap aggregate counts routed providers only; the single native group has no cap
+      // switch. Zero-row routed providers are included: they can still hold a per-provider
+      // cap (e.g. a custom model added later), and excluding them would let "set all"
+      // silently overwrite that cap when the global value changes.
+      const routed = groups.filter(group => !group.native);
       return routed.length > 0 && routed.every(group => contextCaps[group.provider] === contextCapValue);
     },
     [groups, contextCaps, contextCapValue],
