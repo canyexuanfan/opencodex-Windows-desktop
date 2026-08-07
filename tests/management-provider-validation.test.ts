@@ -2454,6 +2454,27 @@ describe("provider management validation", () => {
         body: JSON.stringify({ value: 0 }),
       });
       expect(bad.status).toBe(400);
+
+      // Invalid per-provider value is rejected before mutating config: the provider cap
+      // must not fall back to the global default.
+      const badPerProvider = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 0 }),
+      });
+      expect(badPerProvider.status).toBe(400);
+      const afterBadPerProvider = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadPerProvider.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A non-boolean setAll accompanying a global value is rejected before mutating config.
+      const badSetAll = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: 700_000, setAll: "yes" }),
+      });
+      expect(badSetAll.status).toBe(400);
+      const afterBadSetAll = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadSetAll.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
     } finally {
       await server.stop(true);
     }

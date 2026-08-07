@@ -653,9 +653,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       if (!hasOwnProvider(config.providers, provider)) {
         return jsonResponse({ error: "unknown provider" }, 404);
       }
-      const perProviderValue = typeof body.value === "number" && Number.isFinite(body.value) && body.value > 0
-        ? Math.floor(body.value)
-        : undefined;
+      if (body.value !== undefined
+        && (typeof body.value !== "number" || !Number.isFinite(body.value) || body.value <= 0)) {
+        return jsonResponse({ error: "value must be a positive number" }, 400);
+      }
+      const perProviderValue = typeof body.value === "number" ? Math.floor(body.value) : undefined;
       setProviderContextCap(config, provider, body.enabled, perProviderValue);
       save(config);
       reconcileLiveStateStores();
@@ -670,6 +672,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     if (body.value !== undefined) {
       if (typeof body.value !== "number" || !Number.isFinite(body.value) || body.value <= 0) {
         return jsonResponse({ error: "value must be a positive number" }, 400);
+      }
+      if (body.setAll !== undefined && typeof body.setAll !== "boolean") {
+        return jsonResponse({ error: "setAll must be a boolean" }, 400);
       }
       const affected = Object.keys(providerContextCaps(config));
       const applyToAll = body.setAll === true;

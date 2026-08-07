@@ -568,7 +568,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
     setBusy(true);
     busyRef.current = true;
     setStatus("");
-    const enabled = contextCaps[provider] !== undefined;
+    // Send the desired next state, not the current one: clicking the switch turns a
+    // currently-unset cap on (enabled: true) and a currently-set cap off (enabled: false).
+    const enabled = contextCaps[provider] === undefined;
     try {
       const r = await fetch(`${apiBase}/api/provider-context-caps`, {
         method: "PUT",
