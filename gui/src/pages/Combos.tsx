@@ -273,7 +273,14 @@ export default function Combos({
     return <DataSurfaceSkeleton label={t("cws.loading")} rows={5} />;
   }
 
-  if (state.kind === "failed-cold") {
+  /*
+   * `!data` matters. Disabling the only subscriber schedules store eviction, so a
+   * reactivation whose fetch fails is classified `failed-cold` even when this component
+   * still holds a coherent retained payload — and replacing the workspace there would
+   * unmount the editor and destroy the very draft retention exists to protect. With
+   * retained data the workspace stays up and the failure shows in the stale banner below.
+   */
+  if (state.kind === "failed-cold" && !data) {
     const reason = state.error instanceof Error ? state.error.message : t("cws.loadFailed");
     return (
       <>

@@ -140,13 +140,16 @@ test("a cold catalog never removes the tab strip", async () => {
   }
 });
 
-test("a cold catalog failure still leaves the other tabs reachable", async () => {
+test("a cold catalog failure still lets the user reach another tab", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/models")) throw new Error("catalog down");
     if (url.includes("/api/provider-context-caps")) return Response.json({ providers: {} });
     if (url.includes("/api/providers")) return Response.json([]);
     if (url.includes("/api/selected-models")) return Response.json({});
+    if (url.includes("/api/routing-profiles")) return Response.json([]);
+    if (url.includes("/api/routing-analytics")) return Response.json(null);
+    if (url.includes("/api/config")) return Response.json({ providers: {} });
     return new Response(null, { status: 404 });
   }) as typeof fetch;
 
@@ -154,9 +157,15 @@ test("a cold catalog failure still leaves the other tabs reachable", async () =>
   try {
     await act(async () => { await Promise.resolve(); });
     expect(tabs(container)).toHaveLength(3);
-    const combosTab = container.querySelector("#models-tab-combos") as HTMLButtonElement;
-    expect(combosTab).toBeTruthy();
-    expect(combosTab.disabled).toBe(false);
+
+    // "Reachable" has to mean the click works and the panel actually appears — asserting
+    // the button merely exists would pass with a dead tab.
+    await act(async () => {
+      (container.querySelector("#models-tab-routing") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(panel(container, "routing")).toBeTruthy();
+    expect(panel(container, "routing")?.hasAttribute("hidden")).toBe(false);
   } finally {
     await act(async () => root.unmount());
   }
@@ -190,7 +199,7 @@ test("panels mount lazily and then stay mounted, hidden", async () => {
   }
 });
 
-test("every rendered panel is wired to its tab and carries an error boundary", async () => {
+test("every rendered panel is wired to its tab", async () => {
   installFetch();
   const { container, root } = await mountModels();
   try {
@@ -213,26 +222,155 @@ test("every rendered panel is wired to its tab and carries an error boundary", a
 });
 
 /*
- * The whole point of gating: a hidden catalog must stop polling. Counted rather than
- * timed, because the assertion is "no NEW requests", not "requests within a window".
+ * The ARIA test above pins wiring, not isolation — it would pass with every boundary
+ * deleted. This one makes a panel actually throw. App's boundary is keyed by page, and
+ * all three tabs are now one page, so without per-panel boundaries one broken tab would
+ * take the whole workspace down and stay broken across a switch.
  */
-test("leaving the catalog stops its requests", async () => {
+test("a panel that throws does not take its siblings with it", async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/api/models")) return Response.json([]);
+    if (url.includes("/api/provider-context-caps")) return Response.json({ providers: {} });
+    if (url.includes("/api/providers")) return Response.json([]);
+    if (url.includes("/api/selected-models")) return Response.json({});
+    // A shape the combos loader cannot parse into a coherent page.
+    if (url.includes("/api/combos")) return Response.json({ combos: { not: "an array" } });
+    if (url.includes("/api/config")) return Response.json(null);
+    if (url.includes("/api/routing-profiles")) return Response.json([]);
+    if (url.includes("/api/routing-analytics")) return Response.json(null);
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  const { container, root } = await mountModels();
+  try {
+    await act(async () => {
+      (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    // Whatever Combos did, the strip and the other tabs must still be usable.
+    expect(tabs(container)).toHaveLength(3);
+    await act(async () => {
+      (container.querySelector("#models-tab-routing") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(panel(container, "routing")?.hasAttribute("hidden")).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+/*
+ * The whole point of gating: a hidden catalog must stop polling.
+ *
+ * The first version of this test waited 60ms against a 10-SECOND poll interval, so it
+ * passed whether or not the poll was gated — a green assertion proving nothing. Real
+ * time is what the interval reads, so this waits past one full period and counts a
+ * catalog-exclusive endpoint rather than `/api/models`, which several panels request.
+ */
+test("a hidden catalog stops polling across a full interval", async () => {
   const { hits } = installFetch();
   const { container, root } = await mountModels();
   try {
     await act(async () => { await Promise.resolve(); });
-    const before = hits.get("/api/models") ?? 0;
-    expect(before).toBeGreaterThan(0);
+    expect(hits.get("/api/provider-context-caps") ?? 0).toBeGreaterThan(0);
 
     await act(async () => {
       (container.querySelector("#models-tab-routing") as HTMLButtonElement).click();
     });
     await act(async () => { await Promise.resolve(); });
-    const afterSwitch = hits.get("/api/models") ?? 0;
+    const afterSwitch = hits.get("/api/provider-context-caps") ?? 0;
 
-    // Let any interval that survived the switch fire.
-    await act(async () => { await new Promise(r => setTimeout(r, 60)); });
-    expect(hits.get("/api/models") ?? 0).toBe(afterSwitch);
+    // One full poll period plus slack. Slow, but a shorter wait cannot tell a gated
+    // poll from an ungated one.
+    await act(async () => { await new Promise(r => setTimeout(r, 11_000)); });
+    expect(hits.get("/api/provider-context-caps") ?? 0).toBe(afterSwitch);
+  } finally {
+    await act(async () => root.unmount());
+  }
+}, 30_000);
+
+/*
+ * The failure that actually shipped: an unsaved draft vanished on a tab switch. The
+ * lazy-mount test above cannot catch it — the panel wrapper stayed mounted the whole
+ * time while the editor subtree underneath was replaced.
+ */
+test("an unsaved combo draft survives a tab switch", async () => {
+  installFetch();
+  const { container, root } = await mountModels();
+  try {
+    await act(async () => {
+      (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const field = () => panel(container, "combos")?.querySelector("input") as HTMLInputElement | null;
+    const input = field();
+    expect(input).toBeTruthy();
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        testWindow.HTMLInputElement.prototype, "value",
+      )?.set;
+      setter?.call(input, "draft-probe");
+      input!.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(field()?.value).toBe("draft-probe");
+
+    await act(async () => {
+      (container.querySelector("#models-tab-catalog") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(field()?.value).toBe("draft-probe");
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+/*
+ * A reactivation whose fetch fails is classified `failed-cold` once the store has been
+ * evicted, and replacing the workspace there would destroy the retained draft.
+ */
+test("a failed combos reload keeps the workspace instead of replacing it", async () => {
+  let failNext = false;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (failNext && url.includes("/api/combos")) throw new Error("combos down");
+    if (url.includes("/api/models")) return Response.json([]);
+    if (url.includes("/api/provider-context-caps")) return Response.json({ providers: {} });
+    if (url.includes("/api/providers")) return Response.json([]);
+    if (url.includes("/api/selected-models")) return Response.json({});
+    if (url.includes("/api/combos")) return Response.json([]);
+    if (url.includes("/api/config")) return Response.json({ providers: {} });
+    return new Response(null, { status: 404 });
+  }) as typeof fetch;
+
+  const { container, root } = await mountModels();
+  try {
+    await act(async () => {
+      (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(panel(container, "combos")?.querySelector(".combos-workspace-root")).toBeTruthy();
+
+    failNext = true;
+    await act(async () => {
+      (container.querySelector("#models-tab-catalog") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      (container.querySelector("#models-tab-combos") as HTMLButtonElement).click();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(panel(container, "combos")?.querySelector(".combos-workspace-root")).toBeTruthy();
   } finally {
     await act(async () => root.unmount());
   }
