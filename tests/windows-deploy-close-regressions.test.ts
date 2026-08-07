@@ -73,8 +73,16 @@ describe("server bind canonicalizes explicit localhost but preserves wildcards (
   test("literal localhost binds to 127.0.0.1; 0.0.0.0/:: exposure is untouched", () => {
     expect(src).toContain("const configuredHost = config.hostname?.trim();");
     expect(src).toContain('!configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1"');
-    expect(src).toContain("hostname: bindHost,");
-    // Must not blanket-rewrite the bind host (that would break intentional 0.0.0.0 exposure).
-    expect(src).not.toContain('hostname: "127.0.0.1",');
+    // Must not blanket-rewrite the PUBLIC bind host — that would break intentional 0.0.0.0
+    // exposure, which is the regression this guards.
+    //
+    // A literal "127.0.0.1" now appears once, for the separate unauthenticated loopback
+    // listener (#1102). That one is a second socket whose entire purpose is to be
+    // loopback-only, so a bare substring ban would forbid the fix rather than the defect.
+    // Pin the assertion to the public serve call instead: it must take bindHost and nothing
+    // else.
+    expect(src).toContain("server = Bun.serve<WsData>({ ...serveOptions, port: listenPort, hostname: bindHost });");
+    expect(src).not.toMatch(/port: listenPort,\s*\n\s*hostname: "127\.0\.0\.1"/);
+    expect(src).not.toContain("port: listenPort, hostname: \"127.0.0.1\"");
   });
 });

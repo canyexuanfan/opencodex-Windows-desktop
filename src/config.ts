@@ -1035,6 +1035,14 @@ const configSchema = z.object({
   // is safe: startServer() already falls back to 127.0.0.1 for a missing hostname. Write-time
   // rejection lives in validateConfigCandidate() so bad values still surface to the caller.
   hostname: z.string().trim().min(1).optional().catch(undefined),
+  // Discriminated on `enabled` so a disabled entry cannot be forced to carry a port, and an
+  // enabled one cannot omit it (#1102). A malformed value degrades to undefined rather than
+  // failing the whole parse: this is an opt-in convenience surface, and a hand-edit typo here
+  // must never reset providers/apiKeys through the backup-and-defaults repair path.
+  unauthenticatedLoopbackListener: z.union([
+    z.object({ enabled: z.literal(false) }),
+    z.object({ enabled: z.literal(true), port: z.number().int().min(1).max(65535) }),
+  ]).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
@@ -1974,13 +1982,45 @@ function codexAccountPickerEnabledError(value: unknown): string | null {
 }
 
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
+/**
+ * Reject a loopback-listener port that collides with the proxy port (#1102).
+ *
+ * The schema can only check the shape of each field on its own; the two ports being distinct
+ * is a relationship between them. Letting the pair through would surface as a startup failure
+ * after the public listener already bound, which reads like an unrelated port conflict.
+ *
+ * This is write-time only, matching `blankHostnameError`: a live caller can be told the value
+ * is wrong, whereas a hand-edited config on the read path degrades to undefined rather than
+ * resetting the whole file.
+ */
+function loopbackListenerPortError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const listener = (value as Record<string, unknown>).unauthenticatedLoopbackListener;
+  if (listener === undefined) return null;
+  if (!listener || typeof listener !== "object" || Array.isArray(listener)) {
+    return "schema_invalid: unauthenticatedLoopbackListener: must be an object or omitted";
+  }
+  const entry = listener as Record<string, unknown>;
+  if (entry.enabled !== true) return null;
+  const listenerPort = entry.port;
+  if (typeof listenerPort !== "number" || !Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must be an integer port when enabled";
+  }
+  const proxyPort = (value as Record<string, unknown>).port;
+  if (typeof proxyPort === "number" && proxyPort === listenerPort) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must differ from the proxy port";
+  }
+  return null;
+}
+
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
   const boundaryError = blankHostnameError(value)
     ?? claudeSubagentEffortError(value)
     ?? appOwnedMemoryBudgetError(value)
     ?? googleAntigravityStaticCatalogVersionError(value)
     ?? codexAccountPrioritiesError(value)
-    ?? codexAccountPickerEnabledError(value);
+    ?? codexAccountPickerEnabledError(value)
+    ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
