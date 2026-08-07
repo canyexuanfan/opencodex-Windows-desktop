@@ -209,6 +209,18 @@ describe("headless GUI parity CLI", () => {
     expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { setAll: true } });
   });
 
+  test("model context provider maps to the atomic GUI endpoint with an optional value", async () => {
+    const runtime = fakeRuntime();
+    const code = await handleModelsRuntimeCommand("context", ["provider", "openai", "on", "--value", "128_000", "--json"], runtime.deps);
+    expect(code).toBe(0);
+    expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: true, value: 128_000 } });
+
+    const offRuntime = fakeRuntime();
+    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], offRuntime.deps);
+    expect(offCode).toBe(0);
+    expect(offRuntime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
+  });
+
   test("combo set parses ordered weighted targets", async () => {
     const runtime = fakeRuntime();
     const code = await handleComboCommand([

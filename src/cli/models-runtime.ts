@@ -20,7 +20,7 @@ const USAGE = `Usage:
   ocx models <enable|disable> <provider/model|native-model> [--native] [--json]
   ocx models provider <name> <on|off> [--json]
   ocx models selected <provider> [--set <id,id...>|--clear] [--json]
-  ocx models context <status|value <tokens>|provider <name> <on|off>|all <on|off>> [--json]
+  ocx models context <status|value <tokens>|provider <name> <on|off> [--value <tokens>]|all <on|off>> [--json]
   ocx models shadow <status|set> [model|-] [--enabled <on|off>] [--json]`;
 
 type ModelRow = {
@@ -163,6 +163,14 @@ async function context(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     const state = args.shift()?.toLowerCase();
     if (!provider || (state !== "on" && state !== "off")) throw new CliUsageError("provider and on|off are required", USAGE);
     body = { provider, enabled: state === "on" };
+    // Optional explicit cap value for this provider only (`ocx models context provider
+    // openai on --value 128000`). Mirrors the dashboard's per-provider cap picker; the
+    // value never leaks to other providers.
+    const value = takeIntegerOption(args, "--value", { min: 1 });
+    if (value !== undefined && state !== "on") {
+      throw new CliUsageError("--value can only be used with on", USAGE);
+    }
+    if (value !== undefined) body.value = value;
   } else if (action === "all") {
     const state = args.shift()?.toLowerCase();
     if (state !== "on" && state !== "off") throw new CliUsageError("all requires on|off", USAGE);
