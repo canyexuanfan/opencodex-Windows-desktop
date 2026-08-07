@@ -37,6 +37,54 @@ request failed after the first streamed frame
   assert.equal(result.valid, true, result.reasons.join("\n"));
 });
 
+test("accepts emphasized Environment keys", () => {
+  const result = validateIssue({
+    title: "[Bug]: Cursor request fails after stream start",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+The Cursor request fails after streaming starts through the Claude Code integration.
+
+### Environment
+- **OpenCodex**: 2.10.2
+- **OS**: Linux (Ubuntu x64)
+
+### Debug evidence
+Run \`ocx debug provider cursor\`; it returns \`resource_exhausted\` after stream start.
+`,
+  });
+
+  assert.equal(result.valid, true, result.reasons.join("\n"));
+});
+
+test("does not duplicate case-insensitive reproduction aliases", () => {
+  const repeated = "Run `ocx start` and observe the proxy error after the request fails.";
+  const result = validateIssue({
+    title: "[Bug]: Proxy request fails",
+    labels: ["bug"],
+    body: `
+### Client or integration
+Claude Code
+
+### Summary
+${repeated}
+
+### Environment
+- OpenCodex: 2.10.2
+- OS: Linux
+
+### Steps to Reproduce
+${repeated}
+`,
+  });
+
+  assert.equal(result.valid, false);
+  assert.match(result.reasons.join("\n"), /same content/i);
+});
+
 test("does not treat vague alternative headings as actionable reproduction", () => {
   const result = validateIssue({
     title: "[Bug]: Cursor model does not work",
