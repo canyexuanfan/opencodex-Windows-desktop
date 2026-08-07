@@ -103,6 +103,15 @@ So the shared piece is a neutral primitive: SID parsing/validation plus bounded
 `user-identity.ts` keeps translating failures into its own refusal type; the ACL
 owner applies its own required/optional policy. Cache successful values only.
 
+**Do not write a third System32 resolver.**
+`resolveTrustedWindowsPowerShellExe()` in `src/lib/windows-elevation.ts:103-138`
+already resolves and validates the executable through `GetSystemDirectoryW`.
+Reuse it, or lift its trusted-path machinery into a neutral Windows
+system-tools module — a fresh `SystemRoot`/PATH lookup would reintroduce exactly
+the substitution surface this whole section exists to close. The SID primitive
+still needs its own bounded sync/async execution and neutral error type; only
+the executable resolution is shared.
+
 ## Timeout must not poison the path memo
 
 A SID lookup that times out has to be classified distinctly. If it surfaces as
