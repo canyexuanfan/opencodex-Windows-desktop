@@ -17,6 +17,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isRealBunBinary } from "../src/lib/bun-binary-validator.mjs";
 import { npmInvocation } from "../src/update/npm-invocation.mjs";
+import {
+  npmCachePreflightFailureMessage,
+  runNpmCachePreflight,
+} from "../src/update/npm-cache-preflight.mjs";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "../src/update/tray-update-plan.mjs";
 
 const PKG = "@bitkyc08/opencodex";
@@ -134,6 +138,12 @@ function runNpmSelfUpdate() {
   if (latest && latest === current) {
     console.log(`Already on the latest ${tag} version (v${latest}).`);
     process.exit(0);
+  }
+
+  const cachePreflight = runNpmCachePreflight();
+  if (!cachePreflight.ok) {
+    console.error(`opencodex: ${npmCachePreflightFailureMessage(cachePreflight.reason)}. Aborting before stopping the proxy.`);
+    process.exit(1);
   }
 
   // Remember whether a background service manages the proxy BEFORE stopping — `ocx stop`

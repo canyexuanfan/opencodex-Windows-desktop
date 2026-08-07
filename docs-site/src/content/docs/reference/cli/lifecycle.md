@@ -325,8 +325,12 @@ if it is not running.
 Self-update opencodex from npm. Stable installs use `@latest`; preview installs stay on `@preview`
 unless you pass `--tag latest|preview`. It detects a source checkout and tells you to
 `git pull && bun install` instead, and is a no-op if you are already on the newest version for that
-tag. A running proxy is stopped before files are replaced; an installed service is rebuilt and
-started automatically, while a foreground installation prints `ocx start` as the next step.
+tag. Before stopping anything, npm installations run a bounded Unix cache ownership and access
+check. Nested symlinks are checked with `lstat` but not followed; Windows explicitly skips this
+Unix-only check. A failure aborts while the tray and proxy are still running. A running proxy is
+then stopped before files are replaced; an installed service is rebuilt and started automatically,
+while a foreground installation prints `ocx start` as the next step. Dashboard update records
+redact profile/cache paths and UID/GID values before they are persisted.
 
 ```bash
 ocx update
