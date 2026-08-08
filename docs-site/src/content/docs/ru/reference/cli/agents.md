@@ -203,12 +203,14 @@ Pi не требует переменной окружения и несёт л�
 MCP-записи.
 :::
 
-Никакой ключ никогда не сериализуется. Конфиг opencode несёт только env-reference, так что секрет
-остаётся в вашем окружении, а конфиг Pi несёт заглушку вместо учётных данных. Loopback-прокси
-(`127.0.0.1`, по умолчанию) вообще не требует admission key. Задавайте переменную opencode только
-если прокси слушает не на loopback; как выдаются admission key, описано в
-[Удалённом доступе](/reference/configuration/#remote-access). Ключи upstream-провайдеров — это
-совсем отдельная история и настраиваются в [Провайдерах](/guides/providers/).
+Никакой ключ никогда не сериализуется. Конфиги opencode, Hermes и OpenClaw несут только
+env-reference, так что секрет остаётся в вашем окружении, а конфиги Pi, OMP, Kimi и Gajae несут
+loopback-заглушку вместо учётных данных. Loopback-прокси (`127.0.0.1`, по умолчанию) вообще не
+требует admission key. Если прокси слушает не на loopback, задайте соответствующую переменную
+`OPENCODEX_OPENCODE_API_KEY`, `OPENCODEX_HERMES_API_KEY` или `OPENCODEX_OPENCLAW_API_KEY`.
+Сгенерированные интеграции Pi, OMP, Kimi и Gajae работают только через loopback. Как выдаются
+admission key, описано в [Удалённом доступе](/reference/configuration/#remote-access). Ключи
+upstream-провайдеров — это совсем отдельная история и настраиваются в [Провайдерах](/guides/providers/).
 
 Тот же payload отдаётся через `GET /api/client-config` и показывается на вкладке API в дашборде,
 поэтому CLI, API и GUI используют в точности одни и те же байты.

@@ -198,12 +198,10 @@ export function ompAgentDir(env: OpencodeLaunchEnv = process.env, home: string =
     const override = env.PI_CODING_AGENT_DIR?.trim();
     if (override) return absoluteClientPath(override, home, "PI_CODING_AGENT_DIR");
   }
-  const configDir = env.PI_CONFIG_DIR?.trim();
-  const root = configDir
-    ? (isAbsolute(configDir) || configDir === "~" || configDir.startsWith("~/") || configDir.startsWith("~\\")
-      ? absoluteClientPath(configDir, home, "PI_CONFIG_DIR")
-      : join(home, configDir))
-    : join(home, ".omp");
+  // OMP treats PI_CONFIG_DIR as a directory name relative to the user's home,
+  // even when the value starts with `/` or `~`. Mirror that path.join contract
+  // exactly instead of assigning those values different filesystem semantics.
+  const root = join(home, env.PI_CONFIG_DIR || ".omp");
   return profile ? join(root, "profiles", profile, "agent") : join(root, "agent");
 }
 

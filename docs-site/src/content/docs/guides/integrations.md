@@ -10,7 +10,7 @@ file, and removes it again. Seven clients work this way, each with a switch:
 |---|---|---|---|---|
 | OpenCode | `~/.config/opencode/opencode.json` | JSON | next direct launch | `OPENCODEX_OPENCODE_API_KEY` |
 | Pi | `~/.pi/agent/models.json` | JSON | new sessions | loopback placeholder |
-| OMP | `~/.omp/agent/models.yml` | YAML | after restarting OMP | loopback placeholder |
+| OMP | `~/.omp/agent/models.yml` | YAML | after restarting OMP | `opencodex-loopback` placeholder |
 | Hermes | `~/.hermes/config.yaml` | YAML | new sessions | `OPENCODEX_HERMES_API_KEY` |
 | OpenClaw | `~/.openclaw/openclaw.json` | JSON5 | immediately, on a running gateway | `OPENCODEX_OPENCLAW_API_KEY` |
 | Kimi Code | `~/.kimi-code/config.toml` | TOML | on restart, or `/reload` | loopback placeholder |
@@ -18,7 +18,7 @@ file, and removes it again. Seven clients work this way, each with a switch:
 
 Paths honor each client's own environment override where it has one. For OMP,
 `OMP_PROFILE` wins over `PI_PROFILE` by presence, even when explicitly empty. A named profile
-uses `PI_CONFIG_DIR` as its root and ignores `PI_CODING_AGENT_DIR`; without a named profile,
+uses `PI_CONFIG_DIR` as a directory name relative to the user's home and ignores `PI_CODING_AGENT_DIR`; without a named profile,
 `PI_CODING_AGENT_DIR` wins. OMP supports provider-level headers, but this initial integration
 is deliberately loopback-only; remote `x-opencodex-api-key` wiring is deferred. Relocated
 `HERMES_HOME`, `KIMI_CODE_HOME`, and `XDG_CONFIG_HOME` paths are likewise followed rather than

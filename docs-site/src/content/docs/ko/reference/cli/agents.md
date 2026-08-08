@@ -169,7 +169,7 @@ opencode는 `{env:OPENCODEX_OPENCODE_API_KEY}`를 보간합니다. opencodex가 
 `ocx export`는 실제 client config를 절대 쓰지 않습니다. 대상 경로는 손으로 병합하라고 출력되며, `--out`은 `--force` 없이 기존 파일을 덮어쓰지 않습니다. config를 바꾸어 덮어쓰면 이미 들어 있던 다른 provider, agent, MCP entry가 사라지기 때문입니다.
 :::
 
-어떤 key도 직렬화되지 않습니다. opencode config에는 env reference만 들어가므로 secret은 환경 변수에 남고, Pi config에는 인증 정보가 아니라 placeholder가 들어갑니다. loopback proxy(`127.0.0.1`, 기본값)는 admission key가 전혀 필요하지 않습니다. opencode 변수는 proxy가 loopback을 넘어 바인딩할 때만 설정하십시오. admission key가 어떻게 발급되는지는 [Remote access](/reference/configuration/#remote-access)를 보십시오. upstream provider 자체의 key는 완전히 별개의 것으로, 각 [Providers](/guides/providers/)에 맞게 설정합니다.
+어떤 key도 직렬화되지 않습니다. opencode, Hermes, OpenClaw config에는 env reference만 들어가므로 secret은 환경 변수에 남고, Pi, OMP, Kimi, Gajae config에는 인증 정보가 아니라 loopback placeholder가 들어갑니다. loopback proxy(`127.0.0.1`, 기본값)는 admission key가 전혀 필요하지 않습니다. proxy가 loopback을 넘어 바인딩할 때는 해당하는 `OPENCODEX_OPENCODE_API_KEY`, `OPENCODEX_HERMES_API_KEY`, `OPENCODEX_OPENCLAW_API_KEY`를 설정하십시오. 생성되는 Pi, OMP, Kimi, Gajae 통합은 loopback 전용입니다. admission key가 어떻게 발급되는지는 [Remote access](/reference/configuration/#remote-access)를 보십시오. upstream provider 자체의 key는 완전히 별개의 것으로, 각 [Providers](/guides/providers/)에 맞게 설정합니다.
 
 같은 payload는 `GET /api/client-config`로 제공되고 dashboard의 API 탭에도 렌더링되므로, CLI, API, GUI가 모두 같은 바이트를 사용합니다.
 

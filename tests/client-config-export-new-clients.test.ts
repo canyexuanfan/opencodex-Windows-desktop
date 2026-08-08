@@ -57,11 +57,10 @@ function ctx(config: OcxConfig = LOOPBACK): ExportContext {
 }
 
 describe("no secret reaches a client config", () => {
-  test("a client is loopback-only exactly when it has nowhere to put the admission header", () => {
-    // /v1/chat/completions rejects bearer credentials and requires the
-    // dedicated x-opencodex-api-key header (AUTH_MATRIX in auth-cors.ts), so a
-    // client whose schema has no header field cannot authenticate remotely at
-    // all. Saying so beats exporting a config that 401s.
+  test("the generated client support policy identifies every loopback-only integration", () => {
+    // Pi, Kimi and Gajae cannot emit the dedicated admission header. OMP can
+    // carry provider headers, but remote credential wiring is deliberately
+    // deferred from this initial generated integration.
     const loopbackOnly = EXPORT_CLIENT_IDS.filter(id => EXPORT_CLIENTS[id].loopbackOnly);
     expect(loopbackOnly).toEqual(["pi", "omp", "kimi", "gajae"]);
   });

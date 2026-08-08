@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ClientPathError,
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
   OPENCODE_API_KEY_ENV,
@@ -477,24 +478,29 @@ describe("EXPORT_CLIENTS registry", () => {
       writeFileSync(join(defaultAgentDir, "models.yml"), "providers: {}\n");
       expect(ompModelsConfigPath({} as NodeJS.ProcessEnv, home)).toBe(join(defaultAgentDir, "models.yml"));
 
-      const configRoot = join(home, "custom-omp");
-      const profiled = { OMP_PROFILE: "work", PI_CONFIG_DIR: configRoot } as NodeJS.ProcessEnv;
-      expect(EXPORT_CLIENTS.omp.destination(profiled)).toBe(
+      const configDir = "custom-omp";
+      const configRoot = join(home, configDir);
+      const profiled = { OMP_PROFILE: "work", PI_CONFIG_DIR: configDir } as NodeJS.ProcessEnv;
+      expect(ompModelsConfigPath(profiled, home)).toBe(
         join(configRoot, "profiles", "work", "agent", "models.yml"),
       );
-      expect(EXPORT_CLIENTS.omp.destination(profiled)).toBe(ompModelsConfigPath(profiled));
-      expect(EXPORT_CLIENTS.omp.destination({ PI_CONFIG_DIR: configRoot } as NodeJS.ProcessEnv)).toBe(
+      expect(ompModelsConfigPath({ PI_CONFIG_DIR: configDir } as NodeJS.ProcessEnv, home)).toBe(
         join(configRoot, "agent", "models.yml"),
+      );
+      expect(ompModelsConfigPath({ PI_PROFILE: "legacy", PI_CONFIG_DIR: configDir } as NodeJS.ProcessEnv, home)).toBe(
+        join(configRoot, "profiles", "legacy", "agent", "models.yml"),
       );
       // OMP_PROFILE wins by presence, so an explicit blank selects the default
       // profile instead of inheriting a legacy PI_PROFILE.
-      expect(EXPORT_CLIENTS.omp.destination({
+      expect(ompModelsConfigPath({
         OMP_PROFILE: "  ",
         PI_PROFILE: "legacy",
-        PI_CONFIG_DIR: configRoot,
-      } as NodeJS.ProcessEnv)).toBe(
+        PI_CONFIG_DIR: configDir,
+      } as NodeJS.ProcessEnv, home)).toBe(
         join(configRoot, "agent", "models.yml"),
       );
+      expect(() => ompModelsConfigPath({ OMP_PROFILE: ".." } as NodeJS.ProcessEnv, home)).toThrow(ClientPathError);
+      expect(() => ompModelsConfigPath({ OMP_PROFILE: "NUL.txt" } as NodeJS.ProcessEnv, home)).toThrow(ClientPathError);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

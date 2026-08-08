@@ -233,7 +233,7 @@ export function applyIntegration(input: IntegrationWriteInput): WriteOutcome {
   }
   if (isLoopbackOnly(clientId) && !isLoopbackHostname(input.config.hostname)) {
     return refuse(clientId, "non_loopback", classified.state,
-      `${clientId} has nowhere to put the admission header a non-loopback bind requires, so a generated config would be rejected — and writing one by hand would not help either. Give it loopback access instead, through a tunnel or a local forwarder.`);
+      `The generated ${clientId} integration is loopback-only and does not emit the admission header a non-loopback bind requires. Give it loopback access instead, through a tunnel or a local forwarder.`);
   }
   if (classified.state === "conflict") {
     return refuse(clientId, "conflict", "conflict",
