@@ -12,7 +12,12 @@
  * carries an account reference (dry-run/evaluate), never invented.
  */
 
-import { codexQuotaWindowForPlan, getAccountQuota, isCodexQuotaExhausted } from "../codex/quota";
+import {
+  codexQuotaWindowForPlan,
+  getAccountQuota,
+  isCodexQuotaExhausted,
+  listAccountQuotas,
+} from "../codex/quota";
 import { getCachedProviderAccountQuota } from "../providers/quota";
 import type { RouteQuotaEvidence } from "./trace";
 
@@ -27,39 +32,100 @@ export interface QuotaEvidenceInput {
   codexAccountPlan?: string;
 }
 
+export interface CodexPoolQuotaAccount {
+  accountId: string;
+  plan?: string;
+}
+
+function codexAccountQuotaEvidence(accountId: string, plan?: string): RouteQuotaEvidence {
+  const quota = getAccountQuota(accountId);
+  if (!quota) return { known: false };
+
+  // Go/Free accounts report a 30-day window only; weekly windows gate
+  // everything else. `codexQuotaWindowForPlan` is the single shared rule
+  // (parser, exhaustion, recovery), so select the plan-specific bars here too.
+  const monthly = codexQuotaWindowForPlan(plan) === "monthly";
+  const percents = [
+    ...(monthly ? [] : [quota.weeklyPercent]),
+    quota.monthlyPercent,
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const maxPercent = percents.length > 0 ? Math.max(...percents) : undefined;
+  const resets = [
+    ...(monthly ? [] : [quota.weeklyResetAt]),
+    quota.monthlyResetAt,
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    .filter(value => value > Date.now());
+  return {
+    known: true,
+    ...(maxPercent !== undefined
+      ? { headroom: Math.max(0, Math.min(1, 1 - maxPercent / 100)) }
+      : {}),
+    exhausted: isCodexQuotaExhausted(quota, plan),
+    ...(resets.length > 0 ? { resetAtMs: Math.min(...resets) } : {}),
+    source: "codex-pool",
+  };
+}
+
+/**
+ * Provider-level quota evidence for a Codex account pool. A policy profile
+ * chooses provider/model, while the existing pool remains authoritative for
+ * the physical account. Therefore the provider is usable when ANY known pool
+ * account has headroom. Unknown accounts prevent a known-exhausted verdict:
+ * unknown capacity is not zero capacity.
+ */
+export function codexPoolQuotaEvidence(accounts: readonly CodexPoolQuotaAccount[]): RouteQuotaEvidence {
+  if (accounts.length === 0) return { known: false };
+  const evidence = accounts.map(account => codexAccountQuotaEvidence(account.accountId, account.plan));
+  const known = evidence.filter(item => item.known);
+  if (known.length === 0) return { known: false };
+
+  const usable = known.filter(item => item.exhausted !== true);
+  if (usable.length > 0) {
+    const headrooms = usable
+      .map(item => item.headroom)
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    return {
+      known: true,
+      exhausted: false,
+      ...(headrooms.length > 0 ? { headroom: Math.max(...headrooms) } : {}),
+      source: "codex-pool",
+    };
+  }
+
+  // At least one account has no quota evidence. The pool may still be usable,
+  // so fail open as unknown rather than excluding the provider as exhausted.
+  if (known.length < evidence.length) return { known: false };
+
+  const resets = known
+    .map(item => item.resetAtMs)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return {
+    known: true,
+    exhausted: true,
+    headroom: 0,
+    ...(resets.length > 0 ? { resetAtMs: Math.min(...resets) } : {}),
+    source: "codex-pool",
+  };
+}
+
 /**
  * Assemble quota evidence from canonical local caches only (no network).
  * Unknown dimensions stay unknown - never zero.
  */
 export function quotaEvidenceForCandidate(input: QuotaEvidenceInput): RouteQuotaEvidence {
   if (input.provider === "openai" && input.codexAccountId) {
-    const quota = getAccountQuota(input.codexAccountId);
-    if (quota) {
-      // Go/Free accounts report a 30-day window only; weekly windows gate
-      // everything else. `codexQuotaWindowForPlan` is the single shared rule
-      // (parser, exhaustion, recovery), so select the plan-specific bars here
-      // too instead of always combining weekly + monthly.
-      const monthly = codexQuotaWindowForPlan(input.codexAccountPlan) === "monthly";
-      const percents = [
-        ...(monthly ? [] : [quota.weeklyPercent]),
-        quota.monthlyPercent,
-      ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-      const maxPercent = percents.length > 0 ? Math.max(...percents) : undefined;
-      const resets = [
-        ...(monthly ? [] : [quota.weeklyResetAt]),
-        quota.monthlyResetAt,
-      ].filter((value): value is number => typeof value === "number" && Number.isFinite(value))
-        .filter(value => value > Date.now());
-      return {
-        known: true,
-        ...(maxPercent !== undefined
-          ? { headroom: Math.max(0, Math.min(1, 1 - maxPercent / 100)) }
-          : {}),
-        exhausted: isCodexQuotaExhausted(quota, input.codexAccountPlan),
-        ...(resets.length > 0 ? { resetAtMs: Math.min(...resets) } : {}),
-        source: "codex-pool",
-      };
+    // The live routing/profile assembly path includes the selected account's
+    // plan. At that boundary the candidate represents the whole Codex pool,
+    // not that one active account, so aggregate the reconciled quota cache.
+    // Caller-supplied dry-run account evidence omits the plan and remains exact.
+    if (input.codexAccountPlan !== undefined) {
+      const pool = [...listAccountQuotas()].map(([accountId]) => ({
+        accountId,
+        ...(accountId === input.codexAccountId ? { plan: input.codexAccountPlan } : {}),
+      }));
+      if (pool.length > 1) return codexPoolQuotaEvidence(pool);
     }
+    return codexAccountQuotaEvidence(input.codexAccountId, input.codexAccountPlan);
   }
 
   if (input.provider === "anthropic" && input.accountRef) {
