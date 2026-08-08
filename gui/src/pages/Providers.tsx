@@ -41,7 +41,10 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [modelsRefreshToken, setModelsRefreshToken] = useState(0);
   const [oauthTosPending, setOauthTosPending] = useState<{ provider: string; addAccount: boolean } | null>(null);
   /** Bumped after OAuth login so ProviderDetails switches to the Accounts tab. */
-  const [accountsFocusToken, setAccountsFocusToken] = useState(0);
+  const [accountsFocus, setAccountsFocus] = useState<{ token: number; provider: string | null }>({
+    token: 0,
+    provider: null,
+  });
   const aliveRef = useRef(true);
   // Which apiBase this instance has already bootstrapped. StrictMode double-invokes the mount
   // effect and its deferred load is deliberately uncancellable, so the guard lives here.
@@ -71,7 +74,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     setAdding(false);
     setAddIntent(null);
     setWorkspaceSelected(provider);
-    setAccountsFocusToken(token => token + 1);
+    setAccountsFocus(previous => ({ token: previous.token + 1, provider }));
   }, []);
   // Providers hash sync is owned by App (passive replaceHash / deliberate navigateHash).
 
@@ -339,7 +342,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             accounts={accountSets[item.name]?.accounts ?? []}
             keys={keyPools[item.name] ?? []}
             accountLoadState={accountLoadStates[item.name] ?? (item.authMode === "oauth" ? "idle" : "ready")}
-            accountsFocusToken={workspaceSelected === item.name ? accountsFocusToken : 0}
+            accountsFocusToken={accountsFocus.token}
+            accountsFocusProvider={accountsFocus.provider}
             switchingAccountId={switchingAccount?.provider === item.name ? switchingAccount.accountId : null}
             busyProvider={busy}
             loginHint={loginInfo}

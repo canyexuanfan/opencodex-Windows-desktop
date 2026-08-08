@@ -42,6 +42,7 @@ export default function ProviderDetails({
   accounts,
   accountLoadState,
   accountsFocusToken = 0,
+  accountsFocusProvider = null,
   switchingAccountId,
   keys,
   busyProvider,
@@ -72,8 +73,10 @@ export default function ProviderDetails({
   oauth?: { loggedIn: boolean; email?: string; error?: string; needsReauth?: boolean };
   accounts?: OAuthAccountRow[];
   accountLoadState?: AccountLoadState;
-  /** When this token increases, switch to the Accounts tab (post-OAuth reveal). */
+  /** When this token increases for accountsFocusProvider, switch to the Accounts tab. */
   accountsFocusToken?: number;
+  /** Provider that owns the current accountsFocusToken; other providers ignore it. */
+  accountsFocusProvider?: string | null;
   switchingAccountId?: string | null;
   keys?: ApiKeyRow[];
   busyProvider?: string | null;
@@ -104,6 +107,8 @@ export default function ProviderDetails({
   const free = useMemo(() => isFreeProvider(item), [item]);
   const local = useMemo(() => isLocalProvider(item), [item]);
   const authSurface = useMemo(() => providerAuthSurface(item), [item]);
+  // Global counter from Providers — only honor it for the reveal target.
+  const scopedAccountsFocusToken = accountsFocusProvider === item.name ? accountsFocusToken : 0;
   const connectionIdentity = JSON.stringify([
     codexController?.activeId ?? "",
     accounts?.find(account => account.active)?.id ?? "",
@@ -133,9 +138,9 @@ export default function ProviderDetails({
   // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
   // Hold a non-zero token until authSurface exists so mount-time focus from
   // revealProviderAccounts is not marked seen before Accounts can open.
-  if (accountsFocusToken !== seenAccountsFocusToken && !(accountsFocusToken && !authSurface)) {
-    setSeenAccountsFocusToken(accountsFocusToken);
-    if (accountsFocusToken && authSurface) {
+  if (scopedAccountsFocusToken !== seenAccountsFocusToken && !(scopedAccountsFocusToken && !authSurface)) {
+    setSeenAccountsFocusToken(scopedAccountsFocusToken);
+    if (scopedAccountsFocusToken && authSurface) {
       if (settingsDirty && tab === "settings") {
         setPendingLeave("accounts");
       } else {
