@@ -70,7 +70,16 @@ import {
   type UpstreamSendRecovery,
 } from "../../lib/upstream-retry";
 import { classifyTransportFailureKind, transportErrorCode } from "../../lib/upstream-reachability";
-import { recordUpstreamHostFailure, resetUpstreamHostHealth, upstreamHostHealthKey } from "../../codex/upstream-host-health";
+import {
+  acquireUpstreamHostAdmission,
+  disableUpstreamHostCircuitForKey,
+  normalizeUpstreamHostCircuitThreshold,
+  recordUpstreamHostFailure,
+  releaseUpstreamHostAdmission,
+  resetUpstreamHostHealth,
+  upstreamHostHealthKey,
+  type UpstreamHostAdmissionLease,
+} from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
@@ -112,7 +121,13 @@ import {
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 
-import { decodeRequestErrorResponse, handleResponses, usesCodexForwardPoolAuth } from "./core";
+import {
+  decodeRequestErrorResponse,
+  handleResponses,
+  preAuthUpstreamHostCircuitKey,
+  upstreamHostCircuitOpenResponse,
+  usesCodexForwardPoolAuth,
+} from "./core";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel } from "./fetch-helpers";
 
 export const COMPACT_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
@@ -312,12 +327,33 @@ export async function handleResponsesCompact(
   // official OpenAI API. Any other Responses-shaped gateway must take the routed
   // summarizer path below, or compaction fails against an endpoint it never had (#422).
   if (supportsNativeResponsesCompactEndpoint(route.providerName, route.provider)) {
+    if (req.signal.aborted) {
+      return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+    }
+    // The enclosing native-compact guard already restricts this path to
+    // supported backends, so compact intentionally does not require the
+    // regular Responses adapter check here.
+    const preAuthCompactHostKey = preAuthUpstreamHostCircuitKey(route, config, {
+      requireResponsesAdapter: false,
+    });
+    let compactHostAdmissionLease: UpstreamHostAdmissionLease | null = null;
+    let authCtx: CodexAuthContext = { kind: "main", accountId: null };
+    if (preAuthCompactHostKey) {
+      const admission = acquireUpstreamHostAdmission(
+        preAuthCompactHostKey,
+        config.upstreamHostCircuitThreshold,
+      );
+      if (admission.kind === "blocked") {
+        return upstreamHostCircuitOpenResponse(admission.retryAfterSeconds);
+      }
+      compactHostAdmissionLease = admission.lease;
+    }
+    try {
     // Native ChatGPT/OpenAI model: forward the compact request verbatim to the real backend.
     // Resolve the SAME pool/thread auth context as /v1/responses — forwarding the caller's raw
     // headers would run compaction on the wrong account (or 401) whenever a pool account is
     // active for this thread while normal turns succeed.
     let compactProvider = route.provider;
-    let authCtx: CodexAuthContext = { kind: "main", accountId: null };
     const headers = new Headers({ "content-type": "application/json" });
     try {
       if (route.codexAccountMode) {
@@ -364,6 +400,45 @@ export async function handleResponsesCompact(
     // so routed-model reasoning items (reasoning_text content) don't 400 the ChatGPT backend.
     const compactBody = sanitizeReasoningInputContent(compactBodyRaw) as typeof compactBodyRaw;
     const compactUrl = `${base}/responses/compact`;
+    const actualCompactHostKey = upstreamHostHealthKey(
+      route.providerName,
+      safeOriginLabel(compactUrl),
+    );
+    const compactHostKey = compactProvider.authMode === "forward"
+      ? actualCompactHostKey
+      : null;
+    const compactHostCircuitEnabled = compactHostKey !== null
+      && normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0;
+    if (compactHostKey !== null && !compactHostCircuitEnabled) {
+      disableUpstreamHostCircuitForKey(actualCompactHostKey);
+    }
+    if (compactHostAdmissionLease && compactHostAdmissionLease.key !== compactHostKey) {
+      releaseCodexAuthContextProbeLease(authCtx);
+      return formatErrorResponse(502, "upstream_error", "Provider host changed after circuit admission");
+    }
+    if (req.signal.aborted) {
+      releaseCodexAuthContextProbeLease(authCtx);
+      return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+    }
+    if (!compactHostAdmissionLease && compactHostCircuitEnabled) {
+      const admission = acquireUpstreamHostAdmission(
+        compactHostKey!,
+        config.upstreamHostCircuitThreshold,
+      );
+      if (admission.kind === "blocked") {
+        releaseCodexAuthContextProbeLease(authCtx);
+        return upstreamHostCircuitOpenResponse(admission.retryAfterSeconds);
+      }
+      compactHostAdmissionLease = admission.lease;
+    }
+    const settleObservedCompactHostResponse = (): void => {
+      if (compactHostCircuitEnabled) {
+        resetUpstreamHostHealth(actualCompactHostKey, compactHostAdmissionLease);
+      } else {
+        resetUpstreamHostHealth(actualCompactHostKey);
+      }
+      compactHostAdmissionLease = null;
+    };
     const compactThreadId = req.headers.get("x-codex-parent-thread-id");
     const connectMs = config.connectTimeoutMs ?? 200_000;
     // Takes its context explicitly: the alternate-account flow below records a rejection
@@ -418,7 +493,7 @@ export async function handleResponsesCompact(
       ).then(res => {
         // Every real attempt response — including an intermediate 5xx the retry
         // wrapper replaces — proves the host was reached (#914 review).
-        resetUpstreamHostHealth(upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)));
+        settleObservedCompactHostResponse();
         return res;
       });
       return recovery === "single"
@@ -442,11 +517,19 @@ export async function handleResponsesCompact(
       const outcome = classifyTransportFailureKind(err);
       // Host-level evidence stands regardless of pool membership (#914 review).
       if (outcome === "connect_neutral") {
-        recordUpstreamHostFailure(
-          upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
-          { code: transportErrorCode(err) },
-        );
+        if (compactHostCircuitEnabled) {
+          recordUpstreamHostFailure(actualCompactHostKey, {
+            code: transportErrorCode(err),
+            threshold: config.upstreamHostCircuitThreshold,
+            lease: compactHostAdmissionLease,
+          });
+        } else {
+          recordUpstreamHostFailure(actualCompactHostKey, { code: transportErrorCode(err) });
+        }
+      } else {
+        releaseUpstreamHostAdmission(compactHostAdmissionLease);
       }
+      compactHostAdmissionLease = null;
       recordCompactPoolOutcome(outcomeCtx, outcome);
       return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
     }
@@ -517,11 +600,19 @@ export async function handleResponsesCompact(
           const outcome = classifyTransportFailureKind(err);
           // Host-level evidence stands regardless of pool membership (#914 review).
           if (outcome === "connect_neutral") {
-            recordUpstreamHostFailure(
-              upstreamHostHealthKey(route.providerName, safeOriginLabel(compactUrl)),
-              { code: transportErrorCode(err) },
-            );
+            if (compactHostCircuitEnabled) {
+              recordUpstreamHostFailure(actualCompactHostKey, {
+                code: transportErrorCode(err),
+                threshold: config.upstreamHostCircuitThreshold,
+                lease: compactHostAdmissionLease,
+              });
+            } else {
+              recordUpstreamHostFailure(actualCompactHostKey, { code: transportErrorCode(err) });
+            }
+          } else {
+            releaseUpstreamHostAdmission(compactHostAdmissionLease);
           }
+          compactHostAdmissionLease = null;
           recordCompactPoolOutcome(outcomeCtx, outcome);
           return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
         }
@@ -548,6 +639,10 @@ export async function handleResponsesCompact(
     // synthetic buffer errors are not upstream bodies and stay uninspected.
     if (buffered.ok) inspectResponseLogJson(logCtx, await buffered.clone().text());
     return buffered;
+    } finally {
+      releaseUpstreamHostAdmission(compactHostAdmissionLease);
+      releaseCodexAuthContextProbeLease(authCtx);
+    }
   }
 
   // ROUTED model: run the v2 synthetic-compaction turn internally (appends COMPACT_PROMPT, no
