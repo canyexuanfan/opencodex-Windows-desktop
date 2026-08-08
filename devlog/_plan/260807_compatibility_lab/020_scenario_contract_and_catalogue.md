@@ -192,14 +192,16 @@ minimum finite bound, with `null` meaning unbounded at that layer.
 
 ## 2. Suite projection rules
 
-For each exact suite manifest:
+For each exact suite manifest, first compute the required scenarios whose
+manifest requirements are applicable to the exact subject. That applicable
+required set must be non-empty for any positive executable verdict.
 
-- `VERIFIED`: all `required` scenarios applicable to the subject have current
-  passes and every `conformance_negative_control` observed its exact required
-  rejection.
-- `PROBED`: at least one required scenario passed, with no current
-  compatibility-attributable required-scenario failure, but coverage is
-  incomplete.
+- `VERIFIED`: the applicable required set is non-empty; every applicable
+  `required` scenario has a current pass; and every applicable
+  `conformance_negative_control` observed its exact required rejection.
+- `PROBED`: at least one applicable required scenario passed, with no current
+  compatibility-attributable required-scenario failure, but the suite's
+  verification rule is not fully satisfied.
 - `DEGRADED`: a failure rule on an applicable required scenario yields
   `degraded`.
 - `UNSUPPORTED`: a required scenario's exact
@@ -207,6 +209,14 @@ For each exact suite manifest:
 - `BLOCKED`: only blockers exist and no current attributable verdict takes
   precedence.
 - `CLAIMED`/`UNKNOWN`: follow the evidence contract.
+
+An inapplicable required scenario contributes neither a pass nor a failure. If
+no required scenario is applicable, the suite cannot project `PROBED` or
+`VERIFIED`; it falls through to `CLAIMED` or `UNKNOWN` under the evidence
+contract. If execution was attempted but an environmental or administrative
+precondition prevented reaching assertions, that attempt is a typed blocker
+and may project `BLOCKED` under normal precedence; it is not treated as
+inapplicability.
 
 Supplemental scenarios never block `VERIFIED` unless a new suite version makes
 them required.
