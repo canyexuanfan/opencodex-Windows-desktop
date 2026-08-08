@@ -1,7 +1,7 @@
 # OpenCodex Compatibility Lab / EvalGrid
 
-Status: CL-00 architecture authority  
-Authority baseline: `upstream/dev` at `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296`  
+Status: CL-00 architecture authority
+Authority baseline: `upstream/dev` at `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296`
 Package/runtime at baseline: OpenCodex `2.10.2`, Bun `1.3.14`
 
 ## Purpose
