@@ -369,6 +369,7 @@ export const tr: Record<TKey, string> = {
   "prov.loginRequestFail": "{provider} giriş isteği başarısız oldu",
   "prov.loginCancelled": "{provider} girişi iptal edildi",
   "prov.loginTimeout": "{provider} girişi zaman aşımına uğradı.",
+  "prov.loginSameAccount": "Hâlâ aynı {provider} hesabı — tarayıcıda hesap değiştirin, ardından tekrar Hesap Ekle'yi deneyin.",
   "prov.loginOk": "{provider} hesabına giriş yapıldı. Proxy'yi başlatın: {cmd}",
   "prov.added": "\"{name}\" eklendi. Proxy'yi başlatın: {cmd}",
   "oauthTos.highTitle": "{provider}: abonelik OAuth riski",
