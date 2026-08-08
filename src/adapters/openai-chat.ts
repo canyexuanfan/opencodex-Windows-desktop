@@ -266,18 +266,8 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
   const toolCatalogNudge = shouldInjectNonOpenAIToolCatalogNudge(provider)
     ? buildNonOpenAIToolCatalogNudgeForTools(context.tools, options.toolChoice)
     : undefined;
-  // Chat templates used by LM Studio, llama.cpp, and other strict OpenAI-compatible
-  // backends require every system instruction to precede conversation history. Codex can
-  // append developer reminders after user turns, so fold text-only developer messages into
-  // the single leading system message instead of emitting role:"system" in place. Developer
-  // messages with images cannot be represented as system content and remain user-compatible
-  // vision messages at their original position below.
-  const developerSystemParts = context.messages
-    .map(developerSystemText)
-    .filter((part): part is string => part !== undefined && part.length > 0);
   const systemParts = [
     ...(context.systemPrompt ?? []),
-    ...developerSystemParts,
     ...(toolCatalogNudge ? [toolCatalogNudge] : []),
   ];
   if (systemParts.length > 0) {
@@ -298,7 +288,13 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
       case "developer": {
         const parts = typeof msg.content === "string" ? undefined : msg.content as OcxContentPart[];
         const hasImages = parts?.some(p => p.type === "image") ?? false;
-        if (msg.role === "developer" && !hasImages) break;
+        if (msg.role === "developer" && !hasImages) {
+          const text = typeof msg.content === "string"
+            ? msg.content
+            : parts!.map(p => (p as OcxTextContent).text).join("");
+          out.push({ role: "developer", content: text });
+          break;
+        }
         let chatMsg: Record<string, unknown>;
         if (typeof msg.content === "string") {
           chatMsg = { role: "user", content: msg.content };
@@ -652,7 +648,7 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
     type: "function",
     function: {
       name: namespacedToolName(t.namespace, t.name),
-      description: t.description,
+      ...(t.description ? { description: t.description } : {}),
       parameters,
       ...(t.strict !== undefined ? { strict: t.strict } : {}),
     },
@@ -680,7 +676,12 @@ function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxPro
 
 function toolChoiceToChatFormat(tc: OcxParsedRequest["options"]["toolChoice"], tools: OcxParsedRequest["context"]["tools"]): unknown {
   if (!tc) return undefined;
-  if (isAllowedToolChoice(tc)) return tc.mode === "required" ? "required" : "auto";
+  if (isAllowedToolChoice(tc)) {
+    if (tc.mode === "required" && tc.allowedTools.length === 1) {
+      return { type: "function", function: { name: resolveToolChoiceWireName(tools, tc.allowedTools[0]) } };
+    }
+    return tc.mode === "required" ? "required" : "auto";
+  }
   if (tc === "auto" || tc === "none" || tc === "required") return tc;
   if ("name" in tc) return { type: "function", function: { name: resolveToolChoiceWireName(tools, tc.name) } };
   return undefined;
