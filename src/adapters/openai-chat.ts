@@ -951,6 +951,9 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         const rawPayload = sseFieldValue(line, "data");
         if (rawPayload === null) return "continue";
         const payload = rawPayload.trim();
+        // A bare `data:` line carries nothing (heartbeat-style keep-alive on some gateways);
+        // it is not a malformed frame, just nothing to parse.
+        if (payload.length === 0) return "continue";
         if (payload === "[DONE]") {
           yield* flushToolCalls();
           const stopReason = stopReasonFor(finishReason);
