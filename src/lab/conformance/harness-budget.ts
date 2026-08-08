@@ -11,14 +11,16 @@ type TestAdapter<T extends ProviderAdapter> = Omit<T, "buildRequest" | "parseStr
     response: Response,
     budget?: TranslatorBudget,
   ) => ReturnType<NonNullable<T["parseResponse"]>>;
+  dispose(): void;
 };
 
-/** Inject translator budget for harness adapter calls (mirrors tests/helpers/translator-budget). */
+/** Inject one bounded translator budget for a harness adapter scope. Call dispose() in finally. */
 export function withHarnessTranslatorBudget<T extends ProviderAdapter>(adapter: T): TestAdapter<T> {
   const budget = createTranslatorBudget();
   const buildRequest = adapter.buildRequest.bind(adapter);
   const parseStream = adapter.parseStream.bind(adapter);
   const parseResponse = adapter.parseResponse?.bind(adapter);
+  let disposed = false;
   return {
     ...adapter,
     buildRequest(parsed: Parameters<T["buildRequest"]>[0], incoming?: Partial<IncomingMeta>) {
@@ -36,5 +38,10 @@ export function withHarnessTranslatorBudget<T extends ProviderAdapter>(adapter: 
         return parseResponse(response, explicitBudget ?? budget);
       },
     } : {}),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      budget.dispose();
+    },
   } as unknown as TestAdapter<T>;
 }

@@ -26,7 +26,9 @@ export function resolveJsonPointer(root: unknown, pointer: string): PointerResul
       return { ok: false, reason: "selector_missing" };
     }
     const obj = current as Record<string, unknown>;
-    if (!(token in obj)) return { ok: false, reason: "selector_missing" };
+    if (!Object.prototype.hasOwnProperty.call(obj, token)) {
+      return { ok: false, reason: "selector_missing" };
+    }
     current = obj[token];
   }
   return { ok: true, value: current };

@@ -54,7 +54,7 @@ export const NEGATIVE_CONTROL_FIXTURES: Array<{
     mutate: (c) => ({
       ...c,
       id: "negative.tool-result-order",
-      assertions: [{ id: "result", operator: "tool_result_correlates", selector: "/upstream/requests", expected: { call: "/client/response/toolCalls/0/id", result: "/upstream/requests/1/json/input/0/call_id" }, required: true }],
+      assertions: [{ id: "result", operator: "tool_result_correlates", selector: "/upstream/requests", expected: { call: "/client/response/toolCalls/0/id", result: "/upstream/requests/1/json/messages/1/tool_call_id" }, required: true }],
       fixture: {
         ...c.fixture,
         bytesUtf8: JSON.stringify({
@@ -152,7 +152,9 @@ export function buildNegativeControls(cases: CaseRecord[]): CaseRecord[] {
   for (const control of NEGATIVE_CONTROL_FIXTURES) {
     const base = baseCaseForNegativeControl(control.id, cases);
     if (!base) continue;
-    built.push(control.mutate(structuredClone(base)));
+    const cloned = structuredClone(base);
+    delete cloned.expectedFailure;
+    built.push(control.mutate(cloned));
   }
   return built;
 }

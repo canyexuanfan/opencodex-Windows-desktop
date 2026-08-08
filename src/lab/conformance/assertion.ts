@@ -129,7 +129,9 @@ function evaluatePresence(
 function evaluateEventSequence(assertion: AssertionSpec, observation: NormalizedObservation): AssertionResult {
   const events = observation.client.response.events.map((e) => e.event);
   const expected = assertion.expected as string[];
-  const passed = events.length === expected.length && events.every((e, i) => e === expected[i]);
+  const passed = Array.isArray(expected)
+    && events.length === expected.length
+    && events.every((e, i) => e === expected[i]);
   return {
     id: assertion.id,
     operator: assertion.operator,
@@ -167,7 +169,7 @@ function evaluateIdMatches(assertion: AssertionSpec, observation: NormalizedObse
     };
   }
   const grammar = ID_GRAMMARS[String(assertion.expected)];
-  const value = String(resolved.value ?? "");
+  const value = typeof resolved.value === "string" ? resolved.value : "";
   const passed = grammar ? grammar.test(value) : false;
   return {
     id: assertion.id,
@@ -180,7 +182,17 @@ function evaluateIdMatches(assertion: AssertionSpec, observation: NormalizedObse
 }
 
 function evaluateIdStable(assertion: AssertionSpec, observation: NormalizedObservation): AssertionResult {
-  const pointers = assertion.expected as string[];
+  const pointers = assertion.expected;
+  if (!Array.isArray(pointers) || pointers.length < 2 || !pointers.every((p) => typeof p === "string")) {
+    return {
+      id: assertion.id,
+      operator: assertion.operator,
+      required: assertion.required,
+      passed: false,
+      observedSummary: "expected at least two pointers",
+      reason: "invalid_expected",
+    };
+  }
   const values: string[] = [];
   for (const pointer of pointers) {
     const resolved = resolveJsonPointer(observation, pointer);
@@ -194,7 +206,17 @@ function evaluateIdStable(assertion: AssertionSpec, observation: NormalizedObser
         reason: resolved.reason,
       };
     }
-    values.push(String(resolved.value ?? ""));
+    if (typeof resolved.value !== "string") {
+      return {
+        id: assertion.id,
+        operator: assertion.operator,
+        required: assertion.required,
+        passed: false,
+        observedSummary: "identifier must be a string",
+        reason: "selector_type_mismatch",
+      };
+    }
+    values.push(resolved.value);
   }
   const passed = values.every((v) => v === values[0]);
   return {
@@ -207,9 +229,17 @@ function evaluateIdStable(assertion: AssertionSpec, observation: NormalizedObser
   };
 }
 
+function correlatedIds(left: unknown, right: unknown): boolean {
+  return typeof left === "string"
+    && typeof right === "string"
+    && left.length > 0
+    && right.length > 0
+    && left === right;
+}
+
 function evaluateIdCorrelates(assertion: AssertionSpec, observation: NormalizedObservation): AssertionResult {
-  const pointers = assertion.expected as string[];
-  if (pointers.length !== 2) {
+  const pointers = assertion.expected;
+  if (!Array.isArray(pointers) || pointers.length !== 2 || !pointers.every((p) => typeof p === "string")) {
     return {
       id: assertion.id,
       operator: assertion.operator,
@@ -222,7 +252,6 @@ function evaluateIdCorrelates(assertion: AssertionSpec, observation: NormalizedO
   const left = resolveJsonPointer(observation, pointers[0]);
   const right = resolveJsonPointer(observation, pointers[1]);
   if (!left.ok || !right.ok) {
-    const reason = !left.ok ? (left as { reason: string }).reason : (right as { reason: string }).reason;
     return {
       id: assertion.id,
       operator: assertion.operator,
@@ -232,7 +261,7 @@ function evaluateIdCorrelates(assertion: AssertionSpec, observation: NormalizedO
       reason: "selector_missing",
     };
   }
-  const passed = String(left.value ?? "") === String(right.value ?? "");
+  const passed = correlatedIds(left.value, right.value);
   return {
     id: assertion.id,
     operator: assertion.operator,
@@ -244,7 +273,17 @@ function evaluateIdCorrelates(assertion: AssertionSpec, observation: NormalizedO
 }
 
 function evaluateToolResultCorrelates(assertion: AssertionSpec, observation: NormalizedObservation): AssertionResult {
-  const spec = assertion.expected as { call: string; result: string };
+  const spec = assertion.expected as { call?: unknown; result?: unknown };
+  if (!spec || typeof spec.call !== "string" || typeof spec.result !== "string") {
+    return {
+      id: assertion.id,
+      operator: assertion.operator,
+      required: assertion.required,
+      passed: false,
+      observedSummary: "expected call/result pointers",
+      reason: "invalid_expected",
+    };
+  }
   const call = resolveJsonPointer(observation, spec.call);
   const result = resolveJsonPointer(observation, spec.result);
   if (!call.ok || !result.ok) {
@@ -257,7 +296,7 @@ function evaluateToolResultCorrelates(assertion: AssertionSpec, observation: Nor
       reason: "selector_missing",
     };
   }
-  const passed = String(call.value ?? "") === String(result.value ?? "");
+  const passed = correlatedIds(call.value, result.value);
   return {
     id: assertion.id,
     operator: assertion.operator,

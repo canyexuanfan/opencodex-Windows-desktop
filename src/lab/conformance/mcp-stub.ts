@@ -30,14 +30,19 @@ export function executeMcpSyntheticAction(caseRecord: CaseRecord): NormalizedObs
       return runCallResult(decoded);
     case "mcp_resource_round_trip_v1":
       return runResourceRoundTrip(decoded);
-    default:
-      throw new Error(`invalid_manifest: unsupported MCP action ${token}`);
   }
 }
 
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
 function runNamespaceRoundTrip(decoded: Record<string, unknown>): NormalizedObservation {
-  const namespace = String(decoded.namespace ?? "");
-  const name = String(decoded.name ?? "");
+  if (!nonEmptyString(decoded.namespace) || !nonEmptyString(decoded.name)) {
+    throw new Error("invalid_manifest: MCP namespace/name must be non-empty strings");
+  }
+  const namespace = decoded.namespace;
+  const name = decoded.name;
   const wireName = `${namespace}__${name}`;
   const observation = emptyObservation();
   observation.upstream.requests.push({
@@ -72,29 +77,50 @@ function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+function parsesJson(value: string): boolean {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function runSchemaBounds(decoded: Record<string, unknown>): NormalizedObservation {
-  const limitBytes = Number(decoded.limitBytes ?? 0);
-  const exactSchema = String(decoded.exactSchema ?? "");
-  const overSchema = String(decoded.overSchema ?? "");
   const observation = emptyObservation();
-  const exactBound = utf8ByteLength(exactSchema) === limitBytes && JSON.parse(exactSchema) !== undefined
-    ? "pass"
-    : "fail";
-  const oneOverRejected = utf8ByteLength(overSchema) === limitBytes + 1
-    && JSON.parse(overSchema) !== undefined
-    ? "pass"
-    : "fail";
+  const limitBytes = decoded.limitBytes;
+  const exactSchema = decoded.exactSchema;
+  const overSchema = decoded.overSchema;
+  if (!Number.isInteger(limitBytes) || (limitBytes as number) <= 0
+    || typeof exactSchema !== "string" || typeof overSchema !== "string") {
+    observation.verifiers = {
+      exact_bound: "fail",
+      one_over_rejected: "fail",
+      partial_commit: false,
+    };
+    return observation;
+  }
+
+  const limit = limitBytes as number;
+  const exactValid = utf8ByteLength(exactSchema) === limit && parsesJson(exactSchema);
+  // The inert stub models two isolated catalogue transactions. The over-bound transaction
+  // is rejected before commit; its validity matters so this tests the byte ceiling rather
+  // than malformed JSON.
+  const overRejected = utf8ByteLength(overSchema) === limit + 1 && parsesJson(overSchema);
   observation.verifiers = {
-    exact_bound: exactBound,
-    one_over_rejected: oneOverRejected,
+    exact_bound: exactValid ? "pass" : "fail",
+    one_over_rejected: overRejected ? "pass" : "fail",
     partial_commit: false,
   };
   return observation;
 }
 
 function runCallResult(decoded: Record<string, unknown>): NormalizedObservation {
-  const namespace = String(decoded.namespace ?? "");
-  const name = String(decoded.name ?? "");
+  if (!nonEmptyString(decoded.namespace) || !nonEmptyString(decoded.name)) {
+    throw new Error("invalid_manifest: MCP namespace/name must be non-empty strings");
+  }
+  const namespace = decoded.namespace;
+  const name = decoded.name;
   const argumentsValue = decoded.arguments ?? {};
   const result = decoded.result;
   const wireName = `${namespace}__${name}`;
@@ -119,13 +145,22 @@ function runCallResult(decoded: Record<string, unknown>): NormalizedObservation 
 }
 
 function runResourceRoundTrip(decoded: Record<string, unknown>): NormalizedObservation {
-  const resources = decoded.resources;
-  const read = decoded.read as { uri?: string; contents?: unknown[] } | undefined;
+  if (!Array.isArray(decoded.resources) || !decoded.read || typeof decoded.read !== "object") {
+    throw new Error("invalid_manifest: invalid MCP resource fixture");
+  }
+  const read = decoded.read as { uri?: unknown; contents?: unknown[] };
+  if (!nonEmptyString(read.uri) || !Array.isArray(read.contents)) {
+    throw new Error("invalid_manifest: invalid MCP resource read fixture");
+  }
+  const matching = decoded.resources.filter((resource) =>
+    resource && typeof resource === "object" && (resource as { uri?: unknown }).uri === read.uri
+  );
+  if (matching.length !== 1) throw new Error("invalid_manifest: MCP resource URI must resolve exactly once");
   const observation = emptyObservation();
   setClientResponse(observation, {
     json: {
-      resources,
-      contents: read?.contents,
+      resources: decoded.resources,
+      contents: read.contents,
     },
     status: 200,
   });
@@ -139,12 +174,6 @@ export function attachMcpVerifiers(observation: NormalizedObservation, caseRecor
       observation.client.response.mcpCalls = projectMcpCalls(toolCalls);
     }
   }
-  if (caseRecord.id === "mcp-core.protocol.call-result") {
-    const decoded = JSON.parse(caseRecord.fixture.bytesUtf8) as Record<string, unknown>;
-    observation.verifiers.stub_received = {
-      namespace: String(decoded.namespace ?? ""),
-      name: String(decoded.name ?? ""),
-      arguments: decoded.arguments ?? {},
-    };
-  }
+  // runCallResult records the literal one-invocation receipt. Do not reconstruct it here:
+  // assertions must inspect the action result that actually ran.
 }

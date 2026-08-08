@@ -64,24 +64,27 @@ export function projectToolCallsFromOutput(output: unknown[]): ToolCallProjectio
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
     if (rec.type === "function_call") {
-      calls.push({
-        id: String(rec.call_id ?? rec.id ?? ""),
-        name: String(rec.name ?? ""),
-        arguments: parseToolArguments(rec.arguments, "function"),
-        kind: "function",
-        ordinal: ordinal++,
-      });
+      const id = rec.call_id ?? rec.id;
+      const name = rec.name;
+      if (typeof id !== "string" || id.length === 0 || typeof name !== "string" || name.length === 0) continue;
+      const args = parseToolArguments(rec.arguments, "function");
+      if (args === null) continue;
+      calls.push({ id, name, arguments: args, kind: "function", ordinal: ordinal++ });
     } else if (rec.type === "custom_tool_call") {
+      const id = rec.call_id ?? rec.id;
+      const name = rec.name;
+      if (typeof id !== "string" || id.length === 0 || typeof name !== "string" || name.length === 0) continue;
       calls.push({
-        id: String(rec.call_id ?? rec.id ?? ""),
-        name: String(rec.name ?? ""),
+        id,
+        name,
         arguments: parseToolArguments(rec.input, "custom"),
         kind: "custom",
         ordinal: ordinal++,
       });
     }
   }
-  return calls;
+  const ids = calls.map((call) => call.id);
+  return new Set(ids).size === ids.length ? calls : [];
 }
 
 export function projectToolCallsFromEvents(events: NormalizedEvent[]): ToolCallProjection[] {
@@ -124,23 +127,27 @@ function deriveTerminal(events: NormalizedEvent[]): string | null {
   return null;
 }
 
+function extractOutputText(json: Record<string, unknown>): string {
+  let text = "";
+  const output = json.output;
+  if (!Array.isArray(output)) return text;
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    const content = (item as { content?: unknown[] }).content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part && typeof part === "object" && (part as { type?: string }).type === "output_text") {
+        text += String((part as { text?: string }).text ?? "");
+      }
+    }
+  }
+  return text;
+}
+
 export function deriveNormalizedText(events: NormalizedEvent[], json: unknown): string {
   if (json && typeof json === "object" && !Array.isArray(json)) {
-    const resp = json as Record<string, unknown>;
-    if (Array.isArray(resp.output)) {
-      let text = "";
-      for (const item of resp.output) {
-        if (!item || typeof item !== "object") continue;
-        const content = (item as { content?: unknown }).content;
-        if (!Array.isArray(content)) continue;
-        for (const part of content) {
-          if (part && typeof part === "object" && (part as { type?: string }).type === "output_text") {
-            text += String((part as { text?: string }).text ?? "");
-          }
-        }
-      }
-      if (text) return text;
-    }
+    const text = extractOutputText(json as Record<string, unknown>);
+    if (text) return text;
   }
   let text = "";
   for (const ev of events) {
@@ -159,26 +166,30 @@ export function finalizeObservation(
   observation: NormalizedObservation,
   events: NormalizedEvent[],
   json: unknown = null,
+  status = 200,
 ): void {
-  const toolCalls = projectToolCallsFromEvents(events);
-  const terminal = deriveTerminal(events);
-  setClientResponse(observation, {
-    events,
-    toolCalls: toolCalls.length > 0 ? toolCalls : projectToolCallsFromOutput(
+  const eventToolCalls = projectToolCallsFromEvents(events);
+  const resolvedToolCalls = eventToolCalls.length > 0
+    ? eventToolCalls
+    : projectToolCallsFromOutput(
       json && typeof json === "object" && !Array.isArray(json)
         ? ((json as { output?: unknown[] }).output ?? [])
         : [],
-    ),
-    mcpCalls: projectMcpCalls(toolCalls),
+    );
+  const terminal = deriveTerminal(events);
+  setClientResponse(observation, {
+    events,
+    toolCalls: resolvedToolCalls,
+    mcpCalls: projectMcpCalls(resolvedToolCalls),
     terminal,
     normalizedText: deriveNormalizedText(events, json),
     json,
-    status: 200,
+    status,
   });
 }
 
 export function attachVerifiers(observation: NormalizedObservation, caseRecord: CaseRecord): void {
-  observation.verifiers = buildVerifiers(observation, caseRecord);
+  observation.verifiers = { ...observation.verifiers, ...buildVerifiers(observation, caseRecord) };
 }
 
 function buildVerifiers(observation: NormalizedObservation, caseRecord: CaseRecord): Record<string, unknown> {
@@ -218,23 +229,28 @@ function buildVerifiers(observation: NormalizedObservation, caseRecord: CaseReco
 }
 
 function evaluateCallResultOrder(observation: NormalizedObservation): string {
-  const input = observation.upstream.requests[0]?.json as { input?: unknown[] } | undefined;
-  if (!input?.input || !Array.isArray(input.input)) return "fail";
-  let sawCall = false;
-  for (const item of input.input) {
+  const request = observation.upstream.requests[0]?.json as { input?: unknown[] } | undefined;
+  const input = request?.input;
+  if (!Array.isArray(input)) return "fail";
+  let pendingCallId: string | undefined;
+  let resultCount = 0;
+  for (const item of input) {
     if (!item || typeof item !== "object") continue;
-    const type = (item as { type?: string }).type;
-    if (type === "function_call") {
-      if (sawCall) return "fail";
-      sawCall = true;
+    const record = item as { type?: string; call_id?: unknown };
+    if (record.type === "function_call") {
+      if (pendingCallId !== undefined) return "fail";
+      if (typeof record.call_id !== "string" || record.call_id.length === 0) return "fail";
+      pendingCallId = record.call_id;
       continue;
     }
-    if (type === "function_call_output") {
-      if (!sawCall) return "fail";
-      return "pass";
+    if (record.type === "function_call_output") {
+      if (pendingCallId === undefined) return "fail";
+      if (typeof record.call_id !== "string" || record.call_id !== pendingCallId) return "fail";
+      resultCount++;
+      if (resultCount > 1) return "fail";
     }
   }
-  return "fail";
+  return pendingCallId !== undefined && resultCount === 1 ? "pass" : "fail";
 }
 
 function evaluateCompactionReplayed(caseRecord: CaseRecord): boolean {
@@ -287,13 +303,10 @@ function evaluateModalityPath(caseRecord: CaseRecord): string {
 
 function evaluateSilentImageDrop(caseRecord: CaseRecord): boolean {
   const vector = JSON.parse(caseRecord.fixture.bytesUtf8) as Record<string, unknown>;
-  const requestHasImage = Boolean(vector.requestHasImage);
-  const modalities = vector.modelInputModalities as string[] | undefined;
-  const sidecar = vector.visionSidecar as { enabled?: boolean } | undefined;
-  if (!requestHasImage) return false;
-  if (Array.isArray(modalities) && modalities.includes("image")) return false;
-  if (sidecar?.enabled) return false;
-  return true;
+  if (!Boolean(vector.requestHasImage)) return false;
+  // Protocol V1's closed modality-gate vector treats the explicit `unsupported` path as a
+  // typed rejection, not as an omitted image. Native/sidecar paths likewise preserve it.
+  return !["native", "sidecar", "unsupported"].includes(evaluateModalityPath(caseRecord));
 }
 
 function evaluateJsonSseEquivalence(caseRecord: CaseRecord): string {
@@ -319,21 +332,4 @@ function evaluateJsonSseEquivalence(caseRecord: CaseRecord): string {
   }
   const sseProjection = { text: sseText, terminal: sseTerminal };
   return JSON.stringify(jsonProjection) === JSON.stringify(sseProjection) ? "pass" : "fail";
-}
-
-function extractOutputText(json: Record<string, unknown>): string {
-  let text = "";
-  const output = json.output;
-  if (!Array.isArray(output)) return text;
-  for (const item of output) {
-    if (!item || typeof item !== "object") continue;
-    const content = (item as { content?: unknown[] }).content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      if (part && typeof part === "object" && (part as { type?: string }).type === "output_text") {
-        text += String((part as { text?: string }).text ?? "");
-      }
-    }
-  }
-  return text;
 }

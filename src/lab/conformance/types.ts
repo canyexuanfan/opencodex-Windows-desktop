@@ -152,10 +152,14 @@ export interface ScenarioRunResult {
   diagnostics: string[];
 }
 
+/** All eight protocol-conformance suites frozen by CL-00 Protocol V1. */
 export const CL01_SUITES = [
   "responses-core",
   "chat-core",
   "anthropic-core",
   "tools-core",
   "codex-core",
+  "vision-core",
+  "reasoning-core",
+  "mcp-core",
 ] as const;

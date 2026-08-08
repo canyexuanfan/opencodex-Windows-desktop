@@ -3,7 +3,10 @@ import type { OcxProviderConfig } from "../../types";
 export function fixtureProviderConfig(adapter: string): OcxProviderConfig {
   return {
     adapter,
-    baseUrl: "http://127.0.0.1:1/v1",
+    // The Chat fixture intentionally exercises native OpenAI Chat semantics (including
+    // role:"developer" and named single-tool selection). Other fixture adapters remain
+    // loopback-only and never perform network I/O.
+    baseUrl: adapter === "openai-chat" ? "https://api.openai.com/v1" : "http://127.0.0.1:1/v1",
     apiKey: "fixture-key",
     allowPrivateNetwork: true,
     models: ["fixture-model"],
@@ -18,11 +21,7 @@ export function upstreamAdapterForProtocol(protocol: string): string {
       return "openai-chat";
     case "openai-responses":
       return "openai-responses";
-    case "anthropic-messages":
-      return "anthropic";
-    case "cursor-protobuf":
-      return "cursor";
     default:
-      return "openai-chat";
+      throw new Error(`unsupported upstream protocol: ${protocol}`);
   }
 }

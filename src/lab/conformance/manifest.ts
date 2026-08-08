@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixtureDigest, scenarioManifestDigest } from "./digest";
+import { fixtureDigest } from "./digest";
 import { MCP_ACTION_TOKENS } from "./mcp-stub";
 import type {
   CaseAuthority,
@@ -12,6 +12,7 @@ import type {
 import { CL01_SUITES, SYNTHETIC_MARKER } from "./types";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+// Provenance is the normative CL-00 authority name, not the runtime copy's basename.
 const AUTHORITY_FILE = "022_protocol_v1_cases.json";
 
 export function loadCaseAuthority(): CaseAuthority {
@@ -74,7 +75,12 @@ function fixtureRef(fixture: CaseRecord["fixture"], authority: CaseAuthority): R
 }
 
 function expandFailureRules(caseRecord: CaseRecord, authority: CaseAuthority): FailureRule[] {
-  const base = [...authority.failureRuleSets[authority.manifestDefaults.failureRuleSet]];
+  const setName = authority.manifestDefaults.failureRuleSet;
+  const ruleSet = authority.failureRuleSets[setName];
+  if (!Array.isArray(ruleSet)) {
+    throw new Error(`harness_failure: contract_integrity unknown failureRuleSet ${setName}`);
+  }
+  const base = [...ruleSet];
   if (!caseRecord.expectedFailure) return base;
   const template = authority.expectedFailureRuleTemplate;
   const controlRule: FailureRule = {
@@ -131,12 +137,6 @@ export function validateExpandedFixtureRef(
     errors.push("fixture byteLength mismatch in expanded ref");
   }
   return errors;
-}
-
-export function validateScenarioManifestDigest(caseRecord: CaseRecord, authority: CaseAuthority): boolean {
-  const expanded = expandScenario(caseRecord, authority);
-  const digest = scenarioManifestDigest(expanded);
-  return digest.length === 64;
 }
 
 function validateMcpHarnessFeatures(caseRecord: CaseRecord): string[] {
