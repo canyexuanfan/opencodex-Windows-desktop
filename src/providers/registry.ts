@@ -1303,8 +1303,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // context window from jawcode metadata instead of falling back to the 128k
     // strict-fields default (jawcode models.json, verified 2026-08-08).
     jawcodeBundle: "deepseek",
-    // deepseek-chat/deepseek-reasoner are upstream-deprecated at 2026-07-24 15:59 UTC;
-    // kept until then. Evidence: devlog/_plan/260710_provider_hardening/002_research_cn.md.
+    // deepseek-chat/deepseek-reasoner were deprecated upstream on 2026-07-24 15:59 UTC;
+    // official identifiers are now deepseek-v4-flash / deepseek-v4-pro. They stay in
+    // the list only as compatibility aliases so existing saved configs and requests
+    // keep validating and routing (they previously mapped to v4-flash; devlog
+    // _plan/260710_provider_hardening/002_research_cn.md). The current offerings are
+    // the V4 ids — defaultModel and the model-specific wiring above use them.
     models: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
     defaultModel: "deepseek-v4-flash",
     // Official DeepSeek Codex setup (codex-deepseek-setup.sh) advertises 1,048,576
