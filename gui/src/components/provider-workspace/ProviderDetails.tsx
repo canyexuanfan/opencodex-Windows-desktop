@@ -94,7 +94,9 @@ export default function ProviderDetails({
   const [pendingLeave, setPendingLeave] = useState<Tab | "deselect" | null>(null);
   const [leaveSaving, setLeaveSaving] = useState(false);
   const settingsSaveRef = useRef<(() => Promise<boolean>) | null>(null);
-  const [seenAccountsFocusToken, setSeenAccountsFocusToken] = useState(accountsFocusToken);
+  // Seed 0 so a mount-time token from revealProviderAccounts stays pending until
+  // authSurface exists; seeding with the prop would treat it as already seen.
+  const [seenAccountsFocusToken, setSeenAccountsFocusToken] = useState(0);
   const registerSettingsSave = useCallback((save: (() => Promise<boolean>) | null) => {
     settingsSaveRef.current = save;
   }, []);
@@ -129,7 +131,9 @@ export default function ProviderDetails({
   // Adjust related state when accountsFocusToken changes during render (not in an
   // effect) so the Accounts tab is selected without a one-frame stale paint.
   // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
-  if (accountsFocusToken !== seenAccountsFocusToken) {
+  // Hold a non-zero token until authSurface exists so mount-time focus from
+  // revealProviderAccounts is not marked seen before Accounts can open.
+  if (accountsFocusToken !== seenAccountsFocusToken && !(accountsFocusToken && !authSurface)) {
     setSeenAccountsFocusToken(accountsFocusToken);
     if (accountsFocusToken && authSurface) {
       if (settingsDirty && tab === "settings") {
