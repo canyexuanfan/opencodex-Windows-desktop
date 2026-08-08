@@ -286,6 +286,7 @@ export const ja: Record<TKey, string> = {
   "prov.loginCancelled": "{provider} ログインはキャンセルされました",
   "prov.loginTimeout": "{provider} ログインがタイムアウトしました — ブラウザが閉じたか完了しませんでした。もう一度お試しください。",
   "prov.loginOk": "{provider} にログインしました。{cmd} を実行(またはライブで適用)してモデルを一覧表示します。",
+  "prov.loginSameAccount": "同じ {provider} アカウントのままです。ブラウザでアカウントを切り替えてから、もう一度アカウント追加を試してください。",
   "oauthTos.highTitle": "{provider}: サブスクリプション OAuth リスク",
   "oauthTos.elevatedTitle": "{provider}: 非公式 OAuth ブリッジ",
   "oauthTos.anthropicBody": "OpenCodex のような第三者プロキシ経由で Claude サブスクリプションの OAuth トークンを直接再利用することは、Anthropic がサポートする統合ではなく、アクセス制限につながる可能性があります。Claude サブスクリプションを使用するサポートされた Agent SDK 統合は別物です。",

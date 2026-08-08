@@ -286,6 +286,7 @@ export const zh: Record<TKey, string> = {
   "prov.loginCancelled": "{provider} 登录已取消",
   "prov.loginTimeout": "{provider} 登录超时 — 浏览器已关闭或未完成。请重试。",
   "prov.loginOk": "已登录到 {provider}。运行 {cmd}（或实时生效）以列出其模型。",
+  "prov.loginSameAccount": "仍是同一个 {provider} 账户 — 请在浏览器中切换账户后再次尝试添加账户。",
   "oauthTos.highTitle": "{provider}：订阅 OAuth 风险",
   "oauthTos.elevatedTitle": "{provider}：非官方 OAuth 桥接",
   "oauthTos.anthropicBody": "通过 OpenCodex 等第三方代理直接复用 Claude 订阅 OAuth 令牌，并非 Anthropic 支持的集成方式，可能导致访问受限。可使用 Claude 订阅的受支持 Agent SDK 集成属于另一种方式。",

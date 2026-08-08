@@ -2,7 +2,7 @@
  * ProviderDetails — the detail header + tab shell (WP090+091). Owns tab state
  * and composes the Overview/Models/Usage/Settings panels.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatProviderDisplayName } from "../../provider-icons";
@@ -41,6 +41,7 @@ export default function ProviderDetails({
   oauth,
   accounts,
   accountLoadState,
+  accountsFocusToken = 0,
   switchingAccountId,
   keys,
   busyProvider,
@@ -70,6 +71,8 @@ export default function ProviderDetails({
   oauth?: { loggedIn: boolean; email?: string; error?: string; needsReauth?: boolean };
   accounts?: OAuthAccountRow[];
   accountLoadState?: AccountLoadState;
+  /** When this token increases, switch to the Accounts tab (post-OAuth reveal). */
+  accountsFocusToken?: number;
   switchingAccountId?: string | null;
   keys?: ApiKeyRow[];
   busyProvider?: string | null;
@@ -89,6 +92,7 @@ export default function ProviderDetails({
   const [pendingLeave, setPendingLeave] = useState<Tab | "deselect" | null>(null);
   const [leaveSaving, setLeaveSaving] = useState(false);
   const settingsSaveRef = useRef<(() => Promise<boolean>) | null>(null);
+  const lastAccountsFocusTokenRef = useRef(0);
   const registerSettingsSave = useCallback((save: (() => Promise<boolean>) | null) => {
     settingsSaveRef.current = save;
   }, []);
@@ -111,6 +115,13 @@ export default function ProviderDetails({
     }
     setTab(next);
   }, [tab, settingsDirty]);
+
+  useEffect(() => {
+    if (!accountsFocusToken || accountsFocusToken === lastAccountsFocusTokenRef.current) return;
+    lastAccountsFocusTokenRef.current = accountsFocusToken;
+    if (!authSurface) return;
+    setTab("accounts");
+  }, [accountsFocusToken, authSurface]);
 
   const requestDeselect = useCallback(() => {
     if (settingsDirty && tab === "settings") {

@@ -52,8 +52,8 @@ function decodeCursorJwtPayload(token: string): CursorJwtPayload | undefined {
 /** Build OAuthCredentials from Cursor tokens, extracting stable identity from JWT `sub` for multiauth. */
 export function credentialsFromCursorTokens(accessToken: string, refreshToken: string): OAuthCredentials {
   const payload = decodeCursorJwtPayload(accessToken) ?? decodeCursorJwtPayload(refreshToken);
-  const accountId = typeof payload?.sub === "string" && payload.sub.length > 0 ? payload.sub : undefined;
-  const email = typeof payload?.email === "string" && payload.email.length > 0 ? payload.email.toLowerCase() : undefined;
+  const accountId = cursorJwtIdentity(payload?.sub);
+  const email = cursorJwtEmail(payload?.email);
   return {
     access: accessToken,
     refresh: refreshToken,
@@ -63,11 +63,27 @@ export function credentialsFromCursorTokens(accessToken: string, refreshToken: s
   };
 }
 
+/** Coerce JWT `sub` (string or number) into a stable multiauth account id. */
+function cursorJwtIdentity(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+function cursorJwtEmail(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  return value.toLowerCase();
+}
+
 /** Generate PKCE params + the cursor.com deep-link login URL (challenge only — never the verifier). */
-export async function generateCursorAuthParams(): Promise<CursorAuthParams> {
+export async function generateCursorAuthParams(opts?: { forceLogin?: boolean }): Promise<CursorAuthParams> {
   const { verifier, challenge } = await generatePKCE();
   const uuid = crypto.randomUUID();
+  // Cursor's deep-control page has no documented account-picker query; `mode=login` is the
+  // stable entry. forceLogin only changes the operator-facing instructions so a second/third
+  // account can be chosen in the already-open browser session before approving.
   const params = new URLSearchParams({ challenge, uuid, mode: "login", redirectTarget: "cli" });
+  if (opts?.forceLogin) params.set("prompt", "login");
   return { verifier, challenge, uuid, loginUrl: `${CURSOR_LOGIN_URL}?${params.toString()}` };
 }
 
@@ -139,9 +155,15 @@ export async function pollCursorAuth(
 export async function loginCursor(
   ctrl: OAuthController,
   pollBaseDelayMs: number = POLL_BASE_DELAY_MS,
+  opts?: { forceLogin?: boolean },
 ): Promise<OAuthCredentials> {
-  const { verifier, uuid, loginUrl } = await generateCursorAuthParams();
-  ctrl.onAuth?.({ url: loginUrl, instructions: "Approve the Cursor login in your browser, then return here." });
+  const { verifier, uuid, loginUrl } = await generateCursorAuthParams({ forceLogin: opts?.forceLogin === true });
+  ctrl.onAuth?.({
+    url: loginUrl,
+    instructions: opts?.forceLogin
+      ? "In the browser, switch to the Cursor account you want to add, then approve the login and return here."
+      : "Approve the Cursor login in your browser, then return here.",
+  });
   ctrl.onProgress?.("Waiting for Cursor login approval…");
   const { accessToken, refreshToken } = await pollCursorAuth(uuid, verifier, ctrl.signal, pollBaseDelayMs);
   return credentialsFromCursorTokens(accessToken, refreshToken);
