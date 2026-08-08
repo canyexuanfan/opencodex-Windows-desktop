@@ -50,9 +50,24 @@ freshness               manifestDefaults.freshness
   role: x.role,
   mediaType: x.mediaType,
   digest: x.digest,
-  byteLength: UTF8(x.bytesUtf8).byteLength
+  byteLength: UTF8(x.bytesUtf8).byteLength,
+  syntheticMarker: "ocx-lab-synthetic-v1",
+  provenance: {
+    kind: "lab_authored",
+    authority: "022_protocol_v1_cases.json",
+    sourceCommit: source.sourceCommit
+  }
 }
 ```
+
+The marker/provenance fields are mandatory for every protocol V1 fixture
+reference and participate in the scenario manifest digest. Registration rejects
+any fixture reference whose marker is absent/different, whose provenance kind
+is not `lab_authored`, whose authority is not the exact authority file above,
+or whose source commit differs from the parsed authority. This is the
+machine-checkable synthetic-fixture boundary: a fixture cannot be substituted
+from user input, a repository, MCP config, an external URL, or a live response
+merely because its bytes share a valid digest.
 
 `expandFailureRules(case)` copies
 `failureRuleSets[manifestDefaults.failureRuleSet]`. When
@@ -203,7 +218,8 @@ Closed V1 fixture roles are:
 - `adapter_vector`: decode the fixture JSON and feed its documented fields to
   the selected adapter boundary without network access;
 - `synthetic_tool`: decode the fixture JSON into the in-memory inert tool/MCP
-  stub. It never executes model arguments.
+  stub and execute only the closed harness action selected below. It never
+  executes model arguments.
 
 Closed media types are `application/json`, `text/event-stream`,
 `application/vnd.opencodex.adapter-vector+json`, and
@@ -214,6 +230,41 @@ features. `adapter_vector` keys are scenario-specific closed input fields
 defined by the literal vector and scenario assertions; unknown keys reject the
 fixture. CL-01 must encode those fields as a discriminated union keyed by the
 scenario ID, not a generic callback or dynamic module.
+
+The four protocol V1 MCP cases each carry exactly one additional closed
+`requiredHarnessFeatures` action token. These tokens are executable semantics
+and participate in the scenario manifest digest:
+
+- `mcp_namespace_round_trip_v1`: decode `namespace`, `name`, `description`, and
+  `inputSchema`; register exactly one inert tool; serialize its upstream name
+  as `namespace + "__" + name`; then synthesize exactly one completed
+  client-visible function call with ID `call_fixture`, that flattened name, and
+  arguments `{}`. Run the normal `toolCalls` -> `mcpCalls` projection. No stub
+  result, process, filesystem, or network action occurs.
+- `mcp_schema_bounds_v1`: decode only `limitBytes`, `exactSchema`, and
+  `overSchema`; stage an otherwise-identical single inert tool first with
+  `exactSchema` and then in a fresh transaction with `overSchema`. The first
+  transaction commits only when its UTF-8 schema bytes equal the limit; the
+  second must reject atomically before commit when it is exactly one byte over.
+  It emits no tool call and performs no invocation.
+- `mcp_call_result_v1`: decode `namespace`, `name`, `arguments`, and `result`;
+  register exactly one inert tool; synthesize exactly one completed call with
+  ID `call_fixture`; invoke the in-memory stub exactly once with the decoded
+  namespace/name/arguments; the stub returns the literal decoded `result`,
+  which becomes `/client/response/json`. Duplicate/missing calls or any extra
+  invocation fail the required verifier.
+- `mcp_resource_round_trip_v1`: decode only `resources` and `read`; install them
+  in the in-memory resource stub; perform exactly one list operation followed
+  by exactly one read for `read.uri`; expose the literal list as
+  `/client/response/json/resources` and the matching literal contents as
+  `/client/response/json/contents`. Missing, duplicate, or extra operations
+  fail the required assertion.
+
+A protocol V1 MCP case missing its scenario-specific action token, carrying the
+wrong token, carrying more than one of these tokens, or providing fixture keys
+outside that token's closed schema rejects registration. No generic
+`synthetic_tool` callback, implicit model output, or implementation-defined
+invocation is permitted.
 
 The MCP cases use only `in_memory_mcp_stub`. No case authorizes stdio, a child
 process, user MCP configuration, filesystem access, or a user tool.
@@ -416,11 +467,12 @@ CL-01 may materialize and execute only the protocol manifests in the case
 authority. It must:
 
 1. parse the authority as JSON and reject unknown fields;
-2. recompute all fixture, scenario, and suite digests;
+2. recompute all fixture, scenario, and suite digests, including the mandatory
+   synthetic fixture marker/provenance fields;
 3. retain the exact case fixture bytes and expanded manifests
    content-addressably;
-4. execute only loopback mocks, closed adapter vectors, and in-memory inert MCP
-   stubs;
+4. execute only loopback mocks, closed adapter vectors, and the four exact
+   in-memory MCP action tokens above;
 5. fail registration rather than invent semantics.
 
 This document and the JSON authority authorize no runner, mock server, ledger,
