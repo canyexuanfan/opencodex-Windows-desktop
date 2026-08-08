@@ -1,7 +1,7 @@
 import { comboFailureDecision } from "../../combos/failover";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import { readJsonRequestBody } from "../request-decompress";
-import type { RequestLogContext } from "../request-log";
+import { finishRequestAttempt, type RequestLogContext } from "../request-log";
 import type { OcxConfig } from "../../types";
 import type { RouteCandidateTrace, RouteDecisionTraceV1 } from "../../routing/trace";
 import { handleResponses as handleResponsesCore } from "./core";
@@ -46,18 +46,13 @@ function requestWithCandidate(
   candidate: Pick<RouteCandidateTrace, "provider" | "model">,
 ): Request {
   const headers = new Headers(req.headers);
-  // The retry body is re-serialized JSON. Carrying the original compression or
-  // byte length would make the child request malformed.
   headers.delete("content-encoding");
   headers.delete("content-length");
   headers.set("content-type", "application/json");
   return new Request(req.url, {
     method: req.method,
     headers,
-    body: JSON.stringify({
-      ...rawBody,
-      model: `${candidate.provider}/${candidate.model}`,
-    }),
+    body: JSON.stringify({ ...rawBody, model: `${candidate.provider}/${candidate.model}` }),
     signal: req.signal,
   });
 }
@@ -65,10 +60,7 @@ function requestWithCandidate(
 function errorCodeFromText(text: string): string | undefined {
   if (!text) return undefined;
   try {
-    const payload = JSON.parse(text) as {
-      error?: { code?: unknown; type?: unknown };
-      code?: unknown;
-    };
+    const payload = JSON.parse(text) as { error?: { code?: unknown; type?: unknown }; code?: unknown };
     const candidate = payload.error?.code ?? payload.error?.type ?? payload.code;
     return typeof candidate === "string" ? candidate : undefined;
   } catch {
@@ -77,21 +69,34 @@ function errorCodeFromText(text: string): string | undefined {
 }
 
 async function shouldHopPolicyCandidate(response: Response, signal?: AbortSignal): Promise<boolean> {
-  if (response.status < 400) return false;
+  if (response.status < 400 || signal?.aborted) return false;
   try {
     const inspected = await readBoundedResponseBody(response.clone(), { signal });
     const text = inspected.displaySafe ? inspected.text : "";
-    return comboFailureDecision(response.status, text, {
-      code: errorCodeFromText(text),
-    }) === "hop";
+    return comboFailureDecision(response.status, text, { code: errorCodeFromText(text) }) === "hop";
   } catch {
-    // If the error body cannot be inspected safely, do not invent a retry.
     return false;
   }
 }
 
 function isPolicyDecision(trace: RouteDecisionTraceV1 | undefined): trace is RouteDecisionTraceV1 {
   return trace?.routeKind === "policy" && !!trace.profile;
+}
+
+/** Finalize the failed physical attempt so the retry receives a fresh attempt row. */
+function finishFailedPolicyAttempt(logCtx: RequestLogContext, status: number): void {
+  const attempt = logCtx.activeAttempt;
+  if (attempt) {
+    const startedAt = logCtx.activeAttemptStartedAt ?? Date.now();
+    finishRequestAttempt(attempt, status, Math.max(0, Date.now() - startedAt), attempt.usage ?? logCtx.usage);
+  }
+  delete logCtx.activeAttempt;
+  delete logCtx.activeAttemptStartedAt;
+  delete logCtx.usage;
+  delete logCtx.usageFromBridge;
+  delete logCtx.upstreamError;
+  delete logCtx.terminalHttpStatus;
+  delete logCtx.terminalIncompleteReason;
 }
 
 /**
@@ -108,16 +113,10 @@ export async function handleResponsesWithPolicyFallback(
   deps: PolicyFallbackDeps = {},
 ): Promise<Response> {
   const runCore = deps.runCore ?? handleResponsesCore;
-
-  // Capture a replayable, decompressed body before the core consumes the
-  // request. If decoding fails, defer entirely to the canonical core path so
-  // its existing error semantics remain unchanged.
   let rawBody: Record<string, unknown> | null = null;
   try {
     const parsed = await readJsonRequestBody(req.clone());
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      rawBody = parsed as Record<string, unknown>;
-    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) rawBody = parsed as Record<string, unknown>;
   } catch {
     // Core owns the client-facing parse/decompression error.
   }
@@ -137,14 +136,11 @@ export async function handleResponsesWithPolicyFallback(
     if (!next) return response;
     tried.add(candidateKey(next));
 
+    finishFailedPolicyAttempt(logCtx, response.status);
     const retryRequest = requestWithCandidate(req, rawBody, next);
     try {
       response = await runCore(retryRequest, config, logCtx, options);
     } finally {
-      // A fallback child routes explicitly and therefore produces its own
-      // explicit-provider trace. Keep the original policy decision as the
-      // request-level WHY while retaining the child's physical model/provider
-      // and attempts on the mutable log context.
       logCtx.requestedModel = initialRequestedModel;
       logCtx.routeDecision = initialTrace;
     }
