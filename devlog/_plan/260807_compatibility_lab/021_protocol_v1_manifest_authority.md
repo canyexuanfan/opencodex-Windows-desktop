@@ -145,8 +145,9 @@ verificationRule        all-applicable-required-pass-v1
 
 Unknown fields reject registration. The suite digest uses
 `ocx-lab:suite-manifest:v1` plus JCS exactly as defined by the evidence
-contract. `VERIFIED` requires a current pass for every applicable member and
-the exact suite/scenario/fixture digests above.
+contract. `VERIFIED` requires at least one applicable required member, a
+current pass for every applicable required member, and the exact
+suite/scenario/fixture digests above.
 
 ## 3. Observation selector model
 
@@ -234,7 +235,15 @@ The harness retains exact fixture bytes and normalizes only for assertions:
    Exactly one optional leading U+0020 after `:` is removed; no other
    whitespace is trimmed.
 5. Repeated `data` fields join with LF. The last `event` field wins.
-6. `[DONE]` is a sentinel only for Chat surfaces.
+6. Sentinel interpretation follows the protocol of the byte stream being
+   normalized, not the client-facing `requirements.surfaces` label. For an
+   `upstream_response` fixture, the source is the case's single resolved
+   `requirements.upstreamProtocols` entry: only `openai-chat` recognizes a
+   data value exactly equal to `[DONE]` as a sentinel. `openai-responses` and
+   `anthropic-messages` do not. A raw fixture with zero or multiple resolved
+   source protocols is invalid. Client-output normalization instead follows
+   the emitted client protocol; a Responses bridge's transport `[DONE]`
+   padding is not reclassified as an upstream Chat sentinel.
 7. When `event` is absent and parsed `data` is an object with string `type`,
    Responses/Anthropic normalization infers that `type`. Explicit event wins.
    Parsed `null`, scalar, array, or empty data is padding and emits no event.
@@ -267,7 +276,6 @@ function_call:
   { id: item.call_id, name: item.name,
     arguments: JSON.parse(item.arguments),
     kind: "function", ordinal: output order }
-
 custom_tool_call:
   { id: item.call_id, name: item.name,
     arguments: item.input,
