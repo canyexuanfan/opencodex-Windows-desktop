@@ -302,7 +302,8 @@ samples, and blocked attempts cannot produce `PROBED`.
 Produced only when every requirement in the suite manifest's verification rule
 is met by current, valid, attributable observations for the exact projection
 key, and no newer current contradictory attributable failure remains
-unresolved.
+unresolved. A verification rule with zero applicable required scenarios is not
+satisfied and cannot produce `PROBED` or `VERIFIED`.
 
 The projection must expose:
 
@@ -695,9 +696,24 @@ model, reasoning, per-turn limits and timeout/stall limits plus the matching
 flat dependency subject ID.
 
 Values that are inapplicable to the selected model/surface are omitted rather
-than copied wholesale. Canonical JSON sorts keys, normalizes absent/default
-values to their effective value, and sorts set-like arrays while preserving
-order-sensitive arrays.
+than copied wholesale. Canonical JSON sorts object keys and normalizes
+absent/default values to their effective value. Array handling is closed and
+part of the V1 schema:
+
+| Array-valued key | Ordering mode | Element comparison |
+|---|---|---|
+| `modalities.input` | `set` | UTF-8 JCS bytes |
+| `reasoning.efforts` | `set` | UTF-8 JCS bytes |
+| `tools.choiceRestrictions` | `set` | UTF-8 JCS bytes |
+| `openrouter.order` | `ordered` | source order preserved |
+| `openrouter.only` | `set` | UTF-8 JCS bytes |
+
+For `set`, each element is JCS-canonicalized, duplicate JCS byte sequences are
+rejected, and elements sort lexicographically by their UTF-8 JCS bytes. For
+`ordered`, elements are JCS-canonicalized but their resolved source order is
+preserved. Any other closed key resolving to an array, or any array-valued key
+without one of these declared modes, fails subject construction as
+`harness_failure` with code `unclassified_behavior_input`.
 
 Acceptance tests for the future builder must enumerate every
 behavior-changing config/default read by the selected adapter and prove that
