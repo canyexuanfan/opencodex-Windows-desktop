@@ -13,17 +13,18 @@ import { join, resolve } from "node:path";
  * This guard closes that. It regenerates into a temp directory and byte-compares, so it can never
  * clobber the committed file.
  *
- * It SKIPS when the jawcode checkout is absent, which is the normal case for contributors and for
- * CI: `scripts/generate-jawcode-metadata.ts` throws without it, so asserting unconditionally would
- * turn every external run red. The drift can only be introduced by someone who has the source, so
- * that is exactly where the check needs to fire.
+ * The generator's default source is the vendored snapshot `scripts/jawcode-models.json`, so this
+ * guard runs everywhere — including CI, which previously skipped it for lack of a sibling jawcode
+ * checkout. Refreshing the metadata is one deliberate commit: copy jawcode's current
+ * packages/ai/src/models.json over the snapshot and rerun `bun run generate:jawcode-metadata`.
+ * JAWCODE_MODELS_JSON still overrides the source to compare against a live jawcode checkout.
  */
 const GENERATED = resolve(import.meta.dir, "../src/generated/jawcode-model-metadata.ts");
-// Resolve the default exactly the way the generator does — relative to cwd, not to this file — so a
-// git worktree does not silently point at a sibling that happens to share the parent directory.
+// Mirror the generator's default: the vendored snapshot next to the script, so the guard is
+// deterministic in worktrees and CI. JAWCODE_MODELS_JSON opts into a live-checkout comparison.
 const SOURCE = process.env.JAWCODE_MODELS_JSON
   ? resolve(process.env.JAWCODE_MODELS_JSON)
-  : resolve(process.cwd(), "../jawcode/packages/ai/src/models.json");
+  : resolve(import.meta.dir, "../scripts/jawcode-models.json");
 
 describe("generated jawcode metadata stays in sync with its source", () => {
   test.skipIf(!existsSync(SOURCE))(

@@ -29,6 +29,7 @@ const PROVIDER_ALIASES: Record<string, string> = {
   "gemini-antigravity": "google",
   "moonshot": "moonshot",
   "zhipu-bigmodel": "zai",
+  "zhipu-bigmodel-coding": "zai",
   "minimax": "minimax",
   "minimax-cn": "minimax"
 } as const;

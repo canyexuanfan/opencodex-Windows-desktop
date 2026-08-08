@@ -19,9 +19,17 @@ type RawModel = {
   };
 };
 
+// The default source is the vendored snapshot at scripts/jawcode-models.json (a byte copy of
+// jawcode's packages/ai/src/models.json from https://github.com/lidge-jun/jawcode), so generation
+// and the sync guard no longer depend on a sibling jawcode checkout. Provenance: jawcode 63aefba
+// (codex/gpt-5.6-price-cut-refresh) — that branch carries the verified post-cut gpt-5.6 rates
+// (#907) which jawcode dev has NOT merged, so snapshotting a plain jawcode dev checkout would
+// silently regress Terra/Luna pricing. To refresh: copy the intended models.json over the
+// snapshot and rerun this script in the same commit. JAWCODE_MODELS_JSON still overrides the
+// source for comparing against a live jawcode checkout.
 const sourcePath = process.env.JAWCODE_MODELS_JSON
   ? resolve(process.env.JAWCODE_MODELS_JSON)
-  : resolve(process.cwd(), "../jawcode/packages/ai/src/models.json");
+  : resolve(import.meta.dir, "jawcode-models.json");
 // `JAWCODE_METADATA_OUT` lets the sync guard regenerate into a temp file and byte-compare without
 // any risk of clobbering the committed output (tests/jawcode-metadata-sync.test.ts).
 const outPath = process.env.JAWCODE_METADATA_OUT
