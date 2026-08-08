@@ -118,15 +118,18 @@ event kinds are:
 observation
 claim_snapshot
 invalidation
+purge_tombstone
 ```
 
 An `observation` records one scenario attempt. A `claim_snapshot` captures the
 local declared-capability inputs and source revisions needed to reproduce
 `CLAIMED`: registry/config, cached catalog or native metadata, including the
 adapter inference currently assembled by `src/routing/capability.ts`. An
-`invalidation` identifies prior evidence that a later-discovered harness,
-fixture, redaction, or integrity defect makes unusable. Invalidations append;
-they never delete or edit prior lines.
+`invalidation` identifies prior non-sensitive evidence that a later-discovered
+harness, fixture, redaction, or integrity defect makes unusable. Invalidations
+append; they never delete or edit prior lines. A `purge_tombstone` is the
+privacy-safe exceptional record left after confirmed sensitive evidence is
+physically removed under the security contract.
 
 Each event has:
 
@@ -180,24 +183,129 @@ supersedes[]
 effectiveAt
 ```
 
+An `invalidation` additionally has:
+
+```text
+targetEventIds[]          non-empty, maximum 1024
+reason                    harness_defect | fixture_defect |
+                          redaction_defect | integrity_defect |
+                          contract_artifact_missing | manual_correction
+```
+
+Invalidation rules:
+
+- `targetEventIds` is a set encoded as lowercase event IDs sorted
+  lexicographically by UTF-8 bytes. Duplicate IDs reject the whole invalidation.
+- Every target must be an earlier valid `observation` or `claim_snapshot` in
+  the same ledger. Unknown, malformed, future, self, `invalidation`, or
+  `purge_tombstone` targets reject the whole invalidation and report ledger
+  corruption; projection never applies a partial target list.
+- The `reason` set above is closed. Unsupported or missing reasons reject the
+  invalidation.
+- Multiple valid invalidation events may name the same prior target; the target
+  remains excluded. There is no "uninvalidate" mutation: replacement evidence
+  is a new observation or claim snapshot.
+- Sensitive-evidence deletion does not weaken these rules. It uses the separate
+  `purge_tombstone` contract below because the sensitive target line may no
+  longer exist by design.
+
+A `purge_tombstone` additionally has:
+
+```text
+targetEventIds[]          sorted unique lowercase event IDs
+targetArtifactDigests[]   sorted unique lowercase SHA-256 digests
+reason                    sensitive_evidence
+purgeActions[]            ledger | sqlite | artifact | scratch | export
+```
+
+At least one target array is non-empty. The reason is exactly
+`sensitive_evidence`; action names are a closed set, sorted and unique. A purge
+tombstone may refer to an event line or artifact that has already been
+physically removed by the same fail-closed purge. Projection applies valid
+purge tombstones before ordinary invalidations, excludes every targeted event,
+and treats every targeted artifact as typed `purged_unavailable`. Cached SQLite
+rows that depended on a targeted event or artifact are invalid and must be
+removed/rebuilt. A prior `VERIFIED`, `PROBED`, `DEGRADED`, `UNSUPPORTED`, or
+`CLAIMED` result is never retained solely from purged evidence.
+
+### `ClaimSourceManifestV1`
+
+`sourceManifestDigest` is reproducible evidence, not an opaque checksum. Every
+claim snapshot references one retained canonical `ClaimSourceManifestV1`:
+
+```text
+{
+  "schemaVersion": 1,
+  "subjectId": string,
+  "providerId": string,
+  "clientModelId": string,
+  "capability": string,
+  "sources": [ClaimSourceV1, ...],
+  "resolvedEvidence": RouteCapabilityEvidenceV1
+}
+```
+
+`ClaimSourceV1` is one record for each consulted source that contributed or
+could have contributed to the selected capability:
+
+```text
+{
+  "kind": "provider_config" | "provider_registry" | "cached_catalog" |
+          "native_metadata" | "adapter_inference",
+  "revision": string | null,
+  "facts": ClaimCapabilityFactsV1
+}
+```
+
+`sources` is ordered by the closed kind order shown above and contains at most
+one record per kind. `ClaimCapabilityFactsV1` is a closed, sanitized projection
+of only capability-relevant inputs used by the current resolver: selected
+context window, input modalities, reasoning efforts, catalog capability names,
+service-tier support, effective adapter/tool-capable classification,
+parallel-tool-call enablement, endpoint locality class
+`local|private|unknown`, and canonical-OpenAI-forward classification where
+applicable. It never stores a base URL, hostname, credential, account identity,
+custom header, arbitrary provider config, catalog path, prompt, or repository
+data. `RouteCapabilityEvidenceV1` is the closed resolver output currently
+represented by `RouteCapabilityEvidence`: context window, image, tools,
+reasoning efforts, service tier, local-only, remote-allowed, and encrypted
+Codex-task evidence, with absent fields remaining absent.
+
+The canonical digest is lowercase:
+
+```text
+sha256(
+  UTF8("ocx-lab:claim-source-manifest:v1\0") ||
+  UTF8(JCS(ClaimSourceManifestV1))
+)
+```
+
+The exact canonical bytes are retained as a content-addressed
+`claim_source_manifest` artifact while any non-purged claim snapshot references
+them. Projection must load those retained bytes, recompute the digest, and
+verify matching `subjectId` and `capability` before accepting historical
+`CLAIMED` state. Missing bytes, digest mismatch, duplicate/unknown source kinds,
+unknown facts, or a subject/capability mismatch makes that claim unusable,
+projects no `CLAIMED` result from it, and reports ledger/artifact corruption.
+
 Claim rules:
 
 - Claims exist only for `live_route_compatibility`; protocol and task verdicts
   cannot be `CLAIMED`.
 - `sourceManifestDigest` identifies the canonical, content-addressed snapshot
-  of all registry/config/catalog/native/adapter inputs used by the existing
-  capability resolver. Raw secrets are forbidden.
+  above of all sanitized registry/config/catalog/native/adapter inputs used by
+  the existing capability resolver. Raw secrets are forbidden.
 - `supersedes` explicitly lists every previously current claim event for the
   same `(subjectId, capability)`. The first snapshot uses an empty list.
 - A source refresh, removal, or changed polarity appends a new snapshot; it
   never edits a prior event. `withdrawn` means the local declaration no longer
   exists. `not_supported` suppresses `CLAIMED` but cannot produce
   `UNSUPPORTED`.
-- Projection first applies invalidations, then removes every event named by a
-  valid later snapshot's `supersedes`. Exactly one unsuperseded claim may
-  remain current for a claim key. Multiple unsuperseded claims, a missing
-  referenced predecessor, a cross-key supersession, or a cycle makes claim
-  state `UNKNOWN` and reports ledger corruption.
+- Projection first applies purge tombstones and invalidations, then removes
+  every event named by a valid later snapshot's `supersedes`. Exactly one
+  unsuperseded claim may remain current for a claim key. Multiple unsuperseded
+  claims, a missing referenced predecessor, a cross-key supersession, or a
+  cycle makes claim state `UNKNOWN` and reports ledger corruption.
 - Claim ordering is `effectiveAt`, then `recordedAt`, then event ID, but
   ordering never substitutes for the explicit supersession graph.
 
@@ -233,20 +341,23 @@ Rules:
   OpenCodex state.
 - A structurally invalid or partially written line contributes no evidence and
   is reported as ledger corruption. SQLite must be rebuildable from all valid
-  complete lines.
+  complete lines plus privacy-safe purge tombstones.
 
-The canonical scenario manifest, suite manifest and synthetic fixture bytes
-referenced by an observation are retained as content-addressed
-`scenario_manifest`, `suite_manifest`, and `fixture` artifacts. These contract
-artifacts have indefinite retention while any non-invalidated observation
-references them. A missing or digest-mismatched contract artifact makes that
-observation unusable and yields `harness_failure`; projection code must never
-substitute the current manifest for the historical one.
+The canonical scenario manifest, suite manifest, synthetic fixture bytes, and
+claim-source manifest referenced by valid evidence are retained as
+content-addressed `scenario_manifest`, `suite_manifest`, `fixture`, and
+`claim_source_manifest` artifacts. Scenario/suite/fixture contract artifacts
+remain retained while any non-invalidated, non-purged observation references
+them. Claim-source manifests remain retained while any non-purged claim
+snapshot references them. A missing or digest-mismatched required contract
+artifact makes that evidence unusable and reports corruption; projection code
+must never substitute the current manifest for the historical one.
 
 The SQLite projection may cache derived verdict rows. Such rows must include
-their `asOf`, projection spec, scenario/suite/fixture manifest digests, and
-contributing event IDs. Deleting SQLite and replaying JSONL plus the referenced
-content-addressed contract artifacts must reproduce them.
+their `asOf`, projection spec, scenario/suite/fixture manifest digests, claim
+source manifest digest where applicable, and contributing event IDs. Deleting
+SQLite and replaying JSONL plus the referenced content-addressed contract
+artifacts and purge tombstones must reproduce every non-purged row.
 
 ## 3. Canonical verdict contract
 
@@ -312,7 +423,7 @@ The projection must expose:
 - subject ID and full local subject;
 - projection algorithm version and `asOf`;
 - freshness calculation;
-- any invalidations and contradictory events considered.
+- any invalidations, purge tombstones, and contradictory events considered.
 
 An LLM judge, user assertion, registry declaration, successful model listing,
 or mutable `verified=true` flag cannot produce `VERIFIED`.
@@ -391,7 +502,7 @@ state outside this set.
 Contradictory attributable evidence is never overwritten. The projection:
 
 1. filters by exact subject/layer/suite/scenario versions;
-2. applies invalidation events;
+2. applies purge tombstones and invalidation events;
 3. applies freshness;
 4. orders observations by completion time and deterministic event-ID tie-break;
 5. applies the suite's contradiction rule;
@@ -592,10 +703,10 @@ Semantics:
   provider-instance fingerprint, client/upstream model IDs, effective adapter,
   upstream protocol, endpoint fingerprint, and behavior fingerprint. It cannot
   nest. Records sort by this total order of UTF-8 string comparisons:
-  role, provider ID, upstream model ID, endpoint fingerprint, client model
-  ID, effective adapter, upstream protocol, then behavior fingerprint. A
-  duplicate full key makes subject construction `harness_failure`. An empty
-  list is canonical when no sidecar is invoked.
+  role, provider ID, provider-instance fingerprint, upstream model ID,
+  endpoint fingerprint, client model ID, effective adapter, upstream protocol,
+  then behavior fingerprint. A duplicate full key makes subject construction
+  `harness_failure`. An empty list is canonical when no sidecar is invoked.
 
 ### Behavior fingerprint allowlist
 
