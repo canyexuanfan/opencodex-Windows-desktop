@@ -216,7 +216,7 @@
       "fixture": { "id": "tools-function", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"tools\":[{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"]}}],\"upstreamToolCall\":{\"id\":\"call_fixture\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"},\"toolResult\":{\"toolCallId\":\"call_fixture\",\"content\":\"RESULT\"}}", "digest": "9107f4dfdd7da8340c866c9fb6f42854437cebb98592d0510969c810c1eeb0ad" },
       "assertions": [
         { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_fixture","name":"lookup","arguments":{"q":"x"},"kind":"function","ordinal":0}, "required": true },
-        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
+        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/messages/1/tool_call_id"}, "required": true }
       ]
     },
     {
@@ -285,7 +285,7 @@
       "fixture": { "id": "codex-patch", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Add File: x\\n+x\\n*** End Patch\\n\",\"callId\":\"call_patch\",\"result\":\"Done\"}", "digest": "668baa1fbea1d7a6556f717467fc3b90a47b2edfaa2ccf0c7950fd30dfe27a81" },
       "assertions": [
         { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_patch","name":"apply_patch","arguments":"*** Begin Patch\n*** Add File: x\n+x\n*** End Patch\n","kind":"custom","ordinal":0}, "required": true },
-        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
+        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/messages/1/tool_call_id"}, "required": true }
       ]
     },
     {
