@@ -123,7 +123,7 @@ function ensurePrivatePosixDirectory(path: string, uid: number): void {
   assertPrivatePosixDirectory(path, uid);
 }
 
-function resolvePosixRuntimeRoot(uid: number): string {
+function resolveTrustedPosixTmp(): string {
   let realTmp: string;
   try {
     realTmp = realpathSync.native(POSIX_TMP_PATH);
@@ -138,10 +138,80 @@ function resolvePosixRuntimeRoot(uid: number): string {
     if (cause instanceof CodexUserIdentityRefusal) throw cause;
     refuse("The system temporary directory cannot be trusted.", cause);
   }
+  return realTmp;
+}
 
+function resolvePosixRuntimeRoot(uid: number): string {
+  const realTmp = resolveTrustedPosixTmp();
   const root = join(realTmp, `opencodex-runtime-v1-${uid}`);
   ensurePrivatePosixDirectory(root, uid);
   return root;
+}
+
+export type CoordinatorNamespaceProbe =
+  | { readonly status: "ok"; readonly root: string }
+  | { readonly status: "missing" };
+
+/**
+ * Read-only namespace probe for diagnostics (`ocx doctor`).
+ *
+ * Unlike the runtime resolvers, this never creates the root or the lock
+ * directories: a doctor run must observe the namespace, not initialize it.
+ * A missing namespace is reported as `missing` instead of refused, so a fresh
+ * machine does not read as a broken one; an existing but unsafe namespace is
+ * refused exactly like the creating path would refuse it.
+ */
+export function probeCodexCoordinatorNamespace(identity: UserIdentity): CoordinatorNamespaceProbe {
+  if (identity.platform === "posix") {
+    const root = join(resolveTrustedPosixTmp(), `opencodex-runtime-v1-${identity.uid}`);
+    let entry;
+    try {
+      entry = lstatSync(root);
+    } catch (cause) {
+      const code = cause && typeof cause === "object" && "code" in cause
+        ? String((cause as { code?: unknown }).code)
+        : "";
+      if (code === "ENOENT") return { status: "missing" };
+      refuse("The Codex coordinator namespace cannot be inspected.", cause);
+    }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      refuse("The Codex coordinator namespace is not a real directory.");
+    }
+    if (entry.uid !== identity.uid || (entry.mode & 0o777) !== POSIX_PRIVATE_MODE) {
+      refuse("The Codex coordinator namespace has unsafe ownership or permissions.");
+    }
+    return { status: "ok", root };
+  }
+
+  if (!SID_PATTERN.test(identity.sid)) refuse("The coordinator identity contains an invalid SID.");
+  const localAppData = powershellValue(
+    "[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
+  );
+  if (!isAbsolute(localAppData)) refuse("Windows LocalAppData resolution returned a relative path.");
+  const root = resolve(localAppData, "OpenCodex", "Runtime", "v1", identity.sid.toUpperCase());
+  let entry;
+  try {
+    entry = lstatSync(root);
+  } catch (cause) {
+    const code = cause && typeof cause === "object" && "code" in cause
+      ? String((cause as { code?: unknown }).code)
+      : "";
+    if (code === "ENOENT") return { status: "missing" };
+    refuse("The Windows coordinator namespace cannot be inspected.", cause);
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    refuse("The Windows coordinator namespace is not a real directory.");
+  }
+  try {
+    const real = realpathSync.native(root);
+    if (!samePathIdentity(real, root, "win32")) {
+      refuse("The Windows coordinator namespace is redirected by a junction or reparse point.");
+    }
+    return { status: "ok", root: real };
+  } catch (cause) {
+    if (cause instanceof CodexUserIdentityRefusal) throw cause;
+    refuse("The Windows coordinator namespace cannot be resolved.", cause);
+  }
 }
 
 function resolveWindowsRuntimeRoot(identity: Extract<UserIdentity, { platform: "win32" }>): string {

@@ -25,10 +25,9 @@ import { NativeProfileError } from "../codex/native-profile-types";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
-import { getCodexHome } from "../codex/paths";
 import {
   CodexUserIdentityRefusal,
-  resolveCodexHistorySerializationDatabasePath,
+  probeCodexCoordinatorNamespace,
   resolveEffectiveUserIdentity,
 } from "../codex/user-identity";
 import { collectProjectCodexConfigWarnings, formatProjectCodexConfigWarningsForDoctor } from "../codex/project-config-warnings";
@@ -909,13 +908,17 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   // busy timeout) — reports state, never mutates.
   console.log("\nCodex history migration");
   // The history failure messages point here; make the visit worthwhile by
-  // probing the coordinator namespace the locks live in. Resolution exercises
-  // identity, runtime-root, and permission checks without taking any lock.
+  // probing the coordinator namespace the locks live in. The probe exercises
+  // identity, runtime-root, and permission checks without taking any lock or
+  // creating anything (a doctor run must observe, not initialize).
   try {
     const identity = resolveEffectiveUserIdentity();
-    const codexHome = getCodexHome();
-    resolveCodexHistorySerializationDatabasePath(identity, codexHome, join(codexHome, "state_5.sqlite"));
-    console.log("  ok     history coordinator namespace resolves");
+    const probe = probeCodexCoordinatorNamespace(identity);
+    if (probe.status === "missing") {
+      console.log("  ok     history coordinator namespace not created yet (no history operation has run)");
+    } else {
+      console.log("  ok     history coordinator namespace resolves");
+    }
   } catch (cause) {
     const reason = cause instanceof CodexUserIdentityRefusal ? cause.message : String(cause);
     console.log(`  --     history coordinator namespace refused: ${reason}`);

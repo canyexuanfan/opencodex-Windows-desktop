@@ -205,7 +205,14 @@ export function describeHistoryJobFailure(
  */
 function redactWorkerMessage(message: string): string {
   const home = homedir();
-  return home.length > 1 ? message.split(home).join("~") : message;
+  if (home.length <= 1) return message;
+  // Windows spellings vary in case and separator; an exact match would leave
+  // the account name in the message.
+  if (process.platform === "win32") {
+    const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\\\/g, "[\\\\/]");
+    return message.replace(new RegExp(escaped, "gi"), "~");
+  }
+  return message.split(home).join("~");
 }
 
 function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutcome {

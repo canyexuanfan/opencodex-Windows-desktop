@@ -1262,7 +1262,7 @@ function failedHistoryRestore(reason?: CodexHistoryFailureReason, detail?: strin
         ? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
         : detail
           ? `Codex resume history could NOT be restored: ${detail}`
-          : "Codex resume history could NOT be restored — the Codex app appears to be holding the history database.",
+          : "Codex resume history could NOT be restored; the reason was not recorded. Run 'ocx doctor'.",
   };
 }
 
@@ -1272,55 +1272,20 @@ function failedHistoryRestore(reason?: CodexHistoryFailureReason, detail?: strin
  * Only a genuine busy result blames the Codex app. An unsafe-path refusal, an
  * unavailable coordinator database, a permission denial, or a dead/timed-out
  * worker is a different problem; the old collapse made every one of those read
- * as "the Codex app is holding the database" (issue #1191).
+ * as "the Codex app is holding the database" (issue #1191). `busy` and
+ * `permission` keep the restore-specific sentence built by
+ * `failedHistoryRestore`; every other reason reuses the single formatter so
+ * the two modules cannot drift apart.
  */
-function failedHistoryRestoreFromOutcome(
+export function failedHistoryRestoreFromOutcome(
   outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
 ): CodexRestoreHistoryResult {
-  if (outcome.kind === "blocked") {
-    switch (outcome.reason) {
-      case "busy":
-        return failedHistoryRestore("busy");
-      case "unsafe-path":
-        return failedHistoryRestore(
-          undefined,
-          "opencodex refused its history lock path (unsafe coordinator namespace); this is not a Codex app lock. Run 'ocx doctor' and check the opencodex runtime directory.",
-        );
-      case "database":
-        return failedHistoryRestore(
-          undefined,
-          "the history coordinator database is unavailable; this is not a Codex app lock. Run 'ocx doctor'.",
-        );
-      case "desired_disabled":
-      case "desired_enabled":
-        // Unreachable today: the async restore caller intercepts both desired-
-        // state reasons before this mapper runs. If that ever changes, name
-        // the actual cause instead of falling back to the lock wording this
-        // function exists to get rid of (issue #1191).
-        return failedHistoryRestore(
-          undefined,
-          outcome.reason === "desired_disabled"
-            ? "Codex integration is disabled, so the history operation was skipped."
-            : "Codex integration is enabled, so the history operation was skipped.",
-        );
-    }
+  if (outcome.kind === "blocked" && outcome.reason === "busy") return failedHistoryRestore("busy");
+  if (outcome.kind === "failed" && outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
+  if (outcome.kind === "failed" && outcome.historyFailureReason === "permission") {
+    return failedHistoryRestore("permission");
   }
-  if (outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
-  if (outcome.historyFailureReason === "permission") return failedHistoryRestore("permission");
-  switch (outcome.reason) {
-    case "worker-error":
-      return failedHistoryRestore(undefined, `the history worker failed (${outcome.message}). Run 'ocx doctor'.`);
-    case "worker-died":
-      return failedHistoryRestore(
-        undefined,
-        "the history worker exited unexpectedly; this is not a Codex app lock. Run 'ocx doctor'.",
-      );
-    case "timeout":
-      return failedHistoryRestore(
-        undefined,
-        "the history worker timed out; this is not a Codex app lock. Run 'ocx doctor'.",
-      );
-  }
+  return failedHistoryRestore(undefined, describeHistoryJobFailure(outcome, "restore"));
 }
 
 function externalProviderRestoreResult(activeProvider: string): CodexNativeRestoreResult {
@@ -1558,11 +1523,9 @@ export async function restoreNativeCodexAsync(
               ? "Codex integration was disabled; history restoration was skipped."
               : "Codex integration was enabled; history restoration was skipped.",
           }
-      : outcome.kind === "blocked"
+      : outcome.kind === "blocked" || outcome.kind === "failed"
         ? failedHistoryRestoreFromOutcome(outcome)
-        : outcome.kind === "failed"
-          ? failedHistoryRestoreFromOutcome(outcome)
-          : failedHistoryRestore();
+        : failedHistoryRestore();
   const base = catalog.removed > 0
     ? `${config.message} Catalog restored to ${catalog.kept} native model(s) (dropped ${catalog.removed} proxy-routed).`
     : config.message;
@@ -1638,7 +1601,7 @@ export function getCodexConfigPath(): string {
  * A genuine lock keeps the established deferred/SKIPPED wording; any other
  * reason names itself instead of blaming the Codex app/IDE.
  */
-function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legacyMode: boolean): string {
+export function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legacyMode: boolean): string {
   // A busy database is a deferral no matter which half observed it: the lock
   // contended (blocked/busy), or the worker acquired the lock and then found
   // SQLite busy (failed with a busy history reason). Only those keep the
