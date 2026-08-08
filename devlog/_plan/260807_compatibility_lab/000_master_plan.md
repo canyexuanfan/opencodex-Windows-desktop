@@ -47,7 +47,8 @@ CL-00 audited the live `dev` tree before defining new authority.
   `src/server/management/routing-profile-routes.ts`.
 - Dashboard profile editor, dry-run and routing analytics:
   `gui/src/pages/RoutingProfiles.tsx`, mounted under Models -> Routing.
-- Immutable request/usage evidence and rebuildable history projection:
+- Canonical append-only request/usage evidence and rebuildable history
+  projection:
   `src/usage/log.ts`, `src/routing/history/indexer.ts`, and
   `src/routing/analytics.ts`.
 - Why-this-route evidence:
@@ -57,7 +58,8 @@ CL-00 audited the live `dev` tree before defining new authority.
   `gui/src/pages/log-route-decision.ts`; there is no GUI request-history browser
   or full trace + attempts + outcome view on this baseline.
 - Existing diagnostics are narrower than Compatibility Lab:
-  `ocx doctor` is observe-only environment/OAuth/runtime diagnosis, while
+  the default `ocx doctor` path is observe-only environment/OAuth/runtime
+  diagnosis; explicit `--fix-codex-runtime` may persist a repair. In contrast,
   `POST /api/providers/test` performs a bounded live `/models` connectivity
   check only when applicable; forward providers return configured status and
   static catalogues return not-applicable without network access.
@@ -143,11 +145,12 @@ changes provider metadata, or turns a probe result directly into a route.
 
 ### Routing Profiles
 
-Routing Profiles remain the only user-policy layer. Future compatibility
-requirements extend `OcxRoutingProfileConfig`, its normalizer/revision, the
-existing evaluator, the existing management CRUD/dry-run endpoints, and the
-Models dashboard editor. There will be no compatibility-specific profile
-store, evaluator, or editor.
+Routing Profiles remain the sole compatibility-policy surface. Future
+compatibility requirements extend `OcxRoutingProfileConfig`, its
+normalizer/revision, the existing evaluator, the existing management
+CRUD/dry-run endpoints, and the Models dashboard editor. Existing combo and
+account-pool controls retain their separate non-compatibility responsibilities.
+There will be no compatibility-specific profile store, evaluator, or editor.
 
 ### Router Intelligence
 
@@ -208,8 +211,8 @@ Future implementation uses the existing OpenCodex config root returned by
   content-addressed contract artifacts retained with the observations that
   reference them.
 - Verdicts are derived projections, never mutable canonical booleans.
-- Corrections append invalidation/supersession events; prior bytes are not
-  edited.
+- Corrections append invalidation events or a new claim snapshot with explicit
+  `supersedes[]`; prior bytes are not edited.
 - The Lab does not copy `usage.jsonl` or routing-history rows. When useful, an
   observation references an existing request ID or route decision ID.
 - Agent Fabric supplies structured outcome data/references, never repositories

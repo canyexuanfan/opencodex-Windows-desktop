@@ -22,7 +22,9 @@ schemaVersion           source.schemaVersion
 id                      case.id
 version                 manifestDefaults.version
 suite                   { id: case.suite,
-                          version: manifestDefaults.suiteVersion }
+                          version: manifestDefaults.suiteVersion,
+                          evidenceLayer:
+                            manifestDefaults.evidenceLayer }
 evidenceLayer           manifestDefaults.evidenceLayer
 capability              case.capability
 verificationRole        case.verificationRole when present,
@@ -34,8 +36,8 @@ fixtures                when case.initiatingRequest is present:
                         otherwise: [fixtureRef(case.fixture)]
 executionLimits         manifestDefaults.executionLimits
 assertions              case.assertions
-failureRules            failureRuleSets[
-                          manifestDefaults.failureRuleSet]
+expectedFailure         case.expectedFailure, only when present
+failureRules            expandFailureRules(case)
 artifactPolicy          manifestDefaults.artifactPolicy
 freshness               manifestDefaults.freshness
 ```
@@ -51,6 +53,31 @@ freshness               manifestDefaults.freshness
   byteLength: UTF8(x.bytesUtf8).byteLength
 }
 ```
+
+`expandFailureRules(case)` copies
+`failureRuleSets[manifestDefaults.failureRuleSet]`. When
+`case.expectedFailure` is absent, that copy is the complete rule list and no
+control-specific rule exists. When present, registration validates the closed
+control matrix in the evidence contract and inserts this materialized record
+immediately before `required-assertion`:
+
+```text
+id                      expectedFailureRuleTemplate.id
+match                   expectedFailureRuleTemplate.match
+classification          case.expectedFailure.expectedClass
+secondaryCode           case.expectedFailure.expectedCode
+verdictEffect           none when onMatch is pass,
+                        unsupported when onMatch is unsupported
+retry                   expectedFailureRuleTemplate.retry
+expected                expectedFailureRuleTemplate.expected
+```
+
+`expected_failure_exact_match` exists only when the observed class and code
+equal `expectedClass`/`expectedCode` and every listed assertion ID passed. An
+`onMismatch: fail` falls through to `required-assertion`; an
+`onMismatch: inconclusive` falls through to `fallback`. No V1 case declares a
+`capability_absence_control`, so no V1 expanded manifest contains an
+`unsupported` effect.
 
 JSON object field order has no digest effect, but the field set above is
 closed. Unknown fields reject registration. Arrays preserve source order.
@@ -135,6 +162,8 @@ observation:
       "headers": {},
       "json": null,
       "events": [],
+      "toolCalls": [],
+      "mcpCalls": [],
       "terminal": null,
       "normalizedText": ""
     }
@@ -213,6 +242,48 @@ Each normalized event is:
 { "event": string, "data": JSON value, "ordinal": integer }
 ```
 
+### Semantic call projections
+
+`/client/response/events` always contains the event records above and is never
+treated as an array of bare calls. The normalized observation additionally
+contains `/client/response/toolCalls` and `/client/response/mcpCalls`.
+
+`toolCalls` is built from completed client-visible semantic output items in
+response order. For non-streaming Responses, use `output[]`; for Responses SSE,
+use each `response.output_item.done.data.item` and reject a completed response
+whose added item lacks exactly one done item. Chat fragments are first
+translated by the adapter into those client-visible Responses items; the
+projection never reads the upstream Chat deltas directly.
+
+Accepted item shapes and exact projections are:
+
+```text
+function_call:
+  { id: item.call_id, name: item.name,
+    arguments: JSON.parse(item.arguments),
+    kind: "function", ordinal: output order }
+
+custom_tool_call:
+  { id: item.call_id, name: item.name,
+    arguments: item.input,
+    kind: "custom", ordinal: output order }
+```
+
+Missing/non-string IDs or names, malformed function JSON, duplicate IDs, an
+unknown item type, or an added/done mismatch emits no repaired call and causes
+the corresponding required assertion to fail. Ordinals are contiguous from
+zero; they are not SSE event ordinals.
+
+`mcpCalls` is derived from `toolCalls` whose name starts with `mcp__` and
+contains a final `__` separator. Split at the final separator:
+
+```text
+{ namespace: bytes before final "__", name: bytes after final "__" }
+```
+
+Empty components, more than 64 UTF-8 bytes per component, invalid UTF-8, or a
+non-MCP name emits no MCP call. Order matches `toolCalls`.
+
 ## 6. Assertion operators
 
 - `http_status_equals`: selected integer equals expected integer.
@@ -270,10 +341,10 @@ model output outside that observation.
   `status`. Build the SSE projection where `text` concatenates every
   `response.output_text.delta.data.delta`, and `terminal` is the normalized
   terminal. Return `pass` iff the two JCS objects are equal, else `fail`.
-- `nonoverlap_order`: read normalized `tool_call` events in ordinal order.
-  Return their IDs only when every ID occurs once, ordinals are contiguous
-  from zero, and each event contains its complete arguments. Otherwise return
-  an empty array.
+- `nonoverlap_order`: read `/client/response/toolCalls` in array order. Return
+  their IDs only when every ID occurs once, each record has a complete
+  arguments value, and ordinals are contiguous from zero and equal the array
+  indexes. Otherwise return an empty array.
 - `call_result_order`: over the normalized two-turn input, return `pass` iff a
   `function_call` occurs in turn 1, exactly one `function_call_output` with the
   same `call_id` occurs in turn 2, and no result precedes its call; otherwise
@@ -312,11 +383,13 @@ the corresponding required assertion; it is not silently repaired.
 
 ## 8. Failure rules and freshness
 
-The exact ordered `protocol-v1-default` records are in the case authority.
-Fixture/manifest integrity and harness failures do not affect compatibility.
-Time/resource limits are environmental blockers. Exact unsupported controls
-produce `UNSUPPORTED`; the exact expected rejection of a `negative_control`
-satisfies that control without producing `UNSUPPORTED`; other required
+The exact ordered base `protocol-v1-default` records and the one
+expected-failure rule template are in the case authority. Control-specific
+rules are included only by `expandFailureRules(case)`. Fixture/manifest
+integrity and harness failures do not affect compatibility. Time/resource
+limits are environmental blockers. The exact expected rejection of the V1
+conformance negative control satisfies that control without producing
+`UNSUPPORTED`; no protocol V1 case can produce `UNSUPPORTED`. Other required
 deterministic mismatches are `protocol_failure`/`DEGRADED`.
 
 Protocol V1 scenario and suite freshness are both unbounded (`null`) because

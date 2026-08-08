@@ -42,6 +42,19 @@ annotations in a later phase, but cannot produce a canonical verdict.
 
 ### Non-collapse rule
 
+Each layer has one executable subject kind:
+
+```text
+protocol_conformance       -> ProtocolSubjectV1
+live_route_compatibility   -> RouteSubjectV1
+task_effectiveness         -> TaskSubjectV1
+```
+
+`EvidenceSubjectV1` is that closed discriminated union. An observation whose
+layer and `subjectKind` do not match is invalid evidence. Suite manifests also
+belong to exactly one evidence layer; a manifest cannot mix protocol, live, and
+task scenarios even when their human-facing suite stem is the same.
+
 The canonical projection key is:
 
 ```text
@@ -53,6 +66,48 @@ There is no projection across all layers and no weighted universal score.
 Callers may present multiple layer verdicts next to each other. A prerequisite
 failure in one layer may make a later-layer run inapplicable, but it does not
 rewrite evidence in the other layer.
+
+### `ProtocolSubjectV1`
+
+Protocol evidence identifies OpenCodex translation behavior, not a provider:
+
+```text
+subjectSchemaVersion      1
+subjectKind               protocol
+opencodexCompatibilityVersion
+effectiveAdapter
+inboundProtocol
+upstreamProtocol
+surface
+behaviorFingerprint
+```
+
+The closed `runtime.bunVersion`, `runtime.platform`, and `runtime.arch` behavior
+keys cover platform-sensitive paths; there is no second runtime digest.
+Provider, credential, account, endpoint, health, quota, cost, and latency
+fields are forbidden.
+
+### `TaskSubjectV1`
+
+Task evidence identifies one exact route plus one synthetic task/verifier
+contract:
+
+```text
+subjectSchemaVersion      1
+subjectKind               task
+routeSubject              RouteSubjectV1
+taskClassId
+taskClassVersion
+taskFixtureDigest
+verifierManifestDigest
+fabricCompatibilityVersion
+sandboxProfileDigest
+```
+
+The nested route subject makes execution behavior reproducible. The task
+subject never contains repository contents, prompts, user paths, account
+identity, or raw artifacts. A changed route, task fixture, verifier, Fabric
+runtime, or sandbox profile starts a new task projection.
 
 ## 2. Immutable ledger contract
 
@@ -110,6 +165,41 @@ environment
 artifactRefs[]
 sourceRefs?
 ```
+
+A `claim_snapshot` additionally has:
+
+```text
+evidenceLayer            live_route_compatibility
+subject                  RouteSubjectV1
+subjectId
+capability
+polarity                 supported | not_supported | withdrawn
+sourceManifestDigest
+sourceEventIds[]
+supersedes[]
+effectiveAt
+```
+
+Claim rules:
+
+- Claims exist only for `live_route_compatibility`; protocol and task verdicts
+  cannot be `CLAIMED`.
+- `sourceManifestDigest` identifies the canonical, content-addressed snapshot
+  of all registry/config/catalog/native/adapter inputs used by the existing
+  capability resolver. Raw secrets are forbidden.
+- `supersedes` explicitly lists every previously current claim event for the
+  same `(subjectId, capability)`. The first snapshot uses an empty list.
+- A source refresh, removal, or changed polarity appends a new snapshot; it
+  never edits a prior event. `withdrawn` means the local declaration no longer
+  exists. `not_supported` suppresses `CLAIMED` but cannot produce
+  `UNSUPPORTED`.
+- Projection first applies invalidations, then removes every event named by a
+  valid later snapshot's `supersedes`. Exactly one unsuperseded claim may
+  remain current for a claim key. Multiple unsuperseded claims, a missing
+  referenced predecessor, a cross-key supersession, or a cycle makes claim
+  state `UNKNOWN` and reports ledger corruption.
+- Claim ordering is `effectiveAt`, then `recordedAt`, then event ID, but
+  ordering never substitutes for the explicit supersession graph.
 
 Rules:
 
@@ -176,7 +266,7 @@ Verdicts are projections, not mutable evidence fields.
 
 ### `UNKNOWN`
 
-Produced when no current registry support claim and no current, valid,
+Produced when no current positive claim snapshot and no current, valid,
 attributable observation can classify the projection key.
 
 It can also result when all prior evidence became stale or was invalidated and
@@ -190,6 +280,9 @@ for the exact capability/subject, when no current executable evidence yields a
 stronger state. The snapshot records whether the declaration came from explicit
 provider config, Provider Registry, cached catalog, native metadata, or current
 adapter inference rather than pretending every claim is registry-authored.
+
+`CLAIMED` applies only to `live_route_compatibility`; protocol and task layers
+have no declaration source and project `UNKNOWN` without executable evidence.
 
 A claim cannot produce `PROBED` or `VERIFIED`. A registry negative declaration
 is shown as claim metadata but does not by itself prove `UNSUPPORTED`.
@@ -251,9 +344,9 @@ A blocked retry does not erase a still-current `VERIFIED`, `PROBED`,
 
 Produced only by executable, suite-declared evidence that the exact capability
 is unavailable by contract for this subject. The scenario must define an
-unambiguous unsupported signal or negative-control assertion; a generic 4xx,
-timeout, empty output, registry omission, or failed authentication is
-insufficient.
+unambiguous `capability_absence_control`; a conformance negative control,
+generic 4xx, timeout, empty output, registry omission, or failed authentication
+is insufficient.
 
 Expected rejection of a deliberately unsupported feature can prove
 `UNSUPPORTED` when the rejection itself matches the deterministic contract. It
@@ -268,7 +361,7 @@ For current valid evidence at the same projection key:
    `UNSUPPORTED` according to the scenario's failure rule.
 3. Partial positive coverage yields `PROBED`.
 4. A blocker yields `BLOCKED` only when 1-3 have no current result.
-5. A current positive registry claim yields `CLAIMED`.
+5. A current positive claim snapshot yields `CLAIMED`.
 6. Otherwise the result is `UNKNOWN`.
 
 This is precedence, not a quality scale. In particular, `DEGRADED`,
@@ -389,6 +482,45 @@ codes may add detail without changing these semantics.
 | `budget_exhausted` | Lab request/token/tool/byte/time budget ended the run before its assertion | No | `BLOCKED`; revise scenario limits/version or retry |
 | `inconclusive` | Observations conflict or lack enough information for another class | No | No promotion/degradation; investigate/reverify |
 
+Manifest registration enforces this exhaustive class/effect matrix:
+
+| Class | Legal `verdictEffect` | Additional constraint |
+|---|---|---|
+| `protocol_failure` | `degraded`, or `none` for a supplemental assertion | Never `unsupported` |
+| `capability_failure` | `degraded`, `unsupported`, or `none` for an exact conformance negative control | `unsupported` requires a `capability_absence_control` |
+| `behavioral_failure` | `degraded`, or `none` for a supplemental assertion | `task_effectiveness` only |
+| `authentication_blocked` | `none` | Environmental blocker only |
+| `quota_blocked` | `none` | Environmental blocker only |
+| `region_blocked` | `none` | Environmental blocker only |
+| `network_failure` | `none` | Environmental blocker only |
+| `provider_transient` | `none` | Environmental blocker only |
+| `timeout` | `none` | Environmental blocker only |
+| `harness_failure` | `none` | Invalidates/blocks evidence only |
+| `budget_exhausted` | `none` | Environmental blocker only |
+| `inconclusive` | `none` | No verdict promotion or degradation |
+
+Any other pair rejects the manifest. A retry count cannot change the pair;
+reclassification requires a new observation with independently satisfied
+classification rules.
+
+`expectedFailure` is either absent or:
+
+```text
+controlKind             conformance_negative_control |
+                        capability_absence_control
+expectedClass
+expectedCode
+assertionIds[]
+onMatch                 pass | unsupported
+onMismatch              fail | inconclusive
+```
+
+For `conformance_negative_control`, `onMatch` must be `pass` and the legal
+effect is `none`; the expected rejection helps satisfy `VERIFIED`. For
+`capability_absence_control`, `onMatch` must be `unsupported` and the class
+must be `capability_failure`. No one observation can both satisfy verification
+and project `UNSUPPORTED`.
+
 Safety rules:
 
 - Expired credentials never imply broken tool support.
@@ -403,17 +535,17 @@ Safety rules:
 - `provider_transient` may be promoted to a compatibility-affecting class only
   by a scenario-specific deterministic rule and a new observation; projection
   code must not infer promotion from retry count.
-- An expected failure is first-class scenario data. When the observed
-  rejection exactly matches a declared unsupported assertion, it can produce
-  `UNSUPPORTED`. Any other expected failure remains a pass/fail of the
-  assertion, not a blanket suppression.
+- Expected failures follow the closed control contract above. A generic
+  `negative_control` label never implies capability absence.
 
 ## 6. Canonical route subject
 
-Evidence is never keyed by model name alone. `RouteSubjectV1` contains:
+Live route evidence is never keyed by model name alone. `RouteSubjectV1`
+contains:
 
 ```text
-subjectSchemaVersion
+subjectSchemaVersion      1
+subjectKind               route
 providerId
 providerInstanceFingerprint
 clientModelId
@@ -463,36 +595,111 @@ Semantics:
 
 ### Behavior fingerprint allowlist
 
-The fingerprint is SHA-256 over canonical JSON containing only effective,
-behavior-changing values applicable to the selected model/surface:
+The fingerprint is SHA-256 over JCS `BehaviorFingerprintV1`:
 
-- adapter/wire resolution and `responsesPath`;
-- auth mode and auth transport, but no credential/account identity;
-- stateful/stateless Responses behavior, upstream streaming mode, service-tier
-  support, snapshot and item-ID repair;
-- context/input/output limits and input modalities;
-- reasoning capability, effort/default/mapping/wire/summary/replay/split/
-  toggle/budget behavior;
-- tool-choice restrictions, parallel-tool support, hosted-tool preference,
-  freeform/custom-tool handling, built-in-name escaping;
-- prompt-cache forwarding, Anthropic EOF policy, model suffix handling;
-- Google mode and opaque project/location fingerprints where applicable;
-- OpenRouter routing preferences where applicable;
-- actual Bun runtime version and platform/architecture whenever the selected
-  stream path or adapter has platform-sensitive behavior;
-- effective vision and web-search sidecar enablement, backend, model,
-  reasoning, per-turn limits, timeout/stall limits, and the matching flat
-  dependency subject when that sidecar can execute;
-- MCP schema/result/tool count bounds, with all Lab execution facilities forced
-  to the sandbox settings in the security contract;
-- effective global stream mode, fast/service-tier behavior, and effort caps
-  when they can alter the scenario;
-- a digest of non-credential custom header behavior.
+```text
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "values": {
+    "<closed key>": {
+      "source": "request" | "model_override" | "provider_config" |
+                "registry_runtime_default" | "generated_model_metadata" |
+                "global_config" | "adapter_default" | "lab_forced",
+      "value": <effective scalar, array, object, or opaque digest>
+    }
+  }
+}
+```
+
+The production route/model/adapter resolver, not a second Lab merge, emits the
+effective value and winning source tag. Thus model-specific wire/config
+overrides, registry runtime defaults, generated metadata, global values and
+adapter defaults retain the exact live precedence. If precedence is ambiguous,
+an effective default cannot be resolved, or scenario execution reads a
+behavior-changing input that has no closed key below, subject construction
+fails as `harness_failure` with code `unclassified_behavior_input`; no evidence
+is emitted.
+
+Closed V1 keys are:
+
+```text
+wire.adapter
+wire.upstreamProtocol
+wire.responsesPath
+wire.commandCodeVersion
+wire.modelSuffixMode
+auth.mode
+auth.transport
+responses.stateful
+responses.upstreamStreaming
+responses.serviceTier
+responses.snapshotRepair
+responses.itemIdRepair
+limits.contextWindow
+limits.maxInputTokens
+limits.maxOutputTokens
+modalities.input
+sampling.omitTemperature
+sampling.omitTopP
+sampling.omitPenalties
+reasoning.supported
+reasoning.efforts
+reasoning.defaultEffort
+reasoning.effortMap
+reasoning.wireFormat
+reasoning.summaryMode
+reasoning.replayMode
+reasoning.splitMode
+reasoning.toggleMode
+reasoning.budgetMode
+tools.choiceRestrictions
+tools.parallel
+tools.hostedPreference
+tools.customFreeform
+tools.builtinNameEscaping
+cache.forwarding
+cache.retention
+anthropic.eofPolicy
+google.mode
+google.projectFingerprint
+google.locationFingerprint
+openrouter.order
+openrouter.only
+openrouter.allowFallbacks
+sidecars.vision
+sidecars.webSearch
+mcp.maxTools
+mcp.maxSchemaBytes
+mcp.maxResultBytes
+mcp.nativeLocalExec
+runtime.bunVersion
+runtime.platform
+runtime.arch
+runtime.streamMode
+runtime.fastMode
+runtime.effortCap
+headers.nonCredentialBehaviorDigest
+```
+
+`sampling.omitTemperature`, `sampling.omitTopP`, and
+`sampling.omitPenalties` are the selected-model effective booleans produced
+from `noTemperatureModels`, `noTopPModels`, and `noPenaltyModels`, rather than
+hashes of the whole configured arrays. `wire.commandCodeVersion` is the
+effective `commandCodeVersion`. `cache.retention` is the effective global
+`cacheRetention` value. Sidecar keys contain the effective enablement, backend,
+model, reasoning, per-turn limits and timeout/stall limits plus the matching
+flat dependency subject ID.
 
 Values that are inapplicable to the selected model/surface are omitted rather
 than copied wholesale. Canonical JSON sorts keys, normalizes absent/default
 values to their effective value, and sorts set-like arrays while preserving
 order-sensitive arrays.
+
+Acceptance tests for the future builder must enumerate every
+behavior-changing config/default read by the selected adapter and prove that
+changing each effective value changes the fingerprint, while changing every
+excluded secret/transient value does not.
 
 The following never participate:
 
@@ -502,10 +709,11 @@ The following never participate:
 - prompts, messages, tool results, repository paths or contents;
 - timestamps, transient health, latency, cost, quota or retry state.
 
-Credential headers are excluded. Non-credential custom headers contribute only
-through a locally salted HMAC over normalized names/values, so a behavior
-change alters identity without disclosing the header. Project/location and
-custom endpoint values use the same local opaque treatment.
+Credential headers are excluded. The config-owner fingerprint broker described
+by the security contract supplies only
+`headers.nonCredentialBehaviorDigest`; Lab code never receives raw header names
+or values. Project/location and custom endpoint values use the same local
+opaque treatment.
 
 Public export replaces all local fingerprints with export-scoped opaque IDs
 and redacts custom model IDs unless the export policy explicitly classifies
@@ -520,12 +728,15 @@ producerSchemaVersion
 outcomeId
 taskClassId
 taskClassVersion
-subject
+subject                  TaskSubjectV1
+taskFixtureDigest
+verifierManifestDigest
 startedAt
 completedAt
 resourceLimits
 result                   success | failure | blocked | inconclusive
-verifiers[]              { id, version, result, normalizedMetrics? }
+verifiers[]              { id, version, manifestDigest, result,
+                           normalizedMetrics? }
 artifactRefs[]
 ```
 

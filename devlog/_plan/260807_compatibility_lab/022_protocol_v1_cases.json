@@ -9,11 +9,15 @@
       { "id": "contract-integrity", "match": ["fixture_digest_mismatch", "manifest_digest_mismatch", "fixture_decode_failure", "harness_failure", "sanitizer_failure"], "classification": "harness_failure", "secondaryCode": "contract_integrity", "verdictEffect": "none", "retry": "never", "expected": false },
       { "id": "time-limit", "match": ["connect_timeout", "first_byte_timeout", "inactivity_timeout", "total_timeout"], "classification": "timeout", "secondaryCode": "scenario_time_limit", "verdictEffect": "none", "retry": "never", "expected": false },
       { "id": "resource-limit", "match": ["request_limit", "input_byte_limit", "output_byte_limit", "output_token_limit", "tool_call_limit", "artifact_byte_limit"], "classification": "budget_exhausted", "secondaryCode": "scenario_resource_limit", "verdictEffect": "none", "retry": "never", "expected": false },
-      { "id": "negative-control-exact-rejection", "match": ["negative_control_exact_rejection"], "classification": "capability_failure", "secondaryCode": "expected_negative_control", "verdictEffect": "none", "retry": "never", "expected": true },
-      { "id": "exact-unsupported", "match": ["unsupported_control_exact_rejection"], "classification": "capability_failure", "secondaryCode": "deterministic_unsupported", "verdictEffect": "unsupported", "retry": "never", "expected": true },
       { "id": "required-assertion", "match": ["required_assertion_failed"], "classification": "protocol_failure", "secondaryCode": "deterministic_assertion", "verdictEffect": "degraded", "retry": "never", "expected": false },
       { "id": "fallback", "match": ["no_prior_rule"], "classification": "inconclusive", "secondaryCode": "unclassified", "verdictEffect": "none", "retry": "never", "expected": false }
     ]
+  },
+  "expectedFailureRuleTemplate": {
+    "id": "expected-failure-exact-match",
+    "match": ["expected_failure_exact_match"],
+    "retry": "never",
+    "expected": true
   },
   "manifestDefaults": {
     "version": "1.0.0",
@@ -129,7 +133,7 @@
       "assertions": [
         { "id": "status", "operator": "http_status_equals", "selector": "/client/response/status", "expected": 200, "required": true },
         { "id": "text", "operator": "normalized_text_equals", "selector": "/client/response/normalizedText", "expected": "OK", "required": true },
-        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "done", "required": true }
+        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "completed", "required": true }
       ]
     },
     {
@@ -140,9 +144,9 @@
       "initiatingRequest": { "id": "chat-stream-assembly-request", "role": "client_request", "mediaType": "application/json", "bytesUtf8": "{\"model\":\"fixture-model\",\"input\":\"PING\",\"stream\":true}", "digest": "c2c39a78b939e6c5182d3206f86aa86d6fd706959de9c37072db759aa510a1f6" },
       "fixture": { "id": "chat-stream-assembly", "role": "upstream_response", "mediaType": "text/event-stream", "bytesUtf8": "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"alpha\",\"arguments\":\"{\\\"x\\\":\"}},{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"beta\",\"arguments\":\"{\\\"y\\\":\"}}]}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"2}\"}},{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", "digest": "0085f298a8690aefb74bb09ea2e0cb77703aaf6cfd822c6ce0d4d334ad4b9b3f" },
       "assertions": [
-        { "id": "alpha", "operator": "tool_call_equals", "selector": "/client/response/events/0", "expected": {"id":"call_a","name":"alpha","arguments":{"x":1},"kind":"function","ordinal":0}, "required": true },
-        { "id": "beta", "operator": "tool_call_equals", "selector": "/client/response/events/1", "expected": {"id":"call_b","name":"beta","arguments":{"y":2},"kind":"function","ordinal":1}, "required": true },
-        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "done", "required": true }
+        { "id": "alpha", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_a","name":"alpha","arguments":{"x":1},"kind":"function","ordinal":0}, "required": true },
+        { "id": "beta", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/1", "expected": {"id":"call_b","name":"beta","arguments":{"y":2},"kind":"function","ordinal":1}, "required": true },
+        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "completed", "required": true }
       ]
     },
     {
@@ -154,7 +158,7 @@
       "fixture": { "id": "chat-stream-terminal", "role": "upstream_response", "mediaType": "text/event-stream", "bytesUtf8": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", "digest": "6e0e4e8d32d8575db6a09e89c222b16338e1499e940e038599f7a6b5332e59e6" },
       "assertions": [
         { "id": "text", "operator": "normalized_text_equals", "selector": "/client/response/normalizedText", "expected": "OK", "required": true },
-        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "done", "required": true }
+        { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "completed", "required": true }
       ]
     },
     {
@@ -211,8 +215,8 @@
       "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-chat"], "surfaces": ["responses-http"], "requiredClaims": ["tools"], "requiredHarnessFeatures": ["adapter_vector"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "tools-function", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"tools\":[{\"name\":\"lookup\",\"parameters\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"]}}],\"upstreamToolCall\":{\"id\":\"call_fixture\",\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"},\"toolResult\":{\"toolCallId\":\"call_fixture\",\"content\":\"RESULT\"}}", "digest": "9107f4dfdd7da8340c866c9fb6f42854437cebb98592d0510969c810c1eeb0ad" },
       "assertions": [
-        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/events/0", "expected": {"id":"call_fixture","name":"lookup","arguments":{"q":"x"},"kind":"function","ordinal":0}, "required": true },
-        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/events/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
+        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_fixture","name":"lookup","arguments":{"q":"x"},"kind":"function","ordinal":0}, "required": true },
+        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
       ]
     },
     {
@@ -222,8 +226,8 @@
       "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-responses"], "surfaces": ["responses-http"], "requiredClaims": ["custom_tools"], "requiredHarnessFeatures": ["adapter_vector"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "tools-custom", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"tool\":{\"type\":\"custom\",\"name\":\"apply_patch\",\"format\":{\"type\":\"grammar\",\"syntax\":\"lark\",\"definition\":\"start: /[\\\\s\\\\S]+/\"}},\"call\":{\"id\":\"call_patch\",\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** End Patch\\n\"},\"output\":{\"call_id\":\"call_patch\",\"output\":\"Done\"}}", "digest": "752750104e99602d9160feaa591bcbfcfd0c8c53fc9feda4a48c3b6813b74d44" },
       "assertions": [
-        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/events/0", "expected": {"id":"call_patch","name":"apply_patch","arguments":"*** Begin Patch\n*** End Patch\n","kind":"custom","ordinal":0}, "required": true },
-        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/events/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
+        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_patch","name":"apply_patch","arguments":"*** Begin Patch\n*** End Patch\n","kind":"custom","ordinal":0}, "required": true },
+        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
       ]
     },
     {
@@ -234,7 +238,7 @@
       "initiatingRequest": { "id": "tools-parallel-request", "role": "client_request", "mediaType": "application/json", "bytesUtf8": "{\"model\":\"fixture-model\",\"input\":\"PING\",\"stream\":true}", "digest": "c2c39a78b939e6c5182d3206f86aa86d6fd706959de9c37072db759aa510a1f6" },
       "fixture": { "id": "tools-parallel", "role": "upstream_response", "mediaType": "text/event-stream", "bytesUtf8": "data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"a\",\"arguments\":\"{\"}},{\"index\":1,\"id\":\"call_b\",\"function\":{\"name\":\"b\",\"arguments\":\"{\"}}]}}]}\n\ndata:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"}\"}},{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata:[DONE]\n\n", "digest": "7a954d390bdf48d0dec3ed2515a5bbbedd4165656fcb7f0643ce743d17bb39f0" },
       "assertions": [
-        { "id": "count", "operator": "sse_event_count", "selector": "/client/response/events", "expected": {"event":"tool_call","count":2}, "required": true },
+        { "id": "calls", "operator": "json_path_equals", "selector": "/client/response/toolCalls", "expected": [{"id":"call_a","name":"a","arguments":{},"kind":"function","ordinal":0},{"id":"call_b","name":"b","arguments":{},"kind":"function","ordinal":1}], "required": true },
         { "id": "order", "operator": "json_path_equals", "selector": "/verifiers/nonoverlap_order", "expected": ["call_a","call_b"], "required": true }
       ]
     },
@@ -280,8 +284,8 @@
       "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-chat"], "surfaces": ["responses-http"], "requiredClaims": ["custom_tools"], "requiredHarnessFeatures": ["adapter_vector"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "codex-patch", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"name\":\"apply_patch\",\"input\":\"*** Begin Patch\\n*** Add File: x\\n+x\\n*** End Patch\\n\",\"callId\":\"call_patch\",\"result\":\"Done\"}", "digest": "668baa1fbea1d7a6556f717467fc3b90a47b2edfaa2ccf0c7950fd30dfe27a81" },
       "assertions": [
-        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/events/0", "expected": {"id":"call_patch","name":"apply_patch","arguments":"*** Begin Patch\n*** Add File: x\n+x\n*** End Patch\n","kind":"custom","ordinal":0}, "required": true },
-        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/events/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
+        { "id": "call", "operator": "tool_call_equals", "selector": "/client/response/toolCalls/0", "expected": {"id":"call_patch","name":"apply_patch","arguments":"*** Begin Patch\n*** Add File: x\n+x\n*** End Patch\n","kind":"custom","ordinal":0}, "required": true },
+        { "id": "result", "operator": "tool_result_correlates", "selector": "/upstream/requests", "expected": {"call":"/client/response/toolCalls/0/id","result":"/upstream/requests/1/json/input/0/call_id"}, "required": true }
       ]
     },
     {
@@ -360,7 +364,8 @@
       "assertions": [
         { "id": "path", "operator": "json_path_equals", "selector": "/verifiers/modality_path", "expected": "unsupported", "required": true },
         { "id": "no-drop", "operator": "json_path_equals", "selector": "/verifiers/silent_image_drop", "expected": false, "required": true }
-      ]
+      ],
+      "expectedFailure": { "controlKind": "conformance_negative_control", "expectedClass": "capability_failure", "expectedCode": "image_input_unsupported", "assertionIds": ["path", "no-drop"], "onMatch": "pass", "onMismatch": "fail" }
     },
     {
       "id": "reasoning-core.protocol.effort-mapping",
@@ -415,7 +420,7 @@
       "fixture": { "id": "mcp-namespace", "role": "synthetic_tool", "mediaType": "application/vnd.opencodex.mcp-stub+json", "bytesUtf8": "{\"namespace\":\"mcp__fixture\",\"name\":\"lookup\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}", "digest": "91a53f8c580d461d0f5e0d7209e5d4b95249bdfa8bd3fd4f298e18bdeadb0693" },
       "assertions": [
         { "id": "wire-name", "operator": "json_path_equals", "selector": "/upstream/requests/0/json/tools/0/name", "expected": "mcp__fixture__lookup", "required": true },
-        { "id": "reverse", "operator": "json_path_equals", "selector": "/client/response/events/0", "expected": {"namespace":"mcp__fixture","name":"lookup"}, "required": true }
+        { "id": "reverse", "operator": "json_path_equals", "selector": "/client/response/mcpCalls/0", "expected": {"namespace":"mcp__fixture","name":"lookup"}, "required": true }
       ]
     },
     {

@@ -49,6 +49,31 @@ None.
    - Correction: narrowed every protocol V1 row to its exact `022` evidence and
      made incident mappings explicit future scenario/version inputs when no
      literal V1 vector exists.
+7. The three evidence layers lacked separate executable subject identities,
+   and suites could span layers.
+   - Correction: added the closed `ProtocolSubjectV1`, `RouteSubjectV1`, and
+     `TaskSubjectV1` union, exact layer/subject matching, layer-qualified suite
+     manifests, and one reserved deterministic Fabric task/verifier contract.
+8. Behavior identity did not explicitly close effective
+   `commandCodeVersion`, sampling-parameter omission sets, `cacheRetention`, or
+   unknown future behavior inputs.
+   - Correction: froze `BehaviorFingerprintV1`, its closed keys and source
+     tags, required values from the production resolver, and fail-closed
+     handling/tests for an unclassified behavior input.
+9. A global protocol failure-rule list attached both control effects to every
+   case, violating the legal control matrix.
+   - Correction: the base rule set contains no control rule; expansion adds
+     exactly one materialized rule only for a case with `expectedFailure`.
+     Protocol V1 has one conformance control and no unsupported effect.
+10. Tool/MCP assertions selected bare calls from the normalized SSE event array.
+    - Correction: froze separate canonical `toolCalls[]` and `mcpCalls[]`
+      semantic projections and moved all call/correlation selectors to them.
+11. Chat-backed Responses cases expected adapter `done` instead of the
+    client-visible `completed` terminal, and parallel-tool counting still used
+    nonexistent `tool_call` SSE events.
+    - Correction: those terminals now expect `completed`; parallel count/order
+      derive from `/client/response/toolCalls`, and `toolCalls`/`mcpCalls` are
+      part of the closed observation schema.
 
 ### Medium
 
@@ -77,6 +102,14 @@ None.
 8. One result-content description claimed call correlation absent from its
    assertions.
    - Correction: removed the claim.
+9. Environmental failure effects, claim supersession/currentness, and
+   custom-header fingerprint ownership were not mechanically closed.
+   - Correction: added the exhaustive class/effect matrix, formal
+     `claim_snapshot`/`supersedes[]` schema and currentness algorithm, and a
+     config-owner broker that exposes only a domain-separated header digest.
+10. `ProtocolSubjectV1` named a second `runtimeFingerprint` without a schema.
+    - Correction: removed it; the closed `runtime.*` behavior keys are the sole
+      platform-sensitive identity inputs.
 
 ### Low
 
@@ -85,6 +118,9 @@ None.
 - Corrected historical reference `#745` from issue to pull request.
 - Added `021`/`022` to the stack ledger and created this review record, closing
   all local document links.
+- Corrected request-history evidence from “immutable” to canonical
+  append-only, limited the profile claim to compatibility policy, and noted the
+  explicit state-mutating `ocx doctor --fix-codex-runtime` mode.
 
 ## Mechanical review evidence
 
@@ -99,6 +135,8 @@ None.
 - All named verifier selectors have one closed deterministic definition.
 - `vision-core.protocol.modality-gate` is the sole V1 negative control and is
   represented as such in case and suite expansion.
+- Base failure rules contain no control effect; the vision case alone expands
+  the conformance-control rule.
 
 ## Repository verification
 
@@ -130,7 +168,7 @@ suite passed.
 2. Environmental failures cannot poison compatibility verdicts: **PASS**.
 3. `VERIFIED` is reproducible from immutable evidence: **PASS**.
 4. Exact route identity prevents false evidence reuse: **PASS**.
-5. Routing Profiles remain the sole user-policy layer: **PASS**.
+5. Routing Profiles remain the sole compatibility-policy surface: **PASS**.
 6. The Lab cannot become a second router: **PASS**.
 7. The Lab cannot become a second provider registry: **PASS**.
 8. Probes cannot access user data or arbitrary tools: **PASS**.

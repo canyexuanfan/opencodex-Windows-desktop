@@ -18,7 +18,7 @@ A `CompatibilityScenarioV1` has:
 schemaVersion           1
 id                      stable lowercase dotted ID
 version                 exact semver
-suite                   { id, version }
+suite                   { id, version, evidenceLayer }
 evidenceLayer           protocol_conformance |
                         live_route_compatibility |
                         task_effectiveness
@@ -42,6 +42,10 @@ freshness
 - Editorial description changes do not require a version change.
 - A suite manifest has its own exact version and lists scenario IDs, versions,
   roles, and its verification rule.
+- A suite manifest belongs to exactly one `evidenceLayer`; a scenario and suite
+  with different layers are invalid. Human-facing suite stems may recur across
+  layers, but their manifest keys are
+  `(id, evidenceLayer, version, manifestDigest)`.
 - Scenario and suite manifests are RFC 8785 canonical JSON with the
   domain-separated digest defined by the evidence contract.
 
@@ -152,6 +156,18 @@ The first exact rule wins. If no rule establishes a compatibility-attributable
 class, the attempt is `inconclusive`. Generic HTTP 4xx/5xx rules may classify a
 blocker or transient but cannot prove `UNSUPPORTED`.
 
+Manifest registration must enforce the exhaustive classification/effect matrix
+in `010_architecture_and_evidence_contract.md`. Environmental, timeout,
+budget, harness, transient, and inconclusive classes permit only
+`verdictEffect: none`; a manifest that maps any of them to `degraded` or
+`unsupported` is invalid.
+
+`expectedFailure`, when present, includes `controlKind`, exact class/code,
+assertion IDs, `onMatch`, and `onMismatch`. A
+`conformance_negative_control` exact rejection is a verification pass with no
+verdict effect. A `capability_absence_control` may produce `UNSUPPORTED`. These
+meanings cannot be combined in one scenario observation.
+
 ### Artifact policy
 
 The policy is deny-by-default and names allowed normalized artifacts:
@@ -179,14 +195,15 @@ minimum finite bound, with `null` meaning unbounded at that layer.
 For each exact suite manifest:
 
 - `VERIFIED`: all `required` scenarios applicable to the subject have current
-  passes and every negative control observed its required rejection.
+  passes and every `conformance_negative_control` observed its exact required
+  rejection.
 - `PROBED`: at least one required scenario passed, with no current
   compatibility-attributable required-scenario failure, but coverage is
   incomplete.
 - `DEGRADED`: a failure rule on an applicable required scenario yields
   `degraded`.
-- `UNSUPPORTED`: a required scenario's deterministic unsupported rule or
-  negative control proves the capability unavailable.
+- `UNSUPPORTED`: a required scenario's exact
+  `capability_absence_control` proves the capability unavailable.
 - `BLOCKED`: only blockers exist and no current attributable verdict takes
   precedence.
 - `CLAIMED`/`UNKNOWN`: follow the evidence contract.
@@ -282,7 +299,8 @@ Capability: `tools.round_trip`.
 | `tools-core.live.function-round-trip` | Live-reserved | Inert deterministic function is called once with schema-valid args and static result is continued |
 | `tools-core.live.custom-freeform-round-trip` | Live-reserved | Route emits exact custom/freeform call and accepts static result continuation |
 
-An explicit route contract that rejects a tool kind can prove unsupported.
+An explicit route `capability_absence_control` that rejects a tool kind can
+prove unsupported.
 Malformed arguments, dangling IDs, widened choice, dropped calls/results, or
 incorrect parallel assembly is degraded. A model choosing not to call an
 `auto` tool is inconclusive; required tool choice is used for conclusive live
@@ -330,9 +348,11 @@ Capability: `modalities.image.input`.
 | `vision-core.protocol.modality-gate` | Deterministic negative control; CL-01 | A text-only/no-sidecar synthetic vector produces the typed unsupported path without silent image drop |
 | `vision-core.live.synthetic-ocr` | Live-reserved | Lab-generated image nonce is returned in an exact JSON schema |
 
-A deterministic declared no-image contract may prove unsupported. Dropping,
-textifying without a declared sidecar, corrupting, or misordering image content
-is degraded. Failure of the optional sidecar route is attributed to that exact
+A deterministic declared no-image `capability_absence_control` may prove
+unsupported. The protocol V1 modality gate is instead a conformance negative
+control whose exact rejection is a verification pass. Dropping, textifying
+without a declared sidecar, corrupting, or misordering image content is
+degraded. Failure of the optional sidecar route is attributed to that exact
 subject. Auth/quota/network/transient failures are blocked.
 
 ### `reasoning-core`
@@ -375,6 +395,47 @@ Only a Lab-owned in-memory or loopback fixture is allowed. A route that
 deterministically cannot expose MCP may be unsupported. Namespace loss, schema
 corruption, partial bound commits, or result miscorrelation is degraded.
 User-server unavailability is never tested; environmental failures are blocked.
+
+### `fabric-core` task-effectiveness reservation
+
+This is a distinct `task_effectiveness` suite manifest, not an extension of a
+protocol or live-route manifest:
+
+```text
+suite.id                 fabric-core
+suite.version            1.0.0
+suite.evidenceLayer      task_effectiveness
+verificationRule         all-applicable-required-pass-v1
+freshness.maxAgeMs       2592000000
+```
+
+The first reserved scenario is
+`fabric-core.task.synthetic-patch@1.0.0`:
+
+- subject: exact `TaskSubjectV1`;
+- verification role: `required`;
+- fixture: a content-addressed synthetic scratch tree containing
+  `src/value.txt` with UTF-8 bytes `before\n`, plus a task-class manifest that
+  requests the exact final bytes `after\n`;
+- execution: Fabric-owned, no user repository/prompt, no network, no user MCP,
+  no shell, and filesystem access restricted to that synthetic scratch tree;
+- limits: one file, 64 KiB aggregate input/output, one patch operation,
+  30-second total, 5-second inactivity, and 1 MiB aggregate artifacts;
+- verifier manifest: `exact-tree-diff-v1`, whose digest participates in
+  `TaskSubjectV1`;
+- deterministic verifier: sort repository-relative POSIX paths by UTF-8 bytes,
+  reject symlinks/special files/path traversal, hash exact file bytes, and pass
+  only when the sole diff changes `src/value.txt` from `before\n` to `after\n`
+  with no added/deleted/renamed file;
+- success assertion: verifier result `pass`;
+- failure rules: verifier `fail` is `behavioral_failure -> degraded`;
+  unavailable Fabric/sandbox is `harness_failure -> none`; exhausted time/bytes
+  is the corresponding blocker with effect `none`;
+- artifact policy: retain only the bounded normalized path/digest diff and
+  verifier summary, never file bodies.
+
+This reservation freezes task-subject and verifier semantics for a later Fabric
+phase. It does not authorize CL-01 to implement or execute the task.
 
 ## 4. CL-01 implementation boundary
 

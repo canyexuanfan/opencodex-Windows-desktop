@@ -178,8 +178,8 @@ redaction mechanism.
 
 The local route subject distinguishes exact behavior without raw secrets:
 
-- configured instance, endpoint, custom headers, project and location use a
-  per-installation keyed HMAC;
+- configured instance, endpoint, custom-header behavior, project and location
+  use a per-installation keyed HMAC;
 - credential/account identity does not participate;
 - raw base URLs and private/custom headers are absent;
 - model IDs are retained locally because they are required route identity, but
@@ -189,6 +189,29 @@ The local route subject distinguishes exact behavior without raw secrets:
 
 The salt is stored with secret-file permissions outside the JSONL/artifact
 tree. It is not exported.
+
+### Custom-header fingerprint broker
+
+Raw custom headers remain owned by the provider/config request builder and are
+never passed to Lab code. That owner computes
+`headers.nonCredentialBehaviorDigest` through a narrow fingerprint broker:
+
+1. resolve the effective static custom headers after preset/config merge but
+   before request-specific or credential injection;
+2. remove every credential-bearing header according to the same auth transport
+   classification used by the request builder;
+3. lowercase valid ASCII field names, reject invalid names, preserve duplicate
+   value order, and preserve exact UTF-8 value bytes without trimming;
+4. sort entries by lowercase name while retaining duplicate order and encode
+   JCS `[{"name": string, "values": string[]}, ...]`;
+5. return lowercase HMAC-SHA-256 with installation salt and domain
+   `ocx-lab:local-fingerprint:v1\0customHeaderBehavior\0`.
+
+The broker returns only the digest. Its API cannot return normalized names,
+values, intermediate bytes, the salt, or the credential classification.
+Unknown classification fails subject construction; it never falls back to
+hashing or logging the raw header. Canary tests must prove raw names/values do
+not enter Lab events, errors, SQLite, or artifacts.
 
 ## 6. Local evidence versus public export
 
