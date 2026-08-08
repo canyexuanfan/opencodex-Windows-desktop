@@ -20,7 +20,7 @@ independent review, blockers, and whether a later phase is authorized.
 | Phase | Branch | Starting/base SHA | Accepted head | PR | State |
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
-| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `565f399baba65ca49af545b1016b29a62c5cbada` | [draft Wibias #10](https://github.com/Wibias/opencodex/pull/10) | ACCEPTED (contract-corrected revalidation) |
+| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [draft Wibias #10](https://github.com/Wibias/opencodex/pull/10) | ACCEPTED (contract-corrected revalidation) |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -61,7 +61,7 @@ Independent CL-00 acceptance review is frozen at
 - **Pre-rebase CL-01 head:** `cc447ce9d19d5fb4e03988899f5fb495f9de8d0e` (earlier accepted revision)
 - **CL-00 merge base on `dev`:** `243c3f4905797aa11c62ba933bb03d6d721266fd`
 - **Post-rebase harness commit:** `cfe27b0dcb26a1bf0bb56f68f952e6e4f4d80fe9` (rebase-only)
-- **Correction head:** `574f1d5eb93c091494549ffc0e26ea7a4879c12c` (implementation); **tip:** `565f399baba65ca49af545b1016b29a62c5cbada`
+- **Correction head:** `574f1d5eb93c091494549ffc0e26ea7a4879c12c` (implementation); **tip:** `22d608c82d82e2746c0cef9cd761db19a8e465ee`
 
 ### Corrections applied
 
