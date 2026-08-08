@@ -31,6 +31,20 @@ async function putVision(config: OcxConfig, vision: Record<string, unknown>): Pr
   return response;
 }
 
+function validCliConfig(visionSidecar: Record<string, unknown>): Record<string, unknown> {
+  return {
+    port: 10100,
+    defaultProvider: "test",
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "https://example.com/v1",
+      },
+    },
+    visionSidecar,
+  };
+}
+
 /**
  * Maintainer takeover regression coverage for #1002.
  *
@@ -150,23 +164,13 @@ describe("vision reasoning capability contracts", () => {
     const importPath = join(isolatedHome, "import.json");
 
     try {
-      writeFileSync(importPath, JSON.stringify({
-        port: 10100,
-        defaultProvider: "none",
-        providers: {},
-        visionSidecar: { reasoning: "max" },
-      }));
+      writeFileSync(importPath, JSON.stringify(validCliConfig({ reasoning: "max" })));
       expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).toBe(0);
       let persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
       expect(persisted.visionSidecar).toMatchObject({ reasoning: "xhigh" });
       expect(persisted.visionSidecar.model).toBeUndefined();
 
-      writeFileSync(importPath, JSON.stringify({
-        port: 10100,
-        defaultProvider: "none",
-        providers: {},
-        visionSidecar: { model: "", reasoning: "max" },
-      }));
+      writeFileSync(importPath, JSON.stringify(validCliConfig({ model: "", reasoning: "max" })));
       expect(await handleConfigCommand(["import", importPath, "--yes", "--json"])).toBe(0);
       persisted = JSON.parse(readFileSync(join(isolatedHome, "config.json"), "utf8"));
       expect(persisted.visionSidecar).toMatchObject({ model: "", reasoning: "xhigh" });
