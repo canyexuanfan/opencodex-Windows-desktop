@@ -416,7 +416,7 @@
       "id": "mcp-core.protocol.namespace-mapping",
       "suite": "mcp-core",
       "capability": "tools.mcp.core",
-      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub"], "platforms": [], "routePreconditions": [] },
+      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub","mcp_namespace_round_trip_v1"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "mcp-namespace", "role": "synthetic_tool", "mediaType": "application/vnd.opencodex.mcp-stub+json", "bytesUtf8": "{\"namespace\":\"mcp__fixture\",\"name\":\"lookup\",\"description\":\"fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}", "digest": "91a53f8c580d461d0f5e0d7209e5d4b95249bdfa8bd3fd4f298e18bdeadb0693" },
       "assertions": [
         { "id": "wire-name", "operator": "json_path_equals", "selector": "/upstream/requests/0/json/tools/0/name", "expected": "mcp__fixture__lookup", "required": true },
@@ -427,7 +427,7 @@
       "id": "mcp-core.protocol.schema-and-bounds",
       "suite": "mcp-core",
       "capability": "tools.mcp.core",
-      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub"], "platforms": [], "routePreconditions": [] },
+      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub","mcp_schema_bounds_v1"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "mcp-bounds", "role": "synthetic_tool", "mediaType": "application/vnd.opencodex.mcp-stub+json", "bytesUtf8": "{\"limitBytes\":64,\"exactSchema\":\"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"x\\\":{\\\"type\\\":\\\"string\\\"}},\\\"a\\\":\\\"xxx\\\"}\",\"overSchema\":\"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"x\\\":{\\\"type\\\":\\\"string\\\"}},\\\"a\\\":\\\"xxxx\\\"}\"}", "digest": "34ff4414dc8e196d460390557f4fd74c32418ea00710167baff2a0dc1f3b643c" },
       "assertions": [
         { "id": "exact", "operator": "verifier_result_equals", "selector": "/verifiers/exact_bound", "expected": "pass", "required": true },
@@ -439,7 +439,7 @@
       "id": "mcp-core.protocol.call-result",
       "suite": "mcp-core",
       "capability": "tools.mcp.core",
-      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub"], "platforms": [], "routePreconditions": [] },
+      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub","mcp_call_result_v1"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "mcp-call", "role": "synthetic_tool", "mediaType": "application/vnd.opencodex.mcp-stub+json", "bytesUtf8": "{\"namespace\":\"mcp__fixture\",\"name\":\"lookup\",\"arguments\":{\"q\":\"x\"},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"RESULT\"}],\"isError\":false}}", "digest": "986ef5017fbdb46eb18b30daaffe72aecc93868b7d89b11c3e244dc084f46496" },
       "assertions": [
         { "id": "call", "operator": "json_path_equals", "selector": "/verifiers/stub_received", "expected": {"namespace":"mcp__fixture","name":"lookup","arguments":{"q":"x"}}, "required": true },
@@ -450,7 +450,7 @@
       "id": "mcp-core.protocol.resource-round-trip",
       "suite": "mcp-core",
       "capability": "tools.mcp.core",
-      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub"], "platforms": [], "routePreconditions": [] },
+      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["cursor-protobuf"], "surfaces": ["responses-http"], "requiredClaims": ["mcp"], "requiredHarnessFeatures": ["adapter_vector","in_memory_mcp_stub","mcp_resource_round_trip_v1"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "mcp-resource", "role": "synthetic_tool", "mediaType": "application/vnd.opencodex.mcp-stub+json", "bytesUtf8": "{\"resources\":[{\"uri\":\"fixture://one\",\"name\":\"one\"}],\"read\":{\"uri\":\"fixture://one\",\"contents\":[{\"uri\":\"fixture://one\",\"text\":\"RESOURCE\"}]}}", "digest": "a3f6317374ce92da0155dd14bbf0d5822e8687cbe8ef7968221f23acf8b16aa5" },
       "assertions": [
         { "id": "list", "operator": "json_path_equals", "selector": "/client/response/json/resources", "expected": [{"uri":"fixture://one","name":"one"}], "required": true },
