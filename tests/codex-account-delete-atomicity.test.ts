@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as accountStoreModule from "../src/codex/account-store";
 import {
@@ -18,7 +18,7 @@ import {
   getAccountQuota,
   updateAccountQuota,
 } from "../src/codex/quota";
-import { loadConfig, saveConfig } from "../src/config";
+import { getConfigPath, loadConfig, saveConfig } from "../src/config";
 import * as configModule from "../src/config";
 import type { OcxConfig } from "../src/types";
 
@@ -87,6 +87,7 @@ describe("Codex account delete persistence ordering", () => {
   test("a failure after durable config replacement restores the prior config", () => {
     const config = seededConfig();
     const before = structuredClone(config);
+    const beforeBytes = readFileSync(getConfigPath(), "utf8");
     const realSave = configModule.saveConfigPreservingClaudeCode;
     const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode")
       .mockImplementation(candidate => {
@@ -98,6 +99,7 @@ describe("Codex account delete persistence ordering", () => {
       expect(() => deleteCodexAccount(config, ACCOUNT_ID)).toThrow("forced post-write failure");
 
       expect(config).toEqual(before);
+      expect(readFileSync(getConfigPath(), "utf8")).toBe(beforeBytes);
       expect(loadConfig().codexAccounts?.some(account => account.id === ACCOUNT_ID)).toBe(true);
       expect(getCodexAccountCredential(ACCOUNT_ID)).not.toBeNull();
       expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(true);
