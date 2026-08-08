@@ -63,6 +63,14 @@ export type Comment = {
   author_association?: string;
 };
 
+export type IssueEvent = {
+  id?: number;
+  event: string;
+  created_at?: string;
+  actor?: { login?: string };
+  label?: { name?: string };
+};
+
 export type RunOptions = {
   /** The PR as `pulls.get` will report it — the live, authoritative state. */
   pr: PullRequestState;
@@ -83,12 +91,21 @@ export type RunOptions = {
    */
   eventAction?: string;
   /**
-   * Webhook event name. Defaults to `"pull_request_target"`. Pass
-   * `"issue_comment"` to exercise the GUI-waiver re-run path: the payload then
-   * carries `issue` and `comment` (never `pull_request`), exactly as GitHub
-   * delivers an issue comment on a PR.
+   * Webhook event name. Defaults to `"pull_request_target"`. `issue_comment`
+   * remains available for fail-closed compatibility tests; `status` models the
+   * default-branch CodeRabbit wake-up path.
    */
   eventName?: string;
+  /** SHA carried by a `status` event. Defaults to the live PR head SHA. */
+  statusSha?: string;
+  /** Legacy commit-status context. Defaults to `CodeRabbit`. */
+  statusContext?: string;
+  /** Legacy commit-status state. Defaults to `success`. */
+  statusState?: string;
+  /** Shorthand for a single associated-PR response page. */
+  associatedPullRequests?: unknown[];
+  /** Page-specific PRs returned by repos.listPullRequestsAssociatedWithCommit. */
+  associatedPullRequestPages?: unknown[][];
   /**
    * `author_association` of the commenter on an `issue_comment` event.
    * Defaults to `"COLLABORATOR"`. The gate only re-runs for maintainer
@@ -116,6 +133,12 @@ export type RunOptions = {
   commentPages?: Comment[][];
   /** Shorthand for a single page. */
   comments?: Comment[];
+  /** Issue events used to resolve durable label-application provenance. */
+  issueEvents?: IssueEvent[];
+  /** Page-specific issue-event fixtures for pagination tests. */
+  issueEventPages?: IssueEvent[][];
+  /** Resolved PR number passed from the read-only resolver job. */
+  resolvedPullNumber?: number | string;
   /** Method names that should reject, to exercise partial-failure paths. */
   failOn?: string[];
   /**
@@ -182,6 +205,14 @@ export type RunOptions = {
    * succeeds. Matched case-sensitively against the query text.
    */
   failGraphqlOn?: string[];
+  /**
+   * Login of the event sender (who triggered the webhook, e.g., the user who
+   * applied a label). Defaults to `"contributor"`. Used to test authorization
+   * checks that validate the sender against MAINTAINERS.md.
+   */
+  senderLogin?: string;
+  /** Numeric sender id; status events default to CodeRabbit's stable bot id. */
+  senderId?: number;
 };
 
 /**
@@ -578,10 +609,20 @@ export async function runEnforcePrTarget(
     user: { ...DEFAULT_PR.user, ...(source.user ?? {}) },
   };
   const pages: Comment[][] = options.commentPages ?? [options.comments ?? []];
+  const issueEventPages: IssueEvent[][] =
+    options.issueEventPages ?? [options.issueEvents ?? []];
   const openPullPages: unknown[][] =
     options.openPullPages ??
     (options.openPulls && options.openPulls.length > 0 ? [options.openPulls] : []);
-  const paginatePageCount = Math.max(pages.length, openPullPages.length, 1);
+  const associatedPullRequestPages: unknown[][] =
+    options.associatedPullRequestPages ?? [options.associatedPullRequests ?? [pr]];
+  const paginatePageCount = Math.max(
+    pages.length,
+    issueEventPages.length,
+    openPullPages.length,
+    associatedPullRequestPages.length,
+    1,
+  );
 
   /**
    * Record the call, then either reject or return a plausible payload. Every
@@ -684,6 +725,10 @@ export async function runEnforcePrTarget(
         const page = Number((args as { page?: number })?.page ?? 1);
         return respond("issues.listComments", args, pages[page - 1] ?? []);
       },
+      listEvents: (args: unknown) => {
+        const page = Number((args as { page?: number })?.page ?? 1);
+        return respond("issues.listEvents", args, issueEventPages[page - 1] ?? []);
+      },
       createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
       updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
       deleteComment: (args: unknown) => respond("issues.deleteComment", args, {}),
@@ -705,6 +750,14 @@ export async function runEnforcePrTarget(
       compareCommitsWithBasehead: (args: unknown) => {
         const basehead = String((args as { basehead?: string })?.basehead ?? "");
         return respond("repos.compareCommitsWithBasehead", args, compareResult(basehead));
+      },
+      listPullRequestsAssociatedWithCommit: (args: unknown) => {
+        const page = Number((args as { page?: number })?.page ?? 1);
+        return respond(
+          "repos.listPullRequestsAssociatedWithCommit",
+          args,
+          associatedPullRequestPages[page - 1] ?? [],
+        );
       },
     },
   };
@@ -763,8 +816,8 @@ export async function runEnforcePrTarget(
       respond("request", { route, params });
     /**
      * `github.paginate(fn, params)` — walk every page and concatenate, the way
-     * Octokit does. Page count covers both comment and open-PR fixtures so a
-     * stacked parent on page two is still visible.
+     * Octokit does. Page count covers comment, open-PR, and associated-PR
+     * fixtures so a relevant record on page two is still visible.
      */
     paginate = Object.assign(
       async (fn: (args: unknown) => Promise<{ data: unknown[] }>, params: unknown) => {
@@ -870,7 +923,13 @@ export async function runEnforcePrTarget(
               author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
             },
           }
-        : { pull_request: eventPr }),
+        : options.eventName === "status"
+          ? {
+              sha: options.statusSha ?? pr.head.sha,
+              context: options.statusContext ?? "CodeRabbit",
+              state: options.statusState ?? "success",
+            }
+          : { pull_request: eventPr }),
       repository: {
         id: 987654321,
         name: "opencodex",
@@ -880,7 +939,17 @@ export async function runEnforcePrTarget(
         owner: { login: "lidge-jun", id: 12345, type: "User" },
         html_url: "https://github.com/lidge-jun/opencodex",
       },
-      sender: { login: "contributor", id: 67890, type: "User" },
+      sender: options.eventName === "status"
+        ? {
+            login: options.senderLogin ?? "coderabbitai[bot]",
+            id: options.senderId ?? 136622811,
+            type: "Bot",
+          }
+        : {
+            login: options.senderLogin ?? "contributor",
+            id: options.senderId ?? 67890,
+            type: "User",
+          },
       organization: undefined,
       installation: undefined,
     };
@@ -1007,6 +1076,11 @@ export async function runEnforcePrTarget(
   );
 
   const deferred: (() => unknown)[] = [];
+  const runtime = nodeLikeRuntime(deferred);
+  const runtimeProcess = runtime.process as { env: Record<string, string> };
+  runtimeProcess.env.RESOLVED_PULL_NUMBER = String(
+    options.resolvedPullNumber ?? eventPr.number ?? "",
+  );
 
   const returnValue = await compileScript(script)({
     github,
@@ -1033,7 +1107,7 @@ export async function runEnforcePrTarget(
     // `if (!process.versions.bun) return;` — a no-op in production, green here.
     // Shadow `process` with something that looks like the Node the workflow
     // actually gets, so a runtime probe cannot tell the two apart.
-    ...nodeLikeRuntime(deferred),
+    ...runtime,
   });
 
   // Run whatever the script deferred. Node would run these too, with the write
