@@ -34,7 +34,7 @@ import {
   resolveCodexCatalogSerializationDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
-import { saveConfig } from "../src/config";
+import { getConfigPath, saveConfig } from "../src/config";
 import { CODEX_FORWARD_BASE_URL } from "../src/providers/openai-tiers";
 import type { OcxConfig } from "../src/types";
 import { setBundledCatalogCacheForTests } from "../src/codex/catalog/bundled";
@@ -43,6 +43,7 @@ import {
   setCodexRuntimeResolveCacheForTests,
 } from "../src/codex/runtime";
 import { markModelsFetchFailure } from "../src/codex/model-cache";
+import { legacyCustomModelCatalogSlugs } from "../src/codex/custom-model-catalog-migration";
 
 let root = "";
 let codexHome = "";
@@ -404,6 +405,66 @@ test("convergence preserves only provider-local degraded rows", async () => {
   expect(models.some(entry => entry.slug === "empty/stale")).toBe(false);
   expect(models.some(entry => entry.slug === "removed/ghost")).toBe(false);
   expect(models.some(entry => entry.slug === "external/vendor-model")).toBe(true);
+});
+
+function legacyCustomDeletionConfig(): OcxConfig {
+  const nextConfig = config(false);
+  nextConfig.providers.offline = {
+    adapter: "openai-chat",
+    baseUrl: "https://offline.example.test/v1",
+    authMode: "oauth",
+    models: ["fallback"],
+  };
+  nextConfig.customModels = [{
+    id: "legacy-custom-id",
+    provider: "offline",
+    modelId: "my-model",
+    addedAt: "2026-08-01T00:00:00.000Z",
+  }];
+  return nextConfig;
+}
+
+test("convergence removes a deleted pre-marker custom row while discovery is degraded", async () => {
+  const withCustom = legacyCustomDeletionConfig();
+  writeFileSync(getConfigPath(), `${JSON.stringify(withCustom, null, 2)}\n`);
+  writeCatalog([
+    nativeEntry(),
+    generatedRoutedEntry("offline/my-model"),
+    generatedRoutedEntry("offline/discovered-sibling"),
+  ]);
+
+  const afterDeletion = structuredClone(withCustom);
+  delete afterDeletion.customModels;
+  const models = (await convergeCatalog(afterDeletion)).models ?? [];
+
+  expect(legacyCustomModelCatalogSlugs(afterDeletion)).toEqual(
+    new Set(["offline/my-model"]),
+  );
+  expect(models.some(entry => entry.slug === "offline/my-model")).toBe(false);
+  expect(models.some(entry => entry.slug === "offline/discovered-sibling")).toBe(true);
+});
+
+test("retained sync removes a deleted pre-marker custom row while discovery is degraded", async () => {
+  const withCustom = legacyCustomDeletionConfig();
+  writeFileSync(getConfigPath(), `${JSON.stringify(withCustom, null, 2)}\n`);
+  writeCatalog([
+    nativeEntry(),
+    generatedRoutedEntry("offline/my-model"),
+    generatedRoutedEntry("offline/discovered-sibling"),
+  ]);
+
+  const afterDeletion = structuredClone(withCustom);
+  delete afterDeletion.customModels;
+  saveConfig(afterDeletion);
+  const result = await syncCatalogModels(afterDeletion);
+  const models = (JSON.parse(readFileSync(catalogPath, "utf8")) as RawCatalog).models ?? [];
+
+  expect(result.catalogWritten).toBe(true);
+  expect(legacyCustomModelCatalogSlugs(afterDeletion)).toEqual(
+    new Set(["offline/my-model"]),
+  );
+  expect(models.some(entry => entry.slug === "offline/my-model")).toBe(false);
+  expect(models.some(entry => entry.slug === "offline/discovered-sibling")).toBe(true);
 });
 
 test("degraded preservation still honors explicit routed visibility policy", async () => {

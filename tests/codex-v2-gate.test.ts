@@ -1194,6 +1194,7 @@ describe("3-state multi-agent mode", () => {
         selectedModelsByProvider: new Map(),
         gatheredProviderNames: new Set(),
         degradedProviderNames: new Set(),
+        legacyCustomModelSlugs: new Set(),
         multiAgentMode: "default",
         multiAgentV2Enabled: true,
         exactComboSlugs: new Set(),

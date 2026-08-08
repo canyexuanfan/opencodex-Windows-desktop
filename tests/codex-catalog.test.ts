@@ -3,7 +3,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, shouldExposeRoutedModel } from "../src/codex/catalog";
-import { CODEX_CUSTOM_MODEL_CATALOG_KIND } from "../src/codex/catalog/parsing";
+import {
+  CODEX_CUSTOM_MODEL_CATALOG_KIND,
+  CODEX_PROVIDER_MODEL_CATALOG_KIND,
+} from "../src/codex/catalog/parsing";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import {
   CURSOR_STATIC_MODELS,
@@ -23,6 +26,7 @@ import {
   type ProviderModelDiscoveryStatus,
 } from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
+import { COMBO_NAMESPACE } from "../src/combos";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
 import { enrichProviderFromCatalog } from "../src/oauth/key-providers";
@@ -1252,7 +1256,9 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
       clearModelCache("custom-provider");
     }
   });
+});
 
+describe("legacy custom-model catalog ownership", () => {
   test("degraded provider preservation cannot resurrect a deleted custom model", () => {
     const staleCustom = buildCatalogEntries(nativeTemplate(), [], [{
       provider: "custom-provider",
@@ -1267,6 +1273,152 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
     });
 
     expect(merged.some(entry => entry.slug === "custom-provider/removed-model")).toBe(false);
+  });
+
+  test("deletion evidence removes only an old unmarked OpenCodex custom row", () => {
+    const staleUnmarked = buildCatalogEntries(nativeTemplate(), [], [{
+      provider: "custom-provider",
+      id: "removed-model",
+    }]);
+    const foreignSameSlug = {
+      ...staleUnmarked[0],
+      description: "Managed by another catalog tool.",
+    };
+    const input = {
+      routedEntries: [],
+      gatheredProviderNames: new Set(["custom-provider"]),
+      degradedProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: new Set(["custom-provider/removed-model"]),
+    };
+
+    const removed = mergeObservedForTest({ catalogModels: staleUnmarked, ...input });
+    expect(removed.some(entry => entry.slug === "custom-provider/removed-model")).toBe(false);
+
+    const preserved = mergeObservedForTest({ catalogModels: [foreignSameSlug], ...input });
+    expect(preserved).toContainEqual(expect.objectContaining({
+      slug: "custom-provider/removed-model",
+      description: "Managed by another catalog tool.",
+    }));
+  });
+
+  test("fresh provider rediscovery acknowledges a removed slug before a later outage", () => {
+    const freshProvider = buildCatalogEntries(nativeTemplate(), [], [{
+      provider: "custom-provider",
+      id: "removed-model",
+    }]);
+    const evidence = new Set(["custom-provider/removed-model"]);
+    const rediscovered = mergeObservedForTest({
+      catalogModels: [],
+      routedEntries: freshProvider,
+      gatheredProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: evidence,
+    });
+    const acknowledged = rediscovered.find(entry => (
+      entry.slug === "custom-provider/removed-model"
+    ));
+    expect(acknowledged?.opencodex_catalog_kind).toBe(CODEX_PROVIDER_MODEL_CATALOG_KIND);
+
+    const degraded = mergeObservedForTest({
+      catalogModels: rediscovered,
+      routedEntries: [],
+      gatheredProviderNames: new Set(["custom-provider"]),
+      degradedProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: evidence,
+    });
+    expect(degraded).toContainEqual(expect.objectContaining({
+      slug: "custom-provider/removed-model",
+      opencodex_catalog_kind: CODEX_PROVIDER_MODEL_CATALOG_KIND,
+    }));
+  });
+
+  test("fresh custom ownership wins historical evidence and stays deletion-authoritative", () => {
+    const freshCustom = buildCatalogEntries(nativeTemplate(), [], [{
+      provider: "custom-provider",
+      id: "removed-model",
+      catalogKind: CODEX_CUSTOM_MODEL_CATALOG_KIND,
+    }]);
+    const evidence = new Set(["custom-provider/removed-model"]);
+    const readded = mergeObservedForTest({
+      catalogModels: [],
+      routedEntries: freshCustom,
+      gatheredProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: evidence,
+    });
+    expect(readded).toContainEqual(expect.objectContaining({
+      slug: "custom-provider/removed-model",
+      opencodex_catalog_kind: CODEX_CUSTOM_MODEL_CATALOG_KIND,
+    }));
+
+    const deletedAgain = mergeObservedForTest({
+      catalogModels: readded,
+      routedEntries: [],
+      gatheredProviderNames: new Set(["custom-provider"]),
+      degradedProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: evidence,
+    });
+    expect(deletedAgain.some(entry => entry.slug === "custom-provider/removed-model")).toBe(false);
+  });
+
+  test("unknown catalog kinds fail closed under legacy deletion evidence", () => {
+    const unknownKind = {
+      ...buildCatalogEntries(nativeTemplate(), [], [{
+        provider: "custom-provider",
+        id: "removed-model",
+      }])[0],
+      opencodex_catalog_kind: "future-model-v2",
+    };
+    const merged = mergeObservedForTest({
+      catalogModels: [unknownKind],
+      routedEntries: [],
+      gatheredProviderNames: new Set(["custom-provider"]),
+      degradedProviderNames: new Set(["custom-provider"]),
+      legacyCustomModelSlugs: new Set(["custom-provider/removed-model"]),
+    });
+    expect(merged).toContainEqual(expect.objectContaining({
+      slug: "custom-provider/removed-model",
+      opencodex_catalog_kind: "future-model-v2",
+    }));
+  });
+
+  test("legacy evidence cannot claim account-selector or combo rows", () => {
+    const account = {
+      ...nativeTemplate(),
+      slug: "team/gpt-5.5",
+      display_name: "team / GPT-5.5",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    };
+    const accountMerged = mergeObservedForTest({
+      catalogModels: [account],
+      routedEntries: [],
+      accountBoundEntries: [account],
+      legacyCustomModelSlugs: new Set(["team/gpt-5.5"]),
+    });
+    expect(accountMerged).toContainEqual(expect.objectContaining({
+      slug: "team/gpt-5.5",
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    }));
+
+    const combo = {
+      ...buildCatalogEntries(nativeTemplate(), [], [{
+        provider: "custom-provider",
+        id: "removed-model",
+      }])[0],
+      owned_by: COMBO_NAMESPACE,
+      input_modalities: ["text"],
+    };
+    const comboMerged = mergeObservedForTest({
+      catalogModels: [combo],
+      routedEntries: [],
+      gatheredProviderNames: new Set(["custom-provider"]),
+      degradedProviderNames: new Set(["custom-provider"]),
+      exactComboSlugs: new Set(["custom-provider/removed-model"]),
+      hasPhysicalComboProvider: true,
+      legacyCustomModelSlugs: new Set(["custom-provider/removed-model"]),
+    });
+    expect(comboMerged).toContainEqual(expect.objectContaining({
+      slug: "custom-provider/removed-model",
+      owned_by: COMBO_NAMESPACE,
+    }));
   });
 });
 
@@ -1385,6 +1537,7 @@ function mergeObservedForTest(
     selectedModelsByProvider: new Map(),
     gatheredProviderNames: new Set(),
     degradedProviderNames: new Set(),
+    legacyCustomModelSlugs: new Set(),
     multiAgentMode: "default",
     multiAgentV2Enabled: false,
     exactComboSlugs: new Set(),

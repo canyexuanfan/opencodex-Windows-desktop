@@ -5,6 +5,7 @@ import { COMBO_NAMESPACE } from "../combos";
 import { getAuthStorePath } from "../oauth/store";
 import type { OcxConfig } from "../types";
 import { captureCatalogAdmissionSnapshot } from "./catalog-admission";
+import { legacyCustomModelCatalogSlugs } from "./custom-model-catalog-migration";
 import {
   type CatalogGatherPathKind,
   type CatalogSourceForGather,
@@ -268,6 +269,7 @@ function prepareCatalog(
     selectedModelsByProvider,
     gatheredProviderNames,
     degradedProviderNames,
+    legacyCustomModelSlugs: legacyCustomModelCatalogSlugs(config),
     multiAgentMode,
     multiAgentV2Enabled,
     exactComboSlugs,
