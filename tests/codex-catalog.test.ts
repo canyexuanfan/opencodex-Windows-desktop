@@ -2846,6 +2846,27 @@ describe("Codex catalog routed normalization", () => {
     expect(getModelMetadata("deepseek", "deepseek-v4-flash")?.contextWindow).toBe(1_048_576);
   });
 
+  test("DeepSeek catalog sync appends V4 rows missing from /v1/models", () => {
+    const models = augmentRoutedModelsWithMetadata([], ["deepseek"]);
+    const slugs = new Set(models.map(m => `${m.provider}/${m.id}`));
+
+    expect(slugs.has("deepseek/deepseek-v4-flash")).toBe(true);
+    expect(slugs.has("deepseek/deepseek-v4-pro")).toBe(true);
+    for (const model of models) {
+      expect(model.contextWindow).toBe(1_048_576);
+      expect(model.inputModalities).toEqual(["text"]);
+    }
+
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    for (const id of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+      const routed = entries.find(e => e.slug === `deepseek/${id}`);
+      expect(routed?.context_window).toBe(1_048_576);
+      expect(routed?.max_context_window).toBe(1_048_576);
+      expect(routed?.auto_compact_token_limit).toBe(943_718); // floor(1048576 * 0.9)
+      expect(routed?.input_modalities).toEqual(["text"]);
+    }
+  });
+
   test("provider context-cap applies before jawcode catalog metadata reaches Codex", () => {
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "opencode-go", id: "deepseek-v4-pro", contextCap: 350_000, contextCapped: false },
