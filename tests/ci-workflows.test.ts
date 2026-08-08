@@ -827,9 +827,8 @@ describe("GitHub Actions hardening", () => {
   test("PR target enforcement's structure is an exact allowlist, not a deny-list", async () => {
     const { workflow, jobs, steps } = await readEnforcePrTarget();
 
-    // Top level: these five keys and nothing else.
+    // Top level: concurrency lives on the write job after read-only PR resolution.
     expect(Object.keys(workflow).sort()).toEqual([
-      "concurrency",
       "jobs",
       "name",
       "on",
@@ -873,50 +872,59 @@ describe("GitHub Actions hardening", () => {
       "pull-requests": "write",
     });
 
-    // Every writer for one live PR head must resolve to the same SHA lock.
-    // `pull_request_target` exposes it under pull_request.head.sha; `status`
-    // exposes the same value as event.sha. The run-id fallback is fail-safe for
-    // malformed payloads and prevents unrelated runs sharing an empty key.
-    expect(workflow.concurrency).toEqual({
-      group:
-        "pr-gate-comment-${{ github.event.pull_request.head.sha || github.event.sha || github.run_id }}",
-    });
+    expect(workflow.concurrency).toBeUndefined();
 
-    // The hygiene workflow reads and rewrites the same consolidated gate
-    // comment, so it must share the gate's per-PR concurrency group. Separate
-    // groups would let a gate rebuild and a hygiene update run concurrently
-    // from stale snapshots, and the last write would drop the other's section.
+    const resolver = workflow.jobs?.["resolve-pr"] as WorkflowJob | undefined;
+    expect(resolver).toBeDefined();
+    expect(Object.keys(resolver ?? {}).sort()).toEqual([
+      "if",
+      "outputs",
+      "permissions",
+      "runs-on",
+      "steps",
+    ]);
+    expect(resolver?.["runs-on"]).toBe("ubuntu-latest");
+    expect(resolver?.permissions).toEqual({
+      contents: "read",
+      "pull-requests": "read",
+    });
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.context == 'CodeRabbit'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.state == 'success'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.login == 'coderabbitai[bot]'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.id == 136622811");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'gui-screenshot-waived'");
+
     const hygieneWorkflow = Bun.YAML.parse(
       await readText(".github/workflows/pr-hygiene.yml"),
     ) as { concurrency?: { group?: string; "cancel-in-progress"?: boolean } };
     expect(hygieneWorkflow.concurrency?.group).toBe(
-      "pr-gate-comment-${{ github.event.pull_request.head.sha }}",
+      "pr-gate-comment-${{ github.event.pull_request.number }}",
     );
-    expect(workflow.concurrency?.group).toContain("github.event.pull_request.head.sha");
-    expect(workflow.concurrency?.group).toContain("github.event.sha");
-    // Both comment-writing workflows share the group and neither cancels:
-    // `cancel-in-progress: true` would kill an in-flight gate mutation when a
-    // newer hygiene run starts, losing that read-modify-write.
     expect(hygieneWorkflow.concurrency?.["cancel-in-progress"]).toBe(false);
 
-    // One job, and it is this one. An audit round added a `sidecar:` job that
-    // inherited the PR-write token and un-drafted the PR — every assertion below
-    // still passed, because they only ever looked at `enforce-target`.
-    expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
+    expect(jobs.map(([name]) => name)).toEqual(["resolve-pr", "enforce-target"]);
 
-    // The job is a runner plus steps, with one deliberate `if:` guard. The
-    // guard accepts only successful CodeRabbit commit statuses and filters
-    // label events to the screenshot-waiver label. Other PR lifecycle events run.
-    // No `permissions:` (a job-level block overrides the narrow workflow-level
-    // one), no `container:`/`strategy:`/`outputs:`/`env:`/`defaults:`, and no
-    // `<<:` merge key to reintroduce any of them sideways.
-    const [, job] = jobs[0]!;
-    expect(Object.keys(job).sort()).toEqual(["if", "runs-on", "steps"]);
-    expect(job["runs-on"]).toBe("ubuntu-latest");
-    expect(job["if"]).toContain("github.event_name == 'status'");
-    expect(job["if"]).toContain("github.event.context == 'CodeRabbit'");
-    expect(job["if"]).toContain("github.event.state == 'success'");
-    expect(job["if"]).toContain("github.event.label.name == 'gui-screenshot-waived'");
+    const job = workflow.jobs?.["enforce-target"] as WorkflowJob | undefined;
+    expect(job).toBeDefined();
+    expect(Object.keys(job ?? {}).sort()).toEqual([
+      "concurrency",
+      "if",
+      "needs",
+      "permissions",
+      "runs-on",
+      "steps",
+    ]);
+    expect(job?.["runs-on"]).toBe("ubuntu-latest");
+    expect(job?.permissions).toEqual({
+      contents: "write",
+      "pull-requests": "write",
+    });
+    expect(job?.needs).toBe("resolve-pr");
+    expect(job?.["if"]).toBe("needs.resolve-pr.outputs.pull-number != ''");
+    expect(job?.concurrency).toEqual({
+      group: "pr-gate-comment-${{ needs.resolve-pr.outputs.pull-number }}",
+      "cancel-in-progress": false,
+    });
 
     // Checkout trusted scripts, then run the gate. Anything more is an extra
     // privileged action nobody reviewed.
@@ -943,7 +951,10 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout": ".github/scripts\nMAINTAINERS.md\n",
     });
 
-    expect(Object.keys(scriptStep).sort()).toEqual(["name", "uses", "with"]);
+    expect(Object.keys(scriptStep).sort()).toEqual(["env", "name", "uses", "with"]);
+    expect(scriptStep.env).toEqual({
+      RESOLVED_PULL_NUMBER: "${{ needs.resolve-pr.outputs.pull-number }}",
+    });
 
     // `github-script` is the action, pinned to a 40-hex commit SHA: this
     // workflow hands a write token to whatever the ref resolves to, so a tag or
@@ -1014,17 +1025,11 @@ describe("GitHub Actions hardening", () => {
     expect(script).toMatch(/const ALLOWED_BASES = \["dev"\];/);
     expect(script).toMatch(/const DEFAULT_BASE = "dev";/);
 
-    // Every mutation targets the PR the event fired for. `pull_number` is the
-    // only handle the script has, and an audit round repointed it at
-    // `Number(context.payload.pull_request.title)` — a value the PR author
-    // controls, which turns the bot into a write primitive against any PR
-    // number the author can name. Bind it to the immutable event field.
-    // Status runs resolve the immutable reviewed SHA back to exactly one open
-    // current-head PR before any write-capable operation.
-    expect(script).toContain("context.payload.pull_request?.number");
-    expect(script).toContain("listPullRequestsAssociatedWithCommit");
-    expect(script).toContain("candidate.head?.sha === statusSha");
-    expect(script).toContain("candidates.length !== 1");
+    // The read-only resolver is the single authority for PR identity. The
+    // write job consumes exactly that output, so its mutation target and
+    // concurrency key cannot diverge or perform a second SHA-to-PR lookup.
+    expect(script).toContain("process.env.RESOLVED_PULL_NUMBER");
+    expect(script).not.toContain("listPullRequestsAssociatedWithCommit");
 
     // Nothing may write back into the fetched PR. The audit round preserved the
     // required comparison line verbatim and defeated it one line earlier with
@@ -1125,6 +1130,7 @@ describe("GitHub Actions hardening", () => {
           name !== "github.rest.repos.getCollaboratorPermissionLevel" &&
           name !== "github.rest.repos.compareCommitsWithBasehead" &&
           name !== "github.rest.repos.listPullRequestsAssociatedWithCommit" &&
+          name !== "github.rest.issues.listEvents" &&
           // The claim check reads check-runs; it must never count as a write.
           name !== "github.rest.checks.listForRef",
       );
@@ -2669,6 +2675,17 @@ describe("GitHub Actions hardening", () => {
           ].join("\n"),
         },
         labels: ["gui-screenshot-waived"],
+        maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "synchronize",
+        senderLogin: "contributor",
+        issueEvents: [{
+          id: 101,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "lidge-jun" },
+          label: { name: "gui-screenshot-waived" },
+        }],
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2687,6 +2704,16 @@ describe("GitHub Actions hardening", () => {
         },
         labels: ["gui-screenshot-waived"],
         maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "edited",
+        senderLogin: "contributor",
+        issueEvents: [{
+          id: 101,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "lidge-jun" },
+          label: { name: "gui-screenshot-waived" },
+        }],
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2695,87 +2722,67 @@ describe("GitHub Actions hardening", () => {
       expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by the `gui-screenshot-waived` label");
     });
 
-    test("an ambiguous CodeRabbit status SHA fails closed before any PR mutation", async () => {
-      const headSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+    test("the gui-screenshot-waived label from an unauthorized sender does not waive the screenshot requirement", async () => {
       const result = await run({
-        pr: { base: { ref: "dev" } },
-        eventName: "status",
-        statusSha: headSha,
-        associatedPullRequests: [
-          { number: 42, state: "open", head: { sha: headSha } },
-          { number: 77, state: "open", head: { sha: headSha } },
-        ],
+        pr: {
+          base: { ref: "dev" },
+          title: "GUI: fix provider list spacing",
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
+        },
+        labels: ["gui-screenshot-waived"],
+        maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "synchronize",
+        senderLogin: "lidge-jun",
+        issueEvents: [{
+          id: 102,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "unauthorized-contributor" },
+          label: { name: "gui-screenshot-waived" },
+        }],
       });
 
-      expect(methodsOf(result).filter(method => method !== "require")).toEqual(["repos.listPullRequestsAssociatedWithCommit"]);
-      expect(result.logs.join(" ")).toContain("maps to 2 open current-head PRs; skipping ambiguous/stale revalidation");
-      expect(callsTo(result, "pulls.update")).toEqual([]);
+      // The screenshot failure must remain because the label was applied by
+      // an unauthorized user (not in MAINTAINERS.md).
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot waived");
+      expect(result.logs.join(" ")).toContain("unauthorized-contributor");
+      expect(result.logs.join(" ")).toContain("not in MAINTAINERS.md");
+    });
+
+    test("a missing resolved PR number fails closed before PR lookup", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" } },
+        resolvedPullNumber: "",
+      });
+
+      expect(result.logs.join(" ")).toContain("No pull request could be resolved for this gate event; skipping");
+      expect(callsTo(result, "pulls.get")).toEqual([]);
       expect(callsTo(result, "issues.createComment")).toEqual([]);
       expect(callsTo(result, "issues.updateComment")).toEqual([]);
-      expect(callsTo(result, "issues.addLabels")).toEqual([]);
-      expect(callsTo(result, "issues.removeLabel")).toEqual([]);
       expect(callsTo(result, "graphql")).toEqual([]);
     });
 
-
-    test("a single open current-head PR resolves the CodeRabbit status SHA and runs the gate", async () => {
-      const headSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+    test("the write gate consumes the resolved PR number without re-resolving status SHA", async () => {
       const result = await run({
         pr: { base: { ref: "dev" }, number: 4242 },
         eventName: "status",
-        statusSha: headSha,
-        associatedPullRequests: [
-          { number: 4242, state: "open", head: { sha: headSha } },
-        ],
+        resolvedPullNumber: 4242,
       });
 
       expect(callsTo(result, "pulls.get")).toEqual([
         { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
       ]);
-      expect(result.logs.join(" ")).not.toContain("skipping ambiguous/stale revalidation");
+      expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toEqual([]);
       expect(methodsOf(result)).toContain("issues.listComments");
-    });
-
-    test("CodeRabbit status association paginates before deciding uniqueness", async () => {
-      const headSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
-      const result = await run({
-        pr: { base: { ref: "dev" } },
-        eventName: "status",
-        statusSha: headSha,
-        associatedPullRequestPages: [
-          [{ number: 42, state: "open", head: { sha: headSha } }],
-          [{ number: 77, state: "open", head: { sha: headSha } }],
-        ],
-      });
-
-      expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toHaveLength(2);
-      expect(result.logs.join(" ")).toContain("maps to 2 open current-head PRs; skipping ambiguous/stale revalidation");
-      expect(callsTo(result, "pulls.update")).toEqual([]);
-      expect(callsTo(result, "issues.createComment")).toEqual([]);
-      expect(callsTo(result, "issues.updateComment")).toEqual([]);
-      expect(callsTo(result, "issues.addLabels")).toEqual([]);
-      expect(callsTo(result, "issues.removeLabel")).toEqual([]);
-      expect(callsTo(result, "graphql")).toEqual([]);
-    });
-
-    test("CodeRabbit status with no current-head match fails closed", async () => {
-      const statusSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
-      const result = await run({
-        pr: { base: { ref: "dev" } },
-        eventName: "status",
-        statusSha,
-        associatedPullRequests: [
-          { number: 42, state: "open", head: { sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } },
-        ],
-      });
-
-      expect(result.logs.join(" ")).toContain("maps to 0 open current-head PRs; skipping ambiguous/stale revalidation");
-      expect(callsTo(result, "pulls.update")).toEqual([]);
-      expect(callsTo(result, "issues.createComment")).toEqual([]);
-      expect(callsTo(result, "issues.updateComment")).toEqual([]);
-      expect(callsTo(result, "issues.addLabels")).toEqual([]);
-      expect(callsTo(result, "issues.removeLabel")).toEqual([]);
-      expect(callsTo(result, "graphql")).toEqual([]);
     });
 
     test("a non-maintainer issue_comment does not re-run the gate", async () => {
