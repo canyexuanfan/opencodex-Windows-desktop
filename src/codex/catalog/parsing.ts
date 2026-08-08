@@ -85,6 +85,11 @@ export function isDefaultCatalogPath(path: string): boolean {
   return samePath(path, activeDefaultCatalogPath());
 }
 
+/** Stable nonsemantic ownership marker for rows projected from config.customModels. */
+export const CODEX_CUSTOM_MODEL_CATALOG_KIND = "custom-model-v1";
+/** A formerly ambiguous slug was authoritatively observed as an ordinary provider row. */
+export const CODEX_PROVIDER_MODEL_CATALOG_KIND = "provider-model-v1";
+
 export interface CatalogModel {
   id: string;
   provider: string;
@@ -113,6 +118,8 @@ export interface CatalogModel {
   supportsReasoningSummaries?: boolean;
   /** Normalized upstream capability names retained for management/API consumers (#485 follow-up). */
   capabilities?: string[];
+  /** OpenCodex-only catalog ownership marker; Codex ignores the serialized extension field. */
+  catalogKind?: typeof CODEX_CUSTOM_MODEL_CATALOG_KIND | typeof CODEX_PROVIDER_MODEL_CATALOG_KIND;
 }
 
 export type RawEntry = Record<string, unknown>;
