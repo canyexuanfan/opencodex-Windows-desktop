@@ -10,7 +10,8 @@ The Lab must not read, accept, persist, or export:
 
 - user prompts or conversation history;
 - real user repositories, worktrees, patches, source files, or file paths;
-- user MCP server definitions, resources, results, or credentials by default;
+- user MCP server definitions, resources, results, or credentials, with no
+  Lab mode, CLI flag, profile, or override that can load them;
 - arbitrary shell commands or process output;
 - arbitrary filesystem contents;
 - arbitrary external-network tool requests or responses;
@@ -36,12 +37,27 @@ The future runner must enforce a capability-deny sandbox:
 ### Network
 
 - The immutable scenario manifest may authorize only fixed dependency roles
-  and protocol classes, never a route-local URL. The only remote destinations
-  are the exact primary endpoint and flat sidecar dependency endpoints named
-  in the composite route subject, after existing provider destination-policy
-  validation.
-- DNS resolution and every redirect are revalidated. Redirects cannot widen
-  scheme, host, port, or private-network access.
+  and protocol classes, never a route-local URL.
+- Network authorization uses a trusted in-memory `LabDestinationV1` record
+  owned by the existing provider destination/credential plumbing: scheme,
+  host, port, base path, resolved IP family/address set after policy checks,
+  TLS SNI/Host values, and private-network opt-in. That record is never
+  written to JSONL, SQLite, artifacts, or export.
+- The composite route subject stores only the keyed opaque
+  `endpointFingerprint` derived from the normalized destination. Raw URLs are
+  never evidence fields.
+- The only remote destinations are the exact primary and flat sidecar
+  destinations named by those in-memory records after existing provider
+  destination-policy validation.
+- DNS is resolved once before the policy check. The HTTP client must connect
+  to the validated IP set (pin/connect to the approved addresses) while
+  preserving the intended Host/SNI. A later resolution that differs fails
+  closed as `harness_failure`.
+- Redirects are rejected by default for Lab probes, matching the existing
+  SSRF fail-closed posture. A future scenario that explicitly opts into
+  redirects must authorize every hop with the same destination policy, IP
+  pinning, and Host/SNI preservation; redirects still cannot widen scheme,
+  host, port, or private-network access.
 - Private/loopback endpoints require the route's existing explicit private
   network opt-in and an explicit Lab-run confirmation. Metadata endpoints
   remain blocked.
@@ -49,10 +65,14 @@ The future runner must enforce a capability-deny sandbox:
   destination.
 - A sidecar dependency is allowed only when the scenario explicitly authorizes
   its role/protocol class, the composite subject names the exact dependency
-  fingerprint and endpoint, the operator approves the composite live probe,
-  and its credential is destination-bound independently. Unmanifested roles or
-  subject-external/dynamically widened endpoints make the run
-  `harness_failure`.
+  fingerprint, an in-memory destination record exists for that fingerprint,
+  the operator approves the composite live probe, and its credential is
+  destination-bound independently. Unmanifested roles or subject-external/
+  dynamically widened endpoints make the run `harness_failure`.
+- Inherited `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` values are
+  rejected for Lab runs. If a future reviewed scenario requires a proxy, that
+  proxy endpoint is authorized as its own exact destination under the same
+  SSRF checks and never inherits ambient proxy environment variables.
 - Tools have no network capability. A model-requested web search, image
   generation, URL fetch, computer use, or hosted external tool is disabled or
   classified inapplicable unless a future separately reviewed scenario owns a
@@ -77,9 +97,9 @@ The future runner must enforce a capability-deny sandbox:
 - The runner receives no general shell/process API and no inherited stdin.
 - Filesystem access is restricted to a fresh Lab scratch directory, read-only
   packaged synthetic fixtures, and the bounded artifact writer.
-- Environment inheritance is an allowlist. Secrets and proxy variables are
-  supplied only through reviewed destination/credential plumbing, not copied
-  wholesale.
+- Environment inheritance is an allowlist. Secrets are supplied only through
+  reviewed destination/credential plumbing. Ambient proxy variables are never
+  inherited; see Network above.
 - The run has enforced wall-clock, inactivity, byte, request, token, tool-call,
   memory, process and artifact limits. If the platform cannot enforce a
   required boundary, the run fails as `harness_failure`.
@@ -119,12 +139,21 @@ content-addressed after redaction.
 Initial hard ceilings:
 
 ```text
-maximum artifacts per run       16
-maximum bytes per artifact      256 KiB
-maximum aggregate artifact data 1 MiB
-maximum normalized events       4,096
-maximum sanitized string field  4 KiB
+maximum artifacts per run              16
+maximum bytes per artifact             256 KiB
+maximum aggregate artifact data        1 MiB
+maximum normalized events              4,096
+maximum sanitized string field         4 KiB
+maximum serialized bytes per event     64 KiB
+maximum aggregate normalized event bytes 1 MiB
+maximum event JSON nesting depth       8
+maximum object keys per event object   64
+maximum array elements per event array 256
 ```
+
+These event bounds are enforced while decoding/normalizing, before an event
+is buffered into the observation or any artifact. Exceeding a bound fails the
+run as `harness_failure` without retaining the oversized fragment.
 
 Scenario limits may be lower. Raising a hard ceiling requires a reviewed
 security-contract change; a scenario manifest alone cannot raise it.
@@ -234,29 +263,49 @@ Public publishing is not authorized in CL-00 and remains a later phase.
 
 ## 7. Retention and deletion
 
-- JSONL is the immutable local authority, but a user can delete the entire Lab
-  directory. Immutability describes in-ledger correction semantics, not a
-  promise to resist user deletion.
-- Artifact retention classes are versioned and bounded by storage policy.
-  Deleting an expired artifact leaves its digest/reference and a typed
-  unavailable marker; it does not alter the observation.
+- JSONL is the immutable local authority for non-sensitive evidence, but a
+  user can delete the entire Lab directory. Immutability describes in-ledger
+  correction semantics, not a promise to resist user deletion.
+- Retention ceilings by class:
+  - scratch/temp run directories: deleted at run end; cleanup retry within 24h;
+  - export staging: maximum 24h;
+  - disposable SQLite projection: rebuildable anytime; may be deleted at any
+    time and must be deleted during a sensitive purge;
+  - sanitized non-contract artifacts (`assertion_report`, shapes, traces,
+    errors): default 90 days, hard ceiling 365 days;
+  - content-addressed scenario/suite/fixture contract artifacts: retained
+    while any non-invalidated observation references them, because
+    reproducible `VERIFIED` projection requires the exact historical bytes.
+    Their content remains synthetic-only and size-bounded. User deletion of
+    the Lab directory remains absolute.
+- Deleting an expired non-contract artifact leaves its digest/reference and a
+  typed unavailable marker; it does not alter the observation.
 - SQLite is disposable and contains no data absent from valid ledger events and
   artifact metadata.
-- Invalid or sensitive evidence is neutralized by an appended invalidation and
-  secure artifact deletion. A security incident may require deleting the local
-  ledger; append-only semantics never override the duty to remove leaked
-  secrets.
+- Invalid non-sensitive evidence is neutralized by an appended invalidation and
+  secure artifact deletion.
+- Confirmed sensitive evidence is distinct from ordinary invalidation. It
+  requires a fail-closed purge of every local copy: JSONL lines containing the
+  leak, SQLite rows, artifacts, scratch/temp files, and generated exports. The
+  purge record stores only taxonomy, time, affected event/artifact digests,
+  and action taken — never the leaked value. Append-only semantics never
+  override that duty.
 
 ## 8. Security acceptance tests required later
 
 Before any live runner ships, tests must prove:
 
 1. prompt/repository/MCP/user-tool inputs are unreachable from the scenario DSL;
-2. redirects and model-supplied URLs cannot widen network access;
-3. credential, account, custom header and endpoint canaries never enter
+2. redirects and model-supplied URLs cannot widen network access, and Lab
+   clients pin connections to the validated IP set;
+3. inherited proxy environment variables cannot route Lab traffic;
+4. credential, account, custom header and endpoint canaries never enter
    evidence, errors, SQLite or artifacts;
-4. tool arguments cannot execute;
-5. artifact traversal/symlink/oversize/digest attacks fail closed;
-6. timeout, quota, auth, DNS and harness failures remain blockers;
-7. public export rejects unknown/private fields;
-8. no probe runs from the production routing path.
+5. tool arguments cannot execute;
+6. artifact traversal/symlink/oversize/digest attacks fail closed;
+7. normalized event byte/depth/key/array ceilings fail closed before buffering;
+8. timeout, quota, auth, DNS and harness failures remain blockers;
+9. confirmed sensitive evidence is purged from JSONL, SQLite, artifacts, temp
+   files and exports without recording the leaked value;
+10. public export rejects unknown/private fields;
+11. no probe runs from the production routing path.

@@ -590,8 +590,11 @@ Semantics:
   behaviorally invoked sidecars. Each record contains role, provider ID,
   provider-instance fingerprint, client/upstream model IDs, effective adapter,
   upstream protocol, endpoint fingerprint, and behavior fingerprint. It cannot
-  nest. Records sort by role, provider ID, upstream model ID, then endpoint
-  fingerprint. An empty list is canonical when no sidecar is invoked.
+  nest. Records sort by this total order of UTF-8 string comparisons:
+  role, provider ID, upstream model ID, endpoint fingerprint, client model
+  ID, effective adapter, upstream protocol, then behavior fingerprint. A
+  duplicate full key makes subject construction `harness_failure`. An empty
+  list is canonical when no sidecar is invoked.
 
 ### Behavior fingerprint allowlist
 

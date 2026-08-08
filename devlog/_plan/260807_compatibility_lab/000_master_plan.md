@@ -268,7 +268,7 @@ Only CL-00 is authorized by this document at present.
 | Phase | Purpose | Authorization |
 |---|---|---|
 | CL-00 | Architecture authority, contracts, scenario catalogue, incident corpus | This PR |
-| CL-01 | Deterministic protocol-conformance runner and fixtures | Not started; requires accepted CL-00 |
+| CL-01 | Deterministic protocol-conformance runner and fixtures | Not started; requires CL-00 to be accepted |
 | CL-02 | Immutable JSONL ledger, artifacts and SQLite projection | Not started |
 | CL-03 | Bounded live-route probes | Not started |
 | CL-04 | Lab CLI and management read surfaces | Not started |

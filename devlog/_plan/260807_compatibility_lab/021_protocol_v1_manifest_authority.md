@@ -219,6 +219,11 @@ process, user MCP configuration, filesystem access, or a user tool.
 
 ## 5. SSE normalization
 
+This section is the Lab harness normalizer for protocol V1 observations. It
+does not rewrite production sidecar parsers such as
+`src/vision/anthropic-describe.ts`; those remain out of CL-00/CL-01 scope and
+may keep closed product-local semantics until a later shared-normalizer phase.
+
 The harness retains exact fixture bytes and normalizes only for assertions:
 
 1. UTF-8 must decode without replacement. A BOM is allowed only at byte zero
