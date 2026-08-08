@@ -43,6 +43,12 @@ The future runner must enforce a capability-deny sandbox:
   host, port, base path, resolved IP family/address set after policy checks,
   TLS SNI/Host values, and private-network opt-in. That record is never
   written to JSONL, SQLite, artifacts, or export.
+- Provider destination/credential plumbing creates one per-run immutable
+  `LabDestinationV1` snapshot before endpoint fingerprinting. The exact same
+  snapshot must be used unchanged for endpoint fingerprinting, destination
+  authorization, credential binding, and connection. Mutation, replacement,
+  re-resolution to a different address set, or any mismatch between those
+  stages fails closed as `harness_failure` before credentials are sent.
 - The composite route subject stores only the keyed opaque
   `endpointFingerprint` derived from the normalized destination. Raw URLs are
   never evidence fields.
@@ -69,10 +75,11 @@ The future runner must enforce a capability-deny sandbox:
   the operator approves the composite live probe, and its credential is
   destination-bound independently. Unmanifested roles or subject-external/
   dynamically widened endpoints make the run `harness_failure`.
-- Inherited `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` values are
-  rejected for Lab runs. If a future reviewed scenario requires a proxy, that
-  proxy endpoint is authorized as its own exact destination under the same
-  SSRF checks and never inherits ambient proxy environment variables.
+- Inherited `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `http_proxy`,
+  `https_proxy`, `all_proxy`, and `no_proxy` values are rejected for Lab runs.
+  If a future reviewed scenario requires a proxy, that proxy endpoint is
+  authorized as its own exact destination under the same SSRF checks and never
+  inherits ambient proxy environment variables.
 - Tools have no network capability. A model-requested web search, image
   generation, URL fetch, computer use, or hosted external tool is disabled or
   classified inapplicable unless a future separately reviewed scenario owns a
@@ -97,9 +104,13 @@ The future runner must enforce a capability-deny sandbox:
 - The runner receives no general shell/process API and no inherited stdin.
 - Filesystem access is restricted to a fresh Lab scratch directory, read-only
   packaged synthetic fixtures, and the bounded artifact writer.
-- Environment inheritance is an allowlist. Secrets are supplied only through
-  reviewed destination/credential plumbing. Ambient proxy variables are never
-  inherited; see Network above.
+- The V1 inherited-environment allowlist is empty: Lab code must not read an
+  ambient variable to determine behavior, routing, credentials, destinations,
+  paths, locale, or proxying. The runner may expose only a constructed,
+  non-inherited environment view with exact constants `TZ=UTC` and
+  `NO_COLOR=1`; every other name is absent. In particular all uppercase and
+  lowercase proxy variables are rejected as stated in Network above. Secrets
+  are supplied only through reviewed destination/credential plumbing.
 - The run has enforced wall-clock, inactivity, byte, request, token, tool-call,
   memory, process and artifact limits. If the platform cannot enforce a
   required boundary, the run fails as `harness_failure`.
@@ -229,11 +240,16 @@ never passed to Lab code. That owner computes
    before request-specific or credential injection;
 2. remove every credential-bearing header according to the same auth transport
    classification used by the request builder;
-3. lowercase valid ASCII field names, reject invalid names, preserve duplicate
+3. before canonicalization, enforce at most 64 non-credential header entries,
+   at most 16 duplicate values for one lowercase name, at most 256 ASCII bytes
+   per field name, at most 8 KiB UTF-8 bytes per value, and at most 64 KiB of
+   aggregate normalized name/value bytes; exceeding any bound is
+   `harness_failure` and no digest is emitted;
+4. lowercase valid ASCII field names, reject invalid names, preserve duplicate
    value order, and preserve exact UTF-8 value bytes without trimming;
-4. sort entries by lowercase name while retaining duplicate order and encode
+5. sort entries by lowercase name while retaining duplicate order and encode
    JCS `[{"name": string, "values": string[]}, ...]`;
-5. return lowercase HMAC-SHA-256 with installation salt and domain
+6. return lowercase HMAC-SHA-256 with installation salt and domain
    `ocx-lab:local-fingerprint:v1\0customHeaderBehavior\0`.
 
 The broker returns only the digest. Its API cannot return normalized names,
@@ -282,8 +298,11 @@ Public publishing is not authorized in CL-00 and remains a later phase.
   typed unavailable marker; it does not alter the observation.
 - SQLite is disposable and contains no data absent from valid ledger events and
   artifact metadata.
-- Invalid non-sensitive evidence is neutralized by an appended invalidation and
-  secure artifact deletion.
+- Invalid non-sensitive evidence is neutralized by an appended invalidation.
+  Event-private non-contract artifacts may then be securely deleted. A shared
+  scenario, suite, or fixture contract artifact must remain while any other
+  non-invalidated observation references its digest, and may be deleted only
+  after the last such reference is gone.
 - Confirmed sensitive evidence is distinct from ordinary invalidation. It
   requires a fail-closed purge of every local copy: JSONL lines containing the
   leak, SQLite rows, artifacts, scratch/temp files, and generated exports. The
@@ -298,14 +317,24 @@ Before any live runner ships, tests must prove:
 1. prompt/repository/MCP/user-tool inputs are unreachable from the scenario DSL;
 2. redirects and model-supplied URLs cannot widen network access, and Lab
    clients pin connections to the validated IP set;
-3. inherited proxy environment variables cannot route Lab traffic;
-4. credential, account, custom header and endpoint canaries never enter
+3. the inherited-environment allowlist is empty, all uppercase/lowercase proxy
+   variables are rejected, and no ambient variable changes Lab behavior;
+4. destination-record mutation, replacement, or address-set drift between
+   authorization, fingerprinting, credential binding, and connect fails closed;
+5. credential, account, custom header and endpoint canaries never enter
    evidence, errors, SQLite or artifacts;
-5. tool arguments cannot execute;
-6. artifact traversal/symlink/oversize/digest attacks fail closed;
-7. normalized event byte/depth/key/array ceilings fail closed before buffering;
-8. timeout, quota, auth, DNS and harness failures remain blockers;
-9. confirmed sensitive evidence is purged from JSONL, SQLite, artifacts, temp
-   files and exports without recording the leaked value;
-10. public export rejects unknown/private fields;
-11. no probe runs from the production routing path.
+6. custom-header canonicalization is deterministic; unknown credential
+   classification and every count/name/value/aggregate bound fail closed;
+7. local subject-salt rotation breaks prior correlation and forces
+   re-projection/reverification without reverse lookup;
+8. tool arguments cannot execute;
+9. artifact traversal/symlink/oversize/digest attacks fail closed;
+10. normalized event byte/depth/key/array ceilings fail closed before buffering;
+11. timeout, quota, auth, DNS and harness failures remain blockers;
+12. retention expiry emits typed unavailable markers; cleanup retry/failure is
+    visible and bounded; shared contract artifacts survive invalidation while
+    any non-invalidated observation still references them;
+13. confirmed sensitive evidence is purged from JSONL, SQLite, artifacts, temp
+    files and exports without recording the leaked value;
+14. public export rejects unknown/private fields;
+15. no probe runs from the production routing path.
