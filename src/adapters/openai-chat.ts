@@ -3,11 +3,13 @@ import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, Ocx
 import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { debugProviderDiagnostic } from "../lib/debug";
+import { sseFieldValue } from "../lib/sse-decoder";
 import { isDebugEnabled } from "../lib/debug-settings";
 import { isCyberPolicyCode } from "../lib/errors";
 import { redactSecretString } from "../lib/redact";
 import { contentPartsToText } from "./image";
-import { neutralizeIdentity } from "./identity";
+import { identifyRoutedModel } from "./identity";
+import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
 import {
@@ -70,6 +72,103 @@ function extractErrorDetail(parsed: unknown): string | undefined {
   return undefined;
 }
 
+// ClinePass live responses observed 2026-08-02 wrap non-stream Chat Completions in
+// `{ success, error, data }`; its public Chat Completions docs do not currently describe that
+// envelope. Keep ordinary OpenAI-shaped responses on the direct path.
+function unwrapChatCompletionPayload(json: Record<string, unknown>): Record<string, unknown> {
+  if ((json.error !== undefined && json.error !== null) || Array.isArray(json.choices)) return json;
+  const data = json.data;
+  return data !== null && typeof data === "object" && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : json;
+}
+
+interface OpenAIChatError {
+  message?: unknown;
+  code?: unknown;
+  type?: unknown;
+  status?: unknown;
+  metadata?: unknown;
+}
+
+function safeUpstreamRequestId(metadata: unknown): string | undefined {
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const record = metadata as Record<string, unknown>;
+  const value = record.request_id ?? record.requestId;
+  if (typeof value !== "string") return undefined;
+  const requestId = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)
+    && redactSecretString(requestId) === requestId
+    ? requestId
+    : undefined;
+}
+
+function upstreamErrorEvent(
+  error: unknown,
+  usage?: OcxUsage,
+): Extract<AdapterEvent, { type: "error" }> {
+  const details = error !== null && typeof error === "object" && !Array.isArray(error)
+    ? error as OpenAIChatError
+    : undefined;
+  const rawMessage = typeof error === "string"
+    ? error.trim() || "upstream error"
+    : typeof details?.message === "string" ? details.message : "upstream error";
+  const safeMessage = redactSecretString(rawMessage);
+  const requestId = safeUpstreamRequestId(details?.metadata);
+  const message = requestId !== undefined && !safeMessage.includes(requestId)
+    ? `${safeMessage} (request ID: ${requestId})`
+    : safeMessage;
+  const code = typeof details?.code === "string"
+    ? details.code
+    : typeof details?.code === "number" && Number.isFinite(details.code) && Number.isInteger(details.code)
+      ? String(details.code)
+      : undefined;
+  const errorType = typeof details?.type === "string" ? details.type : undefined;
+  const codeStatus = typeof details?.code === "number"
+    && Number.isInteger(details.code)
+    && details.code >= 100
+    && details.code <= 599
+    ? details.code
+    : undefined;
+  const status = isCyberPolicyCode(code)
+    ? 400
+    : typeof details?.status === "number" && Number.isInteger(details.status)
+      ? details.status
+      : codeStatus;
+  return {
+    type: "error",
+    message,
+    ...(usage !== undefined ? { usage } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(errorType !== undefined ? { errorType } : {}),
+    ...(status !== undefined ? { status } : {}),
+  };
+}
+
+function stopReasonFor(finishReason: unknown): "max_tokens" | "content_filter" | undefined {
+  return finishReason === "length"
+    ? "max_tokens"
+    : finishReason === "content_filter"
+      ? "content_filter"
+      : undefined;
+}
+
+function reasoningTextFrom(record: Record<string, unknown>): string | undefined {
+  return typeof record.reasoning_content === "string" && record.reasoning_content.length > 0
+    ? record.reasoning_content
+    : typeof record.reasoning === "string" && record.reasoning.length > 0
+      ? record.reasoning
+      : undefined;
+}
+
+function invalidChoicesEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+  return {
+    type: "error",
+    message: "upstream response contained invalid choices",
+    ...(usage !== undefined ? { usage } : {}),
+  };
+}
+
 function developerSystemText(message: OcxMessage): string | undefined {
   if (message.role !== "developer") return undefined;
   if (typeof message.content === "string") return message.content;
@@ -77,9 +176,30 @@ function developerSystemText(message: OcxMessage): string | undefined {
   return message.content.map(part => (part as OcxTextContent).text).join("");
 }
 
+/**
+ * Chat-completions image_url parts for images carried inside a tool result (issue #888). role:"tool"
+ * content is text-only on every chat provider, so these ride in a follow-up user message instead of
+ * being flattened to the "[image]" marker the model can't actually see. Data URLs and remote https
+ * URLs are both valid in image_url.url, unlike Gemini inline_data which needs base64.
+ */
+function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[] {
+  if (typeof content === "string") return [];
+  const parts: unknown[] = [];
+  for (const p of content) {
+    // Skip parts without a usable URL (the tool-output parser accepts the empty file_id shape):
+    // a {"url":""} part would fail the whole request where the "[image]" marker degrades safely.
+    if (p.type !== "image" || !p.imageUrl) continue;
+    parts.push({ type: "image_url", image_url: { url: p.imageUrl, ...(p.detail ? { detail: p.detail } : {}) } });
+  }
+  return parts;
+}
+
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
+  // Mirror the bridge's replay-cache scope (issue #950): provider call ids are
+  // not globally unique, so reasoning must not cross conversation boundaries.
+  const replayCacheScope = parsed._clientThreadId ?? "global";
 
   // 260718 dangling tool_calls hardening (devlog/_plan/260718_dangling_toolcall_hardening):
   // strict chat providers (Kimi/Moonshot) 400 when an assistant tool_call is not answered
@@ -91,6 +211,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
   interface PendingToolCall { id: string; name: string }
   let pendingToolCalls: PendingToolCall[] = [];
   let deferredBarrierMessages: unknown[] = [];
+  let pendingToolResultImageParts: unknown[] = [];
   let mintedIdSeq = 0;
   const seenWireCallIds = new Set<string>();
 
@@ -109,6 +230,22 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
     deferredBarrierMessages = [];
   };
 
+  // Tool-result images collected during the open round land in ONE user vision message once the
+  // round closes — never inside it, where strict providers (Kimi/Moonshot) 400 on interleaved
+  // user messages. Released before deferred barriers so the images stay adjacent to the results
+  // they came from (mirrors google.ts sibling inline_data parts and the Kiro carrier images).
+  const flushToolResultImages = (): void => {
+    if (pendingToolResultImageParts.length === 0) return;
+    out.push({
+      role: "user",
+      content: [
+        { type: "text", text: "[ocx] image output from the preceding tool result(s):" },
+        ...pendingToolResultImageParts,
+      ],
+    });
+    pendingToolResultImageParts = [];
+  };
+
   // Close an unresolved tool round with explicit unavailable-result messages. The wording
   // must not claim interruption, success, failure, or user intent: execution status is
   // UNKNOWN, and for user-input tools this must not read as an answer.
@@ -122,6 +259,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
       });
     }
     pendingToolCalls = [];
+    flushToolResultImages();
     releaseDeferredBarriers();
   };
 
@@ -147,7 +285,10 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
     // base_instructions is ignored at request time). Neutralize that one identity line
     // so routed, non-OpenAI models don't misreport themselves as GPT-5 / OpenAI — without
     // leaking the proxy identity into the payload.
-    const sys = neutralizeIdentity(systemParts.join("\n\n"));
+    const wireModelId = provider.modelSuffixBracketStrip
+      ? stripBracketedModelSuffix(parsed.modelId)
+      : parsed.modelId;
+    const sys = identifyRoutedModel(systemParts.join("\n\n"), wireModelId);
     out.push({ role: "system", content: sys });
   }
 
@@ -188,7 +329,26 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
         if (textParts.length > 0) {
           chatMsg.content = textParts.map(p => p.text).join("");
         }
-        const reasoningContent = thinkingParts.map(p => p.thinking).join("");
+        let reasoningContent = thinkingParts.map(p => p.thinking).join("");
+        // History transformations (compaction, lost assistant turn, resumed
+        // threads) can strip the reasoning item while the tool round survives.
+        // Re-attach the reasoning the bridge recorded for these call ids so
+        // preserveReasoningContentModels providers (DeepSeek thinking mode)
+        // never receive a bare tool-call continuation (issue #950).
+        if (
+          reasoningContent.length === 0
+          && toolCalls.length > 0
+          && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+        ) {
+          const cached = toolCalls
+            .map(tc => (tc.id ? peekReasoningForCall(tc.id, replayCacheScope) : undefined))
+            .filter((text): text is string => typeof text === "string" && text.length > 0);
+          // Parallel calls share one preceding reasoning block, which is
+          // recorded under every call id — join unique texts only.
+          if (cached.length > 0) {
+            reasoningContent = [...new Set(cached)].join("\n");
+          }
+        }
         if (reasoningContent.length > 0 && modelInList(provider.preserveReasoningContentModels, parsed.modelId)) {
           chatMsg.reasoning_content = reasoningContent;
         }
@@ -232,8 +392,12 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
             tool_call_id: toolCallId,
             content: contentPartsToText(msg.content),
           });
+          pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
           pendingToolCalls.splice(matchIdx, 1);
-          if (pendingToolCalls.length === 0) releaseDeferredBarriers();
+          if (pendingToolCalls.length === 0) {
+            flushToolResultImages();
+            releaseDeferredBarriers();
+          }
         } else {
           if (!toolCallId) toolCallId = `call_orphan_${out.length}`;
           // No matching call in the open round. Close any unresolved round first so the
@@ -242,9 +406,17 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           // role:"tool" message unless an assistant tool_call with the same id immediately precedes it.
           flushPendingToolCalls();
           const name = safeToolName(msg.toolName);
+          // The orphan repair synthesizes an assistant tool call for a result
+          // whose assistant turn was lost; carry the recorded reasoning so the
+          // replayed round stays valid for thinking-mode providers (#950).
+          const cachedReasoning =
+            toolCallId && modelInList(provider.preserveReasoningContentModels, parsed.modelId)
+              ? peekReasoningForCall(toolCallId, replayCacheScope)
+              : undefined;
           out.push({
             role: "assistant",
             content: emptyAssistantContent(provider),
+            ...(cachedReasoning ? { reasoning_content: cachedReasoning } : {}),
             tool_calls: [{
               id: toolCallId,
               type: "function",
@@ -257,6 +429,8 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
             tool_call_id: toolCallId,
             content: contentPartsToText(msg.content),
           });
+          pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
+          flushToolResultImages();
         }
         break;
       }
@@ -370,14 +544,6 @@ function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   }
 }
 
-function isKimiSchemaTarget(provider: OcxProviderConfig): boolean {
-  try {
-    return new URL(provider.baseUrl).hostname === "api.kimi.com";
-  } catch {
-    return false;
-  }
-}
-
 // Volcengine Ark regional endpoints. Ark validates an assistant message's text field as a
 // REQUIRED parameter and treats "" as absent, so a tool-call-only assistant in history 400s with
 // `MissingParameter: input.content.text` (#796). Every other OpenAI-compatible provider accepts
@@ -416,11 +582,16 @@ function emptyAssistantContent(provider: OcxProviderConfig): string | { type: "t
 }
 
 /**
- * Kimi requires function.parameters.type to be exactly "object" at the root.
- * Codex tools with oneOf/anyOf schemas omit the root type, causing 400 errors.
- * Add type: "object" at the root while preserving oneOf, $defs, and other schema keys.
+ * Providers like Kimi and DeepSeek reject function parameter schemas whose root
+ * `type` is missing or `null` — JSON Schema requires `"object"` at the root of
+ * function parameters. Add `type: "object"` at the root while preserving
+ * `oneOf`, `$defs`, and every other schema key.
+ *
+ * This mirrors `normalizeFunctionToolSchema` in openai-responses.ts, which
+ * applies the same root-only normalization unconditionally on the responses
+ * path. Nested schema content is intentionally left untouched.
  */
-function ensureKimiRootObjectType(parameters: unknown): Record<string, unknown> {
+function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
   if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
     return { type: "object", properties: {} };
   }
@@ -471,13 +642,11 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
-  const kimiTarget = isKimiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
     const parameters = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
-      : kimiTarget
-        ? ensureKimiRootObjectType(t.parameters)
-        : t.parameters;
+      : ensureRootObjectType(t.parameters);
+
     if (parameters === undefined) return [];
     return [{
     type: "function",
@@ -588,10 +757,27 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         body.top_p = parsed.options.topP;
       }
       if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
+      const reasoningDisabled = modelInList(provider.noReasoningModels, parsed.modelId);
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
       let reasoningLog: AdapterRequest["reasoningLog"];
-      if (reasoningEffort !== undefined) {
-        if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
+      // ClinePass live requests observed 2026-08-02 require this gateway-specific object; the
+      // public API docs do not currently specify its request shape.
+      if (!reasoningDisabled && provider.reasoningWireFormat === "gateway-object" && parsed.options.reasoning === "none") {
+        body.reasoning = { enabled: false };
+        reasoningLog = {
+          effectiveEffort: "none",
+          wireField: "reasoning.enabled",
+          wireValue: false,
+        };
+      } else if (reasoningEffort !== undefined) {
+        if (provider.reasoningWireFormat === "gateway-object") {
+          body.reasoning = { enabled: true, effort: reasoningEffort };
+          reasoningLog = {
+            effectiveEffort: reasoningEffort,
+            wireField: "reasoning.effort",
+            wireValue: reasoningEffort,
+          };
+        } else if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
           const budget = thinkingBudgetForEffort(parsed, reasoningEffort, maxTokens);
           if (budget !== undefined) {
             body.thinking_budget = budget;
@@ -632,6 +818,26 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // Cerebras, etc.) reject unknown fields. Only forward when the provider opts in.
       if (provider.promptCacheKey && parsed.options.promptCacheKey !== undefined) {
         body.prompt_cache_key = parsed.options.promptCacheKey;
+      }
+      // Responses `text.format` -> chat `response_format`. json_object maps 1:1; json_schema
+      // re-nests the flattened Responses fields under `json_schema` — the exact inverse of
+      // responseFormatToText in src/chat/inbound.ts. Forwarded unconditionally (like `stop`):
+      // response_format is a first-class Chat Completions field, it is only present when the
+      // caller explicitly asked for structured output, and a backend that rejects it should
+      // fail loud rather than silently return prose the caller will try to JSON.parse.
+      const textFormat = parsed.options.textFormat;
+      if (textFormat?.type === "json_object") {
+        body.response_format = { type: "json_object" };
+      } else if (textFormat?.type === "json_schema") {
+        body.response_format = {
+          type: "json_schema",
+          json_schema: {
+            name: textFormat.name ?? "response",
+            ...(textFormat.description !== undefined ? { description: textFormat.description } : {}),
+            ...(textFormat.schema !== undefined ? { schema: textFormat.schema } : {}),
+            ...(textFormat.strict !== undefined ? { strict: textFormat.strict } : {}),
+          },
+        };
       }
 
       if (tools) {
@@ -704,17 +910,28 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       interface PendingToolCall { key: string; id: string; name: string; args: string; argsBytes: number }
       const pendingToolCalls: PendingToolCall[] = [];
       let toolCallSeq = 0;
+      const closeToolCalls = (): PendingToolCall[] => {
+        const calls = [...pendingToolCalls];
+        for (const call of calls) budget.closeCall(call.key);
+        pendingToolCalls.length = 0;
+        return calls;
+      };
       const flushToolCalls = function* (): Generator<AdapterEvent> {
         // Do not treat flushed tool calls as user-facing output for the finish-less EOF
         // fallback — incomplete tool args must stay on the truncation path.
-        for (const call of pendingToolCalls) {
+        for (const call of closeToolCalls()) {
           if (!call.id) call.id = `call_${++toolCallSeq}`;
           yield { type: "tool_call_start", id: call.id, name: call.name };
           if (call.args.length > 0) yield { type: "tool_call_delta", arguments: call.args };
           yield { type: "tool_call_end" };
-          budget.closeCall(call.key);
         }
-        pendingToolCalls.length = 0;
+      };
+      const terminateWithError = function* (
+        event: Extract<AdapterEvent, { type: "error" }>,
+      ): Generator<AdapterEvent, "terminate"> {
+        closeToolCalls();
+        yield event;
+        return "terminate";
       };
       let pendingUsage: OcxUsage | undefined;
       // Track terminal signals so a socket EOF without any terminator can fail closed instead of
@@ -731,15 +948,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // Yields adapter events and returns "terminate" for a terminal frame ([DONE] / error) that
       // must end the stream, or "continue" otherwise. Mutates the closure's terminal-signal state.
       const handleDataLine = function* (line: string): Generator<AdapterEvent, "continue" | "terminate"> {
-        if (!line.startsWith("data: ")) return "continue";
-        const payload = line.slice(6).trim();
+        const rawPayload = sseFieldValue(line, "data");
+        if (rawPayload === null) return "continue";
+        const payload = rawPayload.trim();
         if (payload === "[DONE]") {
           yield* flushToolCalls();
-          const stopReason = finishReason === "length"
-            ? "max_tokens"
-            : finishReason === "content_filter"
-              ? "content_filter"
-              : undefined;
+          const stopReason = stopReasonFor(finishReason);
           yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
           return "terminate";
         }
@@ -755,23 +969,10 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         // A 200/OK chat-completions stream may carry an inline provider error envelope
         // instead of a clean [DONE]. Surface it as a terminal error so the bridge emits a
         // classified response.failed (bridge case "error") — never a truncated completion.
-        if (chunk.error) {
-          const err = chunk.error as { message?: string; code?: string; type?: string; status?: number } | undefined;
-          const message = err?.message ?? "upstream error";
-          debugProviderDiagnostic("openai-chat", "stream-error", { message });
-          yield* flushToolCalls();
-          yield {
-            type: "error",
-            message,
-            ...(typeof err?.code === "string" ? { code: err.code } : {}),
-            ...(typeof err?.type === "string" ? { errorType: err.type } : {}),
-            ...(isCyberPolicyCode(err?.code)
-              ? { status: 400 }
-              : typeof err?.status === "number" && Number.isInteger(err.status)
-                ? { status: err.status }
-                : {}),
-          };
-          return "terminate";
+        if (chunk.error !== undefined && chunk.error !== null) {
+          const event = upstreamErrorEvent(chunk.error, pendingUsage);
+          debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
+          return yield* terminateWithError(event);
         }
 
         if (chunk.usage) {
@@ -781,17 +982,36 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           pendingUsage = usageFromOpenAIChat(chunk.usage as Record<string, unknown>);
         }
 
-        const choices = chunk.choices as { delta?: Record<string, unknown>; finish_reason?: string }[] | undefined;
-        if (!choices || choices.length === 0) return "continue";
+        const choices = chunk.choices;
+        if (choices === undefined) return "continue";
+        if (!Array.isArray(choices)) {
+          return yield* terminateWithError(invalidChoicesEvent(pendingUsage));
+        }
+        if (choices.length === 0) return "continue";
+        const rawChoice = choices[0];
+        if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
+          return yield* terminateWithError(invalidChoicesEvent(pendingUsage));
+        }
+        const choice = rawChoice as {
+          delta?: Record<string, unknown>;
+          finish_reason?: string;
+          error?: unknown;
+        };
+        if (choice.finish_reason === "error") {
+          const event = upstreamErrorEvent(choice.error, pendingUsage);
+          debugProviderDiagnostic("openai-chat", "stream-error", { message: event.message });
+          return yield* terminateWithError(event);
+        }
         // Observe the terminator BEFORE the delta guard: a finish-only chunk (finish_reason set,
         // no delta) is a graceful close and must record finishReason even though we skip it below.
-        if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
-          finishReason = choices[0].finish_reason;
+        if (typeof choice.finish_reason === "string" && choice.finish_reason) {
+          finishReason = choice.finish_reason;
         }
-        const delta = choices[0].delta;
+        const delta = choice.delta;
         if (delta) {
-          if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
-            yield { type: "reasoning_raw_delta", text: delta.reasoning_content };
+          const reasoningText = reasoningTextFrom(delta);
+          if (reasoningText !== undefined) {
+            yield { type: "reasoning_raw_delta", text: reasoningText };
           }
           if (typeof delta.content === "string" && delta.content.length > 0) {
             sawUserFacingOutput = true;
@@ -839,7 +1059,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
         // Any non-empty finish_reason ends the generation: flush assembled tool calls as
         // atomic sequences (covers "tool_calls" AND providers that close tool turns with "stop").
-        if (typeof choices[0].finish_reason === "string" && choices[0].finish_reason) {
+        if (typeof choice.finish_reason === "string" && choice.finish_reason) {
           yield* flushToolCalls();
         }
         return "continue";
@@ -918,11 +1138,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         yield* flushToolCalls();
         // Graceful close that omitted [DONE] but delivered finish_reason and/or answer text.
-        const stopReason = finishReason === "length"
-          ? "max_tokens"
-          : finishReason === "content_filter"
-            ? "content_filter"
-            : undefined;
+        const stopReason = stopReasonFor(finishReason);
         yield { type: "done", usage: pendingUsage, ...(stopReason ? { stopReason } : {}) };
       } catch (error) {
         if (isTranslatorBudgetExceededError(error)
@@ -940,7 +1156,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         throw error;
       } finally {
         budget.releaseRetained(bufferBytes, { kind: "live_transient" });
-        for (const call of pendingToolCalls) budget.closeCall(call.key);
+        closeToolCalls();
         reader.releaseLock();
       }
     },
@@ -950,34 +1166,40 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const responseBytes = new TextEncoder().encode(JSON.stringify(json)).byteLength;
       budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
       try {
-      if (json.error) {
-        const upstreamError = json.error as { message?: unknown; code?: unknown; type?: unknown; status?: unknown };
-        const message = typeof upstreamError.message === "string" ? upstreamError.message : "upstream error";
-        const code = typeof upstreamError.code === "string" ? upstreamError.code : undefined;
-        const errorType = typeof upstreamError.type === "string" ? upstreamError.type : undefined;
-        const status = isCyberPolicyCode(code)
-          ? 400
-          : typeof upstreamError.status === "number" && Number.isInteger(upstreamError.status)
-            ? upstreamError.status
-            : undefined;
+      const payload = unwrapChatCompletionPayload(json);
+      const usage = usageFromOpenAIChat(payload.usage as Record<string, unknown> | undefined);
+      if (json.success === false && payload.error === undefined) {
         return [{
           type: "error",
-          message,
-          ...(code !== undefined ? { code } : {}),
-          ...(errorType !== undefined ? { errorType } : {}),
-          ...(status !== undefined ? { status } : {}),
+          message: "upstream reported failure without an error payload",
+          ...(usage ? { usage } : {}),
         }];
+      }
+      if (payload.error !== undefined && payload.error !== null) {
+        return [upstreamErrorEvent(payload.error, usage)];
       }
 
       const events: AdapterEvent[] = [];
-      const choices = json.choices as { message?: Record<string, unknown> }[] | undefined;
-      if (!Array.isArray(choices) || choices.length === 0 || !choices[0].message) {
-        return [{ type: "error", message: "upstream response contained no choices" }];
+      const choices = payload.choices as {
+        message?: Record<string, unknown>;
+        finish_reason?: unknown;
+        error?: OpenAIChatError;
+      }[] | undefined;
+      if (!Array.isArray(choices) || choices.length === 0) {
+        return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
       }
+      const rawChoice = choices[0];
+      if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice)) {
+        return [invalidChoicesEvent(usage)];
+      }
+      const choice = rawChoice;
+      if (choice.finish_reason === "error") return [upstreamErrorEvent(choice.error, usage)];
+      if (!choice.message) return [{ type: "error", message: "upstream response contained no choices", ...(usage ? { usage } : {}) }];
 
-      const msg = choices[0].message;
-      if (typeof msg.reasoning_content === "string" && msg.reasoning_content.length > 0) {
-        events.push({ type: "reasoning_raw_delta", text: msg.reasoning_content });
+      const msg = choice.message;
+      const reasoningText = reasoningTextFrom(msg);
+      if (reasoningText !== undefined) {
+        events.push({ type: "reasoning_raw_delta", text: reasoningText });
       }
       if (typeof msg.content === "string") {
         events.push({ type: "text_delta", text: msg.content });
@@ -990,10 +1212,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           events.push({ type: "tool_call_end" });
         }
       }
-      const usage = json.usage as Record<string, unknown> | undefined;
+      const stopReason = stopReasonFor(choice.finish_reason);
       events.push({
         type: "done",
-        usage: usageFromOpenAIChat(usage),
+        usage,
+        ...(stopReason ? { stopReason } : {}),
       });
       retainTranslatedEventBatch(events, budget);
       return events;

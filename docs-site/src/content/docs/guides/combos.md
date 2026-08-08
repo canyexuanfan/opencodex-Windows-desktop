@@ -200,7 +200,7 @@ task workflow.
 
 ### Dashboard
 
-Open the local dashboard and choose **Combos**. The workspace creates, edits, renames, and removes
+Open the local dashboard and choose **Models → Combos**. The workspace creates, edits, renames, and removes
 combos, and its target picker excludes disabled models and nested combos.
 
 ### CLI

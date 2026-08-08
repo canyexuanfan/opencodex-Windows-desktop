@@ -11,10 +11,10 @@ description: Multi-agent surface, guidance при делегировании, pr
 | Поле | Тип | По умолчанию | Значение |
 | --- | --- | --- | --- |
 | `multiAgentMode?` | `"v1" \| "default" \| "v2"` | `"default"` | `v1` штампует все модели как v1; `v2` штампует все модели как v2. `default` восстанавливает upstream pin'ы (Sol/Terra — v2, Luna — v1) и для остальных следует native flag `multi_agent_v2`. Применяется к новым сессиям. |
-| `subagentModels?` | `string[]` | `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4-mini` | До пяти native- или routed-id, которые показываются первыми в picker'е подагентов. Явный пустой список сохраняется. |
+| `subagentModels?` | `string[]` | `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.4-mini` | До пяти bare native-id, account-qualified id `<selector>/<native-openai-model>` или routed-id `provider/model`, которые показываются первыми в picker'е подагентов. Страница Subagents предлагает только bare native- и routed-id и при сохранении исключает точные account-qualified варианты; для точного выбора используйте `ocx agent subagents set` или отредактируйте конфигурацию. Явный пустой список сохраняется. |
 | `injectionModel?` | `string` | — | Предпочитаемая native- или routed-модель подагента, которую proxy использует в собственном guidance v2. |
 | `injectionEffort?` | `string` | — | Предпочитаемый effort (`low`–`ultra`), имеющий смысл только вместе с `injectionModel`. |
-| `injectionPrompt?` | `string` | — | Заменяет встроенное тело guidance. Поддерживает `{{model}}`, `{{effort}}`, `{{roster}}` и `{{fallback}}`. Условия срабатывания при этом не меняются. |
+| `injectionPrompt?` | `string` | — | Заменяет встроенное тело guidance для v2. Поддерживает `{{model}}`, `{{effort}}`, `{{roster}}` и `{{fallback}}`. Настроенного `injectionModel` достаточно, чтобы отобразить пользовательский prompt. |
 | `multiAgentGuidanceEnabled?` | `boolean` | `true` | Управляет только developer-guidance, написанным самим opencodex, для v1/v2; не меняет native default'ы агентов, tools, routing, roster'ы и effort cap'ы. |
 | `syncCodexSubagentDefaults?` | `boolean` | `false` | Разрешает записывать `injectionModel` и, при наличии, `injectionEffort` как native default'ы Codex при sync/restart. Требует `injectionModel`. |
 | `subagentModelFallback?` | `string[]` | `[]` | Глобальные fallback-модели для порождённых child-turn'ов в порядке приоритета. |

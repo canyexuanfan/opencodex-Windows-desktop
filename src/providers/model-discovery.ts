@@ -2,6 +2,7 @@ import type { OcxProviderConfig } from "../types";
 import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
+  registryEntryForProviderDestination,
   type ProviderModelDiscoveryFilter,
   type ProviderModelDiscoveryPredicate,
   type ProviderModelDiscoveryScalar,
@@ -124,9 +125,14 @@ export function resolveProviderModelDiscovery(
   providerName: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
 ): ResolvedProviderModelDiscovery {
-  const entry = providerMatchesRegistryTransport(providerName, provider)
-    ? getProviderRegistryEntry(providerName)
-    : undefined;
+  // The dashboard permits a canonical preset to be saved under a different name. Recover its
+  // registry-owned discovery policy by transport in that case. The destination helper is limited
+  // to exact fixed-key baseUrl + adapter matches, so custom endpoints, OAuth rows, templates, and
+  // overridable destinations cannot acquire another provider's discovery URL or filter.
+  const namedEntry = getProviderRegistryEntry(providerName);
+  const entry = namedEntry
+    ? (providerMatchesRegistryTransport(providerName, provider) ? namedEntry : undefined)
+    : registryEntryForProviderDestination(provider);
   const spec = entry?.modelDiscovery;
   return {
     ...(spec ? { spec } : {}),

@@ -1,3 +1,5 @@
+import { sseFieldValue } from "../lib/sse-decoder";
+
 /** A single web source backing the sidecar's answer. */
 export interface WebSearchSource {
   url: string;
@@ -187,7 +189,8 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.startsWith("data: ")) handle(line.slice(6).trim());
+        const data = sseFieldValue(line, "data");
+        if (data !== null) handle(data.trim());
       }
     }
   } finally {

@@ -60,15 +60,16 @@ Custom `injectionPrompt` text can use all four placeholders:
 
 | Placeholder | Replaced with |
 | --- | --- |
-| `{{model}}` | The configured `injectionModel`, or an empty string |
+| `{{model}}` | The effective preferred model for this request. A bare native `injectionModel` is account-qualified only when the request itself targets an explicit account selector. An unresolved or ambiguous bare value becomes an empty string; an unresolved explicit account-qualified or routed id remains unchanged |
 | `{{effort}}` | The configured `injectionEffort`, or an empty string |
 | `{{roster}}` | The resolved picker-visible, surface-compatible roster |
 | `{{fallback}}` | The configured global fallback guidance |
 
 The built-in v2 guidance has a 700-character budget. If it would exceed the budget, opencodex drops
-the roster first rather than truncating the core spawn instructions. Guidance fires only when a
-preferred model, eligible roster, or fallback chain resolves. A custom prompt does not bypass that
-gate.
+the roster first rather than truncating the core spawn instructions. Built-in guidance fires only
+when a preferred model, eligible roster, or fallback chain resolves. A configured `injectionModel`
+is sufficient to render a custom prompt; if a bare value cannot resolve uniquely, `{{model}}`
+expands to an empty string.
 
 On v1, opencodex injects only the upstream-style proactive delegation guidance at `max` or `ultra`
 effort. It does not add a preferred model, roster, fallback list, or custom prompt on v1.

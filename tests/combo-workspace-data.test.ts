@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type ComboItem,
+  COMBO_EFFORTS,
   buildComboAttention,
   comboPublicModelId,
   draftEquals,
@@ -171,12 +172,27 @@ describe("combo-workspace-data", () => {
     )).toEqual(["medium", "high"]);
   });
 
-  test("intersectComboEfforts treats unknown members as having no selectable efforts", () => {
+  test("intersectComboEfforts treats unknown members as picker wildcards", () => {
     const map = new Map<string, readonly string[] | undefined>([
       ["a/m1", ["low", "medium"]],
     ]);
     expect(intersectComboEfforts(
       [{ provider: "a", model: "m1" }, { provider: "b", model: "unknown" }],
+      map,
+    )).toEqual(["low", "medium"]);
+    expect(intersectComboEfforts(
+      [{ provider: "b", model: "unknown" }],
+      map,
+    )).toEqual(COMBO_EFFORTS);
+  });
+
+  test("intersectComboEfforts keeps an advertised empty ladder restrictive", () => {
+    const map = new Map<string, readonly string[] | undefined>([
+      ["a/m1", ["low", "medium"]],
+      ["b/no-reasoning", []],
+    ]);
+    expect(intersectComboEfforts(
+      [{ provider: "a", model: "m1" }, { provider: "b", model: "no-reasoning" }],
       map,
     )).toEqual([]);
   });
