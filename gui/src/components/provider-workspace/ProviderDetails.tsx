@@ -2,7 +2,7 @@
  * ProviderDetails — the detail header + tab shell (WP090+091). Owns tab state
  * and composes the Overview/Models/Usage/Settings panels.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
 import type { WorkspaceItem } from "../../provider-workspace/catalog";
 import { formatProviderDisplayName } from "../../provider-icons";
@@ -94,7 +94,7 @@ export default function ProviderDetails({
   const [pendingLeave, setPendingLeave] = useState<Tab | "deselect" | null>(null);
   const [leaveSaving, setLeaveSaving] = useState(false);
   const settingsSaveRef = useRef<(() => Promise<boolean>) | null>(null);
-  const lastAccountsFocusTokenRef = useRef(0);
+  const [seenAccountsFocusToken, setSeenAccountsFocusToken] = useState(accountsFocusToken);
   const registerSettingsSave = useCallback((save: (() => Promise<boolean>) | null) => {
     settingsSaveRef.current = save;
   }, []);
@@ -126,12 +126,19 @@ export default function ProviderDetails({
     setTab(next);
   }, [tab, settingsDirty]);
 
-  useEffect(() => {
-    if (!accountsFocusToken || accountsFocusToken === lastAccountsFocusTokenRef.current) return;
-    lastAccountsFocusTokenRef.current = accountsFocusToken;
-    if (!authSurface) return;
-    switchTab("accounts");
-  }, [accountsFocusToken, authSurface, switchTab]);
+  // Adjust related state when accountsFocusToken changes during render (not in an
+  // effect) so the Accounts tab is selected without a one-frame stale paint.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  if (accountsFocusToken !== seenAccountsFocusToken) {
+    setSeenAccountsFocusToken(accountsFocusToken);
+    if (accountsFocusToken && authSurface) {
+      if (settingsDirty && tab === "settings") {
+        setPendingLeave("accounts");
+      } else {
+        setTab("accounts");
+      }
+    }
+  }
 
   const requestDeselect = useCallback(() => {
     if (settingsDirty && tab === "settings") {
