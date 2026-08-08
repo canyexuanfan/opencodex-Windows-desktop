@@ -4,7 +4,8 @@ Date: 2026-08-08
 
 Scope: the complete CL-00 contract set on
 `feat/cl-00-compatibility-contracts`, based on
-`3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296`.
+`3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296`, ending at
+`12e50a3502fb4af25283538cc717ead2291edd8b`.
 
 The review was read-only and separate from the authoring pass. Every validated
 Critical, High, and Medium finding was corrected and re-reviewed before this

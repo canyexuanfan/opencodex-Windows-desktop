@@ -19,7 +19,7 @@ whether the next phase is authorized.
 
 | Phase | Branch | Base SHA | Implementation head | PR | State |
 |---|---|---|---|---|---|
-| CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | pending commit after delayed-review corrections | [draft #1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED |
+| CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `12e50a3502fb4af25283538cc717ead2291edd8b` | [draft #1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED |
 | CL-01 | not created | CL-00 must be accepted first | not started | none | NOT AUTHORIZED |
 
 ## CL-00 acceptance log
@@ -67,7 +67,7 @@ whether the next phase is authorized.
   challenges pass and no Critical/High/Medium findings remain.
 - Blockers: none for CL-00. Full-suite green remains unavailable on this host
   for the Windows/Bun reasons above.
-- CL-00 ending implementation SHA: pending commit after delayed-review
-  corrections from the independent acceptance pass.
+- CL-00 ending implementation SHA:
+  `12e50a3502fb4af25283538cc717ead2291edd8b`.
 - Draft PR: [#1286](https://github.com/lidge-jun/opencodex/pull/1286).
 - CL-01 authorized: **NO**. Acceptance of CL-00 does not start CL-01.
