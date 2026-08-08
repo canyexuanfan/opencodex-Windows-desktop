@@ -68,6 +68,7 @@ whether the next phase is authorized.
 - Blockers: none for CL-00. Full-suite green remains unavailable on this host
   for the Windows/Bun reasons above.
 - CL-00 ending implementation SHA:
-  `12e50a3502fb4af25283538cc717ead2291edd8b`.
+  `12e50a3502fb4af25283538cc717ead2291edd8b` (delayed-review corrections);
+  subsequent ledger sync commits may follow without changing that contract set.
 - Draft PR: [#1286](https://github.com/lidge-jun/opencodex/pull/1286).
 - CL-01 authorized: **NO**. Acceptance of CL-00 does not start CL-01.
