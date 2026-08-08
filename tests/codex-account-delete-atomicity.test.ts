@@ -84,6 +84,29 @@ describe("Codex account delete persistence ordering", () => {
     }
   });
 
+  test("a failure after durable config replacement restores the prior config", () => {
+    const config = seededConfig();
+    const before = structuredClone(config);
+    const realSave = configModule.saveConfigPreservingClaudeCode;
+    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode")
+      .mockImplementation(candidate => {
+        realSave(candidate);
+        throw new Error("forced post-write failure");
+      });
+
+    try {
+      expect(() => deleteCodexAccount(config, ACCOUNT_ID)).toThrow("forced post-write failure");
+
+      expect(config).toEqual(before);
+      expect(loadConfig().codexAccounts?.some(account => account.id === ACCOUNT_ID)).toBe(true);
+      expect(getCodexAccountCredential(ACCOUNT_ID)).not.toBeNull();
+      expect(isAccountNeedsReauth(ACCOUNT_ID)).toBe(true);
+      expect(getAccountQuota(ACCOUNT_ID)).not.toBeNull();
+    } finally {
+      saveSpy.mockRestore();
+    }
+  });
+
   test("the durable config deletion happens before credential and runtime cleanup", () => {
     const config = seededConfig();
     const realSave = configModule.saveConfigPreservingClaudeCode;
