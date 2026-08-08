@@ -1,4 +1,5 @@
-import { saveConfigPreservingClaudeCode, withConfigMutationLockSync } from "../config";
+import { existsSync } from "node:fs";
+import { getConfigPath, saveConfigPreservingClaudeCode, withConfigMutationLockSync } from "../config";
 import { removeCodexAccountCredential } from "./account-store";
 import { clearAccountNeedsReauth } from "./account-runtime-state";
 import { getMainChatgptAccountId } from "./auth-collision";
@@ -87,10 +88,11 @@ function restoreRuntimeConfig(target: OcxConfig, snapshot: OcxConfig): void {
 /**
  * Delete a stored account while retaining its selector binding.
  *
- * Config deletion is committed before credentials or runtime state are destroyed. This prevents a
- * failed config write from leaving a still-configured account with a tombstoned credential. The
- * whole sequence shares the config mutation coordinator so a cooperating writer cannot re-add the
- * account between the durable config commit and credential cleanup.
+ * When the runtime config is backed by an existing config.json, commit the config deletion before
+ * credentials or runtime state are destroyed. Pure in-memory callers intentionally remain
+ * side-effect free because they have no durable account row to protect. The whole sequence shares
+ * the config mutation coordinator so a cooperating writer cannot re-add a persisted account
+ * between the durable config commit and credential cleanup.
  *
  * Returns true when a picker-visible row disappeared and the catalog must converge.
  */
@@ -98,6 +100,7 @@ export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string):
   let cleanupFailed = false;
   const pickerVisibilityChanged = withConfigMutationLockSync(() => {
     const previousConfig = structuredClone(runtimeConfig);
+    const hasPersistedConfig = existsSync(getConfigPath());
     const hadStoredAccount = (runtimeConfig.codexAccounts ?? [])
       .some(account => !account.isMain && account.id === accountId);
     const hadVisiblePickerBinding = hadStoredAccount
@@ -112,13 +115,15 @@ export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string):
     clearCodexAccountPin(runtimeConfig, accountId);
     if (runtimeConfig.activeCodexAccountId === accountId) runtimeConfig.activeCodexAccountId = undefined;
 
-    try {
-      // Persist first. Destructive cleanup below must never run for a deletion that did not become
-      // durable. The auth API's existing follow-up save is intentionally idempotent.
-      saveConfigPreservingClaudeCode(runtimeConfig);
-    } catch (error) {
-      restoreRuntimeConfig(runtimeConfig, previousConfig);
-      throw error;
+    if (hasPersistedConfig) {
+      try {
+        // Persist first for durable configs. Destructive cleanup below must never run for a
+        // deletion that failed to commit. Transient configs intentionally skip this write.
+        saveConfigPreservingClaudeCode(runtimeConfig);
+      } catch (error) {
+        restoreRuntimeConfig(runtimeConfig, previousConfig);
+        throw error;
+      }
     }
 
     try {
