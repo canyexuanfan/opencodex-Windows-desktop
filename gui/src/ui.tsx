@@ -26,6 +26,42 @@ export function Notice({ tone, children }: { tone: "ok" | "err" | "warn"; childr
   );
 }
 
+/**
+ * Fixed-position status toast. Portaled so it never consumes page flow / shifts layout.
+ * Parent owns auto-dismiss timing (success banners are typically transient).
+ */
+export function ToastNotice({
+  tone,
+  children,
+  onDismiss,
+  dismissLabel,
+}: {
+  tone: "ok" | "err";
+  children: ReactNode;
+  onDismiss?: () => void;
+  /** Required whenever onDismiss is provided — pass t("common.close"). */
+  dismissLabel: string;
+}) {
+  return createPortal(
+    <div className="toast-notice-host" role="presentation">
+      <div
+        className={`toast-notice notice ${tone === "ok" ? "notice-ok" : "notice-err"}`}
+        role="status"
+        aria-live="polite"
+      >
+        {tone === "ok" ? <IconCheck /> : <IconAlert />}
+        <span className="toast-notice-copy">{children}</span>
+        {onDismiss && (
+          <button type="button" className="toast-notice-dismiss" onClick={onDismiss} aria-label={dismissLabel}>
+            ×
+          </button>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export interface SelectOption { value: string; label: React.ReactNode }
 
 export function Select({ value, options, onChange, disabled, id, label, describedBy, title, style, align, placement, dropdownStyle, portal = true }: {
