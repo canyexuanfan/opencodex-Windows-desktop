@@ -204,6 +204,22 @@ function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
   ws.data.liveTurnAdmissionLease = undefined;
 }
 
+/**
+ * Send one live-sideband frame to the upstream socket.
+ *
+ * Bun's `WebSocket.send` accepts `string | Blob | BufferSource`, but the DOM-lib
+ * `Buffer` can be backed by a `SharedArrayBuffer`, which `BufferSource` rejects.
+ * `Uint8Array.from` copies into a fresh `ArrayBuffer`-backed view, so a frame
+ * arriving from `node:buffer` still round-trips byte-for-byte.
+ */
+function sendUpstreamFrame(upstream: WebSocket, frame: string | Buffer): void {
+  if (typeof frame === "string") {
+    upstream.send(frame);
+    return;
+  }
+  upstream.send(Uint8Array.from(frame));
+}
+
 function finalizeLiveSideband(ws: ServerWebSocket<WsData>, upstream?: WebSocket): void {
   if (upstream && ws.data.liveUpstream !== upstream) return;
   if (ws.data.liveCloseFallback !== undefined) {
@@ -236,7 +252,10 @@ function armLiveSidebandCloseFallback(ws: ServerWebSocket<WsData>, upstream: Web
     // close event. That is still an observed CLOSED transport and is safe to
     // finalize. CONNECTING/CLOSING peers keep the lease so profile switching
     // fails at its own bounded drain deadline instead of racing live traffic.
-    if (upstream.readyState === WebSocket.CLOSED) finalizeLiveSideband(ws, upstream);
+    // The earlier CLOSED check narrowed `readyState` to 0|1|2 in the type
+    // system, but the socket can still transition to CLOSED (3) before this
+    // fallback fires; the cast keeps the runtime-identical check.
+    if ((upstream.readyState as number) === 3) finalizeLiveSideband(ws, upstream);
   }, LIVE_SIDEBAND_CLOSE_FALLBACK_MS);
 }
 
@@ -246,7 +265,9 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   ws.data.livePending = undefined;
   ws.data.cancel = undefined;
   const upstream = ws.data.liveUpstream;
-  if (!upstream || upstream.readyState === WebSocket.CLOSED) {
+  // Bun's `WebSocket` type narrows `readyState` to 0|1|2 even though the DOM
+  // constant CLOSED is 3; the numeric literal is the runtime-identical check.
+  if (!upstream || upstream.readyState === 3) {
     finalizeLiveSideband(ws, upstream);
   } else {
     // The sideband holds a native-main admission lease. Do not release it just
@@ -299,7 +320,7 @@ function attachLiveSidebandUpstream(
     ws.data.livePending = undefined;
     for (const frame of pending) {
       try {
-        upstream.send(frame);
+        sendUpstreamFrame(upstream, frame);
       } catch {
         closeLiveSideband(ws, 1011, "upstream send failed");
         return;
@@ -1312,7 +1333,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             return;
           }
           try {
-            upstream.send(raw);
+            sendUpstreamFrame(upstream, raw);
           } catch {
             closeLiveSideband(ws, 1011, "upstream send failed");
           }
