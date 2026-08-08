@@ -644,19 +644,25 @@ export default function Models({ apiBase }: { apiBase: string }) {
       // Cap aggregate counts routed providers only; the single native group has no cap
       // switch. Zero-row routed providers are included: they can still hold a per-provider
       // cap (e.g. a custom model added later), and excluding them would let "set all"
-      // silently overwrite that cap when the global value changes.
+      // silently overwrite that cap when the global value changes. Saved caps of providers
+      // that are no longer in `groups` (e.g. disabled after receiving a custom cap) are
+      // also counted: the management API rewrites every key in providerContextCaps when
+      // setAll is true, so any saved cap that differs from the current value must keep the
+      // aggregate off.
       const routed = groups.filter(group => !group.native);
-      return routed.length > 0 && routed.every(group => contextCaps[group.provider] === contextCapValue);
+      return routed.length > 0
+        && routed.every(group => contextCaps[group.provider] === contextCapValue)
+        && Object.keys(contextCaps).every(key => contextCaps[key] === contextCapValue);
     },
     [groups, contextCaps, contextCapValue],
   );
 
   const setGlobalCap = (value: number) => {
-    if (!Number.isFinite(value) || value <= 0) return;
+    if (!Number.isSafeInteger(value) || value <= 0) return;
     // Only when "apply to every routed provider" is checked does the new value re-point every
     // provider; otherwise it just becomes the default for future toggles and providers keep
     // their own values.
-    void putCap(allCapped ? { value: Math.floor(value), setAll: true } : { value: Math.floor(value) });
+    void putCap(allCapped ? { value, setAll: true } : { value });
   };
 
   const onSelectProviderCap = (provider: string, raw: string) => {
@@ -667,28 +673,30 @@ export default function Models({ apiBase }: { apiBase: string }) {
     }
     setProviderCapCustomOpen(prev => ({ ...prev, [provider]: false }));
     const value = Number(raw);
-    if (Number.isFinite(value) && value > 0 && value !== contextCaps[provider]) {
-      void putCap({ provider, enabled: true, value: Math.floor(value) });
+    if (Number.isSafeInteger(value) && value > 0 && value !== contextCaps[provider]) {
+      void putCap({ provider, enabled: true, value });
     }
   };
 
   const applyProviderCustomCap = (provider: string) => {
     const value = Number((providerCapCustomDraft[provider] ?? "").replace(/[_,\s]/g, ""));
-    if (!Number.isFinite(value) || value <= 0) { publishFeedback(false, t("models.capSaveFailed")); return; }
+    // Fractional values are rejected (the server floors, so 0.5 would silently become 0).
+    // The editor stays open when validation fails.
+    if (!Number.isSafeInteger(value) || value <= 0) { publishFeedback(false, t("models.capSaveFailed")); return; }
     setProviderCapCustomOpen(prev => ({ ...prev, [provider]: false }));
-    void putCap({ provider, enabled: true, value: Math.floor(value) });
+    void putCap({ provider, enabled: true, value });
   };
 
   const onSelectCap = (raw: string) => {
     if (raw === CUSTOM_OPTION) { setShowCustom(true); setCustomCap(String(contextCapValue)); return; }
     setShowCustom(false);
     const value = Number(raw);
-    if (Number.isFinite(value) && value > 0 && value !== contextCapValue) setGlobalCap(value);
+    if (Number.isSafeInteger(value) && value > 0 && value !== contextCapValue) setGlobalCap(value);
   };
 
   const applyCustomCap = () => {
     const value = Number(customCap.replace(/[_,\s]/g, ""));
-    if (!Number.isFinite(value) || value <= 0) { publishFeedback(false, t("models.capSaveFailed")); return; }
+    if (!Number.isSafeInteger(value) || value <= 0) { publishFeedback(false, t("models.capSaveFailed")); return; }
     setShowCustom(false);
     setGlobalCap(value);
   };
