@@ -1,5 +1,7 @@
 /** CL-01 deterministic protocol conformance harness types (CL-00 contract). */
 
+export const SYNTHETIC_MARKER = "ocx-lab-synthetic-v1";
+
 export type EvidenceLayer = "protocol_conformance" | "live_route_compatibility" | "task_effectiveness";
 
 export type VerificationRole = "required" | "supplemental" | "negative_control";
@@ -70,6 +72,7 @@ export interface FailureRule {
 
 export interface CaseAuthority {
   schemaVersion: number;
+  sourceCommit: string;
   assertionDslVersion: string;
   evidenceSchemaVersion: string;
   failureRuleSets: Record<string, FailureRule[]>;

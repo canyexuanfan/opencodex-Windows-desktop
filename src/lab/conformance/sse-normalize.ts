@@ -2,7 +2,7 @@ import { sseFieldValue } from "../../lib/sse-decoder";
 import type { NormalizedEvent } from "./types";
 
 /** CL-00 §5 SSE normalization for assertion observations. */
-export function normalizeSseBytes(bytes: Uint8Array, surface: string): NormalizedEvent[] {
+export function normalizeSseBytes(bytes: Uint8Array, sourceProtocol: string): NormalizedEvent[] {
   let text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -27,7 +27,7 @@ export function normalizeSseBytes(bytes: Uint8Array, surface: string): Normalize
     }
     if (dataLines.length === 0) continue;
     const joined = dataLines.join("\n");
-    if (surface.includes("chat") && joined === "[DONE]") {
+    if (sourceProtocol === "openai-chat" && joined === "[DONE]") {
       events.push({ event: "[DONE]", data: "[DONE]", ordinal: ordinal++ });
       continue;
     }

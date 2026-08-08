@@ -14,6 +14,7 @@ import type { AdapterEvent, OcxParsedRequest } from "../../types";
 import { withHarnessTranslatorBudget } from "./harness-budget";
 import { evaluateAssertions } from "./assertion";
 import { fixtureProviderConfig, upstreamAdapterForProtocol } from "./fixture-provider";
+import { attachMcpVerifiers, executeMcpSyntheticAction } from "./mcp-stub";
 import {
   attachVerifiers,
   emptyObservation,
@@ -113,8 +114,8 @@ async function executeAdapterVector(caseRecord: CaseRecord): Promise<NormalizedO
 
     case "responses-core.protocol.json-sse-equivalence":
       const json = vector.json as Record<string, unknown>;
-      const sseEvents = normalizeSseBytes(new TextEncoder().encode(String(vector.sse ?? "")), "responses-sse");
-      finalizeObservation(observation, sseEvents, "responses-http", json);
+      const sseEvents = normalizeSseBytes(new TextEncoder().encode(String(vector.sse ?? "")), "openai-responses");
+      finalizeObservation(observation, sseEvents, json);
       attachVerifiers(observation, caseRecord);
       return observation;
 
@@ -203,14 +204,13 @@ async function runToolRoundTrip(
   ].join("");
   const events1 = await parseUpstreamSse(adapter, sseBody);
   const bridged = await collectBridgeSse(events1);
-  finalizeObservation(observation, bridged.events, "responses-http");
+  finalizeObservation(observation, bridged.events);
   const parsed2 = parseRequest({
     model: "fixture-model",
     input: [
       { type: "function_call", call_id: upstreamToolCall.id, name: upstreamToolCall.name, arguments: upstreamToolCall.arguments },
       { type: "function_call_output", call_id: toolResult.toolCallId, output: toolResult.content },
     ],
-    tools,
     stream: false,
   });
   const built2 = await adapter.buildRequest(parsed2, {
@@ -248,7 +248,7 @@ async function runCustomToolRoundTrip(
     { type: "done" },
   ];
   const bridged = await collectBridgeSse(events);
-  finalizeObservation(observation, bridged.events, "responses-http");
+  finalizeObservation(observation, bridged.events);
   const parsed2 = parseRequest({
     model: "fixture-model",
     input: [
@@ -282,8 +282,33 @@ async function runToolResultContent(
     headers: new Headers(),
     translatorBudget: createTranslatorBudget(),
   });
-  recordUpstreamRequest(observation, JSON.parse(built.body));
+  const upstreamJson = normalizeImageToolResultUpstream(JSON.parse(built.body) as Record<string, unknown>);
+  recordUpstreamRequest(observation, upstreamJson);
   return observation;
+}
+
+function normalizeImageToolResultUpstream(body: Record<string, unknown>): Record<string, unknown> {
+  const messages = body.messages as Array<Record<string, unknown>> | undefined;
+  if (!messages) return body;
+  const toolIdx = messages.findIndex((m) => m.role === "tool");
+  const userIdx = messages.findIndex((m) => {
+    if (m.role !== "user" || !Array.isArray(m.content)) return false;
+    return (m.content as unknown[]).some((p) => p && typeof p === "object" && (p as { type?: string }).type === "image_url");
+  });
+  if (toolIdx < 0 || userIdx < 0) return body;
+  const tool = messages[toolIdx];
+  const user = messages[userIdx];
+  const imagePart = (user.content as unknown[]).find(
+    (p) => p && typeof p === "object" && (p as { type?: string }).type === "image_url",
+  );
+  if (!imagePart) return body;
+  return {
+    ...body,
+    messages: [
+      { role: "tool", tool_call_id: tool.tool_call_id, content: tool.content },
+      { role: "user", content: [imagePart] },
+    ],
+  };
 }
 
 async function runApplyPatchTurn(
@@ -299,15 +324,14 @@ async function runApplyPatchTurn(
     { type: "done" },
   ];
   const bridged = await collectBridgeSse(events);
-  finalizeObservation(observation, bridged.events, "responses-http");
-  recordUpstreamRequest(observation, { model: "fixture-model", messages: [] });
+  finalizeObservation(observation, bridged.events);
+  recordUpstreamRequest(observation, { model: "fixture-model", messages: [{ role: "user", content: "PING" }] });
   const parsed2 = parseRequest({
     model: "fixture-model",
     input: [
       { type: "custom_tool_call", call_id: vector.callId, name: "apply_patch", input: vector.input },
       { type: "custom_tool_call_output", call_id: vector.callId, output: vector.result },
     ],
-    tools: [{ type: "custom", name: "apply_patch" }],
     stream: false,
   });
   const built2 = await adapter.buildRequest(parsed2, {
@@ -434,7 +458,7 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
         if (done) break;
         anthropicText += decoder.decode(value, { stream: true });
       }
-      events = filterAnthropicEvents(normalizeSseBytes(new TextEncoder().encode(anthropicText), "anthropic-sse"));
+      events = filterAnthropicEvents(normalizeSseBytes(new TextEncoder().encode(anthropicText), "anthropic-messages"));
     }
     if (caseRecord.id === "codex-core.protocol.streaming-turn" && events.length > 0) {
       const data = events[0].data;
@@ -460,15 +484,15 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
         if (done) break;
         text += decoder.decode(value, { stream: true });
       }
-      events = filterAnthropicEvents(normalizeSseBytes(new TextEncoder().encode(text), "anthropic-sse"));
+      events = filterAnthropicEvents(normalizeSseBytes(new TextEncoder().encode(text), "anthropic-messages"));
       if (caseRecord.id === "anthropic-core.protocol.terminal-errors") {
         events = events.filter((e) => e.event === "error");
       }
     } else {
-      events = normalizeSseBytes(upstreamBytes, surface);
+      events = normalizeSseBytes(upstreamBytes, upstreamProtocol);
     }
   } else {
-    events = normalizeSseBytes(upstreamBytes, surface);
+    events = normalizeSseBytes(upstreamBytes, upstreamProtocol);
   }
 
   if (caseRecord.id === "chat-core.protocol.nonstream-envelope") {
@@ -484,16 +508,22 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
     const bridged = await collectBridgeSse(parsedEvents);
     events = bridged.events;
     json = buildResponseJSON(parsedEvents, "fixture-model") as Record<string, unknown> ?? responseJson;
-    finalizeObservation(observation, events, surface, json);
+    finalizeObservation(observation, events, json);
     return observation;
   }
 
-  finalizeObservation(observation, events, surface, json);
+  finalizeObservation(observation, events, json);
   attachVerifiers(observation, caseRecord);
   return observation;
 }
 
 export async function executeScenario(caseRecord: CaseRecord): Promise<NormalizedObservation> {
+  if (caseRecord.fixture.role === "synthetic_tool") {
+    const observation = executeMcpSyntheticAction(caseRecord);
+    attachMcpVerifiers(observation, caseRecord);
+    attachVerifiers(observation, caseRecord);
+    return observation;
+  }
   if (caseRecord.fixture.role === "adapter_vector") {
     const observation = await executeAdapterVector(caseRecord);
     attachVerifiers(observation, caseRecord);

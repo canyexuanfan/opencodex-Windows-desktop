@@ -32,89 +32,13 @@ export function recordUpstreamRequest(
   json: unknown,
   status = 0,
 ): void {
-  const normalized = normalizeUpstreamObservationJson(json);
-  const body = JSON.stringify(normalized ?? null);
+  const body = JSON.stringify(json ?? null);
   observation.upstream.requests.push({
     status,
     headers: {},
-    json: normalized,
+    json,
     rawBytes: new TextEncoder().encode(body).byteLength,
   });
-}
-
-/** Project Chat-wire tool rows into Responses-shaped input[] for CL-00 assertion selectors. */
-function normalizeUpstreamObservationJson(json: unknown): unknown {
-  if (!json || typeof json !== "object" || Array.isArray(json)) return json;
-  const obj = json as Record<string, unknown>;
-  if (!Array.isArray(obj.messages) || Array.isArray(obj.input)) return json;
-  const input: unknown[] = [];
-  for (const raw of obj.messages as unknown[]) {
-    if (!raw || typeof raw !== "object") continue;
-    const msg = raw as Record<string, unknown>;
-    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
-      const content = msg.content;
-      input.push({
-        type: msg.content && String(msg.content).includes("patch") ? "custom_tool_call_output" : "function_call_output",
-        call_id: msg.tool_call_id,
-        output: content,
-      });
-      continue;
-    }
-    if (msg.role === "user" && Array.isArray(msg.content)) {
-      const imagePart = (msg.content as unknown[]).find((p) => p && typeof p === "object" && (p as { type?: string }).type === "image_url");
-      if (imagePart) {
-        input.push({
-          type: "function_call_output",
-          call_id: "call_fixture",
-          output: (msg.content as unknown[]).find((p) => p && typeof p === "object" && (p as { type?: string }).type === "text"),
-        });
-      }
-    }
-    if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
-      for (const call of msg.tool_calls as unknown[]) {
-        if (!call || typeof call !== "object") continue;
-        const tc = call as Record<string, unknown>;
-        const fn = tc.function as Record<string, unknown> | undefined;
-        input.push({
-          type: "function_call",
-          call_id: tc.id,
-          name: fn?.name,
-          arguments: fn?.arguments,
-        });
-      }
-    }
-    if (msg.role === "assistant" && msg.content === "" && Array.isArray(msg.tool_calls)) {
-      continue;
-    }
-  }
-  if (input.length === 0) return json;
-  const out = { ...obj, input };
-  return reshapeToolResultMessages(out);
-}
-
-function reshapeToolResultMessages(json: Record<string, unknown>): Record<string, unknown> {
-  const messages = json.messages;
-  if (!Array.isArray(messages)) return json;
-  const toolIdx = messages.findIndex((m) => m && typeof m === "object" && (m as { role?: string }).role === "tool");
-  const userIdx = messages.findIndex((m) => {
-    if (!m || typeof m !== "object" || (m as { role?: string }).role !== "user") return false;
-    const content = (m as { content?: unknown }).content;
-    return Array.isArray(content) && content.some((p) => p && typeof p === "object" && (p as { type?: string }).type === "image_url");
-  });
-  if (toolIdx < 0 || userIdx < 0) return json;
-  const tool = messages[toolIdx] as Record<string, unknown>;
-  const user = messages[userIdx] as { content?: unknown[] };
-  const imagePart = user.content?.find((p) => p && typeof p === "object" && (p as { type?: string }).type === "image_url") as
-    | { image_url?: { url?: string } }
-    | undefined;
-  if (!imagePart?.image_url?.url) return json;
-  return {
-    ...json,
-    messages: [
-      { role: "tool", tool_call_id: tool.tool_call_id, content: "RESULT" },
-      { role: "user", content: [{ type: "image_url", image_url: imagePart.image_url }] },
-    ],
-  };
 }
 
 export function setClientResponse(
@@ -191,12 +115,11 @@ export function filterAnthropicEvents(events: ReturnType<typeof normalizeSseByte
   return events.filter((e) => e.event !== "ping");
 }
 
-function deriveTerminal(events: NormalizedEvent[], surface: string): string | null {
+function deriveTerminal(events: NormalizedEvent[]): string | null {
   if (events.some((e) => e.event === "error")) return "failed";
   if (events.some((e) => e.event === "response.failed")) return "failed";
   if (events.some((e) => e.event === "response.completed")) return "completed";
   if (events.some((e) => e.event === "message_stop")) return "message_stop";
-  if (surface.includes("chat") && events.some((e) => e.event === "[DONE]")) return "completed";
   if (events.some((e) => e.event === "response.incomplete")) return "incomplete";
   return null;
 }
@@ -235,11 +158,10 @@ export function deriveNormalizedText(events: NormalizedEvent[], json: unknown): 
 export function finalizeObservation(
   observation: NormalizedObservation,
   events: NormalizedEvent[],
-  surface: string,
   json: unknown = null,
 ): void {
   const toolCalls = projectToolCallsFromEvents(events);
-  const terminal = deriveTerminal(events, surface);
+  const terminal = deriveTerminal(events);
   setClientResponse(observation, {
     events,
     toolCalls: toolCalls.length > 0 ? toolCalls : projectToolCallsFromOutput(
@@ -285,6 +207,11 @@ function buildVerifiers(observation: NormalizedObservation, caseRecord: CaseReco
 
   if (caseRecord.id === "responses-core.protocol.json-sse-equivalence") {
     verifiers.json_sse_equivalence = evaluateJsonSseEquivalence(caseRecord);
+  }
+
+  if (caseRecord.id === "vision-core.protocol.modality-gate") {
+    verifiers.modality_path = evaluateModalityPath(caseRecord);
+    verifiers.silent_image_drop = evaluateSilentImageDrop(caseRecord);
   }
 
   return verifiers;
@@ -348,6 +275,27 @@ function evaluateToolSearchError(caseRecord: CaseRecord): string | null {
   return String((failed[0] as { error?: string }).error ?? "");
 }
 
+function evaluateModalityPath(caseRecord: CaseRecord): string {
+  const vector = JSON.parse(caseRecord.fixture.bytesUtf8) as Record<string, unknown>;
+  const requestHasImage = Boolean(vector.requestHasImage);
+  const modalities = vector.modelInputModalities as string[] | undefined;
+  const sidecar = vector.visionSidecar as { enabled?: boolean } | undefined;
+  if (requestHasImage && Array.isArray(modalities) && modalities.includes("image")) return "native";
+  if (sidecar?.enabled) return "sidecar";
+  return "unsupported";
+}
+
+function evaluateSilentImageDrop(caseRecord: CaseRecord): boolean {
+  const vector = JSON.parse(caseRecord.fixture.bytesUtf8) as Record<string, unknown>;
+  const requestHasImage = Boolean(vector.requestHasImage);
+  const modalities = vector.modelInputModalities as string[] | undefined;
+  const sidecar = vector.visionSidecar as { enabled?: boolean } | undefined;
+  if (!requestHasImage) return false;
+  if (Array.isArray(modalities) && modalities.includes("image")) return false;
+  if (sidecar?.enabled) return false;
+  return true;
+}
+
 function evaluateJsonSseEquivalence(caseRecord: CaseRecord): string {
   const vector = JSON.parse(caseRecord.fixture.bytesUtf8) as { json?: Record<string, unknown>; sse?: string };
   const json = vector.json;
@@ -357,7 +305,7 @@ function evaluateJsonSseEquivalence(caseRecord: CaseRecord): string {
     text: extractOutputText(json),
     terminal: String(json.status ?? ""),
   };
-  const events = normalizeSseBytes(new TextEncoder().encode(sse), "responses-sse");
+  const events = normalizeSseBytes(new TextEncoder().encode(sse), "openai-responses");
   let sseText = "";
   let sseTerminal = "";
   for (const ev of events) {

@@ -182,6 +182,13 @@ function developerSystemText(message: OcxMessage): string | undefined {
  * being flattened to the "[image]" marker the model can't actually see. Data URLs and remote https
  * URLs are both valid in image_url.url, unlike Gemini inline_data which needs base64.
  */
+function toolResultTextForWire(content: string | OcxContentPart[]): string {
+  if (typeof content === "string") return content;
+  const text = content.filter((p) => p.type === "text").map((p) => (p as OcxTextContent).text).join("");
+  if (text) return text;
+  return contentPartsToText(content);
+}
+
 function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[] {
   if (typeof content === "string") return [];
   const parts: unknown[] = [];
@@ -386,7 +393,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           out.push({
             role: "tool",
             tool_call_id: toolCallId,
-            content: contentPartsToText(msg.content),
+            content: toolResultTextForWire(msg.content),
           });
           pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
           pendingToolCalls.splice(matchIdx, 1);
@@ -423,7 +430,7 @@ function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderCon
           out.push({
             role: "tool",
             tool_call_id: toolCallId,
-            content: contentPartsToText(msg.content),
+            content: toolResultTextForWire(msg.content),
           });
           pendingToolResultImageParts.push(...toolResultImageChatParts(msg.content));
           flushToolResultImages();

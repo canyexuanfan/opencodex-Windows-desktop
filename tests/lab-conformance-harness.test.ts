@@ -1,24 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { evaluateAssertion } from "../src/lab/conformance/assertion";
-import { fixtureDigest } from "../src/lab/conformance/digest";
+import { fixtureDigest, scenarioManifestDigest } from "../src/lab/conformance/digest";
 import { jcsEqual } from "../src/lab/conformance/jcs";
 import { resolveJsonPointer } from "../src/lab/conformance/json-pointer";
+import { runScenario } from "../src/lab/conformance/executor";
 import {
   discoverScenarios,
   expandScenario,
   loadCaseAuthority,
+  validateExpandedFixtureRef,
   validateFixtureDigests,
   validateScenarioManifestDigest,
 } from "../src/lab/conformance/manifest";
+import { executeMcpSyntheticAction } from "../src/lab/conformance/mcp-stub";
 import { buildNegativeControls, NEGATIVE_CONTROL_FIXTURES } from "../src/lab/conformance/negative-controls";
 import { emptyObservation } from "../src/lab/conformance/observation";
-import { runScenario } from "../src/lab/conformance/executor";
 import {
   listScenarioIds,
   runConformanceSuite,
   runNegativeControls,
 } from "../src/lab/conformance/runner";
-import { CL01_SUITES } from "../src/lab/conformance/types";
+import { CL01_SUITES, SYNTHETIC_MARKER } from "../src/lab/conformance/types";
+import { normalizeSseBytes } from "../src/lab/conformance/sse-normalize";
 
 describe("CL-01 conformance harness infrastructure", () => {
   test("loads case authority and validates fixture digests", () => {
@@ -68,6 +71,63 @@ describe("CL-01 conformance harness infrastructure", () => {
     expect(result.reason).toBe("selector_missing");
   });
 
+  test("expanded scenario manifests include synthetic provenance", () => {
+    const authority = loadCaseAuthority();
+    const scenario = discoverScenarios(authority)[0];
+    const expanded = expandScenario(scenario, authority);
+    const fixtures = expanded.fixtures as Array<Record<string, unknown>>;
+    expect(fixtures[0].syntheticMarker).toBe(SYNTHETIC_MARKER);
+    expect((fixtures[0].provenance as { kind: string }).kind).toBe("lab_authored");
+    expect((fixtures[0].provenance as { authority: string }).authority).toBe("022_protocol_v1_cases.json");
+    expect((fixtures[0].provenance as { sourceCommit: string }).sourceCommit).toBe(authority.sourceCommit);
+    const digest = scenarioManifestDigest(expanded);
+    expect(digest).toHaveLength(64);
+  });
+
+  test("rejects forged synthetic provenance metadata", () => {
+    const authority = loadCaseAuthority();
+    const scenario = discoverScenarios(authority)[0];
+    const expanded = expandScenario(scenario, authority);
+    const fixtures = expanded.fixtures as Array<Record<string, unknown>>;
+    const forged = { ...fixtures[0], syntheticMarker: "forged" };
+    const errors = validateExpandedFixtureRef(forged, authority, scenario.fixture.bytesUtf8);
+    expect(errors.some((e) => e.includes("syntheticMarker"))).toBe(true);
+    const badCommit = {
+      ...fixtures[0],
+      provenance: { ...(fixtures[0].provenance as object), sourceCommit: "deadbeef" },
+    };
+    expect(validateExpandedFixtureRef(badCommit, authority, scenario.fixture.bytesUtf8).length).toBeGreaterThan(0);
+  });
+});
+
+describe("CL-01 SSE normalization", () => {
+  test("openai-chat recognizes [DONE] sentinel only for chat protocol", () => {
+    const bytes = new TextEncoder().encode("data: {\"choices\":[]}\n\ndata: [DONE]\n\n");
+    const chatEvents = normalizeSseBytes(bytes, "openai-chat");
+    expect(chatEvents.some((e) => e.event === "[DONE]")).toBe(true);
+    const responsesEvents = normalizeSseBytes(bytes, "openai-responses");
+    expect(responsesEvents.some((e) => e.event === "[DONE]")).toBe(false);
+    const anthropicEvents = normalizeSseBytes(bytes, "anthropic-messages");
+    expect(anthropicEvents.some((e) => e.event === "[DONE]")).toBe(false);
+  });
+});
+
+describe("CL-01 MCP deterministic actions", () => {
+  test("all four MCP protocol scenarios pass closed action semantics", async () => {
+    const authority = loadCaseAuthority();
+    const mcpScenarios = authority.cases.filter((c) => c.suite === "mcp-core");
+    expect(mcpScenarios.length).toBe(4);
+    for (const scenario of mcpScenarios) {
+      const observation = executeMcpSyntheticAction(scenario);
+      for (const assertion of scenario.assertions) {
+        const result = evaluateAssertion(assertion, observation);
+        expect(result.passed).toBe(true);
+      }
+    }
+  });
+});
+
+describe("CL-01 expanded scenario manifests are stable", () => {
   test("expanded scenario manifests are stable", () => {
     const authority = loadCaseAuthority();
     const scenario = discoverScenarios(authority)[0];

@@ -2,15 +2,17 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixtureDigest, scenarioManifestDigest } from "./digest";
+import { MCP_ACTION_TOKENS } from "./mcp-stub";
 import type {
   CaseAuthority,
   CaseRecord,
   FailureClassification,
   FailureRule,
 } from "./types";
-import { CL01_SUITES } from "./types";
+import { CL01_SUITES, SYNTHETIC_MARKER } from "./types";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const AUTHORITY_FILE = "022_protocol_v1_cases.json";
 
 export function loadCaseAuthority(): CaseAuthority {
   const path = join(MODULE_DIR, "fixtures", "protocol-v1-cases.json");
@@ -29,8 +31,8 @@ export function discoverScenarios(
 export function expandScenario(caseRecord: CaseRecord, authority: CaseAuthority): Record<string, unknown> {
   const defaults = authority.manifestDefaults;
   const fixtures = caseRecord.initiatingRequest
-    ? [fixtureRef(caseRecord.initiatingRequest), fixtureRef(caseRecord.fixture)]
-    : [fixtureRef(caseRecord.fixture)];
+    ? [fixtureRef(caseRecord.initiatingRequest, authority), fixtureRef(caseRecord.fixture, authority)]
+    : [fixtureRef(caseRecord.fixture, authority)];
   return {
     schemaVersion: authority.schemaVersion,
     id: caseRecord.id,
@@ -54,7 +56,7 @@ export function expandScenario(caseRecord: CaseRecord, authority: CaseAuthority)
   };
 }
 
-function fixtureRef(fixture: CaseRecord["fixture"]): Record<string, unknown> {
+function fixtureRef(fixture: CaseRecord["fixture"], authority: CaseAuthority): Record<string, unknown> {
   const bytes = new TextEncoder().encode(fixture.bytesUtf8);
   return {
     id: fixture.id,
@@ -62,6 +64,12 @@ function fixtureRef(fixture: CaseRecord["fixture"]): Record<string, unknown> {
     mediaType: fixture.mediaType,
     digest: fixture.digest,
     byteLength: bytes.byteLength,
+    syntheticMarker: SYNTHETIC_MARKER,
+    provenance: {
+      kind: "lab_authored",
+      authority: AUTHORITY_FILE,
+      sourceCommit: authority.sourceCommit,
+    },
   };
 }
 
@@ -98,18 +106,72 @@ export function validateFixtureDigests(caseRecord: CaseRecord): string[] {
   return errors;
 }
 
+export function validateExpandedFixtureRef(
+  ref: Record<string, unknown>,
+  authority: CaseAuthority,
+  fixtureBytes: string,
+): string[] {
+  const errors: string[] = [];
+  const bytes = new TextEncoder().encode(fixtureBytes);
+  if (ref.syntheticMarker !== SYNTHETIC_MARKER) {
+    errors.push(`invalid syntheticMarker: ${String(ref.syntheticMarker)}`);
+  }
+  const provenance = ref.provenance as Record<string, unknown> | undefined;
+  if (!provenance || provenance.kind !== "lab_authored") {
+    errors.push("invalid provenance kind");
+  } else if (provenance.authority !== AUTHORITY_FILE) {
+    errors.push(`invalid provenance authority: ${String(provenance.authority)}`);
+  } else if (provenance.sourceCommit !== authority.sourceCommit) {
+    errors.push(`invalid provenance sourceCommit: ${String(provenance.sourceCommit)}`);
+  }
+  if (ref.digest !== fixtureDigest(bytes)) {
+    errors.push("fixture digest mismatch in expanded ref");
+  }
+  if (ref.byteLength !== bytes.byteLength) {
+    errors.push("fixture byteLength mismatch in expanded ref");
+  }
+  return errors;
+}
+
 export function validateScenarioManifestDigest(caseRecord: CaseRecord, authority: CaseAuthority): boolean {
   const expanded = expandScenario(caseRecord, authority);
   const digest = scenarioManifestDigest(expanded);
-  // Registration-time self-check: digest is computable and stable for the expanded manifest.
   return digest.length === 64;
+}
+
+function validateMcpHarnessFeatures(caseRecord: CaseRecord): string[] {
+  if (caseRecord.suite !== "mcp-core") return [];
+  const tokens = caseRecord.requirements.requiredHarnessFeatures.filter(
+    (f) => MCP_ACTION_TOKENS.includes(f as typeof MCP_ACTION_TOKENS[number]),
+  );
+  if (tokens.length !== 1) {
+    return [`${caseRecord.id}: invalid_manifest MCP action token count ${tokens.length}`];
+  }
+  if (caseRecord.fixture.role !== "synthetic_tool") {
+    return [`${caseRecord.id}: MCP cases require synthetic_tool fixture role`];
+  }
+  return [];
 }
 
 function validateAuthority(authority: CaseAuthority): void {
   if (authority.schemaVersion !== 1) throw new Error("unsupported schemaVersion");
+  if (!authority.sourceCommit || typeof authority.sourceCommit !== "string") {
+    throw new Error("missing sourceCommit");
+  }
   if (!Array.isArray(authority.cases) || authority.cases.length === 0) throw new Error("no cases");
   for (const caseRecord of authority.cases) {
-    const errors = validateFixtureDigests(caseRecord);
+    const errors = [
+      ...validateFixtureDigests(caseRecord),
+      ...validateMcpHarnessFeatures(caseRecord),
+    ];
+    const expanded = expandScenario(caseRecord, authority);
+    const fixtures = expanded.fixtures as Array<Record<string, unknown>>;
+    for (let i = 0; i < fixtures.length; i++) {
+      const fixtureSource = i === 0 && caseRecord.initiatingRequest
+        ? caseRecord.initiatingRequest.bytesUtf8
+        : caseRecord.fixture.bytesUtf8;
+      errors.push(...validateExpandedFixtureRef(fixtures[i], authority, fixtureSource));
+    }
     if (errors.length > 0) throw new Error(errors.join("; "));
     if (caseRecord.fixture.role === "upstream_response" && !caseRecord.initiatingRequest) {
       throw new Error(`${caseRecord.id}: upstream_response without initiatingRequest`);
