@@ -26,6 +26,7 @@ export function ProvidersPageModals({
   onAccountLogin,
   onAccountCancelLogin,
   onAccountLogout,
+  onAccountManage,
   onOpenAdd,
   onCloseCodexLogin,
   onCodexAdded,
@@ -52,9 +53,10 @@ export function ProvidersPageModals({
   oauthTosPending: { provider: string; addAccount: boolean } | null;
   onCloseAdd: () => void;
   onAdded: (name: string) => void;
-  onAccountLogin: (provider: string) => void;
+  onAccountLogin: (provider: string, addAccount?: boolean) => void;
   onAccountCancelLogin: (provider: string) => void;
   onAccountLogout: (provider: string) => void;
+  onAccountManage?: (provider: string) => void;
   onOpenAdd: () => void;
   onCloseCodexLogin: () => void;
   onCodexAdded: () => void;
@@ -82,6 +84,7 @@ export function ProvidersPageModals({
           onAccountLogin={onAccountLogin}
           onAccountCancelLogin={onAccountCancelLogin}
           onAccountLogout={onAccountLogout}
+          onAccountManage={onAccountManage}
           onOpen={onOpenAdd}
         />
       )}

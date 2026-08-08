@@ -356,6 +356,7 @@ export const de: Record<TKey, string> = {
   "prov.loginCancelled": "{provider}-Login abgebrochen",
   "prov.loginTimeout": "{provider}-Login abgelaufen — Browser geschlossen oder nicht beendet. Erneut versuchen.",
   "prov.loginOk": "Bei {provider} angemeldet. Führe {cmd} aus (oder es gilt live), um seine Modelle aufzulisten.",
+  "prov.loginSameAccount": "Immer noch dasselbe {provider}-Konto — wechsle im Browser das Konto und versuche „Konto hinzufügen“ erneut.",
   "oauthTos.highTitle": "{provider}: Risiko bei Abo-OAuth",
   "oauthTos.elevatedTitle": "{provider}: inoffizielle OAuth-Brücke",
   "oauthTos.anthropicBody": "Die direkte Wiederverwendung von Claude-Abo-OAuth-Tokens über einen Drittanbieter-Proxy wie OpenCodex ist keine von Anthropic unterstützte Integration und kann zu Zugriffsbeschränkungen führen. Unterstützte Agent-SDK-Integrationen, die Claude-Abos verwenden, sind davon getrennt.",

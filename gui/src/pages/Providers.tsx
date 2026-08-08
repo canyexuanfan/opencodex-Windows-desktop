@@ -4,7 +4,7 @@ import ProviderDetails from "../components/provider-workspace/ProviderDetails";
 import type { WorkspaceProvider } from "../provider-workspace/catalog";
 import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 import { oauthTosRisk } from "../oauth-tos-risk";
-import { Notice } from "../ui";
+import { ToastNotice } from "../ui";
 import { IconPlus } from "../icons";
 import { useT } from "../i18n/shared";
 import { formatProviderDisplayName } from "../provider-icons";
@@ -29,6 +29,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [adding, setAdding] = useState(false);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
+  /** Bumped on every notify so repeated identical success toasts restart the dismiss timer. */
+  const [statusRevision, setStatusRevision] = useState(0);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [oauthStatus, setOauthStatus] = useState<Record<string, import("./providers-shared").OAuthStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -40,6 +42,11 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [codexLoginOpen, setCodexLoginOpen] = useState(false);
   const [modelsRefreshToken, setModelsRefreshToken] = useState(0);
   const [oauthTosPending, setOauthTosPending] = useState<{ provider: string; addAccount: boolean } | null>(null);
+  /** Bumped after OAuth login so ProviderDetails switches to the Accounts tab. */
+  const [accountsFocus, setAccountsFocus] = useState<{ token: number; provider: string | null }>({
+    token: 0,
+    provider: null,
+  });
   const aliveRef = useRef(true);
   // Which apiBase this instance has already bootstrapped. StrictMode double-invokes the mount
   // effect and its deferred load is deliberately uncancellable, so the guard lives here.
@@ -49,9 +56,29 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const notify = useCallback((msg: string, ok: boolean = true) => {
     setStatus(msg);
     setStatusOk(ok);
+    setStatusRevision(revision => revision + 1);
+  }, []);
+
+  const clearStatus = useCallback(() => {
+    setStatus("");
+    setStatusOk(false);
   }, []);
 
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
+
+  // Success toasts are transient; errors stay until the next notify or dismiss.
+  useEffect(() => {
+    if (!status || !statusOk) return;
+    const timer = window.setTimeout(clearStatus, 4500);
+    return () => window.clearTimeout(timer);
+  }, [status, statusOk, statusRevision, clearStatus]);
+
+  const revealProviderAccounts = useCallback((provider: string) => {
+    setAdding(false);
+    setAddIntent(null);
+    setWorkspaceSelected(provider);
+    setAccountsFocus(previous => ({ token: previous.token + 1, provider }));
+  }, []);
   // Providers hash sync is owned by App (passive replaceHash / deliberate navigateHash).
 
   // Warm the Add Provider catalog cache while the page is open so opening the
@@ -139,7 +166,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     fetchConfig, fetchOauth, fetchProviderQuotas, codexActiveNeedsReauth,
   });
   const {
-    accountSets, accountLoadStates, switchingAccount, keyPools, fetchAccountSets,
+    accountSets, setAccountSets, accountLoadStates, switchingAccount, keyPools, fetchAccountSets,
     switchAccount, switchApiKey, removeApiKey, addApiKeyValue, editCredentialAlias,
     removeAccount, activeAccountNeedsReauth,
   } = pools;
@@ -173,9 +200,10 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const bumpModelsRefresh = () => setModelsRefreshToken(n => n + 1);
 
   const { cancelLoginOAuth, loginOAuth, logoutOAuth } = useProvidersOAuth({
-    apiBase, t, aliveRef, accountSets,
+    apiBase, t, aliveRef, accountSets, setAccountSets,
     setBusy, setStatus, setLoginInfo, setOauthStatus, notify,
     fetchConfig, fetchOauth, fetchAccountSets, fetchProviderQuotas, bumpModelsRefresh,
+    onLoginSettled: revealProviderAccounts,
   });
 
   const { removeProvider, confirmRemoveProvider, setProviderDisabled, setDefaultProvider, updateProvider } = useProvidersCrud({
@@ -202,7 +230,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           <h2>{t("nav.providers")}</h2>
         </div>
         {status
-          ? <Notice tone="err">{status}</Notice>
+          ? <ToastNotice tone="err" onDismiss={clearStatus} dismissLabel={t("common.close")}>{status}</ToastNotice>
           : (
             <div className="providers-workspace providers-workspace--boot" aria-busy="true">
               <div className="providers-workspace-rail providers-workspace-rail--boot" aria-hidden="true" />
@@ -219,7 +247,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const accountLoginStatus = buildAccountLoginStatus(config, oauthStatusWithCodex);
   const isForwardProvider = (name: string) => config.providers[name]?.authMode === "forward";
 
-  const onAccountLogin = async (provider: string) => {
+  const onAccountLogin = async (provider: string, addAccount = false) => {
     if (provider === "openai") {
       if (busy === "openai") return;
       const configured = config.providers.openai;
@@ -253,8 +281,12 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     }
     // API-key rows have no OAuth login path (catalog hides the button).
     if (config.providers[provider]?.authMode === "oauth" || oauthProviders.includes(provider)) {
-      requestLoginOAuth(provider);
+      requestLoginOAuth(provider, addAccount);
     }
+  };
+
+  const onAccountManage = (provider: string) => {
+    revealProviderAccounts(provider);
   };
 
   return (
@@ -265,7 +297,9 @@ export default function Providers({ apiBase }: { apiBase: string }) {
           <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}><IconPlus />{t("prov.add")}</button>
         </div>
       </div>
-      {status && <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>}
+      {status && (
+        <ToastNotice tone={statusOk ? "ok" : "err"} onDismiss={clearStatus} dismissLabel={t("common.close")}>{status}</ToastNotice>
+      )}
       <ProviderWorkspaceShell
         onRemoveProvider={removeProvider}
         providers={config.providers as Record<string, WorkspaceProvider>}
@@ -311,6 +345,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             accounts={accountSets[item.name]?.accounts ?? []}
             keys={keyPools[item.name] ?? []}
             accountLoadState={accountLoadStates[item.name] ?? (item.authMode === "oauth" ? "idle" : "ready")}
+            accountsFocusToken={accountsFocus.token}
+            accountsFocusProvider={accountsFocus.provider}
             switchingAccountId={switchingAccount?.provider === item.name ? switchingAccount.accountId : null}
             busyProvider={busy}
             loginHint={loginInfo}
@@ -370,6 +406,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
         onAccountLogin={onAccountLogin}
         onAccountCancelLogin={(provider) => { void cancelLoginOAuth(provider); }}
         onAccountLogout={(provider) => { void logoutOAuth(provider); }}
+        onAccountManage={onAccountManage}
         onOpenAdd={fetchOauth}
         onCloseCodexLogin={() => setCodexLoginOpen(false)}
         onCodexAdded={() => {

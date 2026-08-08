@@ -583,8 +583,8 @@ export interface OcxConfig {
   defaultProvider: string;
   /** OpenAI provider-contract migration marker (v2 = single `openai` provider with account mode). */
   openaiProviderTierVersion?: 1 | 2;
-  /** One-time migration marker for Antigravity's static catalog default. */
-  googleAntigravityStaticCatalogVersion?: 1;
+  /** One-time migration marker for Antigravity's static-catalog defaults. */
+  googleAntigravityStaticCatalogVersion?: 1 | 2;
   /** Claude Code inbound + launcher settings. */
   claudeCode?: OcxClaudeCodeConfig;
   /**
@@ -700,6 +700,12 @@ export interface OcxConfig {
   disabledModels?: string[];
   /** 사용자가 대시보드에서 직접 추가한 커스텀 모델 목록. */
   customModels?: OcxCustomModel[];
+  /**
+   * Internal, versioned evidence for reconciling custom-model deletions with
+   * pre-marker Codex catalog rows. Consumers must parse this defensively so a
+   * future state written by a newer binary survives older whole-config saves.
+   */
+  customModelCatalogMigration?: unknown;
   /**
    * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
    * commit messages, skill orchestration) to a user-chosen model. Default intercepted
@@ -839,6 +845,11 @@ export interface OcxConfig {
   accountPoolStickyLimit?: number;
   /** Consecutive non-2xx upstream responses before switching future new threads. Default 3. 0 = disabled. */
   upstreamFailoverThreshold?: number;
+  /**
+   * Opt-in provider-origin circuit threshold for proven pre-connection reachability failures.
+   * Default 0 (disabled); range 0..20. The circuit never counts timeouts or HTTP responses.
+   */
+  upstreamHostCircuitThreshold?: number;
   /**
    * Opt-in Anthropic OAuth account pool (#294). Default OFF.
    * Failover on 429 + sticky affinity; new sessions may pick lowest known 5h usage.

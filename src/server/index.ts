@@ -186,6 +186,7 @@ import {
   createLocalAttestationProof,
   createLocalAttestationSecret,
 } from "../lib/local-management-attestation";
+import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
@@ -201,6 +202,22 @@ type LiveSidebandWebSocketFactory = (
 function releaseLiveSidebandAdmission(ws: ServerWebSocket<WsData>): void {
   ws.data.liveTurnAdmissionLease?.release();
   ws.data.liveTurnAdmissionLease = undefined;
+}
+
+/**
+ * Send one live-sideband frame to the upstream socket.
+ *
+ * Bun's `WebSocket.send` accepts `string | Blob | BufferSource`, but the DOM-lib
+ * `Buffer` can be backed by a `SharedArrayBuffer`, which `BufferSource` rejects.
+ * `Uint8Array.from` copies into a fresh `ArrayBuffer`-backed view, so a frame
+ * arriving from `node:buffer` still round-trips byte-for-byte.
+ */
+function sendUpstreamFrame(upstream: WebSocket, frame: string | Buffer): void {
+  if (typeof frame === "string") {
+    upstream.send(frame);
+    return;
+  }
+  upstream.send(Uint8Array.from(frame));
 }
 
 function finalizeLiveSideband(ws: ServerWebSocket<WsData>, upstream?: WebSocket): void {
@@ -235,7 +252,10 @@ function armLiveSidebandCloseFallback(ws: ServerWebSocket<WsData>, upstream: Web
     // close event. That is still an observed CLOSED transport and is safe to
     // finalize. CONNECTING/CLOSING peers keep the lease so profile switching
     // fails at its own bounded drain deadline instead of racing live traffic.
-    if (upstream.readyState === WebSocket.CLOSED) finalizeLiveSideband(ws, upstream);
+    // The earlier CLOSED check narrowed `readyState` to 0|1|2 in the type
+    // system, but the socket can still transition to CLOSED (3) before this
+    // fallback fires; the cast keeps the runtime-identical check.
+    if ((upstream.readyState as number) === 3) finalizeLiveSideband(ws, upstream);
   }, LIVE_SIDEBAND_CLOSE_FALLBACK_MS);
 }
 
@@ -245,7 +265,9 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   ws.data.livePending = undefined;
   ws.data.cancel = undefined;
   const upstream = ws.data.liveUpstream;
-  if (!upstream || upstream.readyState === WebSocket.CLOSED) {
+  // Bun's `WebSocket` type narrows `readyState` to 0|1|2 even though the DOM
+  // constant CLOSED is 3; the numeric literal is the runtime-identical check.
+  if (!upstream || upstream.readyState === 3) {
     finalizeLiveSideband(ws, upstream);
   } else {
     // The sideband holds a native-main admission lease. Do not release it just
@@ -298,7 +320,7 @@ function attachLiveSidebandUpstream(
     ws.data.livePending = undefined;
     for (const frame of pending) {
       try {
-        upstream.send(frame);
+        sendUpstreamFrame(upstream, frame);
       } catch {
         closeLiveSideband(ws, 1011, "upstream send failed");
         return;
@@ -702,7 +724,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (url.pathname === "/healthz" && req.method === "GET") {
         // service/pid/port let CLI liveness reject foreign 200s and verify pid identity.
         const healthPort = server.port ?? listenPort;
-        const response = jsonResponse({ status: "ok", service: "opencodex", version: VERSION, uptime: process.uptime(), pid: process.pid, port: healthPort }, 200, req, policy);
+        const response = jsonResponse({
+          status: "ok",
+          service: "opencodex",
+          version: VERSION,
+          uptime: process.uptime(),
+          pid: process.pid,
+          port: healthPort,
+          restartCapability: SYSTEM_RESTART_CAPABILITY_VERSION,
+        }, 200, req, policy);
         const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
         if (challenge) {
           const proof = createLocalAttestationProof(localAttestationSecret, challenge, process.pid, healthPort);
@@ -748,12 +778,17 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
 
       if (url.pathname.startsWith("/api/")) {
-        const apiAuthError = requireManagementAuth(req, managementAuth, config);
+        const localManagementAuth = {
+          attestationSecret: localAttestationSecret,
+          pid: process.pid,
+          port: boundPort ?? requestServer.port ?? listenPort,
+        };
+        const apiAuthError = requireManagementAuth(req, managementAuth, config, localManagementAuth);
         if (apiAuthError) return withManagementCors(apiAuthError, req, config);
         // Which credential passed the gate, resolved from the same session table the
         // gate used. Consent-bearing routes need this: request headers are forgeable
         // by anything holding the admin token, the credential is not.
-        const principal = managementPrincipal(req, managementAuth, config) ?? undefined;
+        const principal = managementPrincipal(req, managementAuth, config, localManagementAuth) ?? undefined;
         const mgmtResponse = await handleManagementAPI(req, url, config, deps.managementApi, principal);
         if (mgmtResponse) return withManagementCors(mgmtResponse, req, config);
         return withManagementCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
@@ -1298,7 +1333,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             return;
           }
           try {
-            upstream.send(raw);
+            sendUpstreamFrame(upstream, raw);
           } catch {
             closeLiveSideband(ws, 1011, "upstream send failed");
           }

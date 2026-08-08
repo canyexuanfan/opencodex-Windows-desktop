@@ -9,9 +9,10 @@
  * Bodies are unchanged from their previous home; only `export` was added.
  */
 import type { CatalogModel } from "../../codex/catalog";
-import { catalogModelSlug, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { catalogModelSlug, nativeModelRows, nativeReasoningEfforts, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import type { ExportModel } from "../../clients/config-export";
 import { providerContextCap } from "../../providers/context-cap";
+import { isVisionReasoningEffort } from "../../reasoning-effort";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import type { OcxConfig } from "../../types";
 import { fetchAllModels } from "./shared";
@@ -47,6 +48,8 @@ export async function listManagementModelRows(config: OcxConfig): Promise<Manage
     namespaced: row.slug,
     disabled: row.disabled,
     native: true,
+    // The Codex catalog may advertise `ultra`, but the image describer accepts only low..max.
+    reasoningEfforts: nativeReasoningEfforts(row.slug).filter(isVisionReasoningEffort),
     ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
   }));
   const customModels: ManagementModelRow[] = (config.customModels ?? []).map(cm => {

@@ -28,6 +28,11 @@ import {
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
 import { isCodexAccountPriorityKey } from "./codex/account-priority";
+import { UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD } from "./codex/upstream-host-health";
+import {
+  adoptCustomModelCatalogMigration,
+  projectCustomModelCatalogMigration,
+} from "./codex/custom-model-catalog-migration";
 import { parseAccountPriority } from "./codex/pool-rotation";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import { routingProfileIssues } from "./routing/profile";
@@ -1023,6 +1028,12 @@ const clientIntegrationsSchema = z.object({
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
+  upstreamHostCircuitThreshold: z.number().int()
+    .min(0)
+    .max(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)
+    .optional()
+    .catch(undefined),
   appOwnedMemoryBudgetMb: z.number().int()
     .min(MIN_APP_OWNED_MEMORY_BUDGET_MB)
     .max(MAX_APP_OWNED_MEMORY_BUDGET_MB)
@@ -1046,9 +1057,8 @@ const configSchema = z.object({
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-  // Invalid hand edits must not discard an otherwise usable config. Treat them as
-  // pre-migration so startup can safely re-run the one-time normalization.
-  googleAntigravityStaticCatalogVersion: z.literal(1).optional().catch(undefined),
+  // Invalid hand edits must not discard an otherwise usable config.
+  googleAntigravityStaticCatalogVersion: z.union([z.literal(1), z.literal(2)]).optional().catch(undefined),
   clientIntegrations: clientIntegrationsSchema.optional().catch(undefined),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
@@ -1696,6 +1706,23 @@ function warnDegradedClaudeSubagentEffort(rawParsed: unknown): void {
   }
 }
 
+function malformedUpstreamHostCircuitThresholdWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `upstreamHostCircuitThreshold ignored: expected an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
+function warnDegradedUpstreamHostCircuitThreshold(rawParsed: unknown): void {
+  const warning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1789,6 +1816,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Schema validation failed — merge defaults into the raw object instead of
@@ -1810,6 +1838,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Merge couldn't fix it — truly broken config
@@ -1861,6 +1890,8 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   warnings.push(...malformedNativeSubagentFields(rawParsed).map(malformedNativeSubagentFieldWarning));
   const pickerWarning = malformedCodexAccountPickerWarning(rawParsed);
   if (pickerWarning) warnings.push(pickerWarning);
+  const hostCircuitWarning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (hostCircuitWarning) warnings.push(hostCircuitWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -1930,6 +1961,18 @@ function appOwnedMemoryBudgetError(value: unknown): string | null {
   return null;
 }
 
+function upstreamHostCircuitThresholdError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `schema_invalid: upstreamHostCircuitThreshold: must be an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
 /**
  * Same reasoning as {@link blankHostnameError}, and more urgent: the read path degrades a
  * malformed selection-order map to undefined, which on a write would drop every entry the
@@ -1960,8 +2003,8 @@ function googleAntigravityStaticCatalogVersionError(value: unknown): string | nu
   const raw = rawConfigRecord(value);
   if (!raw || !Object.hasOwn(raw, "googleAntigravityStaticCatalogVersion")) return null;
   const version = raw.googleAntigravityStaticCatalogVersion;
-  if (version === undefined || version === 1) return null;
-  return "schema_invalid: googleAntigravityStaticCatalogVersion: must be 1 or omitted";
+  if (version === undefined || version === 1 || version === 2) return null;
+  return "schema_invalid: googleAntigravityStaticCatalogVersion: must be 1, 2, or omitted";
 }
 
 function codexAccountPickerEnabledError(value: unknown): string | null {
@@ -2024,6 +2067,7 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
   const boundaryError = blankHostnameError(value)
     ?? claudeSubagentEffortError(value)
     ?? appOwnedMemoryBudgetError(value)
+    ?? upstreamHostCircuitThresholdError(value)
     ?? googleAntigravityStaticCatalogVersionError(value)
     ?? codexAccountPrioritiesError(value)
     ?? codexAccountPickerEnabledError(value)
@@ -2340,7 +2384,9 @@ export function saveConfig(config: OcxConfig): void {
   // Keep the real-home assertion ahead of even lock-directory preparation.
   assertNotRealHomeUnderTest(getConfigDir());
   withConfigMutationLockSync(() => {
-    if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
+    const projected = projectCustomModelCatalogMigration(readRawConfigJson(), config);
+    if (persistConfigUnlocked(projected)) bumpGenerationForCooperatingConfigWrite();
+    adoptCustomModelCatalogMigration(config, projected);
   });
 }
 
@@ -2421,7 +2467,11 @@ export function mutatePersistedConfig<T>(
         continue;
       }
 
-      if (persistConfigUnlocked(confirmedConfig)) bumpGenerationForCooperatingConfigWrite();
+      const projected = projectCustomModelCatalogMigration(
+        commitBase.diagnostics.config,
+        confirmedConfig,
+      );
+      if (persistConfigUnlocked(projected)) bumpGenerationForCooperatingConfigWrite();
       return { status: "committed", value: confirmed.value };
     }
     return { status: "unavailable", reason: "conflict" };
@@ -2659,9 +2709,9 @@ function readPersistedServerBinding(
 export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
   withConfigMutationLockSync(() => {
     const bindingBaseline = persistedLiveServerBinding.get(config);
-    const onDisk = claudeCodeBaseline.has(config) || bindingBaseline
-      ? readRawConfigJson()
-      : undefined;
+    // One authoritative pre-write read feeds both the live-config reconciliation and
+    // custom-model deletion migration. A second read could observe different bytes.
+    const onDisk = readRawConfigJson();
     if (claudeCodeBaseline.has(config)) {
       if (onDisk !== undefined) {
         const baseline = claudeCodeBaseline.get(config);
@@ -2673,18 +2723,23 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
         }
       }
     }
+    const projectedConfig = projectCustomModelCatalogMigration(
+      onDisk,
+      config,
+    );
     const persistedBinding = bindingBaseline && onDisk
       ? readPersistedServerBinding(onDisk, bindingBaseline)
       : bindingBaseline;
     if (persistedBinding) {
-      const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
+      const persistedConfig: OcxConfig = { ...projectedConfig, port: persistedBinding.port };
       if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
       else persistedConfig.hostname = persistedBinding.hostname;
       if (persistConfigUnlocked(persistedConfig)) bumpGenerationForCooperatingConfigWrite();
       persistedLiveServerBinding.set(config, persistedBinding);
     } else {
-      if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
+      if (persistConfigUnlocked(projectedConfig)) bumpGenerationForCooperatingConfigWrite();
     }
+    adoptCustomModelCatalogMigration(config, projectedConfig);
     if (claudeCodeBaseline.has(config)) {
       claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
     }

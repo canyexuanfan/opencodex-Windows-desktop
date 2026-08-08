@@ -187,7 +187,7 @@ describe("startup star prompt", () => {
 
   test("ocx service install gets the prompt too, after the service is up", async () => {
     const service = await readText("src/service.ts");
-    const installIndex = service.indexOf("await ops.install()");
+    const installIndex = service.indexOf("await installServiceSafely(backend, ops.install)");
     const promptIndex = service.indexOf("await maybeShowStarPrompt()");
 
     expect(installIndex).toBeGreaterThan(-1);

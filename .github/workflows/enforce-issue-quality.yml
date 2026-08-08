@@ -443,7 +443,7 @@ jobs:
 
   translate-comment:
     name: Translate non-English issue comments
-    if: github.event_name == 'issue_comment'
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request == null && github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     concurrency:
       # Shares the per-issue queue with the `translate` job: both jobs RMW the

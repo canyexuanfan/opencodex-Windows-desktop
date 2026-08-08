@@ -373,6 +373,7 @@ export const en = {
   "prov.loginCancelled": "{provider} login cancelled",
   "prov.loginTimeout": "{provider} login timed out — browser closed or never finished. Try again.",
   "prov.loginOk": "Logged in to {provider}. Run {cmd} (or it applies live) to list its models.",
+  "prov.loginSameAccount": "Still the same {provider} account — switch accounts in the browser, then try Add account again.",
   "oauthTos.highTitle": "{provider}: subscription OAuth risk",
   "oauthTos.elevatedTitle": "{provider}: unofficial OAuth bridge",
   "oauthTos.anthropicBody": "Directly reusing Claude subscription OAuth tokens through a third-party proxy such as OpenCodex is not a supported Anthropic integration and may lead to access restrictions. Supported Agent SDK integrations that use Claude subscriptions are separate.",

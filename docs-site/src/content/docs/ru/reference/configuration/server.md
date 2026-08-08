@@ -179,14 +179,17 @@ routed-model и hosted-search timeout. Эффективный watchdog мост�
 | `enabled?` | `boolean` | on when usable | Главный переключатель описания изображений. |
 | `backend?` | `"openai" \| "anthropic"` | auto | Та же логика выбора explicit-first/Anthropic-credential-aware, что и у web search. |
 | `model?` | `string` | backend-dependent | `gpt-5.4-mini` для OpenAI или `claude-sonnet-5` для Anthropic. |
+| `reasoning?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"low"` | Уровень рассуждений OpenAI Responses. Anthropic его игнорирует. |
 | `maxDescriptionsPerTurn?` | `number` | `8` | Максимум новых промахов description-cache за один main turn. `0` отключает вызовы; некорректные значения возвращают дефолт. |
 | `timeoutMs?` | `number` | `45000` | Таймаут запроса sidecar'а. |
 
-Vision включается только для изображений, отправленных в модель, входящую в `noVisionModels` её
+Поддерживаемые уровни зависят от возможностей вышестоящего провайдера и заявленной лестницы
+рассуждений выбранной модели. Vision включается только для изображений, отправленных в модель, входящую в `noVisionModels` её
 провайдера. У OpenAI требования по login/forward те же, что и у поиска; явный Anthropic без
 рабочего credential завершается ошибкой. Успешные описания `data:` используют ограниченный cache,
 ключ которого включает backend, model, detail, bytes изображения и нормализованный message
-context. Попадания в cache и дубликаты в пределах одного turn'а не расходуют лимит. Удалённые
+context; в ключи OpenAI дополнительно входит reasoning effort (в ключи Anthropic — нет).
+Попадания в cache и дубликаты в пределах одного turn'а не расходуют лимит. Удалённые
 `https:`-изображения, а также пустые и неуспешные описания не кэшируются.
 
 Sidecar'ы Anthropic OAuth повторно используют уже существующий OAuth fingerprint Claude Code от

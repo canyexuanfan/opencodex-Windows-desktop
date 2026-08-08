@@ -365,6 +365,7 @@ export const ko: Record<TKey, string> = {
   "prov.loginCancelled": "{provider} 로그인이 취소되었습니다",
   "prov.loginTimeout": "{provider} 로그인 시간 초과 — 브라우저를 닫았거나 완료되지 않았습니다. 다시 시도하세요.",
   "prov.loginOk": "{provider} 에 로그인했습니다. 모델을 표시하려면 {cmd} 를 실행하세요(또는 실시간 적용됩니다).",
+  "prov.loginSameAccount": "같은 {provider} 계정입니다. 브라우저에서 계정을 전환한 뒤 계정 추가를 다시 시도하세요.",
   "oauthTos.highTitle": "{provider}: 구독 OAuth 위험",
   "oauthTos.elevatedTitle": "{provider}: 비공식 OAuth 브리지",
   "oauthTos.anthropicBody": "Claude 구독 OAuth 토큰을 OpenCodex 같은 타사 프록시에서 직접 재사용하는 방식은 Anthropic이 지원하는 통합이 아니며 접근이 제한될 수 있습니다. Claude 구독을 사용하는 공식 Agent SDK 통합은 별도입니다.",

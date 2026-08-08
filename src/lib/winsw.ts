@@ -328,7 +328,23 @@ export async function installWinswService(entry: WinswEntry, deps: WinswInstallD
 }
 
 export function startWinswService(): void { runWinsw(["start"]); }
-export function stopWinswService(): void { try { runWinsw(["stopwait"]); } catch { /* not running */ } }
+
+/**
+ * Stop the native service and prove it is no longer running. `stopwait` can fail both
+ * for the benign already-stopped case and for real access/timeout failures, so a bare
+ * catch cannot decide whether it is safe for lifecycle callers to continue. Re-read
+ * SCM state and only accept the two states that cannot still own the proxy listener.
+ */
+export function stopWinswService(): void {
+  try { runWinsw(["stopwait"]); } catch { /* classify by verified state below */ }
+  const status = statusWinswRaw();
+  if (status === "stopped" || status === "nonexistent") return;
+  if (status === "unknown") {
+    throw new Error("Native service stop could not be verified.");
+  }
+  throw new Error("Native service is still running after stop.");
+}
+
 export function uninstallWinswService(): void {
   if (!existsSync(winswExePath())) {
     // The binary is gone but the SCM registration can outlive it (quarantine, partial

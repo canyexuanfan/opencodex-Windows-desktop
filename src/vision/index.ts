@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import type { OcxConfig, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent } from "../types";
 import { modelInList } from "../types";
+import type { VisionReasoningEffort } from "../reasoning-effort";
 import { describeImage, type DescribeOutcome, type VisionSettings } from "./describe";
 import { describeImageAnthropic } from "./anthropic-describe";
+import { normalizeVisionReasoningForModel } from "./reasoning";
 import type { CodexAuthContext } from "../codex/auth-context";
 import { getAccountSet } from "../oauth/store";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
@@ -16,6 +18,7 @@ export { describeImageAnthropic, parseAnthropicVisionSSE } from "./anthropic-des
 const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
 const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_REASONING: VisionReasoningEffort = "low";
 const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;
 export const VISION_DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024;
@@ -186,7 +189,7 @@ export function resolveVisionBackend(
 
 /** Native model used by the OpenAI vision helper, including its bounded default. */
 export function resolveOpenAiVisionModel(config: Pick<OcxConfig, "visionSidecar">): string {
-  return config.visionSidecar?.model ?? DEFAULT_VISION_MODEL;
+  return config.visionSidecar?.model || DEFAULT_VISION_MODEL;
 }
 
 /** A user/developer/toolResult message can carry images (toolResult: e.g. Codex view_image output). */
@@ -242,19 +245,29 @@ export function planVisionSidecar(
 
   if (backend === "anthropic") {
     if (!anthropicSidecar) return undefined;
+    const model = cfg.model || DEFAULT_ANTHROPIC_VISION_MODEL;
     return {
       backend,
       anthropicSidecar,
-      settings: { model: cfg.model ?? DEFAULT_ANTHROPIC_VISION_MODEL, timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+      settings: {
+        model,
+        reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
+        timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      },
       maxDescriptionsPerTurn,
     };
   }
 
   if (!openAiSidecar) return undefined;
+  const model = resolveOpenAiVisionModel(config);
   return {
     backend,
     forwardSidecar: openAiSidecar,
-    settings: { model: resolveOpenAiVisionModel(config), timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS },
+    settings: {
+      model,
+      reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
+      timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    },
     maxDescriptionsPerTurn,
   };
 }
@@ -363,6 +376,7 @@ function descriptionIdentity(job: ImageJob, plan: VisionPlan): { key: string; pe
     key: JSON.stringify([
       plan.backend,
       plan.settings.model,
+      ...(plan.backend === "openai" ? [plan.settings.reasoning] : []),
       job.detail ?? "high",
       imageHash,
       sha256(normalizedContext(job.contextText)),
@@ -418,7 +432,6 @@ export async function describeImagesInPlace(
   recordSidecarOutcome?: SidecarOutcomeRecorder,
   translatorBudget?: TranslatorBudget,
 ): Promise<void> {
-  // 1. Gather every image part across messages, each with its own message's text as context.
   const jobs: ImageJob[] = [];
   const targets: { msg: OcxMessage; parts: OcxContentPart[] }[] = [];
   for (const msg of parsed.context.messages) {
@@ -440,7 +453,6 @@ export async function describeImagesInPlace(
     return;
   }
 
-  // 2. Admit misses in source order. Cache hits and same-turn waiters do not consume the cap.
   const inFlight = new Map<string, Promise<DescribeOutcome>>();
   const executions: Array<() => Promise<void>> = [];
   const outcomePromises: Array<Promise<DescribeOutcome>> = [];
@@ -492,7 +504,6 @@ export async function describeImagesInPlace(
   await runBounded(executions, VISION_CONCURRENCY, execute => execute());
   const outcomes = await Promise.all(outcomePromises);
 
-  // 3. Rebuild each message, replacing image parts with their descriptions in order.
   let oi = 0;
   const descriptions: string[] = [];
   for (const { msg, parts } of targets) {

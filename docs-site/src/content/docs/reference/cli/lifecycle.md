@@ -36,8 +36,14 @@ The same action is available from the web dashboard's **Stop** button (`POST /ap
 
 ### `ocx restart`
 
-Run `stop` followed by `ensure`: stop the proxy/service, restore native Codex, start the proxy in the
-background, and sync the live port back into Codex.
+When a proxy is running, ask that exact attested PID and port to restart in place, wait for its
+normal drain, and verify a different runtime PID on the same port. Managed routing and service
+supervision stay installed throughout; an uncertain request is observed rather than replayed as a
+separate stop/start. If no proxy is running, the command falls back to the normal `ensure` start.
+If a live listener cannot be attested to a runtime PID (including a pre-update proxy), restart fails
+closed without an `ensure` or stop/start fallback. After confirming ownership, use `ocx stop` then
+`ocx start` for a standalone proxy. For a service-managed proxy, use `ocx stop` followed by
+`ocx service start` so supervision is restored.
 
 ### `ocx ensure`
 
@@ -280,6 +286,14 @@ dashboard UAC prompt or rerun `ocx service install` in an elevated PowerShell wi
 
 Wrap a script-based `codex` launcher on PATH with a lightweight autostart script. Real `codex.exe`
 targets are left untouched to avoid breaking exact executable invocations.
+
+Launcher installation alone does not prove that Codex requests will use OpenCodex. After a healthy
+install, the command checks the current Codex routing and reports a warning instead of a green result
+when routing is external, user-owned, or unverifiable. It also warns when outbound proxy variables
+exist only in the current process while `config.proxy` is unset or unresolved, because Codex
+launchers and background services may not inherit that environment. These checks are read-only and
+never print proxy values; resolve the reported handoff and run `ocx doctor` before relying on
+autostart.
 
 If a completed external Codex update overwrites an installed shim, the next ordinary `ocx` command
 backs up the stable new launcher and restores the shim before dispatch. A launcher that is still

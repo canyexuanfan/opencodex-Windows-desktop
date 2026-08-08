@@ -9,7 +9,7 @@ import { buildModelsRequest, resolveModelsAuthToken } from "../../oauth";
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
-import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
+import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
@@ -85,6 +85,11 @@ export function isDefaultCatalogPath(path: string): boolean {
   return samePath(path, activeDefaultCatalogPath());
 }
 
+/** Stable nonsemantic ownership marker for rows projected from config.customModels. */
+export const CODEX_CUSTOM_MODEL_CATALOG_KIND = "custom-model-v1";
+/** A formerly ambiguous slug was authoritatively observed as an ordinary provider row. */
+export const CODEX_PROVIDER_MODEL_CATALOG_KIND = "provider-model-v1";
+
 export interface CatalogModel {
   id: string;
   provider: string;
@@ -113,13 +118,15 @@ export interface CatalogModel {
   supportsReasoningSummaries?: boolean;
   /** Normalized upstream capability names retained for management/API consumers (#485 follow-up). */
   capabilities?: string[];
+  /** OpenCodex-only catalog ownership marker; Codex ignores the serialized extension field. */
+  catalogKind?: typeof CODEX_CUSTOM_MODEL_CATALOG_KIND | typeof CODEX_PROVIDER_MODEL_CATALOG_KIND;
 }
 
 export type RawEntry = Record<string, unknown>;
 
 export type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
 
-export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
+export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go", "deepseek"]);
 
 export const ROUTED_MODEL_COMPATIBILITY_EXCLUSIONS = new Set([
   // Issue #82: Zen Go /models advertises HY3, but Console Go rejects it as outside the lite list.
@@ -392,11 +399,11 @@ export function catalogModelSupportsReasoningSummaries(modelId: string): boolean
   return values.size === 1 ? values.values().next().value : undefined;
 }
 
-export function applyJawcodeCatalogMetadata(entry: RawEntry, provider: string, modelId: string, contextCap?: number): void {
-  const jawcodeProvider = resolveJawcodeProvider(provider);
+export function applyCatalogMetadata(entry: RawEntry, provider: string, modelId: string, contextCap?: number): void {
+  const jawcodeProvider = resolveMetadataProvider(provider);
   if (!jawcodeProvider) return;
-  const meta = getJawcodeModelMetadata(jawcodeProvider, modelId)
-    ?? (shouldCaseFoldMetadataModelId(provider) ? getJawcodeModelMetadataCaseInsensitive(jawcodeProvider, modelId) : undefined);
+  const meta = getModelMetadata(jawcodeProvider, modelId)
+    ?? (shouldCaseFoldMetadataModelId(provider) ? getModelMetadataCaseInsensitive(jawcodeProvider, modelId) : undefined);
   if (!meta) return;
   if (typeof meta.contextWindow === "number" && meta.contextWindow > 0) {
     const contextWindow = applyProviderContextCap(meta.contextWindow, contextCap) ?? meta.contextWindow;

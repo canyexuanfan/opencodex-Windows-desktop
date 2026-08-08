@@ -367,6 +367,7 @@ export const ru: Record<TKey, string> = {
   "prov.loginCancelled": "Вход в {provider} отменён",
   "prov.loginTimeout": "Время ожидания входа в {provider} истекло — браузер был закрыт или вход не был завершён. Попробуйте ещё раз.",
   "prov.loginOk": "Выполнен вход в {provider}. Выполните {cmd} (или изменения применятся на лету), чтобы его модели появились в списке.",
+  "prov.loginSameAccount": "Это всё ещё тот же аккаунт {provider} — переключите аккаунт в браузере и снова нажмите «Добавить аккаунт».",
   "oauthTos.highTitle": "{provider}: риск OAuth по подписке",
   "oauthTos.elevatedTitle": "{provider}: неофициальный OAuth-мост",
   "oauthTos.anthropicBody": "Прямое повторное использование OAuth-токенов подписки Claude через сторонний прокси, такой как OpenCodex, не является поддерживаемой интеграцией Anthropic и может привести к ограничению доступа. Поддерживаемые интеграции Agent SDK, использующие подписки Claude, — это отдельный механизм.",
