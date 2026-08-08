@@ -26,6 +26,29 @@ Scenarios contain Lab-authored synthetic prompts, fixtures, tool definitions
 and results only. They must be recognizable as synthetic and contain no copied
 customer material.
 
+### Synthetic-input admission
+
+Synthetic status is machine-checked, not inferred from content or a friendly
+name. Every fixture admitted to the Lab has a canonical reference containing:
+
+```text
+syntheticMarker          ocx-lab-synthetic-v1
+provenance.kind          lab_authored
+provenance.authority     reviewed manifest/authority identifier
+provenance.sourceCommit  immutable source revision
+digest                   domain-separated content digest
+byteLength               exact admitted byte length
+```
+
+The reference participates in the scenario manifest digest. Admission verifies
+the marker, closed provenance kind, expected authority/source revision, digest,
+and byte length before fixture bytes reach an adapter, mock, tool stub, event
+normalizer, or artifact writer. A request payload, model output, local path,
+repository file, MCP object, URL response, or runtime caller cannot label
+itself synthetic. Protocol V1 uses the exact `fixtureRef` contract in
+`021_protocol_v1_manifest_authority.md`; future live/Fabric suites must define
+an equally closed provenance authority before they may run.
+
 ## 2. Future live-probe sandbox
 
 A live probe is an explicit background/management/CLI action. It is never
@@ -88,12 +111,22 @@ The future runner must enforce a capability-deny sandbox:
 
 ### Credentials
 
-- A credential broker resolves the existing route credential immediately
-  before the request and binds it to the validated destination.
-- Credentials exist in memory for the request only and are never included in a
-  subject, assertion, error, artifact, log, event ID input, or SQLite row.
-- Probe code receives no entire auth store and no unrelated provider/account
-  credential.
+- Secret bytes remain owned by the existing trusted provider credential/
+  transport layer. Lab runner code never receives an API key, token, cookie,
+  authorization value, entire auth store, or credential-bearing header.
+- Immediately before a live request, the credential broker validates the exact
+  immutable `LabDestinationV1` snapshot and returns an opaque,
+  non-serializable `LabCredentialLeaseV1` capability bound to that destination,
+  auth transport, and one run/request budget. The lease exposes no secret
+  bytes, string conversion, header map, equality/debug representation, or
+  credential identity.
+- The trusted transport consumes the lease and injects authorization only after
+  its connection is bound to the same approved destination/address set. A
+  destination, Host/SNI, address-set, transport, or lease-scope mismatch fails
+  closed before authorization is emitted. The lease expires after its bounded
+  request/run and cannot be reused for another destination or sidecar.
+- Credentials therefore never enter a subject, assertion, error, artifact,
+  log, event-ID input, SQLite row, callback, mock, or Lab-owned memory buffer.
 - Credential absence/rejection produces `authentication_blocked`, never a
   compatibility failure.
 
@@ -142,7 +175,7 @@ The future runner must enforce a capability-deny sandbox:
 - No task repository, prompt transcript, worktree, patch body, terminal log, or
   hidden reasoning is copied into `~/.opencodex/lab/`.
 
-## 3. Artifact contract
+## 3. Artifact and resource contract
 
 Artifacts are deny-by-default, normalized, sanitized, bounded, and
 content-addressed after redaction.
@@ -150,30 +183,49 @@ content-addressed after redaction.
 Initial hard ceilings:
 
 ```text
-maximum artifacts per run              16
-maximum bytes per artifact             256 KiB
-maximum aggregate artifact data        1 MiB
-maximum normalized events              4,096
-maximum sanitized string field         4 KiB
-maximum serialized bytes per event     64 KiB
+maximum wall-clock time per run         120,000 ms
+maximum connect time                    10,000 ms
+maximum first-byte time                 30,000 ms
+maximum inactivity time                 30,000 ms
+maximum requests per run                16
+maximum aggregate input bytes           8 MiB
+maximum aggregate output bytes          16 MiB
+maximum output tokens                    32,768
+maximum tool calls                       32
+maximum runner resident memory          512 MiB
+maximum child processes                 0
+maximum artifacts per run               16
+maximum bytes per artifact              256 KiB
+maximum aggregate artifact data         1 MiB
+maximum normalized events               4,096
+maximum sanitized string field          4 KiB
+maximum serialized bytes per event      64 KiB
 maximum aggregate normalized event bytes 1 MiB
-maximum event JSON nesting depth       8
-maximum object keys per event object   64
-maximum array elements per event array 256
+maximum event JSON nesting depth        8
+maximum object keys per event object    64
+maximum array elements per event array  256
 ```
 
-These event bounds are enforced while decoding/normalizing, before an event
-is buffered into the observation or any artifact. Exceeding a bound fails the
-run as `harness_failure` without retaining the oversized fragment.
+Scenario limits may be lower. No scenario, CLI flag, profile, provider config,
+environment variable, route metadata, or runtime caller may raise a hard
+ceiling. Raising one requires a reviewed security-contract version change.
+Timeout ceilings classify with the matching typed `timeout`; request/byte/
+token/tool/artifact ceilings classify `budget_exhausted`. A memory ceiling
+breach or attempted child-process creation terminates the sandboxed run and is
+`budget_exhausted`; inability to enforce any required ceiling is
+`harness_failure` before executable evidence is accepted.
 
-Scenario limits may be lower. Raising a hard ceiling requires a reviewed
-security-contract change; a scenario manifest alone cannot raise it.
+Event bounds are enforced while decoding/normalizing, before an event is
+buffered into the observation or any artifact. Exceeding an event structural
+bound fails the run as `harness_failure` without retaining the oversized
+fragment.
 
 Allowed artifact classes:
 
 - canonical scenario manifest;
 - canonical suite manifest;
 - canonical synthetic fixture;
+- canonical claim-source manifest;
 - assertion report containing normalized expected/observed summaries;
 - sanitized request shape with content replaced by type/length/digest markers;
 - sanitized response shape with visible synthetic fixture output only;
@@ -181,15 +233,43 @@ Allowed artifact classes:
 - sanitized error taxonomy/status;
 - deterministic verifier summary.
 
-Artifact paths are derived from the SHA-256 digest and fixed extension under
-`~/.opencodex/lab/artifacts/`. Manifests reject traversal, symlinks,
-device/special files, alternate data streams, and digest/size mismatch. The
-ledger stores relative content-addressed references, never arbitrary paths.
+Artifact names are derived only from the expected lowercase SHA-256 digest and
+a fixed extension under `~/.opencodex/lab/artifacts/`. The Lab artifact store
+must use descriptor/handle-bound, no-follow I/O rather than validate a pathname
+and reopen it later:
+
+- open and retain a trusted handle to the artifact directory after verifying it
+  is a directory and not a symlink/reparse-point redirection;
+- create writes relative to that directory handle with exclusive/no-follow
+  semantics, reject special files and `st_nlink != 1`, and write only already
+  redacted bytes;
+- compute size and digest from the same open descriptor/handle that received
+  the bytes, flush it, then publish by an atomic rename relative to the trusted
+  directory handle;
+- when a content-addressed target already exists, open it with no-follow
+  semantics and verify regular-file type, single-link status, size, and digest
+  from that same descriptor before reuse;
+- reads open the digest-derived name relative to the trusted directory handle,
+  verify file type/link count/size, hash the bytes, and return/consume those
+  exact bytes from the same open descriptor without closing and reopening by
+  path;
+- traversal, separators, absolute paths, alternate data streams, symlinks,
+  reparse points, hard links, device/special files, digest/size mismatch, or a
+  directory-handle identity change fail closed;
+- on a platform where equivalent descriptor/handle-bound no-follow operations
+  cannot be enforced, the artifact operation is `harness_failure`; it must not
+  fall back to path-only `exists/stat/read` validation.
+
+The ledger stores relative content-addressed references, never arbitrary paths.
+This contract applies to the future Lab artifact store; it does not silently
+reuse a different existing application artifact reader whose path-race
+properties have not been reviewed for Lab evidence.
 
 Scenario/suite manifests and synthetic fixtures use the domain-separated
 digests in the evidence contract and remain retained while referenced by any
-non-invalidated observation. Their content is still subject to the same
-synthetic-data and size rules.
+non-invalidated, non-purged observation. Claim-source manifests remain retained
+while a non-purged claim snapshot references them. Their content is still
+subject to the same synthetic/sanitized-data and size rules.
 
 Redaction occurs before hashing and writing. A redaction failure discards the
 artifact and marks the run `harness_failure`; "write now, redact later" is
@@ -281,7 +361,8 @@ Public publishing is not authorized in CL-00 and remains a later phase.
 
 - JSONL is the immutable local authority for non-sensitive evidence, but a
   user can delete the entire Lab directory. Immutability describes in-ledger
-  correction semantics, not a promise to resist user deletion.
+  correction semantics, not a promise to resist user deletion. Confirmed
+  sensitive evidence is the explicit privacy exception below.
 - Retention ceilings by class:
   - scratch/temp run directories: deleted at run end; cleanup retry within 24h;
   - export staging: maximum 24h;
@@ -290,51 +371,85 @@ Public publishing is not authorized in CL-00 and remains a later phase.
   - sanitized non-contract artifacts (`assertion_report`, shapes, traces,
     errors): default 90 days, hard ceiling 365 days;
   - content-addressed scenario/suite/fixture contract artifacts: retained
-    while any non-invalidated observation references them, because
-    reproducible `VERIFIED` projection requires the exact historical bytes.
-    Their content remains synthetic-only and size-bounded. User deletion of
-    the Lab directory remains absolute.
+    while any non-invalidated, non-purged observation references them, because
+    reproducible executable projection requires the exact historical bytes;
+  - content-addressed claim-source manifests: retained while any non-purged
+    claim snapshot references them, because reproducible `CLAIMED` projection
+    requires the exact historical sanitized source bytes.
+  Contract artifacts remain synthetic/sanitized and size-bounded. User deletion
+  of the Lab directory remains absolute.
 - Deleting an expired non-contract artifact leaves its digest/reference and a
   typed unavailable marker; it does not alter the observation.
-- SQLite is disposable and contains no data absent from valid ledger events and
-  artifact metadata.
-- Invalid non-sensitive evidence is neutralized by an appended invalidation.
-  Event-private non-contract artifacts may then be securely deleted. A shared
-  scenario, suite, or fixture contract artifact must remain while any other
-  non-invalidated observation references its digest, and may be deleted only
-  after the last such reference is gone.
+- SQLite is disposable and contains no data absent from valid ledger events,
+  privacy-safe purge tombstones, and artifact metadata.
+- Invalid non-sensitive evidence is neutralized by a valid appended
+  invalidation under the evidence contract. Event-private non-contract
+  artifacts may then be securely deleted. A shared scenario, suite, fixture,
+  or claim-source contract artifact must remain while any other usable event
+  references its digest, and may be deleted only after the last such reference
+  is invalidated or purged.
 - Confirmed sensitive evidence is distinct from ordinary invalidation. It
-  requires a fail-closed purge of every local copy: JSONL lines containing the
-  leak, SQLite rows, artifacts, scratch/temp files, and generated exports. The
-  purge record stores only taxonomy, time, affected event/artifact digests,
-  and action taken — never the leaked value. Append-only semantics never
-  override that duty.
+  requires a fail-closed purge of every local copy: offending JSONL event
+  lines, SQLite rows, artifacts, scratch/temp files, and generated exports.
+  The purge first determines the affected event IDs/artifact digests without
+  retaining the leaked value, then creates a clean replacement ledger that
+  omits the sensitive event lines and includes the canonical privacy-safe
+  `purge_tombstone` defined in the evidence contract. The replacement ledger
+  is flushed and atomically installed; SQLite is deleted/rebuilt from it and
+  targeted artifacts/temp/exports are removed. If any required replacement or
+  deletion cannot be completed, the purge remains visibly failed and evidence
+  projection is disabled rather than serving stale compatibility state.
+- Projection applies purge tombstones before ordinary invalidation/supersession.
+  Targeted events contribute no `CLAIMED`, `PROBED`, `VERIFIED`, `DEGRADED`, or
+  `UNSUPPORTED` state; targeted artifacts surface only
+  `purged_unavailable`. A previously cached verdict that depended on purged
+  material is invalid and must not survive SQLite rebuild.
+- A purge tombstone stores only event IDs/artifact digests, the fixed
+  `sensitive_evidence` taxonomy, time/producer metadata, and closed action
+  names. It never records the leaked value, raw path, credential, prompt, or
+  identifying diagnostic. Append-only semantics never override the duty to
+  remove sensitive bytes.
 
 ## 8. Security acceptance tests required later
 
 Before any live runner ships, tests must prove:
 
 1. prompt/repository/MCP/user-tool inputs are unreachable from the scenario DSL;
-2. redirects and model-supplied URLs cannot widen network access, and Lab
+2. every admitted fixture has the required synthetic marker/provenance and a
+   runtime/user/repository/MCP/network object cannot self-assert synthetic
+   status;
+3. redirects and model-supplied URLs cannot widen network access, and Lab
    clients pin connections to the validated IP set;
-3. the inherited-environment allowlist is empty, all uppercase/lowercase proxy
+4. the inherited-environment allowlist is empty, all uppercase/lowercase proxy
    variables are rejected, and no ambient variable changes Lab behavior;
-4. destination-record mutation, replacement, or address-set drift between
+5. destination-record mutation, replacement, or address-set drift between
    authorization, fingerprinting, credential binding, and connect fails closed;
-5. credential, account, custom header and endpoint canaries never enter
-   evidence, errors, SQLite or artifacts;
-6. custom-header canonicalization is deterministic; unknown credential
+6. credential canaries never enter Lab memory/objects through the broker: the
+   runner receives only an opaque destination-bound one-run lease, and lease
+   scope/transport/destination mismatch fails before authorization is sent;
+7. account, custom-header and endpoint canaries never enter evidence, errors,
+   SQLite or artifacts;
+8. custom-header canonicalization is deterministic; unknown credential
    classification and every count/name/value/aggregate bound fail closed;
-7. local subject-salt rotation breaks prior correlation and forces
+9. local subject-salt rotation breaks prior correlation and forces
    re-projection/reverification without reverse lookup;
-8. tool arguments cannot execute;
-9. artifact traversal/symlink/oversize/digest attacks fail closed;
-10. normalized event byte/depth/key/array ceilings fail closed before buffering;
-11. timeout, quota, auth, DNS and harness failures remain blockers;
-12. retention expiry emits typed unavailable markers; cleanup retry/failure is
+10. tool arguments cannot execute;
+11. every wall-clock/connect/first-byte/inactivity/request/input/output/token/
+    tool-call/memory/process/artifact hard ceiling is enforced and cannot be
+    widened by a manifest, config, profile, environment variable, or caller;
+12. artifact traversal, symlink/reparse, hard-link, path-race, oversize and
+    digest attacks fail closed, and validated artifact bytes are consumed from
+    the same descriptor/handle that was checked;
+13. normalized event byte/depth/key/array ceilings fail closed before buffering;
+14. timeout, quota, auth, DNS and harness failures remain blockers;
+15. retention expiry emits typed unavailable markers; cleanup retry/failure is
     visible and bounded; shared contract artifacts survive invalidation while
-    any non-invalidated observation still references them;
-13. confirmed sensitive evidence is purged from JSONL, SQLite, artifacts, temp
-    files and exports without recording the leaked value;
-14. public export rejects unknown/private fields;
-15. no probe runs from the production routing path.
+    any usable event still references them;
+16. ordinary invalidations reject unknown/future/cross-kind/partial target
+    lists and deterministically remove only valid named evidence;
+17. confirmed sensitive evidence is removed from JSONL, SQLite, artifacts,
+    temp files and exports; the replacement ledger retains only a privacy-safe
+    purge tombstone; replay cannot preserve a verdict that depended on purged
+    evidence;
+18. public export rejects unknown/private fields;
+19. no probe runs from the production routing path.
