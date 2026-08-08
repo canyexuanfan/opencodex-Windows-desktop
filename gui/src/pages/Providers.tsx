@@ -29,6 +29,8 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const [adding, setAdding] = useState(false);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
+  /** Bumped on every notify so repeated identical success toasts restart the dismiss timer. */
+  const [statusRevision, setStatusRevision] = useState(0);
   const [oauthProviders, setOauthProviders] = useState<string[]>([]);
   const [oauthStatus, setOauthStatus] = useState<Record<string, import("./providers-shared").OAuthStatus>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
   const notify = useCallback((msg: string, ok: boolean = true) => {
     setStatus(msg);
     setStatusOk(ok);
+    setStatusRevision(revision => revision + 1);
   }, []);
 
   const clearStatus = useCallback(() => {
@@ -68,7 +71,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     if (!status || !statusOk) return;
     const timer = window.setTimeout(clearStatus, 4500);
     return () => window.clearTimeout(timer);
-  }, [status, statusOk, clearStatus]);
+  }, [status, statusOk, statusRevision, clearStatus]);
 
   const revealProviderAccounts = useCallback((provider: string) => {
     setAdding(false);
