@@ -126,7 +126,7 @@ export type RawEntry = Record<string, unknown>;
 
 export type RawCatalog = { models?: RawEntry[]; [k: string]: unknown };
 
-export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go"]);
+export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go", "deepseek"]);
 
 export const ROUTED_MODEL_COMPATIBILITY_EXCLUSIONS = new Set([
   // Issue #82: Zen Go /models advertises HY3, but Console Go rejects it as outside the lite list.
