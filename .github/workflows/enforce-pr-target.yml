@@ -6,17 +6,15 @@ on:
       - opened
       - reopened
       - edited
+      - labeled
+      - unlabeled
       - ready_for_review
       - synchronize
-  # A maintainer issue comment ("not touching gui") waives the GUI-screenshot
-  # gate. CodeRabbit also edits its normal PR status comment when a review
-  # finishes, which gives this privileged workflow a safe signal to re-check
-  # review findings even for fork PRs. `pull_request_target` types do not
-  # include issue comments, so both cases use this separate trigger.
-  issue_comment:
-    types:
-      - created
-      - edited
+  # CodeRabbit publishes a legacy commit status named `CodeRabbit` on the
+  # reviewed head SHA. `status` workflows are loaded only from the default
+  # branch, so a PR cannot suppress or rewrite this signal path. The status is
+  # only a wake-up signal; the gate re-reads live reviews before any write.
+  status:
 
 # pull-requests:write covers title/comment/label updates.
 # contents:write is required for convertPullRequestToDraft /
@@ -28,26 +26,24 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # `issue_comment` events carry the issue number, not the PR number. The
-  # group is shared with the hygiene workflow: both read-modify-write the same
-  # consolidated gate comment, so serializing them under one key prevents a
-  # concurrent update from clobbering the other's section.
-  group: pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}
+  # PR lifecycle events and CodeRabbit statuses both identify the live head SHA.
+  # PR hygiene uses that same SHA key, so every writer for one live head is
+  # serialized even when the wake-up events come from different webhook types.
+  group: pr-gate-comment-${{ github.event.pull_request.head.sha || github.event.sha || github.run_id }}
 
 jobs:
   enforce-target:
-    # `issue_comment` fires for comments on ANY issue or PR. This gate is
-    # write-capable, so only two trusted sources may start that path: a
-    # canonical maintainer (GUI-waiver case) or CodeRabbit's own PR status
-    # comment, whose create/edit event is used only as a signal to re-read the
-    # live review threads. All other pull_request_target events run normally.
+    # Only CodeRabbit's successful legacy commit status may wake the status
+    # path. Label events are runner-filtered to the one maintainer-controlled
+    # waiver label so ordinary type labels and the gate's own `review-ready`
+    # writes do not allocate another privileged runner.
     if: >-
-      github.event_name != 'issue_comment' ||
-      (github.event.issue.pull_request != null &&
-       (github.event.comment.user.login == 'coderabbitai[bot]' ||
-        github.event.comment.author_association == 'OWNER' ||
-        github.event.comment.author_association == 'COLLABORATOR' ||
-        github.event.comment.author_association == 'MEMBER'))
+      (github.event_name == 'status' &&
+       github.event.context == 'CodeRabbit' &&
+       github.event.state == 'success') ||
+      (github.event_name == 'pull_request_target' &&
+       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+        github.event.label.name == 'gui-screenshot-waived'))
     runs-on: ubuntu-latest
 
     steps:
@@ -60,7 +56,7 @@ jobs:
           # scripts and MAINTAINERS.md from that same promoted trust boundary.
           # This prevents unpromoted `dev` script changes from executing with
           # the workflow's write-capable token.
-          ref: ${{ github.event_name == 'issue_comment' && github.event.repository.default_branch || github.event.pull_request.base.sha }}
+          ref: ${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -142,54 +138,43 @@ jobs:
             const TITLE_PREFIX = "[WRONG BRANCH] ";
             const LEGACY_COMMENT_MARKER = "<!-- wrong-branch-enforcer -->";
             const REVIEW_READY_LABEL = "review-ready";
+            const GUI_SCREENSHOT_WAIVER_LABEL = "gui-screenshot-waived";
             const MAINTAINERS_FILE = "MAINTAINERS.md";
-            const CODE_RABBIT_LOGIN = "coderabbitai[bot]";
-
             const { owner, repo } = context.repo;
-            // `issue_comment` events carry the PR's issue object, not a
-            // `pull_request` object. The issue number is the PR number either
-            // way, so resolve it from whichever payload the event delivered.
-            const pull_number =
-              context.payload.pull_request?.number ??
-              context.payload.issue?.number;
+            let pull_number = context.payload.pull_request?.number;
 
-            // Defensive re-check of the job-level guard. `issue_comment` events
-            // carry a `comment` object with the author's association. A normal
-            // user comment is trusted only when it comes from a canonical
-            // maintainer; CodeRabbit's own PR status comment is separately
-            // allowed as a signal to re-read live review threads. The comment
-            // body itself is never trusted as gate evidence.
-            if (context.eventName === "issue_comment") {
-              const isPrComment =
-                context.payload.issue?.pull_request != null;
-              const association = context.payload.comment?.author_association;
-              const commenter = context.payload.comment?.user?.login;
-              const isCodeRabbit = commenter === CODE_RABBIT_LOGIN;
-              // The association is a cheap prefilter, but OWNER/COLLABORATOR/
-              // MEMBER is broader than this repository's canonical maintainer
-              // list. A collaborator or member who is not a maintainer must not
-              // start this write-capable gate.
-              const maintainerLogins = new Set(
-                readMaintainerLogins().map(login => login.toLowerCase())
+            // `status` is default-branch controlled, but it carries only the
+            // reviewed commit SHA. Resolve that SHA back to exactly one open PR
+            // whose current head still equals the status SHA. Ambiguous or stale
+            // associations fail closed without mutating any pull request.
+            if (context.eventName === "status") {
+              const statusSha = context.payload.sha;
+              const associatedPrs = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                {
+                  owner,
+                  repo,
+                  commit_sha: statusSha,
+                  per_page: 100
+                }
               );
-              const isCanonicalMaintainer =
-                typeof commenter === "string" &&
-                maintainerLogins.has(commenter.toLowerCase());
-              if (
-                !isPrComment ||
-                (!isCodeRabbit &&
-                 (![
-                   "OWNER",
-                   "COLLABORATOR",
-                   "MEMBER"
-                 ].includes(association) ||
-                  !isCanonicalMaintainer))
-              ) {
+              const candidates = associatedPrs.filter(
+                candidate =>
+                  candidate.state === "open" &&
+                  candidate.head?.sha === statusSha
+              );
+              if (candidates.length !== 1) {
                 core.info(
-                  "issue_comment is neither CodeRabbit nor a canonical maintainer on a PR; skipping the gate."
+                  `CodeRabbit status ${statusSha} maps to ${candidates.length} open current-head PRs; skipping ambiguous/stale revalidation.`
                 );
                 return;
               }
+              pull_number = candidates[0].number;
+            }
+
+            if (!Number.isInteger(pull_number)) {
+              core.info("No pull request could be resolved for this gate event; skipping.");
+              return;
             }
 
             const { data: pr } = await github.rest.pulls.get({
@@ -490,7 +475,7 @@ jobs:
               }
             }
 
-            const failures = collectPrQualityFailures({
+            let failures = collectPrQualityFailures({
               baseRef: pr.base.ref,
               allowedBases: ALLOWED_BASES,
               title: pr.title,
@@ -511,7 +496,21 @@ jobs:
             // the GUI waives the screenshot gate. The flag is what tells the
             // author the screenshot is not required, even though the failure
             // itself is gone from `failures`.
-            const screenshotWaived = hasGuiOverride({ comments });
+            const screenshotWaivedByLabel = (pr.labels ?? []).some(
+              label => label.name === GUI_SCREENSHOT_WAIVER_LABEL
+            );
+            if (screenshotWaivedByLabel) {
+              failures = failures.filter(
+                failure => failure.code !== "missing_ui_screenshot"
+              );
+            }
+            const screenshotWaived =
+              screenshotWaivedByLabel || hasGuiOverride({ comments });
+            const screenshotWaiverNotice = screenshotWaived
+              ? (screenshotWaivedByLabel
+                  ? `UI screenshot waived by the ${inlineCode(GUI_SCREENSHOT_WAIVER_LABEL)} label.`
+                  : "UI screenshot waived by a maintainer comment.")
+              : null;
 
             // The readiness gate applies to contributors (no push permission).
             // Maintainers keep the failure-only contract: draft while quality
@@ -565,7 +564,7 @@ jobs:
             // the live head only when the event actually delivered it.
             const eventHeadSha =
               context.payload.pull_request?.head?.sha ??
-              (context.eventName === "issue_comment"
+              (context.eventName === "status"
                 ? ""
                 : pr.head.sha);
             const completionHeadSha =
@@ -946,9 +945,7 @@ jobs:
                 // the waiver flag, and the prefix notice when the bot owns it.
                 const failureNotices = [
                   ...revalidationNotice,
-                  ...(screenshotWaived
-                    ? ["UI screenshot waived by a maintainer comment."]
-                    : []),
+                  ...(screenshotWaiverNotice ? [screenshotWaiverNotice] : []),
                   ...(hasWrongBase && state.titlePrefixedByBot
                     ? [`Its title has been prefixed with ${inlineCode(TITLE_PREFIX.trim())}.`]
                     : [])
@@ -1038,6 +1035,7 @@ jobs:
                   checklistRequired,
                   notices: [
                     ...revalidationNotice,
+                    ...(screenshotWaiverNotice ? [screenshotWaiverNotice] : []),
                     "This PR stays in draft until every box above is ticked."
                   ]
                 });
@@ -1057,6 +1055,7 @@ jobs:
                   checklistRequired,
                   notices: [
                     ...revalidationNotice,
+                    ...(screenshotWaiverNotice ? [screenshotWaiverNotice] : []),
                     "This PR stays in draft until every box above is ticked."
                   ]
                 });
@@ -1089,6 +1088,7 @@ jobs:
                   checklistRequired,
                   notices: [
                     ...revalidationNotice,
+                    ...(screenshotWaiverNotice ? [screenshotWaiverNotice] : []),
                     "Automatic draft conversion failed. Please convert this pull request to a draft manually until every box above is ticked."
                   ]
                 });
@@ -1144,13 +1144,14 @@ jobs:
               readyState.version = 1;
 
               const notices = [
+                screenshotWaiverNotice,
                 readyConversionFailed
                   ? "Automatic ready-for-review conversion failed; please mark the pull request ready manually if it is still a draft."
                   : readyConverted
                     ? "This pull request has been marked Ready for Review."
                     : "This pull request is already Ready for Review.",
                 readyMoment
-                  ? `CodeRabbit/Codex review was requested via the ${inlineCode(REVIEW_READY_LABEL)} label. If no review appears, comment ${inlineCode("@coderabbitai review")} to request one.`
+                  ? `The ${inlineCode(REVIEW_READY_LABEL)} label marks this PR as ready; review automation runs independently. If no CodeRabbit review appears, comment ${inlineCode("@coderabbitai review")} to request one.`
                   : "",
                 notified && maintainers.length > 0
                   ? `Maintainers notified: ${maintainers
@@ -1214,7 +1215,7 @@ jobs:
                   actions: [],
                   readiness,
                   checklistRequired,
-                  notices: []
+                  notices: screenshotWaiverNotice ? [screenshotWaiverNotice] : []
                 });
                 return;
               }
@@ -1227,7 +1228,7 @@ jobs:
                     actions: [],
                     readiness,
                     checklistRequired,
-                    notices: []
+                    notices: screenshotWaiverNotice ? [screenshotWaiverNotice] : []
                   }
                 );
                 return;

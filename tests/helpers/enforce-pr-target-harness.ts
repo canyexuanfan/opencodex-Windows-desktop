@@ -83,12 +83,21 @@ export type RunOptions = {
    */
   eventAction?: string;
   /**
-   * Webhook event name. Defaults to `"pull_request_target"`. Pass
-   * `"issue_comment"` to exercise the GUI-waiver re-run path: the payload then
-   * carries `issue` and `comment` (never `pull_request`), exactly as GitHub
-   * delivers an issue comment on a PR.
+   * Webhook event name. Defaults to `"pull_request_target"`. `issue_comment`
+   * remains available for fail-closed compatibility tests; `status` models the
+   * default-branch CodeRabbit wake-up path.
    */
   eventName?: string;
+  /** SHA carried by a `status` event. Defaults to the live PR head SHA. */
+  statusSha?: string;
+  /** Legacy commit-status context. Defaults to `CodeRabbit`. */
+  statusContext?: string;
+  /** Legacy commit-status state. Defaults to `success`. */
+  statusState?: string;
+  /** Shorthand for a single associated-PR response page. */
+  associatedPullRequests?: unknown[];
+  /** Page-specific PRs returned by repos.listPullRequestsAssociatedWithCommit. */
+  associatedPullRequestPages?: unknown[][];
   /**
    * `author_association` of the commenter on an `issue_comment` event.
    * Defaults to `"COLLABORATOR"`. The gate only re-runs for maintainer
@@ -581,7 +590,14 @@ export async function runEnforcePrTarget(
   const openPullPages: unknown[][] =
     options.openPullPages ??
     (options.openPulls && options.openPulls.length > 0 ? [options.openPulls] : []);
-  const paginatePageCount = Math.max(pages.length, openPullPages.length, 1);
+  const associatedPullRequestPages: unknown[][] =
+    options.associatedPullRequestPages ?? [options.associatedPullRequests ?? [pr]];
+  const paginatePageCount = Math.max(
+    pages.length,
+    openPullPages.length,
+    associatedPullRequestPages.length,
+    1,
+  );
 
   /**
    * Record the call, then either reject or return a plausible payload. Every
@@ -706,6 +722,14 @@ export async function runEnforcePrTarget(
         const basehead = String((args as { basehead?: string })?.basehead ?? "");
         return respond("repos.compareCommitsWithBasehead", args, compareResult(basehead));
       },
+      listPullRequestsAssociatedWithCommit: (args: unknown) => {
+        const page = Number((args as { page?: number })?.page ?? 1);
+        return respond(
+          "repos.listPullRequestsAssociatedWithCommit",
+          args,
+          associatedPullRequestPages[page - 1] ?? [],
+        );
+      },
     },
   };
 
@@ -763,8 +787,8 @@ export async function runEnforcePrTarget(
       respond("request", { route, params });
     /**
      * `github.paginate(fn, params)` — walk every page and concatenate, the way
-     * Octokit does. Page count covers both comment and open-PR fixtures so a
-     * stacked parent on page two is still visible.
+     * Octokit does. Page count covers comment, open-PR, and associated-PR
+     * fixtures so a relevant record on page two is still visible.
      */
     paginate = Object.assign(
       async (fn: (args: unknown) => Promise<{ data: unknown[] }>, params: unknown) => {
@@ -870,7 +894,13 @@ export async function runEnforcePrTarget(
               author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
             },
           }
-        : { pull_request: eventPr }),
+        : options.eventName === "status"
+          ? {
+              sha: options.statusSha ?? pr.head.sha,
+              context: options.statusContext ?? "CodeRabbit",
+              state: options.statusState ?? "success",
+            }
+          : { pull_request: eventPr }),
       repository: {
         id: 987654321,
         name: "opencodex",
