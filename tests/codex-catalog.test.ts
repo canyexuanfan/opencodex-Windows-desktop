@@ -2388,6 +2388,89 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.supports_reasoning_summaries).toBe(true);
   });
 
+  // #1100 (supersedes PR #1119): a routed row can advertise a full effort ladder
+  // while `supports_reasoning_summaries` is false, and Codex gates construction
+  // of the whole Responses `reasoning` object on that flag — so the Desktop
+  // picker offers an effort the wire never carries. The landed built-in
+  // coverage below ("built-in DeepSeek and GLM effort models opt into Codex
+  // reasoning propagation") pins the registry rows. These three pin the CUSTOM
+  // provider route, which the built-in tests cannot reach.
+  test("routed strip does not defeat an explicit custom-provider summary opt-in (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        ladder: {
+          adapter: "openai-responses",
+          baseUrl: "https://ladder.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high", "max"] },
+          modelSupportsReasoningSummaries: { "effort-model": true },
+        },
+      },
+    });
+    // A template is required. buildCatalogEntries(null, ...) takes the fallback
+    // branch, which never runs the routed strip, so a null-template assertion
+    // cannot detect a reordering regression.
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const routed = entries.find(e => e.slug === "ladder/effort-model");
+
+    expect((routed?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(expect.arrayContaining(["low", "high", "max"]));
+    // The opt-in survives normalizeRoutedCatalogEntry's delete only because
+    // applyCatalogModelMetadata runs after it in buildCatalogEntries' routed
+    // branch (src/codex/catalog/sync.ts). Swap that order and every opted-in
+    // routed provider silently stops receiving reasoning.effort from Codex,
+    // while the picker keeps advertising the ladder.
+    expect(routed?.supports_reasoning_summaries).toBe(true);
+  });
+
+  test("custom routed rows without an opt-in stay conservative about summaries (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        plain: {
+          adapter: "openai-responses",
+          baseUrl: "https://plain.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high", "max"] },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const routed = entries.find(e => e.slug === "plain/effort-model");
+
+    // Deliberate: we do not claim OpenAI-only summary delivery for an arbitrary
+    // endpoint just because it has an effort ladder. The supported remedy is the
+    // per-model opt-in asserted above. Pinned so flipping this default is always
+    // a deliberate decision rather than an accident.
+    expect(routed?.supports_reasoning_summaries).toBe(false);
+  });
+
+  test("the no-template fallback never applies the routed summary strip (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        ladder: {
+          adapter: "openai-responses",
+          baseUrl: "https://ladder.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high", "max"] },
+          modelSupportsReasoningSummaries: { "effort-model": true },
+        },
+      },
+    });
+    // Pins the asymmetry itself: the fallback path skips
+    // normalizeRoutedCatalogEntry entirely, so this row is opt-in-true for a
+    // different reason than the template row above. Kept explicit so a future
+    // unification of the two construction paths is a visible change.
+    const routed = buildCatalogEntries(null, [], models).find(e => e.slug === "ladder/effort-model");
+    expect(routed?.supports_reasoning_summaries).toBe(true);
+  });
+
+
   test("built-in DeepSeek and GLM effort models opt into Codex reasoning propagation (#1100)", async () => {
     const expected = [
       { slug: "deepseek/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
