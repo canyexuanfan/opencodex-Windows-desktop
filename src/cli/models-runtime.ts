@@ -20,7 +20,7 @@ const USAGE = `Usage:
   ocx models <enable|disable> <provider/model|native-model> [--native] [--json]
   ocx models provider <name> <on|off> [--json]
   ocx models selected <provider> [--set <id,id...>|--clear] [--json]
-  ocx models context <status|value <tokens>|provider <name> on [--value <tokens>]|provider <name> off|all <on|off>> [--json]
+  ocx models context <status|value <tokens> [--set-all]|provider <name> on [--value <tokens>]|provider <name> off|all <on|off>> [--json]
   ocx models shadow <status|set> [model|-] [--enabled <on|off>] [--json]`;
 
 type ModelRow = {
@@ -158,6 +158,10 @@ async function context(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     const value = Number(raw.replace(/[_,]/g, ""));
     if (!Number.isInteger(value) || value <= 0) throw new CliUsageError("context value must be a positive integer", USAGE);
     body = { value };
+    // Explicit apply-to-all switch for headless use: re-points every routed provider to
+    // the new value, mirroring the dashboard's "apply to every routed provider" toggle.
+    // Without it the value only becomes the default for future toggles.
+    if (takeFlag(args, "--set-all")) body.setAll = true;
   } else if (action === "provider") {
     const provider = args.shift()?.trim();
     const state = args.shift()?.toLowerCase();
