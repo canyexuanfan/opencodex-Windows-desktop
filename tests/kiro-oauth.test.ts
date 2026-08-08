@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OAUTH_PROVIDERS, runLogin } from "../src/oauth";
-import { inspectKiroCliSqlite, loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroApiRegion, resolveKiroProfileArn, resolveKiroRegion, settleKiroLoginTransaction } from "../src/oauth/kiro";
+import { inspectKiroCliSqlite, kiroCliInstallGuidance, loginKiro, readKiroCliSqlite, refreshKiroToken, resolveKiroApiRegion, resolveKiroProfileArn, resolveKiroRegion, settleKiroLoginTransaction } from "../src/oauth/kiro";
 
 // Windows CI cold runners take 5-7s for the real SQLite create/inspect cycles here
 // (same flake class as 810fa115); the default 5s harness timeout is too tight.
@@ -161,6 +161,12 @@ function seedCustomTokenDb(path: string, rows: Array<[string, Record<string, unk
 }
 
 describe("kiro oauth — import-first", () => {
+  test("Kiro CLI install guidance uses PowerShell on Windows and keeps the Unix command elsewhere", () => {
+    expect(kiroCliInstallGuidance("win32")).toContain("irm 'https://cli.kiro.dev/install.ps1' | iex");
+    expect(kiroCliInstallGuidance("win32")).not.toContain("curl -fsSL https://cli.kiro.dev/install | bash");
+    expect(kiroCliInstallGuidance("darwin")).toContain("curl -fsSL https://cli.kiro.dev/install | bash");
+  });
+
   test("readKiroCliSqlite imports access+refresh from auth_kv", () => {
     seedKiroCliDb({ access_token: "aoa-abc", refresh_token: "rt-1", expires_at: "2099-01-01T00:00:00Z" });
     const t = readKiroCliSqlite();
@@ -417,6 +423,131 @@ describe("kiro oauth — import-first", () => {
     expect(["-wal", "-shm", "-journal"].map(suffix => existsSync(`${kiroCliDbPath()}${suffix}`))).toEqual([false, false, false]);
     expect(readKiroCliSqlite()).toMatchObject({ access: "aoa-prior", refresh: "rt-prior" });
     expect(existsSync(kiroCliRecoveryPath())).toBe(false);
+  });
+
+  test("whoami supplies a valid profileArn when the SQLite import lacks one (#993)", async () => {
+    const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCD1234";
+    seedKiroCliDb({ access_token: "aoa-builder", refresh_token: "rt-builder" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ email: "builder@example.com", profileArn: arn }) };
+      }
+      throw new Error(`unexpected Kiro CLI command: ${args[0]}`);
+    };
+
+    const cred = await loginKiro({}, { cliRunner: runner });
+
+    expect(cred).toMatchObject({
+      access: "aoa-builder",
+      accountId: arn,
+      kiro: { profileArn: arn },
+    });
+  });
+
+  test("a nested profile.arn shape is accepted (#993)", async () => {
+    const arn = "arn:aws:codewhisperer:eu-west-1:123456789012:profile/XY-99";
+    seedKiroCliDb({ access_token: "aoa-nested", refresh_token: "rt-nested" });
+    const nestedRunner = async (args: string[]) => {
+      if (args[0] === "whoami") return { exitCode: 0, stdout: JSON.stringify({ profile: { arn } }) };
+      throw new Error("unexpected");
+    };
+    const nested = await loginKiro({}, { cliRunner: nestedRunner });
+    expect(nested.accountId).toBe(arn);
+  });
+
+  test("a malformed whoami ARN is ignored without breaking the login (#993)", async () => {
+    seedKiroCliDb({ access_token: "aoa-bad", refresh_token: "rt-bad" });
+    const badRunner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ profileArn: "not-an-arn", email: "bad@example.com" }) };
+      }
+      throw new Error("unexpected");
+    };
+    const bad = await loginKiro({}, { cliRunner: badRunner });
+    // Malformed ARN: login still succeeds for ungated models, but no ARN is borrowed.
+    expect(bad.accountId).toBeUndefined();
+    expect(bad.kiro?.profileArn).toBeUndefined();
+  });
+
+  test("an imported SQLite profileArn stays authoritative over whoami (#993)", async () => {
+    const sqliteArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/SQLITE";
+    const whoamiArn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/WHOAMI";
+    seedKiroCliDb({ access_token: "aoa-both", refresh_token: "rt-both", profile_arn: sqliteArn });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") return { exitCode: 0, stdout: JSON.stringify({ profileArn: whoamiArn }) };
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.accountId).toBe(sqliteArn);
+  });
+
+  test("a session switch between the SQLite read and whoami discards whoami's ARN (#993)", async () => {
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA", refresh_token: "rt-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        // Another process switches the active CLI session mid-flight.
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB", refresh_token: "rt-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    // Account A's token must never carry account B's ARN.
+    expect(cred.accountId).toBeUndefined();
+    expect(cred.kiro?.profileArn).toBeUndefined();
+  });
+
+  test("the discarded whoami identity takes the email with it, not just the ARN (#993)", async () => {
+    // Review finding: asserting only that the ARN is absent also passes against
+    // pre-fix code, which ignored whoami's ARN entirely. The email is the part
+    // that pre-fix code WOULD have kept, so it is the assertion that actually
+    // proves the mismatch path clears the whole identity.
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA", refresh_token: "rt-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB", refresh_token: "rt-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.email).toBeUndefined();
+    expect(cred.kiro?.profileArn).toBeUndefined();
+  });
+
+  test("with no refresh token the access token is the revalidation key (#993)", async () => {
+    // The implementation falls back to the access token when refresh is absent.
+    // Without this case that branch is unexercised in either direction.
+    const arn = "arn:aws:codewhisperer:us-east-1:123456789012:profile/BUILDER";
+    seedKiroCliDb({ access_token: "aoa-only" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        return { exitCode: 0, stdout: JSON.stringify({ email: "a@example.com", profileArn: arn }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.kiro?.profileArn).toBe(arn);
+  });
+
+  test("an access-token-only session that changes under whoami is rejected (#993)", async () => {
+    const arnB = "arn:aws:codewhisperer:us-east-1:123456789012:profile/OTHER-ACCOUNT";
+    seedKiroCliDb({ access_token: "aoa-accountA" });
+    const runner = async (args: string[]) => {
+      if (args[0] === "whoami") {
+        removeKiroCliDb();
+        seedKiroCliDb({ access_token: "aoa-accountB" });
+        return { exitCode: 0, stdout: JSON.stringify({ email: "b@example.com", profileArn: arnB }) };
+      }
+      throw new Error("unexpected");
+    };
+    const cred = await loginKiro({}, { cliRunner: runner });
+    expect(cred.kiro?.profileArn).toBeUndefined();
+    expect(cred.email).toBeUndefined();
   });
 
   test("invalid recovery data names the file the operator must remove", async () => {

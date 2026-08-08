@@ -16,6 +16,7 @@ export function ProvidersPageModals({
   addModalAccountRows,
   accountLoginStatus,
   removeConfirmName,
+  removeDefaultProvider,
   codexLoginOpen,
   jsonLeaveOpen,
   jsonSaving,
@@ -45,6 +46,7 @@ export function ProvidersPageModals({
   addModalAccountRows: AccountLoginRow[];
   accountLoginStatus: Record<string, AccountLoginStatus>;
   removeConfirmName: string | null;
+  removeDefaultProvider: string | null;
   codexLoginOpen: boolean;
   jsonLeaveOpen?: boolean;
   jsonSaving?: boolean;
@@ -96,6 +98,7 @@ export function ProvidersPageModals({
       {removeConfirmName && (
         <RemoveConfirmDialog
           providerName={removeConfirmName}
+          defaultProviderName={removeDefaultProvider}
           onCancel={onCancelRemove}
           onConfirm={onConfirmRemove}
         />

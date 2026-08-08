@@ -1,14 +1,27 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test as bunTest } from "bun:test";
 import { Window } from "happy-dom";
 import { act, useEffect, useState } from "react";
 import type { Root } from "react-dom/client";
-import { useClientResource, useKeyedClientResource } from "../src/client-resource";
+import {
+  clearClientResourceStoresForTests,
+  setClientResourceData,
+  useClientResource,
+  useKeyedClientResource,
+} from "../src/client-resource";
+
+// Bun's default per-test budget is 5s. waitFor below is 15s (busy CI runners),
+// so every case in this file needs a higher ceiling or the suite fails as
+// "waitFor timed out" while the predicate never got its full window.
+function test(name: string, fn: () => void | Promise<void>): void {
+  bunTest(name, fn, { timeout: 30_000 });
+}
 
 const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previousGlobals: Record<(typeof globals)[number], unknown>;
 let testWindow: Window;
 
 beforeEach(() => {
+  clearClientResourceStoresForTests();
   previousGlobals = Object.fromEntries(globals.map((key) => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
   testWindow = new Window({ url: "http://localhost/" });
   Object.defineProperties(globalThis, {
@@ -20,13 +33,24 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearClientResourceStoresForTests();
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
   }
 });
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+/**
+ * 1s was enough on an idle machine and not enough on a loaded CI runner: the
+ * visibility test waits for a poll that only fires after a real 20ms interval
+ * plus a React commit, and macOS CI blew through the budget mid-suite while the
+ * same file passed in isolation. Windows GHA later timed out the same waits at
+ * 5s under suite load (`waitFor timed out` on #827). The assertions below are
+ * about *whether* the fetch happens, never about how fast, so a longer ceiling
+ * costs nothing on a healthy run — it only stops a busy runner from reading as
+ * a product bug.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start > timeoutMs) throw new Error("waitFor timed out");
@@ -34,6 +58,21 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
       await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 10));
     });
   }
+}
+
+/**
+ * happy-dom derives `visibilityState` from internals, so drive it directly and fire the
+ * event the store listens for — the same pair a real tab switch produces.
+ */
+async function setVisibility(state: "visible" | "hidden"): Promise<void> {
+  Object.defineProperty(testWindow.document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  await act(async () => {
+    testWindow.document.dispatchEvent(new testWindow.Event("visibilitychange"));
+    await Promise.resolve();
+  });
 }
 
 test("after the latest subscriber unmounts, polling continues with the surviving loader", async () => {
@@ -99,6 +138,120 @@ test("after the latest subscriber unmounts, polling continues with the surviving
   await act(async () => {
     root.unmount();
   });
+  container.remove();
+});
+
+// A hidden tab has nobody reading the paint, so a passive poll there is pure waste. The
+// interesting part is what happens on the way back: the skipped ticks are made up once,
+// rather than the user waiting out the rest of the interval on stale content.
+test("a hidden tab stops passive polling and one quiet fetch makes up for it on return", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const KEY = `poll-visibility-${Date.now()}`;
+  let fetches = 0;
+
+  function Page() {
+    useClientResource(KEY, async () => { fetches += 1; return `v${fetches}`; }, { pollMs: 20 });
+    return null;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => fetches >= 1);
+
+  await setVisibility("hidden");
+  const atHide = fetches;
+  // Several intervals' worth of time passes with the tab in the background.
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 120));
+  });
+  expect(fetches).toBe(atHide);
+
+  await setVisibility("visible");
+  // `>=`, not `===`: the resumed 20ms interval may tick between the catch-up fetch and
+  // the next predicate check on a loaded runner, and an exact-equality predicate can then
+  // never observe the +1 state and burns the whole budget (windows dev run, 075c2f34c).
+  // The hidden-phase assertion above already proves no polling while hidden; this phase
+  // proves the catch-up happens promptly rather than after a full interval.
+  await waitFor(() => fetches >= atHide + 1);
+  expect(fetches).toBeGreaterThanOrEqual(atHide + 1);
+
+  await act(async () => { root.unmount(); });
+  container.remove();
+});
+
+// The restart-reconnect poll is the counterexample: its entire job is to notice a server
+// coming back while the user is looking elsewhere. Pausing it while hidden would break the
+// one case it exists for, so it opts out and keeps ticking.
+test("a subscriber that opts out keeps polling while hidden", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const KEY = `poll-visibility-optout-${Date.now()}`;
+  let fetches = 0;
+
+  function Page() {
+    useClientResource(
+      KEY,
+      async () => { fetches += 1; return `v${fetches}`; },
+      { pollMs: 20, pauseWhenHidden: false },
+    );
+    return null;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => fetches >= 1);
+
+  await setVisibility("hidden");
+  const atHide = fetches;
+  await waitFor(() => fetches > atHide);
+  expect(fetches).toBeGreaterThan(atHide);
+
+  await act(async () => { root.unmount(); });
+  container.remove();
+});
+
+// Options are per subscriber, not per store: a fixed key can be shared, and one consumer's
+// opt-out must not be dropped because a paused peer subscribed to the same key.
+test("on a shared key, one opted-out subscriber keeps the hidden tick alive for the store", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const KEY = `poll-visibility-mixed-${Date.now()}`;
+  let fetches = 0;
+
+  function Page() {
+    // Paused subscriber first, so the opt-out is the later of the two.
+    useClientResource(KEY, async () => { fetches += 1; return `v${fetches}`; }, { pollMs: 20 });
+    useClientResource(
+      KEY,
+      async () => { fetches += 1; return `v${fetches}`; },
+      { pollMs: 20, pauseWhenHidden: false },
+    );
+    return null;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  await waitFor(() => fetches >= 1);
+
+  await setVisibility("hidden");
+  const atHide = fetches;
+  await waitFor(() => fetches > atHide);
+  expect(fetches).toBeGreaterThan(atHide);
+
+  await act(async () => { root.unmount(); });
   container.remove();
 });
 
@@ -414,6 +567,75 @@ test("store is evicted after the last subscriber leaves", async () => {
   });
   await waitFor(() => snap.data === "v2");
   expect(fetches).toBe(2);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("pre-subscribe seed still quiet-revalidates on first subscribe", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `seed-revalidate-${Date.now()}`;
+  let fetches = 0;
+  setClientResourceData(KEY, "seeded");
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return "fresh";
+    });
+    return <span>{resource.data ?? ""}</span>;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page />);
+  });
+  // Without seedNeedsRevalidate the mount would skip the fetch entirely (gets stay 0).
+  await waitFor(() => fetches === 1 && container.textContent === "fresh");
+  expect(fetches).toBe(1);
+
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+test("StrictMode remount still quiet-revalidates a pre-subscribe seed", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const { StrictMode } = await import("react");
+  const container = document.createElement("div");
+  document.body.append(container);
+
+  const KEY = `seed-strictmode-${Date.now()}`;
+  let fetches = 0;
+  setClientResourceData(KEY, "seeded");
+
+  function Page() {
+    const resource = useClientResource(KEY, async () => {
+      fetches += 1;
+      return "fresh";
+    });
+    return <span>{resource.data ?? ""}</span>;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <StrictMode>
+        <Page />
+      </StrictMode>,
+    );
+  });
+  // Dev StrictMode aborts the first subscribe's fetch; the remount must still revalidate.
+  await waitFor(() => container.textContent === "fresh");
+  expect(fetches).toBeGreaterThanOrEqual(1);
 
   await act(async () => {
     root.unmount();

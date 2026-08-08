@@ -41,6 +41,8 @@ import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
 import { syncCatalogModels } from "../src/codex/catalog";
 import { injectClaudeAgentDefs } from "../src/claude/agents-inject";
+import { reconcileComboRotationState } from "../src/combos/resolve";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -128,7 +130,7 @@ async function comboApi(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    refreshCodexCatalog,
+    createManagementConvergeCodex: catalogConvergenceFactory(refreshCodexCatalog),
   });
 }
 
@@ -139,7 +141,7 @@ async function comboApiRaw(config: OcxConfig, method: string, path: string, body
     body,
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    refreshCodexCatalog: async () => {},
+    createManagementConvergeCodex: catalogConvergenceFactory(),
   });
 }
 
@@ -233,7 +235,7 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", ["low", "medium"]).reasoning).toBeUndefined();
   });
 
-  test("debug-warns once per unsupported combo default", () => {
+  test("debug-warns once per unsupported or unknown combo default", () => {
     const debug = spyOn(console, "debug").mockImplementation(() => {});
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
@@ -243,6 +245,13 @@ describe("combo request cloning", () => {
       model: "m1",
       requestedEffort: "high",
       capability: "unsupported",
+    });
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    expect(debug).toHaveBeenCalledTimes(2);
+    expect(debug.mock.calls[1]?.[1]).toMatchObject({
+      requestedEffort: "medium",
+      capability: "unknown",
     });
     debug.mockRestore();
   });
@@ -639,5 +648,61 @@ describe("persisted combo config parity", () => {
         requireEnabledTarget: true,
       })).toContain("at least one enabled");
     });
+  });
+});
+
+describe("combo generation reconciliation", () => {
+  test("a surviving target accepts a late completion after a sibling topology change", () => {
+    clearComboSelectionState();
+    const original = rrConfig(2, [1, 1]);
+    const oldPick = pickComboTarget(original, "free")!;
+    expect(oldPick.target.provider).toBe("a");
+
+    const removed = reconcileComboRotationState({
+      generation: 10_000,
+      providerNames: new Set(["a", "c"]),
+      comboIds: new Set(["free"]),
+      comboTargets: new Set(["free::a/m1", "free::c/m3"]),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    });
+    expect(removed).toBeGreaterThan(0);
+
+    const current = baseConfig({
+      combos: {
+        free: {
+          strategy: "round-robin",
+          stickyLimit: 2,
+          targets: [
+            { provider: "a", model: "m1", weight: 1 },
+            { provider: "c", model: "m3", weight: 1 },
+          ],
+        },
+      },
+    });
+    noteComboFailure("free", oldPick.target, oldPick.writerGeneration);
+    expect(pickComboTarget(current, "free")?.target.provider).toBe("c");
+  });
+
+  test("a removed target rejects a late completion", () => {
+    clearComboSelectionState();
+    const original = rrConfig(1, [1, 1]);
+    const originalCombo = getCombo(original, "free")!;
+
+    reconcileComboRotationState({
+      generation: 10_000,
+      providerNames: new Set(["a", "c"]),
+      comboIds: new Set(["free"]),
+      comboTargets: new Set(["free::a/m1", "free::c/m3"]),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    });
+
+    const removedPick = pickComboTarget(original, "free", { exclude: ["a/m1"] })!;
+    expect(removedPick.target.provider).toBe("b");
+    noteComboSuccess("free", originalCombo, removedPick.target, 0);
+    expect(pickComboTarget(original, "free")?.target.provider).toBe("b");
   });
 });

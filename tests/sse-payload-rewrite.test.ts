@@ -6,8 +6,11 @@ import { createImageGenCallRestoreRewrite } from "../src/server/responses-image-
 import { createResponsesItemIdPayloadRewrite } from "../src/server/responses-item-id-repair";
 import {
   composeSsePayloadRewrites,
+  relaySseWithBlockRewrite,
   relaySseWithPayloadRewrite,
 } from "../src/server/sse-payload-rewrite";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
+import { relaySseWithFailedTail } from "../src/server/relay";
 
 function streamFromText(text: string): ReadableStream<Uint8Array> {
   const chunk = new TextEncoder().encode(text);
@@ -20,6 +23,21 @@ function streamFromText(text: string): ReadableStream<Uint8Array> {
       }
       sent = true;
       controller.enqueue(chunk);
+    },
+  });
+}
+
+function streamFromTexts(texts: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const text = texts[index++];
+      if (text === undefined) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(text));
     },
   });
 }
@@ -65,7 +83,9 @@ describe("SSE payload rewrite composition", () => {
       },
     );
 
-    const out = await readAll(relaySseWithPayloadRewrite(streamFromText(upstream), composed));
+    const budget = createTestTranslatorBudget();
+    const out = await readAll(relaySseWithPayloadRewrite(streamFromText(upstream), composed, budget));
+    budget.dispose();
     expect(imageGenCalls).toBe(3);
     expect(itemIdCalls).toBe(3);
     expect(imageGenCalls).toBe(itemIdCalls);
@@ -97,5 +117,40 @@ describe("SSE payload rewrite composition", () => {
 
   test("compose with no rewrites is identity", () => {
     expect(composeSsePayloadRewrites()('{"a":1}')).toBe('{"a":1}');
+  });
+
+  test("keeps pulling after a partial or intentionally dropped block", async () => {
+    const budget = createTestTranslatorBudget();
+    const upstream = streamFromTexts([
+      'event: drop\ndata: {"type":"drop"',
+      '}\n\nevent: keep\ndata: {"type":"keep","delta":"ok"}\n\n',
+    ]);
+    const rewritten = relaySseWithBlockRewrite(
+      upstream,
+      (block) => block.includes('"type":"drop"') ? [] : [block],
+      budget,
+    );
+
+    expect(await readAll(rewritten)).toBe(
+      'event: keep\ndata: {"type":"keep","delta":"ok"}\n\n',
+    );
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("unterminated rewrite accumulation closes through a typed failed tail", async () => {
+    const budget = createTestTranslatorBudget({ maxTurnBytes: 64 });
+    const upstream = new AbortController();
+    const rewritten = relaySseWithPayloadRewrite(
+      streamFromText(`data: ${"x".repeat(80)}`),
+      payload => payload,
+      budget,
+    );
+
+    const out = await readAll(relaySseWithFailedTail(rewritten, upstream));
+    expect(out).toContain('"code":"translation_buffer_limit"');
+    expect(out).toEndWith("data: [DONE]\n\n");
+    expect(upstream.signal.aborted).toBe(true);
+    expect(budget.snapshot().currentBytes).toBe(0);
+    budget.dispose();
   });
 });

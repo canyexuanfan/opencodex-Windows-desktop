@@ -38,26 +38,51 @@ to GUI static serving.
 Native passthrough SSE has TWO shapes, selected per request in
 `src/server/responses/core.ts`:
 
-- **Default: tee + background inspection.** `upstreamResponse.body.tee()` sends
-  branch[0] to the client (pure native relay on win32 without any client-facing
-  rewrite — the Bun#32111 crash workaround; a JS relay elsewhere) while branch[1] is
+- **Default outside Windows: tee + background inspection.** `upstreamResponse.body.tee()` sends
+  branch[0] through a terminal-aware client relay while branch[1] is
   drained eagerly by `consumeForInspection`/`consumeForResponseLogMetadata`
   for terminal-outcome recording, quota, the passthrough continuation cache,
-  and request logs. This is the only shape on the bundled Bun 1.3.14.
-- **Gated: eager bounded relay** (`src/server/relay-eager.ts`). win32 with no
-  client-facing rewrite only (neither image-gen aliases nor item-id repair), armed by
-  `decideEagerRelay(config.streamMode)` from
-  `src/lib/bun-stream-caps.ts` — default-on only for runtimes proven to carry
-  the Bun#32111 fix (`MIN_FIXED_BUN_VERSION`, null until a bundle bump), or by
-  explicit `streamMode: "eager-relay"` opt-in. One eager reader + byte-bounded
+  and request logs. This remains the default shape on bundled Bun 1.3.14.
+- **Terminal-aware eager bounded relay** (`src/server/relay-eager.ts`). Windows
+  uses this single-reader shape for rewrite traffic and for no-rewrite traffic
+  selected by `selectEagerPath` in `src/lib/bun-stream-caps.ts`; the latter keeps
+  `legacy-tee` and known-bad-runtime `auto` on tee as documented. When selected,
+  `response.completed` closes the client stream even if upstream keeps HTTP/SSE
+  alive. Darwin uses it for no-client-rewrite traffic only (neither image-gen
+  aliases nor item-id repair) and is explicit-only: `auto` stays tee even after
+  a future threshold bump. One eager reader + byte-bounded
   client queue + post-cancel bounded discard-drain replaces the tee and goes
   directly to the response without a JS rewrite wrapper, preserving the full
   inspection side-effect set (shared `createSseInspector` factory in `relay.ts`)
   including the #44 late-terminal semantics.
 
-The two-shape contract is mirror-commented in `src/server/index.ts` and
-source-invariant-tested by `tests/passthrough-abort.test.ts`; keep both in
-lockstep with any `core.ts` passthrough change.
+The two-shape contract is mirror-commented in `src/server/index.ts`; the real
+`core.ts` gate is source-invariant-tested by `tests/passthrough-abort.test.ts`,
+and the platform matrix lives in `tests/bun-stream-caps.test.ts`. Keep all three
+in lockstep with any passthrough-policy change.
+
+Translated response request-log tracking and the heartbeat relay also reuse
+`createSseInspector`. This keeps every client-facing SSE observation path on
+the same byte-bounded, discard-and-resynchronize frame policy and ensures the
+request-log, first-output, and terminal observers share one payload parse.
+
+## Standalone Search and exact account selectors
+
+`POST /v1/alpha/search` retains the selected model in its request body. When that value is an
+account-qualified native selector, the server resolves the public namespace, uses only the mapped
+stored Codex credential, and sends the bare native model upstream. That exact path is fail-closed:
+it does not consult Pool active state or affinity when selecting, and its outcomes cannot rotate
+the active Pool account. An account-wide credential failure still quarantines that credential and
+clears stale ordinary Pool affinities so they cannot reappear after reauthentication. Quota and
+transient outcomes from an exact request leave Pool affinities untouched. Ordinary search requests
+keep the normal Direct/Pool sidecar behavior.
+
+Standalone Images and Live requests currently carry neither the account-qualified model selector
+nor a trustworthy thread correlation from the Codex client. They therefore retain normal provider
+routing. Do not infer an exact account from caller-supplied account headers, process-global last
+selection, connection identity, or other ambient state; concurrent threads could cross-route
+credentials. Extending exact routing to those endpoints requires an opaque client correlation that
+can be bound server-side to a previously validated selector.
 
 ## Standalone Images
 
@@ -73,6 +98,13 @@ then forwards the decoded JSON without rewriting Codex's edit schema. Each paid 
 one upstream attempt; client cancellation aborts the upstream and pool-only failures update the
 existing account-health state. Unknown Images subpaths still reach the JSON `/v1/*` 404 guard.
 
+When the OpenAI credential path is unavailable or its authentication fails, `generations` (not
+`edits`) may fall back to Google Antigravity if that provider is logged in. The fallback is
+credential-driven: it exists so an image request reaches a real upstream answer rather than dying on a
+local credential error, and it does not apply when the caller selected an explicit keyed custom
+provider, because a configured pool owns its own authentication failure rather than hiding it behind
+separately billed generation.
+
 On non-loopback binds, data-plane authentication and origin policy cover both Images routes. An
 explicit keyed Images provider accepts the proxy admission secret as either an OpenAI-style bearer
 or `x-opencodex-api-key` because the provider key replaces caller authorization before fetch. The
@@ -87,6 +119,17 @@ image-gen declaration is replaced by a usable `image_gen__<inner-name>` alias, t
 hosted `image_generation` and deduplicates aliases in stable container order. Empty or malformed
 namespaces do not remove the hosted fallback. Discovery and normalization span both top-level
 `body.tools` and Codex Desktop Responses Lite `input[].type = "additional_tools"` containers.
+
+For a model explicitly listed in `modelPreferHostedTools`, a non-forward Responses provider may opt
+to remove colliding client `image_gen` declarations before this normalization and rewrite their
+selectors to hosted `image_generation`, so a provider-reserved hosted tool takes precedence without
+loosening a caller's tool-choice restriction. The opt-in is intentionally model-scoped: the default
+alias path remains safest for ordinary public Responses endpoints.
+
+For OpenAI API virtual `-pro` models, preference lookup checks the selected public ID first and
+uses the resolved base wire-model ID as a fallback. `modelAdapters` resolves the public ID first and
+the base ID second; the second pass selects the final adapter, and configuration validation mirrors
+both steps.
 
 Client-facing API-key responses perform the inverse mapping: JSON output and SSE function-call
 items restore `{ namespace: "image_gen", name: "<inner-name>" }` so Codex can dispatch the local
@@ -114,19 +157,24 @@ conflicts with `modelSupportsReasoningSummaries: false` for the same model.
 
 ## Claude Desktop config-library resolution
 
-The Desktop profile writer and management status probe share
-`resolveDesktop3pConfigLibraryPath`. Explicit opencodex and Claude user-data overrides win; otherwise
-the resolver follows Electron's platform user-data convention under the `Claude` application
-directory. The retired hardcoded `Claude-3p` path is neither read nor migrated implicitly, so the
-status endpoint cannot report a self-consistent file that Desktop never sees.
+The Desktop profile writer and the management status probe share
+`resolveDesktop3pConfigLibraryPath`. The resolver reproduces Desktop's own rule rather than a guess:
+an explicit `CLAUDE_USER_DATA_DIR` (or the opencodex override) wins; on Windows
+`%LOCALAPPDATA%\Claude-3p` wins; otherwise the Electron user-data path gains a `-3p` suffix if it
+does not already have one. `configLibrary` is appended to that root.
+
+`Claude-3p` is Desktop's real directory name, assembled at runtime from `"Claude" + "-3p"`, which is
+why searching the app bundle for the literal string finds nothing. It is not a legacy path to migrate
+away from. Resolution stays a pure function of (env, platform, home) so the Windows branch is
+testable on any host: stubbing `process.platform` does not propagate to `os.platform()` under Bun.
 
 [Decision Log]
-- 목적과 의도: Make the generated Claude Desktop profile land in the directory the installed Desktop application actually reads and keep dashboard status consistent with that write target.
-- 기존 구현 및 제약 조건: Both callers duplicated a macOS-only `Claude-3p` fallback, which made their internal status agree while Electron used `Claude/configLibrary`; users may also set explicit profile roots.
-- 검토한 주요 대안: Rename only the CLI fallback; scan both directories; move or delete legacy files automatically; centralize a cross-platform resolver.
-- 선택한 방식: Centralize override-aware macOS, Windows, and Linux resolution and use it for both write and status paths without destructive migration.
-- 다른 대안 대신 이 방식을 선택한 이유: One resolver prevents drift, platform defaults match Electron, and leaving the legacy directory untouched avoids deleting user data or guessing which copy should win.
-- 장점, 단점 및 영향: New applies become visible to Desktop on every supported platform; old `Claude-3p` files remain harmless and users with nonstandard layouts must use the documented override.
+- 목적과 의도: 생성된 Claude Desktop 프로필이 설치된 Desktop이 실제로 읽는 디렉터리에 떨어지고, 대시보드 상태가 그 쓰기 대상과 일치하게 한다.
+- 기존 구현 및 제약 조건: 두 호출자가 경로 계산을 각자 복제했고, Desktop이 실제로 참조하는 `CLAUDE_USER_DATA_DIR`와 Windows `LOCALAPPDATA` 분기가 빠져 있었다(#539). 사용자가 프로필 루트를 직접 지정하는 경우도 있다.
+- 검토한 주요 대안: `-3p` 접미사를 구버전 잔재로 보고 제거; 두 디렉터리를 모두 스캔; 레거시 파일을 자동 이전; 크로스플랫폼 해석기를 한 곳에 둔다.
+- 선택한 방식: Desktop 번들의 해석 규칙을 그대로 이식한 override 인지 해석기를 한 곳에 두고, 쓰기 경로와 상태 조회가 같은 함수를 쓴다.
+- 다른 대안 대신 이 방식을 선택한 이유: `-3p`는 Desktop의 정상 동작이므로 제거는 회귀였다. 해석기를 한 곳에 두면 두 호출자의 드리프트가 불가능해지고, 파괴적 이전 없이 상태와 쓰기 대상이 일치한다.
+- 장점, 단점 및 영향: 지원 플랫폼 전부에서 apply 결과가 Desktop에 보인다. 비표준 레이아웃 사용자는 문서화된 override를 써야 하고, 해석기는 Desktop 번들의 규칙 변경을 따라가야 한다.
 
 ## Cursor Native Exec
 
@@ -162,6 +210,21 @@ the upgrade with 426 so Codex falls back to HTTP cleanly.
 
 The endpoint handles `response.create`, ignores `response.processed`, supports warmup
 `generate: false`, and feeds the same request pipeline as HTTP/SSE.
+
+Registry-declared per-model compatibility hints (`modelResponsesUpstreamStreaming`) may ask the
+upstream Responses endpoint for bounded JSON on ANY client transport — WebSocket or ordinary
+HTTP/SSE. The bridge reframes that JSON into the same Responses event sequence
+(`src/server/responses-json-events.ts`): WS turns send the frames as WebSocket messages, while
+HTTP clients that requested streaming receive a synthesized terminal SSE body (created →
+output_item.done → terminal → `[DONE]`). No production registry entry currently opts in:
+DeepSeek V4 Flash used this path while its public-beta Responses stream was suspected of not
+closing on the terminal event, but the official guide documents a
+`response.completed`/`response.incomplete`/`response.failed` terminal with no `data: [DONE]`
+sentinel, and live probes (2026-08-07) confirm the stream closes on the terminal. The relay's
+terminal-output boundary (`src/server/relay.ts`) cuts the stream at that event and synthesizes
+`[DONE]` itself, so DeepSeek streams live again; the registry knob remains as a one-line
+rollback for upstreams that regress, kept suite-reachable by a synthetic-registry fixture in
+`tests/deepseek-inbound-wire.test.ts`.
 
 `ws-bridge.ts` preserves upstream `failed` and `incomplete` status values in the final WebSocket
 frame rather than always emitting `response.completed`. If the response status is `failed`, a
@@ -204,6 +267,33 @@ deadline for the next client replay. Retries are bounded to three attempts; hard
 ordinary 5xx errors are not replayed. Completion fallback rebuilds only replayable text, preserves
 the original user/tool-result turn for reasoning-only attempts, supplies neutral non-empty carriers
 for empty tool output, and validates role alternation plus tool-use/result pairing before transport.
+
+Provider-level `retryOn429` (devlog 260802_429_same_target_retry) is the generic, opt-in
+same-target 429 retry for API-key providers (`authMode: "key"`), primarily single-key pools
+that cannot use multi-key failover. In the pre-stream recovery loop, a 429 waits (`Retry-After`
+or the fixed interval, capped at `maxIntervalMs`) and replays the identical request on the same
+key before any failover, up to `attempts` extra times per request (the budget lives outside the
+recovery loop, so a 413/401 replay cannot re-arm it). The same wait-and-replay applies to every
+other key-auth surface that bypasses that loop: the Responses passthrough wire (e.g. the
+built-in DeepSeek preset), the image/video bridge and web-search sidecar loops (before their
+`on429` key rotation), and Anthropic terminal-guard continuations (before key/account
+failover). The policy covers HTTP-capable adapters only: custom `runTurn` transports in the
+image loop run through an event queue and never receive an HTTP status, so they are outside
+the HTTP retry scope and cannot replay a 429. Codex never retries 429 client-side (openai/codex#30471), so this is the only
+defense for those providers; the final 429 still carries `Retry-After` for clients that honor
+it. Concurrent requests each honor their own policy — there is no process-wide shared cooldown
+(unlike the Kiro pattern), so a rate-limit storm multiplies upstream volume by at most
+`attempts + poolKeys` per request (same-key replays, then failover keys; the pool size is the
+operator-configured `apiKeyPool` length, fixed for the duration of the request). Every surface
+releases (and awaits the cancellation of) the unread 429 body before the backoff, records the
+`rate-limit-429` recovery kind on replay sends, and the bridge loops clear the old
+response-header deadline before the wait and start a fresh one afterward — client cancellation
+is re-checked after the wait, so 499 always wins over a stale-deadline edge, and backoffs never
+consume the connect budget or surface as a 504. The wait is abort-aware:
+once the server observes the client disconnect (Bun propagates it asynchronously, observed
+1–10 s), the sleep is interrupted, the unread 429 body is released, and the request is
+cancelled with 499 before any replay; because the propagation is async, a replay may precede
+the cancel if the interval elapses first (bounded by the same `attempts` budget).
 
 [Decision Log]
 - 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.
@@ -253,7 +343,7 @@ replays are explicit and receive the same repair.
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
 
-## Cursor Router optimization levels
+## Cursor parameterized models
 
 Cursor Router's parameterized `default` model is represented in Codex by four catalog rows:
 `cursor/auto` preserves Cursor's team/account default, while `cursor/auto-cost`,
@@ -262,6 +352,12 @@ All four route to the `default` Cursor wire model. Explicit variants additionall
 `AgentRunRequest.requested_model.parameters` with the `optimization` parameter; this is the same
 parameterized-model channel used by current Cursor clients. Router rows are static capabilities and
 must survive a live `GetUsableModels` response that omits `default`.
+
+`cursor/grok-4.5-fast` is also a stable Codex-facing row, but current Cursor clients do not request
+it as a flat model slug. OpenCodex sends `grok-4.5` through `requested_model` with separate `effort`
+and `fast=true` parameters, leaving legacy `model_details` unset for that parameterized external
+selection. Live discovery still recognizes Cursor's flattened `cursor-grok-4.5-{effort}-fast`
+variants, plus the older `grok-4.5-fast-{effort}` ordering, as availability evidence only.
 
 ## Cursor active-context usage
 
@@ -345,6 +441,45 @@ Grounded in the open-sourced official client (xai-org/grok-build); unit + eviden
   `fetchWithHeaderTimeout` takes an executor so provider fetch wrappers stay inside the
   timeout race.
 
+## Kiro reasoning round-trip (`redactedContent`)
+
+Kiro never returns plaintext reasoning for its **GPT-5.6 family** (`gpt-5.6-sol`, `-terra`,
+`-luna`): `reasoningContentEvent` carries a KMS-encrypted `redactedContent` blob, never `text`.
+Their `additionalModelRequestFieldsSchema` (`ListAvailableModels`) accepts only `reasoning.effort`
+with `additionalProperties: false` — there is no display/summary opt-in, so this is the only
+reasoning these models can return. Kiro's own CLI replays the blob on the matching
+`assistantResponseMessage.reasoningContent` to preserve model reasoning across turns; dropping it
+makes every turn restart without the previous turn's reasoning. Verified on kiro-cli 2.14.1 and
+2.16.0, all three models.
+
+The Claude 4.6+/5 entries advertise a different, richer contract (`thinking.type` adaptive/disabled,
+`thinking.display` summarized/omitted, `output_config.effort`, `max_tokens`) and are not covered by
+that measurement; older Claude, deepseek, minimax, glm, and qwen entries advertise no additional
+fields at all. The handling below keys off the wire field, not the model id, so any model that
+sends `redactedContent` round-trips.
+
+- The blob rides the existing `ocxr1:` envelope as `krc` (`src/responses/reasoning-envelope.ts`) on
+  an envelope-only reasoning item — `summary: []`, no text deltas — so it stays invisible in the
+  Codex app while round-tripping, exactly like the hidden-thinking path.
+- **Pairing is backwards.** Kiro emits `reasoningContentEvent` at the END of an assistant turn,
+  after content AND tool calls. A `krc`-only item therefore belongs to the turn that already
+  closed, so the parser attaches it to the PRECEDING assistant message rather than folding it into
+  the following turn like ordinary reasoning (`src/responses/parser.ts`). With no assistant turn to
+  own it, the blob is dropped rather than mis-paired.
+- The blob lives on `OcxAssistantMessage.kiroRedactedReasoning`, not on a thinking content part, so
+  no other adapter replays provider-private state if the conversation switches providers.
+
+Kiro reports context pressure in its own `contextUsageEvent`, which is the authoritative source. On
+every capture taken (2.14.1 and 2.16.0) `metadataEvent` carried only `stopReason` — which is why
+reading the percentage from `metadataEvent` alone never saw a value — but the parser still accepts a
+finite `contextUsagePercentage` (and a `tokenUsage` block) there as a fallback, so a value parsed
+from `metadataEvent` is legitimate rather than impossible. Both feed the same field, and any
+positive value overwrites an earlier one.
+
+Spend arrives in `meteringEvent` as **credits, not tokens**. No captured response carried
+`tokenUsage` on any event, which is why Kiro usage stays estimated; `meteringEvent` is currently
+ignored because a credit is not a token count.
+
 ## Parallel tool calls (default-on for chat providers)
 
 The openai-chat adapter buffers ALL streamed `tool_calls` deltas (keyed by `index`, falling back to
@@ -423,17 +558,43 @@ combo whose remaining eligible targets use other providers.
 - 장점, 단점 및 영향: Same-account model fallback works without weakening explicit upstream backoff; the account health map intentionally does not remember that one deferred reset-derived failure, while the combo target map does.
 ```
 
+## Transport inventory
+
+The sections above cover the transports with load-bearing invariants. The rest of the transport
+surface is listed here so a maintainer can find the owner without grepping:
+
+| Transport | Owner | Invariant worth knowing |
+| --- | --- | --- |
+| Azure OpenAI Responses | `src/adapters/azure.ts` | Deployment-shaped URLs on top of the Responses contract. |
+| Google / Vertex / Antigravity | `src/adapters/google.ts`, `src/adapters/google-http.ts`, `src/adapters/google-wire-compiler.ts`, `src/adapters/google-tool-schema.ts`, `src/adapters/google-truncation.ts`, `src/adapters/google-errors.ts`, `src/adapters/google-antigravity-wire.ts`, `src/adapters/google-antigravity-replay.ts` | Vertex and Antigravity install a Google-family `fetchResponse` and so own their retry policy, while AI Studio Gemini leaves it undefined and uses the default server fetch path. The Google-family wrapper reuses the shared abort/deadline helpers (`src/lib/upstream-retry.ts`), wire-body repair, and upstream error normalization. |
+| Mimo Free | `src/adapters/mimo-free.ts` | Client identity and JWT handling are transport-local; the per-install client id lives in the opencodex state root. |
+| Anthropic image ingress | `src/adapters/anthropic-image-guard.ts`, `src/adapters/anthropic-image-normalize.ts` | Oversized or unsupported images are normalized or rejected before reaching upstream. |
+| Adapter execution support | `src/adapters/run-turn-queue.ts`, `src/adapters/tool-catalog-nudge.ts`, `src/adapters/identity.ts`, `src/adapters/image.ts`, `src/adapters/upstream-http-error.ts` | Shared machinery: turn ordering, tool-catalog nudging, client fingerprinting, image conversion, upstream error normalization. |
+| Cursor (beyond the sections above) | `src/adapters/cursor/live-transport.ts`, `src/adapters/cursor/transport-retry.ts`, `src/adapters/cursor/mcp-manager.ts`, `src/adapters/cursor/thread-continuity.ts` | Thread continuity is the point: a retry must not start a new Cursor thread. |
+| Claude Messages | `src/server/claude-messages.ts` | Routed translation, a native Anthropic passthrough branch, and `count_tokens`. |
+| Chat Completions inbound | `src/server/chat-completions.ts`, `src/chat/` | Inbound translation onto the same routing pipeline. |
+| Hosted search relay | `src/server/search.ts` | Direct relay; distinct from the web-search sidecar loop below. |
+| Image/video generation loop | `src/images/loop.ts`, `src/images/plan.ts`, `src/images/fulfill.ts`, `src/images/xai-client.ts`, `src/images/xai-video-client.ts`, `src/images/artifacts.ts` | A provider-returned image URL is downloaded into a local artifact once, then served locally; warnings stay URL-free because provider CDN URLs may embed credentials. |
+| GitHub Copilot | `src/providers/xai-transport.ts` (`resolveProviderTransport`), `src/providers/github-copilot-transport.ts` | `resolveProviderTransport` selects the Copilot transport when the routed provider name is `github-copilot`; the Copilot module then resolves its headers and base URL, and the registry seeds the provider row and model fallback. |
+| API-key pools | `src/providers/key-failover.ts` | A 429 rotates the active key and records a cooldown; `provider.apiKey` keeps mirroring the active entry so routing stays single-key. |
+| Alibaba regions | `src/providers/alibaba-region-backup.ts`, `src/providers/alibaba-region-migration.ts`, `src/providers/alibaba-region-startup.ts` | Region migration backs up before rewriting and is idempotent across restarts. |
+| Discovery and quota | `src/providers/model-discovery.ts`, `src/providers/quota.ts` | Discovery rejects a response over 4 MiB or past 2,000 raw rows before caching it. |
+
 ## Sidecars
 
-Web search and vision sidecars only run when the mode-aware `openai` forward ChatGPT authority
-exists and the main request needs that capability.
+Web search and vision sidecars run only when the main request needs that capability and a usable
+sidecar authority exists. Both have two possible backends, but they select differently:
 
-There is one deterministic `openai` sidecar candidate; its current account mode owns credential
-selection. API-key OpenAI is not a ChatGPT forward sidecar candidate.
+| Sidecar | Backend selection | Default model | Activation |
+| --- | --- | --- | --- |
+| `web-search/` | Explicit configuration only: unset always resolves to the OpenAI forward path. Anthropic is never auto-selected from credential availability — doing so once sent OpenAI model ids to the Anthropic API. | `gpt-5.6-luna` (OpenAI), `claude-sonnet-5` (Anthropic) | Hosted `web_search` requested by a non-passthrough routed model. |
+| `vision/` | Explicit configuration wins for both backends. Only an unset backend auto-selects: Anthropic when a usable Anthropic OAuth provider exists, otherwise the OpenAI forward authority. An explicitly selected backend whose authority is unavailable produces no plan rather than falling back. | `claude-sonnet-5` (Anthropic), `gpt-5.4-mini` (OpenAI) | Input contains images for a model listed in `noVisionModels`. |
 
-| Sidecar | Default model | Activation |
-| --- | --- | --- |
-| `web-search/` | `gpt-5.6-luna` | Hosted `web_search` requested by a non-passthrough routed model. |
-| `vision/` | `gpt-5.4-mini` | Input contains images for a model listed in `noVisionModels`. |
+The asymmetry is in the unset case only: vision may describe an image with whichever model can see
+it, while a hosted search tool is tied to a provider-specific tool contract, so search never infers
+Anthropic from credentials alone.
+
+On the OpenAI path there is one deterministic `openai` sidecar candidate and its current account mode
+owns credential selection; API-key OpenAI is not a ChatGPT forward sidecar candidate.
 
 Sidecar failures must degrade to text markers or skipped capability, not abort the main request.

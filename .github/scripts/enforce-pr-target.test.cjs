@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const { latestCodeRabbitReviewForHead } = require("./pr-quality-state.cjs");
 
 describe("enforce-pr-target workflow", () => {
   const workflowPath = path.join(__dirname, "../workflows/enforce-pr-target.yml");
@@ -48,12 +49,133 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
-  it("checks out trusted default-branch scripts only (never PR head)", () => {
-    assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
-    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/);
-    assert.match(workflow, /sparse-checkout:\s*\.github\/scripts/);
-    assert.match(workflow, /persist-credentials:\s*false/);
+  it("re-runs on issue_comment so a maintainer GUI waiver takes effect", () => {
+    // The GUI-screenshot gate is waived by a maintainer issue comment
+    // ("not touching gui"). `pull_request_target` types do not include issue
+    // comments, so without this trigger the waiver sits unread until a PR
+    // edit or push re-runs the gate.
+    assert.match(workflow, /^  issue_comment:/m);
+    assert.match(workflow, /- created/);
+    assert.match(workflow, /- edited/);
+    // The script resolves the PR number from the issue payload, which is what
+    // an issue_comment event delivers instead of a pull_request object.
+    assert.match(workflow, /context\.payload\.issue\?\.number/);
+  });
+
+  it("does not add review events that would break the trusted-base model", () => {
+    // `pull_request_review` / `pull_request_review_comment` load the workflow
+    // from the PR head branch (like `pull_request`), while this workflow's
+    // checkout pins the base SHA — head YAML + base scripts mismatch, so the
+    // gate crashes (`parseGateState is not a function`) and the head controls
+    // the workflow definition under a write token. The findings claim runs on
+    // every `pull_request_target` event instead (opened/edited/synchronize/
+    // ready_for_review).
+    assert.doesNotMatch(workflow, /^  pull_request_review:/m);
+    assert.doesNotMatch(workflow, /^  pull_request_review_comment:/m);
+  });
+
+  it("queries review threads and feeds them to the findings claim check", () => {
+    // Paginated read: `after: $cursor` + `pageInfo.hasNextPage`, so a busy PR
+    // with more than 100 threads cannot hide unresolved bot threads (fail-open
+    // gap in a fail-closed check).
+    assert.match(workflow, /reviewThreads\(first: 100, after: \$cursor\)/);
+    assert.match(workflow, /hasNextPage/);
+    assert.match(workflow, /unresolvedFindingsClaim/);
+    assert.match(workflow, /findingsClaim\.byBot/);
+    assert.match(workflow, /review_findings/);
+  });
+
+  it("fails closed when review threads cannot be read", () => {
+    assert.match(workflow, /findingsUnverifiable/);
+    assert.match(workflow, /findings claim could not be verified/);
+  });
+
+  it("writes exactly one consolidated comment via a single upsert helper", () => {
+    assert.match(workflow, /GATE_MARKER,/);
+    assert.match(workflow, /comment\.body\?\.includes\(GATE_MARKER\)/);
+    assert.match(workflow, /upsertGateComment/);
+    assert.match(workflow, /buildGateCommentBody/);
+    // No legacy two-comment write path remains.
+    assert.doesNotMatch(workflow, /upsertReadinessComment/);
+    assert.doesNotMatch(workflow, /buildReadinessCommentBody/);
+    // No intermediate checkpoint comment writes.
+    assert.doesNotMatch(workflow, /Draft conversion pending/);
+    assert.doesNotMatch(workflow, /Recording ownership state/);
+  });
+
+  it("manages the review-ready status label at the ready moment", () => {
+    assert.match(workflow, /REVIEW_READY_LABEL\s*=\s*"review-ready"/);
+    assert.match(workflow, /github\.rest\.issues\.addLabels/);
+    assert.match(workflow, /github\.rest\.issues\.removeLabel/);
+    assert.match(workflow, /reviewReadyDesired/);
+  });
+
+  it("keeps CodeRabbit auto-review unfiltered so maintainer PRs are not starved", () => {
+    // A positive `labels:` filter under `reviews.auto_review` in
+    // `.coderabbit.yaml` would restrict ALL automatic reviews to PRs carrying
+    // that label. Maintainer PRs never carry `review-ready` (no checklist), so
+    // such a filter would silently stop CodeRabbit from reviewing maintainer
+    // PRs. The label is a status marker only; assert the reviewer config
+    // directly, since the workflow never writes a labels block.
+    const coderabbit = fs.readFileSync(
+      path.join(__dirname, "../../.coderabbit.yaml"),
+      "utf8",
+    );
+    const autoReview = coderabbit.match(/auto_review:[\s\S]*?(?=\n\S|\n\s{2}\S)/);
+    assert.ok(autoReview, ".coderabbit.yaml must declare auto_review");
+    assert.doesNotMatch(autoReview[0], /labels:/);
+  });
+
+  it("migrates legacy two-comment PRs and deletes the old comments", () => {
+    assert.match(workflow, /migrateLegacyCommentsIfNeeded/);
+    assert.match(workflow, /migrateLegacyGateState/);
+    assert.match(workflow, /github\.rest\.issues\.deleteComment/);
+    assert.match(workflow, /legacyEnforcerComment/);
+    assert.match(workflow, /legacyReadinessComment/);
+  });
+
+  it("checks out scripts from the event-specific trusted boundary (never PR head)", () => {
+    // Scope the assertions to the checkout step itself, so a stray `ref:` on
+    // another step cannot satisfy the pin while the checkout stays mutable.
+    const checkoutStep = workflow
+      .split("- name: Checkout trusted PR-quality scripts")[1]
+      .split(/\n {6}- name:/)[0];
+    assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
+    // `pull_request_target` pins the PR base SHA. Privileged `issue_comment`
+    // runs must source scripts from the repository default branch, matching
+    // the branch that supplied the workflow itself; unpromoted `dev` scripts
+    // must never execute under the write-capable token.
+    assert.match(
+      checkoutStep,
+      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'issue_comment'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
+    );
+    assert.doesNotMatch(checkoutStep, /\|\|\s*'dev'/);
+    // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
+    assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
+    assert.match(checkoutStep, /persist-credentials:\s*false/);
     assert.doesNotMatch(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.head/);
+  });
+
+  it("orders same-head CodeRabbit reviews deterministically without timestamps", () => {
+    const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const latest = latestCodeRabbitReviewForHead({
+      reviews: [
+        {
+          id: 41,
+          commit_id: head,
+          user: { login: "coderabbitai[bot]" },
+          body: "older",
+        },
+        {
+          id: 42,
+          commit_id: head,
+          user: { login: "coderabbitai[bot]" },
+          body: "newer",
+        },
+      ],
+      liveHeadSha: head,
+    });
+    assert.equal(latest?.id, 42);
   });
 
   it("loads pr-quality via require from the checked-out scripts", () => {
@@ -65,6 +187,7 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /stackedBase/);
     assert.match(workflow, /github\.rest\.pulls\.list/);
     assert.match(workflow, /treating as stacked/);
+    assert.match(workflow, /other\.base\?\.repo\?\.owner/);
     const qualityCall = workflow.match(
       /collectPrQualityFailures\(\{([\s\S]*?)\}\);/,
     );
@@ -74,9 +197,9 @@ describe("enforce-pr-target workflow", () => {
 
   it("strips stale WRONG BRANCH prefix on failure when base is corrected", () => {
     const failureBlock = workflow.match(
-      /if \(failures\.length > 0\) \{([\s\S]*?)core\.setFailed\(/,
+      /if \(mustDraft\) \{([\s\S]*?)core\.setFailed\(/,
     );
-    assert.ok(failureBlock, "workflow must have a failure path");
+    assert.ok(failureBlock, "workflow must have a draft path");
     const failurePath = failureBlock[1];
     assert.match(failurePath, /shouldStripTitlePrefix/);
     assert.match(failurePath, /!hasWrongBase/);

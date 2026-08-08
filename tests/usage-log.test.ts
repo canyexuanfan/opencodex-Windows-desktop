@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendUsageEntry,
   currentUsageLogRevision,
+  normalizeUsageEntryForTest,
   readRecentUsageEntries,
   readUsageEntries,
   readUsageEntriesForManagement,
@@ -16,6 +18,7 @@ import {
   usageTotalTokens,
   usageReadCacheStatsForTests,
   usageLogRevisionKey,
+  type PersistedUsageEntry,
 } from "../src/usage/log";
 
 let testDir = "";
@@ -35,6 +38,47 @@ afterEach(() => {
 });
 
 describe("usage log", () => {
+  test("preserves explicitly empty attempts through normalization", () => {
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-empty-attempts",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-test",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "unreported",
+      attempts: [],
+    });
+
+    expect(normalized.attempts).toEqual([]);
+  });
+
+  test("persists the rate-limit-429 recovery kind on attempts", () => {
+    const entry: PersistedUsageEntry = {
+      requestId: "ocx-ratelimit-kind",
+      timestamp: 1,
+      provider: "blsc",
+      model: "blsc/DeepSeek-V4-Flash",
+      status: 429,
+      durationMs: 4,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "blsc",
+        model: "blsc/DeepSeek-V4-Flash",
+        adapter: "openai-chat",
+        status: 429,
+        durationMs: 4,
+        sendCount: 2,
+        recoveryKinds: ["rate-limit-429", "rate-limit-429"],
+        usageStatus: "reported",
+      }],
+    };
+    appendUsageEntry(entry);
+    expect(readUsageEntries()[0]?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429"]);
+  });
+
+  /** Build one minimal persisted-usage JSONL line for the given request id. */
   const persistedLine = (requestId: string) => JSON.stringify({
     requestId,
     timestamp: 1,
@@ -68,6 +112,67 @@ describe("usage log", () => {
     expect(usageReadCacheStatsForTests()).toEqual({ fullReads: 1, tailReads: 0, parsedLines: 2_100 });
   });
 
+  test("usage reader never requests more than 64 MiB from an oversized log", async () => {
+    const path = usageLogPath();
+    const fd = openSync(path, "w");
+    try {
+      truncateSync(fd, 64 * 1024 * 1024 + 1024);
+      const tail = Buffer.from(`${persistedLine("tail")}\n`);
+      const tailPosition = 64 * 1024 * 1024 + 1024 - tail.byteLength;
+      writeSync(fd, Buffer.from("\n"), 0, 1, tailPosition - 1);
+      writeSync(fd, tail, 0, tail.byteLength, tailPosition);
+    } finally {
+      closeSync(fd);
+    }
+    const snapshot = await readUsageSnapshotForManagement();
+    expect(snapshot.truncatedPrefixBytes).toBeGreaterThan(0);
+    expect(snapshot.entries.map(entry => entry.requestId)).toEqual(["tail"]);
+  }, STORE_BUDGET_MS); // sparse >64 MiB fixture IO is intrinsic; Windows self-hosted measured 7.193s against Bun's 5s default.
+
+  test("usage tail exact row boundary keeps the complete newest row", async () => {
+    const newest = Buffer.from(`${persistedLine("newest")}\n`);
+    writeFileSync(usageLogPath(), `${persistedLine("older")}\n${newest.toString("utf-8")}`);
+
+    const snapshot = await readUsageSnapshotForManagement(newest.byteLength);
+
+    expect(snapshot.entries.map(entry => entry.requestId)).toEqual(["newest"]);
+  });
+
+  test("usage byte-prefix truncation and entry-count truncation report independent metadata", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
+    );
+    const snapshot = await readUsageSnapshotForManagement();
+    expect(snapshot.entries).toHaveLength(500_000);
+    expect(snapshot.entries[0]?.requestId).toBe("1");
+    expect(snapshot.entries.at(-1)?.requestId).toBe("500000");
+    expect(snapshot.truncatedPrefixBytes).toBe(0);
+    expect(snapshot.entriesTruncated).toBe(true);
+    expect(snapshot.entriesDropped).toBe(1);
+  }, STORE_BUDGET_MS); // parsing 500,001 rows IS the entry-cap assertion; the 200k-row variant measured ~5.05s on windows-latest against Bun's 5s default.
+
+  test("stale usage-read flight is replaced and old completion cannot clear new owner", async () => {
+    writeFileSync(
+      usageLogPath(),
+      `${Array.from({ length: 5_000 }, (_, index) => persistedLine(`stale-${index}`)).join("\n")}\n`,
+    );
+    const first = readUsageSnapshotForManagement();
+    await Promise.resolve();
+    const originalNow = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(originalNow + 30_001);
+    try {
+      const replacement = readUsageSnapshotForManagement();
+      const joiner = readUsageSnapshotForManagement();
+      await expect(first).rejects.toThrow("management usage read superseded");
+      const [second, third] = await Promise.all([replacement, joiner]);
+      expect(third.entries).toEqual(second.entries);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test("a replacement does not join an in-flight read for the previous file revision", async () => {
     writeFileSync(
       usageLogPath(),
@@ -77,10 +182,9 @@ describe("usage log", () => {
     await new Promise<void>(resolve => setTimeout(resolve, 0));
     writeFileSync(usageLogPath(), `${persistedLine("replacement")}\n`);
     const newRead = readUsageSnapshotForManagement();
-    const [oldSnapshot, newSnapshot] = await Promise.all([oldRead, newRead]);
-    expect(oldSnapshot.entries).toHaveLength(2_100);
+    await expect(oldRead).rejects.toThrow("management usage read superseded");
+    const newSnapshot = await newRead;
     expect(newSnapshot.entries.map(entry => entry.requestId)).toEqual(["replacement"]);
-    expect(usageLogRevisionKey(newSnapshot.revision)).not.toBe(usageLogRevisionKey(oldSnapshot.revision));
   });
 
   test("persists conversationId for Logs session correlation", () => {
@@ -248,6 +352,54 @@ describe("usage log", () => {
     expect(attempt).not.toHaveProperty("effectiveEffort");
     expect(attempt).not.toHaveProperty("reasoningWireField");
     expect(attempt).not.toHaveProperty("reasoningWireValue");
+  });
+
+  test("keeps boolean reasoning values only for reasoning.enabled", () => {
+    const base = {
+      requestId: "ocx-boolean-reasoning",
+      timestamp: 1,
+      provider: "combo",
+      model: "combo/free",
+      status: 200,
+      durationMs: 4,
+      usageStatus: "unreported",
+      attempts: [{
+        ordinal: 1,
+        provider: "a",
+        model: "m1",
+        adapter: "openai-chat",
+        status: 200,
+        durationMs: 3,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "unreported",
+      }],
+    } as const;
+    const mismatched = normalizeUsageEntryForTest({
+      ...base,
+      reasoningWireField: "reasoning_effort",
+      reasoningWireValue: true,
+      attempts: [{
+        ...base.attempts[0],
+        reasoningWireField: "reasoning_effort",
+        reasoningWireValue: true,
+      }],
+    });
+    const valid = normalizeUsageEntryForTest({
+      ...base,
+      reasoningWireField: "reasoning.enabled",
+      reasoningWireValue: false,
+      attempts: [{
+        ...base.attempts[0],
+        reasoningWireField: "reasoning.enabled",
+        reasoningWireValue: false,
+      }],
+    });
+
+    expect(mismatched).not.toHaveProperty("reasoningWireValue");
+    expect(mismatched.attempts?.[0]).not.toHaveProperty("reasoningWireValue");
+    expect(valid.reasoningWireValue).toBe(false);
+    expect(valid.attempts?.[0]?.reasoningWireValue).toBe(false);
   });
 
   test("drops only malformed persisted attempts while preserving valid siblings", () => {

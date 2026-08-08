@@ -2,6 +2,7 @@ import type { OcxProviderConfig } from "../types";
 import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
+  registryEntryForProviderDestination,
   type ProviderModelDiscoveryFilter,
   type ProviderModelDiscoveryPredicate,
   type ProviderModelDiscoveryScalar,
@@ -90,6 +91,10 @@ export function providerModelDiscoverySpecError(spec: ProviderModelDiscoverySpec
     if (/^[a-z][a-z\d+.-]*:/i.test(path) || path.startsWith("//") || path.includes("?") || path.includes("#")) {
       return "discovery path must be a query-free relative/origin path";
     }
+    if (path.includes("\\")) return "discovery path must use forward slashes";
+    if (path.split("/").some(segment => segment.replace(/%2e/gi, ".") === "..")) {
+      return "discovery path must not contain parent-directory segments";
+    }
   }
   const queryEntries = Object.entries(spec.query ?? {});
   if (queryEntries.length > 32) return "discovery query may contain at most 32 entries";
@@ -120,9 +125,14 @@ export function resolveProviderModelDiscovery(
   providerName: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
 ): ResolvedProviderModelDiscovery {
-  const entry = providerMatchesRegistryTransport(providerName, provider)
-    ? getProviderRegistryEntry(providerName)
-    : undefined;
+  // The dashboard permits a canonical preset to be saved under a different name. Recover its
+  // registry-owned discovery policy by transport in that case. The destination helper is limited
+  // to exact fixed-key baseUrl + adapter matches, so custom endpoints, OAuth rows, templates, and
+  // overridable destinations cannot acquire another provider's discovery URL or filter.
+  const namedEntry = getProviderRegistryEntry(providerName);
+  const entry = namedEntry
+    ? (providerMatchesRegistryTransport(providerName, provider) ? namedEntry : undefined)
+    : registryEntryForProviderDestination(provider);
   const spec = entry?.modelDiscovery;
   return {
     ...(spec ? { spec } : {}),

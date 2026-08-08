@@ -6,11 +6,23 @@ import type { StartupHealthStatus } from "../startup-health-ui";
 
 export type DashboardSection = "overview" | "providers" | "models";
 
+/**
+ * `#dashboard/update` is the sidebar's action deep link. It is not a tab, so it resolves
+ * to Overview (where the maintenance panel lives) and separately asks the dashboard to
+ * open the update dialog.
+ */
+export const DASHBOARD_UPDATE_HASH = "dashboard/update";
+
 export function readDashboardSectionFromHash(): DashboardSection {
   const raw = window.location.hash.replace(/^#\/?/, "");
   if (raw === "dashboard/providers") return "providers";
   if (raw === "dashboard/models") return "models";
   return "overview";
+}
+
+/** True while the location hash is the sidebar update deep link. */
+export function hashRequestsUpdateDialog(): boolean {
+  return window.location.hash.replace(/^#\/?/, "") === DASHBOARD_UPDATE_HASH;
 }
 
 /** Overview is the bare `#dashboard`; the other sections carry a suffix. */
@@ -27,11 +39,13 @@ export async function requireJson<T>(res: Response, fallbackMessage?: string): P
 
 export interface HealthData { status: string; version: string; uptime: number }
 export interface ProviderInfo { name: string; adapter: string; baseUrl: string; defaultModel?: string; hasApiKey: boolean }
-export interface ModelInfo { id: string; provider: string; owned_by?: string }
+export interface ModelInfo { id: string; provider: string; namespaced: string; owned_by?: string; reasoningEfforts?: string[] }
 export interface SettingsData {
   codexAutoStart: boolean;
   port: number;
   hostname: string;
+  /** IANA zone of the machine running the proxy, used to render log timestamps (#725). */
+  timeZone?: string;
   startupHealth?: {
     status: "native" | "protected" | "at-risk";
     routingKind: "native" | "opencodex-local" | "custom-local" | "custom-remote" | "unknown";
@@ -41,13 +55,14 @@ export interface SettingsData {
   };
 }
 export type SidecarBackend = "openai" | "anthropic";
-export interface SidecarSetting { backend?: SidecarBackend; model: string }
+export type VisionReasoning = "low" | "medium" | "high" | "xhigh" | "max";
+export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning }
 export interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
 export interface SidecarPatch {
   webSearch?: { backend?: SidecarBackend | null; model?: string };
-  vision?: { backend?: SidecarBackend | null; model?: string };
+  vision?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning };
 }
-export interface ShadowCallData { enabled: boolean; model: string }
+export interface ShadowCallData { enabled: boolean; model: string; sourceModels?: string[] }
 export interface UsageSummary30d { summary: { requests: number; totalTokens: number; coverageRatio: number } }
 export type UpdateChannel = "latest" | "preview";
 export type Installer = "npm" | "bun" | "source";
@@ -128,13 +143,55 @@ export function updateJobLabel(status: UpdateJobStatus, t: (key: TKey) => string
 
 export function mergeSidecarSetting(
   current: SidecarSetting,
-  update?: { backend?: SidecarBackend | null; model?: string },
+  update?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning },
 ): SidecarSetting {
   const merged = { ...current };
   if (update?.model !== undefined) merged.model = update.model;
   if (update?.backend === null) delete merged.backend;
   else if (update?.backend !== undefined) merged.backend = update.backend;
+  if (update?.reasoning !== undefined) merged.reasoning = update.reasoning;
   return merged;
+}
+
+/** Effort-only edits must not rewrite a custom model or its explicitly selected backend. */
+export function visionReasoningPatch(reasoning: VisionReasoning): SidecarPatch {
+  return { vision: { reasoning } };
+}
+
+export const VISION_REASONING_LEVELS: VisionReasoning[] = ["low", "medium", "high", "xhigh", "max"];
+
+export function visionReasoningLadder(models: ModelInfo[], modelId: string): VisionReasoning[] {
+  const model = models.find(m => m.id === modelId);
+  const ladder = model?.reasoningEfforts;
+  if (!ladder || ladder.length === 0) return [...VISION_REASONING_LEVELS];
+  const supported = VISION_REASONING_LEVELS.filter(effort => ladder.includes(effort));
+  return supported.length > 0 ? supported : [...VISION_REASONING_LEVELS];
+}
+
+/** Do not keep an unsupported persisted rung in the picker; runtime will not honor it. */
+export function visionReasoningOptionsFor(ladder: VisionReasoning[], persisted: VisionReasoning): VisionReasoning[] {
+  const effective = clampVisionReasoningToLadder(ladder, persisted);
+  return ladder.includes(effective) ? ladder : [effective, ...ladder];
+}
+
+/** Match server normalization: never escalate when a lower/equal supported rung exists. */
+export function clampVisionReasoningToLadder(
+  ladder: VisionReasoning[],
+  persisted: VisionReasoning,
+): VisionReasoning {
+  if (ladder.length === 0 || ladder.includes(persisted)) return persisted;
+  const requestedRank = VISION_REASONING_LEVELS.indexOf(persisted);
+  let best = ladder[0];
+  let bestRank = VISION_REASONING_LEVELS.indexOf(best);
+  for (const effort of ladder) {
+    const rank = VISION_REASONING_LEVELS.indexOf(effort);
+    if (rank <= requestedRank && rank >= bestRank) {
+      best = effort;
+      bestRank = rank;
+    }
+  }
+  // When every supported rung is above the request, use the lowest supported rung.
+  return best;
 }
 
 export function sidecarModelOptions(models: ModelInfo[]) {
@@ -144,6 +201,13 @@ export function sidecarModelOptions(models: ModelInfo[]) {
       out.push({ value: model.id, label: `${model.provider}/${model.id}` });
     }
   }
+  return out;
+}
+
+/** Options for shadow-call replacement models use the proxy's canonical routing id. */
+export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined) {
+  const out = [{ value: "", label: "—" }, ...models.map(model => ({ value: model.namespaced, label: model.namespaced }))];
+  if (current && !out.some(option => option.value === current)) out.push({ value: current, label: current });
   return out;
 }
 

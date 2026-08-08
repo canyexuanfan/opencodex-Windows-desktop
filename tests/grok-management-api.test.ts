@@ -7,6 +7,7 @@ import { loadConfig, saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { GROK_APPLY_TERMINAL_MS, runGrokApplyFlightForTests, setGrokApplyFlightTestHooks } from "../src/server/management/agent-settings-routes";
 
 // Full-suite Windows load: startServer + management flows often exceed bun's default
 // 5s per-test budget (same flake class as claude-management-api.test.ts).
@@ -36,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setGrokApplyFlightTestHooks(null);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (previousGrokHome === undefined) delete process.env.GROK_HOME;
@@ -44,6 +46,61 @@ afterEach(() => {
   isolatedCodexHome = null;
   if (testDir) rmSync(testDir, { recursive: true, force: true });
   if (grokRoot) rmSync(grokRoot, { recursive: true, force: true });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+const grokApplyResult = { ok: true, changed: false, message: "ok" };
+
+test("concurrent Grok apply requests join the live flight", async () => {
+  const gate = deferred<typeof grokApplyResult>();
+  let runs = 0;
+  setGrokApplyFlightTestHooks({ run: () => { runs += 1; return gate.promise; } });
+  const first = runGrokApplyFlightForTests();
+  const second = runGrokApplyFlightForTests();
+  expect(runs).toBe(1);
+  expect(second).toBe(first);
+  gate.resolve(grokApplyResult);
+  expect(await first).toEqual(grokApplyResult);
+  expect(await second).toEqual(grokApplyResult);
+});
+
+test("stale Grok apply is busy until the terminal deadline", async () => {
+  let now = 0;
+  const gate = deferred<typeof grokApplyResult>();
+  setGrokApplyFlightTestHooks({ now: () => now, run: () => gate.promise });
+  const first = runGrokApplyFlightForTests();
+  now = 120_001;
+  await expect(runGrokApplyFlightForTests()).rejects.toThrow("grok_apply_busy");
+  gate.resolve(grokApplyResult);
+  await first;
+});
+
+test("terminal Grok apply replacement cannot be clobbered by the dropped flight", async () => {
+  let now = 0;
+  const gates = [deferred<typeof grokApplyResult>(), deferred<typeof grokApplyResult>()];
+  let runs = 0;
+  setGrokApplyFlightTestHooks({
+    now: () => now,
+    run: () => gates[runs++]!.promise,
+  });
+  const old = runGrokApplyFlightForTests();
+  now = GROK_APPLY_TERMINAL_MS + 1;
+  const replacement = runGrokApplyFlightForTests();
+  expect(runs).toBe(2);
+
+  gates[0]!.resolve(grokApplyResult);
+  expect(await old).toEqual(grokApplyResult);
+  const joined = runGrokApplyFlightForTests();
+  expect(runs).toBe(2);
+  expect(joined).toBe(replacement);
+  gates[1]!.resolve(grokApplyResult);
+  expect(await replacement).toEqual(grokApplyResult);
+  expect(await joined).toEqual(grokApplyResult);
 });
 
 test("PUT /api/grok/selection rejects a non-array body", async () => {
@@ -56,7 +113,7 @@ test("PUT /api/grok/selection rejects a non-array body", async () => {
     });
     expect(res.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -73,7 +130,7 @@ test("PUT /api/grok/selection dedupes, sorts, and persists", async () => {
     expect(body.excluded).toEqual(["a", "b"]);
     expect(loadConfig().grokExcludedModels).toEqual(["a", "b"]);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -92,7 +149,7 @@ test("PUT /api/grok/selection with an empty list removes the field", async () =>
     expect(res.status).toBe(200);
     expect(loadConfig().grokExcludedModels).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -114,7 +171,24 @@ test("GET /api/grok includes candidates and the saved exclusion list", async () 
     expect(Array.isArray(body.candidates)).toBe(true);
     expect(body.candidates.some(c => c.native)).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
+  }
+});
+
+test("GET /api/grok keeps native candidates when claudeCode.desktopNativeModels is false", async () => {
+  const config = loadConfig();
+  config.claudeCode = { desktopNativeModels: false };
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const res = await fetch(new URL("/api/grok", server.url));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      candidates: Array<{ id: string; native: boolean }>;
+    };
+    expect(body.candidates.some(c => c.native)).toBe(true);
+  } finally {
+    await server.stop(true);
   }
 });
 
@@ -130,7 +204,7 @@ test("POST /api/grok/apply reports no-grok-home as a policy skip, not an error",
     expect(body.ok).toBe(true);
     expect(body.skippedReason).toBe("no-grok-home");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -149,6 +223,6 @@ test("POST /api/grok/apply writes through the guarded writer and is idempotent",
     expect(secondBody.ok).toBe(true);
     expect(secondBody.changed).toBe(false);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });

@@ -158,8 +158,8 @@ describe("AccountPoolStrategyControls", () => {
     // Custom Select only paints the active label until opened (sidecar DNA).
     expect(quota).toContain("Quota");
     expect(quota).toContain("select-trigger");
-    expect(quota).toContain("Applies to new sessions only");
-    expect(quota).not.toContain("Sticky successes before rotate");
+    expect(quota).toContain("Quota can also rebind an existing task on its next request after the usage threshold is crossed.");
+    expect(quota).not.toContain("New/unbound assignments before rotate");
 
     const rr = renderToStaticMarkup(
       <LanguageProvider>
@@ -173,11 +173,11 @@ describe("AccountPoolStrategyControls", () => {
       </LanguageProvider>,
     );
     expect(rr).toContain("Round-robin");
-    expect(rr).toContain("Sticky successes before rotate");
+    expect(rr).toContain("New/unbound assignments before rotate");
     expect(rr).toContain('value="2"');
   });
 
-  test("keeps the visual field label by default (Anthropic card has its own title)", () => {
+  test("renders a canonical setting row: visible name, control beside it, no sr-only label", () => {
     const markup = renderToStaticMarkup(
       <LanguageProvider>
         <AccountPoolStrategyControls
@@ -189,27 +189,61 @@ describe("AccountPoolStrategyControls", () => {
         />
       </LanguageProvider>,
     );
-    expect(markup).toContain('class="field-label"');
+    expect(markup).toContain('class="setting-row"');
+    expect(markup).toContain('class="setting-label"');
+    expect(markup).toContain('class="setting-controls"');
+    // The name is visible copy now, not a hidden label above an unnamed picker.
     expect(markup).not.toContain('class="sr-only"');
+    expect(markup).toContain("Rotation strategy");
+    // And the select keeps its accessible name.
+    expect(markup).toContain('aria-label="Rotation strategy"');
   });
 
-  test("strategyLabelHidden drops the duplicate visual label but keeps the accessible name", () => {
+  // The regression this guards: the two strings answer different questions — what the setting
+  // does, and what happens to threads that are already running. Collapsing them to one line
+  // silently drops the account-affinity answer, which is what the plan originally proposed.
+  test("keeps both the strategy description and the session-affinity notice", () => {
     const markup = renderToStaticMarkup(
       <LanguageProvider>
         <AccountPoolStrategyControls
           strategy="quota"
           stickyDraft="1"
-          strategyLabelHidden
           onStrategyChange={() => {}}
           onStickyDraftChange={() => {}}
           onStickyCommit={() => {}}
         />
       </LanguageProvider>,
     );
-    expect(markup).not.toContain('class="field-label"');
-    expect(markup).toContain('class="sr-only"');
-    // The select must still expose an accessible name.
-    expect(markup).toContain('aria-label="Rotation strategy"');
+    expect(markup).toContain("How OpenCodex assigns an account to a new/unbound task.");
+    expect(markup).toContain("New/unbound task means a request with no current account binding");
+    expect((markup.match(/class="desc"/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  /*
+   * Both callers share this component, so a content loss in one of them is a content loss in
+   * the other. The Anthropic pool card had no test mounting it at all, which is how the two
+   * screens drifted apart in the first place.
+   */
+  test("both descriptions survive for the Anthropic caller's id set too", () => {
+    const markup = renderToStaticMarkup(
+      <LanguageProvider>
+        <AccountPoolStrategyControls
+          strategy="round-robin"
+          stickyDraft="3"
+          strategySelectId="anthropic-pool-strategy"
+          stickyInputId="anthropic-pool-sticky-limit"
+          onStrategyChange={() => {}}
+          onStickyDraftChange={() => {}}
+          onStickyCommit={() => {}}
+        />
+      </LanguageProvider>,
+    );
+    expect(markup).toContain("How OpenCodex assigns an account to a new/unbound task.");
+    expect(markup).toContain("Round-robin rotates only tasks without a live binding");
+    expect(markup).toContain('id="anthropic-pool-strategy"');
+    // Round-robin adds its own row, and the sticky help text is a desc rather than a card-sub.
+    expect(markup).toContain("New/unbound assignments before rotate");
+    expect((markup.match(/class="setting-row"/g) ?? []).length).toBe(2);
   });
 });
 
@@ -334,7 +368,7 @@ describe("CodexPoolStrategySetting optimistic strategy select", () => {
 
     expect(strategyTrigger(host).textContent).toContain("Round-robin");
     expect(strategyTrigger(host).disabled).toBe(false);
-    expect(host.textContent).toContain("Sticky successes before rotate");
+    expect(host.textContent).toContain("New/unbound assignments before rotate");
   });
 
   test("rolls back strategy when save fails", async () => {

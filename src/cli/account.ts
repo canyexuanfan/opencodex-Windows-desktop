@@ -2,7 +2,7 @@
 import { loadConfig } from "../config";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { OcxConfig } from "../types";
-import { cmdAddKey, cmdAlias, cmdAutoSwitch, cmdClearCooldown, cmdRefresh, cmdRemove } from "./account-extended";
+import { cmdAddKey, cmdAlias, cmdAutoSwitch, cmdClearCooldown, cmdPriority, cmdRefresh, cmdRemove } from "./account-extended";
 import { apiError, apiJson, classifyAccount, fetchRows, proxyUnreachable, resolveBaseUrl, type AccountDeps, type AccountRow, type AccountType, type ApiResult }
   from "./account-api";
 
@@ -22,6 +22,7 @@ const ACCOUNT_USAGE = `Usage:
   ocx account refresh <provider> [--json]
   ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]
   ocx account alias <provider> <account-or-key-id> <display-name|-> [--json]
+  ocx account priority <provider> <account-id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]
   ocx account remove <provider> <account-or-key-id|main> --yes [--json]
   ocx account clear-cooldown <provider> <account-id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]
@@ -29,6 +30,7 @@ const ACCOUNT_USAGE = `Usage:
   ocx account code <provider> [--flow <flow-id>] [--json]   (reads the code from stdin)
   ocx account cancel <provider> [--flow <flow-id>] [--json]
   ocx account reset-credits <account-id|main> [--consume --yes] [--json]
+  ocx account main <doctor|list|register|add|switch|recover> ...
 
 List and switch provider accounts and API-key pools (masked output only).
 'main' selects the Codex App login for the openai account pool.`;
@@ -66,11 +68,24 @@ function statusText(row: AccountRow): string {
   return parts.join(" ");
 }
 
+/** Signed so the sort direction reads off the column; "-" where ordering does not apply. */
+function priorityText(row: AccountRow): string {
+  if (row.priority === undefined) return "-";
+  return row.priority > 0 ? `+${row.priority}` : String(row.priority);
+}
+
 export function formatAccountTable(rows: AccountRow[]): string {
-  const header = ["PROVIDER", "TYPE", "ID", "PLAN/LABEL", "STATUS"];
+  const header = ["PROVIDER", "TYPE", "ID", "PLAN/LABEL", "PRIORITY", "STATUS"];
   const data = rows.map(r => {
     const keyLabel = r.masked && r.label !== r.masked ? `${r.masked} (${r.label})` : r.masked;
-    return [r.provider, r.type, displayId(r.id), r.type === "api-key" ? keyLabel ?? "-" : r.label ?? "-", statusText(r)];
+    return [
+      r.provider,
+      r.type,
+      displayId(r.id),
+      r.type === "api-key" ? keyLabel ?? "-" : r.label ?? "-",
+      priorityText(r),
+      statusText(r),
+    ];
   });
   const widths = header.map((h, i) => Math.max(h.length, ...data.map(d => d[i]!.length)));
   const line = (cols: string[]) => cols.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
@@ -243,7 +258,7 @@ async function cmdUse(rest: string[], deps: AccountDeps): Promise<number> {
   if (wantsJson) console.log(JSON.stringify({ ok: true, provider: name, type: c.type, activeId }, null, 2));
   else console.log(`${name}: active ${c.type === "api-key" ? "key" : "account"} is now ${displayId(activeId)}`);
   if (c.type === "codex") {
-    console.error("Applies to new Codex sessions; running threads keep their current account.");
+    console.error("Takes effect immediately; running threads move on their next request, and in-flight requests keep the account they captured.");
     const active = await apiJson(deps, baseUrl, "GET", "/api/codex-auth/active");
     if (active.status === 200 && typeof active.json.autoSwitchThreshold === "number" && active.json.autoSwitchThreshold > 0) {
       console.error(`Note: auto-switch (threshold ${active.json.autoSwitchThreshold}%) may override this pin.`);
@@ -261,9 +276,14 @@ export async function cmdAccount(args: string[], deps: AccountDeps = {}): Promis
     if (sub === "refresh") return await cmdRefresh(rest, deps);
     if (sub === "auto-switch") return await cmdAutoSwitch(rest, deps);
     if (sub === "alias" || sub === "rename") return await cmdAlias(rest, deps);
+    if (sub === "priority") return await cmdPriority(rest, deps);
     if (sub === "remove") return await cmdRemove(rest, deps);
     if (sub === "clear-cooldown") return await cmdClearCooldown(rest, deps);
     if (sub === "add-key") return await cmdAddKey(rest, deps);
+    if (sub === "main") {
+      const { cmdNativeMainAccount } = await import("./account-main");
+      return await cmdNativeMainAccount(rest, deps);
+    }
     if (["login", "reauth", "code", "cancel", "reset-credits"].includes(sub ?? "")) {
       const { handleAccountAuthCommand } = await import("./account-auth");
       return await handleAccountAuthCommand(sub!, rest, deps) ?? 1;

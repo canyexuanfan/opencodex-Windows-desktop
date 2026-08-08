@@ -5,6 +5,7 @@ import { nativeModelRows } from "../src/codex/catalog";
 import { loadConfig, saveConfig } from "../src/config";
 import { handleManagementAPI } from "../src/server/management-api";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const TEST_DIR = join(import.meta.dir, `.tmp-model-visibility-management-${process.pid}`);
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -52,7 +53,7 @@ async function putWithConfig(body: unknown, config = loadConfig()): Promise<Resp
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
-  }), url, config, { refreshCodexCatalog: async () => { refreshes += 1; } });
+  }), url, config, { createManagementConvergeCodex: catalogConvergenceFactory(() => { refreshes += 1; }) });
   if (!response) throw new Error("model visibility route was not handled");
   return response;
 }
@@ -62,6 +63,19 @@ async function put(body: unknown): Promise<Response> {
 }
 
 describe("atomic model visibility management", () => {
+  test("catalog busy maps management and v1 models to 503 startup to warn-skip and system-env to skip", async () => {
+    const management = await Bun.file(new URL("../src/server/management-api.ts", import.meta.url)).text();
+    const server = await Bun.file(new URL("../src/server/index.ts", import.meta.url)).text();
+    const prewarm = await Bun.file(new URL("../src/cli/catalog-prewarm.ts", import.meta.url)).text();
+    const systemEnv = await Bun.file(new URL("../src/server/system-env.ts", import.meta.url)).text();
+    for (const source of [management, server]) {
+      expect(source).toContain("CatalogGatherBusyError");
+      expect(source).toContain('"catalog_busy"');
+      expect(source).toContain('"Retry-After": "1"');
+    }
+    expect(prewarm).toContain("startup discovery skipped");
+    expect(systemEnv).toContain('(error as { code?: unknown }).code === "catalog_busy"');
+  });
   test("enables excluded or blocked models and disables without erasing the allowlist", async () => {
     expect((await put({ scope: "models", provider: "google-antigravity", targets: [{ id: "claude-sonnet-4-6" }], enabled: true })).status).toBe(200);
     expect(loadConfig().providers["google-antigravity"].selectedModels)

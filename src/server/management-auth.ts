@@ -13,7 +13,15 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
-import { hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import {
+  SYSTEM_RESTART_CAPABILITY_HEADER,
+  SYSTEM_RESTART_EXPECTED_PID_HEADER,
+  SYSTEM_RESTART_NONCE_HEADER,
+  SYSTEM_RESTART_PATH,
+  parseExpectedSystemRestartPid,
+  verifySystemRestartCapability,
+} from "../lib/system-restart-contract";
+import { forgetEphemeralSecretPath, forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import type { OcxConfig } from "../types";
 import {
   isAllowedManagementOrigin,
@@ -55,8 +63,19 @@ function assertSafeDirectory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("management token directory is not a regular directory");
   chmodSync(path, 0o700);
-  const hardened = hardenSecretDir(path, { required: true });
-  if (!hardened.ok) throw new Error("management token directory ACL hardening did not complete");
+  let hardened: { ok: boolean };
+  try {
+    hardened = hardenSecretDir(path, { required: true });
+  } catch {
+    // required:true hardening now fails closed on genuine ACL timeouts too;
+    // keep the actionable guidance in the surfaced reason.
+    hardened = { ok: false };
+  }
+  if (!hardened.ok) {
+    throw new Error(
+      "management token directory ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
+  }
 }
 
 function readExistingToken(path: string): string {
@@ -65,15 +84,38 @@ function readExistingToken(path: string): string {
     throw new Error("management token path is not a regular secret file");
   }
   chmodSync(path, 0o600);
-  const hardened = hardenSecretPath(path, { required: true });
-  if (!hardened.ok) throw new Error("management token file ACL hardening did not complete");
+  let hardened: { ok: boolean };
+  try {
+    hardened = hardenSecretPath(path, { required: true });
+  } catch {
+    hardened = { ok: false };
+  }
+  if (!hardened.ok) {
+    throw new Error(
+      "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+    );
+  }
   const token = readFileSync(path, "utf8").trim();
   if (!/^ocx_admin_[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("management token file is invalid");
   return token;
 }
 
-function removeBestEffort(path: string): void {
-  try { unlinkSync(path); } catch { /* fail-closed state is preserved by the caller */ }
+export function removeManagementTokenPathBestEffort(
+  path: string,
+  remove: (path: string) => void = unlinkSync,
+  options?: { ephemeral?: boolean },
+): void {
+  // Temps get the full ephemeral release (success + both timeout namespaces);
+  // stable token paths drop only the success memo — destination-keyed timeout
+  // memos are intentional anti-restall state.
+  const forget = options?.ephemeral ? forgetEphemeralSecretPath : forgetHardenedSecretPath;
+  try {
+    remove(path);
+    forget(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") forget(path);
+    /* other failures retain fail-closed state for the caller */
+  }
 }
 
 function createTokenFile(path: string): string {
@@ -89,8 +131,18 @@ function createTokenFile(path: string): string {
     closeSync(fd);
     fd = null;
     chmodSync(temporary, 0o600);
-    const temporaryHardened = hardenSecretPath(temporary, { required: true });
-    if (!temporaryHardened.ok) throw new Error("management token temporary ACL hardening did not complete");
+    let temporaryHardened: { ok: boolean };
+    try {
+      // Destination-keyed timeout memo (the final token path), not the temp.
+      temporaryHardened = hardenSecretPath(temporary, { required: true, timeoutMemoKey: path });
+    } catch {
+      temporaryHardened = { ok: false };
+    }
+    if (!temporaryHardened.ok) {
+      throw new Error(
+        "management token temporary ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
+    }
     try {
       linkSync(temporary, path);
       linked = true;
@@ -98,17 +150,26 @@ function createTokenFile(path: string): string {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return readExistingToken(path);
       throw error;
     }
-    const finalHardened = hardenSecretPath(path, { required: true });
-    if (!finalHardened.ok) throw new Error("management token file ACL hardening did not complete");
+    let finalHardened: { ok: boolean };
+    try {
+      finalHardened = hardenSecretPath(path, { required: true });
+    } catch {
+      finalHardened = { ok: false };
+    }
+    if (!finalHardened.ok) {
+      throw new Error(
+        "management token file ACL hardening did not complete; set OPENCODEX_ADMIN_AUTH_TOKEN to use an environment token instead of a file-backed token",
+      );
+    }
     return token;
   } catch (error) {
-    if (linked) removeBestEffort(path);
+    if (linked) removeManagementTokenPathBestEffort(path);
     throw error;
   } finally {
     if (fd !== null) {
       try { closeSync(fd); } catch { /* best effort */ }
     }
-    removeBestEffort(temporary);
+    removeManagementTokenPathBestEffort(temporary, unlinkSync, { ephemeral: true });
   }
 }
 
@@ -184,13 +245,89 @@ export function issueGuiSession(
   return { token, ...session };
 }
 
+/**
+ * Which credential actually authorized a management request.
+ *
+ * `admin-token` is the raw token from disk/env: anything running as the user can
+ * read it, including a coding agent. `gui-session` is a session token this process
+ * minted for a browser, and it only authorizes a mutation after the origin and the
+ * per-session CSRF token match. Consent-bearing routes must key off this value
+ * rather than off request headers, which the token holder can forge freely.
+ * `system-restart-capability` is a process-scoped HMAC accepted only for the exact
+ * restart route and bound to the current process PID and listening port.
+ */
+export type ManagementPrincipal = "admin-token" | "gui-session" | "system-restart-capability";
+
+export interface LocalManagementAuthContext {
+  attestationSecret: string;
+  pid: number;
+  port: number;
+}
+
+function hasSystemRestartCapability(
+  req: Request,
+  local: LocalManagementAuthContext | undefined,
+): boolean {
+  if (!local || req.method !== "POST") return false;
+  let path: string;
+  try {
+    path = new URL(req.url).pathname;
+  } catch {
+    return false;
+  }
+  if (path !== SYSTEM_RESTART_PATH) return false;
+  const expectedPid = parseExpectedSystemRestartPid(
+    req.headers.get(SYSTEM_RESTART_EXPECTED_PID_HEADER),
+  );
+  if (expectedPid.kind !== "present" || expectedPid.pid !== local.pid) return false;
+  return verifySystemRestartCapability(
+    local.attestationSecret,
+    req.headers.get(SYSTEM_RESTART_NONCE_HEADER),
+    req.method,
+    path,
+    local.pid,
+    local.port,
+    req.headers.get(SYSTEM_RESTART_CAPABILITY_HEADER),
+  );
+}
+
+/**
+ * The principal for a request that already passed `requireManagementAuth`. Kept as a
+ * separate resolution (rather than a changed return type) so every existing caller
+ * keeps its `Response | null` contract. Browser and admin principals are derived
+ * from the same session table and CSRF comparison the gate uses; the restart
+ * principal is derived from the same process-scoped capability check.
+ */
+export function managementPrincipal(
+  req: Request,
+  state: ManagementAuthState,
+  config?: OcxConfig,
+  local?: LocalManagementAuthContext,
+): ManagementPrincipal | null {
+  if (hasSystemRestartCapability(req, local)) return "system-restart-capability";
+  if (!state.available) return null;
+  const actual = req.headers.get("x-opencodex-api-key")?.trim()
+    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (!actual) return null;
+  if (equalSecret(actual, state.token)) return "admin-token";
+  if (!config) return null;
+  removeExpiredSessions(state);
+  return state.sessions.has(actual) ? "gui-session" : null;
+}
+
 export function requireManagementAuth(
   req: Request,
   state: ManagementAuthState,
   config?: OcxConfig,
+  local?: LocalManagementAuthContext,
 ): Response | null {
+  if (hasSystemRestartCapability(req, local)) return null;
   if (!state.available) {
-    return Response.json({ error: "management API unavailable" }, { status: 503 });
+    return Response.json({
+      error: "management API unavailable",
+      reason: state.reason,
+      hint: "Set OPENCODEX_ADMIN_AUTH_TOKEN to bypass file-backed admin token ACL hardening",
+    }, { status: 503 });
   }
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
     || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();

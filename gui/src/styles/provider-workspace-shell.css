@@ -278,6 +278,16 @@
   background: var(--raised);
 }
 
+/* The absolute delete button occupies the rail's trailing status area. Hide the
+   star/status while it is visible instead of letting the button crop either icon. */
+.pws-rail-row-wrap:hover .providers-workspace-rail-trail {
+  opacity: 0;
+}
+
+.providers-workspace-rail-trail {
+  transition: opacity var(--motion-fast);
+}
+
 .pws-rail-row-remove:hover {
   background: var(--raised);
 }
@@ -304,6 +314,20 @@
   width: var(--icon-lg);
   height: var(--icon-lg);
   display: block;
+}
+
+/* Colored initial-letter fallback for providers without a logo asset. */
+.provider-icon-fallback {
+  width: 100%;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  font-weight: var(--weight-semibold);
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
 }
 
 .provider-icon-mask {

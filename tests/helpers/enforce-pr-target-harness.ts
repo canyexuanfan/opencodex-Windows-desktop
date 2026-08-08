@@ -22,6 +22,13 @@ export type RecordedCall = { method: string; args: unknown };
 
 export type HarnessResult = {
   calls: RecordedCall[];
+  /**
+   * Paths the script read through its `node:fs` stub. Kept separate from
+   * `calls` so exact method-sequence assertions stay stable while the fs
+   * capability stays recorded (round: the harness must not hand a write-capable
+   * process module to a script that holds a write token).
+   */
+  fsReads: string[];
   logs: string[];
   warnings: string[];
   /**
@@ -48,7 +55,13 @@ export type PullRequestState = {
   user?: { login: string };
 };
 
-export type Comment = { id: number; user?: { login: string }; body?: string };
+export type Comment = {
+  id: number;
+  user?: { login: string };
+  body?: string;
+  /** GitHub's per-comment association; used for the GUI-screenshot waiver. */
+  author_association?: string;
+};
 
 export type RunOptions = {
   /** The PR as `pulls.get` will report it — the live, authoritative state. */
@@ -63,6 +76,36 @@ export type RunOptions = {
    * still passed because the two were aliases. They are independent here.
    */
   eventPayload?: PullRequestState;
+  /**
+   * Webhook `action` delivered on the event (opened/edited/synchronize/...).
+   * Defaults to `"opened"`. Pass `"synchronize"` to exercise push-path
+   * completion provenance rules.
+   */
+  eventAction?: string;
+  /**
+   * Webhook event name. Defaults to `"pull_request_target"`. Pass
+   * `"issue_comment"` to exercise the GUI-waiver re-run path: the payload then
+   * carries `issue` and `comment` (never `pull_request`), exactly as GitHub
+   * delivers an issue comment on a PR.
+   */
+  eventName?: string;
+  /**
+   * `author_association` of the commenter on an `issue_comment` event.
+   * Defaults to `"COLLABORATOR"`. The gate only re-runs for maintainer
+   * associations (OWNER / COLLABORATOR / MEMBER).
+   */
+  commentAuthorAssociation?: string;
+  /**
+   * Login of the commenter on an `issue_comment` event. Defaults to
+   * `"wibias"`. The gate requires the commenter to be in the trusted
+   * MAINTAINERS.md list, so tests can set a non-maintainer login here.
+   */
+  commentAuthorLogin?: string;
+  /**
+   * Whether the commented-on issue is a pull request. Defaults to `true`.
+   * An `issue_comment` on a plain issue must not start this PR-only gate.
+   */
+  issueIsPullRequest?: boolean;
   /**
    * Comments as `listComments` returns them, PAGE BY PAGE. Pass more than one
    * page to prove the script paginates: an audit round replaced `paginate` with
@@ -85,6 +128,11 @@ export type RunOptions = {
   failStatus?: number;
   /** Collaborator permission returned by `getCollaboratorPermissionLevel`. */
   authorPermission?: string;
+  /**
+   * Fixture content for `MAINTAINERS.md`, so readiness-ping scenarios do not
+   * depend on the live repository file. Defaults to reading the real file.
+   */
+  maintainersFile?: string;
   /** When true, permission lookup rejects like a transient API failure. */
   failPermissionLookup?: boolean;
   /** Overrides for `compareCommitsWithBasehead` keyed by `basehead`. */
@@ -97,6 +145,43 @@ export type RunOptions = {
   openPulls?: unknown[];
   /** Page-keyed open PR fixtures for `pulls.list` (1-based via array index). */
   openPullPages?: unknown[][];
+  /**
+   * Check-runs `checks.listForRef` reports for the head. Defaults to a green
+   * `ci` check so completed-checklist scenarios pass the claim check.
+   * Pass a red/pending/missing set to exercise the claim-check reset paths.
+   */
+  checkRuns?: Array<{ name: string; status: string; conclusion: string | null }>;
+  /**
+   * Review threads `pullRequestReviewThreads` (via GraphQL) reports for the PR.
+   * Each entry is `{ isResolved, author }`; the harness wraps it into the
+   * GraphQL shape the workflow reads. Defaults to no threads (clean).
+   */
+  reviewThreads?: Array<{ isResolved: boolean | null; author: { login: string } | null }>;
+  /**
+   * Pull-request reviews `pulls.listReviews` reports for the PR. Each entry is
+   * `{ body, commit_id, submitted_at, user }`; the workflow reads CodeRabbit's
+   * "Actionable comments posted: N" body line as the outside-diff supplement
+   * and filters by `user.login` so a human review quoting the line does not
+   * count.
+   */
+  reviews?: Array<{
+    body: string;
+    commit_id: string;
+    submitted_at?: string;
+    user?: { login: string };
+  }>;
+  /**
+   * Labels the PR already carries (from `pulls.get`). The gate reads these to
+   * decide whether to add/remove the `review-ready` label.
+   */
+  labels?: string[];
+  /**
+   * GraphQL query fragments that should reject. Unlike `failOn: ["graphql"]`,
+   * which fails the review-threads read, this lets a test fail a specific
+   * mutation (e.g. `markPullRequestReadyForReview`) while the threads read
+   * succeeds. Matched case-sensitively against the query text.
+   */
+  failGraphqlOn?: string[];
 };
 
 /**
@@ -117,6 +202,11 @@ const DEFAULT_BODY = [
   "- [x] Run `bun test tests/ci-workflows.test.ts`",
   "- [x] Confirm enforce-pr-target behaviour locally",
 ].join("\n");
+
+/** The repo's documented "CI passed" check, green by default. */
+const DEFAULT_GREEN_CHECKS = [
+  { name: "ci", status: "completed", conclusion: "success" },
+];
 
 const DEFAULT_PR = {
   number: 42,
@@ -411,6 +501,7 @@ export async function runEnforcePrTarget(
   options: RunOptions,
 ): Promise<HarnessResult> {
   const calls: RecordedCall[] = [];
+  const fsReads: string[] = [];
   const logs: string[] = [];
   const warnings: string[] = [];
   const outputs: { name: string; value: unknown }[] = [];
@@ -451,6 +542,7 @@ export async function runEnforcePrTarget(
       },
     },
     user: { ...DEFAULT_PR.user, ...(options.pr.user ?? {}) },
+    labels: (options.labels ?? []).map(name => ({ name })),
   };
   // Deep-independent from `pr`, so nothing the script does to one can reach the
   // other by aliasing. Defaults to the same values; pass `eventPayload` to make
@@ -526,7 +618,7 @@ export async function runEnforcePrTarget(
   const nodeRequire = createRequire(path.join(process.cwd(), "package.json"));
   const scriptsRoot = path.resolve(process.cwd(), ".github", "scripts");
   /** Bare modules the workflow script may load (see enforce-pr-target.yml). */
-  const ALLOWED_MODULES = new Set(["path", "node:path"]);
+  const ALLOWED_MODULES = new Set(["path", "node:path", "node:fs"]);
 
   function scopedRequire(id: string) {
     calls.push({ method: "require", args: [id] });
@@ -534,6 +626,26 @@ export async function runEnforcePrTarget(
     if (!isPathLike) {
       if (!ALLOWED_MODULES.has(id)) {
         throw new Error(`the script must not require ${id}`);
+      }
+      if (id === "node:fs") {
+        // The script may read exactly one file: the trusted default-branch
+        // MAINTAINERS.md. Everything else about `fs` (writes, directory
+        // listing, arbitrary reads) is a capability the harness must not hand
+        // over, and the read itself has to be recorded like every other call.
+        const nodeFs = nodeRequire("node:fs");
+        return {
+          readFileSync: (pathLike: unknown) => {
+            const resolved = path.resolve(String(pathLike));
+            fsReads.push(resolved);
+            if (resolved !== path.resolve(process.cwd(), "MAINTAINERS.md")) {
+              throw new Error(`the script must not read ${pathLike}`);
+            }
+            return (
+              options.maintainersFile ??
+              nodeFs.readFileSync(resolved, "utf8")
+            );
+          },
+        };
       }
       return nodeRequire(id);
     }
@@ -563,6 +675,7 @@ export async function runEnforcePrTarget(
         const page = Number((args as { page?: number })?.page ?? 1);
         return respond("pulls.list", args, openPullPages[page - 1] ?? []);
       },
+      listReviews: (args: unknown) => respond("pulls.listReviews", args, options.reviews ?? []),
     },
     issues: {
       // Honours `page`, so a caller that skips `paginate` sees only page one —
@@ -573,6 +686,16 @@ export async function runEnforcePrTarget(
       },
       createComment: (args: unknown) => respond("issues.createComment", args, { id: 99 }),
       updateComment: (args: unknown) => respond("issues.updateComment", args, { id: 7 }),
+      deleteComment: (args: unknown) => respond("issues.deleteComment", args, {}),
+      addLabels: (args: unknown) => respond("issues.addLabels", args, {}),
+      removeLabel: (args: unknown) => respond("issues.removeLabel", args, {}),
+    },
+    checks: {
+      listForRef: (args: unknown) =>
+        respond("checks.listForRef", args, {
+          total_count: (options.checkRuns ?? DEFAULT_GREEN_CHECKS).length,
+          check_runs: options.checkRuns ?? DEFAULT_GREEN_CHECKS,
+        }),
     },
     repos: {
       getCollaboratorPermissionLevel: (args: unknown) =>
@@ -600,8 +723,42 @@ export async function runEnforcePrTarget(
    */
   class Octokit {
     rest = rest;
-    graphql = (query: unknown, variables: unknown) =>
-      respond("graphql", { query, variables });
+    graphql = async (query: unknown, variables: unknown) => {
+      const text = String(query ?? "");
+      // Routed through `respond` so a `failOn: ["graphql"]` simulated failure
+      // REJECTS rather than throwing synchronously, like every other method
+      // (real Octokit graphql returns a promise and rejects it).
+      await respond("graphql", { query, variables });
+      // Fail a specific mutation after recording so the failed call appears in
+      // the recording (same semantics as `failOn`). The review-threads read is
+      // the first graphql call; targeting a mutation by query text lets a test
+      // fail only the mutation while the threads read succeeds.
+      if ((options.failGraphqlOn ?? []).some(fragment => text.includes(fragment))) {
+        throw octokitError("graphql", options.failStatus ?? 500);
+      }
+      // The review-threads query is answered with the shape the workflow
+      // reads. `github.graphql` resolves to the raw data payload (no `data`
+      // wrapper, unlike `github.rest.*`), so the threads object is returned
+      // directly. Mutations also resolve to a raw GraphQL payload, never a
+      // REST envelope, so a workflow that reads a mutation result gets the
+      // same shape production produces.
+      if (text.includes("reviewThreads")) {
+        const threads = (options.reviewThreads ?? []).map(thread => ({
+          isResolved: thread.isResolved,
+          comments: {
+            nodes: thread.author ? [{ author: { login: thread.author.login } }] : [],
+          },
+        }));
+        return {
+          repository: {
+            pullRequest: {
+              reviewThreads: { nodes: threads },
+            },
+          },
+        };
+      }
+      return {};
+    };
     request = (route: unknown, params: unknown) =>
       respond("request", { route, params });
     /**
@@ -689,9 +846,31 @@ export async function runEnforcePrTarget(
      * runner and absent here is another `if (payload.x) return;`.
      */
     payload = {
-      action: "opened",
+      action: options.eventAction ?? (options.eventName === "issue_comment" ? "created" : "opened"),
       number: eventPr.number,
-      pull_request: eventPr,
+      // An issue comment on a PR is delivered with `issue` + `comment`, never
+      // `pull_request`. The gate resolves the PR number from whichever object
+      // the event carried.
+      ...(options.eventName === "issue_comment"
+        ? {
+            issue: {
+              number: eventPr.number,
+              node_id: eventPr.node_id,
+              title: eventPr.title,
+              body: eventPr.body,
+              user: eventPr.user,
+              ...(options.issueIsPullRequest === false
+                ? {}
+                : { pull_request: { url: "https://api.github.com/repos/lidge-jun/opencodex/pulls/42" } }),
+            },
+            comment: {
+              id: 424242,
+              body: "not touching gui",
+              user: { login: options.commentAuthorLogin ?? "wibias" },
+              author_association: options.commentAuthorAssociation ?? "COLLABORATOR",
+            },
+          }
+        : { pull_request: eventPr }),
       repository: {
         id: 987654321,
         name: "opencodex",
@@ -705,7 +884,7 @@ export async function runEnforcePrTarget(
       organization: undefined,
       installation: undefined,
     };
-    eventName = "pull_request_target";
+    eventName = options.eventName ?? "pull_request_target";
     sha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
     ref = "refs/pull/42/merge";
     workflow = "Enforce PR target branch";
@@ -864,7 +1043,14 @@ export async function runEnforcePrTarget(
     await callback();
   }
 
-  return { calls, logs, warnings, returnValue, coreSurface: Object.keys(core).sort() };
+  return {
+    calls,
+    fsReads,
+    logs,
+    warnings,
+    returnValue,
+    coreSurface: Object.keys(core).sort(),
+  };
 }
 
 /** Just the method names, in order — the usual thing to assert on. */

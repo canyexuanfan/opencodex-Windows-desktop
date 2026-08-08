@@ -34,10 +34,12 @@ export default function CodexPoolStrategySetting({
   apiBase,
   subscribeLoadObserver,
   readLastActive,
+  onStrategyResolved,
 }: {
   apiBase: string;
   subscribeLoadObserver?: (observer: CodexAccountLoadObserver) => () => void;
   readLastActive?: () => unknown;
+  onStrategyResolved?: (strategy: AccountPoolStrategy) => void;
 }) {
   const t = useT();
   // Seed defaults immediately — never gate the control chrome on a network round-trip.
@@ -61,13 +63,14 @@ export default function CodexPoolStrategySetting({
     const nextStrategy = normalizeAccountPoolStrategy(json.accountPoolStrategy);
     const nextSticky = normalizeAccountPoolStickyLimit(json.accountPoolStickyLimit);
     setStrategy(nextStrategy);
+    onStrategyResolved?.(nextStrategy);
     setStickyLimit(nextSticky);
     setStickyDraft(String(nextSticky));
     hydratedRef.current = true;
     setHydrated(true);
     setLoadError(false);
     setError(null);
-  }, []);
+  }, [onStrategyResolved]);
 
   const applyActivePayload = useCallback((value: unknown) => {
     const fields = strategyFieldsFromActive(value);
@@ -156,7 +159,10 @@ export default function CodexPoolStrategySetting({
     if (savingRef.current) return;
     const previousStrategy = strategy;
     const previousSticky = stickyLimit;
-    if (next.strategy !== undefined) setStrategy(next.strategy);
+    if (next.strategy !== undefined) {
+      setStrategy(next.strategy);
+      onStrategyResolved?.(next.strategy);
+    }
     if (next.stickyLimit !== undefined) {
       setStickyLimit(next.stickyLimit);
       setStickyDraft(String(next.stickyLimit));
@@ -169,6 +175,7 @@ export default function CodexPoolStrategySetting({
     revisionRef.current += 1;
     if (result.ok) {
       setStrategy(result.strategy);
+      onStrategyResolved?.(result.strategy);
       setStickyLimit(result.stickyLimit);
       setStickyDraft(String(result.stickyLimit));
       hydratedRef.current = true;
@@ -176,25 +183,28 @@ export default function CodexPoolStrategySetting({
     } else {
       setError(t("accountPool.strategyUpdateFailed"));
       setStrategy(previousStrategy);
+      onStrategyResolved?.(previousStrategy);
       setStickyLimit(previousSticky);
       setStickyDraft(String(previousSticky));
     }
     savingRef.current = false;
     setSaving(false);
     scheduleDeferredActiveRefresh();
-  }, [apiBase, scheduleDeferredActiveRefresh, stickyLimit, strategy, t]);
+  }, [apiBase, onStrategyResolved, scheduleDeferredActiveRefresh, stickyLimit, strategy, t]);
 
   // Block writes until /active confirms — defaults paint for CLS but must not overwrite server state.
   const controlsDisabled = saving || loadError || !hydrated;
 
   return (
     <div className="card account-pool-strategy-card" aria-busy={saving || (!hydrated && !loadError)}>
-      <strong>{t("accountPool.strategy")}</strong>
-      <div className="card-sub" role={loadError ? "alert" : undefined}>
-        {loadError
-          ? t("accountPool.strategyLoadFailed")
-          : t("accountPool.strategyDesc")}
-      </div>
+      {/*
+        The title and description now live in the setting row itself, so the card no longer
+        repeats them above an unnamed select. Only the load failure still needs its own line:
+        there is no row to attach it to when the controls are replaced by a retry button.
+      */}
+      {loadError && (
+        <div className="card-sub" role="alert">{t("accountPool.strategyLoadFailed")}</div>
+      )}
       {loadError && (
         <button type="button" className="btn btn-ghost btn-sm account-pool-strategy-card__retry" onClick={() => { void load(); }}>
           {t("common.retry")}
@@ -207,7 +217,6 @@ export default function CodexPoolStrategySetting({
           disabled={controlsDisabled}
           strategySelectId="codex-pool-strategy"
           stickyInputId="codex-pool-sticky-limit"
-          strategyLabelHidden
           onStrategyChange={(next) => {
             if (controlsDisabled || next === strategy) return;
             void save({ strategy: next });

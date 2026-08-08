@@ -1,7 +1,12 @@
-import { IconAlert, IconExternal, IconInfo, IconRefresh } from "../icons";
+import { useEffect, useRef, useState } from "react";
+import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
+import { visionReasoningLabel } from "../i18n/vision-reasoning-labels";
 import { Select } from "../ui";
-import { EFFORT_CAP_LEVELS, requireJson, sidecarBackendForModel, updateJobLabel } from "./dashboard-shared";
+import { formatNamespacedModelId } from "../provider-icons";
+import { navigateHash } from "../hash-routing";
+import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch } from "./dashboard-shared";
+import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
 type Dash = ReturnType<typeof useDashboardData>;
@@ -89,20 +94,19 @@ export function DashboardEffortCapPanel({ apiBase, d }: { apiBase: string; d: Da
 
 export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
   const {
-    t,
-    injectionModel, injectionEffort, injectionEfforts, injectionAvailable, injectionSaving,
-    multiAgentGuidanceEnabled, syncCodexSubagentDefaults, saveInjection,
+    t, injectionModel, injectionEffort, injectionEfforts, injectionAvailable, injectionSaving,
+    saveInjection,
   } = d;
 
   return (
-    <div className="panel">
-      <div className="injection-head">
-        <span className="injection-label">{t("dash.injectionLabel")}</span>
+    <div className="panel dash-delegation-summary">
+      <div className="font-semibold">{t("dash.injectionLabel")}</div>
+      <div className="dash-delegation-controls">
         <Select
           value={injectionModel}
           options={[
             { value: "", label: t("dash.injectionNone") },
-            ...injectionAvailable.map(m => ({ value: m.namespaced, label: `${m.provider} / ${m.model}` })),
+            ...injectionAvailable.map(m => ({ value: m.namespaced, label: formatNamespacedModelId(`${m.provider}/${m.model}`, t) })),
           ]}
           onChange={(v) => { void saveInjection({ model: v || null, effort: injectionEffort || null }); }}
           disabled={injectionSaving}
@@ -120,38 +124,8 @@ export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
             label={t("dash.injectionEffortLabel")}
           />
         )}
-      </div>
-      <div className="muted text-control" style={{ marginTop: 6 }}>{t("dash.injectionHint")}</div>
-      <div className="spread dash-subagent-guidance-row">
-        <div className="setting-copy" style={{ flex: 1 }}>
-          <div className="font-semibold">{t("dash.syncCodexSubagentDefaults")}</div>
-          <div className="muted setting-hint">{t("dash.syncCodexSubagentDefaultsHint")}</div>
-        </div>
-        <button
-          type="button"
-          className={`switch ${syncCodexSubagentDefaults ? "on" : ""}`}
-          onClick={() => { void saveInjection({ syncCodexSubagentDefaults: !syncCodexSubagentDefaults }); }}
-          disabled={injectionSaving || !injectionModel}
-          aria-label={t("dash.syncCodexSubagentDefaults")}
-          aria-pressed={syncCodexSubagentDefaults}
-        >
-          <span className="knob" />
-        </button>
-      </div>
-      <div className="spread dash-subagent-guidance-row">
-        <div className="setting-copy" style={{ flex: 1 }}>
-          <div className="font-semibold">{t("dash.multiAgentGuidance")}</div>
-          <div className="muted setting-hint">{t("dash.multiAgentGuidanceHint")}</div>
-        </div>
-        <button
-          type="button"
-          className={`switch ${multiAgentGuidanceEnabled ? "on" : ""}`}
-          onClick={() => { void saveInjection({ multiAgentGuidanceEnabled: !multiAgentGuidanceEnabled }); }}
-          disabled={injectionSaving}
-          aria-label={t("dash.multiAgentGuidance")}
-          aria-pressed={multiAgentGuidanceEnabled}
-        >
-          <span className="knob" />
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigateHash("#subagents")}>
+          {t("dash.injectionManage")}
         </button>
       </div>
     </div>
@@ -161,71 +135,118 @@ export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
 export function DashboardMaintenancePanel({ d }: { d: Dash }) {
   const {
     t, runSync, syncing, updateTriggerRef, openUpdateDialog, updateLoading, updateOpen,
-    syncResult, syncError, updateJob, reconnecting,
+    syncResult, syncError, updateJob, reconnecting, clearSyncFeedback,
   } = d;
+  const syncHoldsWarning = !!syncResult && (
+    !!syncResult.warning
+    || !!syncResult.nativeSubagentDefaultsWarning
+    || !!syncResult.staleAppServerHint
+  );
+  const [syncToastDismissed, setSyncToastDismissed] = useState(false);
+  const syncToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (syncToastTimerRef.current) {
+      clearTimeout(syncToastTimerRef.current);
+      syncToastTimerRef.current = null;
+    }
+    if ((syncResult || syncError) && !syncHoldsWarning) {
+      const holdMs = syncError ? 8000 : 6000;
+      syncToastTimerRef.current = setTimeout(() => {
+        syncToastTimerRef.current = null;
+        setSyncToastDismissed(true);
+        clearSyncFeedback();
+      }, holdMs);
+    }
+    return () => {
+      if (syncToastTimerRef.current) clearTimeout(syncToastTimerRef.current);
+    };
+  }, [syncResult, syncError, syncHoldsWarning, clearSyncFeedback]);
+
+  const handleRunSync = () => {
+    setSyncToastDismissed(false);
+    void runSync();
+  };
+
+  const dismissSyncToast = () => {
+    setSyncToastDismissed(true);
+    clearSyncFeedback();
+  };
 
   return (
-    <div className="panel maintenance-panel">
-      <div className="spread maintenance-head">
-        <div>
-          <div className="font-semibold">{t("dash.maintenance")}</div>
-          <div className="muted text-control" style={{ marginTop: 3 }}>{t("dash.maintenanceHint")}</div>
+    <>
+      <div className="panel maintenance-panel">
+        <div className="dash-sync-summary">
+          <div className="dash-sync-copy">
+            <div className="font-semibold">{t("dash.syncModels")}</div>
+            <div className="muted text-control dash-sync-hint">{t("dash.syncModelsHint")}</div>
+          </div>
+          <div className="maintenance-actions">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={handleRunSync} disabled={syncing}>
+              <IconRefresh className={syncing ? "spin-icon" : undefined} /> {syncing ? t("dash.syncing") : t("dash.syncRun")}
+            </button>
+            <button
+              ref={updateTriggerRef}
+              type="button"
+              className="maintenance-update-anchor"
+              onClick={openUpdateDialog}
+              disabled={updateLoading}
+              aria-haspopup="dialog"
+              aria-controls="dashboard-update-dialog"
+              aria-expanded={updateOpen}
+              aria-label={t("dash.checkUpdate")}
+              tabIndex={-1}
+            />
+          </div>
         </div>
-        <div className="maintenance-actions">
-          <button type="button" className="btn btn-ghost" onClick={runSync} disabled={syncing}>
-            <IconRefresh /> {syncing ? t("dash.syncing") : t("dash.syncModels")}
-          </button>
-          <button
-            ref={updateTriggerRef}
-            type="button"
-            className="btn btn-primary"
-            onClick={openUpdateDialog}
-            disabled={updateLoading}
-            aria-haspopup="dialog"
-            aria-controls="dashboard-update-dialog"
-            aria-expanded={updateOpen}
-          >
-            <IconExternal /> {t("dash.checkUpdate")}
-          </button>
-        </div>
+        {updateJob && (
+          <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
+            {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
+            <span>
+              {updateJobLabel(updateJob.status, t)}
+              {updateJob.latestVersion ? ` ${t("dash.updateVersionTransition", { currentVersion: updateJob.currentVersion, latestVersion: updateJob.latestVersion })}` : ""}
+              {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
+              {updateJob.error ? ` ${updateJob.error}` : ""}
+            </span>
+          </div>
+        )}
       </div>
-      {syncResult && (
-        <div className={`notice ${syncResult.nativeSubagentDefaultsWarning ? "notice-warn" : "notice-ok"} maintenance-notice`} role="status">
-          {syncResult.nativeSubagentDefaultsWarning ? <IconAlert /> : <IconRefresh />}
+      {!syncToastDismissed && syncResult && (
+        <div className={`action-toast notice ${syncHoldsWarning ? "notice-warn" : "notice-ok"}`} role="status" aria-live="polite">
+          {syncHoldsWarning ? <IconAlert /> : <IconCheck />}
           <span>
             {t("dash.syncOk", { count: syncResult.added })}
             {syncResult.warning ? ` ${syncResult.warning}` : ""}
             {syncResult.nativeSubagentDefaultsWarning ? ` ${syncResult.nativeSubagentDefaultsWarning}` : ""}
             {syncResult.staleAppServerHint ? <>{" "}<Trans k="dash.syncStaleHint" cmd="ocx sync --restart-codex" /></> : null}
           </span>
+          <button type="button" className="action-toast-dismiss" onClick={dismissSyncToast} aria-label={t("api.dismiss")}>
+            <IconX width={13} height={13} aria-hidden="true" />
+          </button>
         </div>
       )}
-      {syncError && (
-        <div className="notice notice-err maintenance-notice" role="status">
+      {!syncToastDismissed && syncError && (
+        <div className="action-toast notice notice-err" role="status" aria-live="polite">
           <IconAlert /><span>{t("dash.syncFailed", { error: syncError })}</span>
+          <button type="button" className="action-toast-dismiss" onClick={dismissSyncToast} aria-label={t("api.dismiss")}>
+            <IconX width={13} height={13} aria-hidden="true" />
+          </button>
         </div>
       )}
-      {updateJob && (
-        <div className={`notice ${updateJob.status === "failed" ? "notice-err" : "notice-ok"} maintenance-notice`} role="status">
-          {updateJob.status === "failed" ? <IconAlert /> : <IconRefresh />}
-          <span>
-            {updateJobLabel(updateJob.status, t)}
-            {updateJob.latestVersion ? ` ${updateJob.currentVersion} -> ${updateJob.latestVersion}.` : ""}
-            {reconnecting ? ` ${t("dash.updateReconnecting")}` : ""}
-            {updateJob.error ? ` ${updateJob.error}` : ""}
-          </span>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 
 export function DashboardSidecarPanels({ d }: { d: Dash }) {
   const {
-    t, settings, settingsSaving, toggleCodexAutoStart,
+    locale, t, settings, settingsSaving, toggleCodexAutoStart,
     sidecar, sidecarSaving, sidecarModels, models, saveSidecar,
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
+  const visionModel = sidecar?.vision.model ?? "gpt-5.4-mini";
+  const persistedVisionReasoning = sidecar?.vision.reasoning ?? "low";
+  const visionLadder = visionReasoningLadder(models, visionModel);
+  const visionReasoning = clampVisionReasoningToLadder(visionLadder, persistedVisionReasoning);
 
   return (
     <>
@@ -266,13 +287,28 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
         <div className="panel dash-sidecar-card" aria-busy={!sidecar || undefined}>
           <div className="dash-sidecar-card__row">
             <div className="font-semibold">{t("dash.visionSidecar")}</div>
-            <Select
-              value={sidecar?.vision.model ?? "gpt-5.6-luna"}
-              options={sidecarModels}
-              onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
-              disabled={!sidecar || sidecarSaving}
-              label={t("dash.sidecarModel")}
-            />
+            <div className="dash-delegation-controls">
+              <Select
+                value={visionModel}
+                options={sidecarModels}
+                onChange={model => {
+                  const ladder = visionReasoningLadder(models, model);
+                  const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
+                  void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model), reasoning } });
+                }}
+                disabled={!sidecar || sidecarSaving}
+                label={t("dash.sidecarModel")}
+              />
+              <Select
+                value={visionReasoning}
+                options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: visionReasoningLabel(locale, value) }))}
+                onChange={reasoning => {
+                  void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
+                }}
+                disabled={!sidecar || sidecarSaving}
+                label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
+              />
+            </div>
           </div>
           <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
         </div>
@@ -295,7 +331,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
             >
               <IconInfo width={13} height={13} aria-hidden="true" />
             </button>
-            <code className="muted text-caption">⚠ 5.4-mini</code>
+            <code className="muted text-caption">{`⚠ ${shadowSourceModelBadge(shadowCall?.sourceModels)}`}</code>
           </div>
           <div className="setting-controls" style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button
@@ -310,7 +346,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
             </button>
             <Select
               value={shadowCall?.model ?? ""}
-              options={[{ value: "", label: "—" }, ...models.map(m => ({ value: m.id, label: `${m.provider}/${m.id}` }))]}
+              options={shadowCallModelOptions(models, shadowCall?.model).map(option => option.value === "" ? option : { ...option, label: formatNamespacedModelId(option.value, t) })}
               onChange={v => { void saveShadowCall({ model: v }); }}
               disabled={!shadowCall || shadowCallSaving || !shadowCall?.enabled}
               label={t("dash.shadowCallModel")}

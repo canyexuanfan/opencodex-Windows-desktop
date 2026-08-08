@@ -13,10 +13,15 @@ import { dirname, join } from "node:path";
 import { getConfigDir, getConfigPath, readConfigDiagnostics, readPid, readRuntimePort, resolveEnvValue } from "../config";
 import { findLiveProxy } from "../server/proxy-liveness";
 import { gracefulStopHost } from "../lib/process-control";
+import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
+import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { maskAccountId } from "../lib/privacy";
 import { PROXY_ENV_KEYS, proxyEnvPresent } from "../lib/proxy-env";
 import { configuredAdminToken } from "../lib/admin-secrets";
 import { readCodexTokens } from "../codex/auth-collision";
+import { withNativeMainSharedClaim } from "../codex/native-main-claim";
+import { probeNativeProfileRecoveryState, resolveNativeProfileContext } from "../codex/native-profile-store";
+import { NativeProfileError } from "../codex/native-profile-types";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
@@ -148,6 +153,18 @@ export async function collectOAuthDoctorChecks(
       level: "WARN",
       message:
         "Codex account health unavailable (proxy not running). Action: start the proxy and re-run `ocx doctor` to inspect live cooldown/reauth",
+    });
+  } else if (report.codexHealthSource === "management-auth-failed") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management authentication failed). Action: verify the admin token configuration, restart the proxy, and re-run `ocx doctor`",
+    });
+  } else if (report.codexHealthSource === "management-api-unavailable") {
+    checks.push({
+      level: "WARN",
+      message:
+        "Codex account health unavailable (proxy running; management API response failed). Action: inspect the proxy service log, restart the proxy if needed, and re-run `ocx doctor`",
     });
   }
   for (const entry of report.entries) {
@@ -307,11 +324,45 @@ export type ConfiguredProxyDiagnostic = {
   detail: string;
 };
 
-function envReferenceName(value: string): string | null {
+export function envReferenceName(value: string): string | null {
   const braced = value.match(/^\$\{(\w+)\}$/);
   if (braced) return braced[1]!;
   const bare = value.match(/^\$(\w+)$/);
   return bare ? bare[1]! : null;
+}
+
+export type ProviderApiKeyDiagnostic = {
+  provider: string;
+  envName: string;
+  detail: string;
+};
+
+/** Warn when a key-auth provider's apiKey env reference resolves empty in this process. */
+export function collectProviderApiKeyDiagnostics(
+  providers: Record<string, { authMode?: string; apiKey?: string }> = readConfigDiagnostics().config.providers ?? {},
+  env: EnvMap = process.env,
+): ProviderApiKeyDiagnostic[] {
+  const resolveInEnv = (value: string): string | undefined => {
+    const name = envReferenceName(value);
+    if (!name) return value;
+    return env[name];
+  };
+  const rows: ProviderApiKeyDiagnostic[] = [];
+  for (const [provider, config] of Object.entries(providers)) {
+    if (config.authMode !== "key") continue;
+    const raw = typeof config.apiKey === "string" ? config.apiKey.trim() : "";
+    if (!raw) continue;
+    const envName = envReferenceName(raw);
+    if (!envName) continue;
+    const resolved = resolveInEnv(raw);
+    if (resolved?.trim()) continue;
+    rows.push({
+      provider,
+      envName,
+      detail: `provider ${provider}: env reference ${envName} is unset or empty in this process`,
+    });
+  }
+  return rows;
 }
 
 export function collectConfiguredProxy(): ConfiguredProxyDiagnostic {
@@ -433,36 +484,75 @@ export type WhamProbeResult = {
   authenticated: boolean;
 };
 
+type NativeMainDoctorClaim = <T>(operation: () => Promise<T>) => Promise<T>;
+
+export interface WhamProbeDeps {
+  withNativeMainClaim?: NativeMainDoctorClaim;
+  probeNativeMainRecoveryState?: typeof probeNativeProfileRecoveryState;
+}
+
 /**
  * Replicate the runtime WHAM fetch shape (same URL, 8s timeout, main-token
  * headers when present) so the probe fails exactly where the real path fails.
  * `fetchImpl` is injectable for testing.
  */
-export async function probeWham(fetchImpl: typeof fetch = fetch): Promise<WhamProbeResult> {
-  const tokens = readCodexTokens();
-  const headers: Record<string, string> = {};
-  if (tokens) {
-    headers.Authorization = `Bearer ${tokens.access_token}`;
-    headers["ChatGPT-Account-Id"] = tokens.account_id;
-  }
+export async function probeWham(
+  fetchImpl: typeof fetch = fetch,
+  deps: WhamProbeDeps = {},
+): Promise<WhamProbeResult> {
   const start = performance.now();
+  let authenticated = false;
   try {
-    const resp = await fetchImpl(WHAM_USAGE_URL, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    const durationMs = Math.round(performance.now() - start);
-    return {
-      ok: resp.ok,
-      status: resp.status,
-      durationMs,
-      classification: resp.ok ? "ok" : `http_${resp.status}`,
-      authenticated: !!tokens,
-    };
+    const context = resolveNativeProfileContext();
+    const withClaim = deps.withNativeMainClaim
+      ?? (<T>(operation: () => Promise<T>) => withNativeMainSharedClaim(context, operation));
+    return await withClaim(async () => {
+      const recoveryState = (deps.probeNativeMainRecoveryState ?? probeNativeProfileRecoveryState)(context);
+      if (recoveryState !== "none") {
+        return {
+          ok: false,
+          status: null,
+          durationMs: Math.round(performance.now() - start),
+          classification: `native_main_recovery_${recoveryState}`,
+          authenticated: false,
+        };
+      }
+      const tokens = readCodexTokens();
+      const headers: Record<string, string> = {};
+      if (tokens) {
+        headers.Authorization = `Bearer ${tokens.access_token}`;
+        headers["ChatGPT-Account-Id"] = tokens.account_id;
+      }
+      authenticated = !!tokens;
+      const resp = await fetchImpl(WHAM_USAGE_URL, { headers, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      const durationMs = Math.round(performance.now() - start);
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        durationMs,
+        classification: resp.ok ? "ok" : `http_${resp.status}`,
+        authenticated,
+      };
+    });
   } catch (err) {
     const durationMs = Math.round(performance.now() - start);
+    if (
+      err instanceof NativeProfileError
+      && (err.code === "NATIVE_MAIN_CLAIM_BUSY" || err.code === "NATIVE_MAIN_CLAIM_UNAVAILABLE")
+    ) {
+      return {
+        ok: false,
+        status: null,
+        durationMs,
+        classification: err.code.toLowerCase(),
+        authenticated: false,
+      };
+    }
     const name = err instanceof Error ? err.name : String(err);
     const classification = name === "TimeoutError" || name === "AbortError"
       ? "timeout"
       : "connect_error";
-    return { ok: false, status: null, durationMs, classification, authenticated: !!tokens };
+    return { ok: false, status: null, durationMs, classification, authenticated };
   }
 }
 
@@ -477,6 +567,8 @@ export async function probeWham(fetchImpl: typeof fetch = fetch): Promise<WhamPr
 export type ServiceMemoryData = {
   pid: number;
   bunVersion: string;
+  /** Launch-time provenance; absent for services installed before the marker existed. */
+  bunRuntimeSource?: BunRuntimeSource;
   platform: string;
   rss: number;
   heapUsed: number;
@@ -533,6 +625,9 @@ export async function fetchServiceMemory(
       data: {
         pid: body.pid,
         bunVersion: body.bunVersion,
+        // Allowlisted independently of the server: an unrecognized wire value is
+        // treated as absent rather than echoed into user-facing guidance.
+        bunRuntimeSource: BUN_RUNTIME_SOURCES.find(source => source === body.bunRuntimeSource),
         platform: typeof body.platform === "string" ? body.platform : "unknown",
         rss: body.rss,
         heapUsed: typeof body.heapUsed === "number" ? body.heapUsed : 0,
@@ -606,12 +701,22 @@ export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] 
   } else {
     lines.push("  !!     high RSS, indeterminate split — capture two doctor runs over time to see the trend");
   }
-  // Version-claiming (never binary-claiming): the endpoint cannot distinguish
-  // the bundled binary from an OPENCODEX_BUN_PATH override of the same version.
   if (d.platform === "win32" && d.eagerRelay?.reason === "auto-known-bad") {
     lines.push(`         service is running Bun ${d.bunVersion} on Windows — a version affected by the upstream Bun memory issue.`);
-    lines.push("         Options: wait for a bundled runtime update, or set OPENCODEX_BUN_PATH to a runtime you trust (unvalidated — own risk),");
-    lines.push("         or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    // The remediation depends on how the SERVICE was launched, which only the
+    // launch-time marker can answer. Telling someone to set OPENCODEX_BUN_PATH
+    // when it is already set is the bug this branch exists to avoid (#848).
+    if (d.bunRuntimeSource === "override") {
+      lines.push(`         OPENCODEX_BUN_PATH is already active for this service — the override runtime is itself an affected version (unvalidated — own risk).`);
+      lines.push("         Options: point the override at a different runtime, or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    } else if (d.bunRuntimeSource === undefined) {
+      lines.push("         this service records no runtime origin (installed before provenance tracking), so OpenCodex cannot tell whether an override is already active.");
+      lines.push("         Reinstall the service to record it, or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    } else {
+      const origin = d.bunRuntimeSource === "process" ? "the runtime that launched it" : "the bundled runtime";
+      lines.push(`         the service is using ${origin}. Options: wait for a bundled runtime update, or set OPENCODEX_BUN_PATH to a runtime you trust (unvalidated — own risk),`);
+      lines.push("         or opt into streamMode \"eager-relay\" via PUT /api/settings (crash risk on this runtime; see docs).");
+    }
   }
   return lines;
 }
@@ -625,11 +730,21 @@ export function proxyDownRestartHint(input: {
   proxyRunning: boolean;
   port: number;
   serviceViable: boolean;
+  /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
+  serviceInstalled?: boolean;
+  serviceConflict?: boolean;
 }): string | null {
   if (input.proxyRunning) return null;
+  // `serviceViable` alone conflates "no service at all" with "registered but stale or
+  // stopped". Only the first wants `install`: re-registering an existing service costs a
+  // UAC prompt on Windows and can switch a WinSW backend to Task Scheduler. A conflict
+  // still needs uninstall-then-install, which repairService() refuses outright.
+  const installedButBroken = input.serviceInstalled === true && input.serviceConflict !== true;
   const restart = input.serviceViable
     ? "Restart it with 'ocx service start' (service installed) or 'ocx start'."
-    : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
+    : installedButBroken
+      ? "Restart it with 'ocx start', or refresh the installed service: 'ocx service repair'."
+      : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
   return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
 }
 
@@ -742,6 +857,16 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   console.log("\nConfigured proxy (value hidden)");
   console.log(`  ${configuredProxy.present ? "set    " : "unset  "} ${configuredProxy.key} (${configuredProxy.source}; ${configuredProxy.detail})`);
 
+  const providerApiKeys = collectProviderApiKeyDiagnostics(doctorConfig.providers);
+  console.log("\nProvider API keys (value hidden)");
+  if (providerApiKeys.length === 0) {
+    console.log("  ok     no empty env-referenced provider keys detected in this process");
+  } else {
+    for (const row of providerApiKeys) {
+      console.log(`  !!     ${row.detail}`);
+    }
+  }
+
   console.log("\nRunning proxy process proxy env (presence only)");
   if (runningProxyEnv.status === "not_running") {
     console.log("  --     no running ocx proxy process found");
@@ -817,14 +942,31 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     console.log(`  [${check.level}] ${check.message}`);
   }
 
+  // #857: a running Codex app-server can keep an older in-memory catalog than
+  // the one on disk — surface it outside sync time.
+  const { collectCodexAppServerCatalogState } = await import("../codex/app-server-processes");
+  const catalogState = collectCodexAppServerCatalogState();
+  if (catalogState.state === "stale") {
+    console.log(`  [WARN] Codex app-server (PID(s): ${catalogState.processes.map(p => p.pid).join(", ")}) started before the on-disk catalog changed; its in-memory model list disagrees with ocx. Action: restart Codex (or run \`ocx sync --restart-codex\`)`);
+  } else if (catalogState.state === "unknown") {
+    console.log("  [WARN] Could not verify whether the running Codex app-server's model catalog is current (start time or catalog unreadable). Action: if the model list looks stale, restart Codex");
+  } else if (catalogState.state === "fresh") {
+    console.log("  [OK] Codex app-server model catalog is current with the on-disk catalog.");
+  }
+
   // Hints, not fixes.
   const hints: string[] = [];
   const proxyDown = proxyDownRestartHint({
     proxyRunning: Boolean(live),
     port: live?.port ?? doctorConfig.port ?? 10100,
     serviceViable: startup.serviceViable,
+    serviceInstalled: startup.serviceInstalled,
+    serviceConflict: startup.serviceConflict,
   });
   if (proxyDown) hints.push(proxyDown);
+  for (const row of providerApiKeys) {
+    hints.push(`${row.detail}. Set ${row.envName} in the shell that starts the proxy, or store a literal key in config (value hidden here).`);
+  }
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
   if (!startup.rebootSafe) {

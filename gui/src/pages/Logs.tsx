@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n, LOCALES, type TFn } from "../i18n/shared";
+import { formatProviderDisplayName } from "../provider-icons";
 import { formatTokens } from "../format-tokens";
 import { hashLogConversationQuery, matchesLogConversationId } from "../log-conversation-id";
 import { statusCodeInfo } from "../status-codes";
 import { IconX } from "../icons";
 import { modelLabel } from "../model-display";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 import { EmptyState, Notice } from "../ui";
 import Debug from "./Debug";
 
@@ -15,6 +18,10 @@ import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydo
 import { speedLabel } from "./logs-speed-label";
 import type { LogSurface, LogSurfaceFilter } from "./logs-surface-filter";
 import { logMatchesSurface } from "./logs-surface-filter";
+import {
+  sanitizeLogEntryRouteDecision,
+  validCachedRouteDecision,
+} from "./log-route-decision";
 
 function logsCacheKey(apiBase: string): string {
   return `ocx.logs.list.v1:${apiBase}`;
@@ -74,11 +81,17 @@ interface LogDisplayMetrics {
   cost: CostResult;
 }
 
+/**
+ * Recovery kinds recorded on a log attempt; rendered as localized labels in the logs
+ * detail dialog instead of raw wire values.
+ */
 type AttemptRecoveryKind =
   | "transient-5xx"
   | "connection-reset"
   | "oauth-401"
   | "key-429"
+  | "rate-limit-429"
+  | "anthropic-oauth-429"
   | "image-413";
 
 interface LogAttempt {
@@ -99,7 +112,7 @@ interface LogAttempt {
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
   displayMetrics?: LogDisplayMetrics;
 }
 
@@ -113,7 +126,7 @@ export interface LogEntry {
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -131,6 +144,32 @@ export interface LogEntry {
   firstOutputMs?: number;
   attempts?: LogAttempt[];
   displayMetrics?: LogDisplayMetrics;
+  /** Bounded route-decision trace (RI-01); absent for pre-trace rows. */
+  routeDecision?: {
+    routeKind?: string;
+    profile?: { id?: string; revision?: string };
+    selected?: { provider?: string; model?: string; reason?: string };
+    candidates?: Array<{ provider?: string; model?: string; eligible?: boolean; exclusions?: Array<{ code?: string }> }>;
+  };
+}
+
+function validCachedLogs(cached: LogEntry[] | null): LogEntry[] | null {
+  if (!Array.isArray(cached)) return null;
+  for (const entry of cached) {
+    if (
+      !entry
+      || typeof entry !== "object"
+      || typeof entry.timestamp !== "number"
+      || typeof entry.model !== "string"
+      || typeof entry.provider !== "string"
+      || typeof entry.status !== "number"
+      || typeof entry.durationMs !== "number"
+      || !validCachedRouteDecision(entry.routeDecision)
+    ) {
+      return null;
+    }
+  }
+  return cached;
 }
 
 function isCursorUsageProvider(provider: string): boolean {
@@ -200,7 +239,7 @@ interface ReasoningLogFields {
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
 }
 
 function effortLabel(log: ReasoningLogFields): string {
@@ -245,6 +284,9 @@ function formatEstimatedUsdValue(value: number, localeTag?: string): string {
   }).format(value)}`;
 }
 
+/** Consecutive failed polls before a stale table is called out. Two seconds each, so ~6s. */
+const STALE_POLL_FAILURE_LIMIT = 3;
+
 const METRIC_REASON_KEYS = {
   usage_missing: "logs.detail.reason.usage_missing",
   usage_unsupported: "logs.detail.reason.usage_unsupported",
@@ -262,12 +304,35 @@ const ESTIMATE_REASON_KEYS = {
   expected_price_overlay: "logs.detail.estimate.expected_price_overlay",
 } as const satisfies Record<CostEstimateReason, string>;
 
+/**
+ * i18n keys for every {@link AttemptRecoveryKind}, so the logs detail dialog renders a
+ * localized label instead of the raw wire value (e.g. `rate-limit-429`).
+ */
+const RECOVERY_KIND_KEYS = {
+  "transient-5xx": "logs.detail.attempt.recovery.transient5xx",
+  "connection-reset": "logs.detail.attempt.recovery.connectionReset",
+  "oauth-401": "logs.detail.attempt.recovery.oauth401",
+  "key-429": "logs.detail.attempt.recovery.key429",
+  "rate-limit-429": "logs.detail.attempt.recovery.rateLimit429",
+  "anthropic-oauth-429": "logs.detail.attempt.recovery.anthropicOauth429",
+  "image-413": "logs.detail.attempt.recovery.image413",
+} as const satisfies Record<AttemptRecoveryKind, string>;
+
 function metricReasonKey(reason: MetricUnavailableReason) {
   return METRIC_REASON_KEYS[reason];
 }
 
 function estimateReasonKey(reason: CostEstimateReason) {
   return ESTIMATE_REASON_KEYS[reason];
+}
+
+/**
+ * Map one attempt recovery kind to its i18n key for the logs detail dialog.
+ */
+function recoveryKindKey(kind: AttemptRecoveryKind) {
+  // A stale/malformed cached row can carry a kind outside the known set; fall back to a
+  // localized label instead of handing `t()` an undefined key.
+  return RECOVERY_KIND_KEYS[kind] ?? "logs.detail.attempt.recovery.unknown";
 }
 
 function verificationKey(status: MatchedPriceInfo["status"]): "logs.detail.verification.verified" | "logs.detail.verification.derived" {
@@ -280,12 +345,26 @@ function statusColor(status: number): string {
   return "var(--amber)";
 }
 
-function formatLogTimestamp(ts: number, localeTag?: string): string {
-  return new Date(ts).toLocaleTimeString(localeTag);
+/** Date and time as separate locale strings (no joining comma) for stacked table cells. */
+function formatLogDateParts(ts: number, localeTag?: string, timeZone?: string): { date: string; time: string } {
+  const zone = timeZone ? { timeZone } : undefined;
+  try {
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag, zone),
+      time: new Date(ts).toLocaleTimeString(localeTag, zone),
+    };
+  } catch {
+    // An IANA zone the browser's ICU build does not know throws RangeError.
+    return {
+      date: new Date(ts).toLocaleDateString(localeTag),
+      time: new Date(ts).toLocaleTimeString(localeTag),
+    };
+  }
 }
 
-function formatLogDateTime(ts: number, localeTag?: string): string {
-  return new Date(ts).toLocaleString(localeTag);
+function formatLogDateTime(ts: number, localeTag?: string, timeZone?: string): string {
+  const { date, time } = formatLogDateParts(ts, localeTag, timeZone);
+  return `${date} ${time}`;
 }
 
 function modelTitle(log: LogEntry): string {
@@ -331,18 +410,42 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
 
 export default function Logs({ apiBase }: { apiBase: string }) {
   const { t, locale } = useI18n();
-  const cachedLogs = readSessionListCache<LogEntry[]>(logsCacheKey(apiBase));
-  const [logs, setLogs] = useState<LogEntry[]>(() => cachedLogs ?? []);
-  const [loading, setLoading] = useState(() => !(cachedLogs && cachedLogs.length > 0));
-  const [error, setError] = useState<string | null>(null);
+  const resourceKey = logsCacheKey(apiBase);
+  const cachedLogs = validCachedLogs(readSessionListCache<LogEntry[]>(resourceKey));
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [detail, setDetail] = useState<LogEntry | null>(null);
   const [surfaceFilter, setSurfaceFilter] = useState<LogSurfaceFilter>("all");
   const [conversationFilter, setConversationFilter] = useState("");
   const [conversationQueryHash, setConversationQueryHash] = useState<string | undefined>();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const hasLogsRef = useRef(Boolean(cachedLogs?.length));
   const localeTag = LOCALES.find(l => l.code === locale)?.htmlLang;
+  // The proxy's own zone, so timestamps read the same as the server's logs rather than being
+  // silently shifted into the viewer's zone (#725). Fetched once: it cannot change while the
+  // page is open, so it must not join the 2s log poll. Undefined until it arrives, which
+  // formats browser-local exactly as before.
+  const [serverTimeZone, setServerTimeZone] = useState<string | undefined>();
+  useEffect(() => {
+    const controller = new AbortController();
+    // Abort already rejects the in-flight fetch, but the flag keeps the guarantee
+    // local: the setter is visibly gated without having to reason about whether
+    // the abort propagates through the body read.
+    let cancelled = false;
+    fetch(`${apiBase}/api/settings`, { signal: controller.signal })
+      .then(res => (res.ok ? res.json() as Promise<{ timeZone?: unknown }> : null))
+      .then(body => {
+        if (cancelled || !body) return;
+        if (typeof body.timeZone === "string" && body.timeZone.trim()) {
+          setServerTimeZone(body.timeZone.trim());
+        }
+      })
+      .catch(() => {
+        // Offline or an older proxy without the field: keep browser-local formatting.
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [apiBase]);
   // The hash is the source of truth for the active tab (#logs vs #logs/debug),
   // so refresh/bookmark/back-forward keep the tab choice.
   const [tab, setTab] = useState<LogsTab>(readTabFromHash);
@@ -362,39 +465,55 @@ export default function Logs({ apiBase }: { apiBase: string }) {
 
   const selectTab = selectLogsTab;
 
-  const fetchLogs = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = opts?.silent === true;
-    // Silent polls must not clear an existing error or toggle loading — otherwise
-    // failures flicker between the error banner, empty state, and stale table.
-    if (!silent) setLoading(true);
-    try {
-      const res = await fetch(`${apiBase}/api/logs`);
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
-      const next = await res.json() as LogEntry[];
-      setLogs(next);
-      writeSessionListCache(logsCacheKey(apiBase), next);
-      setError(null);
-    } catch (cause) {
-      if (silent) return;
-      const detail = cause instanceof Error ? cause.message : "";
-      setError(detail ? `${t("logs.loadError")} ${detail}` : t("logs.loadError"));
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, [apiBase, t]);
+  const loadLogs = useCallback(async (signal: AbortSignal): Promise<LogEntry[]> => {
+    const res = await fetch(`${apiBase}/api/logs?limit=2000`, { signal });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
+    const body = await res.json() as LogEntry[] | { logs?: LogEntry[] };
+    const raw = Array.isArray(body) ? body : (body.logs ?? []);
+    const next = raw.map(sanitizeLogEntryRouteDecision);
+    writeSessionListCache(resourceKey, next);
+    return next;
+  }, [apiBase, resourceKey]);
 
-  useEffect(() => {
-    if (tab !== "logs") return;
-    // Re-entering the Logs tab keeps held rows; only cold mounts flash loading.
-    void fetchLogs({ silent: hasLogsRef.current });
-    if (!autoRefresh) return;
-    const interval = setInterval(() => void fetchLogs({ silent: true }), 2000);
-    return () => clearInterval(interval);
-  }, [autoRefresh, fetchLogs, tab]);
+  // The resource layer owns the request and the 2s poll. It keeps held rows through a quiet
+  // poll on its own, which is what the old silent/non-silent split was hand-rolling — and an
+  // empty successful response is now a real empty result rather than a cold load.
+  const logsResource = useDataSurface<LogEntry[]>(
+    resourceKey,
+    [apiBase],
+    loadLogs,
+    {
+      isEmpty: rows => rows.length === 0,
+      enabled: tab === "logs",
+      pollMs: autoRefresh ? 2000 : undefined,
+      initialData: cachedLogs ?? undefined,
+    },
+  );
+  const logsState = logsResource.state;
+  const logs = logsState.data ?? cachedLogs ?? [];
+  const fetchLogs = logsResource.refresh;
 
-  useEffect(() => {
-    hasLogsRef.current = logs.length > 0;
-  }, [logs.length]);
+  // A single failed tick on a two-second poll is noise, but an outage that never recovers must not
+  // leave the user reading stale rows as if they were current. Count consecutive failures and speak
+  // up once it is clearly not transient.
+  const settledFailure = !logsResource.refreshing && logsState.showError;
+  const settledSuccess = !logsResource.refreshing && !logsState.showError && logsState.data !== undefined;
+  // Derived from the settlement itself, so there is no second copy of this state to keep
+  // in sync and no frame painted with a stale banner. `streak` counts CONSECUTIVE failed
+  // settlements: it is stored keyed by the error identity that produced it, so repeated
+  // renders of the same failure do not inflate the count and a success clears it.
+  const [failureStreak, setFailureStreak] = useState<{ error: unknown; count: number }>(
+    { error: null, count: 0 },
+  );
+  if (settledSuccess && failureStreak.count !== 0) {
+    setFailureStreak({ error: null, count: 0 });
+  } else if (settledFailure && failureStreak.error !== logsState.error) {
+    setFailureStreak(previous => ({ error: logsState.error, count: previous.count + 1 }));
+  }
+  // Auto-refresh off: one settled failure is enough — there is no next poll to recover quietly.
+  const pollFailing =
+    failureStreak.count >= STALE_POLL_FAILURE_LIMIT
+    || (!autoRefresh && settledFailure);
 
   const detailInfo = detail ? statusCodeInfo(detail.status, locale) : null;
   const conversationQuery = conversationFilter.trim();
@@ -432,7 +551,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
     : 0;
 
   return (
-    <>
+    <div className="logs-page">
       <div className="page-head">
         <h2>{t("nav.logs")}</h2>
         {tab === "logs" && (
@@ -547,15 +666,35 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         </div>
       )}
 
-      {error ? (
+      {/*
+        Only a cold failure or a user-initiated retry surfaces here. This tab polls every two
+        seconds, so a transient 5xx would otherwise flash the banner on and off under a table
+        that is still perfectly readable — noise, not information. A quiet poll failure keeps the
+        held rows and waits for the next tick, which is the behaviour the auto-refresh tests pin.
+      */}
+      {logsState.kind === "failed-cold" && (
         <Notice tone="err">
-          {error}{" "}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => void fetchLogs()} disabled={loading}>
+          {logsState.error instanceof Error ? `${t("logs.loadError")} ${logsState.error.message}` : t("logs.loadError")}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => fetchLogs({ forceLoading: true })} disabled={logsState.refreshing}>
             {t("common.retry")}
           </button>
         </Notice>
-      ) : loading && logs.length === 0 ? (
-        <EmptyState title={t("common.loading")} />
+      )}
+      {/* Stale rows after a sustained poll outage, or any settled failure while auto-refresh is
+          off (no next tick will recover). Cleared by the first successful fetch. */}
+      {pollFailing && logs.length > 0 && (
+        <Notice tone="err">
+          {t("logs.loadError")}{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => fetchLogs({ forceLoading: true })} disabled={logsResource.refreshing}>
+            {t("common.retry")}
+          </button>
+        </Notice>
+      )}
+
+      {/* A cold failure must not also render the empty state: "nothing came back" and "there is
+          nothing to show" are different answers, and showing both at once tells the user neither. */}
+      {logsState.kind === "failed-cold" ? null : logsState.showSkeleton && logs.length === 0 ? (
+        <DataSurfaceSkeleton label={t("common.loading")} rows={6} />
       ) : filteredLogs.length === 0 ? (
         <EmptyState title={t("logs.noRequests")} />
       ) : (
@@ -573,7 +712,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                <th>{t("logs.col.provider")}</th>
                <th>{t("logs.col.status")}</th>
                 <th>{t("logs.col.request")}</th>
-               <th className="num">{t("logs.col.duration")}</th>
+               <th className="num log-col-duration">{t("logs.col.duration")}</th>
              </tr>
             </thead>
             <tbody>
@@ -585,13 +724,19 @@ export default function Logs({ apiBase }: { apiBase: string }) {
               {virtualRows.map(virtualRow => {
                 const log = filteredLogs[filteredLogs.length - 1 - virtualRow.index];
                 const reasoningWire = reasoningWireLabel(log);
+                const when = formatLogDateParts(log.timestamp, localeTag, serverTimeZone);
                 return (
                <tr
                  key={log.requestId ?? `${log.timestamp}-${virtualRow.index}`}
                  data-index={virtualRow.index}
                  ref={rowVirtualizer.measureElement}
                >
-                 <td className="muted mono">{formatLogTimestamp(log.timestamp, localeTag)}</td>
+                 <td className="muted mono log-col-time">
+                   <span className="logs-stack-start">
+                     <span>{when.date}</span>
+                     <span>{when.time}</span>
+                   </span>
+                 </td>
                   <td className="num mono log-col-tokens" title={tokensTitle(log, t)}>
                     {(() => {
                       const tokenTotal = displayContextTokenTotal(log);
@@ -642,7 +787,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                       {reasoningWire && <span className="muted text-caption leading-tight">{reasoningWire}</span>}
                     </span>
                   </td>
-                  <td className="muted">{log.provider}</td>
+                  <td className="muted">{formatProviderDisplayName(log.provider, t)}</td>
                   <td>
                     <span className="log-status-cell">
                       <span className="mono font-semibold" style={{ color: statusColor(log.status) }}>{log.status}</span>
@@ -657,7 +802,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                     </span>
                  </td>
                   <td className="muted mono"><span className="log-reqid" title={log.requestId}>{log.requestId ?? "-"}</span></td>
-                 <td className="num">{log.durationMs}ms</td>
+                 <td className="num log-col-duration">{log.durationMs}ms</td>
                 </tr>
                 );
               })}
@@ -678,6 +823,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
           detailInfo={detailInfo}
           localeCode={locale}
           localeTag={localeTag}
+          serverTimeZone={serverTimeZone}
           t={t}
           onClose={() => setDetail(null)}
           onFilterConversation={id => {
@@ -687,7 +833,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
         />
       )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -703,12 +849,13 @@ function useModalDialog(open: boolean) {
 }
 
 function LogDetailDialog({
-  detail, detailInfo, localeCode, localeTag, t, onClose, onFilterConversation,
+  detail, detailInfo, localeCode, localeTag, serverTimeZone, t, onClose, onFilterConversation,
 }: {
   detail: LogEntry;
   detailInfo: ReturnType<typeof statusCodeInfo> | null;
   localeCode: string;
   localeTag?: string;
+  serverTimeZone?: string;
   t: TFn;
   onClose: () => void;
   onFilterConversation?: (conversationId: string) => void;
@@ -750,7 +897,7 @@ function LogDetailDialog({
         <section className="log-detail-section" aria-labelledby="log-detail-basic">
           <h4 id="log-detail-basic" className="log-detail-section-title">{t("logs.detail.section.basic")}</h4>
           <div className="log-detail-grid">
-            <span className="muted">{t("logs.col.time")}</span><span className="mono">{formatLogDateTime(detail.timestamp, localeTag)}</span>
+            <span className="muted">{t("logs.col.time")}</span><span className="mono">{formatLogDateTime(detail.timestamp, localeTag, serverTimeZone)}</span>
             <span className="muted">{t("logs.col.request")}</span>
             <span className="log-detail-request-row">
               <span className="mono log-detail-break">{detail.requestId ?? "\u2014"}</span>
@@ -778,13 +925,52 @@ function LogDetailDialog({
               </>
             )}
             <span className="muted">{t("logs.col.model")}</span><span className="mono">{modelLabel(detail.resolvedModel ?? detail.model)}</span>
-            <span className="muted">{t("logs.col.provider")}</span><span>{detail.provider}</span>
+            <span className="muted">{t("logs.col.provider")}</span><span>{formatProviderDisplayName(detail.provider, t)}</span>
             {(detail.requestedEffort || detail.effectiveEffort) && (
               <><span className="muted">{t("logs.col.effort")}</span><span className="mono">{effortLabel(detail)}{reasoningWire ? ` (${reasoningWire})` : ""}</span></>
             )}
             {detail.errorCode && (<><span className="muted">{t("logs.col.error")}</span><span className="mono">{detail.errorCode}</span></>)}
             {detail.upstreamError && (<><span className="muted">{t("logs.col.upstreamReason")}</span><span className="mono log-detail-break">{detail.upstreamError}</span></>)}
           </div>
+        </section>
+
+        <section className="log-detail-section" aria-labelledby="log-detail-route">
+          <h4 id="log-detail-route" className="log-detail-section-title">{t("logs.detail.route.section")}</h4>
+          {detail.routeDecision ? (
+            <div className="log-detail-grid">
+              <span className="muted">{t("logs.detail.route.kind")}</span><span className="mono">{detail.routeDecision.routeKind ?? "–"}</span>
+              {detail.routeDecision.profile?.id && (
+                <><span className="muted">{t("logs.detail.route.profile")}</span>
+                  <span className="mono">{detail.routeDecision.profile.id} ({detail.routeDecision.profile.revision})</span></>
+              )}
+              {detail.routeDecision.selected?.provider && (
+                <><span className="muted">{t("logs.detail.route.selected")}</span>
+                  <span className="mono">
+                    {detail.routeDecision.selected.provider}/{detail.routeDecision.selected.model}
+                    {detail.routeDecision.selected.reason ? ` — ${detail.routeDecision.selected.reason}` : ""}
+                  </span></>
+              )}
+              <span className="muted">{t("logs.detail.route.candidates")}</span>
+              <span className="mono">
+                {(detail.routeDecision.candidates ?? []).map(candidate => {
+                  const provider = typeof candidate.provider === "string" && candidate.provider.length > 0
+                    ? candidate.provider
+                    : "–";
+                  const model = typeof candidate.model === "string" && candidate.model.length > 0
+                    ? candidate.model
+                    : "–";
+                  const mark = candidate.eligible === true
+                    ? " ✓"
+                    : candidate.eligible === false
+                      ? " ✗"
+                      : " ?";
+                  return `${provider}/${model}${mark}`;
+                }).join("  ") || "–"}
+              </span>
+            </div>
+          ) : (
+            <p className="log-detail-notes-line muted">{t("logs.detail.route.unknown")}</p>
+          )}
         </section>
 
         <section className="log-detail-section" aria-labelledby="log-detail-performance">
@@ -855,13 +1041,15 @@ function LogDetailDialog({
                   const attemptReasoningWire = reasoningWireLabel(attempt);
                   const matched = attemptCost?.kind === "value" ? attemptCost.estimate.price : undefined;
                   const reason = attempt.errorCode
-                    ?? (attempt.recoveryKinds.length ? attempt.recoveryKinds.join(", ") : undefined)
+                    ?? (attempt.recoveryKinds.length
+                      ? attempt.recoveryKinds.map(kind => t(recoveryKindKey(kind))).join(", ")
+                      : undefined)
                     ?? (attemptCost?.kind === "unavailable" ? t(metricReasonKey(attemptCost.reason)) : t("logs.detail.attempt.completed"));
                   return (
                     <tr key={`${attempt.ordinal}-${attempt.provider}-${attempt.model}`}>
                       <td className="num mono">{attempt.ordinal}</td>
                       <td>
-                        <span>{attempt.provider}</span><br />
+                        <span>{formatProviderDisplayName(attempt.provider, t)}</span><br />
                         <span className="mono muted log-detail-break">{attempt.model}</span>
                         {(attempt.requestedEffort || attempt.effectiveEffort) && (
                           <>

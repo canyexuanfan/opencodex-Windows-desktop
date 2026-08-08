@@ -1,6 +1,6 @@
 ---
 title: Codex Integration
-description: How opencodex injects itself into Codex, syncs the model catalog, drives the subagent picker, and restores cleanly.
+description: How opencodex injects itself into Codex, syncs the model catalog, installs shims, and restores cleanly.
 ---
 
 opencodex makes Codex route through the proxy by editing two things Codex reads: its config
@@ -23,9 +23,14 @@ model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
 # Auto-injected by opencodex
 openai_base_url = "http://127.0.0.1:10100/v1"
 
+# only when fastMode is set; unset adds no [features] table
 [features]
 fast_mode = true
 ```
+
+The injected `fast_mode` follows the tri-state `fastMode` setting: `true` writes `fast_mode = true`,
+`false` writes `fast_mode = false`, and unset leaves an existing `fast_mode` untouched without
+adding a `[features]` table.
 
 The proxy listens on port `10100` by default and serves `POST /v1/responses`,
 `POST /v1/responses/compact`, `POST /v1/images/generations`, `POST /v1/images/edits`,
@@ -201,6 +206,22 @@ Add a display name from the CLI (the proxy syncs the catalog right away when liv
 ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
 ```
 
+Remote Codex clients can fetch the same generated catalog over the management API (same
+admission token as other `/api/*` routes):
+
+```bash
+dest="${CODEX_HOME:-$HOME/.codex}/opencodex-catalog.json"
+tmp="$(mktemp "${dest}.XXXXXX")"
+curl -fsS -H "x-opencodex-api-key: $OPENCODEX_ADMIN_AUTH_TOKEN" \
+  "https://proxy.example.com/api/catalog" > "$tmp" \
+  && mv "$tmp" "$dest"
+ocx sync-cache
+```
+
+The response is the raw `opencodex-catalog.json` document (no provider credentials). When
+available, the `x-opencodex-codex-version` header reports the Codex runtime version on the
+server so clients can spot version skew.
+
 You can also set or edit it through the management API (`POST /api/custom-models`,
 `PUT /api/custom-models/<id>` with a `displayName` string) and the web dashboard. A `/` is rejected
 because it would collide with the routed-slug separator.
@@ -279,24 +300,7 @@ it is not; `ocx doctor` reports restart safety (service/shim coverage).
 
 ## The subagent picker
 
-Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by
-priority. `subagentModels` accepts up to five ids, either bare native GPT slugs or namespaced
-`provider/model` routes, and gives them priorities 0–4 so they sort first:
-
-```json
-{
-  "subagentModels": [
-    "gpt-5.5",
-    "gpt-5.6-sol",
-    "anthropic/claude-opus-5",
-    "xai/grok-4.5",
-    "cursor/gpt-5.6-terra"
-  ]
-}
-```
-
-Priority ranking: featured (0–4) < other routed (5) < native (9). You can also manage this from the
-[web dashboard](/guides/web-dashboard/).
+Catalog sync makes the selected sub-agent models available to Codex; see [Codex App model picker](/guides/codex-app-models/#subagent-selection) for picker ordering and [Sub-agent Surface](/guides/sub-agent-surface/) for v1/base/v2 delegation and fallback behavior.
 
 ## Codex account warmup
 

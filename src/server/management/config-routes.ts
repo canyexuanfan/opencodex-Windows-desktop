@@ -24,6 +24,14 @@ import {
 import { removeCredential } from "../../oauth/store";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { isStreamMode } from "../../lib/bun-stream-caps";
+import { shadowSourceModels } from "../../lib/shadow-call";
+import {
+  configureAppOwnedMemoryBudget,
+  enforceAppOwnedMemoryBudget,
+  MAX_APP_OWNED_MEMORY_BUDGET_MB,
+  MIN_APP_OWNED_MEMORY_BUDGET_MB,
+  resolveAppOwnedMemoryBudgetBytes,
+} from "../../lib/app-owned-memory";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
@@ -39,6 +47,8 @@ import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
+import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../../reasoning-effort";
+import { normalizeVisionReasoningForModel } from "../../vision/reasoning";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -63,9 +73,10 @@ import { displayCodexRuntimePath, effortClampAppliesToRuntime, loadLastEffortCla
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 
 export async function handleConfigRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
+  const { req, url, config, deps, syncClaudeAgentDefsBestEffort } = ctx;
   if (url.pathname === "/api/config" && req.method === "GET") {
     return jsonResponse(safeConfigDTO(config));
   }
@@ -110,10 +121,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       );
     }
     return jsonResponse({
+      // The dashboard renders request-log timestamps. Without this it formats them in the
+      // BROWSER's zone, so a KST proxy viewed from a UTC browser reports every request nine
+      // hours off (#725). Carried on settings rather than /api/logs because that route's
+      // array response has four consumers that would have to change with it.
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       codexAutoStart: codexAutoStartEnabled(config),
       port: config.port,
       hostname: config.hostname ?? "127.0.0.1",
       streamMode: config.streamMode ?? "auto",
+      appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       startupHealth: await getCachedStartupHealth(config),
       codexRuntime: {
         path: displayCodexRuntimePath(resolved.runtime.command),
@@ -141,7 +158,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/startup-action" && req.method === "POST") {
     let body: { action?: unknown; repair?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install-service", "install-shim"].includes(String(body.action))) {
       return jsonResponse({ error: "action must be install-service or install-shim" }, 400);
     }
@@ -170,7 +187,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/windows-tray" && req.method === "POST") {
     let body: { action?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!body || !["install", "start", "stop", "uninstall"].includes(String(body.action))) {
       return jsonResponse({ error: "action must be install, start, stop, or uninstall" }, 400);
     }
@@ -185,21 +202,29 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/settings" && req.method === "PUT") {
     // Each field is optional but at least one must be present; fields are
-    // validated when present. streamMode-only PUTs must work: Windows-memory
-    // troubleshooting docs tell service users to set it here (a service does
-    // not inherit shell env, so config.json is its only input). A stream-shape
+    // validated when present. streamMode-only PUTs must work: Windows/macOS
+    // memory troubleshooting can use this persisted stream-shape escape hatch
+    // (a Windows service does not inherit shell env). A stream-shape
     // change applies to NEW turns only — the config object is shared by
     // reference with the request handlers, no restart needed.
-    let body: { codexAutoStart?: unknown; streamMode?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
-    if (body.codexAutoStart === undefined && body.streamMode === undefined) {
-      return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
+    let body: { codexAutoStart?: unknown; streamMode?: unknown; appOwnedMemoryBudgetMb?: unknown };
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.codexAutoStart === undefined && body.streamMode === undefined && body.appOwnedMemoryBudgetMb === undefined) {
+      return jsonResponse({ error: "provide codexAutoStart, streamMode, or appOwnedMemoryBudgetMb" }, 400);
     }
     if (body.codexAutoStart !== undefined && typeof body.codexAutoStart !== "boolean") {
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
     }
     if (body.streamMode !== undefined && !isStreamMode(body.streamMode)) {
       return jsonResponse({ error: "streamMode must be auto, legacy-tee, or eager-relay" }, 400);
+    }
+    if (body.appOwnedMemoryBudgetMb !== undefined && (
+      typeof body.appOwnedMemoryBudgetMb !== "number"
+      || !Number.isInteger(body.appOwnedMemoryBudgetMb)
+      || body.appOwnedMemoryBudgetMb < MIN_APP_OWNED_MEMORY_BUDGET_MB
+      || body.appOwnedMemoryBudgetMb > MAX_APP_OWNED_MEMORY_BUDGET_MB
+    )) {
+      return jsonResponse({ error: `appOwnedMemoryBudgetMb must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}` }, 400);
     }
     if (typeof body.codexAutoStart === "boolean") {
       config.codexAutoStart = body.codexAutoStart;
@@ -211,12 +236,20 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
       }
     }
+    if (typeof body.appOwnedMemoryBudgetMb === "number") {
+      config.appOwnedMemoryBudgetMb = body.appOwnedMemoryBudgetMb;
+    }
     saveConfigPreservingClaudeCode(config);
+    if (typeof body.appOwnedMemoryBudgetMb === "number") {
+      configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(body.appOwnedMemoryBudgetMb));
+      enforceAppOwnedMemoryBudget();
+    }
     invalidateStartupHealthCache();
     return jsonResponse({
       ok: true,
       codexAutoStart: codexAutoStartEnabled(config),
       streamMode: config.streamMode ?? "auto",
+      appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       startupHealth: await getCachedStartupHealth(config),
     });
   }
@@ -230,11 +263,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sync" && req.method === "POST") {
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
-    const result = await syncModelsToCodex(undefined, config, null);
+    const { readRuntimePort, loadConfig } = await import("../../config");
+    // Never use the server-captured startup object for a durable integration
+    // decision. A toggle may have persisted while this process was gathering.
+    const runtime = readRuntimePort(process.pid);
+    const result = await syncModelsToCodex(runtime?.port, loadConfig(), null);
+    const status = result.status === "refused" ? 409 : (result.status === "skipped" || result.ok ? 200 : 500);
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),
-    }, result.ok ? 200 : 500);
+    }, status);
   }
 
   if (url.pathname === "/api/update/check" && req.method === "GET") {
@@ -249,7 +287,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/update/run" && req.method === "POST") {
     const { normalizeUpdateChannel, startUpdateJob, UpdateJobError } = await import("../../update/job");
     let body: { tag?: unknown; restart?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.tag !== undefined && body.tag !== "latest" && body.tag !== "preview") {
       return jsonResponse({ error: "tag must be latest or preview" }, 400);
     }
@@ -276,11 +314,14 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
@@ -288,7 +329,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/sidecar-settings" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     // Strict shape (review F2): reject non-object bodies and non-object sections instead of throwing
     // on `null` or silently accepting arrays/strings as no-op updates.
     if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
@@ -296,7 +337,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
     const body = raw as {
       webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown };
-      vision?: { model?: unknown; backend?: unknown; maxDescriptionsPerTurn?: unknown };
+      vision?: { model?: unknown; backend?: unknown; reasoning?: unknown; maxDescriptionsPerTurn?: unknown };
     };
     if (body.webSearch && body.webSearch.backend !== undefined && body.webSearch.backend !== null
       && body.webSearch.backend !== "openai" && body.webSearch.backend !== "anthropic") {
@@ -312,6 +353,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         || body.vision.maxDescriptionsPerTurn <= 0)) {
       return jsonResponse({ error: "vision.maxDescriptionsPerTurn must be a positive integer" }, 400);
     }
+    if (body.vision?.reasoning !== undefined && !isVisionReasoningEffort(body.vision.reasoning)) {
+      return jsonResponse({ error: `vision.reasoning must be ${VISION_REASONING_EFFORTS.join(", ")}` }, 400);
+    }
+
+    let normalizedVisionReasoning: ReturnType<typeof normalizeVisionReasoningForModel>;
+    let visionReasoningTouched = false;
+    if (body.vision && (body.vision.model !== undefined || body.vision.reasoning !== undefined)) {
+      visionReasoningTouched = true;
+      const model = typeof body.vision.model === "string"
+        ? (body.vision.model === "" ? "gpt-5.4-mini" : body.vision.model)
+        : (config.visionSidecar?.model || "gpt-5.4-mini");
+      const sourceReasoning = body.vision.reasoning ?? config.visionSidecar?.reasoning;
+      normalizedVisionReasoning = sourceReasoning === undefined
+        ? undefined
+        : normalizeVisionReasoningForModel(model, sourceReasoning);
+    }
+
     if (body.webSearch) {
       config.webSearchSidecar = { ...config.webSearchSidecar };
       if (typeof body.webSearch.model === "string") {
@@ -337,16 +395,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (typeof body.vision.maxDescriptionsPerTurn === "number") {
         config.visionSidecar.maxDescriptionsPerTurn = body.vision.maxDescriptionsPerTurn;
       }
+      if (visionReasoningTouched) {
+        if (normalizedVisionReasoning === undefined) delete config.visionSidecar.reasoning;
+        else config.visionSidecar.reasoning = normalizedVisionReasoning;
+      }
     }
     saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
@@ -354,12 +419,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "GET") {
     const sci = config.shadowCallIntercept ?? {};
-    return jsonResponse({ enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
 
   if (url.pathname === "/api/shadow-call-settings" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (!isPlainRecord(raw)) return jsonResponse({ error: "body must be a JSON object" }, 400);
     const body = raw as { enabled?: unknown; model?: unknown };
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
@@ -376,7 +445,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     saveConfigPreservingClaudeCode(config);
     const sci = config.shadowCallIntercept;
-    return jsonResponse({ ok: true, enabled: sci.enabled === true, model: sci.model ?? "" });
+    return jsonResponse({
+      ok: true,
+      enabled: sci.enabled === true,
+      model: sci.model ?? "",
+      sourceModels: shadowSourceModels(sci.sourceModels),
+    });
   }
   return null;
 }

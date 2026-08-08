@@ -18,10 +18,12 @@ import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPr
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
 import { normalizeAnthropicImages } from "./anthropic-image-normalize";
-import { neutralizeIdentity } from "./identity";
+import { identifyRoutedModel } from "./identity";
+import { redactSecretString } from "../lib/redact";
 import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
 import { decodeServerSentEvents } from "../lib/sse-decoder";
+import { isTranslatorBudgetExceededError, retainTranslatedEventBatch, type TranslatorBudget } from "../lib/translator-budget";
 
 /** Map a user content part to an Anthropic content block (text or image source). */
 function toAnthropicContentPart(p: OcxContentPart): unknown {
@@ -242,11 +244,175 @@ function isLikelyRealAnthropicThinkingSignature(signature: string | undefined): 
   return /^[A-Za-z0-9+/_=-]+$/.test(signature);
 }
 
+/**
+ * Bridge error fidelity (web-search/images loops): extract a display-safe summary from an
+ * Anthropic JSON error envelope so `Provider error <status>` carries the upstream reason.
+ * JSON-only extraction — HTML/non-JSON bodies yield "" so raw markup is never echoed.
+ */
+export function formatAnthropicErrorBody(status: number, _headers: Headers, payloadText: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return "";
+  }
+  const detail = extractAnthropicErrorDetail(parsed);
+  if (!detail) return "";
+  return redactSecretString(detail).slice(0, 400);
+}
+
+function extractAnthropicErrorDetail(parsed: unknown): string | undefined {
+  if (typeof parsed === "string") return parsed.trim() || undefined;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  // Anthropic envelope: { type: "error", error: { type, message } }; tolerate a bare
+  // { error: { message } } and a string error field.
+  const err = obj.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err !== null && typeof err === "object" && !Array.isArray(err)) {
+    const e = err as Record<string, unknown>;
+    const msg = e.message;
+    if (typeof msg !== "string" || !msg.trim()) return undefined;
+    const type = e.type;
+    return typeof type === "string" && type.trim()
+      ? `${type.trim()}: ${msg.trim()}`
+      : msg.trim();
+  }
+  return undefined;
+}
+
 function usesNativeAnthropicEndpoint(provider: OcxProviderConfig): boolean {
   try {
     return new URL(provider.baseUrl).hostname === "api.anthropic.com";
   } catch {
     throw new Error(`anthropic provider has malformed baseUrl: ${provider.baseUrl}`);
+  }
+}
+
+/** Normalize provider baseUrl paths ending in `/`, `/v1`, or `/v1/messages` to `{origin}/v1/messages`. */
+export function anthropicMessagesUrl(baseUrl: string): string {
+  try {
+    new URL(baseUrl);
+  } catch {
+    throw new Error(`anthropic provider has malformed baseUrl: ${baseUrl}`);
+  }
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  const root = trimmed.replace(/\/v1\/messages\/?$/i, "").replace(/\/v1\/?$/i, "").replace(/\/+$/, "");
+  return `${root}/v1/messages`;
+}
+
+function synthesizeToolUseId(): string {
+  return `toolu_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+}
+
+/**
+ * A tool_use id that a client can actually echo back. `??` only catches a missing
+ * field, so an Anthropic-compatible relay that sends `""` or `"   "` produced a
+ * call whose id round-trips as blank — the next turn then cannot pair the result
+ * with its call. Treat blank as absent and synthesize (#765).
+ */
+function usableToolUseId(id: unknown): string {
+  return typeof id === "string" && id.trim() ? id : synthesizeToolUseId();
+}
+
+/**
+ * Bound repair for a malformed tool-arguments string under the compatibility profile (#658):
+ * a gateway such as AgentRouter can concatenate JSON objects (`{}{"value":42}`). Find the
+ * last parseable JSON object by scanning suffixes from each object-open brace and prefixes
+ * ending at each object-close brace. Both scans walk backwards from the end trying at most
+ * `maxCandidates` positions, so no offset index is ever materialized: a brace-dense hostile
+ * input costs at most 2 × maxCandidates bounded JSON.parse attempts and no extra storage.
+ * Inputs above MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES are not repaired at all.
+ */
+const MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES = 1024 * 1024;
+
+/**
+ * Whether `input` encodes to more than `max` UTF-8 bytes, with an early exit so the check
+ * itself never allocates a copy of a hostile string. `string.length` counts UTF-16 code
+ * units, which undercounts astral text by 2x against a byte budget.
+ */
+function utf8BytesExceed(input: string, max: number): boolean {
+  let bytes = 0;
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < input.length
+      && input.charCodeAt(i + 1) >= 0xdc00 && input.charCodeAt(i + 1) <= 0xdfff) {
+      // A complete surrogate pair is one 4-byte scalar. Anything else — a high surrogate
+      // followed by another high surrogate or a non-surrogate — encodes as two separate
+      // U+FFFD replacements, so the next unit must NOT be skipped.
+      bytes += 4;
+      i++;
+    } else bytes += 3; // lone surrogates encode as U+FFFD (3 bytes)
+    if (bytes > max) return true;
+  }
+  return false;
+}
+
+function lastValidJsonObject(input: string, maxCandidates: number): string | undefined {
+  const tryParseObject = (candidate: string): string | undefined => {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return candidate;
+    } catch { /* keep scanning */ }
+    return undefined;
+  };
+  let scanFrom = input.length - 1;
+  for (let tried = 0; tried < maxCandidates && scanFrom >= 0; tried++) {
+    const open = input.lastIndexOf("{", scanFrom);
+    if (open === -1) break;
+    const repaired = tryParseObject(input.slice(open));
+    if (repaired !== undefined) return repaired;
+    scanFrom = open - 1;
+  }
+  scanFrom = input.length - 1;
+  for (let tried = 0; tried < maxCandidates && scanFrom >= 0; tried++) {
+    const close = input.lastIndexOf("}", scanFrom);
+    if (close === -1) break;
+    const repaired = tryParseObject(input.slice(0, close + 1));
+    if (repaired !== undefined) return repaired;
+    scanFrom = close - 1;
+  }
+  return undefined;
+}
+
+function toolUseArguments(input: unknown, lenient = false): string {
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (!trimmed) return "{}";
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      if (lenient && !utf8BytesExceed(trimmed, MAX_REPAIRABLE_TOOL_ARGUMENT_BYTES)) {
+        const repaired = lastValidJsonObject(trimmed, 32);
+        if (repaired !== undefined) return repaired;
+      }
+      // A tool call's arguments must be a JSON object. Re-encoding an unparseable string as a
+      // JSON *string* is the double-encoding #765 reports: the caller then receives
+      // `"get weather"` where an object was required and the tool call is unusable either way.
+      // An empty object at least fails in the tool's own argument validation.
+      return "{}";
+    }
+  }
+  return JSON.stringify(input ?? {});
+}
+
+/**
+ * Whether arguments assembled from a stream's `input_json_delta` fragments are usable.
+ * A tool block that sent no fragments at all is fine — that is a no-argument call. Anything
+ * else has to parse, because unlike the non-stream path the fragments have already been
+ * forwarded to the client and cannot be repaired after the fact.
+ */
+function streamedToolArgumentsParse(assembled: string): boolean {
+  const trimmed = assembled.trim();
+  if (!trimmed) return true;
+  try {
+    JSON.parse(trimmed);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -280,16 +446,68 @@ const ADAPTIVE_THINKING_FAMILY_MINIMUMS: Record<string, readonly [major: number,
   fable: [0, 0],
 };
 
-function usesAdaptiveThinking(modelId: string): boolean {
-  // Minor is 1-2 digits with a non-digit lookahead so date-pinned ids ("claude-opus-4-20250514")
-  // parse as minor 0 instead of minor 20250514; suffixed ids ("claude-opus-4-8[1m]") still match.
-  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
-  if (!match) return false;
-  const minimum = ADAPTIVE_THINKING_FAMILY_MINIMUMS[match[1]];
+/**
+ * Family/version parse for a Claude model id, tolerant of a routing prefix.
+ *
+ * `parsed.modelId` is not always bare, and the slash can fall on either side.
+ * A `modelMap` entry may point at a routed destination such as
+ * `anthropic/claude-sonnet-5` (prefix), while a custom provider may expose a
+ * native id such as `claude-sonnet-5/variant` (suffix); both survive routing's
+ * known-id decoding. So this matches the segment that actually begins with
+ * `claude-` rather than assuming it is the first or the last one. A capability
+ * predicate that quietly returns false is worse than one that throws — the
+ * request just goes out wrong.
+ *
+ * Minor is 1-2 digits with a non-digit lookahead so date-pinned ids
+ * ("claude-opus-4-20250514") parse as minor 0 instead of minor 20250514;
+ * suffixed ids ("claude-opus-4-8[1m]") still match.
+ */
+function claudeFamilyVersion(modelId: string): { family: string; major: number; minor: number } | undefined {
+  // Find the segment that actually starts with `claude-`, rather than assuming it is either
+  // the first (breaks `anthropic/claude-sonnet-5`) or the last (breaks `claude-sonnet-5/variant`,
+  // where the slash carries a vendor suffix rather than a routing prefix).
+  const match = /(?:^|\/)claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
+  if (!match) return undefined;
+  return {
+    family: match[1]!,
+    major: Number(match[2]),
+    minor: match[3] === undefined ? 0 : Number(match[3]),
+  };
+}
+
+function meetsFamilyMinimum(
+  modelId: string,
+  minimums: Record<string, readonly [major: number, minor: number]>,
+): boolean {
+  const parsed = claudeFamilyVersion(modelId);
+  if (!parsed) return false;
+  const minimum = minimums[parsed.family];
   if (!minimum) return false;
-  const major = Number(match[2]);
-  const minor = match[3] === undefined ? 0 : Number(match[3]);
-  return major > minimum[0] || (major === minimum[0] && minor >= minimum[1]);
+  return parsed.major > minimum[0] || (parsed.major === minimum[0] && parsed.minor >= minimum[1]);
+}
+
+function usesAdaptiveThinking(modelId: string): boolean {
+  return meetsFamilyMinimum(modelId, ADAPTIVE_THINKING_FAMILY_MINIMUMS);
+}
+
+/**
+ * Claude families that (a) think by DEFAULT when the request omits `thinking`,
+ * and (b) accept an explicit `thinking: {type: "disabled"}` to turn it off.
+ *
+ * Deliberately NOT `usesAdaptiveThinking()`, which answers a different question
+ * (which wire shape a family accepts). The two sets differ in both directions:
+ * Fable always thinks and REJECTS an explicit disable, while Opus 4.7/4.8 use
+ * the adaptive wire but leave thinking off when the field is omitted, so they
+ * need no disable at all. Seeded with the family where the defect reproduces
+ * (#545); widen only with vendor evidence, since a wrong entry here turns a
+ * silent truncation into a 400.
+ */
+const EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS: Record<string, readonly [major: number, minor: number]> = {
+  sonnet: [5, 0],
+};
+
+function supportsExplicitThinkingDisable(modelId: string): boolean {
+  return meetsFamilyMinimum(modelId, EXPLICIT_THINKING_DISABLE_FAMILY_MINIMUMS);
 }
 
 /** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */
@@ -379,7 +597,7 @@ function messagesToAnthropicFormat(
   );
   const systemParts = [...(parsed.context.systemPrompt ?? []), ...(toolCatalogNudge ? [toolCatalogNudge] : [])];
   const system = systemParts.length
-    ? neutralizeIdentity(systemParts.join("\n\n")) || undefined
+    ? identifyRoutedModel(systemParts.join("\n\n"), parsed.modelId) || undefined
     : undefined;
   const messages: unknown[] = [];
 
@@ -597,6 +815,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
   return {
     name: "anthropic",
 
+    formatErrorBody: formatAnthropicErrorBody,
+
     async buildRequest(parsed: OcxParsedRequest, incoming?: IncomingMeta) {
       if (typeof provider.apiKey !== "string" || provider.apiKey.trim() === "") {
         if (isOAuth) {
@@ -638,7 +858,14 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       // `reasoning` is a Codex effort string; "none" is the disable sentinel (see parser.ts
       // REASONING_EFFORTS). A bare truthy check would treat "none" as truthy and wrongly enable
       // extended thinking (and strip temperature/top_p), so gate on a real, non-disable effort.
-      if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
+      //
+      // "none" is not the same as absent. Omitting `thinking` lets a default-on model think
+      // anyway, and thinking shares the caller's `max_tokens` — which truncates a small-budget
+      // request before it can emit its stop sequence (#545). Say "disabled" out loud where the
+      // model both defaults to thinking and accepts being told not to.
+      if (parsed.options.reasoning === "none" && supportsExplicitThinkingDisable(parsed.modelId)) {
+        body.thinking = { type: "disabled" };
+      } else if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
         if (usesAdaptiveThinking(parsed.modelId)) {
           // Adaptive-thinking models replace the token budget with an effort knob and reject
           // `thinking.type: "enabled"` outright. `max_tokens` still caps thinking plus visible
@@ -680,8 +907,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         else if (typeof tc === "object" && "name" in tc) body.tool_choice = { type: "tool", name: toolNames.toWire(resolveToolChoiceWireName(parsed.context.tools, tc.name)) };
       }
 
-      const base = provider.baseUrl.replace(/\/v1\/?$/, "");
-      const url = `${base}/v1/messages`;
+      const url = anthropicMessagesUrl(provider.baseUrl);
       const unresolvedPlaceholder = url.match(/\{[^}]*\}/)?.[0];
       if (unresolvedPlaceholder) {
         throw new Error(`anthropic baseUrl contains unresolved ${unresolvedPlaceholder}`);
@@ -723,18 +949,21 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       return { url, method: "POST", headers, body: JSON.stringify(body) };
     },
 
-    async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
+    async *parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
       if (!response.body) {
         yield { type: "error", message: "No response body" };
         return;
       }
 
+      const budgetEncoder = new TextEncoder();
       let currentBlockType = "";
       let currentToolCallId = "";
       let currentToolCallName = "";
+      let currentToolCallJson = "";
       let pendingUsage: Record<string, number> | undefined;
       let pendingStopReason: string | undefined;
       let emittedDone = false;
+      let sawVisibleText = false;
 
       const emitDone = function* (): Generator<AdapterEvent> {
         if (emittedDone) return;
@@ -746,7 +975,8 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         };
       };
 
-      for await (const record of decodeServerSentEvents(response.body, { includeComments: true })) {
+      try {
+      for await (const record of decodeServerSentEvents(response.body, { includeComments: true, translatorBudget: budget })) {
         if (record.kind === "comment") {
           yield { type: "heartbeat" };
           continue;
@@ -773,8 +1003,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 if (!block) break;
                 currentBlockType = block.type;
                 if (block.type === "tool_use") {
-                  currentToolCallId = block.id ?? "";
+                  currentToolCallId = usableToolUseId(block.id);
                   currentToolCallName = toolNames.fromWire(block.name ?? "");
+                  currentToolCallJson = "";
+                  budget.openCall(currentToolCallId);
                   yield { type: "tool_call_start", id: currentToolCallId, name: currentToolCallName };
                 }
                 if (block.type === "redacted_thinking" && typeof block.data === "string") {
@@ -787,6 +1019,10 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                 const delta = data.delta as Record<string, unknown> | undefined;
                 if (!delta) break;
                 if (delta.type === "text_delta" && typeof delta.text === "string") {
+                  // Only non-empty text proves the upstream produced usable output; an empty
+                  // delta followed by EOF must stay a truncation error even on the tolerant
+                  // profile, or a cut-off turn would surface as a successful empty answer.
+                  if (delta.text.length > 0) sawVisibleText = true;
                   yield { type: "text_delta", text: delta.text };
                 } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
                   yield { type: "thinking_delta", thinking: delta.thinking };
@@ -799,15 +1035,44 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
                   // Arrives once, just before the thinking block's content_block_stop; block-scoped
                   // so a stray signature on a non-thinking block can never be captured.
                   yield { type: "thinking_signature", signature: delta.signature };
-                } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+                } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string" && currentBlockType === "tool_use") {
+                  // Forwarded immediately: the bridge maps each delta to a client-visible
+                  // response.function_call_arguments.delta frame, so withholding fragments until
+                  // block close would leave a started call showing empty arguments. A copy is kept
+                  // to validate the assembled payload at content_block_stop.
+                  const previousBytes = budgetEncoder.encode(currentToolCallJson).byteLength;
+                  const nextBytes = previousBytes + budgetEncoder.encode(delta.partial_json).byteLength;
+                  const reservation = budget.reserveTransient(nextBytes, { kind: "tool_args", callId: currentToolCallId });
+                  try {
+                    currentToolCallJson += delta.partial_json;
+                    reservation.commitRetained();
+                    budget.releaseRetained(previousBytes, { kind: "tool_args", callId: currentToolCallId });
+                  } catch (error) {
+                    reservation.release();
+                    throw error;
+                  }
                   yield { type: "tool_call_delta", arguments: delta.partial_json };
                 }
                 break;
               }
               case "content_block_stop": {
                 if (currentBlockType === "tool_use") {
+                  // The non-stream path repairs an unparseable payload in toolUseArguments(); the
+                  // stream cannot, because the fragments are already downstream. Fail the turn
+                  // instead of ending a tool call whose arguments will not parse — the bridge's
+                  // terminal-error path cancels the open call (status incomplete) rather than
+                  // completing it before response.failed (#765).
+                  if (!streamedToolArgumentsParse(currentToolCallJson)) {
+                    yield {
+                      type: "error",
+                      message: "Anthropic stream sent malformed tool_use arguments (invalid JSON)",
+                    };
+                    return;
+                  }
                   yield { type: "tool_call_end" };
+                  budget.closeCall(currentToolCallId);
                   currentToolCallId = "";
+                  currentToolCallJson = "";
                 }
                 currentBlockType = "";
                 break;
@@ -830,27 +1095,67 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
               }
         }
       }
+      } catch (error) {
+        if (!isTranslatorBudgetExceededError(error)) throw error;
+        yield {
+          type: "error",
+          status: 502,
+          errorType: "upstream_error",
+          code: "translation_buffer_limit",
+          message: "upstream translation buffer exceeded the safe limit",
+        };
+        // The budget error IS the terminal event for this stream. Falling through to the
+        // EOF handling below could append tool_call_end/done after it, violating the
+        // one-terminal-event contract for consumers that keep draining the generator.
+        return;
+      } finally {
+        if (currentToolCallId) budget.closeCall(currentToolCallId);
+      }
       if (!emittedDone) {
+        // Fail closed on transport EOF. Compatible providers may omit message_stop after message_delta.stop_reason.
         if (pendingStopReason !== undefined) {
           const stopReason = pendingStopReason === "max_tokens"
             ? "max_tokens"
             : pendingStopReason === "refusal" || pendingStopReason === "content_filter"
               ? "content_filter"
-              : undefined;
+              : pendingStopReason;
           emittedDone = true;
           yield {
             type: "done",
             usage: usageFromAnthropic(pendingUsage),
             ...(stopReason ? { stopReason } : {}),
           };
+        } else if (provider.anthropicEofTolerance === true) {
+          // AgentRouter-style compatibility profile (#658): the upstream can close the stream
+          // after valid content without terminal frames. Complete only when visible text was
+          // received or an open tool call has complete JSON-object arguments; everything else
+          // (incomplete tool JSON, no usable content, transport failure) stays a truncation
+          // error, matching the strict default.
+          if (currentToolCallId) {
+            if (streamedToolArgumentsParse(currentToolCallJson)) {
+              budget.closeCall(currentToolCallId);
+              currentToolCallId = "";
+              yield { type: "tool_call_end" };
+              yield* emitDone();
+            } else {
+              yield { type: "error", message: "upstream stream ended before message_stop — possible truncation" };
+            }
+          } else if (sawVisibleText) {
+            yield* emitDone();
+          } else {
+            yield { type: "error", message: "upstream stream ended before message_stop — possible truncation" };
+          }
         } else {
           yield { type: "error", message: "upstream stream ended before message_stop — possible truncation" };
         }
       }
     },
 
-    async parseResponse(response: Response): Promise<AdapterEvent[]> {
+    async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
       const json = await response.json() as Record<string, unknown>;
+      const responseBytes = new TextEncoder().encode(JSON.stringify(json)).byteLength;
+      budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
+      try {
       const events: AdapterEvent[] = [];
       const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown; thinking?: string; reasoning?: string; signature?: string; data?: string }[] | undefined;
       if (content) {
@@ -867,8 +1172,9 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
           } else if (block.type === "redacted_thinking" && typeof block.data === "string") {
             events.push({ type: "redacted_thinking", data: block.data });
           } else if (block.type === "tool_use") {
-            events.push({ type: "tool_call_start", id: block.id ?? "", name: toolNames.fromWire(block.name ?? "") });
-            events.push({ type: "tool_call_delta", arguments: JSON.stringify(block.input ?? {}) });
+            const id = usableToolUseId(block.id);
+            events.push({ type: "tool_call_start", id, name: toolNames.fromWire(block.name ?? "") });
+            events.push({ type: "tool_call_delta", arguments: toolUseArguments(block.input, provider.anthropicEofTolerance === true) });
             events.push({ type: "tool_call_end" });
           }
         }
@@ -880,7 +1186,11 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         usage: usageFromAnthropic(usage),
         ...(stopReason ? { stopReason } : {}),
       });
+      retainTranslatedEventBatch(events, budget);
       return events;
+      } finally {
+        budget.releaseRetained(responseBytes, { kind: "retained_collectors" });
+      }
     },
 
   };

@@ -75,6 +75,15 @@ GitHub Actions intentionally stay small:
   Open issues labeled `needs-info` with no activity for 14 days get a warning; after 7 more idle
   days they close as not planned. Any update clears the stale warning. To keep long-lived work open,
   remove `needs-info` (for example when promoting an issue to `roadmap`).
+- **Issue quality** (`.github/workflows/enforce-issue-quality.yml`) validates template structure on
+  new and edited issues, applies kind labels (`bug`, `enhancement`, `provider-compatibility`,
+  `documentation`), and adds orthogonal **area** labels from the form Area field plus light
+  title/Summary heuristics: `provider`, `account-pool`, `catalog`, `gui`, `cli`, `proxy`,
+  `platform`, `streaming`, `tools`, `install`, and `service`. Kind/process labels stay separate so
+  you can filter `bug` + `account-pool` without collapsing those axes. Prefer the Area dropdown
+  over inventing per-provider labels. Area: Documentation does not add a second area tag (the docs
+  form already seeds `documentation`). Maintainers can re-apply area labels to all open issues with
+  workflow_dispatch `backfill_open_areas` after the workflow is on the default branch.
 
 Use the helper for releases:
 
@@ -105,6 +114,7 @@ description.
 - Target **`dev`**. Do not open feature or fix pull requests against **`main`**.
 - Branch from the current **`dev`** tip, not from **`main`**. The required **`enforce-target`** check rejects heads whose merge base sits on the **`main`** tip while the branch is far behind the pull request base (the failure mode seen in #644).
 - Write a real description: a **Summary** of what changed and why, plus a **Test plan** (or equivalent substance). Empty bodies, placeholder-only text, and descriptions that use escaped `\n` instead of real line breaks fail the check.
+- If the title or description mentions `gui`, include a screenshot of the UI change in the description; the `enforce-target` check re-runs on description edits until the screenshot is present.
 - Workflow changes in this repository use **`pull_request_target`**. Updated enforcement logic applies only after the workflow is promoted to the repository default branch — the same operational caveat documented in #631.
 
 ## Project maintainers

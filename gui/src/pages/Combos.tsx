@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ComboWorkspace from "../components/ComboWorkspace";
 import {
   type ComboItem,
@@ -10,6 +10,8 @@ import { hideRedundantChatGptForwardProviders } from "../provider-workspace/cata
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
+import { useDataSurface } from "../data-surface";
+import { DataSurfaceSkeleton } from "../components/data-surface";
 
 type ProviderOption = {
   name: string;
@@ -50,20 +52,41 @@ function seedCombos(cacheKey: string): CachedCombosPage | null {
   return readSessionListCache<CachedCombosPage>(cacheKey);
 }
 
-export default function Combos({ apiBase }: { apiBase: string }) {
+export default function Combos({
+  apiBase,
+  active = true,
+  onCountChange,
+}: {
+  apiBase: string;
+  /**
+   * False while this panel is mounted but hidden behind another Models tab. It gates
+   * the NETWORK only — the rendered tree stays put so unsaved editor drafts survive a
+   * tab hop. Defaults true so the standalone page keeps its existing behaviour.
+   */
+  active?: boolean;
+  /** Reports the combo count up to the tab strip. */
+  onCountChange?: (count: number) => void;
+}) {
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
-  const [combos, setCombos] = useState<ComboItem[]>(() => seedCombos(cacheKey)?.combos ?? []);
-  const [providers, setProviders] = useState<ProviderOption[]>(() => seedCombos(cacheKey)?.providers ?? []);
-  const [models, setModels] = useState<ModelOption[]>(() => seedCombos(cacheKey)?.models ?? []);
-  const [cataloguedComboIds, setCataloguedComboIds] = useState<ReadonlySet<string>>(
-    () => new Set(seedCombos(cacheKey)?.cataloguedComboIds ?? []),
-  );
-  const [loading, setLoading] = useState(() => !seedCombos(cacheKey));
+  const cached = useMemo(() => seedCombos(cacheKey), [cacheKey]);
+
+  /*
+   * The last coherent payload, kept so a hidden panel can keep rendering.
+   *
+   * While `active` is false the resource is disabled and reports `data: undefined` with
+   * no skeleton and no error. Falling back to empty arrays there swaps the whole
+   * ComboWorkspace for a first-run empty state and takes every unsaved draft with it —
+   * proven in a browser: type into a combo, switch tabs, come back, field blank.
+   *
+   * State rather than a ref: this repo avoids render-time ref reads under React
+   * Compiler, and a ref would not re-render when the retained payload changes. Written
+   * on the load success path, never during render and never from an effect.
+   */
+  const [retainedData, setRetainedData] = useState<CachedCombosPage | null>(cached ?? null);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [adding, setAdding] = useState(false);
-  const hasCacheRef = useRef(Boolean(seedCombos(cacheKey)));
 
   const notify = (msg: string, ok: boolean) => {
     setStatus(msg);
@@ -80,107 +103,117 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     return () => window.clearTimeout(timer);
   }, [status, statusOk]);
 
-  const fetchAll = useCallback(async (opts?: { notifyOnFail?: boolean }) => {
-    // Soft refresh: keep last-good workspace painted while revalidating.
-    if (!hasCacheRef.current) setLoading(true);
-    try {
-      const [combosRes, configRes, modelsRes] = await Promise.all([
-        fetch(`${apiBase}/api/combos`),
-        fetch(`${apiBase}/api/config`),
-        fetch(`${apiBase}/api/models`),
-      ]);
-      if (!combosRes.ok || !configRes.ok || !modelsRes.ok) {
-        throw new Error("combo workspace load failed");
-      }
-      const combosJson = await combosRes.json();
-      const configJson = await configRes.json() as ConfigDto;
-      // /api/models returns a bare array (not { models: [...] }).
-      const modelsRaw = await modelsRes.json() as unknown;
-      const modelRows = Array.isArray(modelsRaw)
-        ? modelsRaw
-        : Array.isArray((modelsRaw as { models?: unknown })?.models)
-          ? (modelsRaw as { models: unknown[] }).models
-          : [];
-
-      const nextCombos = parseComboList(combosJson);
-      setCombos(nextCombos);
-
-      const allProviders = configJson.providers ?? {};
-      // Collapse canonical forward aliases only in the new-member picker. Validation keeps
-      // every configured provider id, including legacy chatgpt members already in a combo.
-      const visibleProviders = hideRedundantChatGptForwardProviders(allProviders);
-      const nextProviders = Object.entries(allProviders).map(([name, p]) => ({
-        name,
-        disabled: !!p.disabled,
-        hiddenFromPicker: !Object.hasOwn(visibleProviders, name),
-        authMode: p.authMode,
-        adapter: p.adapter,
-        baseUrl: p.baseUrl,
-      }));
-      setProviders(nextProviders);
-
-      const fromApi: ModelOption[] = [];
-      const catalogued = new Set<string>();
-      for (const row of modelRows) {
-        if (!row || typeof row !== "object") continue;
-        const m = row as {
-          provider?: unknown;
-          id?: unknown;
-          namespaced?: unknown;
-          disabled?: unknown;
-          reasoningEfforts?: unknown;
-        };
-        if (typeof m.provider !== "string" || typeof m.id !== "string") continue;
-        const provider = m.provider.trim();
-        const id = m.id.trim();
-        if (!provider || !id) continue;
-        if (provider === "combo") {
-          catalogued.add(id);
-          continue; // combos cannot nest other combos as targets
-        }
-        if (m.disabled === true) continue;
-        const reasoningEfforts = Array.isArray(m.reasoningEfforts)
-          ? m.reasoningEfforts.filter((effort): effort is string => typeof effort === "string")
-          : undefined;
-        fromApi.push({
-          provider,
-          id,
-          namespaced: typeof m.namespaced === "string" ? m.namespaced : undefined,
-          ...(reasoningEfforts ? { reasoningEfforts } : {}),
-        });
-      }
-      setCataloguedComboIds(catalogued);
-
-      // Ensure each provider's defaultModel appears even if catalog fetch lagged.
-      for (const [name, p] of Object.entries(configJson.providers ?? {})) {
-        const dm = typeof p.defaultModel === "string" ? p.defaultModel.trim() : "";
-        if (!dm || p.disabled) continue;
-        if (!fromApi.some((m) => m.provider === name && m.id === dm)) {
-          fromApi.push({ provider: name, id: dm, namespaced: `${name}/${dm}` });
-        }
-      }
-
-      setModels(fromApi);
-      hasCacheRef.current = true;
-      writeSessionListCache(cacheKey, {
-        combos: nextCombos,
-        providers: nextProviders,
-        models: fromApi,
-        cataloguedComboIds: [...catalogued],
-      } satisfies CachedCombosPage);
-    } catch {
-      if (!hasCacheRef.current || opts?.notifyOnFail) notify(t("cws.loadFailed"), false);
-    } finally {
-      setLoading(false);
+  const loadCombos = useCallback(async (signal?: AbortSignal): Promise<CachedCombosPage> => {
+    // Keep all three requests parallel: this workspace is only coherent once every input arrives.
+    const [combosRes, configRes, modelsRes] = await Promise.all([
+      // Signals were missing entirely, so resource cleanup could not cancel these.
+      fetch(`${apiBase}/api/combos`, { signal }),
+      fetch(`${apiBase}/api/config`, { signal }),
+      fetch(`${apiBase}/api/models`, { signal }),
+    ]);
+    if (!combosRes.ok || !configRes.ok || !modelsRes.ok) {
+      throw new Error("combo workspace load failed");
     }
-  }, [apiBase, cacheKey, t]);
+    const combosJson = await combosRes.json();
+    const configJson = await configRes.json() as ConfigDto;
+    // /api/models returns a bare array (not { models: [...] }).
+    const modelsRaw = await modelsRes.json() as unknown;
+    const modelRows = Array.isArray(modelsRaw)
+      ? modelsRaw
+      : Array.isArray((modelsRaw as { models?: unknown })?.models)
+        ? (modelsRaw as { models: unknown[] }).models
+        : [];
 
+    const combos = parseComboList(combosJson);
+    const allProviders = configJson.providers ?? {};
+    // Collapse canonical forward aliases only in the new-member picker. Validation keeps
+    // every configured provider id, including legacy chatgpt members already in a combo.
+    const visibleProviders = hideRedundantChatGptForwardProviders(allProviders);
+    const providers = Object.entries(allProviders).map(([name, p]) => ({
+      name,
+      disabled: !!p.disabled,
+      hiddenFromPicker: !Object.hasOwn(visibleProviders, name),
+      authMode: p.authMode,
+      adapter: p.adapter,
+      baseUrl: p.baseUrl,
+    }));
+
+    const models: ModelOption[] = [];
+    const catalogued = new Set<string>();
+    for (const row of modelRows) {
+      if (!row || typeof row !== "object") continue;
+      const model = row as {
+        provider?: unknown;
+        id?: unknown;
+        namespaced?: unknown;
+        disabled?: unknown;
+        reasoningEfforts?: unknown;
+      };
+      if (typeof model.provider !== "string" || typeof model.id !== "string") continue;
+      const provider = model.provider.trim();
+      const id = model.id.trim();
+      if (!provider || !id) continue;
+      if (provider === "combo") {
+        catalogued.add(id);
+        continue; // combos cannot nest other combos as targets
+      }
+      if (model.disabled === true) continue;
+      const reasoningEfforts = Array.isArray(model.reasoningEfforts)
+        ? model.reasoningEfforts.filter((effort): effort is string => typeof effort === "string")
+        : undefined;
+      models.push({
+        provider,
+        id,
+        namespaced: typeof model.namespaced === "string" ? model.namespaced : undefined,
+        ...(reasoningEfforts ? { reasoningEfforts } : {}),
+      });
+    }
+
+    // Ensure each provider's defaultModel appears even if catalog fetch lagged.
+    for (const [name, provider] of Object.entries(allProviders)) {
+      const defaultModel = typeof provider.defaultModel === "string" ? provider.defaultModel.trim() : "";
+      if (!defaultModel || provider.disabled) continue;
+      if (!models.some(model => model.provider === name && model.id === defaultModel)) {
+        models.push({ provider: name, id: defaultModel, namespaced: `${name}/${defaultModel}` });
+      }
+    }
+
+    const next = { combos, providers, models, cataloguedComboIds: [...catalogued] } satisfies CachedCombosPage;
+    writeSessionListCache(cacheKey, next);
+    // Retain the coherent payload here — one place, on the success path, never during
+    // render. See the `retainedData` note below.
+    setRetainedData(next);
+    return next;
+  }, [apiBase, cacheKey]);
+
+  const resource = useDataSurface<CachedCombosPage>(
+    cacheKey,
+    [apiBase],
+    loadCombos,
+    /*
+     * Gate the network, never the tree. A hidden panel must not fetch, but the rendered
+     * workspace has to stay mounted so an unsaved editor draft survives a tab hop.
+     * Disabling reports `data: undefined`, so `retainedData` below keeps the last good
+     * payload and the subtree never unmounts.
+     */
+    { isEmpty: () => false, initialData: cached ?? undefined, enabled: active },
+  );
+  const { state } = resource;
+
+  const data = state.data ?? retainedData ?? undefined;
+  const combos = data?.combos ?? [];
+
+  /*
+   * Report the count up to the tab strip from an effect keyed on the list length, not
+   * during render, so a parent re-render cannot refire it.
+   */
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void fetchAll();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [fetchAll]);
+    if (!data) return;
+    onCountChange?.(combos.length);
+  }, [combos.length, data, onCountChange]);
+  const providers = data?.providers ?? [];
+  const models = data?.models ?? [];
+  const cataloguedComboIds = new Set(data?.cataloguedComboIds ?? []);
 
   const saveCombo = async (item: ComboItem, isCreate: boolean, renameFrom?: string) => {
     try {
@@ -198,7 +231,7 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         notify(err, false);
         return { ok: false as const, error: err };
       }
-      await fetchAll();
+      resource.refresh();
       notify(
         renameFrom
           ? t("cws.renamed", { from: comboModelId(renameFrom), to: item.model })
@@ -225,7 +258,7 @@ export default function Combos({ apiBase }: { apiBase: string }) {
         notify(err, false);
         return { ok: false as const, error: err };
       }
-      await fetchAll();
+      resource.refresh();
       notify(t("cws.removed", { id }), true);
       return { ok: true as const };
     } catch {
@@ -235,21 +268,25 @@ export default function Combos({ apiBase }: { apiBase: string }) {
     }
   };
 
-  // Cold start only — cached empty lists paint the workspace immediately. `loading`
-  // already encodes that: it initializes to !seedCombos(cacheKey) and a refresh only
-  // sets it when the cache is empty, so reading the ref during render was redundant.
-  if (loading) {
+  // The skeleton owns the live region until a session seed or live workspace is available.
+  if (state.showSkeleton && !data) {
+    return <DataSurfaceSkeleton label={t("cws.loading")} rows={5} />;
+  }
+
+  /*
+   * `!data` matters. Disabling the only subscriber schedules store eviction, so a
+   * reactivation whose fetch fails is classified `failed-cold` even when this component
+   * still holds a coherent retained payload — and replacing the workspace there would
+   * unmount the editor and destroy the very draft retention exists to protect. With
+   * retained data the workspace stays up and the failure shows in the stale banner below.
+   */
+  if (state.kind === "failed-cold" && !data) {
+    const reason = state.error instanceof Error ? state.error.message : t("cws.loadFailed");
     return (
-      <div className="combos-workspace-shell">
-        {status && (
-          <div className="combos-workspace-shell-banner">
-            <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>
-          </div>
-        )}
-        <div className="muted" style={{ padding: "24px 20px" }} role="status">
-          {status ? null : t("cws.loading")}
-        </div>
-      </div>
+      <>
+        <Notice tone="err">{reason}</Notice>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => resource.refresh()}>{t("common.retry")}</button>
+      </>
     );
   }
 
@@ -260,20 +297,30 @@ export default function Combos({ apiBase }: { apiBase: string }) {
           <Notice tone={statusOk ? "ok" : "err"}>{status}</Notice>
         </div>
       )}
-      <div className="combos-workspace-shell-body">
+      {state.showError && (
+        <div className="combos-workspace-shell-banner">
+          <Notice tone="err">{t("cws.loadFailed")}</Notice>
+        </div>
+      )}
+      {/* Revalidation is silent by design: existing combos stay visible, and the
+          shell announces the in-flight refresh to assistive tech only. */}
+      <div className="combos-workspace-shell-body" aria-busy={state.refreshing}>
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {state.refreshing ? t("common.loading") : ""}
+        </span>
         <ComboWorkspace
           combos={combos}
           providers={providers}
           models={models}
           cataloguedComboIds={cataloguedComboIds}
-          loading={loading}
-          onRefresh={() => { void fetchAll({ notifyOnFail: true }); }}
+          loading={false}
+          onRefresh={() => resource.refresh()}
           onSave={saveCombo}
           onRemove={removeCombo}
           onAdd={() => setAdding(true)}
           adding={adding}
           onCloseAdd={() => setAdding(false)}
-          onCreated={() => { void fetchAll(); }}
+          onCreated={() => resource.refresh()}
         />
       </div>
     </div>

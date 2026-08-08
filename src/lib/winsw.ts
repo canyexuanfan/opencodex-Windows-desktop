@@ -20,7 +20,8 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, loadConfig } from "../config";
 import { recordOwnedConfigPath } from "./config-ownership";
-import { durableBunPath } from "./bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./bun-runtime";
+import type { BunRuntimeSource } from "./bun-runtime";
 import { serviceApiTokenFilePath } from "./service-secrets";
 
 export const WINSW_VERSION = "2.12.0";
@@ -64,6 +65,8 @@ function currentCodexHomeAbsolute(): string {
 
 export interface WinswEntry {
   bun: string;
+  /** Provenance of `bun`, resolved together with it so the two can never disagree. */
+  bunRuntimeSource: BunRuntimeSource;
   cli: string;
 }
 
@@ -87,12 +90,21 @@ export function buildWinswXml(entry: WinswEntry, env: NodeJS.ProcessEnv = proces
   })();
   // Services never bake `--port 0` (parsePortOption rejects it); treat as default.
   const safeListenPort = listenPort > 0 && listenPort <= 65535 ? listenPort : 10100;
+  // SCM services do not inherit the interactive user environment (#764). Bake:
+  // - OPENCODEX_HOME so file-backed admin auth (`admin-api-token`) resolves
+  // - OPENCODEX_ACL_TIMEOUT_MS when set (not a secret)
+  // Never embed OPENCODEX_ADMIN_AUTH_TOKEN or OPENCODEX_API_AUTH_TOKEN values in XML —
+  // those stay file-pointer / generated-file only (uninstall retains the XML).
+  const aclTimeout = env.OPENCODEX_ACL_TIMEOUT_MS?.trim();
   const envLines = [
     `  <env name="OCX_SERVICE" value="1"/>`,
+    `  <env name="${BUN_RUNTIME_SOURCE_ENV}" value="${xmlEscape(entry.bunRuntimeSource)}"/>`,
+    `  <env name="${BUN_RUNTIME_PATH_ENV}" value="${xmlEscape(entry.bun)}"/>`,
     `  <env name="OCX_API_TOKEN_FILE" value="${xmlEscape(serviceApiTokenFilePath())}"/>`,
     `  <env name="PATH" value="${xmlEscape(env.PATH ?? "")}"/>`,
     env.CODEX_HOME?.trim() ? `  <env name="CODEX_HOME" value="${xmlEscape(currentCodexHomeAbsolute())}"/>` : null,
-    env.OPENCODEX_HOME?.trim() ? `  <env name="OPENCODEX_HOME" value="${xmlEscape(getConfigDir())}"/>` : null,
+    `  <env name="OPENCODEX_HOME" value="${xmlEscape(getConfigDir())}"/>`,
+    aclTimeout ? `  <env name="OPENCODEX_ACL_TIMEOUT_MS" value="${xmlEscape(aclTimeout)}"/>` : null,
   ].filter((line): line is string => Boolean(line));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <service>
@@ -165,6 +177,12 @@ function runWinsw(args: string[]): string {
 
 /** `install /p` prompts for the service-account password on the console — stdin must be inherited. */
 function runWinswInteractive(args: string[]): void {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      "WinSW install requires an interactive console to prompt for the service account password. "
+        + "Run `ocx service install --native` from an elevated Command Prompt or PowerShell window, not a hidden or piped session.",
+    );
+  }
   execFileSync(winswExePath(), args, { stdio: "inherit" });
 }
 
@@ -310,7 +328,23 @@ export async function installWinswService(entry: WinswEntry, deps: WinswInstallD
 }
 
 export function startWinswService(): void { runWinsw(["start"]); }
-export function stopWinswService(): void { try { runWinsw(["stopwait"]); } catch { /* not running */ } }
+
+/**
+ * Stop the native service and prove it is no longer running. `stopwait` can fail both
+ * for the benign already-stopped case and for real access/timeout failures, so a bare
+ * catch cannot decide whether it is safe for lifecycle callers to continue. Re-read
+ * SCM state and only accept the two states that cannot still own the proxy listener.
+ */
+export function stopWinswService(): void {
+  try { runWinsw(["stopwait"]); } catch { /* classify by verified state below */ }
+  const status = statusWinswRaw();
+  if (status === "stopped" || status === "nonexistent") return;
+  if (status === "unknown") {
+    throw new Error("Native service stop could not be verified.");
+  }
+  throw new Error("Native service is still running after stop.");
+}
+
 export function uninstallWinswService(): void {
   if (!existsSync(winswExePath())) {
     // The binary is gone but the SCM registration can outlive it (quarantine, partial
@@ -350,7 +384,7 @@ export function winswStatusSummary(): string {
   if (status === "nonexistent") {
     // A stale SCM service can outlive a deleted exe; surface the repair path.
     return existsSync(winswXmlPath()) && !existsSync(winswExePath())
-      ? "native assets present but WinSW binary missing — run 'ocx service install --native' to repair"
+      ? "native assets present but WinSW binary missing — run 'ocx service repair'"
       : "";
   }
   return `native (WinSW ${WINSW_VERSION}): ${status}`;
@@ -358,5 +392,6 @@ export function winswStatusSummary(): string {
 
 /** Default entry mirrors the Task Scheduler baking: durable Bun + cli.ts. */
 export function defaultWinswEntry(cliDir: string): WinswEntry {
-  return { bun: durableBunPath(), cli: join(cliDir, "cli", "index.ts") };
+  const runtime = durableBunRuntime();
+  return { bun: runtime.path, bunRuntimeSource: runtime.source, cli: join(cliDir, "cli", "index.ts") };
 }

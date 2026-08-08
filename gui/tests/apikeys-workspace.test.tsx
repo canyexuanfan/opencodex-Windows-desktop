@@ -13,8 +13,10 @@ let previousGlobals: Record<(typeof globals)[number], unknown>;
 let testWindow: Window;
 
 const sampleKeys: ApiKeyEntry[] = [
-  { id: "k1", name: "alpha", prefix: "ocx_aaa", createdAt: "2026-01-01T00:00:00.000Z" },
-  { id: "k2", name: "beta", prefix: "ocx_bbb", createdAt: "2026-01-02T00:00:00.000Z" },
+  { id: "k1", name: "alpha", prefix: "ocx_data_aaaaaaaa...", createdAt: "2026-01-01T00:00:00.000Z",
+    usage: { requests7d: 2, totalRequests: 5, lastUsedAt: "2026-07-30T00:00:00.000Z" } },
+  { id: "k2", name: "beta", prefix: "ocx_data_bbbbbbbb...", createdAt: "2026-01-02T00:00:00.000Z",
+    usage: { requests7d: 0, totalRequests: 0 } },
 ];
 
 const endpoints = {
@@ -66,15 +68,24 @@ async function mountWorkspace(
     filteredModels: [],
     modelsLoading: false,
     modelsLoadFailed: false,
+    modelCount: 0,
+    hasModelData: true,
     modelQuery: "",
     copiedModelId: null,
     modelTests: {},
+    canTestModels: false,
+    attributionSince: "2026-07-01T00:00:00.000Z",
+    authMatrix: [
+      { endpoint: "/v1/responses", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
+    ],
     onNewNameChange: () => {},
     onCreate: () => {},
     onDismissNewKey: () => {},
     onCopyKey: () => {},
-    onDelete: () => {},
+    onDelete: async () => true,
+    onRename: async () => true,
     onModelQueryChange: () => {},
+    onRetryModels: () => {},
     onCopyModelId: () => {},
     onTestModel: () => {},
     sourceLabel: () => "proxy",
@@ -108,14 +119,20 @@ async function mountWorkspace(
   };
 }
 
+/**
+ * Retargeted from the workspace rail to the key table. The rail was replaced by a
+ * pinned section strip plus a table in the Keys section; every behavioral contract
+ * below is unchanged, only the elements that drive it moved. "Back" now returns to
+ * the overview where the rail's Overview row used to.
+ */
 function overviewButton(container: HTMLElement): HTMLButtonElement {
-  return [...container.querySelectorAll<HTMLButtonElement>(".apikeys-workspace-rail-row")]
-    .find(el => el.textContent?.includes("Overview"))!;
+  return [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(el => el.textContent?.includes("Back"))!;
 }
 
 function keyButton(container: HTMLElement, name: string): HTMLButtonElement {
-  return [...container.querySelectorAll<HTMLButtonElement>(".apikeys-workspace-rail-row")]
-    .find(el => el.querySelector(".apikeys-workspace-rail-name")?.textContent === name)!;
+  return [...container.querySelectorAll<HTMLButtonElement>(".awi-keylist-name")]
+    .find(el => el.textContent === name)!;
 }
 
 test("workspace overview navigation preserves pending secret and resets delete confirm", async () => {
@@ -127,11 +144,14 @@ test("workspace overview navigation preserves pending secret and resets delete c
   expect(container.textContent).toContain(FULL_SECRET);
   expect(container.querySelector("main")).toBeNull();
   expect(container.querySelector("section.apikeys-workspace-main")?.getAttribute("aria-label")).toBe("API key details");
-  expect(container.querySelector(".tbl")).toBeNull();
+  // The overview HAS a key table now. It asserted the opposite while the rail
+  // owned key navigation; with the rail gone the table is that surface, so the
+  // contract inverts rather than disappears.
+  expect(container.querySelector(".awi-keylist-table")).not.toBeNull();
 
   await act(async () => { keyButton(container, "alpha").click(); });
   expect(container.textContent).toContain("Key details");
-  expect(container.textContent).toContain("ocx_aaa");
+  expect(container.textContent).toContain("ocx_data_aaaaaaaa...");
   expect(container.textContent).not.toContain(FULL_SECRET);
 
   await act(async () => {
@@ -150,7 +170,7 @@ test("workspace overview navigation preserves pending secret and resets delete c
 test("workspace delete confirm calls onDelete and returns to overview", async () => {
   const deleted: string[] = [];
   const { root, container } = await mountWorkspace({
-    onDelete: (id) => { deleted.push(id); },
+    onDelete: async (id) => { deleted.push(id); return true; },
   });
 
   await act(async () => { keyButton(container, "beta").click(); });
@@ -181,6 +201,21 @@ test("stale selected key falls back to overview when list refreshes without it",
   await rerender({ keys: [sampleKeys[1]!] });
   expect(container.textContent).toContain("Generate key");
   expect(container.textContent).not.toContain("Key details");
+
+  await act(async () => { root.unmount(); });
+});
+
+test("capped API-key history qualifies total requests and attribution date in the rendered detail", async () => {
+  const { root, container, rerender } = await mountWorkspace({ historyTruncated: true });
+  await act(async () => { keyButton(container, "alpha").click(); });
+
+  const labels = () => [...container.querySelectorAll("dt")].map(node => node.textContent);
+  expect(labels()).toContain("Requests in available history");
+  expect(labels()).toContain("Available attribution since");
+
+  await rerender({ historyTruncated: false });
+  expect(labels()).toContain("Total attributed requests");
+  expect(labels()).toContain("Attribution available since");
 
   await act(async () => { root.unmount(); });
 });

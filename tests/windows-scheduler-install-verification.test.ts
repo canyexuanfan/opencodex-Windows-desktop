@@ -3,7 +3,10 @@ import {
   buildWindowsTaskXml,
   decodeSchtasksOutput,
   evaluateWindowsSchedulerInstallVerification,
+  formatWindowsSchedulerServiceStatus,
+  inspectWindowsSchedulerServiceStatus,
   probeWindowsSchedulerTask,
+  schedulerVerificationMaySettle,
   setQuerySchtasksForTests,
   windowsSchedulerCsvIncludesTask,
   windowsSchedulerTaskInstalled,
@@ -74,6 +77,26 @@ describe("probeWindowsSchedulerTask", () => {
     expect(windowsSchedulerTaskInstalled("opencodex-proxy")).toBe(true);
   });
 
+  test("recognizes the task without exposing mojibake from localized table output", () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+    const localizedTable = [
+      "����: \\",
+      "�۾� �̸�                                ���� ���� �ð�         ����",
+      "======================================== ====================== ===============",
+      "opencodex-proxy                          N/A                    �غ�",
+    ].join("\n");
+    setQuerySchtasksForTests(() => localizedTable);
+
+    const result = formatWindowsSchedulerServiceStatus(
+      probeWindowsSchedulerTask("opencodex-proxy"),
+      { status: "running", port: 10100 },
+    );
+
+    expect(result).toBe("✅ service installed (Task Scheduler); OpenCodex proxy running on port 10100.");
+    expect(result).not.toContain("����");
+    expect(result).not.toContain("�۾�");
+  });
+
   test("falls back to CSV listing when the specific query fails", () => {
     Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
     setQuerySchtasksForTests((args) => {
@@ -110,6 +133,34 @@ describe("probeWindowsSchedulerTask", () => {
     expect(probe.detail).toContain("Access is denied.");
     expect(probe.detail).toContain("RPC server is unavailable.");
     expect(windowsSchedulerTaskInstalled("opencodex-proxy")).toBe(false);
+  });
+});
+
+describe("formatWindowsSchedulerServiceStatus", () => {
+  test("reports task and identity-checked proxy state independently", () => {
+    expect(formatWindowsSchedulerServiceStatus({ status: "present" }, { status: "not-running" }))
+      .toBe("⚠️  service installed (Task Scheduler); OpenCodex proxy not running.");
+    expect(formatWindowsSchedulerServiceStatus({ status: "present" }, { status: "unknown" }))
+      .toBe("⚠️  service installed (Task Scheduler); OpenCodex proxy status unknown.");
+    expect(formatWindowsSchedulerServiceStatus({ status: "absent" }, { status: "running", port: 3593 }))
+      .toBe("❌ service not installed (Task Scheduler); OpenCodex proxy is running independently on port 3593.");
+    expect(formatWindowsSchedulerServiceStatus({ status: "absent" }, { status: "not-running" }))
+      .toBe("❌ service not installed (Task Scheduler).");
+    expect(formatWindowsSchedulerServiceStatus({ status: "unknown", detail: "����" }, { status: "running", port: 10100 }))
+      .toBe("⚠️  Task Scheduler registration unknown; OpenCodex proxy running on port 10100.");
+    expect(formatWindowsSchedulerServiceStatus({ status: "unknown", detail: "����" }, { status: "not-running" }))
+      .toBe("⚠️  service status unknown (Task Scheduler query failed); OpenCodex proxy not running.");
+  });
+
+  test("keeps scheduler and runtime probe failures locale-independent", async () => {
+    const status = await inspectWindowsSchedulerServiceStatus({
+      probeTask: () => { throw new Error("���� ����"); },
+      findProxy: async () => { throw new Error("connection failure"); },
+    });
+
+    expect(status).toBe("⚠️  service status unknown (Task Scheduler and proxy checks failed).");
+    expect(status).not.toContain("����");
+    expect(status).not.toContain("connection failure");
   });
 });
 
@@ -197,6 +248,47 @@ describe("evaluateWindowsSchedulerInstallVerification", () => {
     expect(result.ok).toBe(false);
     expect(result.registrationHealthy).toBe(false);
     expect(result.detail).toContain("unhealthy");
+  });
+
+  test("a published-but-invalid registration never enters the settle loop", () => {
+    const badXml = healthyXml.replace("<LogonTrigger>", "<BootTrigger>");
+    const invalid = evaluateWindowsSchedulerInstallVerification({
+      taskInstalled: true,
+      xml: badXml,
+      assetsExist: true,
+      nativeStatus: "nonexistent",
+      wscript,
+      launcher,
+    });
+    expect(invalid.registrationHealthy).toBe(false);
+    expect(invalid.registrationInvalid).toBe(true);
+    // Permanent: rollback must fire immediately, with zero settle delays.
+    expect(schedulerVerificationMaySettle(invalid)).toBe(false);
+
+    // An empty/unreadable view is publication lag: still transient.
+    const pending = evaluateWindowsSchedulerInstallVerification({
+      taskInstalled: false,
+      xml: "",
+      assetsExist: true,
+      nativeStatus: "nonexistent",
+      wscript,
+      launcher,
+    });
+    expect(pending.registrationInvalid).toBe(false);
+    expect(schedulerVerificationMaySettle(pending)).toBe(true);
+
+    // A <Data> block is an explicit permanent violation too.
+    const dataXml = healthyXml.replace("<Triggers>", "<Data>x</Data><Triggers>");
+    const withData = evaluateWindowsSchedulerInstallVerification({
+      taskInstalled: true,
+      xml: dataXml,
+      assetsExist: true,
+      nativeStatus: "nonexistent",
+      wscript,
+      launcher,
+    });
+    expect(withData.registrationInvalid).toBe(true);
+    expect(schedulerVerificationMaySettle(withData)).toBe(false);
   });
 
   test("fails when required assets are missing", () => {

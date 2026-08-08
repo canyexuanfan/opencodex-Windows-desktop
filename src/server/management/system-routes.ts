@@ -14,16 +14,25 @@
  * it is not a standalone leak discriminator. `responseState` attributes growth
  * further: it is the proxy's previous_response_id continuation store, so a
  * growing responseState.totalBytes under rising observed memory points at
- * conversation retention rather than the runtime allocator.
+ * conversation retention rather than the runtime allocator. Spill counts,
+ * payload-byte totals, tombstones, and failure counters remain finite scalars;
+ * response ids, filenames, digests, paths, and payload content never leave the owner.
  *
  * `activeTurnCount` / `isDraining` are scalar lifecycle counters for the
  * dashboard drain-and-restart confirm UX — never request bodies or IDs.
  */
-import { decideEagerRelay } from "../../lib/bun-stream-caps";
+import { selectEagerPath } from "../../lib/bun-stream-caps";
+import { reportedBunRuntimeSource } from "../../lib/bun-runtime";
 import { getActiveTurnCount, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
+import { appOwnedBytesSnapshot } from "../../lib/app-owned-memory";
+import {
+  SYSTEM_RESTART_EXPECTED_PID_HEADER,
+  parseExpectedSystemRestartPid,
+} from "../../lib/system-restart-contract";
 import { jsonResponse } from "../auth-cors";
+import { getInspectionCounters } from "../relay";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
 
@@ -64,10 +73,19 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       })()
       : null;
     const streamMode = config.streamMode ?? "auto";
+    /**
+     * No request-specific rewrite context exists on this route, so report the
+     * effective no-client-rewrite baseline. Individual rewrite requests still
+     * stay on tee even when this baseline says eager.
+     */
+    const eagerRelay = selectEagerPath(process.platform, false, streamMode);
     return jsonResponse({
       pid: process.pid,
       bunVersion: Bun.version,
       bunRevision: Bun.revision,
+      // Recorded at launch, not resolved now: absent means "this service predates the
+      // marker", which callers must report as unknown rather than guess.
+      bunRuntimeSource: reportedBunRuntimeSource(),
       platform: process.platform,
       uptimeSeconds: process.uptime(),
       rss: usage.rss,
@@ -79,8 +97,10 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      observedMetric: observed.observedMetric,
 	      jscHeap,
       responseState: responseStateMetrics(),
+      appOwnedBytes: appOwnedBytesSnapshot(),
+      inspectionCounters: getInspectionCounters(),
       streamMode,
-      eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
+      eagerRelay,
       watchdog,
       activeTurnCount: getActiveTurnCount(),
       isDraining: isDraining(),
@@ -88,6 +108,22 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
   }
 
   if (url.pathname === "/api/system/restart" && req.method === "POST") {
+    const expectedPid = parseExpectedSystemRestartPid(
+      req.headers.get(SYSTEM_RESTART_EXPECTED_PID_HEADER),
+    );
+    if (expectedPid.kind === "invalid") {
+      return jsonResponse({
+        success: false,
+        error: "Invalid restart target identity.",
+      }, 400, req, config);
+    }
+    if (expectedPid.kind === "present" && expectedPid.pid !== process.pid) {
+      return jsonResponse({
+        success: false,
+        error: "Restart target identity changed.",
+      }, 409, req, config);
+    }
+
     // Longer informed drain than /api/stop; does not tear down Codex/Grok injection.
     const result = acceptSystemRestart();
     return jsonResponse({

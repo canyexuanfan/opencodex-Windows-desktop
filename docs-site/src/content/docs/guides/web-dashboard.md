@@ -29,6 +29,11 @@ they expire or the proxy restarts. Only a dashboard bound to a non-loopback host
 the admin token (`OPENCODEX_ADMIN_AUTH_TOKEN`, or the auto-generated
 `~/.opencodex/admin-api-token` file).
 
+When a remote dashboard needs that credential, it presents a standard password form so a browser
+password manager can offer to save and autofill it. The dashboard itself still keeps the token only
+in memory and does not write it to `localStorage` or `sessionStorage`; whether it is saved is entirely
+the browser or password manager's decision.
+
 ## What you can do
 
 | Area | What it does |
@@ -40,7 +45,7 @@ the admin token (`OPENCODEX_ADMIN_AUTH_TOKEN`, or the auto-generated
 | **Startup safety** | Show whether injected Codex routing survives a restart, with separate service and launcher-shim health plus exact repair commands. |
 | **Windows tray** | Install a per-user login tray for one-click proxy start, stop, restart, dashboard access, and status. The tray is a controller, not a proxy restart service. |
 | **Codex autostart** | Allow an already-installed Codex launcher shim to run `ocx ensure`. This toggle does not install a shim or background service. |
-| **Providers** | Add, edit, enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. Provider Settings can disable live model discovery for endpoints with missing, slow, or oversized `/models` catalogs. For Claude (Anthropic) OAuth pools, each logged-in account shows its own 5-hour and weekly rate-limit bars (usage is per credential); a failed probe keeps the last-known bars and marks them unavailable until the next successful refresh. |
+| **Providers** | Add, edit, set the default (enabled providers only), enable/disable, and remove providers; manage OAuth account pools and API-key pools where supported. Removing the current default switches to the first remaining enabled provider when one exists; otherwise deletion is refused and the current default is kept. Provider Settings can disable live model discovery for endpoints with missing, slow, or oversized `/models` catalogs. For Claude (Anthropic) OAuth pools, each logged-in account shows its own 5-hour and weekly rate-limit bars (usage is per credential); a failed probe keeps the last-known bars and marks them unavailable until the next successful refresh. |
 | **Add provider** | Search registry-backed presets for account login, API-key services, local servers, or a custom endpoint. |
 | **Codex Auth** | Add ChatGPT/Codex pool accounts, select the next-session account, refresh 5h / weekly / 30d quotas, enable or disable quota auto-switch, set its 1–100% threshold, and configure transient-failure failover. |
 | **Subagents** | Feature up to five bare native or namespaced routed models in the `spawn_agent` override list. |
@@ -100,8 +105,21 @@ catalog entry.
 
 The **Codex Auth** page manages the native ChatGPT/Codex route:
 
-- Manually choosing an account changes the next new Codex session; an already-bound thread keeps its
-  current account for that manual switch.
+Pool mode selects across the main and added Codex accounts; Direct uses only the caller/main login.
+In-flight requests keep their captured credentials, and a 401/403 reauthentication or 429 cooldown
+may clear affinity and rotate to another eligible Pool account. This is separate from `openai-apikey`
+and other providers.
+
+- Manually choosing an account applies immediately: an already-bound thread moves to it on its next
+  request, and only requests already in flight keep the account they captured. A manual choice is also
+  pinned: the card shows a **PINNED** badge, and a higher selection order cannot preempt that account
+  until it is drained, you select another account, or you change any account's selection order.
+- Each account card carries a **Selection order** control (First, Earlier, Normal, Later, Last).
+  Higher order is used first, and the pool drops to a lower order only once every account above it is
+  drained or unavailable. A changed order applies from the next unbound request and never moves a
+  thread that is already bound. The Codex Desktop (main) account is ordered like any other, so it can
+  be set to **Last** and kept as the reserve. An order set from `ocx account priority` outside those
+  five presets stays visible and selectable on the card.
 - Thread affinity prevents per-request flapping. With quota auto-switch enabled, a long-running
   thread is periodically re-evaluated and may rebind after its relevant usage reaches the threshold
   and a strictly lower-usage eligible account exists.
@@ -114,6 +132,34 @@ The **Codex Auth** page manages the native ChatGPT/Codex route:
   values.
 - Pool request logs use opaque labels such as `p3fa91c`, never account emails.
 
+The Providers overview separately summarizes Pool-mode usage as a display-only weighted capacity
+estimate, alongside the effective account's raw quota and the next capacity recovery. See
+[Providers overview pool capacity](/guides/providers/#providers-overview-pool-capacity) for the
+visible fields, incomplete-coverage meaning, and routing boundary.
+
+## Starring is yours to decide, not an agent's
+
+The sidebar's star button — and the one-time question `ocx start` asks in an interactive
+terminal — goes through **your own `gh` login**. opencodex holds no GitHub token, and the
+only thing it learns is your yes or no.
+
+Because that writes to your GitHub account, agent-driven callers are refused rather than
+allowed to answer for you:
+
+- `ocx start` and `ocx service install` **skip the prompt entirely** when an agent or CI
+  harness is driving them (`CLAUDECODE`, `CODEX_THREAD_ID`, `CURSOR_TRACE_ID`, `CI`, and
+  similar). The one-time marker stays unwritten, so the real prompt still shows up on your
+  next hand-typed run. The agent is told to ask you instead — and to ask as a plain Yes/No
+  choice you have to answer, not as a soft aside it can slip past you. If you never get
+  around to answering, the agent is told to re-ask rather than treat your silence as a no.
+- `POST /api/github/star` answers `403` with `code: "agent_consent_required"` when the proxy
+  runs under an agent session and the request has no dashboard browser session. Possessing
+  the admin token is not consent: an agent on your machine can read that file.
+- The dashboard button keeps working normally. A real click carries same-origin session
+  evidence, so it is recognized as you even when an agent started the proxy.
+- Saying no ends it. Nothing is persisted and nothing is added to any model prompt to nudge
+  you later.
+
 ## How the dashboard talks to the proxy
 
 The GUI is a thin client over the proxy's JSON management API. Useful endpoints include:
@@ -121,6 +167,7 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET` / `PUT /api/settings` | Read settings or toggle Codex autostart. |
+| `GET` / `POST /api/github/star` | Read the `gh`-derived star state, or star the repository. The POST is refused with `403` `agent_consent_required` for agent-driven callers without a dashboard session. |
 | `GET /api/startup-health` | Read secret-free routing, service, shim, and restart-safety diagnostics. |
 | `POST /api/startup-action` | Install the background service or Codex launcher shim through fixed, allowlisted actions. |
 | `GET` / `POST /api/windows-tray` | Read or change the Windows tray installation and visible-process state. POST accepts `install`, `start`, `stop`, or `uninstall`. |
@@ -129,15 +176,16 @@ The GUI is a thin client over the proxy's JSON management API. Useful endpoints 
 | `GET` / `PUT /api/sidecar-settings` | Read or set search/vision sidecar model settings. |
 | `GET` / `PUT /api/injection-model` | Read or set the shared sub-agent model/effort selection and the independent guidance/native-default switches. |
 | `GET` / `PUT /api/v2` | Read or set the surface mode, Codex feature flag, and v2 thread limit. |
-| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | List, add/replace, enable/disable, or remove providers. |
+| `GET /api/providers` · `POST /api/providers` · `PATCH /api/providers?name=...` · `DELETE /api/providers?name=...` | List, add/replace, enable/disable, set the default, or remove providers. `PATCH` uses standalone `{ "setDefault": true }` on an enabled provider; `POST` may include `setDefault` when creating/replacing (also enabled-only). Deleting the current default reassigns to the first remaining enabled provider when one exists; otherwise the API returns `409` with `code: "last_provider"` and keeps the current default. |
 | `GET /api/models` · `PUT /api/disabled-models` | List native/routed model rows and update the shared disabled-model set. |
 | `GET /api/selected-models` · `PUT /api/model-visibility` | Read provider allowlists and atomically change the final visibility of one model or provider group. |
 | `GET /api/key-providers` · `GET /api/oauth/providers` | Read the API-key and OAuth provider catalogs. |
 | `POST /api/oauth/login` · `GET /api/oauth/status` | Start a provider OAuth flow and poll for completion. |
 | `GET /api/codex-auth/accounts?refresh=1` | List main and pool accounts, force quota refresh, and report main-account `hasCredential` / terminal `needsReauth` state. |
 | `PUT /api/codex-auth/active` · `PUT /api/codex-auth/auto-switch` · `PUT /api/codex-auth/failover` | Select the account for the next request and configure pool routing. |
+| `GET /api/codex-auth/active` · `PUT /api/codex-auth/accounts/priority` | Read the effective account (including `pinned` and which account is `pinnedAccountId`) and set one account's selection order. |
 | `POST /api/codex-auth/login` · `GET /api/codex-auth/login-status` | Add a pool account through browser login. |
-| `GET /api/logs?tail=50&provider=...&status=5xx` | Read recent request metadata with optional tail, provider, and exact/class status filters. |
+| `GET /api/logs?tail=50&limit=20&offset=0&provider=...&status=5xx` | Read recent request metadata with optional tail, provider, and exact/class status filters. With `limit`/`offset`, paging walks backward from the newest row (`offset=0` returns the latest page). Response shape: `{ timeZone, total, logs }` where `total` is the filtered row count before pagination. |
 | `GET` / `PUT /api/subagent-models` | Read or set the five featured `spawn_agent` override models. |
 | `POST /api/stop` | Stop the proxy/service, restore native Codex, and exit. |
 

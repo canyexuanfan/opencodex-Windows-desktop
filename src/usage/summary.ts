@@ -2,7 +2,7 @@ import { baseProviderLabel } from "../providers/label";
 import { canonicalAntigravityUsageModel } from "../providers/antigravity-models";
 import { usageDisplayTotalTokens } from "./totals";
 import type { PersistedUsageEntry, UsageStatus } from "./log";
-import { estimateComboCost, estimateRequestCost, effectiveServiceTier } from "./cost";
+import { estimateComboCost, estimateRequestCost, serviceTierContext } from "./cost";
 
 export type UsageRange = "7d" | "30d" | "all";
 export type UsageSurface = "all" | "codex" | "claude" | "grok";
@@ -91,6 +91,17 @@ export interface UsageSummary {
 }
 
 const DAY_MS = 86_400_000;
+export const MAX_USAGE_MODEL_BREAKDOWN_ROWS = 256;
+
+function retainedBreakdownRows<T>(
+  rows: T[],
+  aggregateOverflow: (overflow: T[]) => T,
+): T[] {
+  if (rows.length <= MAX_USAGE_MODEL_BREAKDOWN_ROWS) return rows;
+  const keep = rows.slice(0, MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1);
+  keep.push(aggregateOverflow(rows.slice(MAX_USAGE_MODEL_BREAKDOWN_ROWS - 1)));
+  return keep;
+}
 
 export function parseRange(input: string | null | undefined): UsageRange {
   if (input === "7d" || input === "30d" || input === "all") return input;
@@ -275,7 +286,7 @@ function addEstimatedCost(
     totals.unmeteredRequests += 1;
     return;
   }
-  const tier = effectiveServiceTier(entry);
+  const tier = serviceTierContext(entry);
   const estimate = entry.attempts?.length
     ? estimateComboCost(entry.attempts, undefined, tier)
     : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier });
@@ -334,7 +345,21 @@ function buildDayGrid(range: UsageRange, since: number | null, now: number, entr
   const out = [...grid.values()].sort((a, b) => a.date.localeCompare(b.date));
   for (const day of out) {
     const models = dayModels.get(day.date);
-    if (models) day.models = [...models.values()].sort((a, b) => b.requests - a.requests);
+    if (models) {
+      const sorted = [...models.values()].sort((a, b) => b.requests - a.requests);
+      day.models = retainedBreakdownRows(sorted, overflow => {
+        const requests = new Set<string>();
+        let attemptCount = 0;
+        let totalTokens = 0;
+        for (const model of overflow) {
+          attemptCount += model.attemptCount;
+          totalTokens += model.totalTokens;
+          const requestKey = `${day.date}\0${usageModelKey(model.provider, model.model)}`;
+          for (const requestId of dayModelRequests.get(requestKey) ?? []) requests.add(requestId);
+        }
+        return { model: "other", provider: "other", requests: requests.size, attemptCount, totalTokens };
+      });
+    }
   }
   return out;
 }
@@ -390,7 +415,7 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number): Usage
   }
   // Accumulate per-model estimated cost
   for (const entry of entries) {
-    const tier = effectiveServiceTier(entry);
+    const tier = serviceTierContext(entry);
     const estimate = entry.attempts?.length
       ? estimateComboCost(entry.attempts, undefined, tier)
       : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier });
@@ -414,7 +439,47 @@ function buildModels(entries: PersistedUsageEntry[], totalTokens: number): Usage
   }
   const models = [...byKey.values()];
   for (const m of models) m.shareRatio = totalTokens === 0 ? 0 : m.totalTokens / totalTokens;
-  return models.sort((a, b) => b.requests - a.requests);
+  const sorted = models.sort((a, b) => b.requests - a.requests);
+  return retainedBreakdownRows(sorted, overflow => {
+    const statusesByRequest = new Map<string, UsageStatus[]>();
+    const other: UsageModel = {
+      provider: "other",
+      model: "other",
+      requests: 0,
+      attemptCount: 0,
+      measuredRequests: 0,
+      reportedRequests: 0,
+      estimatedRequests: 0,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      shareRatio: 0,
+    };
+    for (const model of overflow) {
+      other.attemptCount += model.attemptCount;
+      other.totalTokens += model.totalTokens;
+      other.inputTokens += model.inputTokens;
+      other.outputTokens += model.outputTokens;
+      if (model.estimatedCostUsd !== undefined) {
+        other.estimatedCostUsd = (other.estimatedCostUsd ?? 0) + model.estimatedCostUsd;
+      }
+      const key = usageModelKey(model.provider, model.model);
+      for (const [requestId, statuses] of statusesByKey.get(key) ?? []) {
+        const combined = statusesByRequest.get(requestId) ?? [];
+        combined.push(...statuses);
+        statusesByRequest.set(requestId, combined);
+      }
+    }
+    other.requests = statusesByRequest.size;
+    for (const statuses of statusesByRequest.values()) {
+      const status = foldAttributionStatuses(statuses);
+      if (isMeasuredStatus(status)) other.measuredRequests += 1;
+      if (status === "reported") other.reportedRequests += 1;
+      else if (status === "estimated") other.estimatedRequests += 1;
+    }
+    other.shareRatio = totalTokens === 0 ? 0 : other.totalTokens / totalTokens;
+    return other;
+  });
 }
 
 function buildProviders(entries: PersistedUsageEntry[], totalTokens: number): UsageProvider[] {
@@ -459,7 +524,7 @@ function buildProviders(entries: PersistedUsageEntry[], totalTokens: number): Us
     }
   }
   for (const entry of entries) {
-    const tier = effectiveServiceTier(entry);
+    const tier = serviceTierContext(entry);
     const estimate = entry.attempts?.length
       ? estimateComboCost(entry.attempts, undefined, tier)
       : estimateRequestCost({ provider: entry.provider, model: entry.model, usage: entry.usage, usageStatus: entry.usageStatus, serviceTier: tier });

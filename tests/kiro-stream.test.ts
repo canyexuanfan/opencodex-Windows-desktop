@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createKiroAdapter, isRetryableKiroStreamCatchError } from "../src/adapters/kiro";
+import {
+  createKiroAdapter as createKiroAdapterProduction,
+  isRetryableKiroStreamCatchError,
+  parseKiroStream,
+} from "../src/adapters/kiro";
 import {
   KIRO_COMPLETION_RETRY_MESSAGE,
   KIRO_COMPLETION_TOOL_NAME,
@@ -12,7 +16,13 @@ import { parseKiroEvent } from "../src/adapters/kiro-events";
 import { resetKiroThrottleStateForTests } from "../src/adapters/kiro-retry";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { estimateTokens } from "../src/lib/token-estimate";
+import { createTranslatorBudget } from "../src/lib/translator-budget";
 import type { OcxParsedRequest, OcxProviderConfig, OcxUsage } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+function createKiroAdapter(...args: Parameters<typeof createKiroAdapterProduction>) {
+  return withTestTranslatorBudget(createKiroAdapterProduction(...args));
+}
 
 const enc = new TextEncoder();
 const origHome = process.env.HOME;
@@ -323,6 +333,106 @@ describe("kiro adapter — parseStream", () => {
       endTurn: true,
       providerState: { kiro: { conversationId: "returned-conversation-42" } },
     });
+  });
+
+  test("large first-attempt text stays charged through fallback construction and releases after parse", async () => {
+    const budget = createTranslatorBudget();
+    const firstText = "x".repeat(10 * 1024 * 1024);
+    const fallbackText = "y".repeat(1024 * 1024);
+    try {
+      const events = await collectAdapterEvents(parseKiroStream(
+        new Response(streamOf(eventFrame({ content: firstText }))),
+        budget,
+        "claude-sonnet-4.5",
+        0,
+        undefined,
+        undefined,
+        "conversation-large-first",
+        "required",
+        async () => {
+          const chargedDuringFactory = budget.snapshot().currentBytes;
+          expect(chargedDuringFactory).toBeGreaterThanOrEqual(Buffer.byteLength(firstText));
+          await Promise.resolve();
+          expect(budget.snapshot().currentBytes).toBe(chargedDuringFactory);
+          return {
+            response: new Response(streamOf(eventFrame({ content: fallbackText }))),
+            inputTokens: 0,
+            contextInputEstimate: 0,
+            nameMap: new Map(),
+            conversationId: "conversation-small-fallback",
+          };
+        },
+      ));
+
+      expect(events.some(event => event.type === "error")).toBe(false);
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(events.some(event => event.type === "text_delta" && event.text.length === fallbackText.length)).toBe(true);
+      expect(budget.snapshot().currentBytes).toBe(0);
+    } finally {
+      budget.dispose();
+    }
+  }, 60_000);
+
+  test("production fallback charges its retry serialization before releasing first-attempt text", async () => {
+    const budget = createTranslatorBudget();
+    const firstText = "p".repeat(1024 * 1024);
+    const fallbackText = "final fallback";
+    try {
+      const adapter = createKiroAdapterProduction(provider);
+      await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]), {
+        headers: new Headers(),
+        translatorBudget: budget,
+      });
+      let chargedAtFetch = 0;
+      globalThis.fetch = (async () => {
+        chargedAtFetch = budget.snapshot().currentBytes;
+        return new Response(streamOf(eventFrame({ content: fallbackText })));
+      }) as typeof fetch;
+
+      const events = await collectAdapterEvents(adapter.parseStream(
+        new Response(streamOf(eventFrame({ content: firstText }))),
+        budget,
+      ));
+
+      expect(chargedAtFetch).toBeGreaterThan(2 * Buffer.byteLength(firstText));
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(budget.snapshot().currentBytes).toBe(0);
+    } finally {
+      budget.dispose();
+    }
+  }, 60_000);
+
+  test("near-cap production fallback rejects before fetch with a typed translation overflow", async () => {
+    const budget = createTranslatorBudget({ maxTurnBytes: 308_000 });
+    const firstText = "x".repeat(100 * 1024);
+    let fetches = 0;
+    try {
+      const adapter = createKiroAdapterProduction(provider);
+      await adapter.buildRequest(parsedWith([{ role: "user", content: "do it" }], [bashTool]), {
+        headers: new Headers(),
+        translatorBudget: budget,
+      });
+      globalThis.fetch = (async () => {
+        fetches++;
+        return new Response(streamOf(eventFrame({ content: "must not be fetched" })));
+      }) as typeof fetch;
+
+      const events = await collectAdapterEvents(adapter.parseStream(
+        new Response(streamOf(eventFrame({ content: firstText }))),
+        budget,
+      ));
+
+      expect(fetches).toBe(0);
+      expect(events.at(-1)).toMatchObject({
+        type: "error",
+        status: 502,
+        errorType: "upstream_error",
+        code: "translation_buffer_limit",
+      });
+      expect(budget.snapshot().currentBytes).toBe(0);
+    } finally {
+      budget.dispose();
+    }
   });
 
   test("bounded fallback uses its rebuilt context estimate for the final absolute checkpoint", async () => {
@@ -986,6 +1096,21 @@ describe("kiro adapter — parseStream", () => {
     expect(errors[0]).not.toContain("{");
   });
 
+  test("an event-stream profileArn-required exception classifies as kiro_profile_required (#993)", async () => {
+    const payload = JSON.stringify({
+      __type: "ValidationException",
+      message: "profileArn is required for this account",
+    });
+    const frame = encodeMessage({ ":message-type": "exception", ":exception-type": "ValidationException" }, enc.encode(payload));
+    const errors: string[] = [];
+    for await (const e of createKiroAdapter(provider).parseStream(new Response(streamOf(frame)))) {
+      if (e.type === "error") errors.push(e.message);
+    }
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("kiro_profile_required");
+    expect(errors[0]).toContain("ocx account login kiro --reauth");
+  });
+
   test("auth and model exceptions become actionable Kiro errors", async () => {
     const authFrame = encodeMessage(
       { ":message-type": "exception", ":exception-type": "AccessDeniedException" },
@@ -1194,6 +1319,40 @@ describe("kiro adapter — parseStream", () => {
       { type: "text_delta", text: "visible answer" },
       expect.objectContaining({ type: "done", endTurn: true }),
     ]);
+  });
+
+  // Kiro's Sol-family models never return plaintext reasoning: reasoningContentEvent carries an
+  // encrypted `redactedContent` blob (verified against kiro-cli 2.14.1 and 2.16.0), which the
+  // official client replays on the matching assistantResponseMessage to preserve reasoning across
+  // turns. Reading only `text` dropped it entirely.
+  test("reasoningContentEvent redactedContent is captured for round-trip", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      eventFrame({ content: "visible answer" }),
+      eventFrame({ redactedContent: "LktUUn5+encrypted" }, "reasoningContentEvent"),
+    ))));
+    expect(events).toEqual([
+      { type: "text_delta", text: "visible answer" },
+      { type: "kiro_redacted_reasoning", data: "LktUUn5+encrypted" },
+      expect.objectContaining({ type: "done", endTurn: true }),
+    ]);
+  });
+
+  test("reasoningContentEvent carrying both text and redactedContent emits both", async () => {
+    const events = await collectAdapterEvents(createKiroAdapter(provider).parseStream(new Response(streamOf(
+      eventFrame({ text: "plain", redactedContent: "blob" }, "reasoningContentEvent"),
+    ))));
+    expect(events).toEqual([
+      { type: "reasoning_raw_delta", text: "plain" },
+      { type: "kiro_redacted_reasoning", data: "blob" },
+      expect.objectContaining({ type: "done" }),
+    ]);
+  });
+
+  // Kiro reports context pressure in its own event type; metadataEvent carries only stopReason, so
+  // reading contextUsagePercentage from metadataEvent alone never saw a value.
+  test("contextUsageEvent supplies the absolute context usage percentage", () => {
+    const parsed = parseKiroEvent("contextUsageEvent", enc.encode(JSON.stringify({ contextUsagePercentage: 42.5 })));
+    expect(parsed).toEqual({ type: "context_usage", contextUsagePercentage: 42.5 });
   });
 
   test("thinking tags split across chunks are parsed as reasoning", async () => {
@@ -1616,5 +1775,33 @@ describe("kiro adapter — parseResponse (web-search sidecar non-streaming path)
     // The absolute checkpoint reflects the whole conversation, not just this attempt's output.
     expect(usage?.contextTotalTokens).toBeGreaterThan(usage?.outputTokens ?? 0);
     expect(usage?.contextTotalTokens).toBeGreaterThanOrEqual(builtEstimate);
+  });
+});
+
+describe("surrogate safety at kiro boundaries", () => {
+  test("the reasoning carry never emits a delta ending on a lone high surrogate", async () => {
+    const { KiroThinkingParser } = await import("../src/adapters/kiro-thinking");
+    const parser = new KiroThinkingParser();
+    // An astral char exactly at the carry/send boundary.
+    const events = parser.feed("<thinking>🎆aaaaaaaaaaa");
+    const emitted = JSON.stringify(events);
+    expect(emitted.includes("\uFFFD")).toBe(false);
+    for (const event of events) {
+      const text = (event as { text?: string }).text ?? "";
+      if (text.length === 0) continue;
+      const last = text.charCodeAt(text.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    }
+  });
+
+  test("a truncated tool description never ends on a lone high surrogate", async () => {
+    const { truncateDescriptionForTests } = await import("../src/adapters/kiro-tools");
+    const description = "a".repeat(1022) + "🎆cd";
+    const out = truncateDescriptionForTests(description, 1024);
+    expect(out.endsWith("…")).toBe(true);
+    const kept = out.slice(0, -1);
+    const last = kept.charCodeAt(kept.length - 1);
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    expect(out.includes("\uFFFD")).toBe(false);
   });
 });

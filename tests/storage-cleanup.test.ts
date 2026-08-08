@@ -21,10 +21,12 @@ import {
   listTrashEntries,
   normalizeArchivedRolloutPath,
   previewArchivedCleanup,
+  previewExactArchivedCleanup,
   restoreTrashEntry,
   selectOldestPercent,
   type ExecuteCleanupOptions,
 } from "../src/storage/cleanup";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
 
 const OLD = new Date("2026-01-01T00:00:00Z");
 const MID = new Date("2026-02-01T00:00:00Z");
@@ -209,6 +211,117 @@ function runWithDigest(
   });
 }
 
+describe("pinned archived threads", () => {
+  function pinThread(homeDir: string, threadId: string): void {
+    const db = new Database(join(homeDir, "state_5.sqlite"));
+    const hasColumn = db
+      .query<{ name: string }, []>(`PRAGMA table_info("threads")`)
+      .all()
+      .some(r => r.name === "is_pinned");
+    if (!hasColumn) {
+      db.exec("ALTER TABLE threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+    }
+    db.exec(`UPDATE threads SET is_pinned = 1 WHERE id = '${threadId}'`);
+    db.close();
+  }
+
+  test.each(["quarantine", "permanent"] as const)(
+    "%s excludes pinned threads from preview and execution",
+    mode => {
+      home = buildHome();
+      pinThread(home, "told");
+
+      const preview = previewArchivedCleanup(50, home);
+      expect(preview.candidates.map(c => c.relPath)).toEqual([
+        "archived_sessions/rollout-mid.jsonl",
+      ]);
+
+      const result = executeArchivedCleanup({
+        percent: 50,
+        mode,
+        digest: preview.digest,
+        codexHome: home,
+      });
+      expect(result.ok).toBe(true);
+      expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+      const check = new Database(join(home, "state_5.sqlite"), { readonly: true });
+      expect(check.query("SELECT id FROM threads WHERE id = 'told'").get()).toBeTruthy();
+      check.close();
+    },
+    { timeout: STORE_BUDGET_MS },
+  );
+
+  test("pinning after preview fails closed as stale_preview", () => {
+    home = buildHome();
+    const preview = previewArchivedCleanup(50, home);
+    expect(preview.candidates.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+    ]);
+
+    pinThread(home, "told");
+
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: preview.digest,
+      codexHome: home,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("stale_preview");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+  }, { timeout: STORE_BUDGET_MS });
+
+  test("exact-candidate preview also excludes pinned threads", () => {
+    home = buildHome();
+    pinThread(home, "told");
+    const all = listArchivedCandidates(home);
+    const preview = previewExactArchivedCleanup(all, home);
+    expect(preview.candidates.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-mid.jsonl",
+      "archived_sessions/rollout-new.jsonl",
+    ]);
+  }, { timeout: STORE_BUDGET_MS });
+
+  test("pin landing after staging stops the locked reconcile and restores files", () => {
+    home = buildHome();
+    // Schema carries the column but nothing is pinned yet, so the preview
+    // still selects the oldest archived thread.
+    const db0 = new Database(join(home, "state_5.sqlite"));
+    db0.exec("ALTER TABLE threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0");
+    db0.close();
+
+    const preview = previewArchivedCleanup(50, home);
+    expect(preview.candidates.map(c => c.relPath)).toEqual([
+      "archived_sessions/rollout-old.jsonl",
+    ]);
+
+    const result = executeArchivedCleanup({
+      percent: 50,
+      mode: "quarantine",
+      digest: preview.digest,
+      codexHome: home,
+      _test: {
+        // The realistic race: the pin lands between preview/digest
+        // recompute and the reconcile write lock.
+        beforeReconcileLock: () => {
+          const db = new Database(join(home, "state_5.sqlite"));
+          db.exec("UPDATE threads SET is_pinned = 1 WHERE id = 'told'");
+          db.close();
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("pinned_thread");
+    expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
+
+    const check = new Database(join(home, "state_5.sqlite"), { readonly: true });
+    expect(check.query("SELECT id FROM threads WHERE id = 'told'").get()).toBeTruthy();
+    check.close();
+  }, { timeout: STORE_BUDGET_MS });
+});
+
 describe("previewArchivedCleanup", () => {
   test("lists archived files oldest-first and ignores active sessions", () => {
     home = buildHome();
@@ -219,7 +332,7 @@ describe("previewArchivedCleanup", () => {
       "archived_sessions/rollout-new.jsonl",
     ]);
     expect(listed.some(c => c.relPath.includes("sessions/2026"))).toBe(false);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("percent selects oldest subset and includes digest", () => {
     home = buildHome();
@@ -235,7 +348,7 @@ describe("previewArchivedCleanup", () => {
     expect(preview.bytes).toBe(preview.candidates[0]!.bytes);
     expect(preview.digest).toBe(computePreviewDigest(preview.candidates, 50));
     expect(preview.digest).toMatch(/^[a-f0-9]{64}$/);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("treats .jsonl and .jsonl.zst as one logical rollout", () => {
     home = buildHome();
@@ -249,7 +362,7 @@ describe("previewArchivedCleanup", () => {
       "archived_sessions/rollout-old.jsonl.zst",
     ]);
     expect(listed.filter(c => c.relPath.includes("rollout-old"))).toHaveLength(1);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("normalizeArchivedRolloutPath", () => {
@@ -266,7 +379,7 @@ describe("normalizeArchivedRolloutPath", () => {
     // ISO timestamps in filenames must not be treated as Windows drive letters.
     expect(normalizeArchivedRolloutPath("archived_sessions/rollout-2026-01-01T10:00:00.jsonl", home))
       .toBe("archived_sessions/rollout-2026-01-01T10:00:00.jsonl");
-  });
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("executeArchivedCleanup", () => {
@@ -288,7 +401,7 @@ describe("executeArchivedCleanup", () => {
     const ids = db.query<{ id: string }, []>("SELECT id FROM threads ORDER BY id").all().map(r => r.id);
     db.close();
     expect(ids).toEqual(["active", "tmid", "tnew"]);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("permanent deletes files and threads without creating trash", () => {
     home = buildHome();
@@ -304,7 +417,7 @@ describe("executeArchivedCleanup", () => {
     const ids = db.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
     db.close();
     expect(ids).toEqual(["active"]);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("stale_preview when filesystem changed after preview", () => {
     home = buildHome();
@@ -418,7 +531,7 @@ describe("executeArchivedCleanup", () => {
       try { logsRead?.close(); } catch { /* */ }
       try { memoriesRead?.close(); } catch { /* */ }
     }
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rolls back staged renames when a later rename fails", () => {
     home = buildHome();
@@ -457,6 +570,8 @@ describe("executeArchivedCleanup", () => {
     expect(existsSync(join(home, ".trash", "77", "rollout-old.jsonl"))).toBe(false);
   });
 
+  // Windows CI: permanent cleanup + spawn/dynamic-tool SQLite work can exceed Bun's
+  // default 5s under runner load (timed out at 5.5s on PR #779).
   test("deletes spawn edges with parent_thread_id/child_thread_id and cascades dynamic tools", () => {
     home = buildHome({ withSpawnEdges: true, withDynamicTools: true });
     // Delete both sides of the edge together so referenced_history does not fire.
@@ -466,7 +581,7 @@ describe("executeArchivedCleanup", () => {
     expect(db.query("SELECT COUNT(*) AS n FROM thread_spawn_edges").get() as { n: number }).toEqual({ n: 0 });
     expect(db.query("SELECT COUNT(*) AS n FROM thread_dynamic_tools").get() as { n: number }).toEqual({ n: 0 });
     db.close();
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rejects candidates still referenced by a live spawn edge", () => {
     home = buildHome({ withSpawnEdges: true });
@@ -639,7 +754,7 @@ describe("executeArchivedCleanup", () => {
     const ids = state.query<{ id: string }, []>("SELECT id FROM threads").all().map(r => r.id);
     state.close();
     expect(ids).toEqual(["active"]);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("threads read failure leaves every file and database unchanged", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -666,7 +781,7 @@ describe("executeArchivedCleanup", () => {
     expect(Buffer.compare(beforeGoals, readFileSync(join(home, "goals_1.sqlite")))).toBe(0);
     expect(Buffer.compare(beforeMemories, readFileSync(join(home, "memories_1.sqlite")))).toBe(0);
     expect(Buffer.compare(beforeState, readFileSync(join(home, "state_5.sqlite")))).toBe(0);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   // Windows CI: injected satellite rollback paths (especially goals) can measure 6–13s
   // there and trip bun's default 5s harness timeout.
@@ -723,9 +838,11 @@ describe("executeArchivedCleanup", () => {
       expect(stateAfter.query("SELECT id, rollout_path, archived FROM threads ORDER BY id").all()).toEqual(threads);
       stateAfter.close();
     },
-    { timeout: 30_000 },
+    { timeout: STORE_BUDGET_MS },
   );
 
+  // Same Windows satellite-rollback budget as the injected-mutation cases above:
+  // failBeforeStateCommit + failSatelliteRestore measured ~10s on windows-latest.
   test("satellite restore failure keeps recovery trashDir and manifest", () => {
     home = buildHome({ withSatelliteStores: true });
     const result = runWithDigest(100, "permanent", home, {
@@ -739,7 +856,7 @@ describe("executeArchivedCleanup", () => {
     expect(existsSync(join(home, ".trash", "94", "satellite-backup.json"))).toBe(true);
     // Files are still restored; trash is kept for DB recovery metadata.
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("satellite-backup write failure leaves every database and rollout unchanged", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -922,7 +1039,7 @@ describe("executeArchivedCleanup", () => {
         job_key: (expected as { job_key: string }).job_key,
       });
     }
-  }, { timeout: 30_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("permanent cleanup works with logs-only satellite store", () => {
     home = buildHome({ satellites: "logs" });
@@ -1012,7 +1129,7 @@ describe("executeArchivedCleanup", () => {
       "active", "tmid", "tnew", "told",
     ]);
     state.close();
-  }, { timeout: 30_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   // Windows CI: same multi-satellite restore profile as above (timed out at 5s on PR #558).
   test("concurrent consolidate enqueue watermark change is preserved on restore", () => {
@@ -1050,7 +1167,7 @@ describe("executeArchivedCleanup", () => {
       "active", "tmid", "tnew", "told",
     ]);
     state.close();
-  }, { timeout: 30_000 });
+  }, { timeout: STORE_BUDGET_MS });
 });
 
 describe("listTrashEntries + restoreTrashEntry", () => {
@@ -1133,6 +1250,8 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(existsSync(join(home, ".trash", "1700000000300", "rollout-old.jsonl"))).toBe(true);
   });
 
+  // Windows CI: quarantine + multi-satellite restore (state/tools/spawn/logs remap)
+  // measured ~8s on windows-latest against Bun's default 5s harness timeout.
   test("quarantine retains satellite-backup and restores satellite + state dependents", () => {
     home = buildHome({ withSatelliteStores: true, withDynamicTools: true, withSpawnEdges: true });
     // 100%: spawn edge told→tmid stays inside the delete set (cross-boundary edges refuse cleanup).
@@ -1171,7 +1290,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     const logs = new Database(join(home, "logs_3.sqlite"), { readonly: true });
     expect(logs.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id='told'").get()).toEqual({ n: 1 });
     logs.close();
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("rejects malformed satellite-backup.json without destroying trash", () => {
     home = buildHome();
@@ -1441,7 +1560,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
       has_user_event: 1,
       archived: 1,
     });
-  });
+  }, { timeout: STORE_BUDGET_MS });
 
   test.each([
     ["failAfterStateCommit", { failAfterStateCommit: true }, "db_reconcile_failed"],
@@ -1498,7 +1617,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
       expect(logsAfter.query("SELECT COUNT(*) AS n FROM logs WHERE thread_id='told'").get()).toEqual({ n: 1 });
       logsAfter.close();
     },
-    { timeout: 20_000 },
+    { timeout: STORE_BUDGET_MS },
   );
 
   test("late failure after logs commit keeps metadata, persists pending sections, and resume preserves pre-existing rows", () => {
@@ -1602,7 +1721,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
       goals.query("SELECT COUNT(*) AS n FROM thread_goals WHERE thread_id IN ('told','tmid','tnew')").get(),
     ).toEqual({ n: 2 }); // fixture seeds told+tmid only
     goals.close();
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("leftover-stage failure never restages files and retry accepts destinations", () => {
     // Regression for reverse-move failure after metadata compensation: restage
@@ -1660,7 +1779,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
       logsAfter.query("SELECT ts, target FROM logs WHERE id=1").get(),
     ).toEqual({ ts: 42, target: "pre" });
     logsAfter.close();
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("initial restore-pending write failure moves no files", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1684,7 +1803,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(retried.ok).toBe(true);
     expect(retried.count).toBe(3);
     expect(existsSync(stage)).toBe(false);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("interrupted pending update preserves the previous valid marker", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1721,7 +1840,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(retried.ok).toBe(true);
     expect(retried.error).toBeUndefined();
     expect(existsSync(stage)).toBe(false);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("crash after file move retries without dest_exists or fs_failed", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1747,7 +1866,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(retried.error).not.toBe("fs_failed");
     expect(retried.count).toBe(3);
     expect(existsSync(stage)).toBe(false);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("mid-move failure keeps placed dest, marker, and resumes without dest_exists", () => {
     // First rename succeeds, second throws. Do not reverse the first file or drop
@@ -1801,7 +1920,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(true);
     expect(existsSync(join(home, "archived_sessions", "rollout-mid.jsonl"))).toBe(true);
     expect(existsSync(join(home, "archived_sessions", "rollout-new.jsonl"))).toBe(true);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("malformed restore-pending.json is not treated as a fresh restore", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1819,7 +1938,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(existsSync(join(stage, "rollout-old.jsonl"))).toBe(true);
     expect(existsSync(join(home, "archived_sessions", "rollout-old.jsonl"))).toBe(false);
     expect(readFileSync(join(stage, "restore-pending.json"), "utf8")).toBe("{not-valid-json");
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("resume with owed satellite sections and missing backup fails closed", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1850,7 +1969,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(failed.error).toBe("db_reconcile_failed");
     expect(existsSync(stage)).toBe(true);
     expect(existsSync(join(stage, "manifest.json"))).toBe(true);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("resume with owed logs section but missing logs in backup fails closed", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1881,7 +2000,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(existsSync(stage)).toBe(true);
     expect(existsSync(join(stage, "manifest.json"))).toBe(true);
     expect(existsSync(join(stage, "restore-pending.json"))).toBe(true);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("failed tombstone rename keeps stage recoverable and listed", () => {
     home = buildHome();
@@ -1905,7 +2024,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     expect(retried.ok).toBe(true);
     expect(existsSync(stage)).toBe(false);
     expect(listTrashEntries(home)).toEqual([]);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("tombstone delete failure reports success without phantom trash entry", () => {
     home = buildHome();
@@ -1925,7 +2044,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     const trashRoot = join(home, ".trash");
     const tombstones = readdirSync(trashRoot).filter(n => n.startsWith(".tombstone-"));
     expect(tombstones.length).toBe(1);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("cleanup rejects overlap with accepted restore-pending destinations after state-commit failure", () => {
     home = buildHome({ withSatelliteStores: true });
@@ -1961,7 +2080,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
     const retry = restoreTrashEntry(trashId, { codexHome: home });
     expect(retry.ok).toBe(true);
     expect(existsSync(join(home, restoredRel))).toBe(true);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("cleanup rejects overlap with accepted restore-pending destinations after file-move failure", () => {
     home = buildHome();
@@ -1996,7 +2115,7 @@ describe("listTrashEntries + restoreTrashEntry", () => {
 
     const retry = restoreTrashEntry(trashId, { codexHome: home });
     expect(retry.ok).toBe(true);
-  }, { timeout: 20_000 });
+  }, { timeout: STORE_BUDGET_MS });
 
   test("percent preview backfills past pending oldest archive for manual cleanup", () => {
     home = buildHome();

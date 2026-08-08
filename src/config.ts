@@ -1,8 +1,25 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, truncateSync, unlinkSync, writeFileSync, chmodSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
+import {
+  bumpConfigGenerationAtPath,
+  bumpCurrentConfigGeneration,
+  initializeConfigGeneration,
+  observeConfigGenerationAtPath,
+  readConfigGenerationAtPath,
+  readConfigGenerationInTransaction,
+  type ConfigGenerationObservation,
+} from "./codex/generation";
+import type {
+  BumpConfigGeneration,
+  ConfigGeneration,
+  ReadConfigGeneration,
+  WithExpectedConfigGenerationSync,
+} from "./codex/convergence-types";
 import {
   CODEX_ACCOUNT_NAMESPACE_COMBO_ALIAS_COLLISION_ERROR,
   codexAccountNamespaceForModel,
@@ -10,23 +27,51 @@ import {
   isValidCodexAccountNamespaceTarget,
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
+import { isCodexAccountPriorityKey } from "./codex/account-priority";
+import { UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD } from "./codex/upstream-host-health";
+import { parseAccountPriority } from "./codex/pool-rotation";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
-import { hardenSecretDir, hardenSecretPath, hardenSecretPathAsync } from "./lib/windows-secret-acl";
+import { routingProfileIssues } from "./routing/profile";
+import { POLICY_NAMESPACE } from "./routing/profile-namespace";
+import {
+  forgetEphemeralSecretPath,
+  hardenSecretDir,
+  hardenSecretPath,
+  hardenSecretPathAsync,
+  windowsSecretAclApplies,
+} from "./lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
+import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
+import { isLocalAttestationSecret } from "./lib/local-management-attestation";
 import { providerDestinationConfigError } from "./lib/destination-policy";
+import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
   isWirePinnedModel,
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
+  pinnedWireAdapter,
   REASONING_SUMMARY_DELIVERY_VALUES,
   type OcxClaudeCodeConfig,
   type OcxConfig,
+  type OcxApiKeyEntry,
   type OcxProviderConfig,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import {
+  getProviderRegistryEntry,
+  providerMatchesRegistryTransport,
+  providerModelWireDefault,
+} from "./providers/registry";
+import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
 import { isCodexReasoningEffort, modelRecordValue } from "./reasoning-effort";
+import {
+  DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES,
+  MAX_APP_OWNED_MEMORY_BUDGET_MB,
+  MIN_APP_OWNED_MEMORY_BUDGET_MB,
+} from "./lib/app-owned-memory";
+import { isHostedToolUnsupportedForModel } from "./responses/hosted-tool-policy";
 
 let _atomicSeq = 0;
 
@@ -89,24 +134,92 @@ function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+/**
+ * Resolve a write target through any symlink before the temp+rename dance.
+ *
+ * rename(2) replaces a directory ENTRY. When the entry is itself a symlink
+ * (a dotfiles-managed `~/.codex/config.toml` -> `~/dotfiles/.codex/config.toml`,
+ * say), renaming a sibling temp file over it destroys the link and leaves a plain
+ * file behind — the repo silently stops receiving writes. Resolving first puts both
+ * the temp file and the rename target inside the link's real directory, so the entry
+ * being replaced is the real file and the symlink survives.
+ *
+ * Same-filesystem atomicity is preserved because the temp file stays beside its
+ * resolved target. A genuinely absent destination (not yet created) falls back to
+ * the literal path, which is the correct target for a first write.
+ *
+ * An EXISTING symlink that cannot be resolved — dangling because its target volume
+ * is unmounted, an ELOOP chain, an EACCES parent — is refused instead. Falling back
+ * to the literal path there would let the rename replace the link, recreating the
+ * exact dotfiles-divergence failure this helper exists to prevent (audit: wt4 wp2).
+ */
+export function resolveWriteTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (cause) {
+    let entry;
+    try {
+      entry = lstatSync(path);
+    } catch (error) {
+      if (isMissingPathError(error)) return path; // no entry at all — first write
+      throw error;
+    }
+    if (entry.isSymbolicLink()) {
+      throw new Error(`refusing to replace unresolvable symlinked write target: ${path}`, { cause });
+    }
+    return path;
+  }
+}
+
+/**
+ * Re-apply the real-home guard to a RESOLVED write target.
+ *
+ * Callers such as saveConfig check only their logical config dir, which passes when
+ * OPENCODEX_HOME points at a temp fixture. Following a symlink out of that fixture
+ * would land on the protected home the caller's own check just cleared, so the guard
+ * has to run again on wherever the write actually terminates. Inert in production,
+ * where the guard is disarmed.
+ */
+function assertResolvedTargetAllowed(path: string, target: string): void {
+  // The file itself may resolve literally while its PARENT is a symlink out
+  // of the fixture (a first write beneath a symlinked config dir). Guard the
+  // directory the write actually lands in either way.
+  if (target === path) {
+    let realParent: string;
+    try {
+      realParent = realpathSync(dirname(target));
+    } catch {
+      return; // unresolvable parent: resolveWriteTarget already owns that refusal
+    }
+    if (realParent !== dirname(target)) assertNotRealHomeUnderTest(realParent);
+    return;
+  }
+  assertNotRealHomeUnderTest(dirname(target));
+}
+
 export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO = {
   write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
   harden: target => {
     try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-    if (process.platform === "win32") hardenSecretPath(target, { required: true });
+    // Timeout memo keyed by the stable destination (matches the async writer):
+    // a failed temp harden must not mint a new unique-temp key on every write.
+    if (process.platform === "win32") hardenSecretPath(target, { required: true, timeoutMemoKey: path });
   },
   rename: renameAtomicFile,
   truncate: target => truncateSync(target, 0),
   unlink: unlinkSync,
 }): void {
   recordOwnedConfigPath(resolveConfigDir(), path);
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     io.write(tmp, content);
     io.harden(tmp);
     hardened = true;
-    io.rename(tmp, path);
+    io.rename(tmp, target);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -133,6 +246,7 @@ export function atomicWriteFile(path: string, content: string, io: AtomicWriteIO
     if (!removed && !hardened) {
       try { io.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -145,6 +259,11 @@ export interface AtomicWriteAsyncIO {
   rename: (source: string, destination: string) => void | Promise<void>;
   truncate: (path: string) => void | Promise<void>;
   unlink: (path: string) => void | Promise<void>;
+}
+
+/** Test-only crash seam. Production callers leave this undefined. */
+export interface AtomicWriteAsyncTestSeam {
+  afterTempWrite?: (tempPath: string) => void | Promise<void>;
 }
 
 async function renameAtomicFileAsync(source: string, destination: string): Promise<void> {
@@ -171,6 +290,7 @@ export async function atomicWriteFileAsync(
   path: string,
   content: string,
   io?: AtomicWriteAsyncIO,
+  testSeam?: AtomicWriteAsyncTestSeam,
 ): Promise<void> {
   const effective: AtomicWriteAsyncIO = io ?? {
     write: (target, value) => writeFileSync(target, value, { encoding: "utf-8", mode: 0o600 }),
@@ -184,13 +304,17 @@ export async function atomicWriteFileAsync(
     truncate: target => truncateSync(target, 0),
     unlink: unlinkSync,
   };
-  const tmp = `${path}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
+  const target = resolveWriteTarget(path);
+  assertResolvedTargetAllowed(path, target);
+  const tmp = `${target}.ocx.${process.pid}.${++_atomicSeq}.tmp`;
   let hardened = false;
   try {
     await effective.write(tmp, content);
+    await testSeam?.afterTempWrite?.(tmp);
     await effective.harden(tmp);
     hardened = true;
-    await effective.rename(tmp, path);
+    await effective.rename(tmp, target);
+    forgetEphemeralSecretPath(tmp);
   } catch (cause) {
     let scrubbed = false;
     try {
@@ -217,6 +341,7 @@ export async function atomicWriteFileAsync(
     if (!removed && !hardened) {
       try { await effective.harden(tmp); hardened = true; } catch { /* zero-byte residual is reported honestly */ }
     }
+    if (removed) forgetEphemeralSecretPath(tmp);
     if (!removed) throw new AtomicWriteResidualTempError(tmp, hardened, { cause });
     throw cause;
   }
@@ -291,7 +416,10 @@ export function backupConfigBeforeOpenAiTierMigration(
     write: (target, bytes) => writeFileSync(target, bytes),
     harden: target => {
       try { chmodSync(target, 0o600); } catch { /* platform may ignore chmod */ }
-      if (process.platform === "win32") hardenSecretPath(target, { required: true });
+      // Soft-fail: a wedged/failed icacls on CI temp volumes must not abort
+      // startServer mid-suite (timeout + EBUSY cascade on shared TEST_DIR).
+      // chmod above still applies; live credential writes keep required:true.
+      if (process.platform === "win32") hardenSecretPath(target, { required: false });
     },
     publishNoReplace: (temp, backup) => linkSync(temp, backup),
     truncate: target => truncateSync(target, 0),
@@ -330,7 +458,6 @@ export function backupConfigBeforeOpenAiTierMigration(
 
   const scrubUnpublishedTemp = (): void => {
     cleanupAttempted = true;
-    if (!io.exists(temp)) return;
     let scrubbed = false;
     try {
       io.truncate(temp);
@@ -346,14 +473,19 @@ export function backupConfigBeforeOpenAiTierMigration(
       io.unlink(temp);
       removed = true;
     } catch (error) {
-      if (isMissingPathError(error) || !io.exists(temp)) removed = true;
+      if (isMissingPathError(error)) {
+        removed = true;
+      }
       else {
         try { io.unlink(temp); removed = true; }
         catch (retryError) {
-          if (isMissingPathError(retryError) || !io.exists(temp)) removed = true;
+          if (isMissingPathError(retryError)) {
+            removed = true;
+          }
         }
       }
     }
+    if (removed) forgetEphemeralSecretPath(temp);
     if (!removed && !scrubbed) throw new OpenAiTierBackupSecretResidualError(temp);
     if (!removed) throw new OpenAiTierBackupCleanupError();
   };
@@ -374,10 +506,18 @@ export function backupConfigBeforeOpenAiTierMigration(
     published = true;
     try {
       io.unlink(temp);
-    } catch {
-      try {
+      forgetEphemeralSecretPath(temp);
+    } catch (firstError) {
+      if (isMissingPathError(firstError)) {
+        forgetEphemeralSecretPath(temp);
+      } else try {
         io.unlink(temp);
-      } catch {
+        forgetEphemeralSecretPath(temp);
+      } catch (secondError) {
+        if (isMissingPathError(secondError)) {
+          forgetEphemeralSecretPath(temp);
+          return "created";
+        }
         // temp and backup are hard links to the same inode. Roll back the backup
         // link before any truncation so the downgrade snapshot is never zeroed.
         try { io.unlink(backup); } catch { throw new OpenAiTierBackupRollbackError(); }
@@ -429,22 +569,72 @@ function resolveRuntimePortPath(): string {
 }
 
 const warnedConfigFallbacks = new Set<string>();
+let lastWarningReconciledGeneration = 0;
 
+export function reconcileConfigWarningMemos(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = warnedConfigFallbacks.size;
+  warnedConfigFallbacks.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
+
+/**
+ * Bounds for the opt-in same-target 429 wait-and-retry policy. Single source of truth
+ * shared by the config schema, the load-time sanitizer, and the management write
+ * boundary. Strict, so an unknown key is rejected at every validation boundary instead
+ * of being silently ignored (the load-time sanitizer still degrades unknown keys with a
+ * warning before schema validation, so hand-edited configs keep loading).
+ */
+const retryOn429PolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  attempts: z.number().int().min(1).max(20).optional(),
+  intervalMs: z.number().int().min(100).max(600_000).optional(),
+  // The effective cap for a single wait is MAX_COOLDOWN_MS (10 min) in key-failover.ts;
+  // larger configured values would be dead config.
+  maxIntervalMs: z.number().int().min(100).max(600_000).optional(),
+  respectRetryAfter: z.boolean().optional(),
+}).strict();
+
+/**
+ * Zod schema for one provider entry: known fields are validated strictly while unknown
+ * fields pass through (preserved for runtime extensions).
+ */
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  mcpMaxTools: z.number().int().positive().optional(),
+  mcpMaxSchemaBytes: z.number().int().positive().optional(),
+  mcpMaxResultBytes: z.number().int().positive().optional(),
   apiKeyTransport: z.enum(["x-api-key", "bearer"]).optional(),
   responsesPath: z.string().min(1).optional(),
+  statelessResponses: z.boolean().optional(),
+  supportsServiceTier: z.boolean().optional(),
+  preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  retryOn429: retryOn429PolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),
     reasoning: z.array(z.string().min(1)).optional(),
     repairMissingTerminalIds: z.boolean().optional(),
+    repairInvalidIds: z.boolean().optional(),
   }).strict().optional(),
+  responsesSnapshotRepair: z.boolean().optional(),
 }).passthrough();
 
-const RESERVED_PROVIDER_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+const RESERVED_PROVIDER_NAMES = new Set([
+  // JavaScript prototype-pollution guards.
+  "__proto__",
+  "prototype",
+  "constructor",
+  // System-reserved routing namespace (resolved before provider/account
+  // namespaces in routeModelInternal). "combo" is intentionally NOT reserved:
+  // a physical provider named `combo` is a supported pattern (combo aliases
+  // hosted on the combo provider), and the combo selector only wins when an
+  // actual combo id matches.
+  "policy",
+]);
 const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const SENSITIVE_PROVIDER_HEADERS = new Set([
@@ -584,6 +774,100 @@ export function reasoningSummaryDeliveryRecordConfigError(
   return null;
 }
 
+const SUPPORTED_PREFERRED_HOSTED_TOOLS = new Set(["image_generation"]);
+
+export function modelPreferHostedToolsConfigError(
+  value: unknown,
+  field: string,
+  providerName: string,
+  provider: { adapter?: unknown; authMode?: unknown; modelAdapters?: unknown; baseUrl?: unknown },
+): string | null {
+  if (value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return `${field} must be a plain object`;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return `${field} must be a plain object with own properties`;
+  const entries = Object.entries(value);
+  const registry = getProviderRegistryEntry(providerName);
+  // Effective transport: a `preserveCustomDestination` registry row reused under a
+  // different endpoint keeps its own adapter AND its own auth at runtime, because
+  // `routedProviderConfig()` honors `providerMatchesRegistryTransport()`. Both the
+  // wire check below and the forward-auth check here have to start from the same
+  // decision, or validation accepts a preference the adapter never applies —
+  // `preferConfiguredHostedTools()` runs only on the non-forward branch.
+  const registryTransportMatches = typeof provider.baseUrl === "string"
+    && providerMatchesRegistryTransport(providerName, {
+      baseUrl: provider.baseUrl,
+      adapter: provider.adapter as OcxProviderConfig["adapter"],
+      ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+    });
+  const effectiveForwardAuth = registryTransportMatches
+    ? registry?.authKind === "forward"
+    : provider.authMode === "forward";
+  if (entries.length > 0 && effectiveForwardAuth) {
+    return `${field} is not supported on forward-auth Responses providers`;
+  }
+  const requestedWireFor = (modelId: string): unknown => provider.modelAdapters
+    && typeof provider.modelAdapters === "object"
+    && !Array.isArray(provider.modelAdapters)
+    ? (provider.modelAdapters as Record<string, unknown>)[modelId]
+    : undefined;
+  const resolveEffectiveWire = (modelId: string, currentWire: unknown): unknown => {
+    const pinned = pinnedWireAdapter(providerName, modelId);
+    if (pinned) return pinned;
+    const requestedWire = requestedWireFor(modelId);
+    if (typeof requestedWire === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(requestedWire)) {
+      return requestedWire;
+    }
+    // No explicit override: fall back to the registry's per-model wire default before
+    // the provider-wide adapter, because that is the order `resolveModelAdapter()`
+    // uses at request time (src/server/adapter-resolve.ts:38-48). Skipping it rejected
+    // preferences the runtime would have honored — DeepSeek routes `deepseek-v4-flash`
+    // over native Responses for a Responses inbound while the provider-wide wire stays
+    // openai-chat. Hosted-tool preferences only apply to Responses traffic, so the
+    // inbound to ask about is "responses".
+    const registryDefault = typeof currentWire === "string" && typeof provider.baseUrl === "string"
+      ? providerModelWireDefault(
+        providerName,
+        {
+          baseUrl: provider.baseUrl,
+          adapter: currentWire,
+          ...(typeof provider.authMode === "string" ? { authMode: provider.authMode as OcxProviderConfig["authMode"] } : {}),
+        },
+        modelId,
+        MODEL_ADAPTER_OVERRIDE_ALLOWED,
+        "responses",
+      )
+      : undefined;
+    return registryDefault ?? currentWire;
+  };
+  for (const [key, entry] of entries) {
+    if (!key.trim()) return `${field} keys must be nonblank model ids`;
+    if (!Array.isArray(entry)) return `${field}.${key} must be an array`;
+    if (entry.length === 0) return `${field}.${key} must include image_generation`;
+    for (const tool of entry) {
+      if (typeof tool !== "string" || !SUPPORTED_PREFERRED_HOSTED_TOOLS.has(tool)) {
+        return `${field}.${key} supports only image_generation`;
+      }
+      if (isHostedToolUnsupportedForModel(key, tool)) {
+        return `${field}.${key} cannot prefer ${tool}: the model does not support it`;
+      }
+    }
+    // Same `registryTransportMatches` decision the forward-auth check above uses:
+    // start from the registry adapter only when this config still points at the
+    // registry's documented transport.
+    const baseWire = registryTransportMatches ? registry?.adapter ?? provider.adapter : provider.adapter;
+    let effectiveWire = resolveEffectiveWire(key, baseWire);
+    const virtualWireModel = resolveOpenAiVirtualModel(providerName, key)?.wireModelId;
+    if (virtualWireModel && virtualWireModel !== key) {
+      effectiveWire = resolveEffectiveWire(virtualWireModel, effectiveWire);
+    }
+    if (effectiveWire !== "openai-responses") {
+      return `${field}.${key} requires the openai-responses wire`;
+    }
+  }
+  return null;
+}
+
 /**
  * Validate a provider's per-model wire override map (#404).
  *
@@ -665,8 +949,92 @@ const codexAccountNamespacesSchema = z.custom<Record<string, unknown>>(
   }
 }).pipe(z.record(z.string(), z.string()));
 
+const CODEX_ACCOUNT_PRIORITIES_RECORD_ERROR =
+  "codexAccountPriorities must be a plain object mapping Codex account ids to selection-order integers";
+const CODEX_ACCOUNT_PRIORITY_KEY_ERROR =
+  "selection-order keys must be a Codex pool-account id or the main Codex account and cannot be reserved JavaScript object keys";
+const CODEX_ACCOUNT_PRIORITY_VALUE_ERROR =
+  "selection order must be an integer between -100 and 100";
+
+const CODEX_ACCOUNT_PIN_PATTERN = /^[a-zA-Z0-9._-]{1,64}$/;
+
+const codexAccountPrioritiesSchema = z.custom<Record<string, unknown>>(
+  (value): value is Record<string, unknown> => !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null),
+  { error: CODEX_ACCOUNT_PRIORITIES_RECORD_ERROR },
+).superRefine((priorities, ctx) => {
+  // Inspect raw own entries before z.record parses them; Zod omits __proto__ record keys.
+  for (const [accountId, priority] of Object.entries(priorities)) {
+    if (!isCodexAccountPriorityKey(accountId)) {
+      ctx.addIssue({ code: "custom", path: [accountId], message: CODEX_ACCOUNT_PRIORITY_KEY_ERROR });
+    }
+    if (parseAccountPriority(priority) === null) {
+      ctx.addIssue({ code: "custom", path: [accountId], message: CODEX_ACCOUNT_PRIORITY_VALUE_ERROR });
+    }
+  }
+}).pipe(z.record(z.string(), z.number().int()));
+
+/**
+ * Deliberately permissive. A user's config is not ours to invalidate: a strict
+ * entry fails the whole parse, and loadConfig's fallback then backs the file up
+ * and returns defaults — losing providers and pool accounts because one key name
+ * was too long. Length and charset rules live at the POST/PATCH boundary, where
+ * rejecting produces a 400 instead. `.passthrough()` keeps unknown per-key
+ * properties across a load -> mutate -> save round trip.
+ *
+ * Only `key` is load-bearing: admission compares that string and nothing else
+ * (src/server/auth-cors.ts isDataPlaneAdmissionSecret). So the secret is the one
+ * field that must be a usable string, and every piece of metadata around it
+ * degrades instead of taking the credential down with it. Dropping a working key
+ * because its `name` was hand-edited to a number would be a silent revocation —
+ * and on a remote bind, potentially a server that refuses to start.
+ *
+ * "Usable" matches admission exactly. The presented token is trimmed before the
+ * comparison but the stored value is not, so a key with surrounding whitespace
+ * can never match either form of itself. Keeping one would be worse than dropping
+ * it: `system-env.ts` and `cli/claude.ts` hand `apiKeys[0].key` to launched
+ * clients, so a junk first entry would mask a valid later one.
+ */
+const apiKeyEntrySchema = z.object({
+  key: z.string().refine(isUsableApiKeySecret),
+  // Degrades to "" here; every schema consumer then runs `normalizeApiKeyIds`,
+  // which fills it deterministically so the id is stable across loads.
+  id: z.string().catch(""),
+  name: z.string().catch(""),
+  createdAt: z.string().catch(""),
+}).passthrough();
+
+/**
+ * Durable per-client intent.
+ *
+ * `.passthrough()` is load-bearing: a binary that only knows `codex` must not
+ * erase a key a later version wrote during a field-scoped mutation. And each key
+ * degrades on its own — a hand edit of `{"codex": "false", "future": false}`
+ * drops `codex` to absent (which reads as ON) and keeps `future`, rather than
+ * invalidating the object or, worse, the whole config.
+ */
+const clientIntegrationsSchema = z.object({
+  codex: z.boolean().optional().catch(undefined),
+  grok: z.boolean().optional().catch(undefined),
+  "claude-desktop": z.boolean().optional().catch(undefined),
+}).passthrough();
+
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
+  managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
+  upstreamHostCircuitThreshold: z.number().int()
+    .min(0)
+    .max(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)
+    .optional()
+    .catch(undefined),
+  appOwnedMemoryBudgetMb: z.number().int()
+    .min(MIN_APP_OWNED_MEMORY_BUDGET_MB)
+    .max(MAX_APP_OWNED_MEMORY_BUDGET_MB)
+    .default(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024))
+    .catch(DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024)),
   // A blank hostname degrades to undefined rather than failing the parse. `getDefaultConfig()`
   // carries no `hostname` key, so the backup-and-defaults repair path below cannot merge one
   // away — a hand-edited `"hostname": ""` would fail twice and reset providers/apiKeys to
@@ -674,9 +1042,21 @@ const configSchema = z.object({
   // is safe: startServer() already falls back to 127.0.0.1 for a missing hostname. Write-time
   // rejection lives in validateConfigCandidate() so bad values still surface to the caller.
   hostname: z.string().trim().min(1).optional().catch(undefined),
+  // Discriminated on `enabled` so a disabled entry cannot be forced to carry a port, and an
+  // enabled one cannot omit it (#1102). A malformed value degrades to undefined rather than
+  // failing the whole parse: this is an opt-in convenience surface, and a hand-edit typo here
+  // must never reset providers/apiKeys through the backup-and-defaults repair path.
+  unauthenticatedLoopbackListener: z.union([
+    z.object({ enabled: z.literal(false) }),
+    z.object({ enabled: z.literal(true), port: z.number().int().min(1).max(65535) }),
+  ]).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  // Invalid hand edits must not discard an otherwise usable config. Treat them as
+  // pre-migration so startup can safely re-run the one-time normalization.
+  googleAntigravityStaticCatalogVersion: z.literal(1).optional().catch(undefined),
+  clientIntegrations: clientIntegrationsSchema.optional().catch(undefined),
   providerContextCaps: z.record(z.string(), z.number().int().positive()).optional(),
   contextCapValue: z.number().int().positive().optional(),
   multiAgentGuidanceEnabled: z.boolean().optional(),
@@ -690,12 +1070,42 @@ const configSchema = z.object({
   codexShimAutoRestore: z.boolean().optional(),
   pausedCodexAccountIds: z.array(z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/)).optional(),
   codexAccountNamespaces: codexAccountNamespacesSchema.optional(),
+  // Selection order is a preference, not a safety control like pause: a malformed
+  // map degrades to "no ordering" rather than failing the parse, so a hand-edited
+  // typo cannot trip the backup-and-defaults repair path and wipe providers or
+  // pool accounts. Warning emitted in loadConfig.
+  codexAccountPriorities: codexAccountPrioritiesSchema.optional().catch(undefined),
+  activeCodexAccountPinned: z.string().regex(CODEX_ACCOUNT_PIN_PATTERN).optional().catch(undefined),
+  // A malformed hand edit must degrade to false without discarding providers, accounts,
+  // or the exact selector map. Live writes remain strict.
+  codexAccountPickerEnabled: z.boolean().optional().catch(false),
   // Model ids excluded from the Grok Build managed block (dashboard switches).
   grokExcludedModels: z.array(z.string()).optional(),
   // Invalid values degrade to undefined ("auto") instead of failing the whole
   // parse: a hand-edited typo must never trip the backup-and-defaults repair
   // path below and wipe providers/pool accounts. Warning emitted in loadConfig.
   streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional().catch(undefined),
+  // Same degrade-don't-reject rationale as the fields above: a hand-edited
+  // non-string must not trip the backup-and-defaults repair path. Unset then
+  // takes the canonical sideband path (src/server/live.ts normalizeSidebandRoot).
+  experimentalRealtimeWsBaseUrl: z.string().optional().catch(undefined),
+  // Salvage element by element, and never fail the parse. Two spellings were
+  // measured on this zod version and both lose data:
+  //   `z.array(entry).catch(undefined)` -> one bad entry discards EVERY key
+  //   `z.array(z.unknown())`            -> a non-array value still raises
+  //                                        invalid_type, reaching the
+  //                                        backup-and-defaults repair path
+  // Starting from `unknown` is what makes both survivable. A key the user still
+  // has deployed must not be collateral damage for one bad neighbour, and on a
+  // remote bind an emptied array is worse than cosmetic: assertServerAuthConfig
+  // refuses to start without a data credential.
+  apiKeys: z.unknown().optional().transform(value => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) return undefined;
+    return value
+      .filter(row => apiKeyEntrySchema.safeParse(row).success)
+      .map(row => apiKeyEntrySchema.parse(row) as OcxApiKeyEntry);
+  }),
 }).passthrough().superRefine((config, ctx) => {
   const claudeCode = (config as { claudeCode?: unknown }).claudeCode;
   if (claudeCode !== undefined && (!claudeCode || typeof claudeCode !== "object" || Array.isArray(claudeCode))) {
@@ -721,6 +1131,7 @@ const configSchema = z.object({
     const configuredProviderNamespaces = new Set([
       COMBO_NAMESPACE,
       OPENAI_CODEX_PROVIDER_ID,
+      POLICY_NAMESPACE,
       ...Object.keys(config.providers),
     ].map(codexProviderNamespaceKey));
     const namespaceTargets = new Set(
@@ -732,7 +1143,7 @@ const configSchema = z.object({
         ctx.addIssue({
           code: "custom",
           path: ["codexAccountNamespaces", namespace],
-          message: "account selectors must not collide with configured provider or combo namespaces",
+          message: "account selectors must not collide with configured provider, combo, or routing policy namespaces",
         });
       }
       if (configuredAccountIds.has(namespace) || namespaceTargets.has(namespace)) {
@@ -749,7 +1160,7 @@ const configSchema = z.object({
       ctx.addIssue({
         code: "custom",
         path: ["providers", name],
-        message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys",
+        message: "provider names must use letters, numbers, dot, underscore, or hyphen and cannot be reserved JavaScript object keys or routing namespaces (policy)",
       });
     }
     const provider = config.providers[name];
@@ -826,6 +1237,19 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", name, "modelAdapters"],
         message: modelAdaptersError,
+      });
+    }
+    const preferHostedToolsError = modelPreferHostedToolsConfigError(
+      (provider as { modelPreferHostedTools?: unknown }).modelPreferHostedTools,
+      "modelPreferHostedTools",
+      name,
+      provider,
+    );
+    if (preferHostedToolsError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", name, "modelPreferHostedTools"],
+        message: preferHostedToolsError,
       });
     }
     const maxInputError = positiveIntegerRecordConfigError(
@@ -938,6 +1362,27 @@ const configSchema = z.object({
       }
     }
   }
+  const routingProfiles = (config as { routingProfiles?: unknown }).routingProfiles;
+  if (routingProfiles !== undefined) {
+    if (!routingProfiles || typeof routingProfiles !== "object" || Array.isArray(routingProfiles)) {
+      ctx.addIssue({ code: "custom", path: ["routingProfiles"], message: "routingProfiles must be an object" });
+    } else {
+      for (const [id, raw] of Object.entries(routingProfiles as Record<string, unknown>)) {
+        for (const issue of routingProfileIssues(id, raw, {
+          providers: config.providers,
+          combos: combos as Record<string, import("./types").OcxComboConfig> | undefined,
+          routingProfiles: routingProfiles as Record<string, import("./types").OcxRoutingProfileConfig>,
+          codexAccountNamespaces: accountNamespaces,
+        }, { excludeProfileId: id })) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["routingProfiles", id, ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
+    }
+  }
 });
 
 /**
@@ -969,6 +1414,9 @@ export function getRuntimePortPath(): string {
 
 export function hardenConfigDir(): void {
   const dir = getConfigDir();
+  // The guard runs BEFORE any mutation: refusing the write after chmod/ACL
+  // would already have changed the protected directory (review round 2).
+  assertNotRealHomeUnderTest(dir);
   if (existsSync(dir)) {
     try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
     if (process.platform === "win32") {
@@ -999,6 +1447,96 @@ function warnDegradedStreamMode(rawParsed: unknown, validated: OcxConfig): void 
 }
 
 /**
+ * Load-time degradation for `retryOn429` (loadConfig only): one hand-edited invalid optional
+ * field (e.g. `attempts: 0` or a string) must not trip the whole provider schema and hide every
+ * provider/key behind a default config. Invalid fields are dropped with a warning; the management
+ * write boundary still rejects invalid policies explicitly.
+ */
+function sanitizeRetryOn429ForLoad(parsed: unknown): void {
+  if (!parsed || typeof parsed !== "object") return;
+  const root = parsed as Record<string, unknown>;
+  const providers = root.providers;
+  if (!providers || typeof providers !== "object" || Array.isArray(providers)) return;
+  for (const [name, provider] of Object.entries(providers as Record<string, unknown>)) {
+    // This sanitizer runs BEFORE schema validation, so the provider name is untrusted: redact
+    // secret-shaped names and JSON-escape control characters before it reaches any warning.
+    const safeProviderName = JSON.stringify(redactSecretString(name));
+    if (!provider || typeof provider !== "object" || Array.isArray(provider)) continue;
+    const p = provider as Record<string, unknown>;
+    const policy = p.retryOn429;
+    if (policy === undefined) continue;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+      delete p.retryOn429;
+      // Never serialize the value: an accidental `retryOn429: "sk-..."` would leak the secret.
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 (${typeof policy}) is invalid — ignoring the policy`);
+      continue;
+    }
+    const policyRecord = policy as Record<string, unknown>;
+    // An explicitly present but invalid master switch must not silently default to ENABLED:
+    // drop the whole policy so a hand-edit that tried to disable retries stays disabled.
+    if ("enabled" in policyRecord && typeof policyRecord.enabled !== "boolean") {
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.enabled (${typeof policyRecord.enabled}) is invalid — ignoring the whole policy`);
+      continue;
+    }
+    // Field checks derive from the shared policy schema so the bounds cannot drift
+    // between the load-time sanitizer, the config schema, and the write boundary.
+    const policyShape = retryOn429PolicySchema.shape;
+    const hadPolicyEntries = Object.keys(policyRecord).length > 0;
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, fieldSchema] of Object.entries(policyShape)) {
+      const value = policyRecord[key];
+      if (value === undefined) continue;
+      if (fieldSchema.safeParse(value).success) cleaned[key] = value;
+      // Log only the received type, never the value (provider config can hold secrets).
+      else console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${key} (${typeof value}) is invalid — ignoring the field`);
+    }
+    const knownKeys = new Set(Object.keys(policyShape));
+    for (const key of Object.keys(policyRecord)) {
+      if (!knownKeys.has(key)) {
+        // Redact the field NAME before logging: a malformed hand-edit can place a secret in a
+        // property name (`retryOn429: { "sk-...": true }`). Ordinary typos (e.g. `attempt`)
+        // stay readable, secret-shaped names become [REDACTED]. JSON-escape afterwards so a
+        // control-character property name (newline/ANSI) can never forge a log line.
+        console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429.${JSON.stringify(redactSecretString(key))} is not a recognized field — ignoring it`);
+      }
+    }
+    if (hadPolicyEntries && Object.keys(cleaned).length === 0) {
+      // Every supplied field was invalid: drop the whole policy. Persisting `{}` here would
+      // opt IN to retries with defaults, which is the opposite of what a malformed
+      // disable-oriented edit (`retryOn429: { enabled: "false" }`, `attempts: 0`) asked for.
+      delete p.retryOn429;
+      console.warn(`⚠️  config.json providers.${safeProviderName}.retryOn429 has no valid fields left — removing the policy (an empty policy would enable retries with defaults)`);
+    } else {
+      // Preserve an intentionally empty `retryOn429: {}` (presence = opt-in with defaults).
+      p.retryOn429 = cleaned;
+    }
+  }
+}
+
+/**
+ * Management write-boundary validation for `retryOn429` (fail closed). Unlike the
+ * lenient load-time sanitizer, invalid values and unknown keys are rejected outright so
+ * a POST/PATCH cannot persist a policy the proxy would then silently degrade. Reuses the
+ * shared policy schema. Never echoes values, and secret-shaped unknown field names are
+ * redacted (a malformed write can place a secret in a property name).
+ */
+export function retryOn429PolicyConfigError(policy: unknown): string | null {
+  if (policy === undefined) return null;
+  const result = retryOn429PolicySchema.safeParse(policy);
+  if (result.success) return null;
+  const first = result.error.issues[0];
+  if (!first) return "retryOn429 is invalid";
+  if (first.code === "unrecognized_keys") {
+    const names = first.keys.map(key => JSON.stringify(redactSecretString(key))).join(", ");
+    return `retryOn429 has unrecognized field${first.keys.length > 1 ? "s" : ""}: ${names}`;
+  }
+  if (first.path.length === 0) return `retryOn429 is invalid (${first.message})`;
+  const field = String(first.path[first.path.length - 1]);
+  return `retryOn429.${field} is invalid (${first.message})`;
+}
+
+/**
  * Companion to {@link warnDegradedStreamMode} for a blank persisted `hostname`. The bind
  * falls back to loopback, which is the safe direction but not what the file asked for —
  * say so once instead of silently ignoring the field.
@@ -1008,6 +1546,123 @@ function warnDegradedHostname(rawParsed: unknown, validated: OcxConfig): void {
   const raw = (rawParsed as Record<string, unknown>).hostname;
   if (raw !== undefined && validated.hostname === undefined) {
     console.warn(`⚠️  config.json hostname ${JSON.stringify(raw)} is not a usable bind address — falling back to 127.0.0.1`);
+  }
+}
+
+/**
+ * Companion to {@link warnDegradedStreamMode} for a malformed selection-order map.
+ * Priority is a preference, so the schema drops the whole map rather than failing
+ * the parse — say so once, otherwise the pool silently reverts to flat ordering.
+ */
+function degradedCodexAccountPriorityWarnings(rawParsed: unknown, validated: OcxConfig): string[] {
+  const record = rawConfigRecord(rawParsed);
+  const warnings: string[] = [];
+  // The pin degrades silently otherwise, which reads as the manual selection simply
+  // not having survived the restart.
+  if (record?.activeCodexAccountPinned !== undefined && validated.activeCodexAccountPinned === undefined) {
+    warnings.push("activeCodexAccountPinned is not a valid account id — the manually selected account is no longer pinned");
+  }
+  const raw = record?.codexAccountPriorities;
+  if (raw !== undefined && validated.codexAccountPriorities === undefined) {
+    warnings.push("codexAccountPriorities is invalid (expected account ids mapped to integers between -100 and 100) — account selection order is disabled");
+  }
+  return warnings;
+}
+
+function warnDegradedCodexAccountPriorities(rawParsed: unknown, validated: OcxConfig): void {
+  for (const warning of degradedCodexAccountPriorityWarnings(rawParsed, validated)) {
+    console.warn(`⚠️  config.json ${warning}`);
+  }
+}
+
+/**
+ * The apiKeys schema salvages entry by entry rather than failing the parse, so a
+ * dropped key is otherwise invisible — and it will not be re-saved by the next
+ * mutation. Say so out loud. Compares the raw array against the validated one,
+ * the same shape as the degrade warnings above.
+ */
+/** One definition of "usable secret", shared by the schema and the warnings. */
+function isUsableApiKeySecret(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value === value.trim();
+}
+
+/**
+ * Give every salvaged key a stable, targetable id.
+ *
+ * Pure and deterministic on purpose. Two earlier spellings were wrong: minting a
+ * UUID inside the schema transform handed out a different id on every parse, and
+ * repairing-then-writing during `loadConfig` put a file write on the read path,
+ * where it could clobber a concurrent legitimate save with a stale snapshot.
+ *
+ * So the replacement id is derived from the entry's position, which is already
+ * how the file orders these rows: same file in, same ids out, no I/O and no
+ * randomness. It is not derived from the secret — a public identifier should
+ * never be a function of key material.
+ */
+function normalizeApiKeyIds(config: OcxConfig): OcxConfig {
+  const keys = config.apiKeys;
+  if (!keys?.length) return config;
+  // Reserve every explicit id BEFORE synthesizing any, or a synthetic
+  // `salvaged-1` assigned to row 1 would push a row that legitimately owns that
+  // id onto `salvaged-2`. An id the user already has is the one thing this
+  // repair must never take away.
+  const reserved = new Set<string>();
+  for (const entry of keys) {
+    if (entry.id) reserved.add(entry.id);
+  }
+  const taken = new Set<string>(reserved);
+  const kept = new Set<string>();
+  keys.forEach((entry, index) => {
+    // The first row holding an explicit id keeps it; later collisions are the
+    // ones that move.
+    if (entry.id && !kept.has(entry.id)) {
+      kept.add(entry.id);
+      return;
+    }
+    let candidate = `salvaged-${index + 1}`;
+    let suffix = 1;
+    while (taken.has(candidate)) candidate = `salvaged-${index + 1}-${++suffix}`;
+    entry.id = candidate;
+    taken.add(candidate);
+    kept.add(candidate);
+  });
+  return config;
+}
+
+function warnDegradedApiKeys(rawParsed: unknown, validated: OcxConfig): void {
+  if (!rawParsed || typeof rawParsed !== "object") return;
+  const raw = (rawParsed as Record<string, unknown>).apiKeys;
+  if (raw === undefined) return;
+  if (!Array.isArray(raw)) {
+    console.warn(`⚠️  config.json apiKeys is not an array — ignoring it; generate a new key from the API tab`);
+    return;
+  }
+  const dropped = raw.length - (validated.apiKeys?.length ?? 0);
+  if (dropped > 0) {
+    console.warn(`⚠️  config.json apiKeys: skipped ${dropped} malformed entr${dropped === 1 ? "y" : "ies"} — the remaining keys still work`);
+  }
+  // Same-length repairs are invisible to the count above, and they are the ones
+  // that show up as a blank name or an unknown date in the dashboard. Say so.
+  const repaired = raw.filter(row => {
+    if (!row || typeof row !== "object") return false;
+    const entry = row as Record<string, unknown>;
+    // Must match the schema exactly: a row whose key is unusable was DROPPED, and
+    // saying "the key still works" about it would be a lie.
+    if (!isUsableApiKeySecret(entry.key)) return false;
+    return typeof entry.id !== "string" || !entry.id
+      || typeof entry.name !== "string"
+      || typeof entry.createdAt !== "string";
+  }).length;
+  if (repaired > 0) {
+    console.warn(`⚠️  config.json apiKeys: repaired metadata on ${repaired} entr${repaired === 1 ? "y" : "ies"} — the key still works, but its name or date may read as unknown`);
+  }
+  // A duplicate id is repaired too, and it is not visible in either count above.
+  const ids = raw.filter(row => row && typeof row === "object" && isUsableApiKeySecret((row as Record<string, unknown>).key))
+    .map(row => (row as Record<string, unknown>).id)
+    .filter((id): id is string => typeof id === "string" && !!id);
+  const duplicates = ids.length - new Set(ids).size;
+  if (duplicates > 0) {
+    console.warn(`⚠️  config.json apiKeys: ${duplicates} entr${duplicates === 1 ? "y" : "ies"} shared an id — reassigned so each key can be renamed and revoked on its own`);
   }
 }
 
@@ -1048,6 +1703,23 @@ function warnDegradedClaudeSubagentEffort(rawParsed: unknown): void {
   }
 }
 
+function malformedUpstreamHostCircuitThresholdWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `upstreamHostCircuitThreshold ignored: expected an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
+function warnDegradedUpstreamHostCircuitThreshold(rawParsed: unknown): void {
+  const warning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1075,6 +1747,18 @@ function malformedNativeSubagentFields(rawParsed: unknown): NativeSubagentPersis
 function malformedNativeSubagentFieldWarning(field: NativeSubagentPersistedField): string {
   const expected = field === "syncCodexSubagentDefaults" ? "a boolean" : "a string";
   return `${field} ignored: expected ${expected}`;
+}
+
+function malformedCodexAccountPickerWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "codexAccountPickerEnabled")) return null;
+  if (typeof raw.codexAccountPickerEnabled === "boolean") return null;
+  return "codexAccountPickerEnabled ignored: expected a boolean";
+}
+
+function warnDegradedCodexAccountPicker(rawParsed: unknown): void {
+  const warning = malformedCodexAccountPickerWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
 }
 
 function nativeSubagentSyncDisabledReason(config: OcxConfig, rawParsed?: unknown): string | null {
@@ -1118,13 +1802,18 @@ export function loadConfig(): OcxConfig {
   try {
     const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
-      const config = result.data as OcxConfig;
+      const config = normalizeApiKeyIds(result.data as OcxConfig);
       warnDegradedStreamMode(parsed, config);
       warnDegradedHostname(parsed, config);
+      warnDegradedApiKeys(parsed, config);
+      warnDegradedCodexAccountPriorities(parsed, config);
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
+      warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Schema validation failed — merge defaults into the raw object instead of
@@ -1139,10 +1828,14 @@ export function loadConfig(): OcxConfig {
     const retryResult = configSchema.safeParse(merged);
     if (retryResult.success) {
       warnConfigRepaired(configPath, result.error);
-      const config = retryResult.data as OcxConfig;
+      const config = normalizeApiKeyIds(retryResult.data as OcxConfig);
       warnDegradedHostname(parsed, config);
+      warnDegradedApiKeys(parsed, config);
+      warnDegradedCodexAccountPriorities(parsed, config);
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
+      warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Merge couldn't fix it — truly broken config
@@ -1160,6 +1853,12 @@ export type ConfigDiagnostics = {
   error: string | null;
   /** Non-fatal config concerns; absent when there are no warnings. */
   warnings?: string[];
+};
+
+type ConfigFileSnapshot = {
+  diagnostics: ConfigDiagnostics;
+  /** Exact file contents, including a possible BOM, used as the optimistic revision. */
+  raw?: string;
 };
 
 function configPlaceholderWarnings(config: OcxConfig): string[] {
@@ -1181,10 +1880,15 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   const normalized = normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, rawParsed), rawParsed);
   const warnings = configPlaceholderWarnings(normalized);
+  warnings.push(...degradedCodexAccountPriorityWarnings(rawParsed, normalized));
   if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
     warnings.push(`claudeCode.subagentEffort ignored: expected one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`);
   }
   warnings.push(...malformedNativeSubagentFields(rawParsed).map(malformedNativeSubagentFieldWarning));
+  const pickerWarning = malformedCodexAccountPickerWarning(rawParsed);
+  if (pickerWarning) warnings.push(pickerWarning);
+  const hostCircuitWarning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (hostCircuitWarning) warnings.push(hostCircuitWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -1243,31 +1947,149 @@ function claudeSubagentEffortError(value: unknown): string | null {
   return `schema_invalid: claudeCode.subagentEffort: must be one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`;
 }
 
+function appOwnedMemoryBudgetError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const budget = (value as Record<string, unknown>).appOwnedMemoryBudgetMb;
+  if (budget === undefined) return null;
+  if (typeof budget !== "number" || !Number.isInteger(budget)
+    || budget < MIN_APP_OWNED_MEMORY_BUDGET_MB || budget > MAX_APP_OWNED_MEMORY_BUDGET_MB) {
+    return `schema_invalid: appOwnedMemoryBudgetMb: must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}`;
+  }
+  return null;
+}
+
+function upstreamHostCircuitThresholdError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `schema_invalid: upstreamHostCircuitThreshold: must be an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
+/**
+ * Same reasoning as {@link blankHostnameError}, and more urgent: the read path degrades a
+ * malformed selection-order map to undefined, which on a write would drop every entry the
+ * user had accumulated and still report success. A load-time degrade leaves the raw map in
+ * the file to be repaired by hand; a degraded write erases it. One bad `ocx config set`
+ * must not cost the whole map, so a live caller is told instead.
+ */
+function codexAccountPrioritiesError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  if (raw.codexAccountPriorities !== undefined) {
+    const parsed = codexAccountPrioritiesSchema.safeParse(raw.codexAccountPriorities);
+    if (!parsed.success) {
+      return schemaDiagnosticsError(parsed.error).replace("schema_invalid: ", "schema_invalid: codexAccountPriorities.");
+    }
+  }
+  // Tested as a string rather than coerced: `String(123)` matches the id pattern, so a
+  // coercing guard waves a non-string pin through to the schema, where `.catch(undefined)`
+  // drops it and reports the write as a success — the exact silent-degrade this guards.
+  const pin = raw.activeCodexAccountPinned;
+  if (pin !== undefined && (typeof pin !== "string" || !CODEX_ACCOUNT_PIN_PATTERN.test(pin))) {
+    return "schema_invalid: activeCodexAccountPinned: must be an account id";
+  }
+  return null;
+}
+
+function googleAntigravityStaticCatalogVersionError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "googleAntigravityStaticCatalogVersion")) return null;
+  const version = raw.googleAntigravityStaticCatalogVersion;
+  if (version === undefined || version === 1) return null;
+  return "schema_invalid: googleAntigravityStaticCatalogVersion: must be 1 or omitted";
+}
+
+function codexAccountPickerEnabledError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw) return null;
+  const descriptor = Object.getOwnPropertyDescriptor(raw, "codexAccountPickerEnabled");
+  if (!descriptor) {
+    return "codexAccountPickerEnabled" in raw
+      ? "schema_invalid: codexAccountPickerEnabled: must be an own boolean data property or omitted"
+      : null;
+  }
+  if (!("value" in descriptor)) {
+    return "schema_invalid: codexAccountPickerEnabled: must be an own boolean data property or omitted";
+  }
+  const enabled = descriptor.value;
+  if (enabled === undefined || typeof enabled === "boolean") return null;
+  return "schema_invalid: codexAccountPickerEnabled: must be a boolean or omitted";
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
+/**
+ * Reject a loopback-listener port that collides with the proxy port (#1102).
+ *
+ * The schema can only check the shape of each field on its own; the two ports being distinct
+ * is a relationship between them. Letting the pair through would surface as a startup failure
+ * after the public listener already bound, which reads like an unrelated port conflict.
+ *
+ * This is write-time only, matching `blankHostnameError`: a live caller can be told the value
+ * is wrong, whereas a hand-edited config on the read path degrades to undefined rather than
+ * resetting the whole file.
+ */
+function loopbackListenerPortError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const listener = (value as Record<string, unknown>).unauthenticatedLoopbackListener;
+  if (listener === undefined) return null;
+  if (!listener || typeof listener !== "object" || Array.isArray(listener)) {
+    return "schema_invalid: unauthenticatedLoopbackListener: must be an object or omitted";
+  }
+  const entry = listener as Record<string, unknown>;
+  // `enabled` must be a real boolean. The schema's `.catch(undefined)` would otherwise DELETE
+  // a `"true"` string entry and report success, leaving an operator convinced they enabled an
+  // unauthenticated listener that is in fact off. Load-time still degrades quietly — a hand
+  // edit must not reset the file — but a live caller gets told.
+  if (typeof entry.enabled !== "boolean") {
+    return "schema_invalid: unauthenticatedLoopbackListener.enabled: must be a boolean";
+  }
+  if (entry.enabled !== true) return null;
+  const listenerPort = entry.port;
+  if (typeof listenerPort !== "number" || !Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must be an integer port when enabled";
+  }
+  const proxyPort = (value as Record<string, unknown>).port;
+  if (typeof proxyPort === "number" && proxyPort === listenerPort) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must differ from the proxy port";
+  }
+  return null;
+}
+
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
-  const boundaryError = blankHostnameError(value) ?? claudeSubagentEffortError(value);
+  const boundaryError = blankHostnameError(value)
+    ?? claudeSubagentEffortError(value)
+    ?? appOwnedMemoryBudgetError(value)
+    ?? upstreamHostCircuitThresholdError(value)
+    ?? googleAntigravityStaticCatalogVersionError(value)
+    ?? codexAccountPrioritiesError(value)
+    ?? codexAccountPickerEnabledError(value)
+    ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
-  if (result.success) return { ok: true, config: result.data as OcxConfig };
+  if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
   return { ok: false, error: schemaDiagnosticsError(result.error) };
 }
 
-export function readConfigDiagnostics(): ConfigDiagnostics {
-  const configPath = getConfigPath();
-  if (!existsSync(configPath)) {
-    return { config: getDefaultConfig(), source: "default", error: null };
-  }
+function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
   try {
-    const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
+    // Same degradation as loadConfig: a hand-edited invalid retryOn429 must not trip the
+    // schema and send the caller a default-config fallback (the config command could then
+    // persist that fallback over the user's providers/keys).
+    sanitizeRetryOn429ForLoad(parsed);
     const result = configSchema.safeParse(parsed);
     if (result.success) {
-      return validFileConfigDiagnostics(result.data as OcxConfig, parsed);
+      return validFileConfigDiagnostics(normalizeApiKeyIds(result.data as OcxConfig), parsed);
     }
 
     const retryResult = configSchema.safeParse(mergeConfigDefaults(parsed));
     if (retryResult.success) {
-      return validFileConfigDiagnostics(retryResult.data as OcxConfig, parsed);
+      return validFileConfigDiagnostics(normalizeApiKeyIds(retryResult.data as OcxConfig), parsed);
     }
 
     return { config: getDefaultConfig(), source: "fallback", error: schemaDiagnosticsError(result.error) };
@@ -1276,18 +2098,375 @@ export function readConfigDiagnostics(): ConfigDiagnostics {
   }
 }
 
-export function saveConfig(config: OcxConfig): void {
+function readConfigFileSnapshot(): ConfigFileSnapshot {
+  try {
+    const raw = readFileSync(getConfigPath(), "utf-8");
+    return { diagnostics: configDiagnosticsFromRaw(raw), raw };
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return {
+        diagnostics: { config: getDefaultConfig(), source: "default", error: null },
+      };
+    }
+    return {
+      diagnostics: { config: getDefaultConfig(), source: "fallback", error: "invalid_json" },
+    };
+  }
+}
+
+export function readConfigDiagnostics(): ConfigDiagnostics {
+  return readConfigFileSnapshot().diagnostics;
+}
+
+/**
+ * The persisted config, plus a digest of the EXACT bytes it was parsed from.
+ *
+ * A union rather than a nullable digest, because `{ kind: "read" }` with no
+ * digest is a state that cannot occur — and a state that cannot occur should
+ * not be a state that can be written down. Refusing it at runtime is a check
+ * somebody eventually forgets; making it unrepresentable is not.
+ *
+ * Why a byte digest at all: the Codex write lock compares an authority snapshot
+ * taken before the lock against one taken while holding it, and its config
+ * component used to hash the PARSED object. Two files that differ only in
+ * whitespace or key order parse identically, so a non-cooperating writer could
+ * rewrite the file between admission and commit and the comparison would see
+ * nothing. Hashing what was actually read closes that.
+ *
+ * `readConfigFileSnapshot` stays private on purpose. Its `raw` carries provider
+ * API keys and admission tokens, and `privacy:scan` reads tracked source text,
+ * not runtime values — so it would not catch a caller that logged or serialized
+ * that string. The digest travels; the bytes do not.
+ */
+export type ConfigAdmissionSnapshot =
+  | Readonly<{ kind: "read"; diagnostics: ConfigDiagnostics; contentSha256: string }>
+  | Readonly<{ kind: "unreadable"; diagnostics: ConfigDiagnostics; contentSha256: null }>;
+
+export function readConfigAdmissionSnapshot(): ConfigAdmissionSnapshot {
+  let bytes: Buffer;
+  try {
+    // ONE read. Hashing the file and then reading it again to parse would leave
+    // a window for the two to disagree, which is the exact hazard this exists
+    // to detect — the check would become a second chance to be wrong.
+    bytes = readFileSync(getConfigPath());
+  } catch (error) {
+    return {
+      kind: "unreadable",
+      diagnostics: isMissingPathError(error)
+        ? { config: getDefaultConfig(), source: "default", error: null }
+        : { config: getDefaultConfig(), source: "fallback", error: "invalid_json" },
+      contentSha256: null,
+    };
+  }
+  return {
+    kind: "read",
+    // Decoded from the same buffer that was hashed, not re-read from disk.
+    diagnostics: configDiagnosticsFromRaw(bytes.toString("utf-8")),
+    contentSha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+const CONFIG_MUTATION_DB_FILENAME = "config-mutation.sqlite";
+const CONFIG_MUTATION_DB_SIDECARS = ["-journal", "-wal", "-shm"] as const;
+let warnedConfigMutationDirectoryAcl = false;
+
+export class ConfigMutationLockError extends Error {
+  readonly code = "CONFIG_MUTATION_LOCK_UNAVAILABLE";
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ConfigMutationLockError";
+  }
+}
+
+function configMutationDatabasePath(): string {
   const dir = getConfigDir();
+  // First statement on purpose: a rejected mutation must leave nothing behind, not a
+  // freshly created/chmod'd directory or database. See src/lib/test-home-guard.ts.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
     try { chmodSync(dir, 0o700); } catch { /* best-effort on existing dir */ }
   }
-  if (process.platform === "win32") {
-    hardenSecretDir(dir, { required: true });
+  if (windowsSecretAclApplies()) {
+    try {
+      // Distinct timeout memo from management-token directory harden: a required
+      // management-dir timeout must not poison config mutation on the same home
+      // (windows-latest server-management-auth cases).
+      hardenSecretDir(dir, { required: true, timeoutMemoKey: `${dir}::config-mutation` });
+    } catch (error) {
+      if (!warnedConfigMutationDirectoryAcl) {
+        warnedConfigMutationDirectoryAcl = true;
+        const diagnostics = error instanceof Error ? error.message : "ACL hardening failed";
+        console.warn(
+          `[opencodex] Config mutation coordination directory ACL hardening did not complete; continuing without it. ${diagnostics}`,
+        );
+      }
+    }
   }
+  const path = join(dir, CONFIG_MUTATION_DB_FILENAME);
+  recordOwnedConfigPath(dir, path);
+  for (const suffix of CONFIG_MUTATION_DB_SIDECARS) {
+    recordOwnedConfigPath(dir, `${path}${suffix}`);
+  }
+  return path;
+}
+
+let configMutationLockDepth = 0;
+let configMutationDatabase: Database | null = null;
+
+/**
+ * Serialize synchronous config and Codex credential-generation commits across processes with an
+ * OS-backed SQLite write transaction. `busy_timeout=0` is deliberate: runtime request paths must
+ * fail immediately under contention rather than freeze the Bun event loop. Process exit releases
+ * SQLite locks without stale-owner deletion or lease recovery races.
+ *
+ * Reentrancy is limited to the current synchronous call stack; never return a Promise from `fn`.
+ */
+export function withConfigMutationLockSync<T>(fn: () => T): T {
+  if (configMutationLockDepth > 0) {
+    configMutationLockDepth += 1;
+    try {
+      return fn();
+    } finally {
+      configMutationLockDepth -= 1;
+    }
+  }
+  const path = configMutationDatabasePath();
+  let database: Database | undefined;
+  let transactionOpen = false;
+  try {
+    database = new Database(path, { create: true });
+    try { chmodSync(path, 0o600); } catch { /* platform may ignore chmod */ }
+    database.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    transactionOpen = true;
+    initializeConfigGeneration(database);
+  } catch (cause) {
+    if (transactionOpen) {
+      try { database?.exec("ROLLBACK"); } catch { /* close below still releases the OS lock */ }
+    }
+    try { database?.close(); } catch { /* acquisition already failed */ }
+    const code = cause && typeof cause === "object" && "code" in cause
+      ? String((cause as { code?: unknown }).code)
+      : "";
+    throw new ConfigMutationLockError(
+      code === "SQLITE_BUSY" ? "Config mutation already in progress" : "Could not acquire config mutation transaction",
+      { cause },
+    );
+  }
+
+  configMutationLockDepth = 1;
+  configMutationDatabase = database;
+  try {
+    const value = fn();
+    database.exec("COMMIT");
+    transactionOpen = false;
+    return value;
+  } catch (error) {
+    if (transactionOpen) {
+      try { database.exec("ROLLBACK"); } catch { /* close below still releases the OS lock */ }
+      transactionOpen = false;
+    }
+    throw error;
+  } finally {
+    configMutationLockDepth = 0;
+    configMutationDatabase = null;
+    try { database.close(); } catch { /* the OS lock is released with the handle */ }
+  }
+}
+
+function bumpGenerationForCooperatingConfigWrite(): void {
+  if (!configMutationDatabase) {
+    throw new Error("A cooperating config write requires the config mutation transaction.");
+  }
+  bumpCurrentConfigGeneration(configMutationDatabase);
+}
+
+export const readConfigGeneration: ReadConfigGeneration = () => {
+  try {
+    return readConfigGenerationAtPath(configMutationDatabasePath());
+  } catch {
+    return { kind: "unavailable", reason: "database" };
+  }
+};
+
+export function observeConfigGeneration(): ConfigGenerationObservation {
+  return observeConfigGenerationAtPath(join(getConfigDir(), CONFIG_MUTATION_DB_FILENAME));
+}
+
+/**
+ * Read the generation from the transaction that is open RIGHT NOW.
+ *
+ * The observer cannot do this job. On the very first acquisition the
+ * `BEGIN IMMEDIATE` that creates the table has not committed yet, so a separate
+ * read-only connection cannot read a generation from it — measured, not
+ * assumed. A caller that compared a pre-lock observation against an observer
+ * re-read would therefore refuse every first write as stale.
+ *
+ * Throwing when no transaction is open is deliberate. Being called outside the
+ * lock is broken plumbing, and returning a typed "unavailable" would let that
+ * bug arrive disguised as an environmental failure — retried forever, on a
+ * machine where nothing is wrong.
+ */
+export function readConfigGenerationInCurrentMutationTransaction(): ConfigGeneration {
+  if (configMutationLockDepth < 1 || !configMutationDatabase) {
+    throw new Error(
+      "readConfigGenerationInCurrentMutationTransaction requires an open config mutation transaction.",
+    );
+  }
+  return readConfigGenerationInTransaction(configMutationDatabase);
+}
+
+export const bumpConfigGeneration: BumpConfigGeneration = expected => {
+  try {
+    return bumpConfigGenerationAtPath(configMutationDatabasePath(), expected);
+  } catch {
+    return { kind: "unavailable", reason: "database" };
+  }
+};
+
+function configGenerationFailureReason(error: unknown): "busy" | "database" {
+  const cause = error instanceof ConfigMutationLockError ? error.cause : error;
+  const code = cause && typeof cause === "object" && "code" in cause
+    ? String((cause as { code?: unknown }).code)
+    : "";
+  const message = cause instanceof Error ? cause.message : "";
+  return code === "SQLITE_BUSY"
+    || code === "SQLITE_LOCKED"
+    || /database (?:is|table is) locked/i.test(message)
+    ? "busy"
+    : "database";
+}
+
+export const withExpectedConfigGenerationSync: WithExpectedConfigGenerationSync = (
+  expected,
+  commit,
+) => {
+  let callbackThrew = false;
+  let callbackError: unknown;
+  try {
+    return withConfigMutationLockSync(() => {
+      const database = configMutationDatabase;
+      if (!database) throw new Error("Config mutation transaction database is unavailable.");
+      const current = readConfigGenerationInTransaction(database);
+      if (current.value !== expected.value) return { kind: "conflict", current };
+      try {
+        return { kind: "matched", generation: current, value: commit() };
+      } catch (error) {
+        callbackThrew = true;
+        callbackError = error;
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (callbackThrew && error === callbackError) throw error;
+    return { kind: "unavailable", reason: configGenerationFailureReason(error) };
+  }
+};
+
+function persistConfigUnlocked(config: OcxConfig): boolean {
   const configPath = getConfigPath();
-  atomicWriteFile(configPath, JSON.stringify(config, null, 2) + "\n");
+  const bytes = JSON.stringify(config, null, 2) + "\n";
+  try {
+    if (readFileSync(configPath, "utf8") === bytes) return false;
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+  atomicWriteFile(configPath, bytes);
+  return true;
+}
+
+export function saveConfig(config: OcxConfig): void {
+  // Keep the real-home assertion ahead of even lock-directory preparation.
+  assertNotRealHomeUnderTest(getConfigDir());
+  withConfigMutationLockSync(() => {
+    if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
+  });
+}
+
+export type PersistedConfigMutation<T> = {
+  changed: boolean;
+  value: T;
+};
+
+export type PersistedConfigMutationOutcome<T> =
+  | { status: "committed" | "unchanged"; value: T }
+  | { status: "unavailable"; reason: "missing" | "invalid" | "conflict" };
+
+const CONFIG_MUTATION_MAX_REBASE_ATTEMPTS = 3;
+let persistedConfigMutationBeforeCommitForTests: (() => void) | null = null;
+
+/** Test-only one-shot seam: inject a competing mutation after the first decision, before freshness revalidation. */
+export function setPersistedConfigMutationBeforeCommitForTests(hook: (() => void) | null): void {
+  persistedConfigMutationBeforeCommitForTests = hook;
+}
+
+function unavailableConfigMutationReason(snapshot: ConfigFileSnapshot): "missing" | "invalid" {
+  return snapshot.diagnostics.source === "default" ? "missing" : "invalid";
+}
+
+/**
+ * Patch a schema-valid on-disk config under the shared mutation lock. Cooperating writers are
+ * serialized; the callback is rerun on the newest snapshot so observed direct byte changes rebase
+ * and credential predicates are re-evaluated immediately before the atomic commit. A writer that
+ * ignores the coordinator can still change bytes after the final check because the filesystem has
+ * no portable conditional rename. Missing or malformed config always fails closed and is never
+ * recreated from a prior snapshot.
+ */
+export function mutatePersistedConfig<T>(
+  mutate: (config: OcxConfig) => PersistedConfigMutation<T>,
+): PersistedConfigMutationOutcome<T> {
+  // Avoid creating/opening the coordinator database for a read-path update that already knows
+  // there is no valid config. The same check runs again under the transaction for authority.
+  const observed = readConfigFileSnapshot();
+  if (observed.diagnostics.source !== "file" || observed.raw === undefined) {
+    return { status: "unavailable", reason: unavailableConfigMutationReason(observed) };
+  }
+  return withConfigMutationLockSync(() => {
+    let base = readConfigFileSnapshot();
+    for (let attempt = 0; attempt < CONFIG_MUTATION_MAX_REBASE_ATTEMPTS; attempt += 1) {
+      if (base.diagnostics.source !== "file" || base.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(base) };
+      }
+
+      const tentativeConfig = structuredClone(base.diagnostics.config);
+      const tentative = mutate(tentativeConfig);
+      if (!tentative.changed) return { status: "unchanged", value: tentative.value };
+
+      const hook = persistedConfigMutationBeforeCommitForTests;
+      persistedConfigMutationBeforeCommitForTests = null;
+      hook?.();
+
+      const latest = readConfigFileSnapshot();
+      if (latest.diagnostics.source !== "file" || latest.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(latest) };
+      }
+      if (latest.raw !== base.raw) {
+        base = latest;
+        continue;
+      }
+
+      // Re-run against a fresh clone even when config bytes are unchanged: a Codex credential
+      // generation lives in a separate file and may have changed at the injected seam.
+      const confirmedConfig = structuredClone(latest.diagnostics.config);
+      const confirmed = mutate(confirmedConfig);
+      if (!confirmed.changed) return { status: "unchanged", value: confirmed.value };
+
+      const commitBase = readConfigFileSnapshot();
+      if (commitBase.diagnostics.source !== "file" || commitBase.raw === undefined) {
+        return { status: "unavailable", reason: unavailableConfigMutationReason(commitBase) };
+      }
+      if (commitBase.raw !== latest.raw) {
+        base = commitBase;
+        continue;
+      }
+
+      if (persistConfigUnlocked(confirmedConfig)) bumpGenerationForCooperatingConfigWrite();
+      return { status: "committed", value: confirmed.value };
+    }
+    return { status: "unavailable", reason: "conflict" };
+  });
 }
 
 export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolean {
@@ -1519,36 +2698,38 @@ function readPersistedServerBinding(
  * guarantee.
  */
 export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
-  const bindingBaseline = persistedLiveServerBinding.get(config);
-  const onDisk = claudeCodeBaseline.has(config) || bindingBaseline
-    ? readRawConfigJson()
-    : undefined;
-  if (claudeCodeBaseline.has(config)) {
-    if (onDisk !== undefined) {
-      const baseline = claudeCodeBaseline.get(config);
-      const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
-      const diskChanged = !deepEqual(persistedClaudeCode, baseline);
-      const weChanged = !deepEqual(config.claudeCode, baseline);
-      if (diskChanged && !weChanged) {
-        config.claudeCode = persistedClaudeCode;
+  withConfigMutationLockSync(() => {
+    const bindingBaseline = persistedLiveServerBinding.get(config);
+    const onDisk = claudeCodeBaseline.has(config) || bindingBaseline
+      ? readRawConfigJson()
+      : undefined;
+    if (claudeCodeBaseline.has(config)) {
+      if (onDisk !== undefined) {
+        const baseline = claudeCodeBaseline.get(config);
+        const persistedClaudeCode = normalizePersistedClaudeCode(onDisk.claudeCode);
+        const diskChanged = !deepEqual(persistedClaudeCode, baseline);
+        const weChanged = !deepEqual(config.claudeCode, baseline);
+        if (diskChanged && !weChanged) {
+          config.claudeCode = persistedClaudeCode;
+        }
       }
     }
-  }
-  const persistedBinding = bindingBaseline && onDisk
-    ? readPersistedServerBinding(onDisk, bindingBaseline)
-    : bindingBaseline;
-  if (persistedBinding) {
-    const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
-    if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
-    else persistedConfig.hostname = persistedBinding.hostname;
-    saveConfig(persistedConfig);
-    persistedLiveServerBinding.set(config, persistedBinding);
-  } else {
-    saveConfig(config);
-  }
-  if (claudeCodeBaseline.has(config)) {
-    claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
-  }
+    const persistedBinding = bindingBaseline && onDisk
+      ? readPersistedServerBinding(onDisk, bindingBaseline)
+      : bindingBaseline;
+    if (persistedBinding) {
+      const persistedConfig: OcxConfig = { ...config, port: persistedBinding.port };
+      if (persistedBinding.hostname === undefined) delete persistedConfig.hostname;
+      else persistedConfig.hostname = persistedBinding.hostname;
+      if (persistConfigUnlocked(persistedConfig)) bumpGenerationForCooperatingConfigWrite();
+      persistedLiveServerBinding.set(config, persistedBinding);
+    } else {
+      if (persistConfigUnlocked(config)) bumpGenerationForCooperatingConfigWrite();
+    }
+    if (claudeCodeBaseline.has(config)) {
+      claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+    }
+  });
 }
 
 export function codexAutoStartEnabled(config: Pick<OcxConfig, "codexAutoStart">): boolean {
@@ -1576,6 +2757,8 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    managementUsageMaxReadBytes: 64 * 1024 * 1024,
+    appOwnedMemoryBudgetMb: DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024),
     // Fresh/re-initialized configs are already written in the current three-tier
     // OpenAI shape. Mark them as such so startup does not mistake them for a
     // legacy config and collide with an immutable backup from an earlier setup.
@@ -1631,6 +2814,8 @@ export function applyProxyEnv(config: OcxConfig): void {
 
 export function writePid(pid: number): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
@@ -1643,22 +2828,28 @@ export type RuntimePortState = {
   pid: number;
   port: number;
   hostname?: string;
+  /** Per-process proof key; protected by the config directory and never served. */
+  attestationSecret?: string;
 };
 
 function isValidRuntimePortState(value: unknown): value is RuntimePortState {
   if (!value || typeof value !== "object") return false;
   const state = value as Record<string, unknown>;
   const hostnameOk = state.hostname === undefined || typeof state.hostname === "string";
+  const attestationOk = state.attestationSecret === undefined || isLocalAttestationSecret(state.attestationSecret);
   return Number.isSafeInteger(state.pid)
     && Number(state.pid) > 0
     && Number.isInteger(state.port)
     && Number(state.port) > 0
     && Number(state.port) <= 65535
-    && hostnameOk;
+    && hostnameOk
+    && attestationOk;
 }
 
 export function writeRuntimePort(state: RuntimePortState): void {
   const dir = getConfigDir();
+  // Guard before ANY directory mutation (mkdir or chmod), not just the write.
+  assertNotRealHomeUnderTest(dir);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
@@ -1759,15 +2950,61 @@ export function parsePidFile(raw: string): number | null {
 export function isOcxStartCommandLine(commandLine: string): boolean {
   const normalized = commandLine.toLowerCase().replace(/\\/g, "/");
   // "src/cli.ts" matches pre-restructure installs still running; "src/cli/index.ts" is current.
+  // `@bitkyc08/.opencodex-*` is npm's in-place rename of the global package during
+  // `npm install -g` — a Windows service wrapper can respawn from that temp tree
+  // mid-update, and must still count as ocx for port reclaim.
   const hasOcxEntrypoint = normalized.includes("src/cli.ts")
     || normalized.includes("src/cli/index.ts")
     || normalized.includes("@bitkyc08/opencodex")
+    || /@bitkyc08\/\.opencodex-/.test(normalized)
     || /(?:^|[\s/"'])(?:ocx|opencodex)(?:\.cmd)?(?:$|[\s"'])/.test(normalized);
   return hasOcxEntrypoint && /(?:^|[\s"'])start(?:$|[\s"'])/.test(normalized);
 }
 
 /** Per-process memo: waitForProxy/findLiveProxy used to spawn powershell on every 150ms poll. */
 const ocxStartProcessCache = new Map<number, boolean>();
+let ocxStartProcessSweepCursor = 0;
+let ocxStartProcessProbe: (pid: number) => void = pid => { process.kill(pid, 0); };
+
+export function setOcxStartProcessProbeForTests(probe: ((pid: number) => void) | null): void {
+  ocxStartProcessProbe = probe ?? (pid => { process.kill(pid, 0); });
+}
+
+export function setOcxStartProcessCacheForTests(entries: Iterable<readonly [number, boolean]>): void {
+  ocxStartProcessCache.clear();
+  for (const [pid, value] of entries) ocxStartProcessCache.set(pid, value);
+  ocxStartProcessSweepCursor = 0;
+}
+
+export function sweepDeadOcxStartProcessCache(maxProbes = 64): number {
+  const pids: number[] = [];
+  let removed = 0;
+  for (const pid of ocxStartProcessCache.keys()) {
+    if (Number.isSafeInteger(pid) && pid > 0) pids.push(pid);
+    else if (ocxStartProcessCache.delete(pid)) removed += 1;
+  }
+  if (pids.length === 0 || maxProbes <= 0) {
+    ocxStartProcessSweepCursor = 0;
+    return removed;
+  }
+  const probeCount = Math.min(Math.floor(maxProbes), pids.length);
+  const start = ocxStartProcessSweepCursor % pids.length;
+  for (let offset = 0; offset < probeCount; offset += 1) {
+    const pid = pids[(start + offset) % pids.length]!;
+    try {
+      ocxStartProcessProbe(pid);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      if (ocxStartProcessCache.delete(pid)) removed += 1;
+    }
+  }
+  ocxStartProcessSweepCursor = (start + probeCount) % pids.length;
+  return removed;
+}
+
+export function ocxStartProcessCacheSizeForTests(): number {
+  return ocxStartProcessCache.size;
+}
 
 function isLikelyOcxStartProcess(pid: number): boolean {
   const cached = ocxStartProcessCache.get(pid);

@@ -191,7 +191,12 @@ export default function ProviderCatalog({
                         {busy ? t("prov.waitingBrowser") : t("modal.accountAdd")}
                       </button>
                     )}
-                    {onLogout && (
+                    {busy && onCancelLogin && (
+                      <button type="button" className="btn btn-ghost" onClick={() => onCancelLogin(row.id)}>
+                        {t("common.cancel")}
+                      </button>
+                    )}
+                    {onLogout && !busy && (
                       <button type="button" className="btn btn-ghost" onClick={() => onLogout(row.id)}>
                         {t("modal.accountLogout")}
                       </button>

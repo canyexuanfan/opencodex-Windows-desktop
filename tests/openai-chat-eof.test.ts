@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
 import { bridgeToResponsesSSE } from "../src/bridge";
 import type { AdapterEvent } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+const createOpenAIChatAdapter = (...args: Parameters<typeof createOpenAIChatAdapterProduction>) =>
+  withTestTranslatorBudget(createOpenAIChatAdapterProduction(...args));
 
 const provider = { adapter: "openai-chat", baseUrl: "https://example.test/v1", apiKey: "key" };
 
@@ -12,11 +16,18 @@ async function collect(gen: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[
 }
 
 describe("openai-chat stream EOF fail-closed", () => {
-  test("truncated stream (no [DONE], no finish_reason) yields a terminal error, not a clean done", async () => {
+  test("truncated stream (no [DONE], no finish_reason) yields done when content was emitted", async () => {
     const response = new Response('data: {"choices":[{"delta":{"content":"par"}}]}\n\n');
     const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
     const last = events[events.length - 1];
-    expect(last.type).toBe("error");
+    expect(last.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("empty EOF without content still errors", async () => {
+    const response = new Response("");
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
     expect(events.some(e => e.type === "done")).toBe(false);
   });
 
@@ -75,6 +86,56 @@ describe("openai-chat stream EOF fail-closed", () => {
     expect(events.find(e => e.type === "error")).toMatchObject({ message: "Rate limit reached for model" });
   });
 
+  test("choice-scoped finish_reason error yields a terminal error", async () => {
+    const response = new Response([
+      'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"error","error":{"code":"rate_limit","message":"ClinePass limit reached"}}]}\n\n',
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+
+    expect(events.at(-1)).toMatchObject({
+      type: "error",
+      code: "rate_limit",
+      message: "ClinePass limit reached",
+    });
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+
+  test("terminal errors discard a pending tool call instead of completing it", async () => {
+    for (const terminal of [
+      'data: {"choices":[{"finish_reason":"error","error":{"code":"server_error","message":"upstream failed"}}]}\n\n',
+      'data: {"error":{"code":"server_error","message":"upstream failed"}}\n\n',
+    ]) {
+      const body = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"l"}}]}}]}\n\n',
+        terminal,
+      ].join("");
+      const adapter = createOpenAIChatAdapter(provider);
+      const events = await collect(adapter.parseStream(new Response(body)));
+
+      expect(events).toEqual([{ type: "error", code: "server_error", message: "upstream failed" }]);
+
+      const bridged = await new Response(bridgeToResponsesSSE(
+        adapter.parseStream(new Response(body)),
+        "openai-chat/test-model",
+      )).text();
+      expect(bridged).toContain("event: response.failed");
+      expect(bridged).not.toContain("response.function_call_arguments.done");
+      expect(bridged).not.toContain('"status":"completed"');
+    }
+  });
+
+  test("Cline-compatible delta.reasoning is preserved as reasoning output", async () => {
+    const response = new Response([
+      'data: {"choices":[{"delta":{"reasoning":"considering"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n',
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+
+    expect(events).toContainEqual({ type: "reasoning_raw_delta", text: "considering" });
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
   test("finish-only chunk with no delta (provider omits [DONE]) is accepted as done", async () => {
     const response = new Response([
       'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
@@ -128,11 +189,107 @@ describe("openai-chat stream EOF fail-closed", () => {
     expect(events.some(e => e.type === "error")).toBe(false);
   });
 
-  test("genuinely truncated stream WITHOUT a trailing newline still fails closed", async () => {
-    // Mid-content frame, no terminator, no newline — must remain a terminal error.
+  test("genuinely truncated stream WITHOUT a trailing newline completes when content was emitted", async () => {
+    // Mid-content frame, no terminator, no newline — content was yielded, so accept done.
     const response = new Response('data: {"choices":[{"delta":{"content":"par"}}]}');
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("done");
+    expect(events.some(e => e.type === "error")).toBe(false);
+  });
+
+  test("EOF with pending tool calls and no finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{\\"a\\":"}}]}}]}\n\n',
+    );
     const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
     expect(events.at(-1)?.type).toBe("error");
     expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("reasoning-only EOF without finish_reason fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+
+  test("usage-only EOF with pending tool calls fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":"{}"}}]}}]}\n\n' +
+        'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("usage-only EOF without answer text fails closed", async () => {
+    const response = new Response(
+      'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+});
+
+describe("openai-chat EOF mid tool call (#735)", () => {
+  test("a half-assembled tool call at EOF errors instead of being flushed as complete", async () => {
+    // The provider opened a tool call and sent part of its argument JSON, then the socket closed
+    // with no finish_reason and no [DONE]. flushToolCalls() emits tool_call_end, so running it
+    // first would hand the client `{"cmd":"l` as a COMPLETED call -- a truncation reported as a
+    // successful tool invocation. The check therefore runs before the flush.
+    const response = new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"l"}}]}}]}\n\n',
+    );
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+    expect(events.some(e => e.type === "done")).toBe(false);
+  });
+
+  test("a usage frame does not launder a truncated tool call into success", async () => {
+    // Usage alone counts as a terminal signal for text streams, and before this guard it also
+    // let a mid-flight tool call through: the tool branch is checked on finish_reason only, so
+    // usage must not be able to substitute for it.
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"l"}}]}}]}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}\n\n',
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.at(-1)?.type).toBe("error");
+    expect(events.some(e => e.type === "tool_call_end")).toBe(false);
+  });
+
+  test("a tool call closed by [DONE] alone still completes normally", async () => {
+    // [DONE] flushes and returns BEFORE the EOF block, so this exercises a different early-return
+    // path than the finish_reason control below. It passes with the guard reverted -- that is the
+    // point: it pins the path the guard must never start intercepting.
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"ls\\"}"}}]}}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.some(e => e.type === "error")).toBe(false);
+    expect(events.filter(e => e.type === "tool_call_end")).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  test("a tool call closed by finish_reason still completes normally", async () => {
+    // The control: the guard must fire on MISSING terminal signals only, never on a well-formed
+    // tool turn, or every tool call in the product breaks.
+    const response = new Response([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"shell","arguments":"{\\"cmd\\":\\"ls\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+    const events = await collect(createOpenAIChatAdapter(provider).parseStream(response));
+    expect(events.some(e => e.type === "error")).toBe(false);
+    expect(events.filter(e => e.type === "tool_call_end")).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("done");
   });
 });

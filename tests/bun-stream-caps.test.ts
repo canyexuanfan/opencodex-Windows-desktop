@@ -4,9 +4,20 @@ import {
   compareBunVersions,
   decideEagerRelay,
   isStreamMode,
+  isWin32EagerRewrite,
   MIN_FIXED_BUN_VERSION,
   parseBunVersion,
+  selectEagerPath,
 } from "../src/lib/bun-stream-caps";
+
+describe("isWin32EagerRewrite (#864 transport gate)", () => {
+  test("win32 + rewrite → eager inline rewrite; everything else stays out", () => {
+    expect(isWin32EagerRewrite("win32", true)).toBe(true);
+    expect(isWin32EagerRewrite("win32", false)).toBe(false);
+    expect(isWin32EagerRewrite("darwin", true)).toBe(false);
+    expect(isWin32EagerRewrite("linux", true)).toBe(false);
+  });
+});
 
 describe("parseBunVersion", () => {
   test("parses plain and prerelease versions to the numeric triple", () => {
@@ -84,6 +95,43 @@ describe("decideEagerRelay (activation scenarios)", () => {
       reason: "config-legacy",
     });
   });
+});
+
+describe("selectEagerPath (platform policy matrix)", () => {
+  const configLegacy = { useEagerRelay: false, reason: "config-legacy" } as const;
+  const configEager = { useEagerRelay: true, reason: "config-eager" } as const;
+  const autoFixed = { useEagerRelay: true, reason: "auto-fixed-runtime" } as const;
+  const cases: Array<{
+    platform: NodeJS.Platform;
+    mode: "auto" | "legacy-tee" | "eager-relay";
+    rewrite: boolean;
+    expected: typeof configLegacy | typeof configEager | typeof autoFixed | null;
+  }> = [
+    { platform: "win32", mode: "legacy-tee", rewrite: false, expected: configLegacy },
+    { platform: "win32", mode: "eager-relay", rewrite: false, expected: configEager },
+    { platform: "win32", mode: "auto", rewrite: false, expected: autoFixed },
+    { platform: "win32", mode: "legacy-tee", rewrite: true, expected: null },
+    { platform: "win32", mode: "eager-relay", rewrite: true, expected: null },
+    { platform: "win32", mode: "auto", rewrite: true, expected: null },
+    { platform: "darwin", mode: "legacy-tee", rewrite: false, expected: null },
+    { platform: "darwin", mode: "eager-relay", rewrite: false, expected: configEager },
+    { platform: "darwin", mode: "auto", rewrite: false, expected: null },
+    { platform: "darwin", mode: "legacy-tee", rewrite: true, expected: null },
+    { platform: "darwin", mode: "eager-relay", rewrite: true, expected: configEager },
+    { platform: "darwin", mode: "auto", rewrite: true, expected: null },
+    { platform: "linux", mode: "legacy-tee", rewrite: false, expected: null },
+    { platform: "linux", mode: "eager-relay", rewrite: false, expected: null },
+    { platform: "linux", mode: "auto", rewrite: false, expected: null },
+    { platform: "linux", mode: "legacy-tee", rewrite: true, expected: null },
+    { platform: "linux", mode: "eager-relay", rewrite: true, expected: null },
+    { platform: "linux", mode: "auto", rewrite: true, expected: null },
+  ];
+
+  for (const { platform, mode, rewrite, expected } of cases) {
+    test(`${platform} + ${mode} + rewrite=${rewrite}`, () => {
+      expect(selectEagerPath(platform, rewrite, mode, "1.4.0", "1.4.0")).toEqual(expected);
+    });
+  }
 });
 
 describe("isStreamMode", () => {

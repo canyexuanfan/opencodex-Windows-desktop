@@ -12,19 +12,25 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
-import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
+import { isVertexTruncatedTurn, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { compileGoogleWireBody } from "./google-wire-compiler";
-import { neutralizeIdentity } from "./identity";
+import { identifyRoutedModel } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityEffortWireModel } from "../providers/antigravity-models";
+import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
+import {
+  isTranslatorBudgetExceededError,
+  retainTranslatedEventBatch,
+  type TranslatorBudget,
+} from "../lib/translator-budget";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
-import { mapReasoningEffort } from "../reasoning-effort";
+import { configuredReasoningEfforts, mapReasoningEffort } from "../reasoning-effort";
 
 // Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
 // tool calls. This steers them to keep the BETWEEN-STEP text to one line and reason internally
@@ -117,15 +123,18 @@ function geminiToolResultText(content: string | OcxContentPart[]): string {
   return hasContent ? contentPartsToText(content) : GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
 }
 
-function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
+function messagesToGeminiFormat(
+  parsed: OcxParsedRequest,
+  routedModelId = parsed.modelId,
+): { systemInstruction?: unknown; contents: unknown[] } {
   // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
   // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(parsed.context.tools, parsed.options.toolChoice);
-  const systemText = neutralizeIdentity([
+  const systemText = identifyRoutedModel([
     ...(parsed.context.systemPrompt ?? []),
     ...(toolCatalogNudge ? [toolCatalogNudge] : []),
     GOOGLE_BREVITY_INSTRUCTION,
-  ].join("\n\n"));
+  ].join("\n\n"), routedModelId);
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
@@ -224,6 +233,28 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
   }];
 }
 
+/**
+ * Client tool_choice enforcement on the wire. The catalog nudge states the same contract in
+ * prose, but without functionCallingConfig the model is free to ignore it. "auto" stays absent
+ * so the common case is byte-identical. The allowedTools variant already filters the
+ * declarations in toolsToGeminiFormat; only its "required" half needs a wire mode.
+ */
+function toolChoiceToGeminiToolConfig(parsed: OcxParsedRequest): Record<string, unknown> | undefined {
+  const choice = parsed.options.toolChoice;
+  if (!choice || choice === "auto") return undefined;
+  if (choice === "none") return { functionCallingConfig: { mode: "NONE" } };
+  if (choice === "required") return { functionCallingConfig: { mode: "ANY" } };
+  if (isAllowedToolChoice(choice)) {
+    return choice.mode === "required" ? { functionCallingConfig: { mode: "ANY" } } : undefined;
+  }
+  return {
+    functionCallingConfig: {
+      mode: "ANY",
+      allowedFunctionNames: [resolveToolChoiceWireName(parsed.context.tools, choice.name)],
+    },
+  };
+}
+
 function usageFromGemini(usage: Record<string, number> | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
   return {
@@ -287,24 +318,44 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       : {}),
 
     async buildRequest(parsed: OcxParsedRequest) {
-      const { systemInstruction, contents } = messagesToGeminiFormat(parsed);
+      const routedModelId = provider.googleMode === "cloud-code-assist"
+        ? resolveAntigravityEffortWireModel(
+            parsed.modelId,
+            mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning),
+          ).wireModelId
+        : parsed.modelId;
+      const { systemInstruction, contents } = messagesToGeminiFormat(parsed, routedModelId);
       const tools = toolsToGeminiFormat(parsed);
 
       const body: Record<string, unknown> = { contents };
       if (systemInstruction) body.systemInstruction = systemInstruction;
       if (tools) body.tools = tools;
+      // Only meaningful with declarations on the wire: mode ANY with an empty
+      // catalog is a guaranteed upstream 400.
+      const toolConfig = tools ? toolChoiceToGeminiToolConfig(parsed) : undefined;
+      if (toolConfig) body.toolConfig = toolConfig;
 
       const generationConfig: Record<string, unknown> = {};
       if (parsed.options.maxOutputTokens) generationConfig.maxOutputTokens = parsed.options.maxOutputTokens;
       if (parsed.options.temperature !== undefined) generationConfig.temperature = parsed.options.temperature;
       if (parsed.options.topP !== undefined) generationConfig.topP = parsed.options.topP;
       if (parsed.options.stopSequences) generationConfig.stopSequences = parsed.options.stopSequences;
-      const directFlashThinking = provider.googleMode !== "vertex"
-        && provider.googleMode !== "cloud-code-assist"
-        && (parsed.modelId === "gemini-3.5-flash" || parsed.modelId === "gemini-3.6-flash")
+      // Effort → thinkingLevel follows the configured ladder: any model advertising reasoning
+      // efforts (registry preset or user config) sends the mapped level, so a picker-selected
+      // effort actually reaches the wire (gemini-3.1-pro-preview ships a ladder). The original
+      // gemini-3.5/3.6-flash direct-mode slice stays hardcoded so unladdered configs keep their
+      // current behavior; Vertex participates only through an explicitly configured ladder (the
+      // seed google-vertex entry ships none). Image models are excluded — thinkingConfig would
+      // suppress the responseModalities fallback below. CCA maps effort on its envelope path.
+      const thinkingEligible = provider.googleMode !== "cloud-code-assist"
+        && !isImageCapableModel(parsed.modelId)
+        && (configuredReasoningEfforts(provider, parsed.modelId) !== undefined
+          || (provider.googleMode !== "vertex"
+            && (parsed.modelId === "gemini-3.5-flash" || parsed.modelId === "gemini-3.6-flash")));
+      const thinkingLevel = thinkingEligible
         ? mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning)
         : undefined;
-      if (directFlashThinking) generationConfig.thinkingConfig = { thinkingLevel: directFlashThinking };
+      if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel };
       if (!generationConfig.thinkingConfig && isImageCapableModel(parsed.modelId)) {
         generationConfig.responseModalities = ["TEXT", "IMAGE"];
       }
@@ -344,6 +395,12 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const draftRequest: Record<string, unknown> = { ...body, sessionId };
         // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
         if (/claude/i.test(wireModelId)) {
+          // VALIDATED would defeat a client's tool_choice "none": honor it by dropping the
+          // declarations instead, the wire shape of a tool-less Claude turn.
+          if (parsed.options.toolChoice === "none") {
+            delete draftRequest.tools;
+            delete draftRequest.toolConfig;
+          }
           const existing = (draftRequest.toolConfig ?? {}) as Record<string, unknown>;
           const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
           draftRequest.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
@@ -390,6 +447,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         if (!project) throw new Error("Vertex AI requires a project id (provider.project or GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT).");
         const location = provider.location || process.env.GOOGLE_CLOUD_LOCATION;
         if (!location) throw new Error("Vertex AI requires a location (provider.location or GOOGLE_CLOUD_LOCATION).");
+        const locationError = googleVertexLocationConfigError(location);
+        if (locationError) throw new Error(locationError);
         const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
         const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${parsed.modelId}:${method}${streamParam}`;
         const token = await getVertexAccessToken();
@@ -408,7 +467,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       return { url, method: "POST", headers, body: JSON.stringify(compiled.body) };
     },
 
-    async *parseStream(response: Response): AsyncGenerator<AdapterEvent> {
+    async *parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
       if (!response.body) {
         yield { type: "error", message: "No response body" };
         return;
@@ -420,7 +479,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      const budgetEncoder = new TextEncoder();
       let buffer = "";
+      let bufferBytes = 0;
       let pendingUsage: OcxUsage | undefined;
       let toolCallsStarted = 0;
       let lastFinishReason: string | undefined;
@@ -529,7 +590,13 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          const nextBuffer = buffer + decoder.decode(value, { stream: true });
+          const nextBufferBytes = budgetEncoder.encode(nextBuffer).byteLength;
+          const appendReservation = budget.reserveTransient(nextBufferBytes, { kind: "live_transient" });
+          buffer = nextBuffer;
+          appendReservation.commitRetained();
+          budget.releaseRetained(bufferBytes, { kind: "live_transient" });
+          bufferBytes = nextBufferBytes;
           // Cap incomplete frames before waiting for a newline — otherwise a single
           // unterminated data: payload can grow without bound.
           if (buffer.length > MAX_SSE_FRAME_BYTES) {
@@ -540,6 +607,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
           const lines = buffer.split("\n");
           buffer = lines.pop() ?? "";
+          const residualBytes = budgetEncoder.encode(buffer).byteLength;
+          const residualReservation = budget.reserveTransient(residualBytes, { kind: "live_transient" });
+          residualReservation.commitRetained();
+          budget.releaseRetained(bufferBytes, { kind: "live_transient" });
+          bufferBytes = residualBytes;
 
           let sawLiveness = false;
           let sawContentEvent = false;
@@ -569,7 +641,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
         if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-          && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
+          && isVertexTruncatedTurn(lastFinishReason, toolCallsStarted)) {
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }
@@ -587,12 +659,23 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           usage: pendingUsage,
           ...(stopReason ? { stopReason } : {}),
         };
+      } catch (error) {
+        if (!isTranslatorBudgetExceededError(error)) throw error;
+        try { await reader.cancel(error); } catch { /* already closed */ }
+        yield {
+          type: "error",
+          status: 502,
+          errorType: "upstream_error",
+          code: "translation_buffer_limit",
+          message: "upstream translation buffer exceeded the safe limit",
+        };
       } finally {
+        budget.releaseRetained(bufferBytes, { kind: "live_transient" });
         reader.releaseLock();
       }
     },
 
-    async parseResponse(response: Response): Promise<AdapterEvent[]> {
+    async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
       // Reject oversized responses before JSON parse. Prefer Content-Length when
       // present and truthful; always stream-read with a hard byte cap so a missing
       // or lying Content-Length cannot force a full in-memory buffer + parse.
@@ -602,6 +685,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         return [{ type: "error", message: `google response too large (content-length ${contentLength} exceeds ${MAX_RESPONSE_BYTES} bytes)` }];
       }
       let rawText: string;
+      let rawTextBytes = 0;
       try {
         const reader = response.body?.getReader();
         if (!reader) return [{ type: "error", message: "google response had no body" }];
@@ -616,38 +700,58 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               await reader.cancel().catch(() => {});
               return [{ type: "error", message: `google response too large (exceeded ${MAX_RESPONSE_BYTES} bytes)` }];
             }
+            budget.chargeRetained(value.byteLength, { kind: "retained_collectors" });
             chunks.push(value);
           }
         } finally {
           try { await reader.cancel(); } catch { /* ignore */ }
           reader.releaseLock();
         }
+        const bytesReservation = budget.reserveTransient(total, { kind: "retained_collectors" });
         const bytes = new Uint8Array(total);
         let offset = 0;
         for (const chunk of chunks) {
           bytes.set(chunk, offset);
           offset += chunk.byteLength;
         }
+        bytesReservation.commitRetained();
+        budget.releaseRetained(total, { kind: "retained_collectors" });
         rawText = new TextDecoder().decode(bytes);
+        rawTextBytes = new TextEncoder().encode(rawText).byteLength;
+        const textReservation = budget.reserveTransient(rawTextBytes, { kind: "retained_collectors" });
+        textReservation.commitRetained();
+        budget.releaseRetained(total, { kind: "retained_collectors" });
       } catch (err) {
         return [{ type: "error", message: err instanceof Error ? err.message : "failed to read google response body" }];
       }
       let raw: Record<string, unknown>;
+      let rawBytes = 0;
       try {
         raw = JSON.parse(rawText) as Record<string, unknown>;
+        rawBytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
+        const rawReservation = budget.reserveTransient(rawBytes, { kind: "retained_collectors" });
+        rawReservation.commitRetained();
+        budget.releaseRetained(rawTextBytes, { kind: "retained_collectors" });
       } catch {
+        budget.releaseRetained(rawTextBytes, { kind: "retained_collectors" });
         return [{ type: "error", message: "google response was not valid JSON" }];
       }
+      const finish = (events: AdapterEvent[]): AdapterEvent[] => {
+        retainTranslatedEventBatch(events, budget);
+        budget.releaseRetained(rawBytes, { kind: "retained_collectors" });
+        rawBytes = 0;
+        return events;
+      };
       if (raw.error) {
         const err = raw.error as { message?: string };
-        return [{ type: "error", message: err.message ?? "upstream error" }];
+        return finish([{ type: "error", message: err.message ?? "upstream error" }]);
       }
       // Antigravity (CCA) nests the standard Gemini payload under `response`; unwrap it.
       let json = raw;
       if (provider.googleMode === "cloud-code-assist") {
         const wrapped = raw.response;
         if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) {
-          return [{ type: "error", message: "google-antigravity response missing response wrapper" }];
+          return finish([{ type: "error", message: "google-antigravity response missing response wrapper" }]);
         }
         json = wrapped as Record<string, unknown>;
       }
@@ -655,7 +759,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
 
       const candidates = json.candidates as { content?: { parts?: { text?: string; functionCall?: { name: string; args: unknown } }[] }; finishReason?: string }[] | undefined;
       if (!candidates?.length) {
-        return [{ type: "error", message: "google response contained no candidates" }];
+        return finish([{ type: "error", message: "google response contained no candidates" }]);
       }
       let toolCallsStarted = 0;
       const imageBudget = createImageBudget();
@@ -693,8 +797,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       // Fail-closed truncation, same as the stream path: a non-stream turn cut off mid tool call
       // (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces an error instead of a silent done.
       if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-        && toolCallsStarted > 0 && isVertexTruncationReason(candidates?.[0]?.finishReason)) {
-        return [{ type: "error", message: vertexTruncationErrorMessage(candidates?.[0]?.finishReason) }];
+        && isVertexTruncatedTurn(candidates?.[0]?.finishReason, toolCallsStarted)) {
+        return finish([{ type: "error", message: vertexTruncationErrorMessage(candidates?.[0]?.finishReason) }]);
       }
 
       const usage = json.usageMetadata as Record<string, number> | undefined;
@@ -702,7 +806,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         type: "done",
         usage: usageFromGemini(usage),
       });
-      return events;
+      return finish(events);
     },
   };
 }

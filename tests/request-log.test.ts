@@ -23,8 +23,9 @@ import {
   sealRequestAttemptIdentity,
   type RequestLogContext,
 } from "../src/server/request-log";
+import { handleResponses } from "../src/server/responses";
 import { bridgeToResponsesSSE } from "../src/bridge";
-import type { AdapterEvent, OcxUsage } from "../src/types";
+import type { AdapterEvent, OcxConfig, OcxUsage } from "../src/types";
 import {
   appendUsageEntry,
   readUsageEntries,
@@ -53,6 +54,64 @@ function log(overrides: Partial<RequestLogEntry>): RequestLogEntry {
 }
 
 describe("request log metadata", () => {
+  test("creates one ordinary attempt after the final adapter is resolved", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({
+      id: "resp_attempt",
+      object: "response",
+      status: "completed",
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    })) as typeof fetch;
+    const logCtx: RequestLogContext = { model: "unknown", provider: "unknown" };
+    const config = {
+      defaultProvider: "gateway",
+      providers: {
+        gateway: {
+          adapter: "openai-responses",
+          authMode: "key",
+          apiKey: "test-key",
+          baseUrl: "https://gateway.example/v1",
+        },
+      },
+    } as OcxConfig;
+
+    try {
+      const response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gateway/test-model", input: "hello", stream: false }),
+      }), config, logCtx);
+
+      expect(response.status).toBe(200);
+      expect(logCtx.providerAdapter).toBe("openai-responses");
+      expect(logCtx.attempts).toEqual([expect.objectContaining({
+        ordinal: 1,
+        provider: "gateway",
+        model: "test-model",
+        adapter: "openai-responses",
+        sendCount: 1,
+      })]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("projects explicitly empty attempts from persisted usage", () => {
+    const projected = requestLogEntryFromPersistedUsage({
+      requestId: "ocx-empty-attempts",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-test",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "unreported",
+      attempts: [],
+    });
+
+    expect(projected.attempts).toEqual([]);
+  });
+
   test("records the adapter's exact outbound reasoning parameter", () => {
     const attempt = beginRequestAttempt(1, "xai", "grok-4.5", "openai-chat");
     const logCtx: RequestLogContext = {
@@ -150,6 +209,23 @@ describe("request log metadata", () => {
       expect(attempt.reasoningWireField).toBeUndefined();
       expect(attempt.reasoningWireValue).toBeUndefined();
     }
+  });
+
+  test("records a gateway reasoning disable as a boolean", () => {
+    const logCtx: RequestLogContext = { model: "m", provider: "cline-pass" };
+    recordAdapterReasoning(logCtx, {
+      url: "https://api.cline.bot/api/v1/chat/completions",
+      method: "POST",
+      headers: {},
+      body: "{}",
+      reasoningLog: {
+        effectiveEffort: "none",
+        wireField: "reasoning.enabled",
+        wireValue: false,
+      },
+    });
+
+    expect(logCtx.reasoningWireValue).toBe(false);
   });
 
   test("recordFirstOutput is one-shot for request and active attempt (WP4 TTFT)", () => {
@@ -544,6 +620,17 @@ describe("request log metadata", () => {
     expect(combined.map(entry => entry.requestId)).toEqual(["c"]);
   });
 
+  test("filters logs by offset and limit", () => {
+    const logs = Array.from({ length: 5 }, (_, i) => log({ requestId: `r${i}`, provider: "openai", status: 200 }));
+    expect(filterRequestLogs(logs, new URLSearchParams("limit=2")).map(entry => entry.requestId)).toEqual(["r3", "r4"]);
+    expect(filterRequestLogs(logs, new URLSearchParams("offset=2&limit=2")).map(entry => entry.requestId)).toEqual(["r1", "r2"]);
+  });
+
+  test("limit returns newest rows when buffer exceeds limit", () => {
+    const logs = Array.from({ length: 10 }, (_, i) => log({ requestId: `r${i}`, provider: "openai", status: 200 }));
+    expect(filterRequestLogs(logs, new URLSearchParams("limit=3")).map(entry => entry.requestId)).toEqual(["r7", "r8", "r9"]);
+  });
+
   test("deferred JSON logging preserves response service tier before final log", async () => {
     const entries: RequestLogEntry[] = [];
     const logCtx = {
@@ -589,6 +676,29 @@ describe("request log metadata", () => {
       resolvedModel: "gpt-5.5",
       usageStatus: "unreported",
     });
+  });
+
+  test("client-facing response selectors do not replace the physical routed model", async () => {
+    const entries: RequestLogEntry[] = [];
+    const logCtx: RequestLogContext = {
+      model: "claude-sonnet-5",
+      provider: "anthropic",
+      resolvedModel: "claude-sonnet-5",
+      preserveResolvedModelFromRoute: true,
+    };
+    const response = responseWithDeferredRequestLog(
+      new Response(JSON.stringify({
+        model: "anthropic/claude-sonnet-5",
+        status: "completed",
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      "ocx-test-routed-model",
+      Date.now(),
+      logCtx,
+      entry => entries.push(entry),
+    );
+
+    expect(await response.json()).toMatchObject({ model: "anthropic/claude-sonnet-5" });
+    expect(entries[0]?.resolvedModel).toBe("claude-sonnet-5");
   });
 
   test("deferred JSON logging captures reported usage", async () => {
@@ -1250,7 +1360,7 @@ describe("request log restart hydrate", () => {
 
   test("hydrate keeps only the newest MAX_LOG_SIZE rows from a long usage.jsonl", () => {
     clearRequestLogsForTests();
-    const persisted: PersistedUsageEntry[] = Array.from({ length: 205 }, (_, i) => ({
+    const persisted: PersistedUsageEntry[] = Array.from({ length: 2005 }, (_, i) => ({
       requestId: `ocx-${i}`,
       timestamp: i,
       provider: "openai",
@@ -1259,10 +1369,10 @@ describe("request log restart hydrate", () => {
       durationMs: 1,
       usageStatus: "unreported" as const,
     }));
-    expect(hydrateRequestLogsFromDisk(() => persisted)).toBe(200);
+    expect(hydrateRequestLogsFromDisk(() => persisted)).toBe(2000);
     const ids = getRequestLogEntries().map(e => e.requestId);
     expect(ids[0]).toBe("ocx-5");
-    expect(ids.at(-1)).toBe("ocx-204");
+    expect(ids.at(-1)).toBe("ocx-2004");
   });
 
   test("hydrate swallows usage.jsonl read failures instead of crashing startup", () => {

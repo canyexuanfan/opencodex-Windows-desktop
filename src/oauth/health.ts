@@ -3,8 +3,15 @@ import { getAnthropicAccountHealthSnapshot } from "./anthropic-routing";
 import { isAccountNeedsReauth } from "../codex/account-runtime-state";
 import { getCodexAccountCredential, listCodexAccountIds } from "../codex/account-store";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
+import { configuredAdminToken } from "../lib/admin-secrets";
+import { readRuntimePort } from "../config";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  createLocalAttestationChallenge,
+  verifyLocalAttestationProof,
+} from "../lib/local-management-attestation";
 import { maskAccountId } from "../lib/privacy";
-import { loadServiceTokenFromFile } from "../lib/service-secrets";
 import { findLiveProxy, probeHostname } from "../server/proxy-liveness";
 import { loadAuthStore, peekAuthStore, peekOAuthRefreshIntent, readOAuthRefreshIntent } from "./store";
 import type { ProviderAccount } from "./types";
@@ -320,36 +327,82 @@ function coerceRemoteAccountHealth(
   return projectOAuthAccountHealth({ needsReauth: account.needsReauth === true });
 }
 
+type LiveProxyCodexHealthResult = {
+  source: CodexHealthSource;
+  entries: OAuthHealthEntry[] | null;
+};
+
 async function fetchCodexHealthFromLiveProxy(
   fetchImpl: typeof fetch = fetch,
   findLiveProxyImpl: typeof findLiveProxy = findLiveProxy,
-): Promise<OAuthHealthEntry[] | null> {
+  readRuntimePortImpl: typeof readRuntimePort = readRuntimePort,
+): Promise<LiveProxyCodexHealthResult> {
   const live = await findLiveProxyImpl();
-  if (!live) return null;
-  const token = process.env.OPENCODEX_API_AUTH_TOKEN ?? loadServiceTokenFromFile(process.env);
+  if (!live) return { source: "unavailable", entries: null };
+  // This is a management-plane endpoint. A data-plane service token is intentionally not
+  // interchangeable with the admin credential even on loopback.
+  const token = configuredAdminToken();
   const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
   try {
+    if (token) {
+      // Public /healthz identity is intentionally forgeable enough for liveness, not
+      // strong enough to receive a bearer. Prove the listener knows the per-process
+      // secret stored in the protected runtime record before attaching the admin token.
+      if (live.source !== "runtime" || live.pid === null) {
+        return { source: "management-api-unavailable", entries: null };
+      }
+      const attestedPid = live.pid;
+      const runtime = readRuntimePortImpl(attestedPid);
+      if (!runtime?.attestationSecret || runtime.port !== live.port) {
+        return { source: "management-api-unavailable", entries: null };
+      }
+      const challenge = createLocalAttestationChallenge();
+      const proofResponse = await fetchImpl(
+        `http://${probeHostname(live.hostname)}:${live.port}/healthz`,
+        {
+          headers: { [LOCAL_ATTESTATION_CHALLENGE_HEADER]: challenge },
+          signal: AbortSignal.timeout(4000),
+        },
+      );
+      const proof = proofResponse.headers.get(LOCAL_ATTESTATION_PROOF_HEADER);
+      if (!proofResponse.ok || !verifyLocalAttestationProof(
+        runtime.attestationSecret,
+        challenge,
+        attestedPid,
+        live.port,
+        proof,
+      )) {
+        return { source: "management-api-unavailable", entries: null };
+      }
+      headers.Authorization = `Bearer ${token}`;
+    }
     const res = await fetchImpl(
       `http://${probeHostname(live.hostname)}:${live.port}/api/codex-auth/accounts`,
       { headers, signal: AbortSignal.timeout(4000) },
     );
-    if (!res.ok) return null;
+    if (res.status === 401 || res.status === 403) {
+      return { source: "management-auth-failed", entries: null };
+    }
+    if (!res.ok) return { source: "management-api-unavailable", entries: null };
     const json = await res.json() as { accounts?: ProxyCodexAccountHealth[] };
-    if (!Array.isArray(json.accounts)) return null;
+    if (!Array.isArray(json.accounts)) return { source: "management-api-unavailable", entries: null };
     const entries: OAuthHealthEntry[] = [];
     for (const account of json.accounts) {
       if (!account?.id || typeof account.id !== "string") continue;
       pushEntry(entries, "codex", account.id, coerceRemoteAccountHealth(account));
     }
-    return entries;
+    return { source: "management-api", entries };
   } catch {
-    return null;
+    return { source: "management-api-unavailable", entries: null };
   }
 }
 
 /** How CLI/doctor obtained Codex cooldown/reauth (proxy memory only lives in the proxy). */
-export type CodexHealthSource = "management-api" | "unavailable";
+export type CodexHealthSource =
+  | "management-api"
+  | "unavailable"
+  | "management-auth-failed"
+  | "management-api-unavailable";
 
 export type OAuthCliHealthReport = {
   entries: OAuthHealthEntry[];
@@ -359,6 +412,10 @@ export type OAuthCliHealthReport = {
 /** Shown by `ocx status` / `ocx doctor` when the proxy management API is unreachable. */
 export const CODEX_HEALTH_UNAVAILABLE_NOTE =
   "Codex health: unavailable (proxy not running; live cooldown/reauth requires the management API)";
+export const CODEX_HEALTH_AUTH_FAILED_NOTE =
+  "Codex health: unavailable (proxy running; management authentication failed)";
+export const CODEX_HEALTH_MANAGEMENT_API_UNAVAILABLE_NOTE =
+  "Codex health: unavailable (proxy running; management API did not return account health)";
 
 /**
  * CLI/doctor collector: observe-only OAuth store reads, and Codex health only from the
@@ -369,13 +426,18 @@ export async function collectOAuthHealthEntriesForCli(
   deps: {
     fetchImpl?: typeof fetch;
     findLiveProxyImpl?: typeof findLiveProxy;
+    readRuntimePortImpl?: typeof readRuntimePort;
   } = {},
 ): Promise<OAuthCliHealthReport> {
   const entries = collectOAuthHealthEntries(now, { observeOnly: true, includeLocalCodex: false });
-  const remote = await fetchCodexHealthFromLiveProxy(deps.fetchImpl, deps.findLiveProxyImpl);
-  if (remote) {
-    for (const entry of remote) entries.push(entry);
+  const remote = await fetchCodexHealthFromLiveProxy(
+    deps.fetchImpl,
+    deps.findLiveProxyImpl,
+    deps.readRuntimePortImpl,
+  );
+  if (remote.entries) {
+    for (const entry of remote.entries) entries.push(entry);
     return { entries, codexHealthSource: "management-api" };
   }
-  return { entries, codexHealthSource: "unavailable" };
+  return { entries, codexHealthSource: remote.source };
 }

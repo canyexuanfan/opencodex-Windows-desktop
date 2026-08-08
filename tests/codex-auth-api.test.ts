@@ -1,13 +1,22 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
+  resetLifecycleDrainStateForTests,
+} from "../src/server/lifecycle";
 import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex/account-label";
 import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
   clearMainAccountInfoCache, maskEmail,
+  clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
+  type CodexAuthAccountDto,
+  listCodexAuthAccounts,
 } from "../src/codex/auth-api";
 import {
   getCodexAccountCredential,
@@ -31,12 +40,30 @@ import {
 } from "../src/codex/websocket-registry";
 import type { OcxConfig } from "../src/types";
 import type { WsData } from "../src/server/ws-bridge";
+import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
+import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "../src/codex/main-account";
 import {
   deleteCodexAccount,
   reconcileMainCodexAccountRuntimeState,
   resetMainCodexAccountIdentityTrackingForTests,
 } from "../src/codex/account-lifecycle";
+import {
+  getConfigPath,
+  loadConfig,
+  saveConfig,
+  setPersistedConfigMutationBeforeCommitForTests,
+} from "../src/config";
+import { captureConfigGeneration, registerStateStore } from "../src/lib/state-store-sweeper";
+import {
+  reconcileLiveStateStores,
+  setLiveStateStoreConfig,
+  STATE_STORE_REGISTRATIONS,
+} from "../src/lib/state-store-registrations";
+import {
+  listOpenAiForwardSidecarCandidates,
+  resolveFirstUsableOpenAiSidecar,
+} from "../src/providers/openai-sidecar";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-codex-auth-api-test");
 const TEST_CODEX_HOME = join(TEST_DIR, "codex");
@@ -193,6 +220,7 @@ function seedPoolAccount(
 }
 
 beforeEach(() => {
+  resetLifecycleDrainStateForTests();
   previousOpencodexHome = process.env.OPENCODEX_HOME;
   previousCodexHome = process.env.CODEX_HOME;
   previousManualImportEnv = process.env[MANUAL_IMPORT_ENV];
@@ -215,6 +243,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetLifecycleDrainStateForTests();
+  setPersistedConfigMutationBeforeCommitForTests(null);
   clearAccountNeedsReauth("__main__");
   clearAccountQuota();
   clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
@@ -235,6 +265,438 @@ afterEach(() => {
 });
 
 describe("codex-auth API", () => {
+  test("account polling owns native main through publication so switch and rollback wait", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-poll-owned", account_id: "acct-main-poll-owned" },
+    }));
+
+    for (const scenario of [
+      { path: "/api/native-main-profiles/switch", body: { target: "target", confirmedStopped: true }, method: "switch" as const },
+      { path: "/api/native-main-profiles/recover", body: { rollback: true, confirmedStopped: true }, method: "recover" as const },
+    ]) {
+      clearMainAccountInfoCache();
+      clearAccountQuota();
+      setMainAccountPlan(null);
+      let releaseUsage!: () => void;
+      const usageGate = new Promise<void>(resolve => { releaseUsage = resolve; });
+      let markUsageStarted!: () => void;
+      const usageStarted = new Promise<void>(resolve => { markUsageStarted = resolve; });
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "https://chatgpt.com/backend-api/wham/usage") {
+          markUsageStarted();
+          await usageGate;
+          return Response.json({
+            email: "owned@example.test",
+            plan_type: "plus",
+            rate_limit: { primary_window: { used_percent: 37 } },
+          });
+        }
+        return previousFetch(input, init);
+      }) as typeof fetch;
+
+      const pollRequest = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const polling = handleCodexAuthAPI(pollRequest, new URL(pollRequest.url), makeConfig());
+      await usageStarted;
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+
+      let operations = 0;
+      const manager = {
+        context: undefined,
+        switch: async () => { operations += 1; return { switched: true }; },
+        recover: async () => { operations += 1; return { recovered: true }; },
+      } as unknown as NativeProfileManager;
+      const profileRequest = () => new Request(`http://localhost${scenario.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(scenario.body),
+      });
+      const blockedRequest = profileRequest();
+      const blocked = await handleNativeProfileAPI(
+        blockedRequest,
+        new URL(blockedRequest.url),
+        makeConfig(),
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(blocked?.status).toBe(409);
+      expect(operations).toBe(0);
+
+      releaseUsage();
+      const pollResponse = await polling;
+      expect(pollResponse?.status).toBe(200);
+      const body = await pollResponse?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).toMatchObject({
+        plan: "plus",
+        hasCredential: true,
+        quota: { weeklyPercent: 37 },
+      });
+      expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)).toMatchObject({ weeklyPercent: 37 });
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+
+      const allowedRequest = profileRequest();
+      const allowed = await handleNativeProfileAPI(
+        allowedRequest,
+        new URL(allowedRequest.url),
+        makeConfig(),
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(allowed?.status).toBe(200);
+      expect(operations).toBe(1);
+    }
+  });
+
+  test("account list discards a main snapshot invalidated while pool publication is pending", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-generation", account_id: "acct-main-generation" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "publication-pool",
+      email: "publication-pool@example.test",
+      plan: "plus",
+      chatgptAccountId: "acct-publication-pool",
+    });
+    let releasePool!: () => void;
+    const poolGate = new Promise<void>(resolve => { releasePool = resolve; });
+    let markPoolStarted!: () => void;
+    const poolStarted = new Promise<void>(resolve => { markPoolStarted = resolve; });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "https://chatgpt.com/backend-api/wham/usage") {
+        return previousFetch(input, init);
+      }
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      if (accountId === "acct-main-generation") {
+        return Response.json({
+          email: "stale-main@example.test",
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 44 } },
+        });
+      }
+      markPoolStarted();
+      await poolGate;
+      return Response.json({
+        plan_type: "plus",
+        rate_limit: { primary_window: { used_percent: 12 } },
+      });
+    }) as typeof fetch;
+
+    try {
+      const request = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const pending = handleCodexAuthAPI(request, new URL(request.url), config);
+      await poolStarted;
+      clearMainAccountInfoCache();
+      releasePool();
+      const response = await pending;
+      const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)).toMatchObject({
+        email: "Codex App login",
+        plan: null,
+        quota: null,
+      });
+    } finally {
+      releasePool();
+    }
+  });
+
+  test("account list preserves only the last claim-owned credential snapshot while main is fenced", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-snapshot", account_id: "acct-main-snapshot" },
+    }));
+    globalThis.fetch = (async () => Response.json({
+      email: "snapshot@example.test",
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+    const listMain = async () => {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+      const response = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      return body.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)!;
+    };
+
+    expect((await listMain()).hasCredential).toBe(true);
+    clearMainAccountInfoCache();
+    let drain = acquireNativeMainProfileDrain("credential-snapshot-cold-cache");
+    try {
+      expect((await listMain()).hasCredential).toBe(true);
+    } finally {
+      drain?.release();
+    }
+
+    await listMain();
+    rmSync(join(TEST_CODEX_HOME, "auth.json"));
+    expect((await listMain()).hasCredential).toBe(false);
+    drain = acquireNativeMainProfileDrain("credential-snapshot-warm-cache");
+    try {
+      expect((await listMain()).hasCredential).toBe(false);
+    } finally {
+      drain?.release();
+    }
+  });
+
+  test("bulk pause retains native-main ownership through pool settlement and persisted publication", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-pause-owned", account_id: "acct-main-pause-owned" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pause-pool", email: "pool@example.test", plan: "plus" });
+    let releasePool!: () => void;
+    const poolGate = new Promise<void>(resolve => { releasePool = resolve; });
+    let markMainDone!: () => void;
+    const mainDone = new Promise<void>(resolve => { markMainDone = resolve; });
+    let markPoolStarted!: () => void;
+    const poolStarted = new Promise<void>(resolve => { markPoolStarted = resolve; });
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      if (accountId === "acct-main-pause-owned") {
+        markMainDone();
+        return Response.json({
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 100 } },
+        });
+      }
+      markPoolStarted();
+      await poolGate;
+      return Response.json({
+        plan_type: "plus",
+        rate_limit: { primary_window: { used_percent: 10 } },
+      });
+    }) as typeof fetch;
+
+    const pauseReq = new Request("http://localhost/api/codex-auth/accounts/pause-exhausted", { method: "PUT" });
+    const pending = handleCodexAuthAPI(pauseReq, new URL(pauseReq.url), config);
+    await Promise.all([mainDone, poolStarted]);
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    const manager = {
+      context: undefined,
+      switch: async () => ({ switched: true }),
+    } as unknown as NativeProfileManager;
+    const switchReq = new Request("http://localhost/api/native-main-profiles/switch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target: "target", confirmedStopped: true }),
+    });
+    const blocked = await handleNativeProfileAPI(switchReq, new URL(switchReq.url), makeConfig(), {
+      manager,
+      drainTimeoutMs: 0,
+    });
+    expect(blocked?.status).toBe(409);
+
+    releasePool();
+    const response = await pending;
+    expect(response?.status).toBe(200);
+    expect((await response?.json() as { pausedAccountIds: string[] }).pausedAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+    expect(loadConfig().pausedCodexAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+    expect(getNativeMainProfileRequestCount()).toBe(0);
+  });
+
+  test("bulk pause settles a rejected pool probe before atomically publishing main pause", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-pause-settled", account_id: "acct-main-pause-settled" },
+    }));
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "busy-pool", email: "busy@example.test", plan: "plus" });
+    const clearAdmission = seedCodexAuthAdmissionForTests({ quotaFlights: 16 });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 100 } },
+    })) as typeof fetch;
+    try {
+      const request = new Request("http://localhost/api/codex-auth/accounts/pause-exhausted", { method: "PUT" });
+      const response = await handleCodexAuthAPI(request, new URL(request.url), config);
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({
+        pausedAccountIds: [MAIN_CODEX_ACCOUNT_ID],
+        checkedAccountCount: 1,
+        failedAccountCount: 1,
+        complete: false,
+      });
+      expect(loadConfig().pausedCodexAccountIds).toContain(MAIN_CODEX_ACCOUNT_ID);
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      clearAdmission();
+    }
+  });
+
+  test("main reset-credit consume owns native main through destructive upstream work and rejects post-fence work", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "main-reset-owned", account_id: "acct-main-reset-owned" },
+    }));
+    let consumeCalls = 0;
+    let releaseConsume!: () => void;
+    const consumeGate = new Promise<void>(resolve => { releaseConsume = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/rate-limit-reset-credits/consume")) {
+        consumeCalls += 1;
+        markStarted();
+        await consumeGate;
+        return Response.json({ code: "noop" });
+      }
+      return previousFetch(input, init);
+    }) as typeof fetch;
+    const request = () => {
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: MAIN_CODEX_ACCOUNT_ID }),
+      });
+      return handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    };
+
+    const pending = request();
+    await started;
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    const drain = acquireNativeMainProfileDrain("reset-credit-overlap");
+    expect(drain).not.toBeNull();
+    try {
+      const blocked = await request();
+      expect(blocked?.status).toBe(503);
+      expect(blocked?.headers.get("Retry-After")).toBe("1");
+      expect(await blocked?.json()).toMatchObject({ code: "server_busy" });
+      expect(consumeCalls).toBe(1);
+
+      releaseConsume();
+      const completed = await pending;
+      expect(completed?.status).toBe(200);
+      expect(await completed?.json()).toEqual({ code: "noop" });
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+    } finally {
+      releaseConsume();
+      drain?.release();
+    }
+  });
+
+  test("pool-quota flight 17 total across accounts rejects before request creation while compatible generation joins", async () => {
+    const clearLoginOwners = seedCodexAuthAdmissionForTests({ loginFlows: 32 });
+    try {
+      const login = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "capacity-login" }),
+      });
+      const response = await handleCodexAuthAPI(login, new URL(login.url), makeConfig());
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toMatchObject({ code: "server_busy" });
+    } finally {
+      clearLoginOwners();
+    }
+
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "quota-a", email: "a@example.test" });
+    seedPoolAccount(config, { id: "quota-b", email: "b@example.test" });
+    const clearQuotaOwners = seedCodexAuthAdmissionForTests({ quotaFlights: 15 });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let requestCount = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/wham/usage")) {
+        requestCount += 1;
+        await gate;
+        return Response.json({ rate_limit: { primary_window: { used_percent: 1 } } });
+      }
+      return previousFetch(input);
+    }) as typeof fetch;
+    try {
+      const request = () => {
+        const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+        return handleCodexAuthAPI(req, new URL(req.url), config);
+      };
+      const first = request();
+      const joiner = request();
+      for (let attempt = 0; attempt < 20 && requestCount === 0; attempt++) await Promise.resolve();
+      expect(requestCount).toBe(1);
+      release();
+      const bodies = await Promise.all([first, joiner].map(async pending => {
+        const response = await pending;
+        return response?.json() as Promise<{ accounts: CodexAuthAccountDto[] }>;
+      }));
+      expect(bodies[0].accounts.find(account => account.id === "quota-b")?.quotaProbeSkipped).toBe(true);
+      expect(bodies[1].accounts.find(account => account.id === "quota-a")?.quotaProbeSkipped).not.toBe(true);
+    } finally {
+      release();
+      clearQuotaOwners();
+    }
+  });
+
+  test("Codex login state row 33 rejects before browser work and terminal TTL deletes only its owner", async () => {
+    const cleanup = seedCodexAuthAdmissionForTests({ loginFlows: 32 });
+    try {
+      const request = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: "capacity-login-owner" }),
+      });
+      const response = await handleCodexAuthAPI(request, new URL(request.url), makeConfig());
+      expect(response?.status).toBe(503);
+      expect(await response?.json()).toMatchObject({ code: "server_busy" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("busy pool-quota probe leaves management GET 200 with cached quota and per-account quotaProbeSkipped", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "quota-skipped", email: "skip@example.test" });
+    updateAccountQuota("quota-skipped", 42);
+    const cleanup = seedCodexAuthAdmissionForTests({ quotaFlights: 16 });
+    try {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const response = await handleCodexAuthAPI(req, new URL(req.url), config);
+      const body = await response?.json() as { accounts: CodexAuthAccountDto[] };
+      expect(response?.status).toBe(200);
+      expect(body.accounts.find(account => account.id === "quota-skipped")).toMatchObject({
+        quotaProbeSkipped: true,
+        quota: { weeklyPercent: 42 },
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("busy pool-quota probe maps reset-credit refresh to 503 server_busy with Retry-After 1", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "quota-reset-busy", email: "busy@example.test" });
+    const cleanup = seedCodexAuthAdmissionForTests({ quotaFlights: 16 });
+    globalThis.fetch = (async (input: RequestInfo | URL) => String(input).includes("/consume")
+      ? Response.json({ code: "reset" })
+      : previousFetch(input)) as typeof fetch;
+    try {
+      const req = new Request("http://localhost/api/codex-auth/reset-credits/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId: "quota-reset-busy" }),
+      });
+      const response = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(response?.status).toBe(503);
+      expect(response?.headers.get("Retry-After")).toBe("1");
+      expect(await response?.json()).toMatchObject({ code: "server_busy" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("busy pool-quota probe is swallowed by startup priming like other priming failures", async () => {
+    const config = makeConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+    });
+    seedPoolAccount(config, { id: "prime-busy", email: "prime@example.test" });
+    const cleanup = seedCodexAuthAdmissionForTests({ quotaFlights: 16 });
+    try {
+      await expect(primeCodexPoolQuotas(config, "test")).resolves.toBeUndefined();
+    } finally {
+      clearCodexQuotaPrimeState();
+      cleanup();
+    }
+  });
+
   test("GET /api/codex-auth/accounts returns array with main", async () => {
     const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
     const url = new URL(req.url);
@@ -549,6 +1011,8 @@ describe("codex-auth API", () => {
     const data = await resp!.json() as { activeCodexAccountId: string | null; autoSwitchThreshold: number };
     expect(data).toEqual({
       activeCodexAccountId: "pool-live",
+      pinned: false,
+      pinnedAccountId: null,
       autoSwitchThreshold: 55,
       upstreamFailoverThreshold: 3,
       accountPoolStrategy: "quota",
@@ -682,6 +1146,697 @@ describe("codex-auth API", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("GET /api/codex-auth/accounts reconciles and persists a fresh pool plan on a cache miss", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-refresh",
+      email: "pool-plan-refresh@example.com",
+      plan: "plus",
+    });
+    saveConfig(structuredClone(config));
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-plan-refresh")?.plan).toBe("prolite");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-refresh")?.plan).toBe("prolite");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-refresh")?.plan).toBe("prolite");
+  });
+
+  test("a fresh upgraded plan controls quota projection in the same accounts response", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-upgrade",
+      email: "pool-plan-upgrade@example.com",
+      plan: "free",
+    });
+    saveConfig(structuredClone(config));
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "pro",
+      rate_limit: {
+        primary_window: { used_percent: 17, reset_at: 1782628379 },
+        tertiary_window: { used_percent: 23, reset_at: 1787401330 },
+      },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as {
+      accounts: Array<{ id: string; plan?: string; quota?: Record<string, unknown> }>;
+    };
+    const account = data.accounts.find(candidate => candidate.id === "pool-plan-upgrade");
+
+    expect(account?.plan).toBe("pro");
+    expect(account?.quota).toMatchObject({
+      weeklyPercent: 17,
+      weeklyResetAt: 1782628379,
+      monthlyPercent: 23,
+      monthlyResetAt: 1787401330,
+    });
+  });
+
+  test("pool plan refresh ignores a missing upstream plan and performs no config write", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-missing",
+      email: "pool-plan-missing@example.com",
+      plan: "plus",
+    });
+    saveConfig(structuredClone(config));
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
+    globalThis.fetch = (async () => Response.json({
+      rate_limit: { primary_window: { used_percent: 8, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-missing")?.plan).toBe("plus");
+    expect(configCommits).toBe(0);
+  });
+
+  test("pool plan refresh persists plan_type when WHAM omits rate_limit windows", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-only",
+      email: "pool-plan-only@example.com",
+      plan: "plus",
+    });
+    saveConfig(structuredClone(config));
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-only")?.plan).toBe("prolite");
+  });
+
+  test("pool plan refresh performs no config write when the authoritative plan is unchanged", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-unchanged",
+      email: "pool-plan-unchanged@example.com",
+      plan: "plus",
+    });
+    saveConfig(structuredClone(config));
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "plus",
+      rate_limit: { primary_window: { used_percent: 7, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
+    expect(configCommits).toBe(0);
+  });
+
+  test("pool plan refresh does not recreate a config file deleted while the server is running", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-config-deleted",
+      email: "pool-plan-config-deleted@example.com",
+      plan: "plus",
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "pro",
+      rate_limit: { primary_window: { used_percent: 6, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(resp!.status).toBe(200);
+    // Missing config fails closed on disk, but the response still surfaces the WHAM plan.
+    expect(data.accounts.find(account => account.id === "pool-plan-config-deleted")?.plan).toBe("pro");
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-config-deleted")?.plan).toBe("plus");
+    expect(existsSync(join(TEST_DIR, "config.json"))).toBe(false);
+  });
+
+  test("pool plan refresh batches multiple authoritative changes into one config save", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-plan-a", email: "pool-plan-a@example.com", plan: "plus" });
+    seedPoolAccount(config, { id: "pool-plan-b", email: "pool-plan-b@example.com", plan: "free" });
+    saveConfig(structuredClone(config));
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
+    globalThis.fetch = (async (_input, init) => {
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      return Response.json({
+        plan_type: accountId === "acct-pool-plan-a" ? "prolite" : "pro",
+        rate_limit: { primary_window: { used_percent: 9 } },
+      });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    expect(resp!.status).toBe(200);
+    expect(configCommits).toBe(1);
+    expect(loadConfig().codexAccounts?.map(account => [account.id, account.plan])).toEqual([
+      ["pool-plan-a", "prolite"],
+      ["pool-plan-b", "pro"],
+    ]);
+  });
+
+  test("concurrent pool plan refreshes share token rotation, one WHAM read, and one config save", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-concurrent",
+      email: "pool-plan-concurrent@example.com",
+      plan: "plus",
+      expiresAt: Date.now() - 1,
+    });
+    saveConfig(structuredClone(config));
+    let configCommits = 0;
+    setPersistedConfigMutationBeforeCommitForTests(() => { configCommits += 1; });
+    let calls = 0;
+    let tokenRefreshCalls = 0;
+    let releaseFetch!: () => void;
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
+    const fetchGate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    globalThis.fetch = (async input => {
+      if (String(input) === "https://auth.openai.com/oauth/token") {
+        tokenRefreshCalls += 1;
+        return Response.json({
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+          expires_in: 3600,
+        });
+      }
+      calls += 1;
+      markFetchStarted();
+      await fetchGate;
+      return Response.json({
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 16 } },
+      });
+    }) as typeof fetch;
+
+    try {
+      const request = () => {
+        const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+        return handleCodexAuthAPI(req, new URL(req.url), config);
+      };
+      const first = request();
+      const second = request();
+      await fetchStarted;
+      await new Promise<void>(resolve => queueMicrotask(resolve));
+      expect(calls).toBe(1);
+      releaseFetch();
+      const responses = await Promise.all([first, second]);
+      const payloads = await Promise.all(responses.map(response => response!.json())) as Array<{
+        accounts: Array<{ id: string; plan?: string }>;
+      }>;
+
+      expect(payloads.map(payload => payload.accounts.find(account => account.id === "pool-plan-concurrent")?.plan))
+        .toEqual(["pro", "pro"]);
+      expect(tokenRefreshCalls).toBe(1);
+      expect(calls).toBe(1);
+      expect(configCommits).toBe(1);
+    } finally {
+      setPersistedConfigMutationBeforeCommitForTests(null);
+    }
+  });
+
+  test("pool plan persistence preserves an unrelated edit from the latest disk config", async () => {
+    const config = makeConfig({
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          note: "runtime-note",
+        },
+      },
+      defaultProvider: "custom",
+    });
+    seedPoolAccount(config, { id: "pool-plan-disk", email: "pool-plan-disk@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    let releaseFetch!: () => void;
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
+    const fetchGate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    globalThis.fetch = (async () => {
+      markFetchStarted();
+      await fetchGate;
+      return Response.json({
+        plan_type: "prolite",
+        rate_limit: { primary_window: { used_percent: 14 } },
+      });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const pending = handleCodexAuthAPI(req, new URL(req.url), config);
+    await fetchStarted;
+    const editedOnDisk = loadConfig();
+    editedOnDisk.providers.custom!.note = "manual-disk-note";
+    saveConfig(editedOnDisk);
+    releaseFetch();
+    const resp = await pending;
+    expect(resp!.status).toBe(200);
+
+    const persisted = loadConfig();
+    expect(persisted.providers.custom?.note).toBe("manual-disk-note");
+    expect(persisted.codexAccounts?.find(account => account.id === "pool-plan-disk")?.plan).toBe("prolite");
+    expect(config.providers.custom?.note).toBe("runtime-note");
+  });
+
+  test("pool plan commit rebases an unrelated config write injected after its first checks", async () => {
+    const config = makeConfig({
+      providers: {
+        custom: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          note: "runtime-note",
+        },
+      },
+      defaultProvider: "custom",
+    });
+    seedPoolAccount(config, { id: "pool-plan-cas-edit", email: "pool-plan-cas-edit@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    let injected = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      injected = true;
+      const concurrent = loadConfig();
+      concurrent.providers.custom!.note = "concurrent-disk-note";
+      saveConfig(concurrent);
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const persisted = loadConfig();
+
+    expect(injected).toBe(true);
+    expect(persisted.providers.custom?.note).toBe("concurrent-disk-note");
+    expect(persisted.codexAccounts?.find(account => account.id === "pool-plan-cas-edit")?.plan).toBe("prolite");
+    expect(config.providers.custom?.note).toBe("runtime-note");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-edit")?.plan).toBe("prolite");
+  });
+
+  test("pool plan commit does not recreate a config deleted after its first checks", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-plan-cas-delete", email: "pool-plan-cas-delete@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    let absentAtRecheck = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      rmSync(getConfigPath(), { force: true });
+      absentAtRecheck = !existsSync(getConfigPath());
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(absentAtRecheck).toBe(true);
+    expect(existsSync(getConfigPath())).toBe(false);
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-delete")?.plan).toBe("prolite");
+  });
+
+  test("pool plan commit leaves config malformed when malformed bytes arrive after its first checks", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "pool-plan-cas-malformed", email: "pool-plan-cas-malformed@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    const malformed = "{ malformed concurrent config";
+    let malformedAtRecheck = false;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      writeFileSync(getConfigPath(), malformed);
+      malformedAtRecheck = readFileSync(getConfigPath(), "utf8") === malformed;
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(malformedAtRecheck).toBe(true);
+    expect(readFileSync(getConfigPath(), "utf8")).toBe(malformed);
+    expect(config.codexAccounts?.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === "pool-plan-cas-malformed")?.plan).toBe("prolite");
+  });
+
+  test("pool plan commit rejects an old plan after same-id credential replacement at its commit seam", async () => {
+    const accountId = "pool-plan-cas-generation";
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: accountId,
+      email: "old-generation@example.com",
+      plan: "plus",
+      accessToken: "old-generation-access",
+      refreshToken: "old-generation-refresh",
+      chatgptAccountId: "old-generation-account",
+    });
+    saveConfig(structuredClone(config));
+    const startingGeneration = readCodexAccountRecord(accountId)?.generation;
+    let replacementGeneration: number | undefined;
+    setPersistedConfigMutationBeforeCommitForTests(() => {
+      const replacementConfig = loadConfig();
+      const replacementAccount = replacementConfig.codexAccounts?.find(account => account.id === accountId);
+      if (!replacementAccount) throw new Error("replacement account missing");
+      replacementAccount.email = "replacement@example.test";
+      replacementAccount.plan = "free";
+      saveCodexAccountCredential(accountId, {
+        accessToken: "replacement-access",
+        refreshToken: "replacement-refresh",
+        expiresAt: Date.now() + 5 * 60_000,
+        chatgptAccountId: "replacement-account",
+      });
+      replacementGeneration = readCodexAccountRecord(accountId)?.generation;
+      saveConfig(replacementConfig);
+    });
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+    const persistedAccount = loadConfig().codexAccounts?.find(account => account.id === accountId);
+    const finalRecord = readCodexAccountRecord(accountId);
+
+    expect(startingGeneration).toBe(1);
+    expect(replacementGeneration).toBe(2);
+    expect(finalRecord?.generation).toBe(2);
+    expect(finalRecord?.credential?.accessToken).toBe("replacement-access");
+    expect(persistedAccount).toMatchObject({ email: "replacement@example.test", plan: "free" });
+    expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+    expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("plus");
+  });
+
+  test("pool plan persistence fails closed without waiting behind a busy config writer", async () => {
+    const accountId = "pool-plan-lock-busy";
+    const config = makeConfig();
+    seedPoolAccount(config, { id: accountId, email: "pool-plan-lock-busy@example.com", plan: "plus" });
+    saveConfig(structuredClone(config));
+    const lockDatabase = new Database(join(TEST_DIR, "config-mutation.sqlite"), { create: true });
+    lockDatabase.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 12 } },
+    })) as typeof fetch;
+
+    try {
+      const startedAt = performance.now();
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      const elapsedMs = performance.now() - startedAt;
+      const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+      expect(elapsedMs).toBeLessThan(2_000);
+      expect(loadConfig().codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+      expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("plus");
+      // Disk persistence fails closed under lock contention, but the response still reflects WHAM.
+      expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("prolite");
+    } finally {
+      lockDatabase.exec("ROLLBACK");
+      lockDatabase.close();
+    }
+  });
+
+  test("pool plan refresh cannot update an account deleted and recreated during the WHAM request", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-reused",
+      email: "old-plan@example.com",
+      plan: "plus",
+      accessToken: "old-plan-access",
+      refreshToken: "old-plan-refresh",
+      chatgptAccountId: "old-plan-account",
+    });
+    let releaseFetch!: () => void;
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
+    const fetchGate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    globalThis.fetch = (async () => {
+      markFetchStarted();
+      await fetchGate;
+      return Response.json({
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 11 } },
+      });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const pending = handleCodexAuthAPI(req, new URL(req.url), config);
+    await fetchStarted;
+    deleteCodexAccount(config, "pool-plan-reused");
+    config.codexAccounts = [{
+      id: "pool-plan-reused",
+      email: "new-plan@example.com",
+      plan: "free",
+      isMain: false,
+    }];
+    saveCodexAccountCredential("pool-plan-reused", {
+      accessToken: "new-plan-access",
+      refreshToken: "new-plan-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "new-plan-account",
+    });
+    releaseFetch();
+    const resp = await pending;
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(config.codexAccounts[0]?.plan).toBe("free");
+    expect(data.accounts.find(account => account.id === "pool-plan-reused")?.plan).toBe("free");
+    expect(existsSync(join(TEST_DIR, "config.json"))).toBe(false);
+  });
+
+  test("a replacement credential starts a separate refresh while the prior generation is still in flight", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-generation-flight",
+      email: "old-flight@example.com",
+      plan: "plus",
+      accessToken: "old-flight-access",
+      refreshToken: "old-flight-refresh",
+      chatgptAccountId: "old-flight-account",
+    });
+    saveConfig(structuredClone(config));
+    let releaseOldFetch!: () => void;
+    let markOldFetchStarted!: () => void;
+    const oldFetchStarted = new Promise<void>(resolve => { markOldFetchStarted = resolve; });
+    const oldFetchGate = new Promise<void>(resolve => { releaseOldFetch = resolve; });
+    const whamAccountIds: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id") ?? "";
+      whamAccountIds.push(accountId);
+      if (accountId === "old-flight-account") {
+        markOldFetchStarted();
+        await oldFetchGate;
+        return Response.json({
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 41 } },
+        });
+      }
+      return Response.json({
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 19 } },
+      });
+    }) as typeof fetch;
+
+    const request = () => {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      return handleCodexAuthAPI(req, new URL(req.url), config);
+    };
+    const oldPending = request();
+    await oldFetchStarted;
+    deleteCodexAccount(config, "pool-plan-generation-flight");
+    config.codexAccounts = [{
+      id: "pool-plan-generation-flight",
+      email: "new-flight@example.com",
+      plan: "free",
+      isMain: false,
+    }];
+    saveCodexAccountCredential("pool-plan-generation-flight", {
+      accessToken: "new-flight-access",
+      refreshToken: "new-flight-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "new-flight-account",
+    });
+    saveConfig(structuredClone(config));
+
+    const replacementResp = await request();
+    const replacementData = await replacementResp!.json() as {
+      accounts: Array<{ id: string; plan?: string; quota?: { weeklyPercent?: number } }>;
+    };
+    const replacement = replacementData.accounts.find(account => account.id === "pool-plan-generation-flight");
+    expect(replacement).toMatchObject({ plan: "pro", quota: { weeklyPercent: 19 } });
+
+    releaseOldFetch();
+    const oldResp = await oldPending;
+    const oldData = await oldResp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(whamAccountIds).toEqual(["old-flight-account", "new-flight-account"]);
+    expect(oldData.accounts.find(account => account.id === "pool-plan-generation-flight")?.plan).toBe("pro");
+    expect(config.codexAccounts[0]?.plan).toBe("pro");
+    expect(loadConfig().codexAccounts?.[0]?.plan).toBe("pro");
+  });
+
+  test("final account assembly discards quota and credential state from a replaced account", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-finished",
+      email: "old-finished@example.com",
+      plan: "plus",
+      chatgptAccountId: "old-finished-account",
+    });
+    seedPoolAccount(config, {
+      id: "pool-plan-blocker",
+      email: "blocker@example.com",
+      plan: "plus",
+      chatgptAccountId: "blocker-account",
+    });
+    let releaseBlocker!: () => void;
+    let markBlockerStarted!: () => void;
+    const blockerStarted = new Promise<void>(resolve => { markBlockerStarted = resolve; });
+    const blockerGate = new Promise<void>(resolve => { releaseBlocker = resolve; });
+    globalThis.fetch = (async (_input, init) => {
+      const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+      if (accountId === "blocker-account") {
+        markBlockerStarted();
+        await blockerGate;
+        return Response.json({
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 5 } },
+        });
+      }
+      return Response.json({
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 31, reset_at: 1782628379 } },
+      });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const pending = handleCodexAuthAPI(req, new URL(req.url), config);
+    await blockerStarted;
+    for (let attempt = 0; attempt < 100 && getAccountQuota("pool-plan-finished") === null; attempt += 1) {
+      await new Promise<void>(resolve => queueMicrotask(resolve));
+    }
+    expect(getAccountQuota("pool-plan-finished")?.weeklyPercent).toBe(31);
+
+    deleteCodexAccount(config, "pool-plan-finished");
+    config.codexAccounts = [
+      {
+        id: "pool-plan-finished",
+        email: "new-finished@example.com",
+        plan: "free",
+        isMain: false,
+      },
+      ...(config.codexAccounts ?? []),
+    ];
+    releaseBlocker();
+    const resp = await pending;
+    const data = await resp!.json() as {
+      accounts: Array<{
+        id: string;
+        plan?: string;
+        quota: unknown;
+        hasCredential: boolean;
+        needsReauth?: boolean;
+      }>;
+    };
+    const replacement = data.accounts.find(account => account.id === "pool-plan-finished");
+
+    expect(replacement).toMatchObject({
+      plan: "free",
+      quota: null,
+      hasCredential: false,
+      needsReauth: true,
+    });
+    expect(config.codexAccounts.find(account => account.id === "pool-plan-finished")?.plan).toBe("free");
+  });
+
+  test("a stale 401 refresh cannot mark a replacement credential for reauthentication", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-plan-stale-auth",
+      email: "old-auth@example.com",
+      plan: "plus",
+      accessToken: "old-auth-access",
+      refreshToken: "old-auth-refresh",
+      chatgptAccountId: "old-auth-account",
+    });
+    let releaseFetch!: () => void;
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
+    const fetchGate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    globalThis.fetch = (async () => {
+      markFetchStarted();
+      await fetchGate;
+      return new Response(null, { status: 401 });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const pending = handleCodexAuthAPI(req, new URL(req.url), config);
+    await fetchStarted;
+    deleteCodexAccount(config, "pool-plan-stale-auth");
+    config.codexAccounts = [{
+      id: "pool-plan-stale-auth",
+      email: "new-auth@example.com",
+      plan: "free",
+      isMain: false,
+    }];
+    saveCodexAccountCredential("pool-plan-stale-auth", {
+      accessToken: "new-auth-access",
+      refreshToken: "new-auth-refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "new-auth-account",
+    });
+    releaseFetch();
+    const resp = await pending;
+    const data = await resp!.json() as {
+      accounts: Array<{
+        id: string;
+        plan?: string;
+        quota: unknown;
+        hasCredential: boolean;
+        needsReauth?: boolean;
+      }>;
+    };
+    const replacement = data.accounts.find(account => account.id === "pool-plan-stale-auth");
+
+    expect(replacement).toMatchObject({
+      plan: "free",
+      quota: null,
+      hasCredential: true,
+      needsReauth: false,
+    });
+    expect(getCodexAccountCredential("pool-plan-stale-auth")?.accessToken).toBe("new-auth-access");
   });
 
   test("GET /api/codex-auth/accounts refresh=1 clears stale weekly for monthly primary-only WHAM", async () => {
@@ -1398,6 +2553,244 @@ describe("codex-auth API", () => {
     expect(resolveCodexAccountForThread("runtime-selection", config)).toBe("pool-runtime");
   });
 
+  async function putPriority(config: OcxConfig, body: unknown): Promise<Response> {
+    const req = new Request("http://localhost/api/codex-auth/accounts/priority", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+    return (await handleCodexAuthAPI(req, new URL(req.url), config))!;
+  }
+
+  test("PUT /api/codex-auth/accounts/priority persists a pool account's selection order", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: 2 });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ ok: true, id: "work", priority: 2 });
+    expect(config.codexAccountPriorities).toEqual({ work: 2 });
+  });
+
+  test("PUT /api/codex-auth/accounts/priority accepts the main Codex account", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, { id: MAIN_CODEX_ACCOUNT_ID, priority: -2 });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ id: MAIN_CODEX_ACCOUNT_ID, priority: -2 });
+    expect(config.codexAccountPriorities).toEqual({ [MAIN_CODEX_ACCOUNT_ID]: -2 });
+  });
+
+  // The id guard is the one rejection branch with no coverage: the priority-value and
+  // request-body tables below already cover theirs. It is also the load-bearing guard --
+  // it is what keeps a prototype key out of the priorities map -- and neither the CLI
+  // (which validates ids before issuing the PUT) nor the dashboard (which can only name
+  // accounts it just listed) can reach it, so only a direct request exercises it.
+  test.each([
+    ["a prototype key", "__proto__"],
+    ["the prototype property", "prototype"],
+    ["the constructor property", "constructor"],
+    ["an id containing a space", "has space"],
+    ["an over-long id", "a".repeat(65)],
+    ["an empty id", ""],
+    ["a non-string id", 123],
+    ["a null id", null],
+  ] as const)("rejects %s before any write", async (_label, id) => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id, priority: 1 });
+
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toMatchObject({ error: "Invalid account id format" });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  // A pin predating any stored order would otherwise outrank it forever: it blocks
+  // preemption and caps every eligibility list at its own tier. Setting an order is the
+  // newer statement of intent, so it releases the pin rather than losing to it.
+  test("setting a selection order releases a pin, whichever account was pinned", async () => {
+    const config = makeConfig({ activeCodexAccountPinned: "side" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: 1 });
+
+    expect(resp.status).toBe(200);
+    expect(config.codexAccountPriorities).toEqual({ work: 1 });
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("a null priority resets the account and drops an emptied map", async () => {
+    const config = makeConfig({ codexAccountPriorities: { work: 2 } });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority: null });
+
+    expect(resp.status).toBe(200);
+    expect(await resp.json()).toMatchObject({ id: "work", priority: 0 });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test.each([
+    ["a fraction", 1.5],
+    ["a numeric string", "2"],
+    ["a boolean", true],
+    ["an array", []],
+    ["an object", {}],
+    ["above the range", 101],
+    ["below the range", -101],
+    // An omitted key, which JSON cannot distinguish from an explicit undefined. Only `null`
+    // means reset; a body with no priority at all is a malformed request, not a reset.
+    // Deliberately no NaN case: JSON.stringify turns NaN into null, which this route
+    // legitimately reads as a reset, so asserting a 400 would assert something unreachable.
+    // NaN is covered where it can occur, against parseAccountPriority in
+    // tests/codex-pool-rotation.test.ts.
+    ["a missing value", undefined],
+  ] as const)("rejects %s as a selection order", async (_label, priority) => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const resp = await putPriority(config, { id: "work", priority });
+
+    expect(resp.status).toBe(400);
+    // The message too, not just the status: the id guard and the exists check also answer
+    // 400/404 here, so a status-only assertion would pass if validation order regressed.
+    expect(await resp.json()).toMatchObject({
+      error: expect.stringContaining("priority must be null or an integer"),
+    });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test.each([
+    ["a JSON array", "[1]"],
+    ["a JSON string", '"work"'],
+    ["a bare number", "7"],
+    ["JSON null", "null"],
+  ] as const)("rejects %s as a request body", async (_label, body) => {
+    const resp = await putPriority(makeConfig(), body);
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toMatchObject({ error: "body must be an object" });
+  });
+
+  test("rejects malformed JSON as a request body", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, "{not json");
+
+    expect(resp.status).toBe(400);
+    // A distinct message from the not-an-object case: the parse fails before the shape
+    // check, and collapsing the two would hide a body that parsed but was the wrong type.
+    expect(await resp.json()).toMatchObject({ error: "Invalid JSON" });
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test("an unknown account id is a 404 and writes nothing", async () => {
+    const config = makeConfig();
+
+    const resp = await putPriority(config, { id: "missing", priority: 1 });
+
+    expect(resp.status).toBe(404);
+    expect(config.codexAccountPriorities).toBeUndefined();
+  });
+
+  test("selection order is independent of alias, pause, and active selection", async () => {
+    const config = makeConfig({ activeCodexAccountId: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    await putPriority(config, { id: "work", priority: 1 });
+
+    expect(config.codexAccountPriorities).toEqual({ work: 1 });
+    expect(config.pausedCodexAccountIds).toBeUndefined();
+    expect(config.activeCodexAccountId).toBe("work");
+    expect(config.codexAccounts?.[0]?.alias).toBeUndefined();
+  });
+
+  test("the account list reports selection order, defaulting to zero", async () => {
+    const config = makeConfig({ codexAccountPriorities: { work: 2 } });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const accounts = await listCodexAuthAccounts(config);
+
+    expect(accounts.find(a => a.id === "work")?.priority).toBe(2);
+    expect(accounts.find(a => a.id === "side")?.priority).toBe(0);
+    expect(accounts.find(a => a.isMain)?.priority).toBe(0);
+  });
+
+  test("GET /api/codex-auth/active reports an operator pin but not an automatic pick", async () => {
+    const config = makeConfig({ activeCodexAccountId: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const read = async () => {
+      const req = new Request("http://localhost/api/codex-auth/active");
+      return (await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json()) as { pinned: boolean };
+    };
+    expect((await read()).pinned).toBe(false);
+
+    const selectReq = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "work" }),
+    });
+    await handleCodexAuthAPI(selectReq, new URL(selectReq.url), config);
+
+    expect(config.activeCodexAccountPinned).toBe("work");
+    expect((await read()).pinned).toBe(true);
+  });
+
+  // Under round-robin the pin caps the tier while the cursor moves inside it, so `pinned`
+  // alone cannot tell a surface which card to mark. The id is reported independently.
+  test("GET /api/codex-auth/active names the pinned account even when it is not active", async () => {
+    const config = makeConfig({ activeCodexAccountId: "side", activeCodexAccountPinned: "work" });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+    seedPoolAccount(config, { id: "side", email: "side@example.test" });
+
+    const req = new Request("http://localhost/api/codex-auth/active");
+    const data = await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json() as
+      { pinned: boolean; pinnedAccountId: string | null };
+
+    expect(data.pinned).toBe(false);
+    expect(data.pinnedAccountId).toBe("work");
+  });
+
+  // A null id clears the selection rather than making one, so it must not leave a pin
+  // behind. Pinning the __main__ fallback would produce a pin no effective active
+  // account matches: GET reports pinned:false while selectPriorityTier still honours it
+  // as a floor, silently capping the pool at the main account's tier — the exact
+  // inverse of ordering main last, with no surface that shows or clears it.
+  test("clearing the active account releases the pin instead of pinning main", async () => {
+    const config = makeConfig({
+      activeCodexAccountId: "work",
+      codexAccountPriorities: { [MAIN_CODEX_ACCOUNT_ID]: -2 },
+    });
+    seedPoolAccount(config, { id: "work", email: "work@example.test" });
+
+    const select = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: "work" }),
+    });
+    await handleCodexAuthAPI(select, new URL(select.url), config);
+    expect(config.activeCodexAccountPinned).toBe("work");
+
+    const clear = new Request("http://localhost/api/codex-auth/active", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accountId: null }),
+    });
+    const resp = await handleCodexAuthAPI(clear, new URL(clear.url), config);
+
+    expect(resp!.status).toBe(200);
+    expect(config.activeCodexAccountId).toBeUndefined();
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+    const req = new Request("http://localhost/api/codex-auth/active");
+    expect(await (await handleCodexAuthAPI(req, new URL(req.url), config))!.json())
+      .toMatchObject({ pinned: false });
+  });
+
   test("PUT /api/codex-auth/accounts/pause-exhausted pauses only freshly confirmed exhausted accounts", async () => {
     const config = makeConfig({
       codexAccounts: [
@@ -1687,12 +3080,35 @@ describe("codex-auth API", () => {
     const config = makeConfig({
       activeCodexAccountId: "pool-delete",
       codexAccounts: [{ id: "pool-delete", email: "pool-delete@example.test", isMain: false }],
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "direct",
+        },
+      },
     });
     saveCodexAccountCredential("pool-delete", {
       accessToken: "access-delete",
       refreshToken: "refresh-delete",
       expiresAt: Date.now() + 5 * 60_000,
       chatgptAccountId: "acct-delete",
+    });
+    for (const registration of STATE_STORE_REGISTRATIONS) registerStateStore(registration);
+    setLiveStateStoreConfig(config);
+    reconcileLiveStateStores();
+    const preDeletionWriterGeneration = captureConfigGeneration();
+    const exactSidecar = await resolveFirstUsableOpenAiSidecar(
+      listOpenAiForwardSidecarCandidates(config),
+      new Headers(),
+      config,
+      { exactAccount: { accountId: "pool-delete", modelId: "gpt-5.6-sol" } },
+    );
+    expect(exactSidecar?.authContext).toMatchObject({
+      accountId: "pool-delete",
+      fixedAccount: true,
+      writerGeneration: preDeletionWriterGeneration,
     });
     updateAccountQuota("pool-delete", 70);
     expect(resolveCodexAccountForThread("delete-thread", config)).toBe("pool-delete");
@@ -1726,6 +3142,7 @@ describe("codex-auth API", () => {
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
 
     expect(resp!.status).toBe(200);
+    expect(captureConfigGeneration()).toBeGreaterThan(preDeletionWriterGeneration);
     expect(config.codexAccounts).toEqual([]);
     expect(config.activeCodexAccountId).toBeUndefined();
     expect(config.pausedCodexAccountIds).toBeUndefined();
@@ -1737,6 +3154,30 @@ describe("codex-auth API", () => {
     expect(cancelled).toBe(true);
     expect(closed).toEqual([{ code: 4001, reason: "Codex account invalidated" }]);
     expect(getTrackedCodexWebSocketCountForAccount("pool-delete")).toBe(0);
+
+    // An exact sidecar can finish after its selected account was deleted. Its
+    // captured writer generation must keep that late outcome from recreating
+    // routing health for an owner that no longer exists.
+    exactSidecar?.recordOutcome?.(429);
+    expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
+
+    updateAccountQuota(
+      "pool-delete",
+      99,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      preDeletionWriterGeneration,
+    );
+    recordCodexUpstreamOutcome(config, "pool-delete", 429, {
+      now: Date.now(),
+      writerGeneration: preDeletionWriterGeneration,
+    });
+    markAccountNeedsReauth("pool-delete", preDeletionWriterGeneration);
+    expect(getAccountQuota("pool-delete")).toBeNull();
+    expect(getCodexUpstreamHealth("pool-delete")).toBeNull();
+    expect(isAccountNeedsReauth("pool-delete")).toBe(false);
   });
 
   test.each([
@@ -2286,6 +3727,7 @@ describe("codex-auth API", () => {
       expiresAt: Date.now() + 5 * 60_000,
       chatgptAccountId: "acct-reauth-plan",
     });
+    updateAccountQuota("reauth-plan", 67, 1782628379);
 
     const result = await completeMockCodexOAuth({
       config,
@@ -2298,6 +3740,7 @@ describe("codex-auth API", () => {
 
     expect(result.state).toMatchObject({ status: "done" });
     expect(config.codexAccounts?.[0]?.plan).toBe("business");
+    expect(getAccountQuota("reauth-plan")).toBeNull();
   });
 
   test("OAuth pool login excludes self from collision check when reauth", async () => {
@@ -2363,6 +3806,7 @@ describe("codex-auth API", () => {
       const pool = data.accounts.find(a => a.id === "cached-test");
       expect(pool?.quota).toMatchObject({ weeklyPercent: 25 });
       expect(called).toBe(false);
+      expect(existsSync(join(TEST_DIR, "config.json"))).toBe(false);
     } finally {
       globalThis.fetch = originalFetch;
     }

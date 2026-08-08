@@ -68,7 +68,7 @@ import {
 } from "../../lib/debug-settings";
 import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
 import { drainAndShutdown } from "../lifecycle";
-import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
+import { filterRequestLogs, filteredRequestLogCount, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
@@ -77,14 +77,14 @@ import { applySystemEnvToggle } from "../system-env";
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
+import {
+  discardUsageSummaryCacheEntry,
+  getUsageSummaryCacheEntry,
+  setUsageSummaryCacheEntry,
+} from "./usage-summary-cache";
 
 const USAGE_DAY_MS = 86_400_000;
-const usageSummaryCache = new Map<string, {
-  revisionKey: string;
-  expiresAt: number;
-  summary: UsageSummary;
-}>();
-
 function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
   if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
   if (surface === "grok") return entry.surface === "grok";
@@ -115,17 +115,23 @@ function usageSummaryExpiresAt(
   return expiresAt;
 }
 
-function refreshedUsageSummary(summary: UsageSummary, range: UsageRange, now: number): UsageSummary {
+function refreshedUsageSummary<T extends UsageSummary & { historyTruncated: boolean }>(summary: T, range: UsageRange, now: number): T {
   const since = range === "7d" ? now - 7 * USAGE_DAY_MS : range === "30d" ? now - 30 * USAGE_DAY_MS : null;
   return { ...summary, since, generatedAt: now };
 }
 
 export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
+  const { req, url, config, deps, syncClaudeAgentDefsBestEffort } = ctx;
 
   if (url.pathname === "/api/logs" && req.method === "GET") {
-    const logs = filterRequestLogs(getRequestLogEntries(), url.searchParams);
-    return jsonResponse(logs.map(requestLogDto));
+    const all = getRequestLogEntries();
+    const total = filteredRequestLogCount(all, url.searchParams);
+    const logs = filterRequestLogs(all, url.searchParams);
+    return jsonResponse({
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      total,
+      logs: logs.map(requestLogDto),
+    });
   }
 
   if (url.pathname === "/api/debug" && req.method === "GET") {
@@ -155,7 +161,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/debug" && req.method === "PUT") {
     let body: { debug?: unknown; usage?: unknown; injection?: unknown; claude?: unknown; reset?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid JSON body" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     if (body.reset === true) return jsonResponse(clearDebugSettings());
     if (body.reset === "debug" || body.reset === "provider") return jsonResponse(clearDebugSetting("debug"));
     if (body.reset === "usage") return jsonResponse(clearDebugSetting("usage"));
@@ -184,16 +190,26 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     const now = Date.now();
     try {
       const cacheKey = `${range}:${surface}`;
-      const observedRevisionKey = usageLogRevisionKey(currentUsageLogRevision());
-      const cached = usageSummaryCache.get(cacheKey);
+      const effectiveReadLimit = config.managementUsageMaxReadBytes ?? 64 * 1024 * 1024;
+      const observedRevisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}\0${effectiveReadLimit}`;
+      const cached = getUsageSummaryCacheEntry(cacheKey);
       if (cached && cached.revisionKey === observedRevisionKey && now < cached.expiresAt) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
-      const snapshot = await readUsageSnapshotForManagement();
-      const summary = summarizeUsage(snapshot.entries, range, now, surface);
-      usageSummaryCache.set(cacheKey, {
-        revisionKey: usageLogRevisionKey(snapshot.revision),
+      if (cached) discardUsageSummaryCacheEntry(cacheKey);
+      const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
+      const revisionReadAt = Date.now();
+      const summary = {
+        ...summarizeUsage(snapshot.entries, range, now, surface),
+        historyTruncated: snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
+        truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
+        entriesTruncated: snapshot.entriesTruncated,
+        entriesDropped: snapshot.entriesDropped,
+      };
+      setUsageSummaryCacheEntry(cacheKey, {
+        revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
         expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
+        revisionReadAt,
         summary,
       });
       return jsonResponse(summary);
@@ -227,6 +243,10 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         days: [],
         models: [],
         providers: [],
+        historyTruncated: false,
+        truncatedPrefixBytes: 0,
+        entriesTruncated: false,
+        entriesDropped: 0,
         error: "read_failed",
       });
     }
@@ -248,7 +268,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup/preview" && req.method === "POST") {
     let body: { percent?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
       return jsonResponse({ error: "invalid_percent" }, 400);
@@ -272,7 +292,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup" && req.method === "POST") {
     let body: { percent?: unknown; mode?: unknown; digest?: unknown; _test?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const percent = typeof body?.percent === "number" ? body.percent : Number.NaN;
     if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
       return jsonResponse({ error: "invalid_percent" }, 400);
@@ -301,6 +321,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           result.error === "codex_busy"
             || result.error === "stale_preview"
             || result.error === "referenced_history"
+            || result.error === "pinned_thread"
             || result.error === "storage_mutation_busy"
             || result.error === "restore_pending_overlap"
             ? 409
@@ -313,6 +334,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           stale_preview: "Archived files changed since preview — run Preview again.",
           restore_pending_overlap: "Selected archives overlap an incomplete trash restore — finish or retry restore first.",
           referenced_history: "Selected archives are still referenced by forked or paginated history.",
+          pinned_thread: "Selected archives include a pinned thread — unpin it in Codex before cleanup.",
           invalid_digest: "Preview digest is missing or invalid.",
           invalid_mode: "mode must be quarantine or permanent.",
           fs_failed: "Filesystem cleanup failed. Some changes may already be applied — check CODEX_HOME/.trash and any recovery path in the response.",
@@ -373,7 +395,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/trash/restore" && req.method === "POST") {
     let body: { id?: unknown };
-    try { body = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const id = typeof body?.id === "string" ? body.id : "";
     if (!id.trim()) {
       return jsonResponse({ error: "invalid_trash", message: "Trash entry id is required." }, 400);
@@ -453,7 +475,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
 
   if (url.pathname === "/api/storage/cleanup-policy" && req.method === "PUT") {
     let raw: unknown;
-    try { raw = await req.json(); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid_json" }, 400); }
     const previous = normalizeStorageCleanupPolicy(config.storageCleanupPolicy);
     const parsed = parseStorageCleanupPolicyInput(raw, previous);
     if (!parsed.ok) return jsonResponse({ error: parsed.error }, 400);

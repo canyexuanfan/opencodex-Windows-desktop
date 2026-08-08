@@ -63,10 +63,10 @@ export function credentialsFromCursorTokens(accessToken: string, refreshToken: s
   };
 }
 
-/** Coerce JWT `sub` (string or number) into a stable multiauth account id. */
+/** Coerce JWT `sub` (string or safe integer) into a stable multiauth account id. */
 function cursorJwtIdentity(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) return value;
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
   return undefined;
 }
 
@@ -76,14 +76,12 @@ function cursorJwtEmail(value: unknown): string | undefined {
 }
 
 /** Generate PKCE params + the cursor.com deep-link login URL (challenge only — never the verifier). */
-export async function generateCursorAuthParams(opts?: { forceLogin?: boolean }): Promise<CursorAuthParams> {
+export async function generateCursorAuthParams(_opts?: { forceLogin?: boolean }): Promise<CursorAuthParams> {
   const { verifier, challenge } = await generatePKCE();
   const uuid = crypto.randomUUID();
-  // Cursor's deep-control page has no documented account-picker query; `mode=login` is the
-  // stable entry. forceLogin only changes the operator-facing instructions so a second/third
-  // account can be chosen in the already-open browser session before approving.
+  // Cursor's deep-control page has no documented account-picker query; only the stable
+  // PKCE params are sent. forceLogin is honored only in loginCursor instructions.
   const params = new URLSearchParams({ challenge, uuid, mode: "login", redirectTarget: "cli" });
-  if (opts?.forceLogin) params.set("prompt", "login");
   return { verifier, challenge, uuid, loginUrl: `${CURSOR_LOGIN_URL}?${params.toString()}` };
 }
 
@@ -161,7 +159,7 @@ export async function loginCursor(
   ctrl.onAuth?.({
     url: loginUrl,
     instructions: opts?.forceLogin
-      ? "In the browser, switch to the Cursor account you want to add, then approve the login and return here."
+      ? "Log out of Cursor in the browser (or use a private window), sign in as the account you want to add, then approve and return here."
       : "Approve the Cursor login in your browser, then return here.",
   });
   ctrl.onProgress?.("Waiting for Cursor login approval…");

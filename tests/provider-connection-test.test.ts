@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleManagementAPI } from "../src/server/management-api";
 import { saveConfig } from "../src/config";
+import { OAUTH_PROVIDERS } from "../src/oauth";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxConfig } from "../src/types";
+import { withRegistryDiscovery } from "./helpers/provider-registry-discovery";
 
 const TEST_DIR = join(tmpdir(), "ocx-conn-test");
 const previousHome = process.env.OPENCODEX_HOME;
@@ -81,7 +83,7 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
     expect(fetches).toBe(0);
   });
 
-  test("static catalog cannot masquerade as a live connection", async () => {
+  test("static catalog reports a neutral non-applicable connection test", async () => {
     const config = baseConfig({
       staticprov: {
         adapter: "openai-chat",
@@ -92,8 +94,23 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
       },
     });
     const { body } = await probe(config, "staticprov");
-    expect(body.ok).toBe(false);
-    expect(String(body.error)).toContain("static catalog only");
+    expect(body).toEqual({ applicable: false, reason: "static_catalog", latencyMs: 0 });
+  });
+
+  test("Google Antigravity reports not-applicable without credentials or network access (#723)", async () => {
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches += 1;
+      throw new Error("static Antigravity catalog must not probe upstream");
+    }) as typeof fetch;
+    const config = baseConfig({
+      "google-antigravity": structuredClone(OAUTH_PROVIDERS["google-antigravity"].providerConfig),
+    });
+
+    const { body } = await probe(config, "google-antigravity");
+
+    expect(body).toEqual({ applicable: false, reason: "static_catalog", latencyMs: 0 });
+    expect(fetches).toBe(0);
   });
 
   test("a fake key gets the upstream rejection, not a catalog-presence pass", async () => {
@@ -178,13 +195,9 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
   });
 
   test("reports only eligible deduplicated models from a registry discovery contract", async () => {
-    const entry = PROVIDER_REGISTRY.find(row => row.id === "together");
-    if (!entry) throw new Error("missing together registry entry");
-    const original = entry.modelDiscovery;
-    entry.modelDiscovery = {
+    await withRegistryDiscovery("together", {
       filter: { anyOf: [{ path: ["type"], equalsAny: ["chat"] }] },
-    };
-    try {
+    }, async () => {
       globalThis.fetch = (async () => Response.json({
         data: [
           { id: "chat-model", type: "chat" },
@@ -202,10 +215,7 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
       const { body } = await probe(config, "together");
       expect(body.ok).toBe(true);
       expect(body.models).toBe(1);
-    } finally {
-      if (original === undefined) delete entry.modelDiscovery;
-      else entry.modelDiscovery = original;
-    }
+    });
   });
 
   test("Google's models-array response shape is accepted (x-goog-api-key path)", async () => {

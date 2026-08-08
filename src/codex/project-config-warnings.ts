@@ -1,11 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path, { dirname, join, resolve } from "node:path";
 import { expandUserPath } from "../config";
 import { defaultCodexHome } from "./home";
 import { readRootTomlString } from "./paths";
+import { truncateRetainedUtf8 } from "../lib/admission";
 
 const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
 const DIAGNOSTICS_CACHE_TTL_MS = 30_000;
+const MAX_DIAGNOSTIC_VALUE_BYTES = 8 * 1024;
 
 function resolveCodexConfigPath(): string {
   const raw = process.env.CODEX_HOME?.trim();
@@ -250,9 +252,23 @@ export function discoverProjectCodexConfigPaths(options: {
 } = {}): string[] {
   const found = new Set<string>();
   const codexConfigPath = options.codexConfigPath ?? resolveCodexConfigPath();
+  // A parent walk can reach the user's home and rediscover this global file as
+  // `$HOME/.codex/config.toml`; compare real paths so symlink aliases are excluded too.
+  const normalizeExistingPath = (candidate: string): string | null => {
+    if (!existsSync(candidate)) return null;
+    let canonical: string;
+    try {
+      canonical = realpathSync.native(candidate);
+    } catch {
+      canonical = resolve(candidate);
+    }
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  };
+  const globalConfigIdentity = normalizeExistingPath(codexConfigPath);
   const addIfExists = (projectRoot: string) => {
-    const path = join(resolve(projectRoot), ".codex", "config.toml");
-    if (existsSync(path)) found.add(path);
+    const candidate = join(resolve(projectRoot), ".codex", "config.toml");
+    const candidateIdentity = normalizeExistingPath(candidate);
+    if (candidateIdentity && candidateIdentity !== globalConfigIdentity) found.add(candidate);
   };
 
   let cwd = resolve(options.cwd ?? process.cwd());
@@ -309,7 +325,16 @@ export function getCachedProjectConfigDiagnostics(): {
 } {
   const now = Date.now();
   if (!diagnosticsCache || now - diagnosticsCache.at > DIAGNOSTICS_CACHE_TTL_MS) {
-    diagnosticsCache = { at: now, warnings: collectProjectCodexConfigWarnings() };
+    diagnosticsCache = {
+      at: now,
+      warnings: collectProjectCodexConfigWarnings().map(warning => ({
+        ...warning,
+        path: truncateRetainedUtf8(warning.path, MAX_DIAGNOSTIC_VALUE_BYTES),
+        detail: truncateRetainedUtf8(warning.detail, MAX_DIAGNOSTIC_VALUE_BYTES),
+        ...(warning.profileName === undefined ? {} : { profileName: truncateRetainedUtf8(warning.profileName, MAX_DIAGNOSTIC_VALUE_BYTES) }),
+        message: truncateRetainedUtf8(warning.message, MAX_DIAGNOSTIC_VALUE_BYTES),
+      })),
+    };
   }
   const warnings = diagnosticsCache.warnings;
   return { warnings, grouped: groupProjectCodexConfigWarningsByPath(warnings) };
@@ -328,7 +353,7 @@ export function summarizeProjectCodexIssue(warning: ProjectCodexConfigWarning): 
 
 function humanizeProviderDetail(detail: string): string {
   if (detail === "opencode_go") return "OpenCode Go";
-  if (detail.startsWith("opencode")) return "OpenCode";
+  if (/^opencode(?:$|[-_.:/])/.test(detail)) return "OpenCode";
   if (detail === "opencodex") return "OpenCodex";
   return detail;
 }

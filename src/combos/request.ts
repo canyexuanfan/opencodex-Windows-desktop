@@ -2,6 +2,15 @@ import type { OcxComboDefaultEffort, OcxComboTarget, OcxConfig } from "../types"
 import { resolveComboId } from "./types";
 
 const warnedUnsupportedDefaults = new Set<string>();
+let lastWarningReconciledGeneration = 0;
+
+export function reconcileComboWarningMemos(generation: number): number {
+  if (generation <= lastWarningReconciledGeneration) return 0;
+  const removed = warnedUnsupportedDefaults.size;
+  warnedUnsupportedDefaults.clear();
+  lastWarningReconciledGeneration = generation;
+  return removed;
+}
 
 export function resetComboEffortWarningStateForTests(): void {
   warnedUnsupportedDefaults.clear();
@@ -31,6 +40,8 @@ export function concreteComboRequestBody(
     && !Object.prototype.hasOwnProperty.call(reasoning, "effort")
   );
   if (!needsDefault) return clone;
+  // Picker availability treats an unknown ladder as a wildcard, but runtime
+  // injection stays fail-closed until this concrete target advertises support.
   if (!targetReasoningEfforts?.includes(defaultEffort)) {
     const key = `${target.provider}/${target.model}:${defaultEffort}`;
     if (!warnedUnsupportedDefaults.has(key)) {

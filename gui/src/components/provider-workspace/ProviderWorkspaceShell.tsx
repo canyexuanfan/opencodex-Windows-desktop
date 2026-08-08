@@ -53,6 +53,51 @@ const SORT_DEFS: { id: ProviderSortMode; labelKey: "pws.sort.az" | "pws.sort.za"
   { id: "accounts-first", labelKey: "pws.sort.accountsFirst" },
 ];
 
+const QUOTA_REPORT_MAX_AGE_MS = 30 * 60_000;
+
+function freshQuotaReport(value: unknown, now: number): ProviderQuotaReportView | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.updatedAt !== "number" || !Number.isFinite(row.updatedAt)) return null;
+  if (now - row.updatedAt >= QUOTA_REPORT_MAX_AGE_MS) return null;
+  if (!("quota" in row)) return null;
+  if (row.label !== undefined && typeof row.label !== "string") return null;
+  if (row.source !== undefined && typeof row.source !== "string") return null;
+  return {
+    ...(typeof row.label === "string" ? { label: row.label } : {}),
+    ...(typeof row.source === "string" ? { source: row.source } : {}),
+    updatedAt: row.updatedAt,
+    quota: row.quota,
+    ...(row.aggregation !== undefined ? { aggregation: row.aggregation } : {}),
+  };
+}
+
+function freshQuotaReportRecord(value: unknown, now = Date.now()): Record<string, ProviderQuotaReportView> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, ProviderQuotaReportView> = {};
+  for (const [provider, raw] of Object.entries(value)) {
+    const report = freshQuotaReport(raw, now);
+    if (provider.trim() && report) out[provider] = report;
+  }
+  return out;
+}
+
+function readFreshQuotaReportCache(key: string): Record<string, ProviderQuotaReportView> | null {
+  return freshQuotaReportRecord(readSessionListCache<unknown>(key));
+}
+
+function freshQuotaReportsFromResponse(value: unknown, now = Date.now()): Record<string, ProviderQuotaReportView> {
+  if (!Array.isArray(value)) return {};
+  const out: Record<string, ProviderQuotaReportView> = {};
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const provider = (raw as Record<string, unknown>).provider;
+    const report = freshQuotaReport(raw, now);
+    if (typeof provider === "string" && provider.trim() && report) out[provider] = report;
+  }
+  return out;
+}
+
 export default function ProviderWorkspaceShell({
   providers,
   apiBase,
@@ -67,7 +112,8 @@ export default function ProviderWorkspaceShell({
   modelsRefreshToken = 0,
   activeAccountNeedsReauth,
   /** Stable key of active OAuth account ids — refetch overview quotas after account switch. */
-  quotaRefreshKey = "",
+  quotaRefreshEpoch = 0,
+  quotaForceRefresh = false,
   detail,
 }: {
   providers: Record<string, WorkspaceProvider>;
@@ -85,10 +131,13 @@ export default function ProviderWorkspaceShell({
   modelsRefreshToken?: number;
   activeAccountNeedsReauth?: Record<string, boolean>;
   /**
-   * Explicit active-account identity key (e.g. `anthropic:<id>|…`). Prefer this over
-   * `activeAccountNeedsReauth` object identity so healthy account switches still refresh.
+   * Monotonic quota revision. It moves only when something actually invalidates the quota
+   * view — an account switch, a login or logout, a key change, a config save — so account
+   * data arriving on a cold load no longer re-triggers the read once per provider.
    */
-  quotaRefreshKey?: string;
+  quotaRefreshEpoch?: number;
+  /** True when the bump came from a mutation that needs the server to bypass its TTL. */
+  quotaForceRefresh?: boolean;
   /** Detail body for the selected provider (WP090); a placeholder renders when absent. */
   detail?: (item: WorkspaceItem, data: DetailSlotData) => ReactNode;
 }) {
@@ -115,10 +164,13 @@ export default function ProviderWorkspaceShell({
     readSessionListCache<{ models: Record<string, ProviderModelUsageRow[]> }>(usageCacheKey)?.models ?? {}
   ));
   const [quotaReports, setQuotaReports] = useState<Record<string, ProviderQuotaReportView>>(() => (
-    readSessionListCache<Record<string, ProviderQuotaReportView>>(quotasCacheKey) ?? {}
+    readFreshQuotaReportCache(quotasCacheKey) ?? {}
   ));
   const [usageLoading, setUsageLoading] = useState(() => !readSessionListCache(usageCacheKey));
-  const [quotasLoading, setQuotasLoading] = useState(() => !readSessionListCache(quotasCacheKey));
+  const [quotasLoading, setQuotasLoading] = useState(() => {
+    const cached = readFreshQuotaReportCache(quotasCacheKey);
+    return !cached || Object.keys(cached).length === 0;
+  });
   const [modelsLoadEpoch, setModelsLoadEpoch] = useState(0);
   const filterWrapRef = useRef<HTMLDivElement>(null);
 
@@ -209,37 +261,37 @@ export default function ProviderWorkspaceShell({
   useEffect(() => {
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      if (!readSessionListCache(quotasCacheKey)) setQuotasLoading(true);
-      void fetch(`${apiBase}/api/provider-quotas`)
-        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown }> }>(r))
+      const cached = readFreshQuotaReportCache(quotasCacheKey);
+      if (!cached || Object.keys(cached).length === 0) setQuotasLoading(true);
+      // A forced bump means a mutation just changed the answer, so the server's TTL has to
+      // be bypassed. The old derived-key effect always read the cached view, which is why a
+      // switch could leave the bars showing the previous account's quota.
+      void fetch(`${apiBase}/api/provider-quotas${quotaForceRefresh ? "?refresh=1" : ""}`)
+        .then(r => readJsonIfOk<{ reports?: Array<{ provider: string; label?: string; source?: string; updatedAt?: number; quota?: unknown; aggregation?: unknown }> }>(r))
         .then((data) => {
           if (cancelled || !data) return;
-          // Merge so a partial/failed probe cannot wipe a previously good provider row.
+          // A successful endpoint response is authoritative, including an empty report list.
+          const next = freshQuotaReportsFromResponse(data.reports);
+          setQuotaReports(next);
+          writeSessionListCache(quotasCacheKey, next);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // Keep last-good only inside the same server freshness bound.
           setQuotaReports(prev => {
-            const next = { ...prev };
-            for (const report of data.reports ?? []) {
-              if (!report?.provider) continue;
-              next[report.provider] = {
-                label: report.label,
-                source: report.source,
-                updatedAt: typeof report.updatedAt === "number" ? report.updatedAt : Date.now(),
-                quota: report.quota,
-              };
-            }
+            const next = freshQuotaReportRecord(prev) ?? {};
             writeSessionListCache(quotasCacheKey, next);
             return next;
           });
         })
-        .catch(() => { /* keep last-good */ })
         .finally(() => { if (!cancelled) setQuotasLoading(false); });
     }, 0);
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-    // Key on active-account identity (not the reauth boolean map) so switching between two
-    // healthy accounts still re-reads /api/provider-quotas for the Usage/overview bars.
-  }, [apiBase, quotaRefreshKey, quotasCacheKey]);
+    // Keyed on the explicit revision: account arrival is silent, real mutations re-read.
+  }, [apiBase, quotaRefreshEpoch, quotaForceRefresh, quotasCacheKey]);
 
   useEffect(() => {
     if (!filterOpen) return;
@@ -308,7 +360,7 @@ export default function ProviderWorkspaceShell({
   const duplicateDisplayNames = useMemo(() => {
     const counts = new Map<string, number>();
     for (const item of allItems) {
-      const label = formatProviderDisplayName(item.name);
+      const label = formatProviderDisplayName(item.name, t);
       counts.set(label, (counts.get(label) ?? 0) + 1);
     }
     const dups = new Set<string>();
@@ -316,7 +368,7 @@ export default function ProviderWorkspaceShell({
       if (n > 1) dups.add(label);
     }
     return dups;
-  }, [allItems]);
+  }, [allItems, t]);
 
   if (allItems.length === 0) {
     return <WorkspaceEmptyState onAddProvider={onAddProvider} />;
@@ -479,7 +531,7 @@ export default function ProviderWorkspaceShell({
                       tabbable={railTabbableName === item.name}
                       modelCount={modelCounts[item.name]}
                       isDefault={defaultProvider === item.name}
-                      showConfigId={duplicateDisplayNames.has(formatProviderDisplayName(item.name))}
+                      showConfigId={duplicateDisplayNames.has(formatProviderDisplayName(item.name, t))}
                       onClick={() => onSelect(item.name)}
                       onFocus={() => setRailFocusName(item.name)}
                     />
@@ -532,7 +584,7 @@ export default function ProviderWorkspaceShell({
             onRetryModels: retryModels,
           }) ?? (
             <div className="pws-detail-placeholder">
-              <h3>{formatProviderDisplayName(selectedItem.name)}</h3>
+              <h3>{formatProviderDisplayName(selectedItem.name, t)}</h3>
               <p className="muted">{t("pws.detailComingSoon")}</p>
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelect(null)}>
                 {t("modal.back")}

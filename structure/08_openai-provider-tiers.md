@@ -30,6 +30,42 @@ requests keep their captured credential. An all-paused pool fails closed.
 The dashboard's bulk pause action refreshes all account quotas and mutates only accounts whose
 plan-relevant window is freshly confirmed at exactly 100%; unknown and failed refreshes are skipped.
 
+`codexAccountPriorities` is a persisted Pool *ordering* boundary and never an eligibility one. It maps
+an account id to an integer from -100 to 100, higher used earlier, with absence meaning 0. Selection
+narrows the already-eligible list to the highest tier that still holds an account with quota headroom
+and lets the configured strategy pick within that tier. A tier drains only when every member is over
+the auto-switch threshold, cooling down, soft-avoided, paused, or needs reauth; unknown quota never
+drains a tier, and every tier drained leaves the eligible list untouched. Ordering never admits an
+account that pause, cooldown, health, or reauth already excluded, and never overrides those
+exclusions. It adds no new rebind cause for a bound thread, which still moves only for the reasons it
+already had: a quota-strategy threshold re-evaluation, a failover streak, an account that stopped
+being selectable, or affinity expiry. The stable `__main__` alias carries an order on equal terms with
+added accounts, which is what lets the Desktop login be ordered last. An absent or empty map
+reproduces the prior selection sequence exactly.
+
+Preemption moves unbound requests back up when a higher tier regains headroom, and it holds the
+runtime cursor only. Under an independent quota scope it must never touch the shared active cursor,
+because the scopes track separate native quota groups and a scoped request has no standing to move
+the account every other scope resolves from.
+
+A manual activation pins its account and lowers the tier ceiling to that account's own tier. The pin
+is released by drain, exclusion, deletion, an explicit failover/promotion away, and any write to
+`codexAccountPriorities` — a pin and an order are both the operator naming an account to use, so the
+newer statement wins. Ordinary round-robin movement inside the capped tier does not release it.
+Without that last rule a pin made before any order existed, which is just an ordinary account switch,
+would outrank every order set afterwards for as long as the account kept headroom.
+
+Only an actual selection pins. Clearing the active account states that no account is chosen, so it
+releases the pin instead of recording one against the `__main__` fallback that the same handler uses
+for its paused check. A pin no effective active account matches is invisible — `pinned` compares the
+two and reports false — while the tier filter still honours it, which would silently cap the pool at
+the main account's tier.
+
+The pin is a ceiling, not a selection: inside the capped tier the strategy cursor still moves. So the
+pinned account and the effective active account are different questions, and the management API answers
+both (`pinned` and `pinnedAccountId`). A surface that marks only the active account loses the pin from
+view exactly when it is doing the most work — suppressing every higher tier.
+
 ```text
 gpt-5.6-sol                         # openai; Pool or Direct follows the provider option
 openai-apikey/gpt-5.6-sol           # OpenAI API key
@@ -56,8 +92,14 @@ cp ~/.opencodex/config.json.pre-openai-tiers-v2.bak ~/.opencodex/config.json
 ```
 
 The historical v1 backup is never overwritten. Restoring the v2 backup intentionally restores the
-shipped v1 shape; the next startup re-migrates to the same marker-2 bytes. A differing pre-existing
-v2 backup blocks migration before save.
+shipped v1 shape; the next startup re-migrates to the same marker-2 bytes.
+
+A pre-existing snapshot that differs from the current config is classified before anything is written
+(`src/config.ts` `classifyOpenAiTierBackup`): a snapshot that parses as a valid pre-migration (v1)
+config is a user-intentional rollback point and blocks migration; a snapshot that is unparseable or
+already tier-v2 is stale and is replaced with a warning. The distinction matters because silently
+discarding a rollback point is destructive, while preserving a stale one would block every later
+migration.
 
 ## Model and wire identity
 
@@ -70,6 +112,19 @@ v2 backup blocks migration before save.
 - `*-pro` selected ids rewrite to the base wire id with `reasoning.mode: "pro"`; request logs,
   usage, model visibility, subagent state, and injection state retain the selected virtual id.
 - Compact preserves provider/selected identity but sends the base model without a reasoning object.
+
+## Account identity and store concurrency
+
+Pool mode needs stable public names and a store that survives concurrent refresh:
+
+- Public selectors are generated per account; the main login's selector is `main`, collision-suffixed
+  if that name is taken, and it maps to the config-only sentinel `@main`, which sits outside the
+  pool-account id grammar (`src/codex/account-namespaces.ts`, `src/codex/account-namespace-match.ts`).
+  Selectors must not collide with provider or combo ids. A user alias is display metadata; routing
+  consults credential identity, never the alias.
+- The credential store is generation-guarded and refresh-locked (`src/codex/account-store.ts`): a
+  refresh persists only if the generation it started from still holds, and a lost race raises a
+  generation-conflict error instead of overwriting the newer credential.
 
 ## Sidecars, management, and UI
 

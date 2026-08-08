@@ -2,6 +2,34 @@ import { describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 
 describe("Responses parser", () => {
+  test("normalizes function tool schemas to an object root without corrupting valid schemas (#745)", () => {
+    const validParameters = {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+      additionalProperties: false,
+    };
+    const parsed = parseRequest({
+      model: "test-model",
+      input: "test",
+      tools: [
+        { type: "function", name: "missing_parameters" },
+        { type: "function", name: "missing_root_type", parameters: { properties: { query: { type: "string" } } } },
+        { type: "function", name: "valid_schema", parameters: validParameters },
+      ],
+    });
+
+    expect(parsed.context.tools).toEqual([
+      { name: "missing_parameters", description: "", parameters: { type: "object" } },
+      {
+        name: "missing_root_type",
+        description: "",
+        parameters: { type: "object", properties: { query: { type: "string" } } },
+      },
+      { name: "valid_schema", description: "", parameters: validParameters },
+    ]);
+  });
+
   test("describes the exact apply_patch freeform envelope", () => {
     const parsed = parseRequest({
       model: "xai/grok-4.5",
@@ -113,6 +141,44 @@ describe("Responses parser", () => {
     });
 
     expect(parsed.options.promptCacheKey).toBe("project-cache-v1");
+  });
+
+  test("carries text.format json_schema into options.textFormat and flags structured output", () => {
+    const parsed = parseRequest({
+      model: "gpt-5.5",
+      input: "structured",
+      stream: true,
+      text: { format: { type: "json_schema", name: "answer", description: "shape", schema: { type: "object" }, strict: true } },
+    });
+
+    expect(parsed.options.textFormat).toEqual({
+      type: "json_schema",
+      name: "answer",
+      description: "shape",
+      schema: { type: "object" },
+      strict: true,
+    });
+    expect(parsed._structuredOutput).toBe(true);
+  });
+
+  test("carries text.format json_object and ignores the plain text format", () => {
+    const jsonObject = parseRequest({
+      model: "gpt-5.5",
+      input: "structured",
+      stream: true,
+      text: { format: { type: "json_object" } },
+    });
+    const plain = parseRequest({
+      model: "gpt-5.5",
+      input: "prose",
+      stream: true,
+      text: { format: { type: "text" } },
+    });
+
+    expect(jsonObject.options.textFormat).toEqual({ type: "json_object" });
+    expect(jsonObject._structuredOutput).toBe(true);
+    expect(plain.options.textFormat).toBeUndefined();
+    expect(plain._structuredOutput).toBeUndefined();
   });
 
   test("preserves input_image blocks from function_call_output", () => {

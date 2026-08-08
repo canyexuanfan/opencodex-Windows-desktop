@@ -24,8 +24,10 @@ import { appendFileSync } from "node:fs";
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
+  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
+  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
@@ -37,6 +39,8 @@ import { resolveFirstUsableOpenAiSidecar, selectOpenAiImagesProvider } from "../
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import type { RequestLogContext } from "./request-log";
 import { codexLogAccountId } from "./responses";
+import type { AdmissionLease } from "../lib/admission";
+import { codexAccountSelectionForTurn } from "./lifecycle";
 
 /** Voice call create can wait on SDP negotiation; bound a hung upstream. */
 const LIVE_UPSTREAM_TIMEOUT_MS = 120_000;
@@ -198,41 +202,91 @@ export function parseLiveSidebandTarget(pathname: string, searchParams: URLSearc
 }
 
 /**
+ * True for the loopback hosts plaintext development servers listen on.
+ * `URL.hostname` keeps the brackets on IPv6, so both forms are accepted.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return lower === "localhost" || lower.endsWith(".localhost")
+    || lower === "127.0.0.1" || lower.startsWith("127.")
+    || lower === "::1" || lower === "[::1]";
+}
+
+/**
+ * Normalize the sideband base to end in exactly `/v1`, with no query, fragment,
+ * or userinfo. Any failure closes to the canonical Realtime API root — never to
+ * the input — because this string decides where upstream bearer credentials and
+ * user audio are sent.
+ *
+ * Bounds, all fail-closed:
+ *   - scheme must be https/wss, or http/ws with a loopback host (the local
+ *     development case this knob exists for);
+ *   - URL userinfo is rejected (URL#toString would forward it verbatim);
+ *   - unparseable input is rejected.
+ *
+ * Endpoint-form overrides are recognized the way upstream recognizes them
+ * (codex-rs realtime_websocket/methods.rs:994): a terminal `/realtime`,
+ * `/realtime/calls/<id>`, or `/live/<id>` is stripped so the root can be
+ * re-derived. A path prefix survives (`https://host/api/v1` keeps `/api`).
+ */
+function normalizeSidebandRoot(baseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return LIVE_SIDEBAND_API_ROOT;
+  }
+  const secure = parsed.protocol === "https:" || parsed.protocol === "wss:";
+  const plaintext = parsed.protocol === "http:" || parsed.protocol === "ws:";
+  if ((!secure && !plaintext) || (plaintext && !isLoopbackHost(parsed.hostname)) || parsed.username || parsed.password) {
+    return LIVE_SIDEBAND_API_ROOT;
+  }
+  parsed.search = "";
+  parsed.hash = "";
+  const path = parsed.pathname
+    .replace(/\/+$/, "")
+    .replace(/\/realtime(?:\/calls\/[^/]+)?$/, "")
+    .replace(/\/live\/[^/]+$/, "")
+    .replace(/\/v1$/, "");
+  parsed.pathname = `${path}/v1`;
+  return parsed.toString().replace(/\/$/, "");
+}
+
+/**
+ * Resolve the sideband base. Upstream policy (codex-rs 438c9e98d): the sideband
+ * join is NOT derived from the selected model provider — precedence is exactly
+ * the explicit override when configured, otherwise the canonical Realtime API
+ * root. The provider base URL deliberately plays no part; a user who needs a
+ * non-canonical host sets the override, the same escape hatch upstream ships as
+ * `experimental_realtime_ws_base_url`.
+ */
+function sidebandBaseRoot(overrideBaseUrl?: string): string {
+  return normalizeSidebandRoot(overrideBaseUrl?.trim() || LIVE_SIDEBAND_API_ROOT);
+}
+
+/**
  * Build the upstream sideband WebSocket URL for a resolved OpenAI/ChatGPT provider.
  * Mirrors openai/codex `websocket_url_from_api_url_for_call` + `normalize_realtime_path`.
+ *
+ * Deliberate deviation: the realtime-query style keeps `intent=quicksilver`,
+ * which upstream does not send. That URL is live against real OpenAI
+ * infrastructure for every canonical voice user and this parameter is known to
+ * work; dropping it is future work gated on a live smoke test. Parity here is
+ * scoped to the host, override precedence, and provider-query exclusion.
  */
 export function buildLiveSidebandUpstreamWsUrl(
-  providerBaseUrl: string,
-  usesBackendShape: boolean,
   target: LiveSidebandTarget,
+  overrideBaseUrl?: string,
 ): string {
-  const root = providerBaseUrl.replace(/\/$/, "");
-  if (usesBackendShape) {
-    // ChatGPT backend-api call-create, but the sideband join lives on the public API host
-    // (matches openai/codex, which builds the sideband from the ApiKey provider default).
-    if (target.style === "frameless-path") {
-      return httpsToWss(`${LIVE_SIDEBAND_API_ROOT}/live/${target.callId}`);
-    }
-    if (target.style === "realtime-calls-path") {
-      return httpsToWss(`${LIVE_SIDEBAND_API_ROOT}/realtime/calls/${target.callId}`);
-    }
-    return httpsToWss(
-      `${LIVE_SIDEBAND_API_ROOT}/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`,
-    );
-  }
+  const sidebandRoot = sidebandBaseRoot(overrideBaseUrl);
   if (target.style === "frameless-path") {
-    // Frameless: normalize to .../live then append /{callId}.
-    const apiRoot = root.replace(/\/v1\/?$/, "");
-    return httpsToWss(`${apiRoot}/v1/live/${target.callId}`);
+    return httpsToWss(`${sidebandRoot}/live/${target.callId}`);
   }
   if (target.style === "realtime-calls-path") {
-    const apiRoot = root.replace(/\/v1\/?$/, "");
-    return httpsToWss(`${apiRoot}/v1/realtime/calls/${target.callId}`);
+    return httpsToWss(`${sidebandRoot}/realtime/calls/${target.callId}`);
   }
-  // Realtime v1/v2: /v1/realtime?intent=quicksilver&call_id=
-  const apiRoot = root.replace(/\/v1\/?$/, "");
   return httpsToWss(
-    `${apiRoot}/v1/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`,
+    `${sidebandRoot}/realtime?intent=quicksilver&call_id=${encodeURIComponent(target.callId)}`,
   );
 }
 
@@ -359,6 +413,7 @@ export async function resolveLiveRelay(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<LiveRelayTarget | Response> {
   try {
     validateForwardAdmissionCredential(req.headers, config);
@@ -383,7 +438,9 @@ export async function resolveLiveRelay(
   let forwardAuthError: Response | undefined;
   if (candidates.forwardCandidates.length > 0) {
     try {
-      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config);
+      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config, {
+        beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
+      });
       if (forward) {
         logCtx.provider = formatCodexProviderForLog(
           forward.providerName,
@@ -394,6 +451,8 @@ export async function resolveLiveRelay(
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
         forwardAuthError = cooldownErrorResponse(err);
+      } else if (err instanceof CodexMainProfileDrainingError) {
+        forwardAuthError = codexMainProfileDrainingResponse();
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(
           409,
@@ -456,13 +515,14 @@ export async function handleLive(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<Response> {
   const inboundContentType = req.headers.get("content-type") ?? "application/octet-stream";
   const inboundBodyOrError = await readRequestBodyCapped(req, LIVE_REQUEST_MAX_BYTES);
   if (inboundBodyOrError instanceof Response) return inboundBodyOrError;
   const inboundBody = inboundBodyOrError;
 
-  const relay = await resolveLiveRelay(req, config, logCtx);
+  const relay = await resolveLiveRelay(req, config, logCtx, turnAdmissionLease);
   if (relay instanceof Response) return relay;
 
   const headers: Record<string, string> = { ...relay.headers };
@@ -537,12 +597,13 @@ export async function resolveLiveSidebandUpgrade(
   config: OcxConfig,
   logCtx: RequestLogContext,
   target: LiveSidebandTarget,
+  turnAdmissionLease?: AdmissionLease,
 ): Promise<{ headers: Record<string, string>; upstreamWsUrl: string; recordOutcome?: LiveRelayTarget["recordOutcome"] } | Response> {
-  const relay = await resolveLiveRelay(req, config, logCtx);
+  const relay = await resolveLiveRelay(req, config, logCtx, turnAdmissionLease);
   if (relay instanceof Response) return relay;
   return {
     headers: relay.headers,
-    upstreamWsUrl: buildLiveSidebandUpstreamWsUrl(relay.providerBaseUrl, relay.usesBackendShape, target),
+    upstreamWsUrl: buildLiveSidebandUpstreamWsUrl(target, config.experimentalRealtimeWsBaseUrl),
     recordOutcome: relay.recordOutcome,
   };
 }

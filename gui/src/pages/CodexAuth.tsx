@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../i18n/shared";
 import CodexAccountPool from "../components/CodexAccountPool";
+import DefaultModeRequestUserInputSetting from "../components/DefaultModeRequestUserInputSetting";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
 import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
@@ -103,6 +104,9 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   const [accountModeState, setAccountModeState] = useState<CodexAccountModeState | null>(
     () => cached?.accountModeState ?? null,
   );
+  // Which apiBase this instance has already read the account mode for. StrictMode double-invokes
+  // the mount effect and its deferred read cannot be cancelled, so dedupe here.
+  const initialModeKeyRef = useRef<string | null>(null);
   const [enableBusy, setEnableBusy] = useState(false);
   const [enableError, setEnableError] = useState("");
 
@@ -130,10 +134,18 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
   }, [apiBase, configCacheKey]);
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => { void loadMode(); }, 0);
+    // Deferred by a microtask, not a timer: a timer had to be cancelled in cleanup, so a quick hop
+    // away from this tab left the banner with no mode read until the next poll. A microtask keeps
+    // the state update out of the effect body while still guaranteeing the request goes out.
+    // Guarded per identity: StrictMode double-invokes this effect and the microtask cannot be
+    // cancelled, so without it the banner reads /api/config twice on every mount.
+    if (initialModeKeyRef.current !== apiBase) {
+      initialModeKeyRef.current = apiBase;
+      void Promise.resolve().then(() => { void loadMode(); });
+    }
     const iv = window.setInterval(() => { void loadMode(); }, 30_000);
-    return () => { window.clearTimeout(timeout); window.clearInterval(iv); };
-  }, [loadMode]);
+    return () => { window.clearInterval(iv); };
+  }, [apiBase, loadMode]);
 
   const enableOpenAi = async () => {
     setEnableBusy(true);
@@ -163,5 +175,10 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     {enableError && <div className="notice notice-err" role="alert">{enableError}</div>}
   </>;
 
-  return <CodexAccountPool apiBase={apiBase} accountModeState={accountModeState} banner={banner} />;
+  return (
+    <>
+      <CodexAccountPool apiBase={apiBase} accountModeState={accountModeState} banner={banner} />
+      <DefaultModeRequestUserInputSetting apiBase={apiBase} />
+    </>
+  );
 }

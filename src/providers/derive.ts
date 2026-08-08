@@ -1,10 +1,17 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
-import { PROVIDER_REGISTRY, providerMatchesRegistryTransport, type ProviderRegistryEntry } from "./registry";
+import {
+  PROVIDER_REGISTRY,
+  providerMatchesRegistryTransport,
+  registryEntryForProviderDestination,
+  type ProviderRegistryEntry,
+} from "./registry";
 
 export interface DerivedKeyLoginProvider {
   label: string;
   baseUrl: string;
+  responsesPath?: string;
   adapter: string;
+  apiKeyValidation?: "unknown";
   apiKeyTransport?: OcxProviderConfig["apiKeyTransport"];
   dashboardUrl: string;
   models?: string[];
@@ -21,6 +28,7 @@ export interface DerivedKeyLoginProvider {
   modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  reasoningWireFormat?: OcxProviderConfig["reasoningWireFormat"];
   noVisionModels?: string[];
   noReasoningModels?: string[];
   noTemperatureModels?: string[];
@@ -53,6 +61,7 @@ export interface DerivedProviderPreset {
   label: string;
   adapter: string;
   baseUrl: string;
+  responsesPath?: string;
   defaultModel?: string;
   auth: "oauth" | "forward" | "key" | "local";
   codexAccountMode?: CodexAccountMode;
@@ -100,12 +109,20 @@ function cloneNestedRecord(input: Record<string, Record<string, string>>): Recor
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }
 
+/**
+ * Build the provider config a registry entry contributes when a preset is materialized.
+ * The registry auth kind is preserved verbatim (including `"local"`) so fail-closed gates
+ * keep distinguishing local runtimes from API-key providers after the seed round-trip.
+ */
 export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderConfig {
   return {
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
     ...(entry.apiKeyTransport !== undefined ? { apiKeyTransport: entry.apiKeyTransport } : {}),
-    authMode: entry.authKind === "local" ? undefined : entry.authKind,
+    ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
+    // Preserve the registry auth kind verbatim (including "local") so fail-closed gates that
+    // distinguish local runtimes from API-key providers keep working after the seed round-trip.
+    authMode: entry.authKind,
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.keyOptional !== undefined ? { keyOptional: entry.keyOptional } : {}),
     ...(entry.freeTier !== undefined ? { freeTier: entry.freeTier } : {}),
@@ -125,6 +142,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
     ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
     ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
+    ...(entry.reasoningWireFormat ? { reasoningWireFormat: entry.reasoningWireFormat } : {}),
     ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
     ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
     ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
@@ -132,6 +150,8 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.noPenaltyModels ? { noPenaltyModels: [...entry.noPenaltyModels] } : {}),
     ...(entry.parallelToolCalls !== undefined ? { parallelToolCalls: entry.parallelToolCalls } : {}),
     ...(entry.promptCacheKey !== undefined ? { promptCacheKey: entry.promptCacheKey } : {}),
+    ...(entry.responsesPath !== undefined ? { responsesPath: entry.responsesPath } : {}),
+    ...(entry.statelessResponses !== undefined ? { statelessResponses: entry.statelessResponses } : {}),
     ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
     ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
     ...(entry.reasoningSplitModels ? { reasoningSplitModels: [...entry.reasoningSplitModels] } : {}),
@@ -152,7 +172,9 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
     out[entry.id] = {
       label: entry.label,
       baseUrl: entry.baseUrl,
+      ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
       adapter: entry.adapter,
+      ...(entry.apiKeyValidation !== undefined ? { apiKeyValidation: entry.apiKeyValidation } : {}),
       ...(entry.apiKeyTransport !== undefined ? { apiKeyTransport: entry.apiKeyTransport } : {}),
       dashboardUrl: entry.dashboardUrl,
       ...(entry.models ? { models: [...entry.models] } : {}),
@@ -169,6 +191,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts: { ...entry.modelDefaultReasoningEfforts } } : {}),
       ...(entry.reasoningEffortMap ? { reasoningEffortMap: { ...entry.reasoningEffortMap } } : {}),
       ...(entry.modelReasoningEffortMap ? { modelReasoningEffortMap: cloneNestedRecord(entry.modelReasoningEffortMap) } : {}),
+      ...(entry.reasoningWireFormat ? { reasoningWireFormat: entry.reasoningWireFormat } : {}),
       ...(entry.noVisionModels ? { noVisionModels: [...entry.noVisionModels] } : {}),
       ...(entry.noReasoningModels ? { noReasoningModels: [...entry.noReasoningModels] } : {}),
       ...(entry.noTemperatureModels ? { noTemperatureModels: [...entry.noTemperatureModels] } : {}),
@@ -221,12 +244,59 @@ export function deriveProviderPresets(): DerivedProviderPreset[] {
   return [...dedupePresets(presets), customPreset()];
 }
 
+/**
+ * Merge registry reasoning-summary defaults PER KEY, letting explicit user values win.
+ *
+ * Not a whole-Record `=== undefined` fill like the scalars around it: a user who sets one
+ * model's flag creates a defined Record, and a whole-object check would then suppress every
+ * registry default for that provider. Spreading registry-first also preserves an explicit
+ * `false` — someone who disabled summaries for a model because their backend 400s on it keeps
+ * that. The result is a fresh object, so saved config never aliases the registry constant.
+ */
+function applyReasoningSummaryDefaults(
+  prov: OcxProviderConfig,
+  defaults: Readonly<Record<string, boolean>> | undefined,
+): void {
+  if (!defaults) return;
+  prov.modelSupportsReasoningSummaries = {
+    ...defaults,
+    ...(prov.modelSupportsReasoningSummaries ?? {}),
+  };
+}
+
+/**
+ * Last-resort enrichment for a provider whose NAME matches no registry id.
+ *
+ * #1100 was reported against a hand-added provider called "GLM" pointing at a vendor endpoint
+ * we recognize. Routing worked, so the row looked healthy, but every piece of registry metadata
+ * was skipped and the reasoning ladder was advertised without summary support — exactly the
+ * inconsistency that makes Codex drop the inbound reasoning object.
+ *
+ * Deliberately narrow: only the reasoning-summary map, and only via
+ * `registryEntryForProviderDestination`, which matches fixed key destinations and refuses
+ * templated or overridable base URLs. A custom row keeps its own identity for everything else.
+ */
+function enrichReasoningSummariesByDestination(prov: OcxProviderConfig): void {
+  const destination = registryEntryForProviderDestination(prov);
+  applyReasoningSummaryDefaults(prov, destination?.modelSupportsReasoningSummaries);
+}
+
 export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig): void {
   const entry = PROVIDER_REGISTRY.find(row => row.id === name);
-  if (!entry || !providerMatchesRegistryTransport(name, prov)) return;
+  if (!entry || !providerMatchesRegistryTransport(name, prov)) {
+    // Name lookup failed, but the row may still point at a vendor route we know. #1100 was
+    // reported against a hand-added provider literally named "GLM": routing worked, yet every
+    // piece of registry metadata was skipped because no registry id is called "GLM".
+    // `registryEntryForProviderDestination` answers the question that actually matters here —
+    // which vendor endpoint is this row talking to — and is already restricted to fixed key
+    // destinations, so a templated or overridable base URL cannot be claimed by it.
+    enrichReasoningSummariesByDestination(prov);
+    return;
+  }
   const seed = providerConfigSeed(entry);
   if (prov.apiKeyTransport === undefined && seed.apiKeyTransport !== undefined) prov.apiKeyTransport = seed.apiKeyTransport;
   if (!prov.defaultModel && seed.defaultModel) prov.defaultModel = seed.defaultModel;
+  if (prov.responsesPath === undefined && seed.responsesPath !== undefined) prov.responsesPath = seed.responsesPath;
   // Fill mode only when absent: an explicit persisted `direct` must never be overwritten.
   if (prov.codexAccountMode === undefined && seed.codexAccountMode !== undefined) prov.codexAccountMode = seed.codexAccountMode;
   if (!prov.models && seed.models) prov.models = [...seed.models];
@@ -241,6 +311,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.modelDefaultReasoningEfforts && seed.modelDefaultReasoningEfforts) prov.modelDefaultReasoningEfforts = { ...seed.modelDefaultReasoningEfforts };
   if (!prov.reasoningEffortMap && seed.reasoningEffortMap) prov.reasoningEffortMap = { ...seed.reasoningEffortMap };
   if (!prov.modelReasoningEffortMap && seed.modelReasoningEffortMap) prov.modelReasoningEffortMap = cloneNestedRecord(seed.modelReasoningEffortMap);
+  if (prov.reasoningWireFormat === undefined && seed.reasoningWireFormat !== undefined) prov.reasoningWireFormat = seed.reasoningWireFormat;
   if (!prov.noVisionModels && seed.noVisionModels) prov.noVisionModels = [...seed.noVisionModels];
   if (!prov.noReasoningModels && seed.noReasoningModels) prov.noReasoningModels = [...seed.noReasoningModels];
   if (!prov.noTemperatureModels && seed.noTemperatureModels) prov.noTemperatureModels = [...seed.noTemperatureModels];
@@ -248,6 +319,30 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (!prov.noPenaltyModels && seed.noPenaltyModels) prov.noPenaltyModels = [...seed.noPenaltyModels];
   if (prov.parallelToolCalls === undefined && seed.parallelToolCalls !== undefined) prov.parallelToolCalls = seed.parallelToolCalls;
   if (prov.promptCacheKey === undefined && seed.promptCacheKey !== undefined) prov.promptCacheKey = seed.promptCacheKey;
+  // Fill-only: a hand-edited path must survive, and a config saved before the registry
+  // learned this route still gets backfilled.
+  if (prov.responsesPath === undefined && seed.responsesPath !== undefined) prov.responsesPath = seed.responsesPath;
+  if (prov.statelessResponses === undefined && seed.statelessResponses !== undefined) prov.statelessResponses = seed.statelessResponses;
+  // Registry-only metadata (never seeded into saved config): backfill straight from
+  // the entry so an explicit user value stays distinguishable from the default.
+  if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
+  if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
+  applyReasoningSummaryDefaults(prov, entry.modelSupportsReasoningSummaries);
+  // Registry-only repair policy (#938): fill only when the runtime provider has
+  // no explicit policy, and deep-clone so saved/user values never alias the
+  // registry constant.
+  if (prov.responsesItemIdRepair === undefined && entry.responsesItemIdRepair) {
+    prov.responsesItemIdRepair = {
+      ...(entry.responsesItemIdRepair.message ? { message: [...entry.responsesItemIdRepair.message] } : {}),
+      ...(entry.responsesItemIdRepair.reasoning ? { reasoning: [...entry.responsesItemIdRepair.reasoning] } : {}),
+      ...(entry.responsesItemIdRepair.repairMissingTerminalIds !== undefined
+        ? { repairMissingTerminalIds: entry.responsesItemIdRepair.repairMissingTerminalIds }
+        : {}),
+      ...(entry.responsesItemIdRepair.repairInvalidIds !== undefined
+        ? { repairInvalidIds: entry.responsesItemIdRepair.repairInvalidIds }
+        : {}),
+    };
+  }
   if (!prov.autoToolChoiceOnlyModels && seed.autoToolChoiceOnlyModels) prov.autoToolChoiceOnlyModels = [...seed.autoToolChoiceOnlyModels];
   if (!prov.preserveReasoningContentModels && seed.preserveReasoningContentModels) prov.preserveReasoningContentModels = [...seed.preserveReasoningContentModels];
   if (!prov.reasoningSplitModels && seed.reasoningSplitModels) prov.reasoningSplitModels = [...seed.reasoningSplitModels];
@@ -287,6 +382,7 @@ function entryToPreset(entry: ProviderRegistryEntry): DerivedProviderPreset {
     label: entry.label,
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
+    ...(entry.responsesPath ? { responsesPath: entry.responsesPath } : {}),
     auth: entry.authKind === "forward" ? "forward" : entry.authKind === "oauth" ? "oauth" : entry.authKind === "local" ? "local" : "key",
     ...(entry.codexAccountMode ? { codexAccountMode: entry.codexAccountMode } : {}),
     ...(entry.codexAccountMode ? { provider: providerConfigSeed(entry) } : {}),

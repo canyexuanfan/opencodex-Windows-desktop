@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
-import { createResponsesPassthroughAdapter } from "../src/adapters/openai-responses";
+import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
 import { parseRequest } from "../src/responses/parser";
 import {
   COMPACT_PROMPT,
@@ -12,6 +12,10 @@ import {
   extractCompactUserMessages,
 } from "../src/responses/compaction";
 import type { AdapterEvent } from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
+
+const createResponsesPassthroughAdapter = (...args: Parameters<typeof createResponsesPassthroughAdapterProduction>) =>
+  withTestTranslatorBudget(createResponsesPassthroughAdapterProduction(...args));
 
 async function* replay(events: AdapterEvent[]): AsyncGenerator<AdapterEvent> {
   for (const event of events) yield event;
@@ -260,5 +264,17 @@ describe("remote compaction v1 helpers (260707 Design-B sweep)", () => {
     const second = output[1] as { content: { text: string }[] };
     expect(second.content[0].text).toBe(recent);
     expect(first.content[0].text.length).toBe(80_000 - recent.length);
+  });
+
+  test("the retained tail never begins on a lone low surrogate", () => {
+    // The reviewer's repro: an 80,001-code-unit message BEGINNING with an
+    // astral character, so the 80k budget cut lands exactly inside the pair.
+    const withAstral = "🎆" + "가".repeat(79_999);
+    expect(withAstral.length).toBe(80_001);
+    const output = buildCompactV1Output([withAstral], "summary");
+    const retained = (output[output.length - 2] as { content: { text: string }[] }).content[0].text;
+    const first = retained.charCodeAt(0);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+    expect(retained.includes("\uFFFD")).toBe(false);
   });
 });

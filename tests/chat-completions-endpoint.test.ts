@@ -1,5 +1,6 @@
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -8,6 +9,42 @@ import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { chatCompletionsToResponsesBody, ChatCompletionsRequestError } from "../src/chat/inbound";
 import { chatCompletionsUsage } from "../src/chat/outbound";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
+import type { TranslatorBudget } from "../src/lib/translator-budget";
+import {
+  acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
+  resetLifecycleDrainStateForTests,
+} from "../src/server/lifecycle";
+import {
+  blockNativeMainRecovery,
+  completeNativeMainRecovery,
+  nativeMainStartupGateSnapshot,
+  waitForNativeMainStartupGate,
+} from "../src/codex/native-profile-startup";
+
+function budgetedChatOutbound(module: typeof import("../src/chat/outbound")) {
+  const translatorBudget = createTestTranslatorBudget();
+  return {
+    ...module,
+    responsesSseToChatCompletionsSse(
+      upstream: ReadableStream<Uint8Array>,
+      model: string,
+      opts?: { translatorBudget?: TranslatorBudget },
+    ) {
+      return module.responsesSseToChatCompletionsSse(upstream, model, {
+        translatorBudget: opts?.translatorBudget ?? translatorBudget,
+      });
+    },
+    collectChatCompletion(
+      stream: ReadableStream<Uint8Array>,
+      model: string,
+      budget?: TranslatorBudget,
+    ) {
+      return module.collectChatCompletion(stream, model, budget ?? translatorBudget);
+    },
+  };
+}
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -124,7 +161,7 @@ type ChatStreamChunk = {
 };
 
 async function convertResponsesFrames(frames: string[], model = "gpt-test") {
-  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const stream = responsesSseToChatCompletionsSse(new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
@@ -225,7 +262,7 @@ test("responsesSseToChatCompletionsSse consumes response.heartbeat without forwa
   // which is why the injected Grok config pins api_backend = "chat_completions". This
   // regression pins the safety property: heartbeats never surface as raw frames here —
   // at most a valid role chunk is emitted.
-  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const upstream = new Response([
     `event: response.heartbeat\ndata: ${JSON.stringify({ type: "response.heartbeat" })}\n\n`,
     `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "hi" })}\n\n`,
@@ -268,7 +305,7 @@ test("POST /v1/chat/completions streams OpenAI-shaped chunks end to end", async 
     expect(text).toContain("data: [DONE]");
     expect(text).toContain("\"finish_reason\":\"stop\"");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -299,7 +336,7 @@ test("non-streaming /v1/chat/completions returns chat.completion JSON", async ()
     expect(json.choices[0]?.message.content).toContain("Hello");
     expect(json.choices[0]?.finish_reason).toBe("stop");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -317,7 +354,7 @@ test("GET /v1/models returns OpenAI list shape for Copilot App discovery", async
     // Routed mock model may or may not appear depending on liveModels; list shape is the contract.
     expect(json.data.every(m => m.object === "model" && typeof m.id === "string")).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -337,7 +374,7 @@ test("invalid chat completions body returns OpenAI-style 400", async () => {
     expect(json.error.message).toContain("model");
     expect(json.error.type).toBe("invalid_request_error");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -387,7 +424,7 @@ test("responsesSseToChatCompletionsSse emits parallel tool calls once with stabl
 });
 
 test("responsesSseToChatCompletionsSse bounds upstream reads until the chat client pulls", async () => {
-  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const encoder = new TextEncoder();
   let pulls = 0;
   const upstream = new ReadableStream<Uint8Array>({
@@ -408,7 +445,7 @@ test("responsesSseToChatCompletionsSse bounds upstream reads until the chat clie
 });
 
 test("responsesSseToChatCompletionsSse delivers the first frame before a macrotask turn", async () => {
-  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const encoder = new TextEncoder();
   const upstream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -430,8 +467,8 @@ test("responsesSseToChatCompletionsSse delivers the first frame before a macrota
   await reader.cancel();
 });
 
-test("POST /v1/chat/completions rejects response_format for routed openai-chat", async () => {
-  const upstream = mockChatUpstream();
+test("POST /v1/chat/completions forwards response_format to routed openai-chat", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
   const server = startServer(0);
   try {
@@ -440,17 +477,49 @@ test("POST /v1/chat/completions rejects response_format for routed openai-chat",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model: "mock/test-model",
-        stream: false,
+        stream: true,
         messages: [{ role: "user", content: "hi" }],
-        response_format: { type: "json_object" },
+        response_format: { type: "json_schema", json_schema: { name: "answer", schema: { type: "object" }, strict: true } },
       }),
     });
-    expect(response.status).toBe(400);
-    const json = await response.json() as { error: { message: string; type: string } };
-    expect(json.error.message).toContain("response_format");
-    expect(json.error.type).toBe("invalid_request_error");
+    expect(response.status).toBe(200);
+    await response.text();
+    // Round trip: chat nested -> internal flat text.format -> re-nested on the wire, byte-identical.
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer", schema: { type: "object" }, strict: true },
+    });
   } finally {
-    server.stop(true);
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("POST /v1/responses carries text.format onto the routed chat wire", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/responses", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        stream: true,
+        input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+        text: { format: { type: "json_schema", name: "answer", schema: { type: "object" }, strict: true } },
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured.length).toBe(1);
+    expect(captured[0]!.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer", schema: { type: "object" }, strict: true },
+    });
+  } finally {
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -508,9 +577,126 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
     expect(response.status).toBe(200);
     expect(seen.some(hit => hit.authorization === ["Bear" + "er", "caller-direct-token"].join(" "))).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("Chat replay owns optional main enrichment while routed work survives drain and recovery", async () => {
+  resetLifecycleDrainStateForTests();
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: "chat-main-access", account_id: "chat-main-account" },
+  }));
+  let upstreamCalls = 0;
+  let finishUpstream: (() => void) | undefined;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const encoder = new TextEncoder();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      upstreamCalls += 1;
+      if (upstreamCalls > 1) {
+        return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
+          finishUpstream = () => {
+            finishUpstream = undefined;
+            controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
+            controller.close();
+          };
+          markStarted();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  let server = startServer(0);
+  await waitForNativeMainStartupGate();
+  const request = () => fetch(new URL("/v1/chat/completions", server.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "mock/test-model",
+      stream: true,
+      messages: [{ role: "user", content: "hold" }],
+    }),
+  });
+  let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+  let recoveryHomeId: string | null = null;
+  try {
+    await waitForNativeMainStartupGate();
+    const pending = request();
+    await started;
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(getNativeMainProfileRequestCount()).toBe(1);
+    drain = acquireNativeMainProfileDrain("chat-overlap");
+    expect(drain).not.toBeNull();
+    const routedDuringDrain = await request();
+    expect(routedDuringDrain.status).toBe(200);
+    await routedDuringDrain.text();
+    expect(upstreamCalls).toBe(2);
+
+    finishUpstream?.();
+    await response.text();
+    expect(getNativeMainProfileRequestCount()).toBe(0);
+    drain?.release();
+    drain = null;
+
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "chat-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const routedDuringRecovery = await request();
+    expect(routedDuringRecovery.status).toBe(200);
+    await routedDuringRecovery.text();
+    expect(upstreamCalls).toBe(3);
+
+    completeNativeMainRecovery(recoveryHomeId);
+    recoveryHomeId = null;
+    await server.stop(true);
+    saveConfig({
+      port: 0,
+      openaiProviderTierVersion: 2,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccounts: [],
+      activeCodexAccountId: "__main__",
+      autoSwitchThreshold: 0,
+    } as OcxConfig);
+    server = startServer(0);
+    await waitForNativeMainStartupGate();
+    recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "chat-main-recovery-home";
+    expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
+    const mainBlocked = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openai/gpt-test",
+        stream: false,
+        messages: [{ role: "user", content: "main blocked" }],
+      }),
+    });
+    expect(mainBlocked.status).toBe(503);
+    expect(upstreamCalls).toBe(3);
+  } finally {
+    if (recoveryHomeId) completeNativeMainRecovery(recoveryHomeId);
+    drain?.release();
+    finishUpstream?.();
+    await server.stop(true);
+    upstream.stop(true);
+    resetLifecycleDrainStateForTests();
   }
 });
 
@@ -573,7 +759,7 @@ test("POST /v1/chat/completions finalizes native passthrough request logs", asyn
     expect(entry).toBeTruthy();
     expect(entry?.status).toBe(200);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
     clearRequestLogsForTests();
@@ -582,7 +768,7 @@ test("POST /v1/chat/completions finalizes native passthrough request logs", asyn
 
 
 test("responsesSseToChatCompletionsSse reconciles done-frame final arguments (last-write-wins)", async () => {
-  const { responsesSseToChatCompletionsSse, collectChatCompletion } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse, collectChatCompletion } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const frames = [
     `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "alpha", arguments: "" } })}\n\n`,
     `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ type: "response.function_call_arguments.delta", item_id: "fc_a", delta: '{"q":"partial' })}\n\n`,
@@ -605,7 +791,7 @@ test("responsesSseToChatCompletionsSse reconciles done-frame final arguments (la
 });
 
 test("responsesSseToChatCompletionsSse emits error frame on response.failed (no clean DONE)", async () => {
-  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const frames = [
     `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_fail" } })}\n\n`,
     `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "partial" })}\n\n`,
@@ -636,8 +822,166 @@ test("responsesSseToChatCompletionsSse emits error frame on response.failed (no 
   await expect(collectChatCompletion(stream2, "mock/test-model")).rejects.toBeInstanceOf(ChatCompletionsStreamError);
 });
 
+test("responsesSseToChatCompletionsSse preserves translator overflow and cancels upstream", async () => {
+  const { responsesSseToChatCompletionsSse, collectChatCompletion, isChatCompletionsStreamError } =
+    budgetedChatOutbound(await import("../src/chat/outbound"));
+  const frame = `event: response.failed\ndata: ${JSON.stringify({
+    type: "response.failed",
+    response: {
+      status: "failed",
+      error: {
+        message: "upstream translation buffer exceeded the safe limit",
+        type: "upstream_error",
+        code: "translation_buffer_limit",
+      },
+    },
+  })}\n\n`;
+  let cancelled = false;
+  const source = () => new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const text = await new Response(responsesSseToChatCompletionsSse(source(), "mock/test-model")).text();
+  expect(text).toContain('"code":"translation_buffer_limit"');
+  expect(text).toContain('"type":"upstream_error"');
+  expect(text).not.toContain("data: [DONE]");
+  expect(cancelled).toBe(true);
+
+  try {
+    await collectChatCompletion(
+      responsesSseToChatCompletionsSse(source(), "mock/test-model"),
+      "mock/test-model",
+    );
+    throw new Error("expected translator overflow");
+  } catch (error) {
+    expect(isChatCompletionsStreamError(error)).toBe(true);
+    if (isChatCompletionsStreamError(error)) {
+      // Provider-controlled overflow is an upstream failure (502), not a client error.
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+});
+
+test("collectChatCompletion enforces the per-call argument cap", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 1024 });
+  const bigArgs = "x".repeat(2048);
+  const frame = `data: ${JSON.stringify({
+    choices: [{ delta: { tool_calls: [{ index: 0, id: "call_big", function: { name: "f", arguments: bigArgs } }] } }],
+  })}\n\n`;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected per-call overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  // The failed call's scope is released on the error path.
+  expect(budget.snapshot().activeCalls).toBe(0);
+});
+
+test("collectChatCompletion enforces the turn cap across many calls", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 512, maxTurnBytes: 4096 });
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      // 12 calls x 512 bytes: per-call fits, the turn cap trips mid-stream.
+      for (let index = 0; index < 12; index++) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          choices: [{ delta: { tool_calls: [{ index, id: `call_${index}`, function: { name: "f", arguments: "y".repeat(512) } }] } }],
+        })}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected turn overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  expect(budget.snapshot().activeCalls).toBe(0);
+});
+
+test("collectChatCompletion releases every call scope after the final owner is charged", async () => {
+  const module = await import("../src/chat/outbound");
+  const budget = createTestTranslatorBudget();
+  const encoder = new TextEncoder();
+  const frames = [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "alpha", arguments: "{\"q\":\"pa" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "rtial\"}" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_b", function: { name: "beta", arguments: "{\"z\":1}" } }] } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ finish_reason: "tool_calls", delta: {} }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(encoder.encode(frame));
+      controller.close();
+    },
+  });
+  const completion = await module.collectChatCompletion(stream, "mock/test-model", budget);
+  const toolCalls = (completion.choices as Array<{ message?: { tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> } }>)[0]
+    ?.message?.tool_calls ?? [];
+  expect(toolCalls).toHaveLength(2);
+  expect(toolCalls[0]?.function?.arguments).toBe('{"q":"partial"}');
+  // All per-call scopes closed: ownership moved to the serialized copies only.
+  expect(budget.snapshot().activeCalls).toBe(0);
+  // Exact surviving charge: the two serialized owners, nothing else.
+  const copyA = { id: "call_a", type: "function", function: { name: "alpha", arguments: '{"q":"partial"}' } };
+  const copyB = { id: "call_b", type: "function", function: { name: "beta", arguments: '{"z":1}' } };
+  expect(budget.snapshot().currentBytes).toBe(
+    Buffer.byteLength(JSON.stringify(copyA)) + Buffer.byteLength(JSON.stringify(copyB)),
+  );
+});
+
+test("collectChatCompletion final-copy overflow cleans up scopes and charges", async () => {
+  const module = await import("../src/chat/outbound");
+  // Args (100 bytes) fit; args + serialized copy exceed the turn cap, so the
+  // overflow fires during the final owner transfer, not mid-stream. The 250
+  // threshold lets the ~213-byte frame and the 100-byte args through first.
+  const budget = createTestTranslatorBudget({ maxCallArgumentBytes: 4096, maxTurnBytes: 250 });
+  const frame = `data: ${JSON.stringify({
+    choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "f", arguments: "a".repeat(100) } }] } }],
+  })}\n\n`;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame));
+      controller.close();
+    },
+  });
+  try {
+    await module.collectChatCompletion(stream, "mock/test-model", budget);
+    throw new Error("expected final-copy overflow");
+  } catch (error) {
+    expect(module.isChatCompletionsStreamError(error)).toBe(true);
+    if (module.isChatCompletionsStreamError(error)) {
+      expect(error).toMatchObject({ status: 502, type: "upstream_error", code: "translation_buffer_limit" });
+    }
+  }
+  expect(budget.snapshot().activeCalls).toBe(0);
+  expect(budget.snapshot().currentBytes).toBe(0);
+});
+
 test("responsesSseToChatCompletionsSse emits error frame on truncated stream", async () => {
-  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse, collectChatCompletion, ChatCompletionsStreamError } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const frames = [
     `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_trunc" } })}\n\n`,
     `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "half" })}\n\n`,
@@ -716,7 +1060,7 @@ test("non-streaming /v1/chat/completions returns error status on upstream failur
     expect(json.error?.message ?? "").toContain("provider blew up");
     expect(json.choices).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -777,7 +1121,7 @@ test("streaming /v1/chat/completions does not clean-DONE after response.failed",
     expect(text).not.toContain("[error]");
     expect(text).not.toContain("data: [DONE]");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -785,7 +1129,7 @@ test("streaming /v1/chat/completions does not clean-DONE after response.failed",
 
 
 test("responsesSseToChatCompletionsSse emits one complete named tool call", async () => {
-  const { responsesSseToChatCompletionsSse, collectChatCompletion } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse, collectChatCompletion } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const frames = [
     `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", item: { type: "function_call", id: "fc_a", call_id: "call_a", name: "exec_command", arguments: "" } })}\n\n`,
     `event: response.function_call_arguments.delta\ndata: ${JSON.stringify({ type: "response.function_call_arguments.delta", item_id: "fc_a", delta: '{"cmd":' })}\n\n`,
@@ -943,7 +1287,7 @@ test("chatCompletionsToResponsesBody recovers tool_calls function.name from earl
 // CRLF framing and a terminal event without a trailing blank line must not be reported
 // as truncation now that the shared SSE decoder drives the converter.
 test("responsesSseToChatCompletionsSse accepts CRLF-framed SSE with terminal event at EOF", async () => {
-  const { responsesSseToChatCompletionsSse, collectChatCompletion } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse, collectChatCompletion } = budgetedChatOutbound(await import("../src/chat/outbound"));
   const raw = [
     `event: response.created\r\ndata: ${JSON.stringify({ type: "response.created", response: { id: "resp_crlf" } })}\r\n\r\n`,
     `event: response.output_text.delta\r\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "hello" })}\r\n\r\n`,
@@ -971,7 +1315,7 @@ test("responsesSseToChatCompletionsSse accepts CRLF-framed SSE with terminal eve
 });
 
 test("responsesSseToChatCompletionsSse cancel promptly cancels an idle upstream", async () => {
-  const { responsesSseToChatCompletionsSse } = await import("../src/chat/outbound");
+  const { responsesSseToChatCompletionsSse } = budgetedChatOutbound(await import("../src/chat/outbound"));
   let upstreamCancelled = false;
   // Never-ending upstream: enqueues one partial frame then goes silent.
   const idleUpstream = new ReadableStream<Uint8Array>({
@@ -1041,7 +1385,7 @@ test("content_filter incomplete still maps to finish_reason content_filter with 
 
 test("collectChatCompletion throws ChatCompletionsStreamError on a stall incomplete (WP3)", async () => {
   const { responsesSseToChatCompletionsSse, collectChatCompletion, isChatCompletionsStreamError } =
-    await import("../src/chat/outbound");
+    budgetedChatOutbound(await import("../src/chat/outbound"));
   const frames = [
     `event: response.incomplete\ndata: ${JSON.stringify({ type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "upstream_stall_timeout" } } })}\n\n`,
   ];
@@ -1105,7 +1449,7 @@ test("an overridden model reaches the responses wire with its hosted tool intact
     // And the hosted tool survived — the chat translation would have dropped it.
     expect(JSON.stringify(captured[0]!.body)).toContain("web_search");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1130,7 +1474,7 @@ test("a sibling model on the same provider still takes the chat wire (#404)", as
     expect(captured.length).toBe(1);
     expect(captured[0]!.pathname).toContain("/chat/completions");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1157,7 +1501,7 @@ test("inbound chat-completions honors the override when stripping sampling (#404
     // The inbound path must read the effective adapter, not the provider default.
     expect(captured[0]!.pathname).toContain("/responses");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -1219,7 +1563,69 @@ test("/v1/chat/completions non-OK upstream preserves structured model_not_found"
       message: "Request failed",
     });
   } finally {
-    server.stop(true);
+    await server.stop(true);
+    upstream.stop(true);
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("/v1/chat/completions status:failed replay normalizes translation_buffer_limit to 502 upstream_error", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        id: "resp_overflow",
+        object: "response",
+        status: "failed",
+        error: {
+          message: "upstream translation buffer exceeded the safe limit",
+          type: "server_error",
+          code: "translation_buffer_limit",
+        },
+      });
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/codex")) {
+      return originalFetch(new URL(`${url.pathname.slice("/backend-api/codex".length)}${url.search}`, upstream.url), init);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: ["Bear" + "er", "caller-direct-token"].join(" "),
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    // Provider-controlled overflow is an upstream failure on every path.
+    expect(response.status).toBe(502);
+    const json = await response.json() as { error?: { code?: string; type?: string } };
+    expect(json.error).toMatchObject({ code: "translation_buffer_limit", type: "upstream_error" });
+  } finally {
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }
@@ -1284,7 +1690,7 @@ test("/v1/chat/completions status:failed replay preserves structured model_not_f
       message: "Request failed",
     });
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
     globalThis.fetch = originalFetch;
   }

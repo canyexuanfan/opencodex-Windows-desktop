@@ -19,18 +19,21 @@ import {
   writeFileSync,
 } from "node:fs";
 import { getConfigDir } from "../config";
-import { durableBunPath } from "../lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "../lib/bun-runtime";
+import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { isProcessAlive } from "../lib/process-control";
 import { serviceApiTokenFilePath } from "../lib/service-secrets";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { windowsEnvIndirectBatchValue } from "../lib/win-paths";
 import { isWslRuntime, wslAutomountRoot } from "./home";
+import { truncateRetainedUtf8 } from "../lib/admission";
 
 const SHIM_MARKER = "opencodex codex autostart shim";
 const CODEX_SHIM_PROBE_BYTES = 16 * 1024;
 export const CODEX_SHIM_REPLACEMENT_STABLE_MS = 100;
 export const CODEX_SHIM_STATE_MAX_BYTES = 1024 * 1024;
 const CODEX_SHIM_RESTORE_LOCK_STALE_MS = 30_000;
+const MAX_DIAGNOSTIC_VALUE_BYTES = 8 * 1024;
 let lastShimDiscoveryError: string | null = null;
 /** Last human-readable reason discovery returned null (exposed for doctor/tests). */
 export function lastCodexDiscoveryError(): string | null {
@@ -118,11 +121,13 @@ export type CodexShimAutoRestoreResult =
   | { status: "ineligible" | "deferred"; message?: string }
   | { status: "restored"; message: string };
 
-function cliEntry(): { bun: string; cli: string } {
+function cliEntry(): { bun: string; bunRuntimeSource: BunRuntimeSource; cli: string } {
   // Bundled Bun path (survives `ocx update`); all three shim builders
   // (Unix / Windows cmd / Windows PowerShell) receive it via this entry.
   // This module lives in src/codex/, the CLI entry in src/cli/index.ts.
-  return { bun: durableBunPath(), cli: join(import.meta.dir, "..", "cli", "index.ts") };
+  // Path and provenance resolve together so the marker always describes this binary.
+  const runtime = durableBunRuntime();
+  return { bun: runtime.path, bunRuntimeSource: runtime.source, cli: join(import.meta.dir, "..", "cli", "index.ts") };
 }
 
 function commandNames(name: string): string[] {
@@ -309,10 +314,12 @@ export function findCodexOnPath(deps: CodexPathScanDeps = {}): string | null {
   }
 
   if (skippedInterop) {
-    lastShimDiscoveryError =
+    lastShimDiscoveryError = truncateRetainedUtf8(
       `Found a Windows codex at ${skippedInterop} via WSL PATH interop, but no Linux-side codex. ` +
       "Refusing to shim a Windows launcher from WSL (a WSL shim breaks Windows invocations). " +
-      "Install codex inside WSL (npm i -g @openai/codex), or run 'ocx ensure' from Windows to shim the Windows side.";
+      "Install codex inside WSL (npm i -g @openai/codex), or run 'ocx ensure' from Windows to shim the Windows side.",
+      MAX_DIAGNOSTIC_VALUE_BYTES,
+    );
   }
   return null;
 }
@@ -324,9 +331,11 @@ function findWindowsCodexTargets(): ShimFileState[] | null {
     if (existsSync(exe) && !isShim(exe)) {
       try {
         if (!lstatSync(exe).isDirectory()) {
-          lastShimDiscoveryError =
+          lastShimDiscoveryError = truncateRetainedUtf8(
             `Found codex.exe at ${exe}. Refusing to rename a real .exe because exact codex.exe invocations would break; ` +
-            "install a codex.cmd/codex.ps1 launcher or use `ocx service install` for autostart.";
+            "install a codex.cmd/codex.ps1 launcher or use `ocx service install` for autostart.",
+            MAX_DIAGNOSTIC_VALUE_BYTES,
+          );
           return null;
         }
       } catch { /* keep scanning */ }
@@ -360,7 +369,16 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, tokenFile = serviceApiTokenFilePath()): string {
+// Provenance is required rather than defaulted: a default would let a caller pass an
+// override binary and silently label it something else, which is precisely the
+// path/marker disagreement this feature exists to prevent.
+//
+// The marker is scoped to the `ensure` invocation in every flavor below and is never
+// exported into the shim's own environment. A shim wraps the real `codex`, so an
+// exported marker would be inherited by Codex and everything it spawns — a shell that
+// then ran a *different* Bun directly would carry a provenance describing a binary it
+// is not executing.
+export function buildUnixCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource, tokenFile = serviceApiTokenFilePath()): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.join("|");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.join("|");
   return `#!/usr/bin/env sh
@@ -400,7 +418,7 @@ case "$ocx_subcommand" in
     ;;
   *)
     if [ -z "$OCX_SHIM_BYPASS" ]; then
-      ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
+      ${BUN_RUNTIME_SOURCE_ENV}=${shQuote(bunRuntimeSource)} ${BUN_RUNTIME_PATH_ENV}=${shQuote(bunPath)} ${shQuote(bunPath)} ${shQuote(cliPath)} ensure >/dev/null 2>&1 || true
     fi
     ;;
 esac
@@ -425,7 +443,7 @@ function windowsBatchSet(name: string, value: string): string {
   return `set "${name}=${windowsEnvIndirectBatchValue(value, windowsBatchValue)}"`;
 }
 
-export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
+export function buildWindowsCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource): string {
   const internalCommandChecks = CODEX_INTERNAL_COMMANDS.map(command => `if /I "%~1"=="${command}" goto run_codex`).join("\r\n");
   const valueOptionChecks = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => `if /I "%~1"=="${option}" goto skip_option_value`).join("\r\n");
   return `@echo off\r
@@ -456,7 +474,11 @@ if "%~1"=="" goto ensure_ocx\r
 shift\r
 goto scan_codex_args\r
 :ensure_ocx\r
+setlocal\r
+${windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource)}\r
+${windowsBatchSet(BUN_RUNTIME_PATH_ENV, bunPath)}\r
 "%OCX_BUN%" "%OCX_CLI%" ensure >nul 2>nul\r
+endlocal\r
 :run_codex\r
 "%OCX_REAL_CODEX%" %*\r
 `;
@@ -466,7 +488,7 @@ function psString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string): string {
+export function buildWindowsPowerShellCodexShim(realCodexPath: string, bunPath: string, cliPath: string, bunRuntimeSource: BunRuntimeSource): string {
   const internalCommands = CODEX_INTERNAL_COMMANDS.map(command => psString(command)).join(", ");
   const valueOptions = CODEX_GLOBAL_OPTIONS_WITH_VALUE.map(option => psString(option)).join(", ");
   const tokenFile = serviceApiTokenFilePath();
@@ -491,7 +513,17 @@ foreach ($argValue in $args) {
 }
 $skipEnsure = $env:OCX_SHIM_BYPASS -or $internalCommands -contains $subcommand -or @("--help", "-h", "--version", "-V") -contains $subcommand
 if (-not $skipEnsure) {
-  & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null
+  $priorRuntimeSource = $env:${BUN_RUNTIME_SOURCE_ENV}
+  $priorRuntimePath = $env:${BUN_RUNTIME_PATH_ENV}
+  $env:${BUN_RUNTIME_SOURCE_ENV} = ${psString(bunRuntimeSource)}
+  $env:${BUN_RUNTIME_PATH_ENV} = ${psString(bunPath)}
+  try { & ${psString(bunPath)} ${psString(cliPath)} ensure *> $null }
+  finally {
+    if ($null -eq $priorRuntimeSource) { Remove-Item Env:\\${BUN_RUNTIME_SOURCE_ENV} -ErrorAction SilentlyContinue }
+    else { $env:${BUN_RUNTIME_SOURCE_ENV} = $priorRuntimeSource }
+    if ($null -eq $priorRuntimePath) { Remove-Item Env:\\${BUN_RUNTIME_PATH_ENV} -ErrorAction SilentlyContinue }
+    else { $env:${BUN_RUNTIME_PATH_ENV} = $priorRuntimePath }
+  }
 }
 & ${psString(realCodexPath)} @args
 exit $LASTEXITCODE
@@ -595,25 +627,25 @@ function gitBashPath(path: string): string {
 }
 
 function writeShim(wrapperPath: string, realCodexPath: string): void {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   if (process.platform === "win32") {
     const lower = wrapperPath.toLowerCase();
     if (lower.endsWith(".ps1")) {
       // UTF-8 BOM: Windows PowerShell 5.1 decodes BOM-less .ps1 files in the ANSI
       // codepage, which mangles non-ASCII paths embedded in the shim.
-      writeFileSync(wrapperPath, `\uFEFF${buildWindowsPowerShellCodexShim(realCodexPath, bun, cli)}`, "utf8");
+      writeFileSync(wrapperPath, `\uFEFF${buildWindowsPowerShellCodexShim(realCodexPath, bun, cli, bunRuntimeSource)}`, "utf8");
     } else if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
-      writeFileSync(wrapperPath, buildWindowsCodexShim(realCodexPath, bun, cli), "utf8");
+      writeFileSync(wrapperPath, buildWindowsCodexShim(realCodexPath, bun, cli, bunRuntimeSource), "utf8");
     } else {
       // Extensionless Git-Bash sh launcher: sh shim with forward-slash paths.
       writeFileSync(
         wrapperPath,
-        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), gitBashPath(serviceApiTokenFilePath())),
+        buildUnixCodexShim(gitBashPath(realCodexPath), gitBashPath(bun), gitBashPath(cli), bunRuntimeSource, gitBashPath(serviceApiTokenFilePath())),
         "utf8",
       );
     }
   } else {
-    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli), "utf8");
+    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), "utf8");
     chmodSync(wrapperPath, 0o755);
   }
 }

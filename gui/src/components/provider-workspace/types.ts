@@ -86,6 +86,8 @@ export interface ProviderAuthHandlers {
 }
 
 export type ProviderUpdatePatch = {
+  /** A standalone routing change; the management API rejects combinations with edits. */
+  setDefault?: true;
   adapter?: string;
   baseUrl?: string;
   defaultModel?: string;
@@ -96,4 +98,6 @@ export type ProviderUpdatePatch = {
   disabled?: boolean;
   allowPrivateNetwork?: boolean;
   liveModels?: boolean;
+  /** Dedicated field: the API PATCHes it alone for the canonical `openai` provider. */
+  codexAccountMode?: "direct" | "pool";
 };

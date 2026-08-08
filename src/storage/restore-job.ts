@@ -16,6 +16,14 @@ import {
   withStorageMutationSlot,
   type StorageMutationCoordinatorTestHooks,
 } from "./storage-mutation-coordinator";
+import {
+  cancelQueuedStorageWorkerSpawns,
+  drainStorageWorkers,
+  StorageWorkerAdmissionBusyError,
+  terminateStorageWorker,
+  tryReserveStorageWorker,
+  withStorageWorkerSpawnGate,
+} from "./worker-lifecycle";
 
 export interface RestoreJobTestHooks extends StorageMutationCoordinatorTestHooks {
   /**
@@ -67,9 +75,14 @@ export function setRestoreTrashJobTestHooks(hooks: RestoreJobTestHooks | null): 
   setStorageMutationCoordinatorTestHooks(hooks);
 }
 
+/**
+ * Fire-and-forget reset. Prefer {@link resetRestoreTrashJobForTestsAsync} from
+ * test beforeEach/afterEach under `bun test --isolate` on Windows.
+ */
 export function resetRestoreTrashJobForTests(): void {
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
-    try { activeWorker.terminate(); } catch { /* */ }
+    void terminateStorageWorker(activeWorker);
     activeWorker = null;
   }
   cancelActiveRun?.();
@@ -78,14 +91,48 @@ export function resetRestoreTrashJobForTests(): void {
   resetStorageMutationCoordinatorForTests();
 }
 
+/**
+ * Await-able reset for test teardown; see policy-job's equivalent for why.
+ * Awaits the active worker directly so drain cannot race a fire-and-forget
+ * deregister from the sync reset.
+ */
+export async function resetRestoreTrashJobForTestsAsync(): Promise<void> {
+  cancelQueuedStorageWorkerSpawns();
+  const worker = activeWorker;
+  activeWorker = null;
+  cancelActiveRun?.();
+  cancelActiveRun = null;
+  testHooks = null;
+  // Join the worker before clearing the mutation coordinator so a concurrent
+  // run cannot acquire CODEX_HOME while the aborted thread is still mutating.
+  try {
+    if (worker) await terminateStorageWorker(worker);
+    await drainStorageWorkers();
+  } finally {
+    resetStorageMutationCoordinatorForTests();
+  }
+}
+
 /** Terminate an in-flight worker during process shutdown. */
 export function abortRestoreTrashJob(): void {
+  cancelQueuedStorageWorkerSpawns();
   if (activeWorker) {
-    try { activeWorker.terminate(); } catch { /* */ }
+    void terminateStorageWorker(activeWorker);
     activeWorker = null;
   }
   cancelActiveRun?.();
   cancelActiveRun = null;
+}
+
+/** Await-able shutdown sibling; joins the restore worker thread before returning. */
+export async function abortRestoreTrashJobAsync(): Promise<void> {
+  cancelQueuedStorageWorkerSpawns();
+  const worker = activeWorker;
+  activeWorker = null;
+  cancelActiveRun?.();
+  cancelActiveRun = null;
+  if (worker) await terminateStorageWorker(worker);
+  await drainStorageWorkers();
 }
 
 /** Test-only SSE/text stream served from the proxy while a worker is blocked. */
@@ -113,20 +160,21 @@ function runInWorker(opts: {
   blockMs?: number;
   restoreTest?: RestoreTestHooks;
 }): Promise<RestoreResult> {
-  return new Promise((resolve, reject) => {
+  const reservation = tryReserveStorageWorker();
+  if (!reservation) return Promise.reject(new StorageWorkerAdmissionBusyError());
+  return withStorageWorkerSpawnGate(() => new Promise<RestoreResult>((resolve, reject) => {
     const requestId = crypto.randomUUID();
     let settled = false;
-    const worker = new Worker(new URL("./restore-worker.ts", import.meta.url).href);
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL("./restore-worker.ts", import.meta.url).href);
+      reservation.bind(worker);
+    } catch (error) {
+      reservation.release();
+      reject(error);
+      return;
+    }
     activeWorker = worker;
-
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cancelActiveRun = null;
-      try { worker.terminate(); } catch { /* */ }
-      if (activeWorker === worker) activeWorker = null;
-      reject(new Error("restore_worker_timeout"));
-    }, WORKER_TIMEOUT_MS);
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -134,9 +182,14 @@ function runInWorker(opts: {
       cancelActiveRun = null;
       clearTimeout(timer);
       if (activeWorker === worker) activeWorker = null;
-      try { worker.terminate(); } catch { /* */ }
-      fn();
+      // Join before settle so mutation coordination inside the restore worker
+      // cannot overlap a follow-on run after a watchdog timeout.
+      void terminateStorageWorker(worker).then(fn, fn);
     };
+
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("restore_worker_timeout")));
+    }, WORKER_TIMEOUT_MS);
 
     cancelActiveRun = () => {
       finish(() => reject(new Error("aborted")));
@@ -174,6 +227,9 @@ function runInWorker(opts: {
         ...(process.env.OPENCODEX_HOME ? { OPENCODEX_HOME: process.env.OPENCODEX_HOME } : {}),
       },
     });
+  })).catch(error => {
+    reservation.release();
+    throw error;
   });
 }
 
@@ -204,6 +260,7 @@ async function executeRestore(opts: {
       ...(restoreTest ? { restoreTest } : {}),
     });
   } catch (err) {
+    if (err instanceof StorageWorkerAdmissionBusyError) return busyRestoreResult();
     return restoreResultFromWorkerRejection(err, opts.trashId);
   }
 }

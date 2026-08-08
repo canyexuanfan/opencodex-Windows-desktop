@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { TFn } from "../i18n/shared";
 import { readJsonIfOk } from "../fetch-json";
 import type { OAuthAccount, OAuthStatus } from "./providers-shared";
@@ -10,7 +10,6 @@ export function useProvidersOAuth({
   apiBase,
   t,
   aliveRef,
-  oauthLoginGenerationRef,
   accountSets,
   setAccountSets,
   setBusy,
@@ -28,7 +27,6 @@ export function useProvidersOAuth({
   apiBase: string;
   t: TFn;
   aliveRef: React.MutableRefObject<boolean>;
-  oauthLoginGenerationRef: React.MutableRefObject<Map<string, number>>;
   accountSets: Record<string, AccountSet>;
   setAccountSets: React.Dispatch<React.SetStateAction<Record<string, AccountSet>>>;
   setBusy: React.Dispatch<React.SetStateAction<string | null>>;
@@ -44,9 +42,17 @@ export function useProvidersOAuth({
   /** Select the provider and open Accounts after a successful login. */
   onLoginSettled?: (provider: string) => void;
 }) {
+  const oauthLoginGenerationRef = useRef<Map<string, number> | null>(null);
+  if (oauthLoginGenerationRef.current === null) oauthLoginGenerationRef.current = new Map();
+
+  const bumpLoginGeneration = useCallback((provider: string) => {
+    const gen = (oauthLoginGenerationRef.current!.get(provider) ?? 0) + 1;
+    oauthLoginGenerationRef.current!.set(provider, gen);
+    return gen;
+  }, []);
+
   const cancelLoginOAuth = useCallback(async (provider: string) => {
-    const gen = (oauthLoginGenerationRef.current.get(provider) ?? 0) + 1;
-    oauthLoginGenerationRef.current.set(provider, gen);
+    const gen = bumpLoginGeneration(provider);
     try {
       await fetch(`${apiBase}/api/oauth/login/cancel`, {
         method: "POST",
@@ -55,17 +61,15 @@ export function useProvidersOAuth({
       });
     } catch { /* ignore */ }
     if (!aliveRef.current) return;
-    if (oauthLoginGenerationRef.current.get(provider) === gen) {
+    if (oauthLoginGenerationRef.current!.get(provider) === gen) {
       setBusy(current => current === provider ? null : current);
       setLoginInfo(current => current?.provider === provider ? null : current);
     }
     notify(t("prov.loginCancelled", { provider: oauthLabel(provider) }), false);
-  }, [aliveRef, apiBase, notify, oauthLoginGenerationRef, setBusy, setLoginInfo, t]);
+  }, [aliveRef, apiBase, bumpLoginGeneration, notify, setBusy, setLoginInfo, t]);
 
   const loginOAuth = async (provider: string, addAccount = false, accountId?: string) => {
-    const nextGen = (oauthLoginGenerationRef.current.get(provider) ?? 0) + 1;
-    oauthLoginGenerationRef.current.set(provider, nextGen);
-    const generation = nextGen;
+    const generation = bumpLoginGeneration(provider);
     const reauthTargetId = accountId?.trim() || undefined;
     setBusy(provider);
     setStatus("");
@@ -80,7 +84,7 @@ export function useProvidersOAuth({
           ...(reauthTargetId ? { accountId: reauthTargetId, reauth: true } : {}),
         }),
       });
-      if (oauthLoginGenerationRef.current.get(provider) !== generation || !aliveRef.current) return;
+      if (oauthLoginGenerationRef.current!.get(provider) !== generation || !aliveRef.current) return;
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string };
         notify(data.error || t("prov.loginFailStart", { provider: oauthLabel(provider) }), false);
@@ -92,9 +96,9 @@ export function useProvidersOAuth({
       }
       const baselineCount = accountSets[provider]?.accounts.length ?? 0;
       let finished = false;
-      for (let i = 0; i < 150 && aliveRef.current && oauthLoginGenerationRef.current.get(provider) === generation; i++) {
+      for (let i = 0; i < 150 && aliveRef.current && oauthLoginGenerationRef.current!.get(provider) === generation; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        if (oauthLoginGenerationRef.current.get(provider) !== generation || !aliveRef.current) return;
+        if (oauthLoginGenerationRef.current!.get(provider) !== generation || !aliveRef.current) return;
         const sRes = await fetch(`${apiBase}/api/oauth/status?provider=${provider}`).catch(() => null);
         const s: (OAuthStatus & { accounts?: OAuthAccount[]; activeAccountId?: string | null }) | null = sRes
           ? ((await readJsonIfOk<OAuthStatus & { accounts?: OAuthAccount[]; activeAccountId?: string | null }>(sRes)) ?? null)
@@ -137,10 +141,11 @@ export function useProvidersOAuth({
           // Seed the account list from the status poll immediately so Accounts does not
           // briefly render empty while the follow-up /api/oauth/accounts round-trip runs.
           if (s.accounts) {
+            const activeFromRow = s.accounts.find(a => a.active)?.id ?? null;
             setAccountSets(current => ({
               ...current,
               [provider]: {
-                activeAccountId: s.activeAccountId ?? null,
+                activeAccountId: s.activeAccountId ?? activeFromRow,
                 accounts: s.accounts!,
               },
             }));
@@ -150,7 +155,7 @@ export function useProvidersOAuth({
           const knownProviders = Object.keys(accountSets);
           const knownSet = new Set(knownProviders);
           await fetchAccountSets(knownSet.has(provider) ? knownProviders : [...knownProviders, provider]);
-          if (!aliveRef.current || oauthLoginGenerationRef.current.get(provider) !== generation) return;
+          if (!aliveRef.current || oauthLoginGenerationRef.current!.get(provider) !== generation) return;
           const sameIdentityAdd = addAccount && !reauthTargetId && statusCount <= baselineCount;
           if (sameIdentityAdd) {
             notify(t("prov.loginSameAccount", { provider: oauthLabel(provider) }), false);
@@ -164,7 +169,7 @@ export function useProvidersOAuth({
           break;
         }
       }
-      if (!finished && oauthLoginGenerationRef.current.get(provider) === generation && aliveRef.current) {
+      if (!finished && oauthLoginGenerationRef.current!.get(provider) === generation && aliveRef.current) {
         await fetch(`${apiBase}/api/oauth/login/cancel`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -174,15 +179,19 @@ export function useProvidersOAuth({
         setLoginInfo(null);
       }
     } catch {
-      if (oauthLoginGenerationRef.current.get(provider) === generation) {
+      if (oauthLoginGenerationRef.current!.get(provider) === generation) {
         notify(t("prov.loginRequestFail", { provider: oauthLabel(provider) }), false);
       }
     } finally {
-      if (aliveRef.current && oauthLoginGenerationRef.current.get(provider) === generation) setBusy(null);
+      if (aliveRef.current && oauthLoginGenerationRef.current!.get(provider) === generation) setBusy(null);
     }
   };
 
   const logoutOAuth = async (provider: string) => {
+    // Invalidate any in-flight login poll so a late completion cannot reseed accounts.
+    bumpLoginGeneration(provider);
+    setBusy(current => current === provider ? null : current);
+    setLoginInfo(current => current?.provider === provider ? null : current);
     try {
       const res = await fetch(`${apiBase}/api/oauth/logout?provider=${encodeURIComponent(provider)}`, { method: "POST" });
       if (!res.ok) {

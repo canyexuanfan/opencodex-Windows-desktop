@@ -18,7 +18,8 @@ import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../li
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
 import { estimateTokens } from "../lib/token-estimate";
-import { routeModel } from "../router";
+import { NoEligiblePolicyCandidateError, routeModel } from "../router";
+import { evidenceFromBody } from "../routing/request-evidence";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
@@ -31,16 +32,25 @@ import {
 } from "./request-log";
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
+import type { AdmissionLease } from "../lib/admission";
+import { tryClaimNativeMainProfileForTurn } from "../codex/native-main-admission";
+import {
+  createTranslatorBudget,
+  finalizeTranslatorBudgetResponse,
+  isTranslatorBudgetExceededError,
+  type TranslatorBudget,
+} from "../lib/translator-budget";
 
 type Rec = Record<string, unknown>;
 
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
-async function readChatBody(req: Request): Promise<unknown> {
+async function readChatBody(req: Request, budget: TranslatorBudget): Promise<unknown> {
   try {
-    return await readJsonRequestBody(req);
+    return await readJsonRequestBody(req, budget);
   } catch (err) {
+    if (isTranslatorBudgetExceededError(err)) throw err;
     throw new ChatCompletionsRequestError(err instanceof Error && err.message ? err.message : "Invalid JSON body");
   }
 }
@@ -49,17 +59,43 @@ export async function handleChatCompletions(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  logIds?: { requestId: string; start: number },
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease },
+): Promise<Response> {
+  const translatorBudget = createTranslatorBudget();
+  try {
+    return finalizeTranslatorBudgetResponse(
+      await handleChatCompletionsWithBudget(req, config, logCtx, translatorBudget, logIds),
+      translatorBudget,
+    );
+  } catch (error) {
+    translatorBudget.dispose();
+    throw error;
+  }
+}
+
+async function handleChatCompletionsWithBudget(
+  req: Request,
+  config: OcxConfig,
+  logCtx: RequestLogContext,
+  translatorBudget: TranslatorBudget,
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease },
 ): Promise<Response> {
   let chatBody: unknown;
   let internalBody: Rec;
   try {
-    chatBody = await readChatBody(req);
+    chatBody = await readChatBody(req, translatorBudget);
     internalBody = chatCompletionsToResponsesBody(chatBody);
+    translatorBudget.chargeRetained(new TextEncoder().encode(JSON.stringify(internalBody)).byteLength, { kind: "request_copies" });
   } catch (err) {
-    const status = err instanceof ChatCompletionsRequestError ? 400 : 500;
+    const overflow = isTranslatorBudgetExceededError(err);
+    const status = overflow ? 413 : err instanceof ChatCompletionsRequestError ? 400 : 500;
     if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, { closeReason: "non_stream" });
-    return chatCompletionsErrorResponse(status, err instanceof Error ? err.message : String(err));
+    return chatCompletionsErrorResponse(
+      status,
+      overflow ? "request translation buffer exceeded the safe limit" : err instanceof Error ? err.message : String(err),
+      overflow ? "request_too_large" : undefined,
+      overflow ? "translation_buffer_limit" : undefined,
+    );
   }
 
   const requestedModel = (chatBody as Rec).model as string;
@@ -75,14 +111,15 @@ export async function handleChatCompletions(
   let nativeRoute = false;
   let directRoute = false;
   try {
-    const route = routeModel(config, internalBody.model as string);
+    const route = routeModel(config, internalBody.model as string, evidenceFromBody(internalBody));
     // Settle the wire once so every branch below reads the adapter this model will
     // actually use, not the provider-wide default (#404).
-    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider);
+    route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "chat");
     logCtx.model = route.modelId;
     logCtx.providerAdapter = route.provider.adapter;
     logCtx.requestedModel = requestedModel;
     logCtx.provider = route.providerName;
+    logCtx.routeDecision = route.routeDecision;
     if (route.provider.adapter === "openai-responses") {
       nativeRoute = true;
       directRoute = route.codexAccountMode === "direct";
@@ -96,10 +133,6 @@ export async function handleChatCompletions(
     } else if (internalBody.store === undefined) {
       internalBody.store = false;
     }
-    if (route.provider.adapter === "openai-chat" && internalBody.text !== undefined) {
-      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 400, { closeReason: "non_stream" });
-      return chatCompletionsErrorResponse(400, "response_format is not supported for routed openai-chat models");
-    }
     if (route.provider.adapter === "cursor" || route.provider.adapter === "kiro") {
       const raw = chatBody as Rec;
       const parts: string[] = [];
@@ -112,7 +145,12 @@ export async function handleChatCompletions(
       const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof NoEligiblePolicyCandidateError) {
+      logCtx.routeDecision = err.trace;
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
+      return chatCompletionsErrorResponse(404, err.message, "invalid_request_error");
+    }
     /* unknown model: let handleResponses shape the 404 */
   }
   void nativeRoute;
@@ -124,21 +162,30 @@ export async function handleChatCompletions(
     if (value) headers.set(name, value);
   }
   // Prefer main ChatGPT auth so OpenAI-backed sidecars remain reachable on routed turns.
-  if (!directRoute) try {
-    const { getMainAccountToken } = await import("../codex/main-account");
-    const token = getMainAccountToken();
-    if (token) {
-      headers.set("authorization", `Bearer ${token.accessToken}`);
-      headers.set("chatgpt-account-id", token.chatgptAccountId);
+  if (!directRoute) {
+    // This enrichment is optional for routed/non-main providers. If native main
+    // is fenced, omit it and let auth-context reject only a final physical-main
+    // selection while healthy pool/provider routes continue.
+    if (tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
+      try {
+        const { getMainAccountToken } = await import("../codex/main-account");
+        const token = getMainAccountToken();
+        if (token) {
+          headers.set("authorization", `Bearer ${token.accessToken}`);
+          headers.set("chatgpt-account-id", token.chatgptAccountId);
+        }
+      } catch {
+        /* optional */
+      }
     }
-  } catch {
-    /* optional */
   }
 
+  const internalBodyJson = JSON.stringify(internalBody);
+  translatorBudget.chargeRetained(new TextEncoder().encode(internalBodyJson).byteLength, { kind: "request_copies" });
   const internalReq = new Request("http://localhost/v1/responses", {
     method: "POST",
     headers,
-    body: JSON.stringify(internalBody),
+    body: internalBodyJson,
   });
 
   let nativeLogged = false;
@@ -148,7 +195,11 @@ export async function handleChatCompletions(
     addFinalRequestLog(logIds.requestId, logIds.start, logCtx, status, meta);
   };
   const upstream = await handleResponses(internalReq, config, logCtx, {
+    ...(logIds?.turnAdmissionLease ? { turnAdmissionLease: logIds.turnAdmissionLease } : {}),
     abortSignal: req.signal,
+    // Body is Responses-shaped by now, but the client spoke Chat Completions.
+    inboundWire: "chat",
+    translatorBudget,
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),
@@ -231,7 +282,7 @@ export async function handleChatCompletions(
 
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream") && response.body) {
-    const chatSse = responsesSseToChatCompletionsSse(response.body, requestedModel);
+    const chatSse = responsesSseToChatCompletionsSse(response.body, requestedModel, { translatorBudget });
     if (stream) {
       // Stream failures surface as an error SSE frame then abort the body — never a
       // success completion that embeds `[error] ...` + clean [DONE].
@@ -245,7 +296,7 @@ export async function handleChatCompletions(
       });
     }
     try {
-      const completion = await collectChatCompletion(chatSse, requestedModel);
+      const completion = await collectChatCompletion(chatSse, requestedModel, translatorBudget);
       return new Response(JSON.stringify(completion), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -274,7 +325,10 @@ export async function handleChatCompletions(
     const error = (json as { error?: { message?: string; type?: string; code?: string | null } }).error;
     const message = error?.message ?? "upstream request failed";
     const classified = classifyError(502, error?.type ?? "server_error", message);
-    if (isCyberPolicyCode(error?.code)) {
+    if (error?.code === "translation_buffer_limit") {
+      classified.code = "translation_buffer_limit";
+      classified.type = "upstream_error";
+    } else if (isCyberPolicyCode(error?.code)) {
       classified.code = CYBER_POLICY_ERROR_CODE;
       classified.type = "invalid_request_error";
     } else if (error?.code === "model_not_found") {
@@ -283,7 +337,9 @@ export async function handleChatCompletions(
       classified.type = "invalid_request_error";
     }
     return chatCompletionsErrorResponse(
-      isCyberPolicyCode(classified.code) ? 400 : 502,
+      classified.code === "translation_buffer_limit"
+        ? 502
+        : isCyberPolicyCode(classified.code) ? 400 : 502,
       message,
       classified.type,
       classified.code,

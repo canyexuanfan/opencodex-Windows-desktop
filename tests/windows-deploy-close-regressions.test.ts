@@ -29,9 +29,29 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
     expect(src).toContain("refusing to hop");
     expect(src).toContain("runtimeTrusted");
     expect(read("src/cli/index.ts")).toContain("allowEphemeralFallback: !hardPin");
-    expect(read("src/cli/index.ts")).toContain("preferRetryMs: hardPin ? 0 : 750");
+    expect(read("src/cli/index.ts")).toContain("preferRetryMs: hardPin ? 5_000 : 750");
     expect(read("src/cli/index.ts")).toContain("Not opening the GUI");
     expect(read("src/server/ports.ts")).toContain("allowEphemeralFallback");
+  });
+  test("Windows GUI update worker is launched without inheriting the proxy LISTEN socket", () => {
+    // Direct spawn() inherits Bun.serve's LISTEN handle → ghost LISTEN with dead parent PID.
+    expect(src).toContain("function spawnGuiUpdateWorker");
+    expect(src).toContain("Start-Process");
+    expect(src).toContain("buildWindowsElevatedArgumentList");
+    expect(src).toContain("resolveTrustedWindowsPowerShellExe");
+    expect(src).toContain("spawnWorkerFn: spawnGuiUpdateWorker");
+    // Foreign listeners must stay fail-closed; npm rename is covered by ocx identity.
+    expect(src).not.toContain("killAnyListenPidOnPort");
+    // 260804 #970: this skip is now conditional on the refresh actually re-registering.
+    // `service repair` needs no elevation, so skipping it would leave the dashboard
+    // update — the common Windows path — with a stale service it could have refreshed.
+    expect(src).toContain('process.env.OCX_SERVICE === "1" && refreshRegisters');
+    expect(src).toContain('const refreshRegisters = (svcArgs ?? []).includes("install")');
+    // Native WinSW installs must stop via stopWinswService, not Task Scheduler /end only.
+    expect(src).toContain("readServiceBackend");
+    expect(src).toContain("stopWinswService");
+    expect(src).toContain("$_.ProcessId -eq $PID");
+    expect(src).toContain("lastChild?.pid && aliveFn(lastChild.pid)");
   });
 });
 
@@ -53,8 +73,16 @@ describe("server bind canonicalizes explicit localhost but preserves wildcards (
   test("literal localhost binds to 127.0.0.1; 0.0.0.0/:: exposure is untouched", () => {
     expect(src).toContain("const configuredHost = config.hostname?.trim();");
     expect(src).toContain('!configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1"');
-    expect(src).toContain("hostname: bindHost,");
-    // Must not blanket-rewrite the bind host (that would break intentional 0.0.0.0 exposure).
-    expect(src).not.toContain('hostname: "127.0.0.1",');
+    // Must not blanket-rewrite the PUBLIC bind host — that would break intentional 0.0.0.0
+    // exposure, which is the regression this guards.
+    //
+    // A literal "127.0.0.1" now appears once, for the separate unauthenticated loopback
+    // listener (#1102). That one is a second socket whose entire purpose is to be
+    // loopback-only, so a bare substring ban would forbid the fix rather than the defect.
+    // Pin the assertion to the public serve call instead: it must take bindHost and nothing
+    // else.
+    expect(src).toContain("server = Bun.serve<WsData>({ ...serveOptions, port: listenPort, hostname: bindHost });");
+    expect(src).not.toMatch(/port: listenPort,\s*\n\s*hostname: "127\.0\.0\.1"/);
+    expect(src).not.toContain("port: listenPort, hostname: \"127.0.0.1\"");
   });
 });

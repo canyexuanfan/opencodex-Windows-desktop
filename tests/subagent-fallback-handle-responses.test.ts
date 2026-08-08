@@ -25,9 +25,11 @@ import {
 import {
   isModelHealthBlocked,
   resetSubagentModelFallbackStateForTests,
+  setSubagentQuotaPrimeForTests,
 } from "../src/codex/subagent-model-fallback";
 import type { CodexAuthContext } from "../src/codex/auth-context";
 import { handleResponses } from "../src/server/responses";
+import { isEagerRelaySseResponse } from "../src/server/relay";
 import type { OcxConfig } from "../src/types";
 import type { RequestLogContext } from "../src/server/request-log";
 import type { ResponsesTerminalStatus } from "../src/bridge";
@@ -197,6 +199,54 @@ async function postSpawn(
 }
 
 describe("subagent fallback without primary auth cooldown failure", () => {
+  test("exact account child bypasses quota priming and fallback on an empty 503", async () => {
+    const now = 1_800_000_000_000;
+    Date.now = () => now;
+    installPoolCredential("pool-a", "pool_acc", now);
+    installPoolCredential("pool-b", "pool_b_acc", now);
+    const cfg = poolNativePlusRoutedConfig({
+      codexAccountNamespaces: { side: "pool-a" },
+      subagentModelFallback: ["xai/grok-4.5"],
+    });
+    cfg.codexAccounts?.push({
+      id: "pool-b",
+      email: "pool-b@example.test",
+      isMain: false,
+      chatgptAccountId: "pool_b_acc",
+    });
+    cfg.activeCodexAccountId = "pool-b";
+    updateAccountQuota("pool-b", 95, undefined, 20);
+
+    let quotaPrimes = 0;
+    setSubagentQuotaPrimeForTests(async () => { quotaPrimes += 1; });
+    const urls: string[] = [];
+    const accounts: Array<string | null> = [];
+    const models: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      urls.push(String(input));
+      const headers = new Headers(init?.headers);
+      accounts.push(headers.get("chatgpt-account-id"));
+      models.push(JSON.parse(String(init?.body))?.model ?? "missing");
+      return new Response(null, { status: 503, headers: { "retry-after": "0" } });
+    }) as typeof fetch;
+
+    const response = await postSpawn(cfg, {
+      model: "side/gpt-5.6-sol",
+      input: readableAgentInput(),
+      stream: false,
+    });
+
+    expect(response.status).toBe(503);
+    const error = await response.json() as { error?: { message?: string } };
+    expect(error.error?.message?.trim().length).toBeGreaterThan(0);
+    expect(error.error?.message?.toLowerCase()).not.toBe("unknown error");
+    expect(quotaPrimes).toBe(0);
+    expect(urls.length).toBeGreaterThan(0);
+    expect(urls.every(url => url.includes("chatgpt.com/backend-api/codex"))).toBe(true);
+    expect(new Set(accounts)).toEqual(new Set(["pool_acc"]));
+    expect(new Set(models)).toEqual(new Set(["gpt-5.6-sol"]));
+  });
+
   test("cooled primary with no probe lease selects healthy routed fallback", async () => {
     const now = 1_800_000_000_000;
     Date.now = () => now;
@@ -949,4 +999,40 @@ describe("native passthrough terminal finalization", () => {
       expect(result.healthBlocked).toBe(false);
     });
   }
+});
+
+describe("darwin explicit eager-relay path selection", () => {
+  const completedSse = `event: response.completed\ndata: ${JSON.stringify({
+    type: "response.completed",
+    response: { id: "r1", status: "completed", output: [] },
+  })}\n\n`;
+
+  async function runDarwinStreamMode(streamMode: "legacy-tee" | "eager-relay"): Promise<Response> {
+    const now = 1_800_000_000_000;
+    Date.now = () => now;
+    installPoolCredential("pool-a", "pool_acc", now);
+    mockSseUpstream(completedSse);
+    return postSpawn(
+      poolNativePlusRoutedConfig({ streamMode, activeCodexAccountId: "pool-a" }),
+      { model: "gpt-5.6-sol", input: readableAgentInput(), stream: true },
+    );
+  }
+
+  test.skipIf(process.platform !== "darwin")(
+    "eager-relay + no rewrite marks the direct handleResponses response as eager",
+    async () => {
+      const response = await runDarwinStreamMode("eager-relay");
+      expect(isEagerRelaySseResponse(response)).toBe(true);
+      expect(await response.text()).toContain("response.completed");
+    },
+  );
+
+  test.skipIf(process.platform !== "darwin")(
+    "legacy-tee + no rewrite does not carry the eager marker",
+    async () => {
+      const response = await runDarwinStreamMode("legacy-tee");
+      expect(isEagerRelaySseResponse(response)).toBe(false);
+      expect(await response.text()).toContain("response.completed");
+    },
+  );
 });
