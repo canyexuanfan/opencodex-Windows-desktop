@@ -25,33 +25,89 @@ permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  # PR lifecycle events and CodeRabbit statuses both identify the live head SHA.
-  # PR hygiene uses that same SHA key, so every writer for one live head is
-  # serialized even when the wake-up events come from different webhook types.
-  group: pr-gate-comment-${{ github.event.pull_request.head.sha || github.event.sha || github.run_id }}
-
 jobs:
-  enforce-target:
-    # Only CodeRabbit's successful legacy commit status may wake the status
-    # path. Label events are runner-filtered to the one maintainer-controlled
-    # waiver label so ordinary type labels and the gate's own `review-ready`
-    # writes do not allocate another privileged runner.
+  resolve-pr:
+    # This read-only job resolves every trusted wake-up event to a PR number
+    # before the write-capable job starts. The PR number is the stable identity
+    # used by both gate writers even when a contributor pushes a new head SHA.
     if: >-
       (github.event_name == 'status' &&
        github.event.context == 'CodeRabbit' &&
-       github.event.state == 'success') ||
+       github.event.state == 'success' &&
+       github.event.sender.login == 'coderabbitai[bot]' &&
+       github.event.sender.id == 136622811) ||
       (github.event_name == 'pull_request_target' &&
        ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
         github.event.label.name == 'gui-screenshot-waived'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      pull-number: ${{ steps.resolve.outputs.pull-number }}
+    steps:
+      - name: Resolve trusted gate event to PR
+        id: resolve
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            let pullNumber = context.payload.pull_request?.number ?? null;
+
+            if (context.eventName === "status") {
+              const sender = context.payload.sender;
+              const trustedCodeRabbit =
+                context.payload.context === "CodeRabbit" &&
+                context.payload.state === "success" &&
+                sender?.login === "coderabbitai[bot]" &&
+                sender?.id === 136622811;
+              if (!trustedCodeRabbit) {
+                core.info("Status producer is not the CodeRabbit GitHub App; skipping.");
+                return;
+              }
+
+              const statusSha = context.payload.sha;
+              const associatedPrs = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                { owner, repo, commit_sha: statusSha, per_page: 100 }
+              );
+              const candidates = associatedPrs.filter(
+                candidate =>
+                  candidate.state === "open" &&
+                  candidate.head?.sha === statusSha
+              );
+              if (candidates.length !== 1) {
+                core.info(
+                  `CodeRabbit status ${statusSha} maps to ${candidates.length} open current-head PRs; skipping ambiguous/stale revalidation.`
+                );
+                return;
+              }
+              pullNumber = candidates[0].number;
+            }
+
+            if (Number.isInteger(pullNumber)) {
+              core.setOutput("pull-number", String(pullNumber));
+            }
+
+  enforce-target:
+    needs: resolve-pr
+    if: needs.resolve-pr.outputs.pull-number != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      # Serialize every writer by PR identity, not head SHA. An older-head run
+      # therefore cannot race a newer-head run that rewrites the same comment.
+      group: pr-gate-comment-${{ needs.resolve-pr.outputs.pull-number }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout trusted PR-quality scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # `pull_request_target` runs from the PR base revision, so use that
-          # immutable base SHA for the trusted scripts. `issue_comment` runs the
+          # immutable base SHA for the trusted scripts. `status` runs the
           # privileged workflow from the repository default branch; source its
           # scripts and MAINTAINERS.md from that same promoted trust boundary.
           # This prevents unpromoted `dev` script changes from executing with
@@ -64,6 +120,8 @@ jobs:
 
       - name: Enforce PR target, ancestry, and description
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          RESOLVED_PULL_NUMBER: ${{ needs.resolve-pr.outputs.pull-number }}
         with:
           script: |
             const path = require("path");
@@ -141,39 +199,25 @@ jobs:
             const GUI_SCREENSHOT_WAIVER_LABEL = "gui-screenshot-waived";
             const MAINTAINERS_FILE = "MAINTAINERS.md";
             const { owner, repo } = context.repo;
-            let pull_number = context.payload.pull_request?.number;
+            const resolvedPullNumber = process.env.RESOLVED_PULL_NUMBER ?? "";
+            const pull_number = /^\d+$/.test(resolvedPullNumber)
+              ? Number.parseInt(resolvedPullNumber, 10)
+              : Number.NaN;
 
-            // `status` is default-branch controlled, but it carries only the
-            // reviewed commit SHA. Resolve that SHA back to exactly one open PR
-            // whose current head still equals the status SHA. Ambiguous or stale
-            // associations fail closed without mutating any pull request.
-            if (context.eventName === "status") {
-              const statusSha = context.payload.sha;
-              const associatedPrs = await github.paginate(
-                github.rest.repos.listPullRequestsAssociatedWithCommit,
-                {
-                  owner,
-                  repo,
-                  commit_sha: statusSha,
-                  per_page: 100
-                }
-              );
-              const candidates = associatedPrs.filter(
-                candidate =>
-                  candidate.state === "open" &&
-                  candidate.head?.sha === statusSha
-              );
-              if (candidates.length !== 1) {
-                core.info(
-                  `CodeRabbit status ${statusSha} maps to ${candidates.length} open current-head PRs; skipping ambiguous/stale revalidation.`
-                );
-                return;
-              }
-              pull_number = candidates[0].number;
+            // `resolve-pr` is the single authority that maps a trusted event to
+            // exactly one live PR. The write-capable job consumes only that
+            // resolved identity so its concurrency key and mutation target
+            // cannot diverge.
+            if (!Number.isSafeInteger(pull_number) || pull_number < 1) {
+              core.info("No pull request could be resolved for this gate event; skipping.");
+              return;
             }
 
-            if (!Number.isInteger(pull_number)) {
-              core.info("No pull request could be resolved for this gate event; skipping.");
+            // Defense in depth: the resolver job is the primary event gate, but
+            // the write-capable script also rejects event classes this workflow
+            // never intends to mutate from.
+            if (!["pull_request_target", "status"].includes(context.eventName)) {
+              core.info(`Unsupported gate event ${context.eventName}; skipping.`);
               return;
             }
 
@@ -496,9 +540,56 @@ jobs:
             // the GUI waives the screenshot gate. The flag is what tells the
             // author the screenshot is not required, even though the failure
             // itself is gone from `failures`.
-            const screenshotWaivedByLabel = (pr.labels ?? []).some(
+            const screenshotWaiverLabelPresent = (pr.labels ?? []).some(
               label => label.name === GUI_SCREENSHOT_WAIVER_LABEL
             );
+            const maintainerLogins = new Set(
+              readMaintainerLogins().map(login => login.toLowerCase())
+            );
+            let screenshotWaiverLabelActorLogin = null;
+            if (screenshotWaiverLabelPresent) {
+              try {
+                const issueEvents = await github.paginate(
+                  github.rest.issues.listEvents,
+                  {
+                    owner,
+                    repo,
+                    issue_number: pull_number,
+                    per_page: 100
+                  }
+                );
+                const waiverEvents = issueEvents
+                  .filter(
+                    event =>
+                      (event.event === "labeled" || event.event === "unlabeled") &&
+                      event.label?.name === GUI_SCREENSHOT_WAIVER_LABEL
+                  )
+                  .sort((left, right) => {
+                    const leftTime = Date.parse(left.created_at ?? "") || 0;
+                    const rightTime = Date.parse(right.created_at ?? "") || 0;
+                    if (leftTime !== rightTime) return leftTime - rightTime;
+                    return Number(left.id ?? 0) - Number(right.id ?? 0);
+                  });
+                const latestWaiverEvent = waiverEvents.at(-1);
+                if (latestWaiverEvent?.event === "labeled") {
+                  screenshotWaiverLabelActorLogin =
+                    latestWaiverEvent.actor?.login ?? null;
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not resolve ${GUI_SCREENSHOT_WAIVER_LABEL} label provenance: ${error.message}`
+                );
+              }
+            }
+            const screenshotWaivedByLabel =
+              screenshotWaiverLabelPresent &&
+              typeof screenshotWaiverLabelActorLogin === "string" &&
+              maintainerLogins.has(screenshotWaiverLabelActorLogin.toLowerCase());
+            if (screenshotWaiverLabelPresent && !screenshotWaivedByLabel) {
+              core.info(
+                `${screenshotWaiverLabelActorLogin ?? "unknown label actor"} is not in MAINTAINERS.md; ignoring ${GUI_SCREENSHOT_WAIVER_LABEL}.`
+              );
+            }
             if (screenshotWaivedByLabel) {
               failures = failures.filter(
                 failure => failure.code !== "missing_ui_screenshot"
@@ -557,10 +648,10 @@ jobs:
             // (see `completionIsStale`). When it is stale the gate resets the
             // boxes and the notification state, re-drafts, and tells the
             // author to re-test and re-tick against the latest code.
-            // `issue_comment` events carry no `pull_request.head.sha`, so the
+            // `status` events carry no `pull_request.head.sha`, so the
             // fallback to the live head would let a completed checklist with
             // no recorded completion head pass as if it attested the current
-            // head. A comment-triggered run must not promote readiness: pass
+            // head. A status-triggered run must not promote readiness: pass
             // the live head only when the event actually delivered it.
             const eventHeadSha =
               context.payload.pull_request?.head?.sha ??

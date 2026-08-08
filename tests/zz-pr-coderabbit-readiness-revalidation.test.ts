@@ -7,6 +7,7 @@ type WorkflowJob = {
     name?: string;
     uses?: string;
     run?: string;
+    env?: Record<string, string>;
     with?: Record<string, string>;
   }>;
 };
@@ -41,17 +42,23 @@ describe("workflow comment-spam hardening", () => {
       "unlabeled",
     ]));
 
+    const resolver = workflow.jobs?.["resolve-pr"];
+    const resolverIf = (resolver?.if ?? "").replace(/\s+/g, " ").trim();
+    for (const guard of [
+      "github.event_name == 'status'",
+      "github.event.context == 'CodeRabbit'",
+      "github.event.state == 'success'",
+      "github.event.sender.login == 'coderabbitai[bot]'",
+      "github.event.sender.id == 136622811",
+      "github.event.action != 'labeled'",
+      "github.event.action != 'unlabeled'",
+      "github.event.label.name == 'gui-screenshot-waived'",
+    ]) {
+      expect(resolverIf).toContain(guard);
+    }
+
     const job = workflow.jobs?.["enforce-target"];
-    const normalize = (value: string | undefined) =>
-      (value ?? "").replace(/\s+/g, " ").trim();
-    expect(normalize(job?.if)).toBe(normalize(`
-      (github.event_name == 'status' &&
-       github.event.context == 'CodeRabbit' &&
-       github.event.state == 'success') ||
-      (github.event_name == 'pull_request_target' &&
-       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-        github.event.label.name == 'gui-screenshot-waived'))
-    `));
+    expect(job?.if).toBe("needs.resolve-pr.outputs.pull-number != ''");
 
     const checkoutStep = job?.steps?.find(
       step => step.name === "Checkout trusted PR-quality scripts",
@@ -64,12 +71,11 @@ describe("workflow comment-spam hardening", () => {
       step => step.name === "Enforce PR target, ancestry, and description",
     );
     const script = gateStep?.with?.script ?? "";
-    expect(script).toContain("github.paginate");
-    expect(script).toContain("listPullRequestsAssociatedWithCommit");
-    expect(script).toContain('candidate.state === "open"');
-    expect(script).toContain("candidate.head?.sha === statusSha");
-    expect(script).toContain("candidates.length !== 1");
-    expect(script).toContain('context.eventName === "status"');
+    expect(gateStep?.env?.RESOLVED_PULL_NUMBER).toBe(
+      "${{ needs.resolve-pr.outputs.pull-number }}",
+    );
+    expect(script).toContain("process.env.RESOLVED_PULL_NUMBER");
+    expect(script).not.toContain("listPullRequestsAssociatedWithCommit");
     expect(script).toContain('const GUI_SCREENSHOT_WAIVER_LABEL = "gui-screenshot-waived"');
     expect(script).toContain("screenshotWaiverNotice");
     expect(script).toContain("unresolvedFindingsClaim");
