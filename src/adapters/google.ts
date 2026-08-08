@@ -497,13 +497,23 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         }
         let emittedContentEvent = false;
 
-        let chunk: Record<string, unknown>;
+        let parsed: unknown;
         try {
-          chunk = JSON.parse(payload);
+          parsed = JSON.parse(payload);
         } catch {
           yield { type: "error", message: "malformed upstream SSE data frame" };
           return "terminate";
         }
+        // `JSON.parse("null")` returns null rather than throwing, so the catch above cannot cover
+        // it and the `chunk.error` read below crashed the stream (see openai-chat.ts). Skip such a
+        // frame rather than terminating, for the reason given there: it is padding between real
+        // frames, not a broken stream. Deliberately returns BEFORE `sawAnyFrame`, so a stream made
+        // only of non-record frames still fails the terminal-signal check below instead of
+        // completing empty. An unparseable frame stays terminal.
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return "continue";
+        }
+        const chunk = parsed as Record<string, unknown>;
         sawAnyFrame = true;
 
         // Inline provider error inside a 200 stream → terminal error (see openai-chat.ts).
