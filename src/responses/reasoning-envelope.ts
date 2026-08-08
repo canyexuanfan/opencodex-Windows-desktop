@@ -24,12 +24,6 @@ export interface ReasoningEnvelope {
    * so replay needs it even though the visible summary was suppressed.
    */
   txt?: string;
-  /**
-   * Kiro `reasoningContentEvent.redactedContent`: a KMS-encrypted reasoning blob that is opaque to
-   * the proxy. Kiro's own CLI replays it on the matching `assistantResponseMessage` to preserve
-   * model reasoning across turns, so it round-trips here the same way a signature does.
-   */
-  krc?: string;
 }
 
 export function encodeReasoningEnvelope(envelope: ReasoningEnvelope): string {
@@ -51,9 +45,7 @@ export function decodeReasoningEnvelope(encryptedContent: string): ReasoningEnve
     }
     const txt = (parsed as { txt?: unknown }).txt;
     if (typeof txt === "string" && txt.length > 0) envelope.txt = txt;
-    const krc = (parsed as { krc?: unknown }).krc;
-    if (typeof krc === "string" && krc.length > 0) envelope.krc = krc;
-    return envelope.sig || envelope.red || envelope.txt || envelope.krc ? envelope : null;
+    return envelope.sig || envelope.red || envelope.txt ? envelope : null;
   } catch {
     return null;
   }

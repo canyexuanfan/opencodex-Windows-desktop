@@ -14,28 +14,6 @@ const validatorSource = readFileSync(
 );
 
 describe("ocx.mjs npm launcher (source invariants)", () => {
-  test("the Bun child receives the runtime provenance the launcher actually selected (#848)", () => {
-    // The launcher is a plain-Node bin script executing at import time, so this is
-    // asserted at the source level: the marker must reach the spawn env, and it must
-    // carry the source resolved alongside the chosen binary rather than a literal.
-    expect(source).toContain('const BUN_RUNTIME_SOURCE_ENV = "OCX_BUN_RUNTIME_SOURCE";');
-    expect(source).toContain("[BUN_RUNTIME_SOURCE_ENV]: bunRuntime.source,");
-
-    // The stamp must sit inside the spawn's env object, not merely somewhere in the file.
-    const spawnStart = source.indexOf("const child = spawn(bun, [cliPath");
-    expect(spawnStart).toBeGreaterThanOrEqual(0);
-    const spawnCall = source.slice(spawnStart, source.indexOf("});", spawnStart));
-    expect(spawnCall).toContain("[BUN_RUNTIME_SOURCE_ENV]: bunRuntime.source");
-
-    // Path and source come from one resolution, so the marker cannot describe another binary.
-    expect(source).toContain("const bunRuntime = resolveBun();");
-    expect(source).toContain("const bun = bunRuntime.path;");
-    expect(source).toContain('return { path: bin, source: "bundled" };');
-
-    // The launcher's literal name must match the TypeScript constant it mirrors.
-    expect(runtimeSource).toContain('export const BUN_RUNTIME_SOURCE_ENV = "OCX_BUN_RUNTIME_SOURCE";');
-  });
-
   test("Windows npm spawns use the trusted absolute invocation without shell lookup", () => {
     expect(source).toContain("const latestInvocation = npmInvocation(");
     expect(source).toContain("const installInvocation = npmInvocation(");
@@ -55,20 +33,17 @@ describe("ocx.mjs npm launcher (source invariants)", () => {
   // auto-load `.env` while the Bun child does. Losing this half silently returns the
   // proxy to billing a subscriber's API key from an ambient file, and the runtime half in
   // src/cli/claude.ts would keep passing its own unit tests while doing nothing.
-  test("the Bun child receives proof-bound pre-Bun Anthropic provenance", () => {
-    expect(source).toContain("const preBunAnthropicSlots = [\"ANTHROPIC_API_KEY\", \"ANTHROPIC_AUTH_TOKEN\", \"ANTHROPIC_BASE_URL\"]");
-    expect(source).toContain("const launchProof = randomBytes(32).toString(\"base64url\")");
-    expect(source).toContain("[NODE_LAUNCH_CONTEXT_ENV]: launchContext");
-    expect(source).toContain("`${NODE_LAUNCH_PROOF_PREFIX}${launchProof}`");
-    expect(source).not.toContain("OCX_PRE_BUN_ANTHROPIC_ENV: preBunAnthropicSlots");
-    // The snapshot must be computed from the launcher's OWN env, before Bun's dotenv load.
+  test("the Bun child receives the pre-Bun Anthropic provenance marker", () => {
+    expect(source).toContain("const preBunAnthropicSlots = [\"ANTHROPIC_API_KEY\", \"ANTHROPIC_AUTH_TOKEN\"]");
+    expect(source).toContain("OCX_PRE_BUN_ANTHROPIC_ENV: preBunAnthropicSlots.join(\",\")");
+    // The marker must be computed from the launcher's OWN env, before Bun's dotenv load.
     expect(source).toContain("typeof process.env[name] === \"string\" && process.env[name] !== \"\"");
   });
 
   test("valid Bun overrides are selected before the bundled runtime", () => {
     expect(source).toContain('const BUN_OVERRIDE_ENV = "OPENCODEX_BUN_PATH";');
     expect(source).toContain("const overridePath = resolve(override);");
-    expect(source).toContain('if (isRealBunBinary(overridePath)) return { path: overridePath, source: "override" };');
+    expect(source).toContain("if (isRealBunBinary(overridePath)) return overridePath;");
 
     const resolveStart = source.indexOf("function resolveBun() {");
     const overrideCheck = source.indexOf("process.env[BUN_OVERRIDE_ENV]?.trim()", resolveStart);

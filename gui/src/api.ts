@@ -1,5 +1,3 @@
-import { promptForAdminToken, type AdminTokenVerifier } from "./admin-token-dialog";
-
 let installed = false;
 /** Shared 401 refresh gate — concurrent waiters join one prompt / token resolution. */
 let resolutionInFlight: Promise<string | null> | null = null;
@@ -13,17 +11,8 @@ let rawFetch: typeof fetch | null = null;
  */
 let promptCancelled = false;
 
-type AdminTokenPrompt = (verifyToken: AdminTokenVerifier) => Promise<string | null>;
-let requestAdminToken: AdminTokenPrompt = promptForAdminToken;
-
-/**
- * Document path re-fetched to mint a fresh loopback GUI session (server injects meta tags).
- * Deliberately NOT "/": the Vite dev server owns that route for the app shell, so the dev
- * proxy forwards this dedicated extensionless path to the backend with the original host.
- */
-const SESSION_REBOOTSTRAP_PATH = "/opencodex-session";
-/** Safe authenticated read used to validate a raw admin token before closing the sign-in form. */
-const ADMIN_TOKEN_VALIDATION_PATH = "/api/settings";
+/** Document path re-fetched to mint a fresh loopback GUI session (server injects meta tags). */
+const SESSION_REBOOTSTRAP_PATH = "/";
 
 function needsApiAuth(input: RequestInfo | URL): boolean {
   try {
@@ -122,18 +111,6 @@ async function reBootstrapSessionToken(): Promise<string | null> {
   }
 }
 
-async function verifyAdminToken(token: string): ReturnType<AdminTokenVerifier> {
-  if (!rawFetch) return "unavailable";
-  try {
-    const [input, init] = withToken(ADMIN_TOKEN_VALIDATION_PATH, { cache: "no-store" }, token);
-    const response = await rawFetch(input, init);
-    if (response.status === 401) return "rejected";
-    return response.ok ? "accepted" : "unavailable";
-  } catch {
-    return "unavailable";
-  }
-}
-
 function clearLegacySessionToken(): void {
   try {
     sessionStorage.removeItem(LEGACY_TOKEN_KEY);
@@ -158,9 +135,8 @@ function withToken(input: RequestInfo | URL, init: RequestInit | undefined, toke
 
 /**
  * Resolve a token after a 401. Concurrent callers share one in-flight resolution so a dashboard
- * fan-out opens at most one credential dialog per /api request wave (#647). Re-reads
- * memoryToken before prompting so waiters that wake after another request already stored a token
- * do not re-prompt.
+ * fan-out does not open one window.prompt per /api request (#647). Re-reads memoryToken before
+ * prompting so waiters that wake after another request already stored a token do not re-prompt.
  */
 async function resolveTokenAfter401(failedToken: string | null): Promise<string | null> {
   if (promptCancelled) return null;
@@ -174,7 +150,7 @@ async function resolveTokenAfter401(failedToken: string | null): Promise<string 
     const renewed = await reBootstrapSessionToken();
     if (renewed) return renewed;
 
-    const prompted = await requestAdminToken(verifyAdminToken);
+    const prompted = window.prompt("OpenCodex admin token (OPENCODEX_ADMIN_AUTH_TOKEN)")?.trim() || null;
     if (prompted) {
       storeToken(prompted);
       return prompted;
@@ -226,7 +202,7 @@ export function installApiAuthFetch(): void {
 }
 
 /** Test-only: allow a fresh `installApiAuthFetch()` in the same module instance. */
-export function resetApiAuthFetchForTests(adminTokenPrompt: AdminTokenPrompt = promptForAdminToken): void {
+export function resetApiAuthFetchForTests(): void {
   installed = false;
   memoryToken = null;
   memoryCsrfToken = null;
@@ -234,5 +210,4 @@ export function resetApiAuthFetchForTests(adminTokenPrompt: AdminTokenPrompt = p
   resolutionInFlight = null;
   rawFetch = null;
   promptCancelled = false;
-  requestAdminToken = adminTokenPrompt;
 }

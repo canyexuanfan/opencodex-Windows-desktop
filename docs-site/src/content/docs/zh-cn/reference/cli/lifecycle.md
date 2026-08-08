@@ -28,9 +28,7 @@ ocx start --port 8080
 
 ### `ocx restart`
 
-代理正在运行时，请求经过验证的准确 PID 和端口执行原位重启，等待正常排空，并确认同一端口上出现不同的运行时 PID。整个过程保留托管路由和服务监督；若请求结果不确定，也不会将其重放为单独的 stop/start。只有没有代理运行时，命令才回退到常规的 `ensure` 启动。
-
-如果无法将正在运行的监听器验证为对应的运行时 PID（包括升级前的代理），重启会安全失败，不会回退到 `ensure` 或 stop/start。确认所有权后，请依次运行一次 `ocx stop` 和 `ocx start`。
+执行 `stop` 然后执行 `ensure`：停止代理/服务，恢复原生 Codex，在后台启动代理，并将当前端口重新同步回 Codex。
 
 ### `ocx ensure`
 
@@ -117,16 +115,6 @@ ocx status --json
 
 对正在运行的代理做身份校验。人类可读输出报告 PID/端口；`--json` 输出 `{ok, pid, port}`。只有在健康时该命令才以 0 退出，否则以 1 退出，因此适合用作服务探针。
 
-### `ocx ready [--json] [--wait [--timeout <seconds>]]`
-
-通过无需认证的 `GET /readyz` 端点检查同步后的就绪状态。就绪时返回 `200`；状态为 `pending` 或
-终态 `failed` 时返回 `503`，并带有 `Retry-After: 1`。HTTP 仅返回经脱敏的身份字段
-`{service, version, uptime, pid, port, status}`。不支持 `/readyz` 的旧代理会按 `unreachable` 失败关闭；
-`/healthz` 是独立的存活检查，不是就绪检查。默认只探测一次；`--wait` 会轮询到就绪或超时，但遇到终态
-`failed` 会立即退出。默认超时为 45 秒；`--timeout <seconds>` 必须与 `--wait` 一起使用，取值范围为 1–300 秒的正整数。CLI JSON
-输出 `{ready, status, pid, port}`，其中 `status` 为 `ready`、`pending`、`failed` 或
-`unreachable`。退出码：就绪为 0；未就绪、pending、failed、超时或无法连接为 1；参数无效为 64。
-
 ### `ocx doctor`
 
 运行只读的环境与连通性诊断：状态路径和文件系统类型、WSL 双重安装、代理环境/配置、ChatGPT 可达性、Codex 插件和项目配置警告，以及待处理的历史迁移。Codex app-home 定位部分也会检测狭义的 Windows Orca 运行时 home 不匹配，并在适用时解释服务迁移。此诊断展示的路径会对操作系统用户名进行脱敏。Doctor 会输出修复提示，但不会自动应用。
@@ -147,7 +135,7 @@ ocx status --json
 
 ## 后台服务
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|start|stop|status|uninstall|remove]`
 
 将 opencodex 作为登录管理的后台服务运行（macOS **launchd**、Linux **systemd user unit**、Windows **Task Scheduler**），在登录时自动启动，在崩溃时自动重启。服务运行会设置 `OCX_SERVICE=1`，因此重启时不会反复改动 Codex 配置。
 
@@ -155,7 +143,6 @@ ocx status --json
 | --- | --- |
 | none | 创建/更新并启动服务。 |
 | `install` | 创建并启动服务。 |
-| `repair` | 就地刷新已安装的服务并重启，不重新注册。 |
 | `start` | 启动已安装的服务。 |
 | `stop` | 停止服务并恢复原生 Codex。 |
 | `status` | 报告服务和代理诊断信息及日志路径。 |
@@ -165,7 +152,6 @@ ocx status --json
 ```bash
 ocx service
 ocx service install
-ocx service repair
 ocx service status
 ocx service uninstall
 ```
@@ -211,7 +197,7 @@ ocx codex-shim uninstall
 
 ### `ocx update [--tag latest|preview]`
 
-从 npm 自更新 opencodex。稳定版安装使用 `@latest`；预览版安装保持在 `@preview`，除非你传入 `--tag latest|preview`。它会检测源码检出，并提示你改为运行 `git pull && bun install`；如果你已经是该标签的最新版本，则不会执行任何操作。对于 npm 安装，它会在停止任何进程之前，对 Unix 缓存的所有权和访问权限执行有界检查。嵌套符号链接会通过 `lstat` 检查但不会跟随；Windows 会明确跳过这项仅适用于 Unix 的检查。检查失败时，更新会在托盘和代理仍运行的情况下中止。随后才会在替换文件之前停止正在运行的代理；已安装的服务会自动重建并启动，而前台安装则会打印 `ocx start` 作为下一步。持久化前，仪表板更新记录会隐去用户配置文件/缓存路径以及 UID/GID 值。
+从 npm 自更新 opencodex。稳定版安装使用 `@latest`；预览版安装保持在 `@preview`，除非你传入 `--tag latest|preview`。它会检测源码检出，并提示你改为运行 `git pull && bun install`；如果你已经是该标签的最新版本，则不会执行任何操作。在替换文件之前会先停止正在运行的代理；已安装的服务会自动重建并启动，而前台安装则会打印 `ocx start` 作为下一步。
 
 ```bash
 ocx update

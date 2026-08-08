@@ -1,19 +1,13 @@
 /**
- * `ocx export --client <id>` — print a client config for the live proxy.
- *
- * Six clients, four formats: opencode and Pi are JSON, Hermes and Gajae YAML,
- * OpenClaw JSON5, Kimi TOML.
+ * `ocx export --client <opencode|pi>` — print a client config for the live proxy.
  *
  * Two consumers, one payload (devlog 260731_client_config_export/020):
  *
- * - **Agent** (`--json`): stdout is exactly the client config as JSON and nothing else,
- *   so `ocx export --client pi --json > models.json` is safe to pipe. This is JSON for
- *   every client, including the YAML/JSON5/TOML ones — the flag is about machine
- *   readability, not the client's native format. Every diagnostic — including the
- *   `--out` write note — goes to stderr.
- * - **Human** (no flag) and `--out`: the client's NATIVE serialization leads, then the
- *   destination path, the merge warning, the env export line, and the model/degraded
- *   counts.
+ * - **Agent** (`--json`): stdout is exactly the client config JSON and nothing else, so
+ *   `ocx export --client pi --json > models.json` is safe to pipe. Every diagnostic —
+ *   including the `--out` write note — goes to stderr.
+ * - **Human** (no flag): the JSON leads, then the destination path, the merge warning,
+ *   the env export line, and the model/degraded counts.
  *
  * The command never writes the user's real config path. `--out` is an explicit target and
  * refuses to clobber an existing file without `--force`, because the common mistake
@@ -21,15 +15,14 @@
  *
  * Serialization itself belongs to src/clients/config-export.ts; this module only resolves
  * the base URL, filters the catalog, and renders. No secret is ever serialized: the config
- * carries the client's documented env reference — or, for Kimi, which cannot hold one, a
- * loopback placeholder — and the real key stays in the environment.
+ * carries the client's documented env reference and the real key stays in the environment.
  */
 import { writeFileSync } from "node:fs";
 import { loadConfig } from "../config";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
-  buildClientConfigText,
+  buildClientConfig,
   isExportClientId,
   opencodeProxyBaseUrl,
   type ExportClientId,
@@ -171,23 +164,16 @@ export async function handleExportCommand(argv: string[], deps: ExportCommandDep
       throw new RuntimeApiError("Management API returned an unexpected /api/models payload.", 502, rows);
     }
     const models = exportModelsFromProxyRows(rows, config);
-    // The text is the client's OWN format — YAML, TOML and JSON5 clients would
-    // otherwise receive a JSON rendering their parser reads differently.
-    const built = buildClientConfigText(client, { baseUrl: proxyV1BaseUrl(root), models, config });
-    const clientConfig = built.document;
-    const text = built.text;
+    const clientConfig = buildClientConfig(client, { baseUrl: proxyV1BaseUrl(root), models, config });
+    const text = JSON.stringify(clientConfig, null, 2);
 
-    // Every serializer already ends with exactly one newline.
-    if (out !== undefined) writeExport(out, text, force);
+    if (out !== undefined) writeExport(out, `${text}\n`, force);
     // stderr, so `--json` stdout stays byte-exact for a redirect.
     if (out !== undefined && wantsJson) console.error(`Wrote ${out}`);
 
     const degraded = models.filter(model => !hasContextLimit(model)).length;
-    // `--json` keeps emitting the DOCUMENT at the top level: a script that
-    // pipes it into a config file must not have to unwrap an envelope we added
-    // for our own convenience. Format metadata rides in the human lines below.
     printData(clientConfig, wantsJson, [
-      text.trimEnd(),
+      text,
       "",
       ...(out !== undefined ? [`Wrote ${out}`] : []),
       `Destination: ${spec.destination(process.env)}`,

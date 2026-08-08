@@ -3,7 +3,6 @@ import type { ComboEffort, ComboStrategy, ComboTarget } from "../combo-workspace
 import { COMBO_EFFORTS, newComboTarget } from "../combo-workspace-data";
 import { IconArrowDown, IconArrowUp, IconGrip, IconPlus, IconTrash } from "../icons";
 import { useT } from "../i18n/shared";
-import { formatProviderDisplayName } from "../provider-icons";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { clampedNumberInput, enabledProviders, modelsForProvider } from "./combo-workspace-utils";
 
@@ -200,7 +199,7 @@ export function TargetEditor({
               <option value="">{t("cws.target.pickProvider")}</option>
               {providerOptions.map((p) => (
                 <option key={p.name} value={p.name}>
-                  {p.disabled ? t("cws.target.disabled", { name: formatProviderDisplayName(p.name, t) }) : formatProviderDisplayName(p.name, t)}
+                  {p.disabled ? t("cws.target.disabled", { name: p.name }) : p.name}
                 </option>
               ))}
             </select>

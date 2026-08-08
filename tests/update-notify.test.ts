@@ -38,10 +38,6 @@ describe("isNewer — latest channel", () => {
   test("prereleases are ignored on the stable channel", () => {
     expect(isNewer("2.7.0-preview.1", "2.6.4", "latest")).toBe(false);
   });
-  test("stable releases compare against a preview current by its base version", () => {
-    expect(isNewer("2.9.1", "2.8.2-preview.20260731", "latest")).toBe(true);
-    expect(isNewer("2.9.1", "2.9.1-preview.20260731", "latest")).toBe(false);
-  });
 });
 
 describe("isNewer — preview channel", () => {
@@ -124,10 +120,7 @@ describe("cli wiring", () => {
     const cli = await readText("src/cli/index.ts");
     const promptIndex = cli.indexOf("await maybeShowUpdatePrompt()");
     const portIndex = cli.indexOf("let port = await chooseListenPort");
-    const serverIndex = cli.search(/\bstartServer\s*\(\s*port\b/);
-    // A -1 from `search` would compare "before" every real index and turn the
-    // ordering assertion below into a silent pass.
-    expect(serverIndex).toBeGreaterThanOrEqual(0);
+    const serverIndex = cli.indexOf("startServer(port)");
     expect(promptIndex).toBeGreaterThan(-1);
     expect(portIndex).toBeGreaterThan(-1);
     expect(promptIndex).toBeLessThan(portIndex);

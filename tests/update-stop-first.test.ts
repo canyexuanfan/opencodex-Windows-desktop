@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runNpmCachePreflight } from "../src/update/npm-cache-preflight.mjs";
 
 const updateSource = readFileSync(join(import.meta.dir, "..", "src", "update", "index.ts"), "utf8");
 const launcherSource = readFileSync(join(import.meta.dir, "..", "bin", "ocx.mjs"), "utf8");
@@ -9,17 +8,6 @@ const serverSource = readFileSync(join(import.meta.dir, "..", "src", "server", "
 const cliSource = readFileSync(join(import.meta.dir, "..", "src", "cli", "index.ts"), "utf8");
 
 describe("update stops the running proxy before replacing files", () => {
-  test("a failed cache pre-flight aborts before the stop callback can run", () => {
-    let stopped = false;
-    const malformedSpawn = (() => ({ status: 0, signal: null, stdout: "not-json", stderr: "" })) as never;
-    const preflight = runNpmCachePreflight({ platform: "linux", spawnSyncFn: malformedSpawn });
-
-    if (preflight.ok) stopped = true;
-
-    expect(preflight).toEqual({ ok: false, reason: "worker_output_malformed" });
-    expect(stopped).toBe(false);
-  });
-
   test("bun/source update path gates on the pid file and spawns 'stop' before the package manager", () => {
     expect(updateSource).toContain('spawnSync(process.execPath, [process.argv[1], "stop"]');
     const stopAt = updateSource.indexOf('[process.argv[1], "stop"]');
@@ -38,20 +26,6 @@ describe("update stops the running proxy before replacing files", () => {
     expect(abortAt).toBeGreaterThan(-1);
     expect(gateAt).toBeLessThan(stopAt);
     expect(abortAt).toBeLessThan(stopAt);
-  });
-
-  test("cache access gates in both CLI entry points precede every tray/proxy stop", () => {
-    const runtimeGate = updateSource.indexOf("const cachePreflight = runNpmCachePreflight();");
-    const runtimeStop = updateSource.indexOf('[process.argv[1], "stop"]');
-    const launcherGate = launcherSource.indexOf("const cachePreflight = runNpmCachePreflight();");
-    const launcherTrayStop = launcherSource.indexOf('runTrayLifecycle(launcher, "stop")');
-    const launcherProxyStop = launcherSource.indexOf('[launcher, "stop"]');
-
-    expect(runtimeGate).toBeGreaterThan(-1);
-    expect(launcherGate).toBeGreaterThan(-1);
-    expect(runtimeGate).toBeLessThan(runtimeStop);
-    expect(launcherGate).toBeLessThan(launcherTrayStop);
-    expect(launcherGate).toBeLessThan(launcherProxyStop);
   });
 
   test("npm launcher update path stops via its own launcher path before npm install", () => {
@@ -81,21 +55,15 @@ describe("update stops the running proxy before replacing files", () => {
     expect(launcherSource).not.toContain('"npm.cmd"');
   });
 
-  test("both paths abort when the stop fails, and REPAIR a managed service after success", () => {
+  test("both paths abort when the stop fails, and reinstall a managed service after success", () => {
     expect(updateSource).toContain("aborting the update");
-    // 260804 #970: the refresh must not re-register. `install` reaches `schtasks /create`
-    // on Windows scheduler backends, which a non-elevated updater cannot run — it would
-    // stop a working proxy and then fail to bring its service back.
+    // The update path now uses serviceReinstallArgs() to preserve the chosen backend.
     expect(updateSource).toContain("serviceReinstallArgs()");
     expect(launcherSource).toContain("aborting the update");
-    expect(launcherSource).toContain('"service", "repair"');
-    // The launcher still reads service-state.json for service-installed detection, and
-    // for the backend choice on the genuinely-absent install fallback.
+    // The launcher reads service-state.json to preserve the backend choice on reinstall.
+    expect(launcherSource).toContain("serviceReinstallArgs");
+    // The launcher reads the state path for both service-installed detection and backend choice.
     expect(launcherSource).toContain('"service-state.json"');
-    // That marker can be STALE, so the fallback asks for structured state rather than
-    // parsing a failure message; bin/ocx.mjs is plain Node and cannot import
-    // diagnoseService(), so it reads startup.serviceInstalled from `status --json`.
-    expect(launcherSource).toContain("startup?.serviceInstalled");
     expect(updateSource).toContain("OCX_BAKE_PORT");
     expect(launcherSource).toContain("OCX_BAKE_PORT");
     // Live runtime port 10100 must not be discarded as a missing-port sentinel.
@@ -164,6 +132,6 @@ describe("/healthz identity fields", () => {
   test("healthz advertises service identity, pid, and port", () => {
     expect(serverSource).toContain('service: "opencodex"');
     expect(serverSource).toContain("pid: process.pid");
-    expect(serverSource).toContain("port: healthPort");
+    expect(serverSource).toContain("port: listenPort");
   });
 });

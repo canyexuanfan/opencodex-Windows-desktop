@@ -45,8 +45,6 @@ export interface WorkspaceProvider {
   disabled?: boolean;
   note?: string;
   allowPrivateNetwork?: boolean;
-  /** Codex account routing mode for the canonical `openai` forward provider. */
-  codexAccountMode?: "direct" | "pool";
 }
 
 /** Three-way pricing/ownership tier for a ready provider row. */

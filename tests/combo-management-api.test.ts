@@ -40,7 +40,6 @@ import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
 import { syncCatalogModels } from "../src/codex/catalog";
 import { injectClaudeAgentDefs } from "../src/claude/agents-inject";
-import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -128,7 +127,7 @@ async function comboApi(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    createManagementConvergeCodex: catalogConvergenceFactory(refreshCodexCatalog),
+    refreshCodexCatalog,
   });
 }
 
@@ -139,7 +138,7 @@ async function comboApiRaw(config: OcxConfig, method: string, path: string, body
     body,
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    createManagementConvergeCodex: catalogConvergenceFactory(),
+    refreshCodexCatalog: async () => {},
   });
 }
 

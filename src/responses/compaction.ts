@@ -105,14 +105,7 @@ export function buildCompactV1Output(userMessages: string[], summary: string): R
       remaining -= msg.length;
     } else {
       // Budget partially covers this older message: keep its tail (most recent context) and stop.
-      let tailStart = msg.length - remaining;
-      // Never start the retained tail on a lone LOW surrogate: the pair's
-      // other half would be lost and encoding substitutes U+FFFD.
-      if (tailStart > 0 && tailStart < msg.length) {
-        const first = msg.charCodeAt(tailStart);
-        if (first >= 0xdc00 && first <= 0xdfff) tailStart += 1;
-      }
-      selected.push(msg.slice(tailStart));
+      selected.push(msg.slice(msg.length - remaining));
       break;
     }
   }

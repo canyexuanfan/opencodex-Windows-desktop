@@ -70,8 +70,6 @@ export interface CursorNativeExecContext extends CursorNativeExecDeps {
   unsafeAllowNativeLocalExec?: boolean;
   /** apply_patch is visible for this request; Cursor-native write/delete must not bypass Codex. */
   rejectNativeFileMutations?: boolean;
-  /** The synthetic exact-match edit tools (edit_file / multi_edit) are advertised this request. */
-  structuredEditAvailable?: boolean;
 }
 
 export function cursorUnsafeNativeLocalExecEnabled(input: Pick<CursorNativeExecContext, "unsafeAllowNativeLocalExec"> = {}): boolean {
@@ -130,8 +128,6 @@ const blobs = new Map<string, CursorBlobEntry>();
 const blobRequestScopes = new Map<CursorBlobRequestScopeToken, CursorBlobRequestScopeState>();
 let blobLimits = { ...DEFAULT_BLOB_LIMITS };
 let blobBytes = 0;
-/** Retained key-string bytes (separate from the payload cap — see key()). */
-let blobKeyBytes = 0;
 let blobLocalBytes = 0;
 let blobPinnedBytes = 0;
 let blobEvictableBytes = 0;
@@ -156,16 +152,13 @@ function recomputeBlobClassAccounting(): void {
   let pinnedBytes = 0;
   let evictableBytes = 0;
   let oldestAt: number | null = null;
-  for (const [k, entry] of blobs) {
+  for (const entry of blobs.values()) {
     const requestPinned = entry.requestPins.size > 0;
     const provenancePinned = entry.provenance === "remote-setBlobArgs" && !isExpired(entry, now);
     if (entry.provenance === "local-regenerated") localBytes += entry.sizeBytes;
-    // Key strings classify WITH their entry: a zero-payload blob must stay
-    // evictable/pinned exactly as its payload would be, or the budget cannot
-    // select it even though the total snapshot counts its key.
-    if (requestPinned || provenancePinned) pinnedBytes += entry.sizeBytes + k.length;
+    if (requestPinned || provenancePinned) pinnedBytes += entry.sizeBytes;
     if (!requestPinned && (entry.provenance === "local-regenerated" || isExpired(entry, now))) {
-      evictableBytes += entry.sizeBytes + k.length;
+      evictableBytes += entry.sizeBytes;
       oldestAt = oldestAt === null ? entry.storedAt : Math.min(oldestAt, entry.storedAt);
     }
   }
@@ -203,12 +196,9 @@ function deleteBlob(k: string, recompute = true): number {
   if (!entry) return 0;
   blobs.delete(k);
   blobBytes -= entry.sizeBytes;
-  blobKeyBytes -= k.length;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.delete(k);
   if (recompute) recomputeBlobClassAccounting();
-  // Full logical release (payload + key): the retained-store snapshot counts
-  // both, so budget enforcement must see both leave.
-  return entry.sizeBytes + k.length;
+  return entry.sizeBytes;
 }
 
 function releaseHydratedBlob(k: string, requestScope?: CursorBlobRequestScopeToken): void {
@@ -323,7 +313,6 @@ function setBlob(
   if (blobs.has(k)) deleteBlob(k, false);
   blobs.set(k, entry);
   blobBytes += entry.sizeBytes;
-  blobKeyBytes += k.length;
   for (const scope of entry.requestPins) blobRequestScopes.get(scope)?.keys.add(k);
   reconcileBlobClassAccountingAndEnforce();
   return { admitted: true, replaced: existing !== undefined };
@@ -339,20 +328,8 @@ function getBlob(k: string): Uint8Array | undefined {
   return entry.data;
 }
 
-/**
- * Raw blob IDs up to this size keep their hex passthrough (every ID the live
- * protocol carries is a 32-byte digest). Anything larger maps to a fixed-size
- * SHA-256 hex of the raw bytes — the derivation is symmetric across
- * setBlobArgs/getBlobArgs, so the round-trip still works, but a hostile or
- * malformed multi-MiB ID can never become an unbounded hex Map key.
- * The `h:`/`d:` prefix domain-separates the two namespaces: a digested ID's
- * key can never collide with a raw 32-byte ID that happens to BE that digest.
- */
-const MAX_BLOB_ID_PASSTHROUGH_BYTES = 64;
-
 function key(bytes: Uint8Array): string {
-  if (bytes.byteLength <= MAX_BLOB_ID_PASSTHROUGH_BYTES) return `h:${Buffer.from(bytes).toString("hex")}`;
-  return `d:${createHash("sha256").update(bytes).digest("hex")}`;
+  return Buffer.from(bytes).toString("hex");
 }
 
 /**
@@ -405,7 +382,6 @@ export function storeCursorBlob(data: Uint8Array, requestScope?: CursorBlobReque
 export interface CursorBlobMetrics {
   count: number;
   totalBytes: number;
-  keyBytes: number;
   localBytes: number;
   pinnedBytes: number;
   rejectedEntryTooLarge: number;
@@ -417,7 +393,6 @@ export function cursorBlobMetrics(): CursorBlobMetrics {
   return {
     count: blobs.size,
     totalBytes: blobBytes,
-    keyBytes: blobKeyBytes,
     localBytes: blobLocalBytes,
     pinnedBytes: blobPinnedBytes,
     rejectedEntryTooLarge,
@@ -435,9 +410,7 @@ export function cursorBlobRetainedStoreSnapshot(): {
 } {
   return {
     count: blobs.size,
-    // Payload + retained key strings: the framework must see everything the
-    // store retains. The 64 MiB admission cap stays payload-only by design.
-    bytes: blobBytes + blobKeyBytes,
+    bytes: blobBytes,
     evictableBytes: blobEvictableBytes,
     pinnedBytes: blobPinnedBytes,
     oldestAt: blobOldestEvictableAt,
@@ -467,7 +440,6 @@ export function resetCursorBlobStateForTests(): void {
   blobs.clear();
   blobRequestScopes.clear();
   blobBytes = 0;
-  blobKeyBytes = 0;
   rejectedEntryTooLarge = 0;
   rejectedPinnedSaturation = 0;
   recomputeBlobClassAccounting();
@@ -516,8 +488,8 @@ export async function handleCursorNativeExec(execMsg: ExecServerMessage, deps: C
     if (execCase === "fetchArgs") return [rejectFetchExecForPolicy(execMsg)];
   }
   if (execCase === "readArgs") return [readExec(execMsg)];
-  if (execCase === "writeArgs") return [deps.rejectNativeFileMutations ? rejectWriteExecForApplyPatch(execMsg, deps.structuredEditAvailable === true) : writeExec(execMsg)];
-  if (execCase === "deleteArgs") return [deps.rejectNativeFileMutations ? rejectDeleteExecForApplyPatch(execMsg, deps.structuredEditAvailable === true) : deleteExec(execMsg)];
+  if (execCase === "writeArgs") return [deps.rejectNativeFileMutations ? rejectWriteExecForApplyPatch(execMsg) : writeExec(execMsg)];
+  if (execCase === "deleteArgs") return [deps.rejectNativeFileMutations ? rejectDeleteExecForApplyPatch(execMsg) : deleteExec(execMsg)];
   if (execCase === "lsArgs") return [lsExec(execMsg)];
   if (execCase === "grepArgs") return [grepExec(execMsg)];
   if (execCase === "shellArgs") return [shellExec(execMsg)];

@@ -8,7 +8,6 @@
  */
 import { Select } from "../../ui";
 import { useT } from "../../i18n/shared";
-import { formatNamespacedModelId } from "../../provider-icons";
 import type { DelegationPatch, DelegationModelOption } from "../../pages/use-subagent-delegation";
 
 export interface SubagentDelegationSectionProps {
@@ -46,7 +45,7 @@ export default function SubagentDelegationSection({
             value={model}
             options={[
               { value: "", label: t("dash.injectionNone") },
-              ...available.map(m => ({ value: m.namespaced, label: formatNamespacedModelId(`${m.provider}/${m.model}`, t) })),
+              ...available.map(m => ({ value: m.namespaced, label: `${m.provider} / ${m.model}` })),
             ]}
             onChange={v => onSave({ model: v || null, effort: effort || null })}
             disabled={saving}

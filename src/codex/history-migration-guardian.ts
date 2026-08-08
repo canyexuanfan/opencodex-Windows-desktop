@@ -1,5 +1,4 @@
 import { countPendingOpencodexHistory, migrateHistoryToOpenai } from "./history-provider";
-import { resolveCodexHistoryJobTarget, runCodexHistoryJob } from "./history-job";
 
 /**
  * Daemon-side retry for the one-time Design-B history migration.
@@ -24,8 +23,7 @@ export interface HistoryMigrationGuardianHandle {
 
 export interface HistoryMigrationGuardianDeps {
   countFn?: typeof countPendingOpencodexHistory;
-  migrateFn?: () => ReturnType<typeof migrateHistoryToOpenai>
-    | Promise<ReturnType<typeof migrateHistoryToOpenai>>;
+  migrateFn?: () => ReturnType<typeof migrateHistoryToOpenai>;
   log?: Pick<Console, "log">;
   tickMs?: number;
   maxTicks?: number;
@@ -44,18 +42,7 @@ function defaultSchedule(fn: () => void, ms: number): { cancel(): void } {
 
 export function startHistoryMigrationGuardian(deps: HistoryMigrationGuardianDeps = {}): HistoryMigrationGuardianHandle {
   const countFn = deps.countFn ?? countPendingOpencodexHistory;
-  // The default migration goes through the history job, so the guardian's timer
-  // thread never performs the transition itself. A background repair that races
-  // an apply or a restore is exactly what H exists to order.
-  const migrateFn = deps.migrateFn ?? (async () => {
-    const outcome = await runCodexHistoryJob({
-      ...resolveCodexHistoryJobTarget(),
-      operation: "migrate-openai",
-    });
-    return outcome.kind === "converged"
-      ? { rows: outcome.rows, files: outcome.files }
-      : { rows: 0, files: 0, failed: true as const };
-  });
+  const migrateFn = deps.migrateFn ?? (() => migrateHistoryToOpenai(undefined, undefined, { attempts: 1 }));
   const log = deps.log ?? console;
   const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
   const maxTicks = deps.maxTicks ?? DEFAULT_MAX_TICKS;
@@ -69,7 +56,7 @@ export function startHistoryMigrationGuardian(deps: HistoryMigrationGuardianDeps
     pending = (deps.scheduleFn ?? defaultSchedule)(tick, tickMs);
   };
 
-  const tick = async () => {
+  const tick = () => {
     if (stopped) return;
     ticks++;
     try {
@@ -79,9 +66,9 @@ export function startHistoryMigrationGuardian(deps: HistoryMigrationGuardianDeps
         return;
       }
       // Locked probe or pending work: attempt one migration pass.
-      const result = await migrateFn();
+      const result = migrateFn();
       if (!result.failed) {
-        const moved = result.rows + ((result as { ejectedRows?: number }).ejectedRows ?? 0);
+        const moved = result.rows + (result.ejectedRows ?? 0);
         if (moved > 0) {
           log.log(`🩹 history-migration: ${moved} legacy opencodex thread(s) migrated back to openai.`);
         }

@@ -27,7 +27,6 @@ export interface StartupHealthData {
   diagnosticStale: boolean;
   commands: {
     installService: string;
-    repairService: string;
     installShim: string;
     restoreNative: string;
   };

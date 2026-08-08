@@ -1,19 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { DICTS, I18nContext, LOCALES, detectInitial, interpolate, setActiveLocale, type Locale, type TFn, type TKey, type Vars } from "./shared";
+import { DICTS, I18nContext, LOCALES, detectInitial, interpolate, type TFn, type TKey, type Vars } from "./shared";
 import { en } from "./en";
 import { useI18n } from "./shared";
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState(() => {
-    const initial = detectInitial();
-    setActiveLocale(initial);
-    return initial;
-  });
-
-  const setLocale = useCallback((next: Locale) => {
-    setActiveLocale(next);
-    setLocaleState(next);
-  }, []);
+  const [locale, setLocale] = useState(detectInitial);
 
   useEffect(() => {
     const meta = LOCALES.find(l => l.code === locale) ?? LOCALES[0];

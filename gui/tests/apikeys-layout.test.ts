@@ -22,13 +22,7 @@ test("ApiKeys uses workspace shell (no classic layout toggle)", async () => {
   expect(page).not.toContain("pws.workspaceToggle");
   expect(page).not.toContain("pws.classicToggle");
 
-  // ApiKeys is no longer rendered by App directly: WP5 made it one panel of
-  // the Integrations tab strip, which is what passes `active` so a hidden
-  // panel stops polling while its drafts stay mounted.
-  expect(app).toContain("<Integrations apiBase={API_BASE} />");
-  expect(app).not.toContain("<ApiKeys apiBase");
-  const integrations = await Bun.file(new URL("../src/pages/Integrations.tsx", import.meta.url)).text();
-  expect(integrations).toContain("<ApiKeys apiBase={apiBase} active={active} />");
+  expect(app).toContain("<ApiKeys apiBase={API_BASE} />");
   expect(css).toContain('@import "./styles-apikeys-workspace.css"');
   expect(css).toContain(".api-auth-list");
   expect(css).toContain(".api-test-note--ok");

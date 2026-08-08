@@ -59,7 +59,7 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   // but stays inert (no load, no polling) whenever a shared controller was injected.
   const ownController = useCodexAccountPool(apiBase, !injectedController);
   const controller = injectedController ?? ownController;
-  const { accounts, activeId, loadState, switchingId, pauseUpdatingId, priorityUpdatingId, pausingExhausted, activePinnedId, load } = controller;
+  const { accounts, activeId, loadState, switchingId, pauseUpdatingId, pausingExhausted, load } = controller;
   const [confirm, setConfirm] = useState<CodexAccountEntry | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [reauthId, setReauthId] = useState<string | null>(null);
@@ -181,22 +181,6 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
     }), !result.ok);
   };
 
-  const changePriority = async (account: CodexAccountEntry, priority: number) => {
-    // Same guard as the pool strategy control (CodexPoolStrategySetting.tsx), and here it is
-    // load-bearing rather than just thrift: `Select` calls onChange for the clicked option
-    // even when it was already selected, and commits the highlighted one on Tab-out. The
-    // route releases the pin on every accepted write — deliberately, since an explicit write
-    // is a newer statement of intent — so without this a mis-click would unpin the account
-    // the operator chose and still report success. Suppressing the no-op belongs here, at
-    // the widget, not at the route, where a same-value write really is a statement.
-    if (priority === account.priority) return;
-    const result = await controller.setAccountPriority(account.id, priority);
-    if (!result.ok && result.reason === "busy") return;
-    showActionFeedback(t(result.ok ? "accountPool.priorityUpdated" : "accountPool.priorityUpdateFailed", {
-      email: account.alias ?? account.email,
-    }), !result.ok);
-  };
-
   const remove = async (id: string) => {
     const label = accounts.find(account => account.id === id)?.email ?? t("pws.accountOrdinal", { count: "1" });
     if (!window.confirm(t("codexAuth.removeConfirm", { id: label }))) return;
@@ -266,9 +250,6 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
   const switchActionLabel = t(accountModeState === "direct" ? "codexAuth.prepareForPool" : "codexAuth.setAsNext");
   const pauseBusy = pauseUpdatingId !== null || pausingExhausted;
   const autoSwitchThreshold = autoSwitch.threshold ?? 0;
-  // The standalone Codex Auth page keeps the doctor-copy affordance; the embedded
-  // Providers workspace account surface does not.
-  const showDoctorCopy = !embedded;
 
   return (
     <div>
@@ -308,13 +289,9 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
             onTogglePause={togglePaused}
             pauseUpdatingId={pauseUpdatingId}
             pauseBusy={pauseBusy}
-            onPriorityChange={(entry, priority) => { void changePriority(entry, priority); }}
-            priorityUpdatingId={priorityUpdatingId}
-            switchingId={switchingId}
-            pinnedId={activePinnedId}
             onOpenReset={openResetPopup}
-            onCopyDoctor={showDoctorCopy ? copyDoctor : undefined}
-            doctorCopyOutcomeFor={showDoctorCopy ? doctorCopy.outcomeFor : undefined}
+            onCopyDoctor={copyDoctor}
+            doctorCopyOutcomeFor={doctorCopy.outcomeFor}
           />
 
           <div className="section-sep">
@@ -342,15 +319,11 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
             onTogglePause={togglePaused}
             pauseUpdatingId={pauseUpdatingId}
             pauseBusy={pauseBusy}
-            onPriorityChange={(entry, priority) => { void changePriority(entry, priority); }}
-            priorityUpdatingId={priorityUpdatingId}
-            switchingId={switchingId}
-            pinnedId={activePinnedId}
             onReauth={openReauth}
             onEditAlias={editAlias}
             onRemove={remove}
-            onCopyDoctor={showDoctorCopy ? copyDoctor : undefined}
-            doctorCopyOutcomeFor={showDoctorCopy ? doctorCopy.outcomeFor : undefined}
+            onCopyDoctor={copyDoctor}
+            doctorCopyOutcomeFor={doctorCopy.outcomeFor}
           />
         </>
       )}
@@ -389,7 +362,6 @@ export default function CodexAccountPool({ apiBase, accountModeState = null, ban
           mainEmail={main?.email}
           accountModeState={accountModeState}
           switchingId={switchingId}
-          orderBusy={priorityUpdatingId !== null}
           onCancel={() => setConfirm(null)}
           onConfirm={() => { void setActive(confirm.id === "__main__" ? "__main__" : confirm.id); }}
         />

@@ -1,12 +1,10 @@
 import type { ServerWebSocket } from "bun";
-import { responsesJsonEventSequence } from "./responses-json-events";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import type { CodexAuthContext } from "../codex/auth-context";
 import { headersForCodexAuthContext } from "../codex/auth-context";
 import type { ResponsesTerminalStatus } from "../bridge";
 import type { DataPlaneAdmission } from "./auth-cors";
-import type { AdmissionLease, AdmissionReservation } from "../lib/admission";
-import { BoundedSseFrameBuffer } from "./sse-frame-buffer";
+import type { AdmissionReservation } from "../lib/admission";
 
 const OPEN = 1;
 type ResponsesTerminalReporter = (status: ResponsesTerminalStatus) => void;
@@ -41,12 +39,6 @@ export interface WsData {
   liveUpstreamHeaders?: Record<string, string>;
   livePending?: Array<string | Buffer>;
   liveOpened?: boolean;
-  /** Once teardown starts, ignore new client frames until the upstream closes. */
-  liveClosing?: boolean;
-  /** Schedules one bounded close retry without surrendering native-main ownership. */
-  liveCloseFallback?: ReturnType<typeof setTimeout>;
-  /** Turn/account ownership retained for the complete sideband socket lifetime. */
-  liveTurnAdmissionLease?: AdmissionLease;
   admissionLease?: AdmissionReservation<ServerWebSocket<WsData>>;
 }
 
@@ -164,6 +156,15 @@ function parseSseBlock(block: string): string | null {
   return data.length > 0 ? data.join("\n") : null;
 }
 
+function nextSseBlock(buffer: string): { block: string; rest: string } | null {
+  const match = buffer.match(/\r?\n\r?\n/);
+  if (!match || match.index === undefined) return null;
+  return {
+    block: buffer.slice(0, match.index),
+    rest: buffer.slice(match.index + match[0].length),
+  };
+}
+
 function payloadType(payload: string): string | null {
   try {
     const json = JSON.parse(payload) as { type?: unknown };
@@ -223,7 +224,7 @@ export async function pumpResponsesSseToWebSocket(
   ws.data.cancel = cancel;
 
   const decoder = new TextDecoder();
-  const framer = new BoundedSseFrameBuffer();
+  let buffer = "";
   let terminalSeen = false;
 
   const handlePayload = (payload: string): boolean => {
@@ -258,14 +259,17 @@ export async function pumpResponsesSseToWebSocket(
     while (!terminalSeen) {
       const { done, value } = await reader.read();
       if (done) break;
-      for (const frame of framer.feed(value)) {
-        const payload = parseSseBlock(decoder.decode(frame.block));
+      buffer += decoder.decode(value, { stream: true });
+      let next: { block: string; rest: string } | null;
+      while ((next = nextSseBlock(buffer))) {
+        buffer = next.rest;
+        const payload = parseSseBlock(next.block);
         if (payload && handlePayload(payload)) break;
       }
     }
-    const tail = framer.finish();
-    if (!terminalSeen && tail.byteLength > 0) {
-      const payload = parseSseBlock(decoder.decode(tail));
+    buffer += decoder.decode();
+    if (!terminalSeen && buffer.trim()) {
+      const payload = parseSseBlock(buffer);
       if (payload) handlePayload(payload);
     }
     if (!terminalSeen && isCurrent() && !clientCancelled) {
@@ -273,27 +277,11 @@ export async function pumpResponsesSseToWebSocket(
       sendProtocolError(ws, 502, "Upstream stream ended before response terminal event");
     }
   } catch (err) {
-    framer.dispose();
-    if (err instanceof WsSendDroppedError) throw err;
-    if (!terminalSeen
-      && isCurrent()
-      && ws.readyState === OPEN
-      && !(err instanceof WsSendDroppedError)) {
-      reportTerminal("incomplete");
-      try {
-        sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
-      } catch (sendErr) {
-        // If delivery is already dropped, there is no useful error frame left
-        // to send. Swallow only that expected transport signal; other failures
-        // still surface to the caller after the upstream reader is released.
-        if (!(sendErr instanceof WsSendDroppedError)) throw sendErr;
-      }
+    if (!terminalSeen && isCurrent() && ws.readyState === OPEN) {
+      if (!(err instanceof WsSendDroppedError)) reportTerminal("incomplete");
+      sendProtocolError(ws, 502, err instanceof Error ? err.message : String(err));
     }
   } finally {
-    framer.dispose();
-    // Framing errors can occur while the upstream body is still live. Always
-    // release the reader, even when terminal/send paths already cancelled it.
-    void reader.cancel().catch(() => {});
     if (ws.data.cancel === cancel) ws.data.cancel = undefined;
   }
 }
@@ -313,12 +301,25 @@ export function sendResponsesJsonAsEvents(
     }
     sendTextFrame(ws, text);
   };
+  const output = Array.isArray(response.output) ? response.output : [];
+  sendObservedFrame({
+    type: "response.created",
+    response: { ...response, status: "in_progress", output: [] },
+  });
+  output.forEach((item, outputIndex) => {
+    sendObservedFrame({
+      type: "response.output_item.done",
+      output_index: outputIndex,
+      item,
+    });
+  });
   const finalStatus = response.status === "failed" || response.status === "incomplete"
     ? response.status
     : "completed";
-  for (const frame of responsesJsonEventSequence(response)) {
-    sendObservedFrame(frame);
-  }
+  sendObservedFrame({
+    type: `response.${finalStatus}` as "response.completed" | "response.failed" | "response.incomplete",
+    response: { ...response, status: finalStatus },
+  });
   onTerminal?.(finalStatus);
 }
 

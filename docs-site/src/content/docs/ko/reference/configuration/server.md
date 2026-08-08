@@ -16,14 +16,14 @@ description: 리스너, 원격 접근, admission 키, 타임아웃, 저장소, �
 | `connectTimeoutMs?` | `number` | `200000` | 시도별 DNS/TCP/TLS/최종 헤더 기한입니다. 본문 생성 전에 끝납니다. |
 | `shutdownTimeoutMs?` | `number` | `5000` | 진행 중인 turn을 중단하기 전에 허용하는 정상 종료 드레인 기한입니다. |
 | `websockets?` | `boolean` | `false` | Responses WebSocket 경로에 `supports_websockets`를 광고합니다. `false`이면 HTTP/SSE를 유지합니다. |
-| `corsAllowOrigins?` | `string[]` | `[]` | CORS에서 추가로 허용할 정확한 origin입니다. 루프백 origin은 항상 허용됩니다. `chrome-extension://<extension-id>` 같은 authority 기반 브라우저 확장 origin을 지원하며, `*`는 와일드카드가 아닙니다. Firefox와 Safari는 확장 UUID를 (설치/브라우저 실행 때마다) 새로 만드므로 origin이 바뀌면 항목을 갱신하세요. |
+| `corsAllowOrigins?` | `string[]` | `[]` | 추가로 허용할 정확한 CORS origin입니다. 루프백 origin은 항상 허용됩니다. |
 | `apiKeys?` | `OcxApiKey[]` | `[]` | 비루프백 바인드에서 관리 API와 데이터 플레인 인증이 허용하는 생성된 `ocx_…` 자격 증명입니다. 대시보드에서 관리합니다. |
 | `storageCleanupPolicy?` | `StorageCleanupPolicy` | disabled | 선택적으로 활성화하는 보관 세션 정리 정책입니다. 절대 암묵적으로 활성화되지 않습니다. |
 | `appOwnedMemoryBudgetMb?` | `number` | `256` | 제거 가능한 앱 소유 로그, 캐시, blob, continuation payload에 대한 MiB 단위 상한입니다. 범위는 64–4096이며 RSS 상한은 아닙니다. |
 | `codexAutoStart?` | `boolean` | `true` | Codex shim이 Codex를 실행하기 전에 `ocx ensure`를 돌리도록 허용합니다. `false`이면 ensure는 아무 작업도 하지 않습니다. |
 | `codexShimAutoRestore?` | `boolean` | `true` | 완료된 외부 Codex 업데이트가 설치된 shim을 교체한 뒤 복원합니다. 환경 변수로 끌 수 있습니다: `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`. |
 | `syncResumeHistory?` | `boolean` | `true` | 되돌릴 수 있는 Codex App history 호환성입니다. 원래 메타데이터는 `ocx stop` / `ocx restore`가 백업하고 복원합니다. |
-| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` | off | 인식된 Codex 보조/섀도 호출을 선택한 모델로 낮은 노력 수준에서 다시 보냅니다. 기본 source prefix는 `gpt-5.6-luna`입니다. 0.144.x 이하의 이전 클라이언트는 `gpt-5.4-mini`를 사용했으며 `sourceModels`로 복원할 수 있습니다. |
+| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` | off | 인식된 Codex 보조/섀도 호출을 선택한 모델로 낮은 노력 수준에서 다시 보냅니다. 기본 source prefix는 `gpt-5.4-mini`와 `gpt-5.6-luna`입니다. |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on when usable | 웹 검색 사이드카 옵션입니다. |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on when usable | 이미지 설명 사이드카 옵션입니다. |
 | `images?` | `OcxImagesConfig` | automatic OpenAI selection | Codex `image_gen`용 독립형 Images 릴레이 옵션입니다. |
@@ -105,7 +105,7 @@ Codex는 제목과 커밋 메시지 같은 작업에 작은 보조 모델을 사
   "shadowCallIntercept": {
     "enabled": true,
     "model": "gpt-5.5",
-    "sourceModels": ["gpt-5.6-luna"]
+    "sourceModels": ["gpt-5.4-mini", "gpt-5.6-luna"]
   }
 }
 ```

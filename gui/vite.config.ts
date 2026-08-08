@@ -18,11 +18,8 @@ export default defineConfig({
   */
   server: proxyTarget ? {
     proxy: {
-      // Keep the original Host on forwarded requests: the backend mints loopback GUI
-      // sessions bound to that origin, and /api session checks must see the same origin.
-      '/opencodex-session': { target: proxyTarget, changeOrigin: false },
-      '/api': { target: proxyTarget, changeOrigin: false },
-      '/healthz': { target: proxyTarget, changeOrigin: false },
+      '/api': { target: proxyTarget, changeOrigin: true },
+      '/healthz': { target: proxyTarget, changeOrigin: true },
     },
   } : undefined,
 })

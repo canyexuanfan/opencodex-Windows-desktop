@@ -36,14 +36,8 @@ The same action is available from the web dashboard's **Stop** button (`POST /ap
 
 ### `ocx restart`
 
-When a proxy is running, ask that exact attested PID and port to restart in place, wait for its
-normal drain, and verify a different runtime PID on the same port. Managed routing and service
-supervision stay installed throughout; an uncertain request is observed rather than replayed as a
-separate stop/start. If no proxy is running, the command falls back to the normal `ensure` start.
-If a live listener cannot be attested to a runtime PID (including a pre-update proxy), restart fails
-closed without an `ensure` or stop/start fallback. After confirming ownership, use `ocx stop` then
-`ocx start` for a standalone proxy. For a service-managed proxy, use `ocx stop` followed by
-`ocx service start` so supervision is restored.
+Run `stop` followed by `ensure`: stop the proxy/service, restore native Codex, start the proxy in the
+background, and sync the live port back into Codex.
 
 ### `ocx ensure`
 
@@ -148,18 +142,6 @@ tokens, authorization headers, request content, emails, and account identities.
 Identity-check the live proxy. Human output reports PID/port; `--json` emits `{ok, pid, port}`. The
 command exits 0 only when healthy and 1 otherwise, making it suitable for service probes.
 
-### `ocx ready [--json] [--wait [--timeout <seconds>]]`
-
-Check post-sync readiness through the unauthenticated `GET /readyz` endpoint. It returns `200` when
-ready, or `503` with `Retry-After: 1` for `pending` and terminal `failed`. Its sanitized HTTP identity
-is `{service, version, uptime, pid, port, status}`. Old proxies without `/readyz` fail closed as
-`unreachable`; `/healthz` is separate liveness, not readiness. The command performs one probe by
-default; `--wait` polls until ready or timeout, but exits immediately when it observes the terminal `failed` state. The
-default timeout is 45 seconds; `--timeout <seconds>` requires `--wait` and accepts positive integer seconds from 1–300.
-CLI JSON emits `{ready, status, pid, port}`, where `status` is `ready`, `pending`, `failed`, or
-`unreachable`. Exit codes are 0 for ready; 1 for not-ready, pending, failed, timeout, or
-unreachable; and 64 for invalid arguments.
-
 ### `ocx doctor`
 
 Run read-only environment and connectivity diagnostics: state paths and filesystem type, WSL dual
@@ -193,7 +175,7 @@ same stale-`app-server` warning and optional `--restart-codex` behavior as `ocx 
 
 ## Background service
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|start|stop|status|uninstall|remove]`
 
 Run opencodex as a login-managed background service (macOS **launchd**, Linux **systemd user unit**,
 Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash. Service runs set
@@ -202,8 +184,7 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 | Subcommand | Action |
 | --- | --- |
 | none | Create/update and start the service. |
-| `install` | Create and start the service. Registers it, which on Windows needs elevation. |
-| `repair` | Refresh an installed service in place and restart it, without re-registering it. |
+| `install` | Create and start the service. |
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
 | `status` | Report service and proxy diagnostics plus log paths. |
@@ -213,7 +194,6 @@ Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash
 ```bash
 ocx service
 ocx service install
-ocx service repair
 ocx service status
 ocx service uninstall
 ```
@@ -250,9 +230,9 @@ log named in the message, and use `ocx start` to serve in the foreground meanwhi
 ⚠️  installed and loaded (launchd; logs: …)
    Registered, but no proxy is answering on port 10100.
    launchd is running an OLDER plist than the one on disk.
-   Fix:    launchctl bootout gui/$(id -u)/com.opencodex.proxy && ocx service repair
+   Fix:    launchctl bootout gui/$(id -u)/com.opencodex.proxy && ocx service install
    Log:    ~/.opencodex/service.log
-   Repair: ocx service repair
+   Repair: ocx service install
    Meanwhile: ocx start           (serves in the foreground)
 ```
 
@@ -331,12 +311,8 @@ if it is not running.
 Self-update opencodex from npm. Stable installs use `@latest`; preview installs stay on `@preview`
 unless you pass `--tag latest|preview`. It detects a source checkout and tells you to
 `git pull && bun install` instead, and is a no-op if you are already on the newest version for that
-tag. Before stopping anything, npm installations run a bounded Unix cache ownership and access
-check. Nested symlinks are checked with `lstat` but not followed; Windows explicitly skips this
-Unix-only check. A failure aborts while the tray and proxy are still running. A running proxy is
-then stopped before files are replaced; an installed service is rebuilt and started automatically,
-while a foreground installation prints `ocx start` as the next step. Dashboard update records
-redact profile/cache paths and UID/GID values before they are persisted.
+tag. A running proxy is stopped before files are replaced; an installed service is rebuilt and
+started automatically, while a foreground installation prints `ocx start` as the next step.
 
 ```bash
 ocx update

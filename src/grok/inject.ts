@@ -24,12 +24,7 @@ const END_MARKER = "# <<< opencodex managed block <<<";
 // cli-chat-proxy and 401s. Per-model direct fields DO route. So every [model.*] block carries its
 // own base_url/api_backend/api_key and no [model_providers] table is emitted at all.
 
-/**
- * INTERNAL API shared with `./inspect` (WP2, devlog 260803_integrations_toggle_all/012).
- * The inspector and the writer are its only callers — one parser for one fence, so a
- * read and a strip can never disagree about where our block starts and stops.
- */
-export interface ManagedRegion {
+interface ManagedRegion {
   start: number;
   end: number;
   orphaned: boolean;
@@ -39,16 +34,11 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-/**
- * INTERNAL API shared with `./inspect`, so the reader and the writer resolve the
- * authoritative home identically (GROK_HOME, then ~/.grok). Not a public surface.
- */
-export function resolveGrokHome(grokHome?: string): string {
+function resolveGrokHome(grokHome?: string): string {
   return grokHome ?? (process.env.GROK_HOME || join(homedir(), ".grok"));
 }
 
-/** INTERNAL API shared with `./inspect` — a missing home is a STATE, not an error. */
-export function isDirectory(path: string): boolean {
+function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {
@@ -56,8 +46,7 @@ export function isDirectory(path: string): boolean {
   }
 }
 
-/** INTERNAL API — see `ManagedRegion` above. Not a public fence-parsing surface. */
-export function findManagedRegion(content: string): ManagedRegion | null {
+function findManagedRegion(content: string): ManagedRegion | null {
   const start = content.indexOf(BEGIN_MARKER);
   if (start === -1) return null;
   const endMarkerStart = content.indexOf(END_MARKER, start + BEGIN_MARKER.length);

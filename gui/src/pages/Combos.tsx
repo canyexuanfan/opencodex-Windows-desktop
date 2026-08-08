@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ComboWorkspace from "../components/ComboWorkspace";
 import {
   type ComboItem,
@@ -11,7 +11,7 @@ import { readSessionListCache, writeSessionListCache } from "../session-list-cac
 import { Notice } from "../ui";
 import { useT } from "../i18n/shared";
 import { useDataSurface } from "../data-surface";
-import { DataSurfaceSkeleton } from "../components/data-surface";
+import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
 
 type ProviderOption = {
   name: string;
@@ -52,38 +52,10 @@ function seedCombos(cacheKey: string): CachedCombosPage | null {
   return readSessionListCache<CachedCombosPage>(cacheKey);
 }
 
-export default function Combos({
-  apiBase,
-  active = true,
-  onCountChange,
-}: {
-  apiBase: string;
-  /**
-   * False while this panel is mounted but hidden behind another Models tab. It gates
-   * the NETWORK only — the rendered tree stays put so unsaved editor drafts survive a
-   * tab hop. Defaults true so the standalone page keeps its existing behaviour.
-   */
-  active?: boolean;
-  /** Reports the combo count up to the tab strip. */
-  onCountChange?: (count: number) => void;
-}) {
+export default function Combos({ apiBase }: { apiBase: string }) {
   const t = useT();
   const cacheKey = `ocx.combos.workspace.v1:${apiBase}`;
-  const cached = useMemo(() => seedCombos(cacheKey), [cacheKey]);
-
-  /*
-   * The last coherent payload, kept so a hidden panel can keep rendering.
-   *
-   * While `active` is false the resource is disabled and reports `data: undefined` with
-   * no skeleton and no error. Falling back to empty arrays there swaps the whole
-   * ComboWorkspace for a first-run empty state and takes every unsaved draft with it —
-   * proven in a browser: type into a combo, switch tabs, come back, field blank.
-   *
-   * State rather than a ref: this repo avoids render-time ref reads under React
-   * Compiler, and a ref would not re-render when the retained payload changes. Written
-   * on the load success path, never during render and never from an effect.
-   */
-  const [retainedData, setRetainedData] = useState<CachedCombosPage | null>(cached ?? null);
+  const cached = seedCombos(cacheKey);
   const [status, setStatus] = useState("");
   const [statusOk, setStatusOk] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -103,13 +75,12 @@ export default function Combos({
     return () => window.clearTimeout(timer);
   }, [status, statusOk]);
 
-  const loadCombos = useCallback(async (signal?: AbortSignal): Promise<CachedCombosPage> => {
+  const loadCombos = useCallback(async (): Promise<CachedCombosPage> => {
     // Keep all three requests parallel: this workspace is only coherent once every input arrives.
     const [combosRes, configRes, modelsRes] = await Promise.all([
-      // Signals were missing entirely, so resource cleanup could not cancel these.
-      fetch(`${apiBase}/api/combos`, { signal }),
-      fetch(`${apiBase}/api/config`, { signal }),
-      fetch(`${apiBase}/api/models`, { signal }),
+      fetch(`${apiBase}/api/combos`),
+      fetch(`${apiBase}/api/config`),
+      fetch(`${apiBase}/api/models`),
     ]);
     if (!combosRes.ok || !configRes.ok || !modelsRes.ok) {
       throw new Error("combo workspace load failed");
@@ -180,9 +151,6 @@ export default function Combos({
 
     const next = { combos, providers, models, cataloguedComboIds: [...catalogued] } satisfies CachedCombosPage;
     writeSessionListCache(cacheKey, next);
-    // Retain the coherent payload here — one place, on the success path, never during
-    // render. See the `retainedData` note below.
-    setRetainedData(next);
     return next;
   }, [apiBase, cacheKey]);
 
@@ -190,27 +158,11 @@ export default function Combos({
     cacheKey,
     [apiBase],
     loadCombos,
-    /*
-     * Gate the network, never the tree. A hidden panel must not fetch, but the rendered
-     * workspace has to stay mounted so an unsaved editor draft survives a tab hop.
-     * Disabling reports `data: undefined`, so `retainedData` below keeps the last good
-     * payload and the subtree never unmounts.
-     */
-    { isEmpty: () => false, initialData: cached ?? undefined, enabled: active },
+    { isEmpty: () => false },
   );
   const { state } = resource;
-
-  const data = state.data ?? retainedData ?? undefined;
+  const data = state.data ?? cached;
   const combos = data?.combos ?? [];
-
-  /*
-   * Report the count up to the tab strip from an effect keyed on the list length, not
-   * during render, so a parent re-render cannot refire it.
-   */
-  useEffect(() => {
-    if (!data) return;
-    onCountChange?.(combos.length);
-  }, [combos.length, data, onCountChange]);
   const providers = data?.providers ?? [];
   const models = data?.models ?? [];
   const cataloguedComboIds = new Set(data?.cataloguedComboIds ?? []);
@@ -273,14 +225,7 @@ export default function Combos({
     return <DataSurfaceSkeleton label={t("cws.loading")} rows={5} />;
   }
 
-  /*
-   * `!data` matters. Disabling the only subscriber schedules store eviction, so a
-   * reactivation whose fetch fails is classified `failed-cold` even when this component
-   * still holds a coherent retained payload — and replacing the workspace there would
-   * unmount the editor and destroy the very draft retention exists to protect. With
-   * retained data the workspace stays up and the failure shows in the stale banner below.
-   */
-  if (state.kind === "failed-cold" && !data) {
+  if (state.kind === "failed-cold") {
     const reason = state.error instanceof Error ? state.error.message : t("cws.loadFailed");
     return (
       <>
@@ -302,12 +247,8 @@ export default function Combos({
           <Notice tone="err">{t("cws.loadFailed")}</Notice>
         </div>
       )}
-      {/* Revalidation is silent by design: existing combos stay visible, and the
-          shell announces the in-flight refresh to assistive tech only. */}
-      <div className="combos-workspace-shell-body" aria-busy={state.refreshing}>
-        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-          {state.refreshing ? t("common.loading") : ""}
-        </span>
+      {state.refreshing && <DataSurfaceStatus live={!state.showError}>{t("cws.loading")}</DataSurfaceStatus>}
+      <div className="combos-workspace-shell-body">
         <ComboWorkspace
           combos={combos}
           providers={providers}

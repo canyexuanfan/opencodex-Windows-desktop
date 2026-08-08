@@ -5,16 +5,7 @@ import { atomicWriteFile } from "../config";
 import { hasInjectedCodexRouting } from "./injected-marker";
 import { CODEX_HOME, CODEX_CONFIG_PATH, CODEX_PROFILE_PATH } from "./paths";
 
-/**
- * Exported so that anything reasoning ABOUT the journal points at the journal.
- *
- * The Codex admission snapshot re-derived this path by hand and got it wrong in
- * both halves — wrong directory and wrong filename — so its "journal identity"
- * watched a file nothing writes. The fixture re-derived it the same wrong way,
- * agreed with the producer, and the pair stayed green. One exported constant
- * removes the opportunity.
- */
-export const JOURNAL_PATH = join(CODEX_HOME, "opencodex-journal.json");
+const JOURNAL_PATH = join(CODEX_HOME, "opencodex-journal.json");
 
 interface Journal {
   version: 1;

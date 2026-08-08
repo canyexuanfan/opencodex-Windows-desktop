@@ -12,7 +12,6 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
-import { CLIENTS } from "../src/components/apikeys-workspace/client-config-clients";
 import { LanguageProvider } from "../src/i18n/provider";
 import ClientConfigPanel from "../src/components/apikeys-workspace/ClientConfigPanel";
 
@@ -21,7 +20,7 @@ let previousGlobals: Record<(typeof globals)[number], unknown>;
 let testWindow: Window;
 const originalFetch = globalThis.fetch;
 
-const OPENCODE_ENVELOPE_BASE = {
+const OPENCODE_ENVELOPE = {
   client: "opencode",
   filename: "opencode.json",
   destination: "/home/dev/.config/opencode/opencode.json",
@@ -29,8 +28,6 @@ const OPENCODE_ENVELOPE_BASE = {
   exportHint: "export OPENCODEX_OPENCODE_API_KEY=<your key>",
   modelCount: 2,
   modelsWithoutLimits: 0,
-  format: "json",
-  mediaType: "application/json",
   config: {
     provider: {
       opencodex: {
@@ -43,7 +40,7 @@ const OPENCODE_ENVELOPE_BASE = {
   },
 };
 
-const PI_ENVELOPE_BASE = {
+const PI_ENVELOPE = {
   client: "pi",
   filename: "pi-models.json",
   destination: "/home/dev/.pi/agent/models.json",
@@ -51,43 +48,8 @@ const PI_ENVELOPE_BASE = {
   exportHint: "export OPENCODEX_PI_API_KEY=<your key>",
   modelCount: 2,
   modelsWithoutLimits: 1,
-  format: "json",
-  mediaType: "application/json",
   // Pi keys its models as an ARRAY — the shape swap is what proves a real refetch.
   config: { providers: { opencodex: { models: [{ id: "gpt-5.4" }, { id: "claude-sonnet-4-6" }] } } },
-};
-
-/**
- * `text` is the server-rendered bytes. Deriving it from `config` here keeps the
- * fixture honest: the dialog asserts it shows exactly what the route sent.
- */
-const OPENCODE_ENVELOPE = {
-  ...OPENCODE_ENVELOPE_BASE,
-  text: `${JSON.stringify(OPENCODE_ENVELOPE_BASE.config, null, 2)}\n`,
-};
-const PI_ENVELOPE = {
-  ...PI_ENVELOPE_BASE,
-  text: `${JSON.stringify(PI_ENVELOPE_BASE.config, null, 2)}\n`,
-};
-
-
-/**
- * A TOML client. This fixture is the one that actually activates the non-JSON
- * path: `text` is not `JSON.stringify(config)`, so restoring the old
- * re-serializing implementation fails these assertions instead of passing.
- */
-const KIMI_ENVELOPE = {
-  client: "kimi",
-  filename: "kimi-config.toml",
-  destination: "/home/dev/.kimi-code/config.toml",
-  apiKeyEnv: "",
-  exportHint: "Kimi Code reads credentials from its config file; loopback needs no key.",
-  modelCount: 1,
-  modelsWithoutLimits: 0,
-  format: "toml",
-  mediaType: "application/toml",
-  text: '[providers.opencodex]\ntype = "openai"\nbase_url = "http://127.0.0.1:10100/v1"\n',
-  config: { providers: { opencodex: { type: "openai", base_url: "http://127.0.0.1:10100/v1" } } },
 };
 
 beforeEach(() => {
@@ -173,7 +135,7 @@ test("each row fetches its own client and its dialog renders that client's exact
   const calls = stubRoute(client => Response.json(client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE));
   const { root, container } = await mountPanel();
 
-  expect([...calls].sort()).toEqual([...CLIENTS].sort());
+  expect([...calls].sort()).toEqual(["opencode", "pi"]);
 
   await act(async () => { rowButton(container, "OpenCode", "Details").click(); });
   const opencodeJson = container.querySelector(".awi-clientconfig-json")!.textContent!;
@@ -195,7 +157,7 @@ test("the config JSON is not rendered at rest", async () => {
   stubRoute(client => Response.json(client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE));
   const { root, container } = await mountPanel();
 
-  expect(container.querySelectorAll(".awi-clientconfig-row")).toHaveLength(CLIENTS.length);
+  expect(container.querySelectorAll(".awi-clientconfig-row")).toHaveLength(2);
   expect(container.querySelector(".awi-clientconfig-json")).toBeNull();
   expect(container.querySelector("dialog")).toBeNull();
   // Both transport actions stay on the surface; only inspection is demoted.
@@ -216,9 +178,7 @@ test("clients render as rows, not a switch", async () => {
   expect(container.querySelector("select")).toBeNull();
   expect(container.querySelector(".awi-clientconfig-segmented")).toBeNull();
   const names = [...container.querySelectorAll(".awi-clientconfig-name")].map(el => el.textContent);
-  // Row order follows the registry, so a new client appears without a code change here.
-  expect(names?.slice(0, 2)).toEqual(["OpenCode", "Pi"]);
-  expect(names).toHaveLength(CLIENTS.length);
+  expect(names).toEqual(["OpenCode", "Pi"]);
   // Each row states where its file goes; a Download with no destination is the
   // ambiguity the announcement text works to prevent.
   expect(row(container, "OpenCode").textContent).toContain(OPENCODE_ENVELOPE.destination);
@@ -263,9 +223,10 @@ test("dialog closes on Escape and returns focus to its trigger", async () => {
 });
 
 test("each client row shows its own brand mark, never a borrowed one", async () => {
-  // OpenCode and Pi ship real assets; the clients added later have none yet and
-  // fall back to a monogram tile. The rule this guards is that no client ever
-  // borrows another product's logo — not that every client has an asset.
+  // Both export clients ship a real asset now: OpenCode from the existing
+  // provider-icon baseline, Pi from the project's own favicon. The monogram is
+  // the fallback for a client with no asset, so seeing one here means a mark
+  // went missing rather than that the fallback is working.
   stubRoute(client => Response.json(client === "pi" ? PI_ENVELOPE : OPENCODE_ENVELOPE));
   const { root, container } = await mountPanel();
 
@@ -273,11 +234,7 @@ test("each client row shows its own brand mark, never a borrowed one", async () 
     .toBe("/provider-icons/opencode.svg");
   expect(row(container, "Pi").querySelector("img")?.getAttribute("src"))
     .toBe("/provider-icons/pi.svg");
-  // Every rendered mark belongs to the client whose row it sits in.
-  const sources = [...container.querySelectorAll("img")]
-    .map(img => img.getAttribute("src"))
-    .filter((src): src is string => src !== null);
-  expect(new Set(sources).size).toBe(sources.length);
+  expect(container.querySelector(".awi-clientconfig-monogram")).toBeNull();
   // Marks are decoration: the row already names its client in text.
   for (const img of container.querySelectorAll("img")) {
     expect(img.getAttribute("alt")).toBe("");
@@ -342,7 +299,7 @@ test("a superseded response never replaces a newer one", async () => {
 });
 
 test("download emits the fetched config under the server-provided filename and never says applied", async () => {
-  stubRoute(client => Response.json(client === "kimi" ? KIMI_ENVELOPE : OPENCODE_ENVELOPE));
+  stubRoute(() => Response.json(OPENCODE_ENVELOPE));
   const blobs: Blob[] = [];
   const createObjectURL = ((blob: Blob) => { blobs.push(blob); return "blob:stub"; }) as typeof URL.createObjectURL;
   const originalCreate = URL.createObjectURL;
@@ -369,28 +326,11 @@ test("download emits the fetched config under the server-provided filename and n
     expect(blobs).toHaveLength(1);
     // happy-dom appends `;charset=utf-8` to the constructed Blob type.
     expect(blobs[0]!.type).toStartWith("application/json");
-    // The blob carries the server-rendered bytes verbatim — the GUI no longer
-    // re-serializes, so a TOML client downloads TOML rather than JSON.
-    expect(await blobs[0]!.text()).toBe(OPENCODE_ENVELOPE.text);
-
-    const firstAnnouncement = container.querySelector(".sr-only[aria-live='polite']")!.textContent!;
-    expect(firstAnnouncement).toContain("Downloaded opencode.json");
-
-    // The TOML client is the case that actually distinguishes the two
-    // implementations: its bytes are not JSON, so a re-serializing panel would
-    // hand the user a file Kimi cannot parse.
-    await act(async () => { rowButton(container, "Kimi Code", "Download").click(); });
-    expect(downloaded).toEqual(["opencode.json", "kimi-config.toml"]);
-    expect(blobs).toHaveLength(2);
-    expect(blobs[1]!.type).toStartWith("application/toml");
-    const tomlBytes = await blobs[1]!.text();
-    expect(tomlBytes).toBe(KIMI_ENVELOPE.text);
-    expect(tomlBytes).not.toBe(`${JSON.stringify(KIMI_ENVELOPE.config, null, 2)}\n`);
-    expect(tomlBytes.startsWith("[providers.opencodex]")).toBe(true);
+    expect(JSON.parse(await blobs[0]!.text())).toEqual(OPENCODE_ENVELOPE.config);
 
     const announcement = container.querySelector(".sr-only[aria-live='polite']")!.textContent!;
-    expect(announcement).toContain("Downloaded kimi-config.toml");
-    expect(announcement).toContain(KIMI_ENVELOPE.destination);
+    expect(announcement).toContain("Downloaded opencode.json");
+    expect(announcement).toContain(OPENCODE_ENVELOPE.destination);
     for (const forbidden of ["applied", "saved", "configured"]) {
       expect(announcement.toLowerCase()).not.toContain(forbidden);
     }
@@ -491,7 +431,7 @@ test("N rows still mean exactly one live region", async () => {
   expect(container.querySelectorAll("[aria-live]")).toHaveLength(1);
   expect(container.querySelector(".awi-clientconfig-json")).toBeNull();
   // Rows exist while cold and state their own loading, without announcing it.
-  expect(container.querySelectorAll(".awi-clientconfig-row")).toHaveLength(CLIENTS.length);
+  expect(container.querySelectorAll(".awi-clientconfig-row")).toHaveLength(2);
 
   await act(async () => { release!(); await gate; });
 

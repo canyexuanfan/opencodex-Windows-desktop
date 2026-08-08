@@ -14,12 +14,9 @@ export function Switch({ on, onClick, disabled, label }: { on: boolean; onClick:
   );
 }
 
-export function Notice({ tone, children }: { tone: "ok" | "err" | "warn"; children: ReactNode }) {
-  // `warn` is degraded-but-not-failed: the action happened, something adjacent
-  // did not. It must not render as the clean success the user did not get.
-  const toneClass = tone === "ok" ? "notice-ok" : tone === "warn" ? "notice-warn" : "notice-err";
+export function Notice({ tone, children }: { tone: "ok" | "err"; children: ReactNode }) {
   return (
-    <div className={`notice ${toneClass}`} role="status">
+    <div className={`notice ${tone === "ok" ? "notice-ok" : "notice-err"}`} role="status">
       {tone === "ok" ? <IconCheck /> : <IconAlert />}
       <span>{children}</span>
     </div>
@@ -28,22 +25,19 @@ export function Notice({ tone, children }: { tone: "ok" | "err" | "warn"; childr
 
 export interface SelectOption { value: string; label: React.ReactNode }
 
-export function Select({ value, options, onChange, disabled, id, label, describedBy, title, style, align, placement, dropdownStyle, portal = true }: {
-  value: string;
+export function Select({ value, options, onChange, disabled, label, id, style, align, placement, dropdownStyle, portal = true }: {  value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
-  /** Put on the trigger, so a sibling `<label htmlFor>` can name it — a button is labelable. */
-  id?: string;
   label?: string;
-  describedBy?: string;
-  title?: string;
   style?: CSSProperties;
   align?: "left" | "right";
   placement?: "below" | "right";
   dropdownStyle?: CSSProperties;
   /** When true (default), menu is portaled and flips above the trigger if it would leave the viewport. */
   portal?: boolean;
+  /** Optional id on the trigger button (tests / labels target `#codex-pool-strategy`). */
+  id?: string;
 }) {
   const listboxId = useId();
   const [open, setOpen] = useState(false);
@@ -130,7 +124,6 @@ export function Select({ value, options, onChange, disabled, id, label, describe
   }, [activeIndex, open, optionId]);
 
   const selectIndex = (index: number) => {
-    if (disabled) return;
     const option = options[index];
     if (!option) return;
     onChange(option.value);
@@ -183,12 +176,7 @@ export function Select({ value, options, onChange, disabled, id, label, describe
 
   const activeDescendant = open && options[activeIndex] ? optionId(activeIndex) : undefined;
 
-  // A shared controller can flip `disabled` while the menu is already open (for
-  // example `priorityUpdatingId` starts an order write). The trigger alone being
-  // disabled must not leave the rendered option buttons able to call `onChange`
-  // and silently drop the second update, so the dropdown is not rendered (and the
-  // option buttons are disabled) whenever `disabled` is true.
-  const dropdown = open && !disabled ? (
+  const dropdown = open ? (
     <div
       ref={menuRef}
       id={listboxId}
@@ -204,7 +192,6 @@ export function Select({ value, options, onChange, disabled, id, label, describe
           type="button"
           role="option"
           tabIndex={-1}
-          disabled={disabled}
           aria-selected={o.value === value}
           className={`select-option${o.value === value ? " active" : ""}${index === activeIndex ? " select-option-active" : ""}`}
           onMouseEnter={() => setHighlightIndex(index)}
@@ -221,8 +208,6 @@ export function Select({ value, options, onChange, disabled, id, label, describe
         id={id}
         type="button"
         role="combobox"
-        title={title}
-        aria-describedby={describedBy}
         className="select-trigger"
         onClick={() => {
           if (disabled) return;

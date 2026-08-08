@@ -32,7 +32,6 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
 import { NATIVE_OPENAI_CONTEXT_OVERRIDES, SUPPORTED_NATIVE_OPENAI_SLUGS, UPSTREAM_NATIVE_ENTRIES } from "./metadata";
-import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
 
 export function legacyCatalogBackupPath(): string {
   return join(getConfigDir(), "catalog-backup.json");
@@ -245,10 +244,8 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
 }
 
 export function applyNativeOpenAiContextOverride(entry: RawEntry): void {
-  const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
-    ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
-  if (!nativeSlug) return;
-  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[nativeSlug];
+  if (!isNativeOpenAiEntry(entry)) return;
+  const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[entry.slug as string];
   if (!override) return;
   if (typeof override.contextWindow === "number") {
     entry.context_window = override.contextWindow;
@@ -320,7 +317,7 @@ export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode, v
     // re-apply upstream pins from the snapshot for native entries that have one.
     for (const entry of entries) {
       const slug = typeof entry.slug === "string" ? entry.slug : "";
-      const upstream = UPSTREAM_NATIVE_ENTRIES.get(trustedAccountBoundNativeCatalogSlug(entry) ?? slug);
+      const upstream = UPSTREAM_NATIVE_ENTRIES.get(slug);
       const upstreamPin = upstream?.multi_agent_version;
       if (typeof upstreamPin === "string") {
         entry.multi_agent_version = upstreamPin;

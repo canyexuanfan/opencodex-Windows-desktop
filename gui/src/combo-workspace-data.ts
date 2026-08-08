@@ -8,10 +8,7 @@ export type ComboEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export const COMBO_EFFORTS: ComboEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
-/**
- * Intersection of advertised effort ladders for picker availability.
- * Unknown ladders are wildcards here only; runtime injection remains fail-closed.
- */
+/** Intersection of per-member effort ladders; unknown ladders contribute no selectable efforts. */
 export function intersectComboEfforts(
   targets: readonly ComboTarget[],
   modelEfforts: ReadonlyMap<string, readonly string[] | undefined>,
@@ -23,8 +20,11 @@ export function intersectComboEfforts(
   for (const target of complete) {
     const key = `${target.provider.trim()}/${target.model.trim()}`;
     const listed = modelEfforts.get(key);
-    if (listed === undefined) continue;
-    const member = listed.filter((effort) => effortSet.has(effort));
+    // Missing metadata must not invent a full ladder — runtime omits the combo default when
+    // supportedLadderFor is undefined (#488 / Codex review).
+    const member: string[] = listed === undefined
+      ? []
+      : listed.filter((effort) => effortSet.has(effort));
     if (common === null) {
       common = member;
     } else {
@@ -32,8 +32,7 @@ export function intersectComboEfforts(
       common = common.filter((effort) => memberSet.has(effort));
     }
   }
-  if (common === null) return [...COMBO_EFFORTS];
-  const commonSet = new Set(common);
+  const commonSet = new Set(common ?? []);
   return COMBO_EFFORTS.filter((effort) => commonSet.has(effort));
 }
 

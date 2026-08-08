@@ -24,10 +24,8 @@ import { appendFileSync } from "node:fs";
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
-  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
-  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
@@ -39,8 +37,6 @@ import { resolveFirstUsableOpenAiSidecar, selectOpenAiImagesProvider } from "../
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "./auth-cors";
 import type { RequestLogContext } from "./request-log";
 import { codexLogAccountId } from "./responses";
-import type { AdmissionLease } from "../lib/admission";
-import { codexAccountSelectionForTurn } from "./lifecycle";
 
 /** Voice call create can wait on SDP negotiation; bound a hung upstream. */
 const LIVE_UPSTREAM_TIMEOUT_MS = 120_000;
@@ -413,7 +409,6 @@ export async function resolveLiveRelay(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  turnAdmissionLease?: AdmissionLease,
 ): Promise<LiveRelayTarget | Response> {
   try {
     validateForwardAdmissionCredential(req.headers, config);
@@ -438,9 +433,7 @@ export async function resolveLiveRelay(
   let forwardAuthError: Response | undefined;
   if (candidates.forwardCandidates.length > 0) {
     try {
-      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config, {
-        beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
-      });
+      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config);
       if (forward) {
         logCtx.provider = formatCodexProviderForLog(
           forward.providerName,
@@ -451,8 +444,6 @@ export async function resolveLiveRelay(
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
         forwardAuthError = cooldownErrorResponse(err);
-      } else if (err instanceof CodexMainProfileDrainingError) {
-        forwardAuthError = codexMainProfileDrainingResponse();
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(
           409,
@@ -515,14 +506,13 @@ export async function handleLive(
   req: Request,
   config: OcxConfig,
   logCtx: RequestLogContext,
-  turnAdmissionLease?: AdmissionLease,
 ): Promise<Response> {
   const inboundContentType = req.headers.get("content-type") ?? "application/octet-stream";
   const inboundBodyOrError = await readRequestBodyCapped(req, LIVE_REQUEST_MAX_BYTES);
   if (inboundBodyOrError instanceof Response) return inboundBodyOrError;
   const inboundBody = inboundBodyOrError;
 
-  const relay = await resolveLiveRelay(req, config, logCtx, turnAdmissionLease);
+  const relay = await resolveLiveRelay(req, config, logCtx);
   if (relay instanceof Response) return relay;
 
   const headers: Record<string, string> = { ...relay.headers };
@@ -597,9 +587,8 @@ export async function resolveLiveSidebandUpgrade(
   config: OcxConfig,
   logCtx: RequestLogContext,
   target: LiveSidebandTarget,
-  turnAdmissionLease?: AdmissionLease,
 ): Promise<{ headers: Record<string, string>; upstreamWsUrl: string; recordOutcome?: LiveRelayTarget["recordOutcome"] } | Response> {
-  const relay = await resolveLiveRelay(req, config, logCtx, turnAdmissionLease);
+  const relay = await resolveLiveRelay(req, config, logCtx);
   if (relay instanceof Response) return relay;
   return {
     headers: relay.headers,

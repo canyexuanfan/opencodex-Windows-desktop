@@ -16,7 +16,6 @@ import {
   TranslatorBudgetExceededError,
   type TranslatorBudget,
 } from "../lib/translator-budget";
-import { sseFieldOffset, sseFieldValue } from "../lib/sse-decoder";
 
 type Rec = Record<string, unknown>;
 
@@ -188,8 +187,6 @@ interface OpenBlock {
   argsBufBytes?: number;
   webSearchArgsEmitted?: boolean;
   callId?: string;
-  /** Last reasoning part identity (item + summary/content index) seen by this thinking block. */
-  reasoningPartKey?: string;
 }
 
 /** Streaming: Responses SSE bytes -> Anthropic Messages SSE bytes. */
@@ -356,21 +353,6 @@ export function responsesSseToAnthropicSse(
           case "response.reasoning_text.delta": {
             if (typeof data.delta !== "string" || data.delta.length === 0) break;
             ensureBlock("thinking");
-            // The JSON path joins reasoning summary/content parts with "\n\n"
-            // (responsesJsonToAnthropicMessage); mirror that at part and item boundaries
-            // so multi-part summaries do not glue into one run-on paragraph. Frames
-            // without part indices produce a constant key and never get a separator.
-            const slot = eventName === "response.reasoning_summary_text.delta"
-              ? `s${String(data.summary_index)}`
-              : `c${String(data.content_index)}`;
-            const partKey = `${String(data.item_id)}:${slot}`;
-            if (open!.reasoningPartKey !== undefined && open!.reasoningPartKey !== partKey) {
-              emit("content_block_delta", {
-                type: "content_block_delta", index: open!.index,
-                delta: { type: "thinking_delta", thinking: "\n\n" },
-              });
-            }
-            open!.reasoningPartKey = partKey;
             emit("content_block_delta", {
               type: "content_block_delta", index: open!.index,
               delta: { type: "thinking_delta", thinking: data.delta },
@@ -589,16 +571,10 @@ export function responsesSseToAnthropicSse(
                       while (lineStart <= rawFrame.length) {
                         const newline = rawFrame.indexOf("\n", lineStart);
                         const lineEnd = newline === -1 ? rawFrame.length : newline;
-                        // The space after the colon is optional in text/event-stream (#1170);
-                        // compute the value offset the same way sseFieldValue does, without
-                        // slicing the line first — the byte accounting below is keyed to
-                        // offsets into rawFrame.
-                        const eventOffset = sseFieldOffset(rawFrame, lineStart, lineEnd, "event");
-                        const dataOffset = sseFieldOffset(rawFrame, lineStart, lineEnd, "data");
-                        if (eventOffset !== -1) {
-                          eventName = rawFrame.slice(eventOffset, lineEnd).trim();
-                        } else if (dataOffset !== -1) {
-                          const fragmentStart = dataOffset;
+                        if (rawFrame.startsWith("event: ", lineStart)) {
+                          eventName = rawFrame.slice(lineStart + 7, lineEnd).trim();
+                        } else if (rawFrame.startsWith("data: ", lineStart)) {
+                          const fragmentStart = lineStart + 6;
                           const fragmentBytes = utf8SliceBytes(rawFrame, fragmentStart, lineEnd);
                           const fragmentReservation = translatorBudget.reserveTransient(fragmentBytes, { kind: "live_transient" });
                           let fragmentCommitted = false;
@@ -868,10 +844,8 @@ export async function collectAnthropicMessage(
         let eventName = "";
         let dataLine = "";
         for (const line of rawFrame.split("\n")) {
-          const eventValue = sseFieldValue(line, "event");
-          if (eventValue !== null) { eventName = eventValue.trim(); continue; }
-          const dataValue = sseFieldValue(line, "data");
-          if (dataValue !== null) dataLine += dataValue;
+          if (line.startsWith("event: ")) eventName = line.slice(7).trim();
+          else if (line.startsWith("data: ")) dataLine += line.slice(6);
         }
         if (!eventName || !dataLine) continue;
         let data: unknown;

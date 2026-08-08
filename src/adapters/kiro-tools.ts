@@ -149,16 +149,7 @@ function toolDescriptionLimit(modelId: string): number {
 function truncateDescription(description: string, limit: number): string {
   if (description.length <= limit) return description;
   if (limit <= 1) return description.slice(0, limit);
-  let end = limit - 1;
-  // Never end the kept text on a lone high surrogate; one step back keeps
-  // the whole pair out instead of a U+FFFD-producing half.
-  if (description.charCodeAt(end - 1) >= 0xd800 && description.charCodeAt(end - 1) <= 0xdbff) end -= 1;
-  return `${description.slice(0, end)}…`;
-}
-
-/** Test-only: exercise the surrogate-safe description truncation directly. */
-export function truncateDescriptionForTests(description: string, limit: number): string {
-  return truncateDescription(description, limit);
+  return `${description.slice(0, limit - 1)}…`;
 }
 
 function serializedToolCatalogBytes(tools: readonly unknown[]): number {

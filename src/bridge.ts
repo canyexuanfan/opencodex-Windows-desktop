@@ -2,26 +2,17 @@ import type { AdapterEvent, OcxMessagePhase, OcxProviderContinuationState, OcxUs
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
-import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import {
   isTranslatorBudgetExceededError,
   releaseTranslatedEvent,
-  createTranslatorBudget,
   type TranslatorBudget,
   type TranslatorBufferKind,
 } from "./lib/translator-budget";
 
 function uuid(): string {
   return crypto.randomUUID().replace(/-/g, "");
-}
-
-/** Test-only: bound the abandoned-owned-budget watchdog delay (null restores). */
-let ownedBudgetAbandonedMs = 10 * 60 * 1000;
-const OWNED_BUDGET_ABANDONED_DEFAULT_MS = ownedBudgetAbandonedMs;
-export function setOwnedBudgetAbandonedMsForTests(ms: number | null): void {
-  ownedBudgetAbandonedMs = ms ?? OWNED_BUDGET_ABANDONED_DEFAULT_MS;
 }
 
 function sseEvent(name: string, data: Record<string, unknown>): string {
@@ -116,28 +107,13 @@ function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>
 export { adapterFailureFromMessage } from "./lib/errors";
 
 /**
- * Build the native `WebSearchAction::Search` payload from the queries that ran.
- *
- * Single query → `{ query, queries: [query] }`. Batch → `{ queries }` with NO singular
- * `query`. Empty → `{ query: "", queries: [""] }`.
- *
- * The asymmetry is load-bearing in both directions. codex-rs prefers a non-empty `query`
- * for the cell label and renders "<first> ..." only when `query` is ABSENT and
- * `queries.len() > 1`, so adding `query` to a batch would collapse the plural ellipsis.
- * Meanwhile DeepSeek's native Responses parser makes `queries` a required field, so a
- * replayed one-term `web_search_call` — carried in the history of every subsequent turn
- * — fails deserialization with `missing field 'queries'` and 400s the rest of the
- * conversation (#930). Carrying both keys in the single case satisfies the strict parser
- * without changing what codex-rs displays.
- *
- * This fixes items created from here on. History recorded before it is repaired at the
- * replay boundary by `backfillWebSearchQueries()` in the Responses adapter.
+ * Build the native `WebSearchAction::Search` payload from the queries that ran. codex-rs prefers a
+ * non-empty `query` over `queries` for the cell label, and only renders "<first> ..." when `query`
+ * is absent and `queries.len() > 1`. So a single query → `{ query }`; multiple → `{ queries }` with
+ * no singular `query`, so Codex shows the native plural ellipsis. Empty → `{ query: "" }`.
  */
 function webSearchAction(queries: string[]): Record<string, unknown> {
-  if (queries.length <= 1) {
-    const query = queries[0] ?? "";
-    return { type: "search", query, queries: [query] };
-  }
+  if (queries.length <= 1) return { type: "search", query: queries[0] ?? "" };
   return { type: "search", queries };
 }
 
@@ -182,12 +158,6 @@ export function bridgeToResponsesSSE(
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
     /**
-     * Conversation identity for the reasoning replay cache (issue #950).
-     * Provider call ids are not globally unique; scoping by thread keeps one
-     * conversation's reasoning out of another's continuations.
-     */
-    replayCacheScope?: string;
-    /**
      * Test seam for the wire/stall beat loop. Production omits this and uses the
      * global timers; injecting here must not change scheduling semantics.
      */
@@ -197,7 +167,6 @@ export function bridgeToResponsesSSE(
     };
   },
 ): ReadableStream<Uint8Array> {
-  const replayCacheScope = options?.replayCacheScope ?? "global";
   const setBeatInterval = options?.timers?.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearBeatInterval = options?.timers?.clearInterval ?? ((id: unknown) => clearInterval(id as ReturnType<typeof setInterval>));
   // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
@@ -239,25 +208,7 @@ export function bridgeToResponsesSSE(
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
   const encoder = new TextEncoder();
-  // Default-budget safety net: omission is SAFE (default turn limits), never
-  // unbounded. Production callers always pass one; an owned default is disposed
-  // at terminal/cancel below.
-  const ownsBudget = !options?.translatorBudget;
-  const budget = options?.translatorBudget ?? createTranslatorBudget();
-  // Idempotent: safe to call at every stream-death path; disposal must come
-  // AFTER the final charges (emitDone), never inside reportTerminal.
-  const disposeOwnedBudget = () => { if (ownsBudget) budget.dispose(); };
-  // A dropped stream (never read, never cancelled) reaches no terminal path,
-  // so the owned budget would sit in liveBudgets for the process lifetime.
-  // One unref'd watchdog per owned budget bounds that to a timeout and clears
-  // itself on any settle (the delay is test-overridable).
-  const ownedWatchdog = ownsBudget
-    ? setTimeout(() => disposeOwnedBudget(), ownedBudgetAbandonedMs)
-    : undefined;
-  ownedWatchdog?.unref?.();
-  const clearOwnedWatchdog = () => {
-    if (ownedWatchdog !== undefined) clearTimeout(ownedWatchdog);
-  };
+  const budget = options?.translatorBudget;
   const bytesOf = (value: string): number => Buffer.byteLength(value);
   const appendString = (
     previous: string,
@@ -268,6 +219,7 @@ export function bridgeToResponsesSSE(
   ): { value: string; bytes: number } => {
     const fragmentBytes = bytesOf(fragment);
     const nextBytes = previousBytes + fragmentBytes;
+    if (!budget) return { value: previous + fragment, bytes: nextBytes };
     const scope = { kind, ...(callId ? { callId } : {}) };
     const reservation = budget.reserveTransient(nextBytes, scope);
     try {
@@ -305,7 +257,6 @@ export function bridgeToResponsesSSE(
     if (terminalReported || clientCancelled || closed) return;
     terminalReported = true;
     try { options?.onTerminal?.(status); } catch { /* terminal metrics must not break the stream */ }
-    clearOwnedWatchdog();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
   // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
@@ -338,7 +289,6 @@ export function bridgeToResponsesSSE(
             return;
           }
           closed = true;
-          disposeOwnedBudget();
         }
       };
       const emitDone = () => {
@@ -434,43 +384,13 @@ export function bridgeToResponsesSSE(
       // encodeReasoningEnvelope: takeReasoningEnvelope's sig/red guard would drop txt-only.
       let hiddenRawReasoningText = "";
       let hiddenRawReasoningBytes = 0;
-      // Raw reasoning text flushed most recently, waiting for the tool call it
-      // preceded. Recorded into the replay cache on tool_call_start so a later
-      // continuation can re-attach it when history lost the reasoning item
-      // (issue #950). Kept until new reasoning/text arrives: parallel tool
-      // calls share the same preceding reasoning block.
-      let rawReasoningForNextToolCall = "";
       const flushHiddenRawReasoning = () => {
         if (!hiddenRawReasoningText) return;
-        rawReasoningForNextToolCall = hiddenRawReasoningText;
         const previousBytes = hiddenRawReasoningBytes;
         const encrypted = encodeReasoningEnvelope({ txt: hiddenRawReasoningText });
         const reservation = budget?.reserveTransient(bytesOf(encrypted), { kind: "reasoning" });
         hiddenRawReasoningText = "";
         hiddenRawReasoningBytes = 0;
-        reservation?.commitRetained();
-        budget?.releaseRetained(previousBytes, { kind: "reasoning" });
-        const itemId = `rs_${uuid()}`;
-        const item = { type: "reasoning", id: itemId, summary: [] as never[], encrypted_content: encrypted };
-        emit("response.output_item.added", { output_index: outputIndex, item });
-        emit("response.output_item.done", { output_index: outputIndex, item });
-        retainFinishedItem(item as OutputItem, bytesOf(encrypted), "reasoning");
-        outputIndex++;
-      };
-      // Kiro reasoning round-trip. Kiro sends its encrypted blob at the END of a turn, while the
-      // assistant message is still open, so this CANNOT emit on arrival: the open message still
-      // owns `outputIndex` (it only advances on close), and an item emitted here would both reuse
-      // that index and land BEFORE the message — where the parser's backwards pairing drops it as
-      // orphaned. Stash it and flush after `done` has closed every open item instead.
-      let pendingKiroRedacted: string | undefined;
-      let pendingKiroRedactedBytes = 0;
-      const flushKiroRedactedReasoning = () => {
-        if (!pendingKiroRedacted) return;
-        const previousBytes = pendingKiroRedactedBytes;
-        const encrypted = encodeReasoningEnvelope({ krc: pendingKiroRedacted });
-        const reservation = budget?.reserveTransient(bytesOf(encrypted), { kind: "reasoning" });
-        pendingKiroRedacted = undefined;
-        pendingKiroRedactedBytes = 0;
         reservation?.commitRetained();
         budget?.releaseRetained(previousBytes, { kind: "reasoning" });
         const itemId = `rs_${uuid()}`;
@@ -557,7 +477,6 @@ export function bridgeToResponsesSSE(
 
       const closeCurrentRawReasoning = () => {
         if (!currentRawReasoning) return;
-        rawReasoningForNextToolCall = currentRawReasoning.text;
         const item = {
           type: "reasoning", id: currentRawReasoning.itemId, summary: [],
           content: [{ type: "reasoning_text", text: currentRawReasoning.text }],
@@ -763,7 +682,6 @@ export function bridgeToResponsesSSE(
         beat = undefined;
         try { controller.close(); } catch { /* already closed */ }
         closed = true;
-        disposeOwnedBudget();
         gated = true;
         stepping = false;
       };
@@ -776,15 +694,6 @@ export function bridgeToResponsesSSE(
         while (!terminated && !closed && emittedFrames === emittedAtStart) {
           iteratorStarted = true;
           const next = await it.next();
-          // A cancel during this await disposes the owned budget; a late event
-          // must never be processed or charged against it. Exit step() outright:
-          // falling into EOF synthesis would let closeCurrentMessage() charge
-          // finished-item retention against the disposed budget.
-          if (closed || clientCancelled) {
-            gated = true;
-            stepping = false;
-            return;
-          }
           if (next.done) { upstreamDone = true; break; }
           const event = next.value;
           let terminalEvent = false;
@@ -818,7 +727,6 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
-              rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               flushHiddenReasoningEnvelope();
               break;
@@ -827,10 +735,6 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
-              // Reasoning consumed by a REAL text turn, not a tool call: no cache target.
-              // Empty text deltas must not wipe reasoning that precedes a tool call
-              // (chat-completions providers emit empty content deltas mid-tool-turn).
-              if (event.text.length > 0) rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               // Only flush on an explicit phase change. A later delta that omits `phase` must
               // keep appending to the current message rather than wiping the earlier phase.
@@ -865,12 +769,6 @@ export function bridgeToResponsesSSE(
             }
             case "thinking_delta": {
               if (options?.hideThinkingSummary) {
-                // The hidden branch returns early, so flush any raw reasoning
-                // that preceded the thinking block and clear the replay-cache
-                // candidate — otherwise a stale reasoning_raw_delta would be
-                // recorded for a LATER tool call (CodeRabbit on #971).
-                flushHiddenRawReasoning();
-                rawReasoningForNextToolCall = "";
                 ({ value: hiddenThinkingText, bytes: hiddenThinkingBytes } = appendString(
                   hiddenThinkingText,
                   hiddenThinkingBytes,
@@ -882,7 +780,6 @@ export function bridgeToResponsesSSE(
               if (currentMsg) closeCurrentMessage("commentary");
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
-              if (event.thinking.length > 0) rawReasoningForNextToolCall = "";
               if (currentToolCall) closeCurrentToolCall();
               if (!currentReasoning) {
                 const itemId = `rs_${uuid()}`;
@@ -918,12 +815,6 @@ export function bridgeToResponsesSSE(
             case "redacted_thinking": {
               budget?.chargeRetained(bytesOf(event.data), { kind: "reasoning" });
               pendingRedacted.push(event.data);
-              break;
-            }
-            case "kiro_redacted_reasoning": {
-              // Stash only — see flushKiroRedactedReasoning. One blob per turn, so last wins.
-              pendingKiroRedactedBytes = replaceRetainedString(pendingKiroRedactedBytes, event.data, "reasoning");
-              pendingKiroRedacted = event.data;
               break;
             }
             case "reasoning_raw_delta": {
@@ -962,9 +853,6 @@ export function bridgeToResponsesSSE(
               if (currentReasoning) closeCurrentReasoning();
               if (currentRawReasoning) closeCurrentRawReasoning();
               flushHiddenRawReasoning();
-              if (rawReasoningForNextToolCall) {
-                rememberReasoningForCall(event.id, rawReasoningForNextToolCall, replayCacheScope);
-              }
               if (currentToolCall) closeCurrentToolCall();
               const mapped = toolNsMap?.get(event.name);
               const realName = mapped?.name ?? event.name;
@@ -1099,9 +987,6 @@ export function bridgeToResponsesSSE(
               // Redacted-only turns (or hidden thinking without a trailing signature event) still
               // need their envelope-only reasoning item so the blocks replay next turn.
               flushHiddenReasoningEnvelope();
-              // After every close above, so the blob lands AFTER the assistant message it belongs
-              // to and the parser's backwards pairing finds it.
-              flushKiroRedactedReasoning();
               if (options?.compaction) {
                 // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
                 const item = {
@@ -1256,7 +1141,6 @@ export function bridgeToResponsesSSE(
         /* already closed (e.g. client cancelled) */
       }
       closed = true;
-      disposeOwnedBudget();
       gated = true;
       stepping = false;
       };
@@ -1292,7 +1176,6 @@ export function bridgeToResponsesSSE(
             beat = undefined;
             try { controller.close(); } catch { /* already closed */ }
             closed = true;
-            disposeOwnedBudget();
             return;
           }
           // Wire silence is independent of upstream adapter heartbeats.
@@ -1305,7 +1188,6 @@ export function bridgeToResponsesSSE(
             emittedFrames++;
           } catch {
             closed = true;
-            disposeOwnedBudget();
           }
         }, heartbeatMs);
       };
@@ -1323,31 +1205,13 @@ export function bridgeToResponsesSSE(
       // cancelled turn does not leak the upstream stream or keep draining tokens (RC2).
         clientCancelled = true;
         closed = true;
-        clearOwnedWatchdog();
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
-        disposeOwnedBudget();
       },
     });
   }
 
 export function buildResponseJSON(
-  events: AdapterEvent[],
-  modelId: string,
-  options?: Parameters<typeof buildResponseJSONWithBudget>[2],
-): Record<string, unknown> {
-  // Default-budget safety net: a caller that omits the budget gets a bounded
-  // default (disposed with the call), never the unbounded append path.
-  if (options?.translatorBudget) return buildResponseJSONWithBudget(events, modelId, options);
-  const budget = createTranslatorBudget();
-  try {
-    return buildResponseJSONWithBudget(events, modelId, { ...options, translatorBudget: budget });
-  } finally {
-    budget.dispose();
-  }
-}
-
-function buildResponseJSONWithBudget(
   events: AdapterEvent[],
   modelId: string,
   options?: {
@@ -1361,12 +1225,9 @@ function buildResponseJSONWithBudget(
     /** Raw adapter-reported usage before wire normalization (see bridgeToResponsesSSE onUsage). */
     onUsage?: (usage: OcxUsage | undefined) => void;
     translatorBudget?: TranslatorBudget;
-    /** Conversation identity for the reasoning replay cache (issue #950). */
-    replayCacheScope?: string;
   },
 ): Record<string, unknown> {
   const responseId = `resp_${uuid()}`;
-  const replayCacheScope = options?.replayCacheScope ?? "global";
   const output: OutputItem[] = [];
   const budget = options?.translatorBudget;
   const encoder = new TextEncoder();
@@ -1422,18 +1283,11 @@ function buildResponseJSONWithBudget(
   let currentSummaryReasoningBytes = 0;
   let currentRawReasoning = "";
   let currentRawReasoningBytes = 0;
-  // Same replay-cache handoff as the streaming path (issue #950): the most
-  // recently flushed raw reasoning waits for the tool call it preceded.
-  let rawReasoningForNextToolCall = "";
   // Anthropic extended-thinking round-trip (batch): see bridgeToResponsesSSE counterpart.
   let batchSignature: string | undefined;
   let batchSignatureBytes = 0;
   let batchRedacted: string[] = [];
   let batchRedactedBytes = 0;
-  // Kiro reasoning blob, held until after the trailing flushes so it lands AFTER the assistant
-  // message (see the streaming path). Retained because it outlives releaseTranslatedEvent.
-  let batchKiroRedacted: string | undefined;
-  let batchKiroRedactedBytes = 0;
   let currentToolCallId = "";
   let currentToolCallName = "";
   let currentToolCallArgs = "";
@@ -1496,7 +1350,6 @@ function buildResponseJSONWithBudget(
   };
   const flushRawReasoning = () => {
     if (!currentRawReasoning) return;
-    rawReasoningForNextToolCall = currentRawReasoning;
     if (options?.hideThinkingSummary === true) {
       // Same contract as the streaming path: no visible reasoning, txt-only envelope round-trip.
       pushOutput({
@@ -1554,7 +1407,6 @@ function buildResponseJSONWithBudget(
         flushText("commentary");
         flushSummaryReasoning();
         flushRawReasoning();
-        rawReasoningForNextToolCall = "";
         flushToolCall();
         break;
       case "text_delta":
@@ -1563,9 +1415,6 @@ function buildResponseJSONWithBudget(
         if (currentText && e.phase !== undefined && currentTextPhase !== e.phase) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
-        // Empty text deltas (batch chat responses always carry content, often "") must
-        // not wipe reasoning that precedes a tool call (#950 non-streaming path).
-        if (e.text.length > 0) rawReasoningForNextToolCall = "";
         if (currentToolCallId) flushToolCall();
         // Compaction turns keep the summary out of normal message output (replay dedup — see
         // bridgeToResponsesSSE); it ships only inside the synthetic compaction item below.
@@ -1584,7 +1433,6 @@ function buildResponseJSONWithBudget(
       case "thinking_delta":
         if (currentText) flushText("commentary");
         if (currentRawReasoning) flushRawReasoning();
-        if (e.thinking.length > 0) rawReasoningForNextToolCall = "";
         if (currentToolCallId) flushToolCall();
         {
           ({ value: currentSummaryReasoning, bytes: currentSummaryReasoningBytes } = appendBatchString(
@@ -1607,16 +1455,6 @@ function buildResponseJSONWithBudget(
         }
         batchRedacted.push(e.data);
         break;
-      case "kiro_redacted_reasoning":
-        // Stash only — pushed after the trailing flushes. One blob per turn, so last wins.
-        {
-          const dataBytes = bytesOf(e.data);
-          budget?.chargeRetained(dataBytes, { kind: "reasoning" });
-          if (batchKiroRedactedBytes > 0) budget?.releaseRetained(batchKiroRedactedBytes, { kind: "reasoning" });
-          batchKiroRedactedBytes = dataBytes;
-        }
-        batchKiroRedacted = e.data;
-        break;
       case "reasoning_raw_delta":
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
@@ -1631,9 +1469,6 @@ function buildResponseJSONWithBudget(
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
-        if (rawReasoningForNextToolCall) {
-          rememberReasoningForCall(e.id, rawReasoningForNextToolCall, replayCacheScope);
-        }
         flushToolCall();
         currentToolCallId = e.id;
         budget?.openCall(e.id);
@@ -1718,15 +1553,6 @@ function buildResponseJSONWithBudget(
   flushRawReasoning();
   // Open tool call on a failed/incomplete turn must not land as status:"completed".
   if (currentToolCallId) flushToolCall(errorEvent || incompleteEvent ? "incomplete" : "completed");
-  if (batchKiroRedacted) {
-    // pushOutput reserves the item itself and releases the retained raw blob it replaces.
-    pushOutput({
-      type: "reasoning", id: `rs_${uuid()}`, summary: [],
-      encrypted_content: encodeReasoningEnvelope({ krc: batchKiroRedacted }),
-    }, batchKiroRedactedBytes, "reasoning");
-    batchKiroRedacted = undefined;
-    batchKiroRedactedBytes = 0;
-  }
   // A truncated turn must never be installed as replacement history: emit the
   // compaction item only when the turn actually completed (#422).
   if (

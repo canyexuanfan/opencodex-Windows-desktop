@@ -16,14 +16,14 @@ description: リスナー、リモート アクセス、アドミッション �
 | `connectTimeoutMs?` | `number` | `200000` |試行ごとの DNS/TCP/TLS/最終ヘッダーの期限。本体が生成される前に終了します。 |
 | `shutdownTimeoutMs?` | `number` | `5000` |アクティブなターンが中止される前の正常な排出期限。 |
 | `websockets?` | `boolean` | `false` |応答 WebSocket パスとして `supports_websockets` をアドバタイズします。 False は HTTP/SSE を維持します。 |
-| `corsAllowOrigins?` | `string[]` | `[]` | 追加の正確な CORS origin。ループバック origin は常に許可します。`chrome-extension://<extension-id>` など authority ベースのブラウザー拡張 origin に対応し、`*` はワイルドカードではありません。Firefox と Safari は拡張 UUID を（インストール/ブラウザー起動ごとに）再生成するため、origin が変わったらエントリを更新してください。 |
+| `corsAllowOrigins?` | `string[]` | `[]` |追加の正確な CORS 起点。ループバック起点は常に許可されます。 |
 | `apiKeys?` | `OcxApiKey[]` | `[]` |生成された `ocx_…` 資格情報は、非ループバック バインドでの管理およびデータ プレーン認証によって受け入れられました。ダッシュボードで管理。 |
 | `storageCleanupPolicy?` | `StorageCleanupPolicy` |無効 |アーカイブされたセッションのクリーンアップ ポリシーをオプトインします。暗黙的に有効になることはありません。 |
 | `appOwnedMemoryBudgetMb?` | `number` | `256` |排除可能なアプリ所有のログ、キャッシュ、BLOB、および継続ペイロードの MiB の上限。範囲は 64 ～ 4096。 RSSキャップではありません。 |
 | `codexAutoStart?` | `boolean` | `true` | Codex を起動する前に、Codex シムで `ocx ensure` を実行させます。 False を指定すると、操作が行われないことが保証されます。 |
 | `codexShimAutoRestore?` | `boolean` | `true` |完了した外部 Codex アップデートによってインストールされたシムが置き換えられた後、インストールされているシムを復元します。環境オプトアウト: `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。 |
 | `syncResumeHistory?` | `boolean` | `true` | Codex App 履歴の互換性を元に戻すことができます。元のメタデータは `ocx stop` / `ocx restore` によってバックアップおよび復元されます。 |
-| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、少ない労力で選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-5.6-luna` です。0.144.x 以前のクライアントでは `gpt-5.4-mini` が使われており、`sourceModels` で復元できます。 |
+| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、少ない労力で選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-5.4-mini` および `gpt-5.6-luna` です。 |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` |使用可能な場合はオン | Web 検索サイドカー オプション。 |
 | `visionSidecar?` | `OcxVisionSidecarConfig` |使用可能な場合はオン |画像説明サイドカー オプション。 |
 | `images?` | `OcxImagesConfig` | OpenAI の自動選択 | Codex `image_gen` のスタンドアロン イメージ リレー オプション。 |
@@ -105,7 +105,7 @@ Codex は、タイトルやコミット メッセージなどのタスクに小�
   "shadowCallIntercept": {
     "enabled": true,
     "model": "gpt-5.5",
-    "sourceModels": ["gpt-5.6-luna"]
+    "sourceModels": ["gpt-5.4-mini", "gpt-5.6-luna"]
   }
 }
 ```

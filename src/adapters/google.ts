@@ -12,25 +12,24 @@ import type {
   OcxToolCall,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, toolAllowedByChoice } from "../types";
 import { contentPartsToText, parseDataUrl } from "./image";
 import { getVertexAccessToken } from "../lib/gcp-adc";
 import { fetchAntigravityWithRetry, fetchVertexWithRetry } from "./google-http";
 import { safeAntigravityHttpErrorMessage, safeVertexHttpErrorMessage } from "./google-errors";
-import { isVertexTruncatedTurn, vertexTruncationErrorMessage } from "./google-truncation";
+import { isVertexTruncationReason, vertexTruncationErrorMessage } from "./google-truncation";
 import { ANTIGRAVITY_REQUEST_UA, antigravitySessionId, isLikelyRealThoughtSignature, sanitizeAntigravityClaudeSignatures } from "./google-antigravity-wire";
 import { compileGoogleWireBody } from "./google-wire-compiler";
-import { identifyRoutedModel } from "./identity";
+import { neutralizeIdentity } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityEffortWireModel } from "../providers/antigravity-models";
-import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
 import {
   isTranslatorBudgetExceededError,
   retainTranslatedEventBatch,
   type TranslatorBudget,
 } from "../lib/translator-budget";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
-import { configuredReasoningEfforts, mapReasoningEffort } from "../reasoning-effort";
+import { mapReasoningEffort } from "../reasoning-effort";
 
 // Google-family models (Gemini/Vertex/Antigravity) tend to emit long running commentary between
 // tool calls. This steers them to keep the BETWEEN-STEP text to one line and reason internally
@@ -123,18 +122,15 @@ function geminiToolResultText(content: string | OcxContentPart[]): string {
   return hasContent ? contentPartsToText(content) : GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
 }
 
-function messagesToGeminiFormat(
-  parsed: OcxParsedRequest,
-  routedModelId = parsed.modelId,
-): { systemInstruction?: unknown; contents: unknown[] } {
+function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
   // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
   // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(parsed.context.tools, parsed.options.toolChoice);
-  const systemText = identifyRoutedModel([
+  const systemText = neutralizeIdentity([
     ...(parsed.context.systemPrompt ?? []),
     ...(toolCatalogNudge ? [toolCatalogNudge] : []),
     GOOGLE_BREVITY_INSTRUCTION,
-  ].join("\n\n"), routedModelId);
+  ].join("\n\n"));
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
@@ -233,28 +229,6 @@ function toolsToGeminiFormat(parsed: OcxParsedRequest): unknown[] | undefined {
   }];
 }
 
-/**
- * Client tool_choice enforcement on the wire. The catalog nudge states the same contract in
- * prose, but without functionCallingConfig the model is free to ignore it. "auto" stays absent
- * so the common case is byte-identical. The allowedTools variant already filters the
- * declarations in toolsToGeminiFormat; only its "required" half needs a wire mode.
- */
-function toolChoiceToGeminiToolConfig(parsed: OcxParsedRequest): Record<string, unknown> | undefined {
-  const choice = parsed.options.toolChoice;
-  if (!choice || choice === "auto") return undefined;
-  if (choice === "none") return { functionCallingConfig: { mode: "NONE" } };
-  if (choice === "required") return { functionCallingConfig: { mode: "ANY" } };
-  if (isAllowedToolChoice(choice)) {
-    return choice.mode === "required" ? { functionCallingConfig: { mode: "ANY" } } : undefined;
-  }
-  return {
-    functionCallingConfig: {
-      mode: "ANY",
-      allowedFunctionNames: [resolveToolChoiceWireName(parsed.context.tools, choice.name)],
-    },
-  };
-}
-
 function usageFromGemini(usage: Record<string, number> | undefined): OcxUsage | undefined {
   if (!usage) return undefined;
   return {
@@ -318,44 +292,24 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       : {}),
 
     async buildRequest(parsed: OcxParsedRequest) {
-      const routedModelId = provider.googleMode === "cloud-code-assist"
-        ? resolveAntigravityEffortWireModel(
-            parsed.modelId,
-            mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning),
-          ).wireModelId
-        : parsed.modelId;
-      const { systemInstruction, contents } = messagesToGeminiFormat(parsed, routedModelId);
+      const { systemInstruction, contents } = messagesToGeminiFormat(parsed);
       const tools = toolsToGeminiFormat(parsed);
 
       const body: Record<string, unknown> = { contents };
       if (systemInstruction) body.systemInstruction = systemInstruction;
       if (tools) body.tools = tools;
-      // Only meaningful with declarations on the wire: mode ANY with an empty
-      // catalog is a guaranteed upstream 400.
-      const toolConfig = tools ? toolChoiceToGeminiToolConfig(parsed) : undefined;
-      if (toolConfig) body.toolConfig = toolConfig;
 
       const generationConfig: Record<string, unknown> = {};
       if (parsed.options.maxOutputTokens) generationConfig.maxOutputTokens = parsed.options.maxOutputTokens;
       if (parsed.options.temperature !== undefined) generationConfig.temperature = parsed.options.temperature;
       if (parsed.options.topP !== undefined) generationConfig.topP = parsed.options.topP;
       if (parsed.options.stopSequences) generationConfig.stopSequences = parsed.options.stopSequences;
-      // Effort → thinkingLevel follows the configured ladder: any model advertising reasoning
-      // efforts (registry preset or user config) sends the mapped level, so a picker-selected
-      // effort actually reaches the wire (gemini-3.1-pro-preview ships a ladder). The original
-      // gemini-3.5/3.6-flash direct-mode slice stays hardcoded so unladdered configs keep their
-      // current behavior; Vertex participates only through an explicitly configured ladder (the
-      // seed google-vertex entry ships none). Image models are excluded — thinkingConfig would
-      // suppress the responseModalities fallback below. CCA maps effort on its envelope path.
-      const thinkingEligible = provider.googleMode !== "cloud-code-assist"
-        && !isImageCapableModel(parsed.modelId)
-        && (configuredReasoningEfforts(provider, parsed.modelId) !== undefined
-          || (provider.googleMode !== "vertex"
-            && (parsed.modelId === "gemini-3.5-flash" || parsed.modelId === "gemini-3.6-flash")));
-      const thinkingLevel = thinkingEligible
+      const directFlashThinking = provider.googleMode !== "vertex"
+        && provider.googleMode !== "cloud-code-assist"
+        && (parsed.modelId === "gemini-3.5-flash" || parsed.modelId === "gemini-3.6-flash")
         ? mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning)
         : undefined;
-      if (thinkingLevel) generationConfig.thinkingConfig = { thinkingLevel };
+      if (directFlashThinking) generationConfig.thinkingConfig = { thinkingLevel: directFlashThinking };
       if (!generationConfig.thinkingConfig && isImageCapableModel(parsed.modelId)) {
         generationConfig.responseModalities = ["TEXT", "IMAGE"];
       }
@@ -395,12 +349,6 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const draftRequest: Record<string, unknown> = { ...body, sessionId };
         // Claude-on-Antigravity forces VALIDATED function calling (the real client always sets it).
         if (/claude/i.test(wireModelId)) {
-          // VALIDATED would defeat a client's tool_choice "none": honor it by dropping the
-          // declarations instead, the wire shape of a tool-less Claude turn.
-          if (parsed.options.toolChoice === "none") {
-            delete draftRequest.tools;
-            delete draftRequest.toolConfig;
-          }
           const existing = (draftRequest.toolConfig ?? {}) as Record<string, unknown>;
           const fcc = (existing.functionCallingConfig ?? {}) as Record<string, unknown>;
           draftRequest.toolConfig = { ...existing, functionCallingConfig: { ...fcc, mode: "VALIDATED" } };
@@ -447,8 +395,6 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         if (!project) throw new Error("Vertex AI requires a project id (provider.project or GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT).");
         const location = provider.location || process.env.GOOGLE_CLOUD_LOCATION;
         if (!location) throw new Error("Vertex AI requires a location (provider.location or GOOGLE_CLOUD_LOCATION).");
-        const locationError = googleVertexLocationConfigError(location);
-        if (locationError) throw new Error(locationError);
         const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
         const url = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${parsed.modelId}:${method}${streamParam}`;
         const token = await getVertexAccessToken();
@@ -641,7 +587,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         // Fail-closed: a turn cut off mid tool call (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces
         // an error instead of a silently-incomplete done. Mirrors kiro-truncation.
         if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-          && isVertexTruncatedTurn(lastFinishReason, toolCallsStarted)) {
+          && toolCallsStarted > 0 && isVertexTruncationReason(lastFinishReason)) {
           yield { type: "error", message: vertexTruncationErrorMessage(lastFinishReason) };
           return;
         }
@@ -797,7 +743,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       // Fail-closed truncation, same as the stream path: a non-stream turn cut off mid tool call
       // (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces an error instead of a silent done.
       if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-        && isVertexTruncatedTurn(candidates?.[0]?.finishReason, toolCallsStarted)) {
+        && toolCallsStarted > 0 && isVertexTruncationReason(candidates?.[0]?.finishReason)) {
         return finish([{ type: "error", message: vertexTruncationErrorMessage(candidates?.[0]?.finishReason) }]);
       }
 

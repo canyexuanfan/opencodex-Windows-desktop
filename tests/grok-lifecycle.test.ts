@@ -43,24 +43,26 @@ describe("Grok fence lifecycle wiring", () => {
 
   test("handleStop gates shared teardown on ownership but still reverts system env", () => {
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
-    const restoreFn = sliceFn(CLI_SOURCE, "async function restoreSharedClientStateAfterStop(", "async function handleStop(");
 
     expect(stopFn).toContain("isServiceOwnershipError(err)");
     expect(stopFn).toContain("ownershipBlocked = true");
-    expect(stopFn).toContain("if (!ownershipBlocked)");
-    expect(stopFn).toContain("await restoreSharedClientStateAfterStop()");
-    expect(restoreFn).toContain("restoreNativeCodexAsync()");
-    expect(restoreFn).not.toContain("revertSystemEnv()");
-    expect(restoreFn).toContain("stripGrokConfig()");
-    expect(stopFn.indexOf("revertSystemEnv()")).toBeLessThan(stopFn.indexOf("if (!ownershipBlocked)"));
+
+    const gateAt = stopFn.indexOf("if (!ownershipBlocked)");
+    const stripAt = stopFn.indexOf("stripGrokConfig()");
+    const restoreAt = stopFn.indexOf("restoreNativeCodex()");
+    const revertAt = stopFn.indexOf("revertSystemEnv()");
+
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(stripAt).toBeGreaterThan(gateAt);
+    expect(restoreAt).toBeGreaterThan(gateAt);
+    // revertSystemEnv carries its own ownership check and concerns launchctl env, not
+    // CODEX_HOME — gating it too would be over-broad.
+    expect(stopFn.slice(revertAt - 200, revertAt)).toContain("NOT gated");
   });
 
   test("a refused Grok strip makes ocx stop fail instead of reporting success", () => {
-    const restoreFn = sliceFn(CLI_SOURCE, "async function restoreSharedClientStateAfterStop(", "async function handleStop(");
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
-    expect(restoreFn).toContain("else if (!grok.ok) { restored = false;");
-    expect(restoreFn).toContain("Grok config restore failed");
-    expect(stopFn).toContain("if (!await restoreSharedClientStateAfterStop()) stopFailed = true");
+    expect(stopFn).toContain("else if (!g.ok) { stopFailed = true;");
   });
 
   test("a refused proxy stop reports WHY, not just that it failed", () => {
@@ -78,7 +80,7 @@ describe("Grok fence lifecycle wiring", () => {
     expect(stopFn.match(/if \(detail\) console\.error\(`   \$\{detail\}`\);/g)).toHaveLength(2);
   });
 
-  test("handleStop returns its outcome while both restart surfaces share the in-place lifecycle", () => {
+  test("handleStop returns its outcome so restart and the tray can react", () => {
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
     // process.exit() inside handleStop would strand runTrayProxyRestart's start() half.
     expect(stopFn).toContain("process.exitCode = 1");
@@ -86,28 +88,20 @@ describe("Grok fence lifecycle wiring", () => {
     expect(stopFn).not.toContain("process.exit(1)");
 
     const restartCase = sliceFn(CLI_SOURCE, 'case "restart"', 'case "health"');
-    expect(restartCase).toContain("await handleProxyRestart(handleRestartStartWhenStopped)");
-    const trayRestart = sliceFn(CLI_SOURCE, "async function handleTrayProxyRestart(", "async function restoreSharedClientStateAfterStop(");
-    const restartHelper = sliceFn(CLI_SOURCE, "async function handleProxyRestart(", "async function handleTrayProxyRestart(");
-    expect(trayRestart).toContain("await handleProxyRestart(() => handleTrayProxyStart(false))");
-    expect(restartHelper).toContain("requestBoundSystemRestart(previous, deadlineAt)");
+    expect(restartCase).toContain("if (await handleStop()) await handleEnsure()");
   });
 
   test("handleStop treats an incomplete native Codex restore as a stop failure", () => {
-    const restoreFn = sliceFn(CLI_SOURCE, "async function restoreSharedClientStateAfterStop(", "async function handleStop(");
     const stopFn = sliceFn(CLI_SOURCE, "async function handleStop(", "async function handleUninstall(");
-    expect(restoreFn).toContain("if (result.success) console.log");
-    expect(restoreFn).toContain("restored = false");
-    expect(restoreFn).toContain("console.error(`⚠️  ${result.message}`)");
-    expect(stopFn).toContain("if (!await restoreSharedClientStateAfterStop()) stopFailed = true");
+    expect(stopFn).toContain("if (r.success) console.log");
+    expect(stopFn).toContain("stopFailed = true");
+    expect(stopFn).toContain("console.error(`⚠️  ${r.message}`)");
   });
 
   test("the daemon's exit cleanup keeps the OCX_SERVICE exclusion and adds the ownership check", () => {
     const startFn = sliceFn(CLI_SOURCE, "const syncCleanup = () => {", "let shuttingDown = false;");
     // Crash/respawn under a service manager must still keep the fence.
-    expect(startFn).toContain('process.env.OCX_SERVICE === "1"');
-    expect(startFn).not.toContain("OCX_KEEP_ROUTING");
-    expect(startFn).toContain("!preserveRouting && serviceEnvironmentOwnedHere()");
+    expect(startFn).toContain("!process.env.OCX_SERVICE && serviceEnvironmentOwnedHere()");
   });
 
   test("signal shutdown reports and exits nonzero when native Codex restore is incomplete", () => {

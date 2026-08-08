@@ -15,37 +15,19 @@ import { CODEX_HOME, getCodexHome } from "./paths";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./quota";
 import {
   canAcquireCodexQuotaProbeLease,
-  codexQuotaScopeForModel,
   computeCodexUsageScore,
-  getCodexQuotaHealthSnapshot,
-  getEffectiveActiveCodexAccountId,
   getPoolAccountPlan,
   isCodexAccountInCooldown,
 } from "./routing";
-import {
-  isCodexAccountUsable,
-  type CodexAccountUsabilityOptions,
-} from "./account-usability";
+import { isCodexAccountUsable } from "./account-usability";
 import { isCodexAccountPaused } from "./account-pause";
 import { slugEquals } from "../providers/slug-codec";
 import { isThreadSpawnRequest } from "../server/effort-policy";
 import { PROVIDER_REGISTRY } from "../providers/registry";
-import {
-  CODEX_FORWARD_BASE_URL,
-  OPENAI_CODEX_PROVIDER_ID,
-  isCanonicalOpenAiForwardProvider,
-} from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { routeModel, type RouteResult } from "../router";
 import { sweepExpiredOnWrite } from "../lib/state-store-sweeper";
-import { codexAccountNamespaceForModel } from "./account-namespace-match";
-import {
-  getUpstreamHostHealth,
-  normalizeUpstreamHostCircuitThreshold,
-  upstreamHostHealthKey,
-} from "./upstream-host-health";
 export const DEFAULT_SUBAGENT_MODEL_FALLBACK_POLL_MS = 60_000;
-
-const CODEX_FORWARD_ORIGIN = new URL(CODEX_FORWARD_BASE_URL).origin.toLowerCase();
 
 type SubagentQuotaPrimeFn = (config: OcxConfig, reason: string) => Promise<void>;
 let subagentQuotaPrimeForTests: SubagentQuotaPrimeFn | null = null;
@@ -86,13 +68,6 @@ function isDisabledFallbackModel(model: string, config: OcxConfig): boolean {
   const slash = model.indexOf("/");
   const provider = model.slice(0, slash);
   const modelId = model.slice(slash + 1);
-  if (codexAccountNamespaceForModel(config.codexAccountNamespaces, model)) {
-    return disabled.some(stored =>
-      stored === model
-      || stored === modelId
-      || slugEquals(stored, "openai", modelId)
-    );
-  }
   return disabled.some(stored => stored === model || slugEquals(stored, provider, modelId));
 }
 
@@ -104,22 +79,13 @@ function pollIntervalMs(config: OcxConfig): number {
   return configured;
 }
 
-function fallbackChainKey(model: string, namespaces: unknown): string {
-  const selector = codexAccountNamespaceForModel(namespaces, model);
-  if (!selector) return JSON.stringify(["model", model.toLowerCase()]);
-  const slash = model.indexOf("/");
-  // Selector keys are exact-case account boundaries. Keep that segment distinct while
-  // retaining legacy case-insensitive de-duplication for the native model suffix.
-  return JSON.stringify(["account", selector, model.slice(slash + 1).toLowerCase()]);
-}
-
 function normalizedChain(primary: string, config: OcxConfig, extra: readonly string[] = []): string[] {
   const chain: string[] = [];
   const seen = new Set<string>();
   const push = (model: string | undefined) => {
     if (!model || model.trim() === "") return;
     const trimmed = model.trim();
-    const key = fallbackChainKey(trimmed, config.codexAccountNamespaces);
+    const key = trimmed.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
     chain.push(trimmed);
@@ -143,14 +109,8 @@ function quotaThreshold(config: OcxConfig): number {
   return threshold > 0 ? threshold : Number.POSITIVE_INFINITY;
 }
 
-/**
- * The account routing would actually use, not just the persisted operator
- * selection: round-robin, fill-first, failover, and priority preemption all
- * move the cursor in memory only, so reading the raw field would check quota
- * against an account this request is not going to touch.
- */
 function activeCodexAccountId(config: OcxConfig): string | null {
-  return getEffectiveActiveCodexAccountId(config) ?? null;
+  return config.activeCodexAccountId ?? null;
 }
 
 /**
@@ -167,18 +127,9 @@ function resolvePoolFallbackAccountId(
   return activeCodexAccountId(config);
 }
 
-function resolveRouteFallbackAccountId(
-  route: RouteResult | null,
-  config: OcxConfig,
-  accountId?: string | null,
-): string | null {
-  return route?.codexAccountId ?? resolvePoolFallbackAccountId(config, accountId);
-}
-
 function isRoutableFallbackModel(model: string, config: OcxConfig): boolean {
   const slash = model.indexOf("/");
   if (slash > 0) {
-    if (codexAccountNamespaceForModel(config.codexAccountNamespaces, model)) return true;
     const providerName = model.slice(0, slash);
     if (!hasOwnProvider(config.providers, providerName)) {
       // Allow well-known "vendor/model" ids (e.g. anthropic/claude-*) to flow as
@@ -199,7 +150,7 @@ export function isNativeModelQuotaExhausted(
 ): boolean {
   const route = tryRouteFallbackModel(config, model);
   if (!route || !isPoolCodexRoute(route)) return false;
-  const resolvedAccountId = resolveRouteFallbackAccountId(route, config, accountId);
+  const resolvedAccountId = resolvePoolFallbackAccountId(config, accountId);
   if (!resolvedAccountId) return false;
   const quota = getAccountQuota(resolvedAccountId);
   const usage = computeCodexUsageScore(quota, getPoolAccountPlan(config, resolvedAccountId));
@@ -216,11 +167,7 @@ export function isModelHealthBlocked(
   const route = tryRouteFallbackModel(config, model);
   const poolScoped = !!route && isPoolCodexRoute(route);
   const health = modelHealth.get(
-    healthKey(
-      model,
-      resolveRouteFallbackAccountId(route, config, accountId),
-      poolScoped,
-    ),
+    healthKey(model, resolvePoolFallbackAccountId(config, accountId), poolScoped),
   );
   return !!health && health.unavailableUntil > now;
 }
@@ -230,7 +177,6 @@ export function isSubagentModelUnavailable(
   config: OcxConfig,
   accountId?: string | null,
   now = Date.now(),
-  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): boolean {
   if (isDisabledFallbackModel(model, config)) return true;
   if (!isRoutableFallbackModel(model, config)) return true;
@@ -241,17 +187,11 @@ export function isSubagentModelUnavailable(
 
   // Pool candidates need a usable account. Derive requirement from the resolved
   // route (canonical openai defaults to pool even when codexAccountMode is omitted).
-  const resolvedAccountId = resolveRouteFallbackAccountId(route, config, accountId);
+  const resolvedAccountId = resolvePoolFallbackAccountId(config, accountId);
   if (!resolvedAccountId) return true;
   if (isCodexAccountPaused(config, resolvedAccountId)) return true;
-  if (!isCodexAccountUsable(config, resolvedAccountId, accountUsabilityOptions)) return true;
-  if (route.codexAccountId !== undefined) {
-    // An account-qualified route is pinned and cannot consume Pool's recovery-probe
-    // escape hatch. Honor both account-wide and model-scoped cooldowns so fallback
-    // advances instead of selecting a candidate that exact auth will reject.
-    const quotaScope = codexQuotaScopeForModel(route.modelId);
-    if (getCodexQuotaHealthSnapshot(resolvedAccountId, quotaScope, now) !== null) return true;
-  } else if (
+  if (!isCodexAccountUsable(config, resolvedAccountId)) return true;
+  if (
     isCodexAccountInCooldown(resolvedAccountId, now)
     && !canAcquireCodexQuotaProbeLease(resolvedAccountId, now)
   ) {
@@ -267,7 +207,6 @@ export function selectAvailableSubagentModel(
   accountId?: string | null,
   now = Date.now(),
   nativeFallbackOnly = false,
-  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): { model: string; rewritten: boolean; skipped: string[] } {
   const chain = normalizedChain(primary, config, extraFallback);
   const skipped: string[] = [];
@@ -279,7 +218,7 @@ export function selectAvailableSubagentModel(
         continue;
       }
     }
-    if (isSubagentModelUnavailable(candidate, config, accountId, now, accountUsabilityOptions)) {
+    if (isSubagentModelUnavailable(candidate, config, accountId, now)) {
       skipped.push(candidate);
       continue;
     }
@@ -301,11 +240,7 @@ export function noteSubagentModelFailure(
   const route = tryRouteFallbackModel(config, model);
   const poolScoped = !!route && isPoolCodexRoute(route);
   modelHealth.set(
-    healthKey(
-      model,
-      resolveRouteFallbackAccountId(route, config, accountId),
-      poolScoped,
-    ),
+    healthKey(model, resolvePoolFallbackAccountId(config, accountId), poolScoped),
     {
       unavailableUntil: now + interval,
       reason: "quota_exhausted",
@@ -389,16 +324,13 @@ export function readCodexAgentModel(role: string, codexHome = CODEX_HOME): strin
 export function resolveAgentModelFallbackForPrimary(
   primary: string,
   codexHome = CODEX_HOME,
-  namespaces?: unknown,
 ): string[] {
   const merged: string[] = [];
   const seen = new Set<string>();
   const push = (model: string | null | undefined) => {
     if (!model || model.trim() === "") return;
     const trimmed = model.trim();
-    // Match global-chain de-dupe: keep account-selector prefixes case-sensitive when
-    // those selectors are configured, while ordinary provider/model ids stay case-insensitive.
-    const key = fallbackChainKey(trimmed, namespaces);
+    const key = trimmed.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
     merged.push(trimmed);
@@ -411,35 +343,18 @@ export function resolveAgentModelFallbackForPrimary(
   return merged;
 }
 
-function subagentQuotaPrimeBlockedByHostCircuit(config: OcxConfig): boolean {
-  if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) === 0) return false;
-  const key = upstreamHostHealthKey(OPENAI_CODEX_PROVIDER_ID, CODEX_FORWARD_ORIGIN);
-  return getUpstreamHostHealth(key)?.cooldownUntil !== undefined;
-}
-
 /**
  * Best-effort quota refresh before subagent model selection.
  * Concurrent callers share one in-flight promise. The success TTL is updated only
  * after a successful refresh so failures remain retryable. Errors are swallowed so
- * spawn routing can continue. When the canonical ChatGPT origin is circuit-blocked,
- * cached quota is used instead of sending credential-bearing usage probes to the
- * same origin before the request's final host admission check.
+ * spawn routing can continue.
  */
-export function maybePrimeSubagentQuota(
-  config: OcxConfig,
-  now = Date.now(),
-  options: { nativeMainReadsForbidden?: boolean } = {},
-): Promise<void> {
-  if (options.nativeMainReadsForbidden) return Promise.resolve();
-  if (subagentQuotaPrimeBlockedByHostCircuit(config)) return Promise.resolve();
+export function maybePrimeSubagentQuota(config: OcxConfig, now = Date.now()): Promise<void> {
   if (quotaPrimeInFlight) return quotaPrimeInFlight;
   if (!shouldPrimeSubagentQuota(config, now)) return Promise.resolve();
 
   quotaPrimeInFlight = (async () => {
     try {
-      // Re-check after claiming single-flight ownership so a circuit opened by
-      // a concurrent request cannot race us into a fresh usage-probe pass.
-      if (subagentQuotaPrimeBlockedByHostCircuit(config)) return;
       if (subagentQuotaPrimeForTests) {
         await subagentQuotaPrimeForTests(config, "subagent-spawn");
       } else {
@@ -476,14 +391,9 @@ export function applySubagentModelFallback(
   accountId?: string | null,
   now = Date.now(),
   nativeFallbackOnly = false,
-  accountUsabilityOptions?: CodexAccountUsabilityOptions,
 ): { from?: string; to?: string; skipped?: string[] } | null {
   if (!isThreadSpawnRequest(headers)) return null;
-  const roleFallback = resolveAgentModelFallbackForPrimary(
-    parsed.modelId,
-    getCodexHome(),
-    config.codexAccountNamespaces,
-  );
+  const roleFallback = resolveAgentModelFallbackForPrimary(parsed.modelId, getCodexHome());
   const globalFallback = config.subagentModelFallback ?? [];
   if (globalFallback.length === 0 && roleFallback.length === 0) return null;
   const selection = selectAvailableSubagentModel(
@@ -493,7 +403,6 @@ export function applySubagentModelFallback(
     accountId,
     now,
     nativeFallbackOnly,
-    accountUsabilityOptions,
   );
   if (!selection.rewritten) return selection.skipped.length > 0
     ? { from: parsed.modelId, to: parsed.modelId, skipped: selection.skipped }

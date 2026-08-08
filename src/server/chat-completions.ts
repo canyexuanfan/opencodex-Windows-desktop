@@ -18,8 +18,7 @@ import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../li
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
 import { estimateTokens } from "../lib/token-estimate";
-import { NoEligiblePolicyCandidateError, routeModel } from "../router";
-import { evidenceFromBody } from "../routing/request-evidence";
+import { routeModel } from "../router";
 import { resolveWireProtocolOverride } from "./adapter-resolve";
 import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
@@ -33,7 +32,6 @@ import {
 import { responseWithDeferredRequestLog } from "./relay";
 import { handleResponses } from "./responses";
 import type { AdmissionLease } from "../lib/admission";
-import { tryClaimNativeMainProfileForTurn } from "../codex/native-main-admission";
 import {
   createTranslatorBudget,
   finalizeTranslatorBudgetResponse,
@@ -111,7 +109,7 @@ async function handleChatCompletionsWithBudget(
   let nativeRoute = false;
   let directRoute = false;
   try {
-    const route = routeModel(config, internalBody.model as string, evidenceFromBody(internalBody));
+    const route = routeModel(config, internalBody.model as string);
     // Settle the wire once so every branch below reads the adapter this model will
     // actually use, not the provider-wide default (#404).
     route.provider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, "chat");
@@ -119,7 +117,6 @@ async function handleChatCompletionsWithBudget(
     logCtx.providerAdapter = route.provider.adapter;
     logCtx.requestedModel = requestedModel;
     logCtx.provider = route.providerName;
-    logCtx.routeDecision = route.routeDecision;
     if (route.provider.adapter === "openai-responses") {
       nativeRoute = true;
       directRoute = route.codexAccountMode === "direct";
@@ -133,6 +130,10 @@ async function handleChatCompletionsWithBudget(
     } else if (internalBody.store === undefined) {
       internalBody.store = false;
     }
+    if (route.provider.adapter === "openai-chat" && internalBody.text !== undefined) {
+      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 400, { closeReason: "non_stream" });
+      return chatCompletionsErrorResponse(400, "response_format is not supported for routed openai-chat models");
+    }
     if (route.provider.adapter === "cursor" || route.provider.adapter === "kiro") {
       const raw = chatBody as Rec;
       const parts: string[] = [];
@@ -145,12 +146,7 @@ async function handleChatCompletionsWithBudget(
       const ladder = supportedLadderFor({ provider: route.provider, modelId: route.modelId });
       if (ladder !== undefined && ladder.length === 0) delete internalBody.reasoning;
     }
-  } catch (err) {
-    if (err instanceof NoEligiblePolicyCandidateError) {
-      logCtx.routeDecision = err.trace;
-      if (logIds) addFinalRequestLog(logIds.requestId, logIds.start, logCtx, 404, { closeReason: "non_stream" });
-      return chatCompletionsErrorResponse(404, err.message, "invalid_request_error");
-    }
+  } catch {
     /* unknown model: let handleResponses shape the 404 */
   }
   void nativeRoute;
@@ -162,22 +158,15 @@ async function handleChatCompletionsWithBudget(
     if (value) headers.set(name, value);
   }
   // Prefer main ChatGPT auth so OpenAI-backed sidecars remain reachable on routed turns.
-  if (!directRoute) {
-    // This enrichment is optional for routed/non-main providers. If native main
-    // is fenced, omit it and let auth-context reject only a final physical-main
-    // selection while healthy pool/provider routes continue.
-    if (tryClaimNativeMainProfileForTurn(logIds?.turnAdmissionLease)) {
-      try {
-        const { getMainAccountToken } = await import("../codex/main-account");
-        const token = getMainAccountToken();
-        if (token) {
-          headers.set("authorization", `Bearer ${token.accessToken}`);
-          headers.set("chatgpt-account-id", token.chatgptAccountId);
-        }
-      } catch {
-        /* optional */
-      }
+  if (!directRoute) try {
+    const { getMainAccountToken } = await import("../codex/main-account");
+    const token = getMainAccountToken();
+    if (token) {
+      headers.set("authorization", `Bearer ${token.accessToken}`);
+      headers.set("chatgpt-account-id", token.chatgptAccountId);
     }
+  } catch {
+    /* optional */
   }
 
   const internalBodyJson = JSON.stringify(internalBody);
@@ -327,7 +316,7 @@ async function handleChatCompletionsWithBudget(
     const classified = classifyError(502, error?.type ?? "server_error", message);
     if (error?.code === "translation_buffer_limit") {
       classified.code = "translation_buffer_limit";
-      classified.type = "upstream_error";
+      classified.type = "invalid_request_error";
     } else if (isCyberPolicyCode(error?.code)) {
       classified.code = CYBER_POLICY_ERROR_CODE;
       classified.type = "invalid_request_error";
@@ -338,7 +327,7 @@ async function handleChatCompletionsWithBudget(
     }
     return chatCompletionsErrorResponse(
       classified.code === "translation_buffer_limit"
-        ? 502
+        ? 413
         : isCyberPolicyCode(classified.code) ? 400 : 502,
       message,
       classified.type,

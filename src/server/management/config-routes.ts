@@ -74,7 +74,7 @@ import type { ManagementContext } from "./context";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 
 export async function handleConfigRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, syncClaudeAgentDefsBestEffort } = ctx;
+  const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
   if (url.pathname === "/api/config" && req.method === "GET") {
     return jsonResponse(safeConfigDTO(config));
   }
@@ -261,16 +261,11 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sync" && req.method === "POST") {
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
-    const { readRuntimePort, loadConfig } = await import("../../config");
-    // Never use the server-captured startup object for a durable integration
-    // decision. A toggle may have persisted while this process was gathering.
-    const runtime = readRuntimePort(process.pid);
-    const result = await syncModelsToCodex(runtime?.port, loadConfig(), null);
-    const status = result.status === "refused" ? 409 : (result.status === "skipped" || result.ok ? 200 : 500);
+    const result = await syncModelsToCodex(undefined, config, null);
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),
-    }, status);
+    }, result.ok ? 200 : 500);
   }
 
   if (url.pathname === "/api/update/check" && req.method === "GET") {

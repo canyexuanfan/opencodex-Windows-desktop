@@ -15,10 +15,8 @@
 import { formatErrorResponse } from "../bridge";
 import {
   CodexAccountCooldownError,
-  codexMainProfileDrainingResponse,
   cooldownErrorResponse,
   CodexAuthContextError,
-  CodexMainProfileDrainingError,
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
 } from "../codex/auth-context";
@@ -37,8 +35,6 @@ import { safeAntigravityHttpErrorMessage } from "../adapters/google-errors";
 import { sanitizeUpstreamErrorText } from "../adapters/upstream-http-error";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { decodeValidatedImageBase64, MAX_ENCODED_BYTES_PER_IMAGE } from "../images/artifacts";
-import type { AdmissionLease } from "../lib/admission";
-import { codexAccountSelectionForTurn } from "./lifecycle";
 
 export type ImagesEndpoint = "generations" | "edits";
 
@@ -327,7 +323,6 @@ export async function handleImages(
   config: OcxConfig,
   endpoint: ImagesEndpoint,
   logCtx: RequestLogContext,
-  turnAdmissionLease?: AdmissionLease,
 ): Promise<Response> {
   const candidates = selectImagesProvider(config);
   if (candidates.error) {
@@ -380,15 +375,11 @@ export async function handleImages(
   let forwardAuthError: Response | undefined;
   if (canUseOpenAiForward) {
     try {
-      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config, {
-        beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
-      });
+      forward = await resolveFirstUsableOpenAiSidecar(candidates.forwardCandidates, req.headers, config);
       if (forward) logCtx.provider = formatCodexProviderForLog(forward.providerName, codexLogAccountId(forward.authContext), config);
     } catch (err) {
       if (err instanceof CodexAccountCooldownError) {
         forwardAuthError = cooldownErrorResponse(err);
-      } else if (err instanceof CodexMainProfileDrainingError) {
-        forwardAuthError = codexMainProfileDrainingResponse();
       } else if (err instanceof CodexThreadAffinityExpiredError) {
         forwardAuthError = formatErrorResponse(409, "invalid_request_error", "Codex thread account affinity expired; start a new session");
       } else if (err instanceof CodexAuthContextError) {

@@ -4,9 +4,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandUserPath, getConfigDir } from "../config";
-import { durableBunRuntime } from "../lib/bun-runtime";
-import type { BunRuntimeSource } from "../lib/bun-runtime";
-import { forgetEphemeralSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
+import { durableBunPath } from "../lib/bun-runtime";
+import { forgetHardenedSecretPath, hardenSecretDir, hardenSecretPath } from "../lib/windows-secret-acl";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -21,8 +20,6 @@ const TRAY_ICON_FILES = [
 
 export interface WindowsTrayEntry {
   bun: string;
-  /** Provenance of `bun`, resolved together with it. */
-  bunRuntimeSource: BunRuntimeSource;
   cli: string;
   script: string;
   codexHome: string;
@@ -84,10 +81,8 @@ function currentCodexHome(): string {
 }
 
 function currentEntry(): WindowsTrayEntry {
-  const runtime = durableBunRuntime();
   return {
-    bun: runtime.path,
-    bunRuntimeSource: runtime.source,
+    bun: durableBunPath(),
     cli: join(import.meta.dir, "..", "cli", "index.ts"),
     script: installedTrayScriptPath(),
     codexHome: currentCodexHome(),
@@ -141,7 +136,6 @@ export function windowsTrayProcessArgs(entry: WindowsTrayEntry, mode: "Run" | "S
     "-WindowStyle", "Hidden",
     "-File", safePath(entry.script),
     "-BunPath", safePath(entry.bun),
-    "-BunRuntimeSource", entry.bunRuntimeSource,
     "-CliPath", safePath(entry.cli),
     "-CodexHome", safePath(entry.codexHome),
     "-OpenCodexHome", safePath(entry.opencodexHome),
@@ -176,7 +170,6 @@ export function buildWindowsTrayPowerShellCommand(entry: WindowsTrayEntry, power
     "-WindowStyle", "Hidden",
     "-File", quoteRunValue(entry.script),
     "-BunPath", quoteRunValue(entry.bun),
-    "-BunRuntimeSource", entry.bunRuntimeSource,
     "-CliPath", quoteRunValue(entry.cli),
     "-CodexHome", quoteRunValue(entry.codexHome),
     "-OpenCodexHome", quoteRunValue(entry.opencodexHome),
@@ -240,8 +233,7 @@ export function replaceWindowsTrayOwnedFile(
     harden: target => {
       try { chmodSync(target, 0o600); } catch { /* best-effort */ }
       if (process.platform !== "win32") return;
-      // Destination-keyed timeout memo: retries share one memo per final path.
-      const hardened = hardenSecretPath(target, { required: true, timeoutMemoKey: path });
+      const hardened = hardenSecretPath(target, { required: true });
       if (!hardened.ok) throw new Error("Windows tray ACL hardening did not complete; refusing to persist executable state.");
     },
     rename: renameSync,
@@ -255,14 +247,14 @@ export function replaceWindowsTrayOwnedFile(
     io.harden(temporary);
     io.rename(temporary, path);
     renamed = true;
-    forgetEphemeralSecretPath(temporary);
+    forgetHardenedSecretPath(temporary);
   } finally {
     if (!renamed) {
       try {
         io.unlink(temporary);
-        forgetEphemeralSecretPath(temporary);
+        forgetHardenedSecretPath(temporary);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetEphemeralSecretPath(temporary);
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") forgetHardenedSecretPath(temporary);
       }
     }
   }

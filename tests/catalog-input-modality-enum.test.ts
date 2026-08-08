@@ -87,12 +87,7 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
       deps: {
         saveConfigPreservingClaudeCode: () => { persistCalls++; },
       } as Parameters<typeof handleModelRoutes>[0]["deps"],
-      convergeCodexCatalog: async () => ({
-        status: "committed",
-        changed: false,
-        degraded: false,
-        notices: [],
-      }),
+      refreshCodexCatalogBestEffort: async () => {},
       syncClaudeAgentDefsBestEffort: async () => {},
     });
   }

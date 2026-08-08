@@ -40,7 +40,6 @@ import { loadServiceTokenFromFile, serviceApiTokenFilePath } from "../lib/servic
 import { providerCodexAccountMode } from "../providers/registry";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
-import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
 
 /**
  * The provider-block serializer, its constants, and the config-path helpers now live in
@@ -498,7 +497,7 @@ async function ensureProxyForOpencode(config: OcxConfig): Promise<LiveProxy | nu
     detached: true,
     stdio: "ignore",
     windowsHide: true,
-    env: withProcessRuntimeProvenance(opencodeProxyStartEnv(process.env) as NodeJS.ProcessEnv),
+    env: opencodeProxyStartEnv(process.env) as NodeJS.ProcessEnv,
   });
   // Without a listener an 'error' (bad argv[1], EMFILE, AV denial) throws synchronously
   // and kills this process; the health poll below already reports the failure properly.

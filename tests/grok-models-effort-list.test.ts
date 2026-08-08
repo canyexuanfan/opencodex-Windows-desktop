@@ -43,13 +43,7 @@ afterEach(() => {
 
 describe("raw /v1/models list reasoning-effort advertisement (Grok Build discovery)", () => {
   test("routed models with configured tiers advertise the Grok reasoning catalog shape", async () => {
-    const config = effortConfig();
-    config.providers.openai = {
-      adapter: "openai-responses",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      liveModels: false,
-    };
-    saveConfig(config);
+    saveConfig(effortConfig());
     const server = startServer(0);
     try {
       const res = await fetch(new URL("/v1/models", server.url));

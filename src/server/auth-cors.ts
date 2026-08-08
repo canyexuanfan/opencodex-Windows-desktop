@@ -4,22 +4,18 @@ import {
   apiKeyTransportConfigError,
   booleanRecordConfigError,
   modelAdapterRecordConfigError,
-  modelPreferHostedToolsConfigError,
   codexAutoStartEnabled,
   positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
   providerBaseUrlConfigError,
   providerHeadersConfigError,
   reasoningSummaryDeliveryRecordConfigError,
-  retryOn429PolicyConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
-import { redactSecretString } from "../lib/redact";
-import { effectiveGoogleMode, getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
+import { getProviderRegistryEntry, providerCodexAccountMode, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
-import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
 
 let _corsOrigin = "http://localhost:10100";
 export function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
@@ -73,7 +69,7 @@ export function isSameOriginAsRequest(req: Request, origin: string): boolean {
   }
 }
 
-export function isAllowedRequestOrigin(req: Request, config: RequestPolicyView): boolean {
+export function isAllowedRequestOrigin(req: Request, config: OcxConfig): boolean {
   const origin = req.headers.get("Origin");
   if (!isApiAuthRequired(config)) {
     if (!isLoopbackRequestHost(req.headers.get("Host"))) return false;
@@ -82,28 +78,15 @@ export function isAllowedRequestOrigin(req: Request, config: RequestPolicyView):
   return !origin || isLoopbackOriginValue(origin) || isSameOriginAsRequest(req, origin) || isExtraAllowedOrigin(origin, config);
 }
 
-function isExtraAllowedOrigin(origin: string, cfg: RequestPolicyView): boolean {
+function isExtraAllowedOrigin(origin: string, cfg: OcxConfig): boolean {
   if (!cfg.corsAllowOrigins?.length) return false;
-  const parsedOrigin = comparableOrigin(origin);
   return cfg.corsAllowOrigins.some(allowed => {
-    const parsedAllowed = comparableOrigin(allowed);
-    return parsedOrigin !== null && parsedAllowed !== null
-      ? parsedAllowed === parsedOrigin
-      : allowed === origin;
+    try {
+      return new URL(allowed).origin === new URL(origin).origin;
+    } catch {
+      return allowed === origin;
+    }
   });
-}
-
-function comparableOrigin(value: string): string | null {
-  try {
-    const parsed = new URL(value);
-    if (parsed.origin !== "null") return parsed.origin;
-    // WHATWG URL exposes authority-based custom schemes (for example browser
-    // extensions) as opaque `null` origins. Compare their scheme + authority so
-    // one allowlisted extension cannot admit every other opaque origin.
-    return parsed.host ? `${parsed.protocol}//${parsed.host}` : null;
-  } catch {
-    return null;
-  }
 }
 
 export function managementRequestOrigin(req: Request, config: OcxConfig): string | null {
@@ -136,7 +119,7 @@ export function browserSecurityHeaders(): Record<string, string> {
   };
 }
 
-export function corsHeaders(req?: Request, config?: RequestPolicyView): Record<string, string> {
+export function corsHeaders(req?: Request, config?: OcxConfig): Record<string, string> {
   const origin = req?.headers.get("Origin");
   const allowOrigin = origin && req && config && isAllowedRequestOrigin(req, config) ? origin : _corsOrigin;
   return {
@@ -160,7 +143,7 @@ export function managementCorsHeaders(req?: Request, config?: OcxConfig): Record
   return headers;
 }
 
-export function withCors(response: Response, req: Request, config: RequestPolicyView): Response {
+export function withCors(response: Response, req: Request, config: OcxConfig): Response {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(corsHeaders(req, config))) {
     headers.set(name, value);
@@ -184,18 +167,14 @@ export function withManagementCors(response: Response, req: Request, config: Ocx
   });
 }
 
-export function jsonResponse(data: unknown, status = 200, req?: Request, config?: RequestPolicyView): Response {
+export function jsonResponse(data: unknown, status = 200, req?: Request, config?: OcxConfig): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: { "Content-Type": "application/json", ...corsHeaders(req, config) },
   });
 }
 
-// The parameter is vestigial — the token has always come from the environment — but callers
-// pass a config, so keep accepting one. Typed as `unknown` rather than `OcxConfig` so a narrow
-// policy view can reach it too (#1102); widening to OcxConfig here would force every caller in
-// the admission path back to the full config.
-export function configuredApiAuthToken(_config?: unknown): string | undefined {
+export function configuredApiAuthToken(_config: OcxConfig): string | undefined {
   const token = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
   return token || undefined;
 }
@@ -212,35 +191,8 @@ export function isLoopbackHostname(hostname: string | undefined): boolean {
   return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
-export function isApiAuthRequired(config: Pick<OcxConfig, "hostname">): boolean {
+export function isApiAuthRequired(config: OcxConfig): boolean {
   return !isLoopbackHostname(config.hostname);
-}
-
-/**
- * The slice of config that decides admission and CORS, and nothing else (#1102).
- *
- * The unauthenticated loopback listener shares this process with the public one: same routing,
- * same account pool, same drain. The only thing it must see differently is its own bind
- * address, because `isApiAuthRequired` reads `hostname` and the shared config says "0.0.0.0".
- *
- * Two ways to express that were rejected. Passing the whole config with `hostname` rewritten
- * and holding it for the listener's lifetime would go stale the moment the management API
- * changes a setting. Adding an `allowUnauthenticated` parameter to the resolvers would create a
- * callable admission bypass that the PUBLIC listener could also reach — the switch would exist
- * on the wrong side of the boundary.
- *
- * So this type is deliberately narrow: it cannot masquerade as a business config, and a policy
- * view that leaks into a routing path fails to typecheck rather than silently taking effect.
- */
-export type RequestPolicyView = Pick<OcxConfig, "hostname" | "corsAllowOrigins" | "apiKeys">;
-
-/** Derive the per-request policy view for a listener. Cheap enough to build per request. */
-export function requestPolicyView(config: OcxConfig, bindHostname: string): RequestPolicyView {
-  return {
-    hostname: bindHostname,
-    ...(config.corsAllowOrigins ? { corsAllowOrigins: config.corsAllowOrigins } : {}),
-    ...(config.apiKeys ? { apiKeys: config.apiKeys } : {}),
-  };
 }
 
 export function assertServerAuthConfig(config: OcxConfig): void {
@@ -284,7 +236,7 @@ export type DataPlaneAdmission =
  * discarded, which is what makes per-key attribution possible without touching
  * the admission decision itself.
  */
-export function resolveDataPlaneAdmissionSecret(token: string, config: Pick<OcxConfig, "apiKeys">): DataPlaneAdmission | null {
+export function resolveDataPlaneAdmissionSecret(token: string, config: OcxConfig): DataPlaneAdmission | null {
   const actual = token.trim();
   if (!actual) return null;
   if (secretEquals(actual, configuredApiAuthToken(config))) return { kind: "environment" };
@@ -372,7 +324,7 @@ export function validateForwardAdmissionCredential(headers: Headers, config: Ocx
  * Resolving form of `hasValidApiAuth`: identical header precedence, identical
  * decision, but it names the admission instead of collapsing it to a boolean.
  */
-export function resolveApiAuth(req: Request, config: RequestPolicyView): DataPlaneAdmission | null {
+export function resolveApiAuth(req: Request, config: OcxConfig): DataPlaneAdmission | null {
   // A loopback bind never reads a token at all, so there is no key to name.
   if (!isApiAuthRequired(config)) return { kind: "loopback" };
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
@@ -383,11 +335,11 @@ export function resolveApiAuth(req: Request, config: RequestPolicyView): DataPla
   return resolveDataPlaneAdmissionSecret(actual, config);
 }
 
-export function hasValidApiAuth(req: Request, config: RequestPolicyView): boolean {
+export function hasValidApiAuth(req: Request, config: OcxConfig): boolean {
   return resolveApiAuth(req, config) !== null;
 }
 
-export function requireApiAuth(req: Request, config: RequestPolicyView, _kind: "data-plane"): Response | null {
+export function requireApiAuth(req: Request, config: OcxConfig, _kind: "data-plane"): Response | null {
   if (hasValidApiAuth(req, config)) return null;
   return formatErrorResponse(401, "authentication_error", "opencodex API key required");
 }
@@ -397,7 +349,7 @@ export function requireApiAuth(req: Request, config: RequestPolicyView, _kind: "
  * Codex Direct. Remote binds must use the dedicated proxy header so the two bearer
  * domains can never be confused.
  */
-export function resolveResponsesApiAuth(req: Request, config: RequestPolicyView): DataPlaneAdmission | null {
+export function resolveResponsesApiAuth(req: Request, config: OcxConfig): DataPlaneAdmission | null {
   if (!isApiAuthRequired(config)) return { kind: "loopback" };
   // Dedicated header ONLY. `Authorization` on these transports may belong to
   // Codex Direct passthrough, and the two bearer domains must stay unconfusable.
@@ -406,7 +358,7 @@ export function resolveResponsesApiAuth(req: Request, config: RequestPolicyView)
   return resolveDataPlaneAdmissionSecret(actual, config);
 }
 
-export function requireResponsesApiAuth(req: Request, config: RequestPolicyView): Response | null {
+export function requireResponsesApiAuth(req: Request, config: OcxConfig): Response | null {
   if (resolveResponsesApiAuth(req, config)) return null;
   return formatErrorResponse(401, "authentication_error", "opencodex API key required");
 }
@@ -423,11 +375,6 @@ function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: Oc
   return actualKeys.every(key => JSON.stringify(actual[key]) === JSON.stringify((expected as unknown as Record<string, unknown>)[key]));
 }
 
-/**
- * Validate a provider object arriving at the management write boundary. Returns an error
- * string, or null when the provider may be persisted. Caller-controlled names/fields are
- * redacted and JSON-escaped so secrets never reach the response.
- */
 export function providerManagementConfigError(name: unknown, provider: unknown): string | null {
   if (typeof name !== "string" || !provider || typeof provider !== "object" || Array.isArray(provider)) {
     return "provider must be a plain object";
@@ -445,9 +392,7 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
       return "provider openai codexAccountMode must be pool or direct";
     }
     if (seed) seed.codexAccountMode = raw.codexAccountMode;
-    const canonicalCandidate = { ...raw };
-    delete canonicalCandidate.responsesSnapshotRepair;
-    const canonical = seed && sameCanonicalProviderSeed(canonicalCandidate, seed);
+    const canonical = seed && sameCanonicalProviderSeed(raw, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;
     }
@@ -457,20 +402,10 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   const typed = provider as unknown as OcxProviderConfig;
   const baseUrlError = providerBaseUrlConfigError(typed.baseUrl);
   if (baseUrlError) return `provider ${name} ${baseUrlError}`;
-  if (effectiveGoogleMode(name, typed) === "vertex" && typed.location !== undefined) {
-    const locationError = googleVertexLocationConfigError(typed.location);
-    if (locationError) return `provider ${name} ${locationError}`;
-  }
   const destinationError = providerDestinationConfigError(name, typed);
   if (destinationError) return `provider ${name} ${destinationError}`;
   const headersError = providerHeadersConfigError(typed.headers);
   if (headersError) return `provider ${name} ${headersError}`;
-  const retryOn429Error = retryOn429PolicyConfigError(raw.retryOn429);
-  if (retryOn429Error) {
-    // The provider name is caller-controlled and can be token-shaped; redact and JSON-escape
-    // it before it reaches the management API response.
-    return `provider ${JSON.stringify(redactSecretString(name))} ${retryOn429Error}`;
-  }
   const apiKeyTransportError = apiKeyTransportConfigError(typed);
   if (apiKeyTransportError) return `provider ${name} ${apiKeyTransportError}`;
   const maxInputError = positiveIntegerRecordConfigError(raw.modelMaxInputTokens, "modelMaxInputTokens");
@@ -484,16 +419,6 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (reasoningSummaryDeliveryError) return `provider ${name} ${reasoningSummaryDeliveryError}`;
   const modelAdaptersError = modelAdapterRecordConfigError(raw.modelAdapters, "modelAdapters", name, typed);
   if (modelAdaptersError) return `provider ${name} ${modelAdaptersError}`;
-  const preferHostedToolsError = modelPreferHostedToolsConfigError(
-    raw.modelPreferHostedTools,
-    "modelPreferHostedTools",
-    name,
-    typed,
-  );
-  if (preferHostedToolsError) return `provider ${name} ${preferHostedToolsError}`;
-  if (raw.responsesSnapshotRepair !== undefined && typeof raw.responsesSnapshotRepair !== "boolean") {
-    return `provider ${name} responsesSnapshotRepair must be a boolean`;
-  }
   const defaultMaxOutputError = positiveIntegerConfigError(raw.defaultMaxOutputTokens, "defaultMaxOutputTokens");
   if (defaultMaxOutputError) return `provider ${name} ${defaultMaxOutputError}`;
   const maxOutputError = positiveIntegerRecordConfigError(raw.modelMaxOutputTokens, "modelMaxOutputTokens");
@@ -571,7 +496,6 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "modelOpenRouterRouting",
       "reasoningEfforts",
       "modelReasoningEfforts",
-      "reasoningWireFormat",
       "noVisionModels",
       "noReasoningModels",
       "noTemperatureModels",

@@ -17,7 +17,6 @@ import {
   getMaxConcurrentThreads,
   getSubagentDeveloperInstructions,
   hasAgentsMaxThreads,
-  isDefaultModeRequestUserInputEnabled,
   isMultiAgentV2Enabled,
   isTranslatableV1ChildLimit,
   isTranslatableV2TotalLimit,
@@ -31,7 +30,6 @@ import {
 } from "../src/codex/features";
 import { cmdV2, codexFeaturesInvocation, v2StatusLine, multiAgentModeLine } from "../src/cli/v2";
 import { handleManagementAPI } from "../src/server/management-api";
-import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 function template(): Record<string, unknown> {
   return {
@@ -123,15 +121,6 @@ describe("features.ts config reader", () => {
 
   test("table detection stops at the next header (no bleed into later tables)", () => {
     expect(isMultiAgentV2Enabled(fixtureConfig("[features.multi_agent_v2]\n[notice]\nenabled = true\n"))).toBe(false);
-  });
-
-  test("default_mode_request_user_input: boolean under [features]", () => {
-    expect(isDefaultModeRequestUserInputEnabled(fixtureConfig("[features]\ndefault_mode_request_user_input = true\n"))).toBe(true);
-    expect(isDefaultModeRequestUserInputEnabled(fixtureConfig("[features]\ndefault_mode_request_user_input = false\n"))).toBe(false);
-    expect(isDefaultModeRequestUserInputEnabled(fixtureConfig("[features]\nfast_mode = true\n"))).toBe(false);
-    expect(isDefaultModeRequestUserInputEnabled(fixtureConfig("model = \"gpt-5.5\"\n"))).toBe(false);
-    expect(isDefaultModeRequestUserInputEnabled(fixtureConfig("[features.multi_agent_v2]\nenabled = true\n"))).toBe(false);
-    expect(isDefaultModeRequestUserInputEnabled("/nonexistent/config.toml")).toBe(false);
   });
 
   test("hasAgentsMaxThreads detects the boot-conflict key", () => {
@@ -647,7 +636,7 @@ describe("management API logical v1/v2 switching", () => {
       const content = readFileSync(path, "utf8");
       writeFileSync(path, content.replace(/^enabled\s*=\s*(?:true|false)$/m, `enabled = ${enabled}`));
     };
-    const deps = { toggleCodexMultiAgentV2: toggle, createManagementConvergeCodex: catalogConvergenceFactory() };
+    const deps = { toggleCodexMultiAgentV2: toggle, refreshCodexCatalog: async () => {} };
     try {
       const toV2 = new Request("http://localhost/api/v2", {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ multiAgentMode: "v2" }),
@@ -712,7 +701,7 @@ describe("management API logical v1/v2 switching", () => {
         body: JSON.stringify({ multiAgentMode: "v2", enabled: false }),
       });
       const response = await handleManagementAPI(req, new URL(req.url), { providers: [] } as never, {
-        toggleCodexMultiAgentV2: () => { toggles++; }, createManagementConvergeCodex: catalogConvergenceFactory(),
+        toggleCodexMultiAgentV2: () => { toggles++; }, refreshCodexCatalog: async () => {},
       });
       expect(response?.status).toBe(400);
       expect(toggles).toBe(0);
@@ -723,7 +712,7 @@ describe("management API logical v1/v2 switching", () => {
         body: JSON.stringify({ multiAgentMode: "v1", enabled: true }),
       });
       expect((await handleManagementAPI(opposite, new URL(opposite.url), { providers: [] } as never, {
-        toggleCodexMultiAgentV2: () => { toggles++; }, createManagementConvergeCodex: catalogConvergenceFactory(),
+        toggleCodexMultiAgentV2: () => { toggles++; }, refreshCodexCatalog: async () => {},
       }))?.status).toBe(400);
       expect(toggles).toBe(0);
     } finally {
@@ -733,10 +722,7 @@ describe("management API logical v1/v2 switching", () => {
 });
 
 describe("management API parity surface for the WP2 keys", () => {
-  const withConfig = (content: string, run: (path: string, deps: {
-    toggleCodexMultiAgentV2: (enabled: boolean) => void;
-    createManagementConvergeCodex: ReturnType<typeof catalogConvergenceFactory>;
-  }) => Promise<void>) => {
+  const withConfig = (content: string, run: (path: string, deps: { toggleCodexMultiAgentV2: (enabled: boolean) => void; refreshCodexCatalog: () => Promise<void> }) => Promise<void>) => {
     const path = fixtureConfig(content);
     const oldCodexHome = process.env.CODEX_HOME;
     const oldOcxHome = process.env.OPENCODEX_HOME;
@@ -746,7 +732,7 @@ describe("management API parity surface for the WP2 keys", () => {
       const current = readFileSync(path, "utf8");
       writeFileSync(path, current.replace(/^enabled\s*=\s*(?:true|false)$/m, `enabled = ${enabled}`));
     };
-    return run(path, { toggleCodexMultiAgentV2: toggle, createManagementConvergeCodex: catalogConvergenceFactory() })
+    return run(path, { toggleCodexMultiAgentV2: toggle, refreshCodexCatalog: async () => {} })
       .finally(() => {
         if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
         if (oldOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldOcxHome;
@@ -836,147 +822,6 @@ describe("management API parity surface for the WP2 keys", () => {
   });
 });
 
-describe("management API default_mode_request_user_input toggle", () => {
-  function requestUserInputEnv<T>(run: () => Promise<T>): Promise<T> {
-    const oldCodexHome = process.env.CODEX_HOME;
-    const path = fixtureConfig("");
-    process.env.CODEX_HOME = dirname(path);
-    return run().finally(() => {
-      if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
-    });
-  }
-
-  function putRequest(enabled: unknown): Request {
-    return new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input", {
-      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled }),
-    });
-  }
-
-  test("GET reports the flag from config.toml", async () => {
-    await requestUserInputEnv(async () => {
-      const response = await handleManagementAPI(
-        new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        { providers: [] } as never,
-        { createManagementConvergeCodex: catalogConvergenceFactory() },
-      );
-      expect(response?.status).toBe(200);
-      expect(await response?.json()).toEqual({ enabled: false, key: "default_mode_request_user_input" });
-    });
-  });
-
-  test("PUT round-trips through the injected toggle and persists config.toml", async () => {
-    await requestUserInputEnv(async () => {
-      const path = join(process.env.CODEX_HOME!, "config.toml");
-      const toggle = (enabled: boolean) => {
-        const content = readFileSync(path, "utf8");
-        const line = `default_mode_request_user_input = ${enabled}`;
-        const next = /default_mode_request_user_input = (?:true|false)/.test(content)
-          ? content.replace(/default_mode_request_user_input = (?:true|false)/, line)
-          : `${content}\n[features]\n${line}\n`;
-        writeFileSync(path, next);
-      };
-      const deps = { toggleDefaultModeRequestUserInput: toggle, createManagementConvergeCodex: catalogConvergenceFactory() };
-      const url = new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input");
-
-      const on = await handleManagementAPI(putRequest(true), url, { providers: [] } as never, deps);
-      expect(on?.status).toBe(200);
-      expect(await on?.json()).toMatchObject({ ok: true, enabled: true, changed: true });
-      expect(readFileSync(path, "utf8")).toContain("[features]\ndefault_mode_request_user_input = true");
-
-      const off = await handleManagementAPI(putRequest(false), url, { providers: [] } as never, deps);
-      expect(off?.status).toBe(200);
-      expect(await off?.json()).toMatchObject({ ok: true, enabled: false, changed: true });
-      expect(readFileSync(path, "utf8")).toContain("default_mode_request_user_input = false");
-    });
-  });
-
-  test("PUT rejects non-boolean bodies before any toggle runs", async () => {
-    await requestUserInputEnv(async () => {
-      let toggles = 0;
-      const response = await handleManagementAPI(
-        putRequest("yes"),
-        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        { providers: [] } as never,
-        { toggleDefaultModeRequestUserInput: () => { toggles++; }, createManagementConvergeCodex: catalogConvergenceFactory() },
-      );
-      expect(response?.status).toBe(400);
-      expect(toggles).toBe(0);
-    });
-  });
-
-  test("PUT rejects null, array, and non-object bodies with 400", async () => {
-    await requestUserInputEnv(async () => {
-      const url = new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input");
-      for (const rawBody of ["null", "[]", "\"yes\"", "42"]) {
-        const response = await handleManagementAPI(
-          new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input", {
-            method: "PUT", headers: { "content-type": "application/json" }, body: rawBody,
-          }),
-          url,
-          { providers: [] } as never,
-          { toggleDefaultModeRequestUserInput: () => { throw new Error("must not toggle"); }, createManagementConvergeCodex: catalogConvergenceFactory() },
-        );
-        expect(response?.status).toBe(400);
-      }
-    });
-  });
-
-  test("PUT rejects an oversized chunked body with 413", async () => {
-    await requestUserInputEnv(async () => {
-      const payload = JSON.stringify({ enabled: true, pad: "x".repeat(5 * 1024 * 1024) });
-      const encoder = new TextEncoder();
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode(payload));
-          controller.close();
-        },
-      });
-      const response = await handleManagementAPI(
-        new Request("http://localhost/api/codex-auth/features/default-mode-request-user-input", {
-          method: "PUT", headers: { "content-type": "application/json" }, body: stream,
-        }),
-        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        { providers: [] } as never,
-        { toggleDefaultModeRequestUserInput: () => { throw new Error("must not toggle"); }, createManagementConvergeCodex: catalogConvergenceFactory() },
-      );
-      expect(response?.status).toBe(413);
-    });
-  });
-
-  test("PUT surfaces the CLI diagnostic in the 502 when the toggle throws", async () => {
-    await requestUserInputEnv(async () => {
-      const toggle = () => {
-        throw Object.assign(new Error("Command failed: codex features enable"), {
-          stderr: Buffer.from("unknown feature flag: default_mode_request_user_input"),
-        });
-      };
-      const response = await handleManagementAPI(
-        putRequest(true),
-        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        { providers: [] } as never,
-        { toggleDefaultModeRequestUserInput: toggle, createManagementConvergeCodex: catalogConvergenceFactory() },
-      );
-      expect(response?.status).toBe(502);
-      const body = await response?.json();
-      expect(body.error).toContain("unknown feature flag: default_mode_request_user_input");
-    });
-  });
-
-  test("PUT fails with 502 when the toggle does not land (unknown flag / old Codex)", async () => {
-    await requestUserInputEnv(async () => {
-      const response = await handleManagementAPI(
-        putRequest(true),
-        new URL("http://localhost/api/codex-auth/features/default-mode-request-user-input"),
-        { providers: [] } as never,
-        { toggleDefaultModeRequestUserInput: () => {}, createManagementConvergeCodex: catalogConvergenceFactory() },
-      );
-      expect(response?.status).toBe(502);
-      expect(await response?.json()).toMatchObject({ error: expect.stringContaining("default_mode_request_user_input toggle failed") });
-    });
-  });
-});
-
 describe("cli surface", () => {
   test("status lines describe the multi-agent surface", () => {
     expect(v2StatusLine(true)).toContain("ON");
@@ -1018,20 +863,14 @@ describe("cli surface", () => {
 
   test("codexFeaturesInvocation: POSIX passthrough; win32 .cmd routed through cmd.exe (devlog 260715 020)", () => {
     const execFileSync = () => "codex-cli 0.145.0";
-    expect(codexFeaturesInvocation("enable", "multi_agent_v2", "darwin", {
+    expect(codexFeaturesInvocation("enable", "darwin", {
       env: { PATH: "" },
       configDir: mkdtempSync(join(tmpdir(), "ocx-v2-inv-posix-")),
       existsSync: () => false,
       execFileSync,
     })).toEqual({ file: "codex", args: ["features", "enable", "multi_agent_v2"], options: {} });
-    expect(codexFeaturesInvocation("enable", "default_mode_request_user_input", "darwin", {
-      env: { PATH: "" },
-      configDir: mkdtempSync(join(tmpdir(), "ocx-v2-inv-posix-")),
-      existsSync: () => false,
-      execFileSync,
-    })).toEqual({ file: "codex", args: ["features", "enable", "default_mode_request_user_input"], options: {} });
     // Explicit CODEX_CLI_PATH pointing at a .cmd (npm-only Windows Codex install).
-    const inv = codexFeaturesInvocation("disable", "multi_agent_v2", "win32", {
+    const inv = codexFeaturesInvocation("disable", "win32", {
       env: { CODEX_CLI_PATH: "C:\\npm\\codex.cmd", ComSpec: "C:\\WINDOWS\\system32\\cmd.exe", PATH: "" },
       configDir: mkdtempSync(join(tmpdir(), "ocx-v2-inv-cmd-")),
       existsSync: () => true,
@@ -1042,7 +881,7 @@ describe("cli surface", () => {
     expect(inv.args).toEqual(["/d", "/s", "/c", '"C:\\npm\\codex.cmd ^"features^" ^"disable^" ^"multi_agent_v2^""']);
     expect(inv.options).toEqual({ windowsVerbatimArguments: true });
     // Bare `codex` resolving to codex.exe stays a direct spawn.
-    const exe = codexFeaturesInvocation("enable", "multi_agent_v2", "win32", {
+    const exe = codexFeaturesInvocation("enable", "win32", {
       env: { PATH: "C:\\bin" },
       configDir: mkdtempSync(join(tmpdir(), "ocx-v2-inv-exe-")),
       existsSync: (p: string) => p === "C:\\bin\\codex.exe",

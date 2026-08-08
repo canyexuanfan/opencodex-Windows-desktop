@@ -98,6 +98,4 @@ export type ProviderUpdatePatch = {
   disabled?: boolean;
   allowPrivateNetwork?: boolean;
   liveModels?: boolean;
-  /** Dedicated field: the API PATCHes it alone for the canonical `openai` provider. */
-  codexAccountMode?: "direct" | "pool";
 };

@@ -1,11 +1,5 @@
 import { loadConfig } from "../config";
 import {
-  MAX_ACCOUNT_PRIORITY,
-  MIN_ACCOUNT_PRIORITY,
-  normalizeAccountPriority,
-  parseAccountPriority,
-} from "../codex/pool-rotation";
-import {
   apiError,
   apiJson,
   classifyAccount,
@@ -24,7 +18,6 @@ const EXTENDED_USAGE = `Usage:
   ocx account refresh <provider> [--json]
   ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]
   ocx account alias <provider> <id|main> <display-name|-> [--json]
-  ocx account priority <provider> <id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]
   ocx account remove <provider> <id|main> --yes [--json]
   ocx account clear-cooldown <provider> <id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]`;
@@ -320,111 +313,6 @@ export async function cmdClearCooldown(args: string[], deps: AccountDeps): Promi
   if (wantsJson) console.log(JSON.stringify({ ok: true, provider: name, id, cleared }, null, 2));
   else if (cleared) console.log(`${name}: cooldown lifted for ${requestedId}`);
   else console.log(`${name}: no active cooldown for ${requestedId}`);
-  return 0;
-}
-
-/**
- * Named selection orders. The words convey sequence rather than rank because the
- * pool moves down the list only when everything above it is drained — "high
- * priority" would suggest the account gets more traffic, which is not what
- * ordering does.
- */
-const PRIORITY_PRESETS: Record<string, number> = {
-  first: 2,
-  earlier: 1,
-  normal: 0,
-  later: -1,
-  last: -2,
-};
-
-function priorityPresetName(priority: number): string | null {
-  return Object.entries(PRIORITY_PRESETS).find(([, value]) => value === priority)?.[0] ?? null;
-}
-
-function formatPriority(priority: number): string {
-  const preset = priorityPresetName(priority);
-  const signed = priority > 0 ? `+${priority}` : String(priority);
-  return preset ? `${signed} (${preset})` : signed;
-}
-
-/** `null` = reset to the default; `undefined` = unparseable. */
-function parsePriorityArgument(raw: string): number | null | undefined {
-  const word = raw.trim().toLowerCase();
-  if (word === "reset") return null;
-  // Own keys only: `in` also matches "constructor", "__proto__", and friends.
-  if (Object.hasOwn(PRIORITY_PRESETS, word)) return PRIORITY_PRESETS[word];
-  // The regex only rules out shapes Number() would coerce ("1e2", " 1 ", ""); the range
-  // itself comes from the core parser so the CLI cannot drift from what the API accepts.
-  if (!/^[+-]?\d+$/.test(word)) return undefined;
-  return parseAccountPriority(Number(word)) ?? undefined;
-}
-
-export async function cmdPriority(args: string[], deps: AccountDeps): Promise<number> {
-  const wantsJson = flag(args, "--json");
-  const name = args.shift();
-  const requestedId = args.shift();
-  const requestedPriority = args.shift();
-  if (!name || !requestedId || args.length) return usage();
-  const classified = configAndType(deps, name);
-  if ("error" in classified) return usage(`Error: ${classified.error}`);
-  if (classified.type !== "codex") {
-    return usage("Error: selection order only applies to the openai Codex account pool");
-  }
-  const id = requestedId === "main" ? MAIN_ID : requestedId;
-
-  // Validate before touching the network so a typo never reaches the proxy.
-  let priority: number | null | undefined;
-  if (requestedPriority !== undefined) {
-    priority = parsePriorityArgument(requestedPriority);
-    if (priority === undefined) {
-      return usage(`Error: selection order must be an integer ${MIN_ACCOUNT_PRIORITY}..${MAX_ACCOUNT_PRIORITY}, one of ${Object.keys(PRIORITY_PRESETS).join("/")}, or reset`);
-    }
-  }
-
-  const baseUrl = await resolveBaseUrl(deps);
-  if (!baseUrl) return proxyUnreachable();
-
-  // No value means "show" — a read must not rewrite what it is reporting.
-  if (priority === undefined) {
-    const result = await fetchCodexRows(deps, baseUrl);
-    const failed = familyFailure(result, `failed to read ${name} accounts`);
-    if (failed !== null) return failed;
-    const row = result.rows.find(candidate => candidate.id === id);
-    if (!row) return usage(`Error: no ${name} account ${requestedId}`);
-    const current = normalizeAccountPriority(row.priority);
-    if (wantsJson) {
-      console.log(JSON.stringify(
-        { ok: true, provider: name, id, priority: current, preset: priorityPresetName(current) },
-        null,
-        2,
-      ));
-    } else {
-      console.log(`${name}: ${requestedId} selection order is ${formatPriority(current)}`);
-    }
-    return 0;
-  }
-
-  const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/accounts/priority", { id, priority });
-  if (response.status === 0) return proxyUnreachable();
-  if (response.status !== 200) return apiError(response.json, `failed to set selection order for ${requestedId}`);
-  const applied = typeof response.json.priority === "number" ? response.json.priority : (priority ?? 0);
-  if (wantsJson) {
-    console.log(JSON.stringify(
-      { ok: true, provider: name, id, priority: applied, preset: priorityPresetName(applied) },
-      null,
-      2,
-    ));
-  } else {
-    console.log(`${name}: ${requestedId} selection order is now ${formatPriority(applied)}`);
-  }
-  // Not cmdUse's note: re-ordering takes effect on the next unbound request rather than
-  // only on new sessions, because preemption moves those requests up immediately.
-  console.error("Takes effect from the next unbound request; running threads keep their current account until drained.");
-  // The release is not optional and not conditional on the value changing, so it has to be
-  // stated: this route is the only way to clear a pin without immediately setting another,
-  // which means a write storing the order an account already had still releases it. Without
-  // this line that is a silent side effect of a command that looks purely declarative.
-  console.error('Also releases any manual "use this account now" pin, on any account.');
   return 0;
 }
 

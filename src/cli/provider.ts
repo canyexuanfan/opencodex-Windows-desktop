@@ -229,18 +229,12 @@ async function handleAdd(args: string[]): Promise<void> {
     return;
   }
 
-  let codexSyncSkipped = false;
   if (wantsSync) {
     const live = await findLiveProxy();
     if (live) {
-      const synced = await syncModelsToCodex(live.port).catch(e => {
+      await syncModelsToCodex(live.port).catch(e => {
         console.error(`Warning: sync failed: ${e instanceof Error ? e.message : String(e)}`);
-        return null;
       });
-      if (synced?.status === "skipped") {
-        codexSyncSkipped = true;
-        console.log("Provider saved; Codex integration is OFF, so Codex sync was skipped.");
-      }
     }
   }
 
@@ -255,7 +249,7 @@ async function handleAdd(args: string[]): Promise<void> {
     console.log(`   Set API key with: ocx provider add ${name} --api-key <key> --force`);
     console.log(`   Or set env var: ${envKey}`);
   }
-  if (wantsSync && !codexSyncSkipped) {
+  if (wantsSync) {
     console.log(`   Models synced to Codex.`);
   } else {
     console.log(`   Apply to Codex: ocx sync`);

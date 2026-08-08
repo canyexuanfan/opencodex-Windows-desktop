@@ -16,8 +16,7 @@ const USAGE = `Usage:
   ocx provider edit <name> [--adapter <id>] [--base-url <url>] [--default-model <id|->]
       [--auth-mode <key|forward|oauth|local|->] [--note <text|->]
       [--api-key-transport <x-api-key|bearer|->]
-      [--headers <json>] [--enabled <on|off>] [--live-models <on|off>]
-      [--allow-private-network <on|off>] [--json]
+      [--enabled <on|off>] [--live-models <on|off>] [--allow-private-network <on|off>] [--json]
   ocx provider test <name> [--json]
   ocx provider quota [--refresh] [--json]
   ocx provider presets [--json]
@@ -40,7 +39,6 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const authMode = cleared(takeOption(args, "--auth-mode"));
   const note = cleared(takeOption(args, "--note"));
   const apiKeyTransport = cleared(takeOption(args, "--api-key-transport"));
-  const headers = takeOption(args, "--headers");
   const enabled = takeBooleanOption(args, "--enabled");
   const liveModels = takeBooleanOption(args, "--live-models");
   const allowPrivateNetwork = takeBooleanOption(args, "--allow-private-network");
@@ -51,21 +49,6 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   if (authMode !== undefined) patch.authMode = authMode;
   if (note !== undefined) patch.note = note;
   if (apiKeyTransport !== undefined) patch.apiKeyTransport = apiKeyTransport;
-  if (headers !== undefined) {
-    if (headers === "-") {
-      patch.headers = null;
-    } else {
-      let parsed: unknown;
-      try { parsed = JSON.parse(headers); } catch { throw new CliUsageError("--headers must be valid JSON"); }
-      if (parsed === null) {
-        patch.headers = null;
-      } else if (typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new CliUsageError("--headers must be a JSON object like {\"X-Custom\":\"value\"}");
-      } else {
-        patch.headers = parsed;
-      }
-    }
-  }
   if (enabled !== undefined) patch.disabled = !enabled;
   if (liveModels !== undefined) patch.liveModels = liveModels;
   if (allowPrivateNetwork !== undefined) patch.allowPrivateNetwork = allowPrivateNetwork;

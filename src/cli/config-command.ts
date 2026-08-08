@@ -1,5 +1,4 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { clearCodexAccountPin } from "../codex/account-priority";
 import { getConfigPath, readConfigDiagnostics, saveConfig, validateConfigCandidate } from "../config";
 import type { OcxConfig } from "../types";
 import { CliUsageError, printData, rejectArgs, runCliAction, takeFlag } from "./runtime-api";
@@ -103,14 +102,6 @@ export async function handleConfigCommand(argv: string[]): Promise<number> {
       setPath(candidate, path, raw === undefined ? undefined : parseValue(raw), action === "unset");
       const config = validate(candidate);
       const savedValue = action === "unset" ? null : getPath(config, path);
-      // Setting the order here is the operator restating it, exactly as through
-      // `ocx account priority` or the management route, so it releases the manual pin
-      // for the same reason those do: a pin made before any order existed would
-      // otherwise outrank every order set afterwards, capping the pool at the pinned
-      // account's tier with nothing on any surface explaining why. `import` is
-      // deliberately not covered — that file supplies its own pin, so there is no
-      // stale one to release.
-      if (pathSegments(path)[0] === "codexAccountPriorities") clearCodexAccountPin(config);
       saveConfig(config);
       printData({ ok: true, path, value: redact(savedValue, path.split(".").at(-1)) }, wantsJson,
         [`${action === "unset" ? "Unset" : "Set"} ${path}.`]);

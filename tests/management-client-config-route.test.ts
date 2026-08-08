@@ -4,7 +4,8 @@ import {
   OPENCODE_API_KEY_ENV,
   OPENCODE_CONFIG_SCHEMA,
   OPENCODE_PROVIDER_ID,
-  LOOPBACK_API_KEY_PLACEHOLDER,
+  PI_API_KEY_ENV,
+  PI_API_KEY_ENV_REF,
   buildClientConfig,
   normalizeExportModels,
   opencodeGlobalConfigPath,
@@ -13,7 +14,6 @@ import {
   type PiGeneratedConfig,
 } from "../src/clients/config-export";
 import type { OcxConfig } from "../src/types";
-import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 /**
  * A key that looks exactly like a real one. Every assertion about `ocx_` absence is
@@ -81,7 +81,7 @@ async function clientConfigApi(config: OcxConfig, query: string): Promise<Respon
     new Request(url, { headers: { Host: url.host } }),
     url,
     config,
-    { saveConfigPreservingClaudeCode: () => {}, createManagementConvergeCodex: catalogConvergenceFactory() },
+    { saveConfigPreservingClaudeCode: () => {}, refreshCodexCatalog: async () => {} },
   );
   expect(response).not.toBeNull();
   return response!;
@@ -93,7 +93,7 @@ async function modelRows(config: OcxConfig): Promise<ModelRow[]> {
     new Request(url, { headers: { Host: url.host } }),
     url,
     config,
-    { saveConfigPreservingClaudeCode: () => {}, createManagementConvergeCodex: catalogConvergenceFactory() },
+    { saveConfigPreservingClaudeCode: () => {}, refreshCodexCatalog: async () => {} },
   );
   return await response!.json() as ModelRow[];
 }
@@ -148,11 +148,11 @@ describe("GET /api/client-config", () => {
 
     expect(body.client).toBe("pi");
     expect(body.filename).toBe("pi-models.json");
-    expect(body.apiKeyEnv).toBe("");
+    expect(body.apiKeyEnv).toBe(PI_API_KEY_ENV);
 
     const provider = (body.config as PiGeneratedConfig).providers[OPENCODE_PROVIDER_ID];
     expect(Array.isArray(provider.models)).toBe(true);
-    expect(provider.apiKey).toBe(LOOPBACK_API_KEY_PLACEHOLDER);
+    expect(provider.apiKey).toBe(PI_API_KEY_ENV_REF);
     expect(provider.baseUrl).toBe("http://127.0.0.1:10100/v1");
     expect(provider.models.map(model => model.id)).toContain("a/m1");
   }, 15_000);
@@ -243,7 +243,7 @@ describe("GET /api/client-config", () => {
       new Request(url, { headers: { Host: url.host, Origin: "https://evil.example" } }),
       url,
       baseConfig(),
-      { saveConfigPreservingClaudeCode: () => {}, createManagementConvergeCodex: catalogConvergenceFactory() },
+      { saveConfigPreservingClaudeCode: () => {}, refreshCodexCatalog: async () => {} },
     );
     expect(response?.status).toBe(403);
   }, 15_000);

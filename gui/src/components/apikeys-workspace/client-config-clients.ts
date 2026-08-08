@@ -8,16 +8,12 @@
  * with EXPORT_CLIENT_IDS by hand; adding a client server-side renders no row
  * until this tuple changes.
  */
-export const CLIENTS = ["opencode", "pi", "hermes", "openclaw", "kimi", "gajae"] as const;
+export const CLIENTS = ["opencode", "pi"] as const;
 export type ExportClientId = (typeof CLIENTS)[number];
 
 export const CLIENT_LABEL_KEYS = {
   opencode: "api.clientConfig.clientOpencode",
   pi: "api.clientConfig.clientPi",
-  hermes: "api.clientConfig.clientHermes",
-  openclaw: "api.clientConfig.clientOpenclaw",
-  kimi: "api.clientConfig.clientKimi",
-  gajae: "api.clientConfig.clientGajae",
 } as const;
 
 /**
@@ -45,13 +41,5 @@ export interface ClientConfigEnvelope {
   exportHint: string;
   modelCount: number;
   modelsWithoutLimits: number;
-  /**
-   * The client's own format and the exact bytes for it. The panel used to
-   * re-serialize `config` as JSON, which is wrong for the four clients that do
-   * not use JSON — a TOML file rendered as JSON does not parse at all.
-   */
-  format: string;
-  mediaType: string;
-  text: string;
   config: unknown;
 }

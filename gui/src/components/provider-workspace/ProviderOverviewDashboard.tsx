@@ -7,11 +7,7 @@ import { useMemo } from "react";
 import { useT, useI18n } from "../../i18n/shared";
 import { IconAlert, IconChevron } from "../../icons";
 import type { WorkspaceSections, WorkspaceItem } from "../../provider-workspace/catalog";
-import {
-  accountQuotaFromReport,
-  capacityAggregationFromReport,
-  type ProviderQuotaReportView,
-} from "../../provider-workspace/report";
+import { accountQuotaFromReport, type ProviderQuotaReportView } from "../../provider-workspace/report";
 import {
   attentionReasonKey,
   buildAttentionItems,
@@ -25,7 +21,6 @@ import { maxQuotaUtilisation } from "../QuotaBars";
 import { ProviderIcon } from "./ProviderRail";
 import { formatProviderDisplayName } from "../../provider-icons";
 import QuotaBars from "../QuotaBars";
-import { ProviderCapacityQuota } from "./ProviderCapacityQuota";
 
 export default function ProviderOverviewDashboard({
   sections,
@@ -69,9 +64,8 @@ export default function ProviderOverviewDashboard({
     for (const item of allItems) {
       const report = quotaReports[item.name];
       const quota = report ? accountQuotaFromReport(report) : null;
-      const aggregation = report ? capacityAggregationFromReport(report) : null;
-      if (report && (quota || aggregation?.presentation === "coverage-only")) {
-        result.push({ item, report, urgency: quota ? maxQuotaUtilisation(quota) : -1 });
+      if (report && quota) {
+        result.push({ item, report, urgency: maxQuotaUtilisation(quota) });
       }
     }
     return result.sort((a, b) => b.urgency - a.urgency || a.item.name.localeCompare(b.item.name));
@@ -168,7 +162,13 @@ export default function ProviderOverviewDashboard({
                   </div>
                   <IconChevron className="pws-dashboard-row-chevron" aria-hidden="true" />
                   <div className="pws-dashboard-row-bars">
-                    <ProviderCapacityQuota report={report} pending={quotasLoading && !report.quota} />
+                    <QuotaBars
+                      quota={accountQuotaFromReport(report)}
+                      threshold={80}
+                      t={t}
+                      layout="stacked"
+                      pending={quotasLoading && !report.quota}
+                    />
                   </div>
                 </button>
               ))}

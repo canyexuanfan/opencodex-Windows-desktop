@@ -29,7 +29,6 @@ export function useProvidersCrud({
   fetchConfig,
   fetchOauth,
   fetchProviderQuotas,
-  refreshCodexAccount,
 }: {
   apiBase: string;
   t: TFn;
@@ -41,8 +40,6 @@ export function useProvidersCrud({
   fetchConfig: () => Promise<void>;
   fetchOauth: () => Promise<void>;
   fetchProviderQuotas: (refresh?: boolean) => Promise<void>;
-  /** Shared Codex account controller refresh (Providers.tsx passes codexPool.load). */
-  refreshCodexAccount?: () => Promise<unknown> | unknown;
 }) {
   const removeProvider = useCallback(async (name: string) => {
     setRemoveConfirmName(name);
@@ -106,18 +103,11 @@ export function useProvidersCrud({
       // Await refresh so callers (e.g. notes editor) only leave edit mode once
       // item.note reflects the saved value.
       await fetchConfig();
-      // A codexAccountMode PATCH clears quota caches and thread affinity server-side,
-      // so both dependent surfaces must refresh before the action reports success.
-      if (Object.hasOwn(patch, "codexAccountMode")) {
-        const refreshes: Promise<unknown>[] = [fetchProviderQuotas(true)];
-        if (refreshCodexAccount) refreshes.push(Promise.resolve(refreshCodexAccount()));
-        await Promise.all(refreshes);
-      }
       return { ok: true };
     } catch {
       return { ok: false, error: t("prov.networkError") };
     }
-  }, [apiBase, fetchConfig, fetchProviderQuotas, refreshCodexAccount, t]);
+  }, [apiBase, fetchConfig, t]);
 
   const setDefaultProvider = useCallback(async (name: string): Promise<boolean> => {
     try {

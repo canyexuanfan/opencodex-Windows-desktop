@@ -42,7 +42,6 @@ import type { OcxConfig } from "../src/types";
 import { syncCatalogModels } from "../src/codex/catalog";
 import { injectClaudeAgentDefs } from "../src/claude/agents-inject";
 import { reconcileComboRotationState } from "../src/combos/resolve";
-import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -130,7 +129,7 @@ async function comboApi(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    createManagementConvergeCodex: catalogConvergenceFactory(refreshCodexCatalog),
+    refreshCodexCatalog,
   });
 }
 
@@ -141,7 +140,7 @@ async function comboApiRaw(config: OcxConfig, method: string, path: string, body
     body,
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    createManagementConvergeCodex: catalogConvergenceFactory(),
+    refreshCodexCatalog: async () => {},
   });
 }
 
@@ -235,7 +234,7 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", ["low", "medium"]).reasoning).toBeUndefined();
   });
 
-  test("debug-warns once per unsupported or unknown combo default", () => {
+  test("debug-warns once per unsupported combo default", () => {
     const debug = spyOn(console, "debug").mockImplementation(() => {});
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
@@ -245,13 +244,6 @@ describe("combo request cloning", () => {
       model: "m1",
       requestedEffort: "high",
       capability: "unsupported",
-    });
-    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
-    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
-    expect(debug).toHaveBeenCalledTimes(2);
-    expect(debug.mock.calls[1]?.[1]).toMatchObject({
-      requestedEffort: "medium",
-      capability: "unknown",
     });
     debug.mockRestore();
   });
