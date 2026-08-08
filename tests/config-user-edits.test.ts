@@ -5,11 +5,13 @@ import { join } from "node:path";
 import {
   armClaudeCodeBaseline,
   getConfigPath,
+  getDefaultConfig,
   loadConfig,
   readConfigDiagnostics,
   reconcileLiveConfigFromDisk,
   saveConfig,
   saveConfigPreservingClaudeCode,
+  validateConfigCandidate,
 } from "../src/config";
 import { rateLimitRetryPolicyFor } from "../src/providers/key-failover";
 import type { OcxConfig } from "../src/types";
@@ -476,4 +478,26 @@ test("a providers hand edit is NOT preserved", () => {
   live.port = 10103;
   saveConfigPreservingClaudeCode(live);
   expect(Object.keys(diskConfig().providers as Record<string, unknown>)).toEqual(["test"]);
+});
+
+test("upstreamHostCircuitThreshold live writes accept only integer values from 0 through 20", () => {
+  for (const value of [0, 1, 20]) {
+    expect(validateConfigCandidate({ ...getDefaultConfig(), upstreamHostCircuitThreshold: value }).ok).toBe(true);
+  }
+  for (const value of [-1, 1.5, 21, "3", null]) {
+    const result = validateConfigCandidate({ ...getDefaultConfig(), upstreamHostCircuitThreshold: value });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("upstreamHostCircuitThreshold");
+  }
+});
+
+test("a malformed upstreamHostCircuitThreshold hand edit disables only the circuit and warns", () => {
+  writeDiskConfig({ upstreamHostCircuitThreshold: 999 });
+  const diagnostics = readConfigDiagnostics();
+  expect(diagnostics.source).toBe("file");
+  expect(diagnostics.config.upstreamHostCircuitThreshold).toBeUndefined();
+  expect(diagnostics.warnings).toContain(
+    "upstreamHostCircuitThreshold ignored: expected an integer from 0 to 20",
+  );
+  expect(diagnostics.config.providers.test).toBeDefined();
 });

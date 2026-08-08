@@ -47,6 +47,8 @@ import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
+import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../../reasoning-effort";
+import { normalizeVisionReasoningForModel } from "../../vision/reasoning";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -312,11 +314,14 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
@@ -332,7 +337,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
     const body = raw as {
       webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown };
-      vision?: { model?: unknown; backend?: unknown; maxDescriptionsPerTurn?: unknown };
+      vision?: { model?: unknown; backend?: unknown; reasoning?: unknown; maxDescriptionsPerTurn?: unknown };
     };
     if (body.webSearch && body.webSearch.backend !== undefined && body.webSearch.backend !== null
       && body.webSearch.backend !== "openai" && body.webSearch.backend !== "anthropic") {
@@ -348,6 +353,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         || body.vision.maxDescriptionsPerTurn <= 0)) {
       return jsonResponse({ error: "vision.maxDescriptionsPerTurn must be a positive integer" }, 400);
     }
+    if (body.vision?.reasoning !== undefined && !isVisionReasoningEffort(body.vision.reasoning)) {
+      return jsonResponse({ error: `vision.reasoning must be ${VISION_REASONING_EFFORTS.join(", ")}` }, 400);
+    }
+
+    let normalizedVisionReasoning: ReturnType<typeof normalizeVisionReasoningForModel>;
+    let visionReasoningTouched = false;
+    if (body.vision && (body.vision.model !== undefined || body.vision.reasoning !== undefined)) {
+      visionReasoningTouched = true;
+      const model = typeof body.vision.model === "string"
+        ? (body.vision.model === "" ? "gpt-5.4-mini" : body.vision.model)
+        : (config.visionSidecar?.model || "gpt-5.4-mini");
+      const sourceReasoning = body.vision.reasoning ?? config.visionSidecar?.reasoning;
+      normalizedVisionReasoning = sourceReasoning === undefined
+        ? undefined
+        : normalizeVisionReasoningForModel(model, sourceReasoning);
+    }
+
     if (body.webSearch) {
       config.webSearchSidecar = { ...config.webSearchSidecar };
       if (typeof body.webSearch.model === "string") {
@@ -373,16 +395,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (typeof body.vision.maxDescriptionsPerTurn === "number") {
         config.visionSidecar.maxDescriptionsPerTurn = body.vision.maxDescriptionsPerTurn;
       }
+      if (visionReasoningTouched) {
+        if (normalizedVisionReasoning === undefined) delete config.visionSidecar.reasoning;
+        else config.visionSidecar.reasoning = normalizedVisionReasoning;
+      }
     }
     saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });

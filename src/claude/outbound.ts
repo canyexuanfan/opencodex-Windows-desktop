@@ -16,6 +16,7 @@ import {
   TranslatorBudgetExceededError,
   type TranslatorBudget,
 } from "../lib/translator-budget";
+import { sseFieldOffset, sseFieldValue } from "../lib/sse-decoder";
 
 type Rec = Record<string, unknown>;
 
@@ -588,10 +589,16 @@ export function responsesSseToAnthropicSse(
                       while (lineStart <= rawFrame.length) {
                         const newline = rawFrame.indexOf("\n", lineStart);
                         const lineEnd = newline === -1 ? rawFrame.length : newline;
-                        if (rawFrame.startsWith("event: ", lineStart)) {
-                          eventName = rawFrame.slice(lineStart + 7, lineEnd).trim();
-                        } else if (rawFrame.startsWith("data: ", lineStart)) {
-                          const fragmentStart = lineStart + 6;
+                        // The space after the colon is optional in text/event-stream (#1170);
+                        // compute the value offset the same way sseFieldValue does, without
+                        // slicing the line first — the byte accounting below is keyed to
+                        // offsets into rawFrame.
+                        const eventOffset = sseFieldOffset(rawFrame, lineStart, lineEnd, "event");
+                        const dataOffset = sseFieldOffset(rawFrame, lineStart, lineEnd, "data");
+                        if (eventOffset !== -1) {
+                          eventName = rawFrame.slice(eventOffset, lineEnd).trim();
+                        } else if (dataOffset !== -1) {
+                          const fragmentStart = dataOffset;
                           const fragmentBytes = utf8SliceBytes(rawFrame, fragmentStart, lineEnd);
                           const fragmentReservation = translatorBudget.reserveTransient(fragmentBytes, { kind: "live_transient" });
                           let fragmentCommitted = false;
@@ -861,8 +868,10 @@ export async function collectAnthropicMessage(
         let eventName = "";
         let dataLine = "";
         for (const line of rawFrame.split("\n")) {
-          if (line.startsWith("event: ")) eventName = line.slice(7).trim();
-          else if (line.startsWith("data: ")) dataLine += line.slice(6);
+          const eventValue = sseFieldValue(line, "event");
+          if (eventValue !== null) { eventName = eventValue.trim(); continue; }
+          const dataValue = sseFieldValue(line, "data");
+          if (dataValue !== null) dataLine += dataValue;
         }
         if (!eventName || !dataLine) continue;
         let data: unknown;

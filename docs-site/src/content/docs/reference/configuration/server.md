@@ -65,6 +65,44 @@ A `0.0.0.0` bind exposes the proxy and configured provider access to the LAN. Us
 networks with a strong token.
 :::
 
+### Local clients that cannot receive the token
+
+A remote bind requires a credential from every caller, including local ones. That breaks a specific
+case: a `codex app-server` launched by a host process that resolves the Codex entrypoint directly
+(`require.resolve('@openai/codex/bin/codex.js')`) never passes through the generated `codex` shim,
+so it never inherits `OPENCODEX_API_AUTH_TOKEN` and every model call fails with `401` before a
+stream opens.
+
+`unauthenticatedLoopbackListener` opens a second listener bound to `127.0.0.1` that admits without a
+credential. The main listener is untouched — remote callers still need the token.
+
+```json
+{
+  "hostname": "0.0.0.0",
+  "port": 10100,
+  "unauthenticatedLoopbackListener": { "enabled": true, "port": 10200 }
+}
+```
+
+`ocx sync` then writes `base_url = "http://127.0.0.1:10200/v1"` into the managed Codex provider block
+and omits the auth header, so a directly spawned app-server works without any credential plumbing.
+
+The port is required and must differ from the proxy port. It is never OS-assigned: an ephemeral port
+would change across restarts while already-running app-servers kept the previous `base_url`.
+
+The listener serves only `POST /v1/responses`, its WebSocket upgrade, `POST /v1/responses/compact`,
+and `GET /v1/models`. Everything else, including `/api/*` and the dashboard, returns `404`.
+
+:::danger[This is an unauthenticated surface]
+Every process on the machine can use this listener. It spends account quota and paid provider
+credentials, and it can exhaust the shared turn capacity that authenticated remote clients depend
+on. Do not enable it on a shared or multi-tenant host.
+
+Binding to `127.0.0.1` means the kernel refuses remote connections, but it does not stop a browser:
+a page you visit can make your browser connect to `127.0.0.1`. The listener therefore applies the
+same `Host` and `Origin` checks as an ordinary loopback bind. Off by default.
+:::
+
 ### SSH port forwarding
 
 Remote use does not require a remote bind. Keep loopback and forward it:

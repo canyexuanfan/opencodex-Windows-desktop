@@ -36,14 +36,29 @@ import { atomicWriteFile } from "../src/config";
 import { hardenStableLockFile } from "../src/codex/native-main-lock-file";
 import { nativeMainClaimPath, withNativeMainSharedClaim } from "../src/codex/native-main-claim";
 import { NATIVE_MAIN_OWNER_DB, retainNativeMainOwner } from "../src/codex/native-main-owner";
+import {
+  resetWindowsPrincipalForTests,
+  setAsyncWindowsPrincipalRunnerForTests,
+  setWindowsPrincipalRunnerForTests,
+} from "../src/lib/windows-user-principal";
 
 let testDir = "";
 
+// The default harden budget is production policy (#1156 raised it to 30s), not a value tests
+// should silently inherit. Isolate the override here so a test that cares about a specific
+// budget pins it explicitly, and a stray value in the developer's environment cannot change
+// what any of these assert.
+let previousAclTimeout: string | undefined;
+
 beforeEach(() => {
+  previousAclTimeout = process.env.OPENCODEX_ACL_TIMEOUT_MS;
+  delete process.env.OPENCODEX_ACL_TIMEOUT_MS;
   testDir = mkdtempSync(join(tmpdir(), "ocx-acl-test-"));
 });
 
 afterEach(() => {
+  if (previousAclTimeout === undefined) delete process.env.OPENCODEX_ACL_TIMEOUT_MS;
+  else process.env.OPENCODEX_ACL_TIMEOUT_MS = previousAclTimeout;
   if (testDir && existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   testDir = "";
 });
@@ -113,6 +128,181 @@ describe("hardenSecretPath – required mode (required: true)", () => {
 
     expect(result.ok).toBe(true);
     expect(existsSync(filePath)).toBe(false);
+  });
+});
+
+describe("effective Windows principal integration", () => {
+  test("the owner grant uses a numeric SID even when USERDOMAIN says WORKGROUP", () => {
+    const filePath = join(testDir, "workgroup-secret.json");
+    writeFileSync(filePath, "data", "utf-8");
+    const oldDomain = process.env.USERDOMAIN;
+    const oldUser = process.env.USERNAME;
+    process.env.USERDOMAIN = "WORKGROUP";
+    process.env.USERNAME = "not-authoritative";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    const seen: string[][] = [];
+    setIcaclsRunnerForTests(args => {
+      seen.push(args);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    try {
+      expect(hardenSecretPath(filePath, { required: true })).toEqual({ ok: true });
+      const grant = seen.find(args => args.includes("/grant:r"));
+      expect(grant).toBeDefined();
+      expect(grant![2]).toMatch(/^\*S-1-(?:\d+-)+\d+:\(F\)$/i);
+      expect(grant![2]).not.toContain("WORKGROUP");
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (oldDomain === undefined) delete process.env.USERDOMAIN;
+      else process.env.USERDOMAIN = oldDomain;
+      if (oldUser === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = oldUser;
+    }
+  });
+
+  // These ran only on Windows until the resolver learned to let an injected
+  // runner outrank the synthetic POSIX principal. A case that silently returns
+  // on two of three CI platforms is not coverage of a fail-closed boundary, and
+  // the timedOutPaths isolation it asserts is the whole reason the identity
+  // failure carries its own error code.
+  const IDENTITY_DIAGNOSTIC =
+    "ACL hardening failed (EACLIDENTITY) — the effective Windows account SID could not be resolved";
+
+  test("a failed identity lookup fails closed, runs no icacls, and never enters the timeout memo", () => {
+    const requiredPath = join(testDir, "identity-required.json");
+    const optionalPath = join(testDir, "identity-optional.json");
+    writeFileSync(requiredPath, "required", "utf-8");
+    writeFileSync(optionalPath, "optional", "utf-8");
+    let identityCalls = 0;
+    let icaclsCalls = 0;
+    setWindowsPrincipalRunnerForTests(() => {
+      identityCalls += 1;
+      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    setIcaclsRunnerForTests(() => {
+      icaclsCalls += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    try {
+      // required: throws, and the CODE survives sanitization so a caller can
+      // branch on the cause rather than parse the message.
+      let thrown: NodeJS.ErrnoException | undefined;
+      try {
+        hardenSecretPath(requiredPath, { required: true });
+      } catch (error) {
+        thrown = error as NodeJS.ErrnoException;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown).toMatchObject({ code: "EACLIDENTITY" });
+
+      // optional: soft-fails WITHOUT touching the ACL. No name-shaped fallback.
+      expect(hardenSecretPath(optionalPath, { required: false })).toEqual({
+        ok: false,
+        diagnostics: IDENTITY_DIAGNOSTIC,
+      });
+
+      // The injected runner actually ran — this is what regressed to 0 when the
+      // synthetic principal was chosen first.
+      expect(identityCalls).toBe(2);
+      expect(icaclsCalls).toBe(0);
+      // An identity failure is not an icacls timeout: the path stays retryable.
+      expect(timedOutSecretPathCountForTests()).toBe(0);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      setWindowsPrincipalRunnerForTests(null);
+      resetWindowsPrincipalForTests();
+    }
+  });
+
+  test("the async harden path applies the same identity policy", async () => {
+    const requiredPath = join(testDir, "identity-required-async.json");
+    const optionalPath = join(testDir, "identity-optional-async.json");
+    writeFileSync(requiredPath, "required", "utf-8");
+    writeFileSync(optionalPath, "optional", "utf-8");
+    let identityCalls = 0;
+    let icaclsCalls = 0;
+    setAsyncWindowsPrincipalRunnerForTests(async () => {
+      identityCalls += 1;
+      return { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    setAsyncIcaclsRunnerForTests(async () => {
+      icaclsCalls += 1;
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    try {
+      let thrown: NodeJS.ErrnoException | undefined;
+      try {
+        await hardenSecretPathAsync(requiredPath, { required: true });
+      } catch (error) {
+        thrown = error as NodeJS.ErrnoException;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown).toMatchObject({ code: "EACLIDENTITY" });
+
+      expect(await hardenSecretPathAsync(optionalPath, { required: false })).toEqual({
+        ok: false,
+        diagnostics: IDENTITY_DIAGNOSTIC,
+      });
+
+      expect(identityCalls).toBe(2);
+      expect(icaclsCalls).toBe(0);
+      expect(timedOutSecretPathCountForTests()).toBe(0);
+    } finally {
+      setAsyncIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      setAsyncWindowsPrincipalRunnerForTests(null);
+      resetWindowsPrincipalForTests();
+    }
+  });
+
+  test("no name-shaped principal reaches icacls when the environment names a plausible account", () => {
+    const filePath = join(testDir, "no-name-fallback.json");
+    writeFileSync(filePath, "data", "utf-8");
+    const oldDomain = process.env.USERDOMAIN;
+    const oldUser = process.env.USERNAME;
+    // A shape a reader would accept at a glance. It is still not the token.
+    process.env.USERDOMAIN = "CORP";
+    process.env.USERNAME = "administrator";
+    const seen: string[][] = [];
+    setWindowsPrincipalRunnerForTests(() => ({
+      success: false,
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+    }));
+    setIcaclsRunnerForTests(args => {
+      seen.push(args);
+      return { success: true, exitCode: 0, timedOut: false, stdout: "" };
+    });
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    try {
+      expect(hardenSecretPath(filePath, { required: false })).toEqual({
+        ok: false,
+        diagnostics: IDENTITY_DIAGNOSTIC,
+      });
+      expect(seen).toEqual([]);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      setWindowsPrincipalRunnerForTests(null);
+      resetWindowsPrincipalForTests();
+      if (oldDomain === undefined) delete process.env.USERDOMAIN;
+      else process.env.USERDOMAIN = oldDomain;
+      if (oldUser === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = oldUser;
+    }
   });
 });
 
@@ -354,6 +544,10 @@ describe("icacls failure paths (injected seams)", () => {
   });
 
   test("all icacls steps share one deadline and a timed-out path is not retried this process", () => {
+    // Pinned to the pre-#1156 budget: this test is about the SHARING of one envelope across
+    // steps, not about how large the envelope is. Without the pin it would silently stop
+    // timing out at the 30s default and assert nothing.
+    process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000";
     const filePath = secretFile();
     let now = 0;
     const budgets: number[] = [];
@@ -371,6 +565,30 @@ describe("icacls failure paths (injected seams)", () => {
     // The timed-out path short-circuits without invoking the runner again.
     expect(() => hardenSecretPath(filePath, { required: true })).toThrow(/skipped/);
     expect(budgets.length).toBe(1);
+  });
+
+  test("slow successful ACL steps fit the default harden envelope (#1156)", () => {
+    // The reported failure: on a machine where icacls is slow, the whole sequence could not
+    // finish inside one 5s envelope, the harden failed closed, and the native-main owner
+    // published a permanent `unavailable` — every native request then 503'd until restart.
+    // No pin here on purpose: this test exists to exercise the SHIPPED default.
+    resetHardenedStateForTests();
+    const filePath = secretFile("slow-default-envelope.json");
+    let now = 0;
+    const steps: string[] = [];
+
+    setNowForTests(() => now);
+    setIcaclsRunnerForTests(args => {
+      if (args.includes("/grant:r")) { steps.push("/grant:r"); now += 2_000; }
+      else if (args.includes("/inheritance:r")) { steps.push("/inheritance:r"); now += 11_000; }
+      else if (args.includes("/remove:g")) { steps.push("/remove:g"); }
+      return ok;
+    });
+
+    // 13s of slow-but-successful work: impossible under the old 5s default, comfortable
+    // under 30s with margin left for the conditional /findsid verification.
+    expect(hardenSecretPath(filePath, { required: true })).toEqual({ ok: true });
+    expect(steps).toEqual(["/grant:r", "/inheritance:r", "/remove:g"]);
   });
 
   test("a timeout diagnostic no longer claims filesystem non-support (issue #160)", () => {
@@ -459,10 +677,10 @@ describe("icacls failure paths (injected seams)", () => {
       expect(budgets[0]).toBeGreaterThan(500);
 
       budgets.length = 0;
-      process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000ms"; // malformed → default 5000
+      process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000ms"; // malformed → default 30000 (#1156)
       hardenSecretPath(secretFile("env-c.json"), { required: true });
-      expect(budgets[0]).toBeLessThanOrEqual(5_000);
-      expect(budgets[0]).toBeGreaterThan(4_000);
+      expect(budgets[0]).toBeLessThanOrEqual(30_000);
+      expect(budgets[0]).toBeGreaterThan(29_000);
     } finally {
       if (prev === undefined) delete process.env.OPENCODEX_ACL_TIMEOUT_MS;
       else process.env.OPENCODEX_ACL_TIMEOUT_MS = prev;
@@ -607,6 +825,8 @@ describe("async hardenSecretPath (issue #612)", () => {
   });
 
   test("a required timeout preserves ETIMEDOUT and one explicit recovery gets a fresh budget", async () => {
+    // Pinned: this asserts that a SECOND call gets a fresh envelope, not the envelope's size.
+    process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000";
     const target = secretFile("one-time-recovery.json");
     let now = 0;
     let grantCalls = 0;
@@ -639,6 +859,9 @@ describe("async hardenSecretPath (issue #612)", () => {
   });
 
   test("the explicit timeout recovery cannot be consumed more than once", async () => {
+    // Pinned: this asserts recovery CARDINALITY. At the 30s default the first call would
+    // succeed on its internal retry and the cardinality claim would never be exercised.
+    process.env.OPENCODEX_ACL_TIMEOUT_MS = "5000";
     const target = secretFile("consumed-recovery.json");
     let now = 0;
     let grantCalls = 0;

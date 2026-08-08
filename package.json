@@ -42,7 +42,7 @@
     "typecheck": "bun x tsc --noEmit",
     "audit:high": "bun audit --audit-level=high && cd gui && bun audit --audit-level=high",
     "privacy:scan": "bun scripts/privacy-scan.ts",
-    "generate:jawcode-metadata": "bun scripts/generate-jawcode-metadata.ts",
+    "generate:model-metadata": "bun scripts/generate-model-metadata.ts",
     "build:gui": "cd gui && bun install --frozen-lockfile && bun run build && cd .. && bun run prepare:package",
     "prepare:package": "bun scripts/prepare-package.ts",
     "prepack": "bun run prepare:package",
@@ -52,13 +52,14 @@
     "prepush": "bun run typecheck && bun run lint:gui:if-changed && bun run test && bun run privacy:scan && bun run doctor:gui:if-changed",
     "lint:gui": "cd gui && bun run lint",
     "lint:gui:if-changed": "bun scripts/lint-gui-if-changed.ts",
+    "postmerge": "bun scripts/build-gui-if-changed.ts",
     "doctor:gui": "cd gui && bun run doctor",
     "doctor:gui:full": "cd gui && bun run doctor:full",
     "doctor:gui:if-changed": "bun scripts/doctor-gui-if-changed.ts",
     "setup:hooks": "bun scripts/setup-hooks.ts"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.12.0",
+    "@bufbuild/protobuf": "^2.13.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@napi-rs/keyring": "1.3.0",
     "bun": "1.3.14",
@@ -66,10 +67,12 @@
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   },
   "overrides": {
+    "@hono/node-server": "2.1.0",
     "fast-uri": "^3.1.5",
+    "hono": "4.13.1",
     "ip-address": "^10.4.0"
   },
   "keywords": [

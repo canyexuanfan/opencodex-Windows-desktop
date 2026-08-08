@@ -28,6 +28,7 @@ import {
   MAIN_CODEX_ACCOUNT_NAMESPACE_TARGET,
 } from "./codex/account-namespace-match";
 import { isCodexAccountPriorityKey } from "./codex/account-priority";
+import { UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD } from "./codex/upstream-host-health";
 import { parseAccountPriority } from "./codex/pool-rotation";
 import { COMBO_NAMESPACE, comboConfigIssues } from "./combos/types";
 import { routingProfileIssues } from "./routing/profile";
@@ -1023,6 +1024,12 @@ const clientIntegrationsSchema = z.object({
 const configSchema = z.object({
   port: z.number().int().min(0).max(65535).default(10100),
   managementUsageMaxReadBytes: z.number().int().positive().default(64 * 1024 * 1024),
+  // Invalid hand edits disable only this opt-in circuit. Live writes remain strict.
+  upstreamHostCircuitThreshold: z.number().int()
+    .min(0)
+    .max(UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD)
+    .optional()
+    .catch(undefined),
   appOwnedMemoryBudgetMb: z.number().int()
     .min(MIN_APP_OWNED_MEMORY_BUDGET_MB)
     .max(MAX_APP_OWNED_MEMORY_BUDGET_MB)
@@ -1035,6 +1042,14 @@ const configSchema = z.object({
   // is safe: startServer() already falls back to 127.0.0.1 for a missing hostname. Write-time
   // rejection lives in validateConfigCandidate() so bad values still surface to the caller.
   hostname: z.string().trim().min(1).optional().catch(undefined),
+  // Discriminated on `enabled` so a disabled entry cannot be forced to carry a port, and an
+  // enabled one cannot omit it (#1102). A malformed value degrades to undefined rather than
+  // failing the whole parse: this is an opt-in convenience surface, and a hand-edit typo here
+  // must never reset providers/apiKeys through the backup-and-defaults repair path.
+  unauthenticatedLoopbackListener: z.union([
+    z.object({ enabled: z.literal(false) }),
+    z.object({ enabled: z.literal(true), port: z.number().int().min(1).max(65535) }),
+  ]).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
@@ -1688,6 +1703,23 @@ function warnDegradedClaudeSubagentEffort(rawParsed: unknown): void {
   }
 }
 
+function malformedUpstreamHostCircuitThresholdWarning(rawParsed: unknown): string | null {
+  const raw = rawConfigRecord(rawParsed);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `upstreamHostCircuitThreshold ignored: expected an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
+function warnDegradedUpstreamHostCircuitThreshold(rawParsed: unknown): void {
+  const warning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (warning) console.warn(`⚠️  config.json ${warning}. Other settings were preserved.`);
+}
+
 type NativeSubagentPersistedField = "injectionModel" | "injectionEffort" | "syncCodexSubagentDefaults";
 
 function rawConfigRecord(rawParsed: unknown): Record<string, unknown> | null {
@@ -1781,6 +1813,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Schema validation failed — merge defaults into the raw object instead of
@@ -1802,6 +1835,7 @@ export function loadConfig(): OcxConfig {
       warnDegradedClaudeSubagentEffort(parsed);
       warnDegradedNativeSubagentConfig(parsed, config);
       warnDegradedCodexAccountPicker(parsed);
+      warnDegradedUpstreamHostCircuitThreshold(parsed);
       return normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed);
     }
     // Merge couldn't fix it — truly broken config
@@ -1853,6 +1887,8 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   warnings.push(...malformedNativeSubagentFields(rawParsed).map(malformedNativeSubagentFieldWarning));
   const pickerWarning = malformedCodexAccountPickerWarning(rawParsed);
   if (pickerWarning) warnings.push(pickerWarning);
+  const hostCircuitWarning = malformedUpstreamHostCircuitThresholdWarning(rawParsed);
+  if (hostCircuitWarning) warnings.push(hostCircuitWarning);
   if (syncDisabledReason) {
     warnings.push(`syncCodexSubagentDefaults ignored: ${syncDisabledReason}`);
   }
@@ -1922,6 +1958,18 @@ function appOwnedMemoryBudgetError(value: unknown): string | null {
   return null;
 }
 
+function upstreamHostCircuitThresholdError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "upstreamHostCircuitThreshold")) return null;
+  const threshold = raw.upstreamHostCircuitThreshold;
+  if (threshold === undefined) return null;
+  if (typeof threshold === "number"
+    && Number.isInteger(threshold)
+    && threshold >= 0
+    && threshold <= UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD) return null;
+  return `schema_invalid: upstreamHostCircuitThreshold: must be an integer from 0 to ${UPSTREAM_HOST_CIRCUIT_MAX_THRESHOLD}`;
+}
+
 /**
  * Same reasoning as {@link blankHostnameError}, and more urgent: the read path degrades a
  * malformed selection-order map to undefined, which on a write would drop every entry the
@@ -1974,13 +2022,53 @@ function codexAccountPickerEnabledError(value: unknown): string | null {
 }
 
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
+/**
+ * Reject a loopback-listener port that collides with the proxy port (#1102).
+ *
+ * The schema can only check the shape of each field on its own; the two ports being distinct
+ * is a relationship between them. Letting the pair through would surface as a startup failure
+ * after the public listener already bound, which reads like an unrelated port conflict.
+ *
+ * This is write-time only, matching `blankHostnameError`: a live caller can be told the value
+ * is wrong, whereas a hand-edited config on the read path degrades to undefined rather than
+ * resetting the whole file.
+ */
+function loopbackListenerPortError(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const listener = (value as Record<string, unknown>).unauthenticatedLoopbackListener;
+  if (listener === undefined) return null;
+  if (!listener || typeof listener !== "object" || Array.isArray(listener)) {
+    return "schema_invalid: unauthenticatedLoopbackListener: must be an object or omitted";
+  }
+  const entry = listener as Record<string, unknown>;
+  // `enabled` must be a real boolean. The schema's `.catch(undefined)` would otherwise DELETE
+  // a `"true"` string entry and report success, leaving an operator convinced they enabled an
+  // unauthenticated listener that is in fact off. Load-time still degrades quietly — a hand
+  // edit must not reset the file — but a live caller gets told.
+  if (typeof entry.enabled !== "boolean") {
+    return "schema_invalid: unauthenticatedLoopbackListener.enabled: must be a boolean";
+  }
+  if (entry.enabled !== true) return null;
+  const listenerPort = entry.port;
+  if (typeof listenerPort !== "number" || !Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must be an integer port when enabled";
+  }
+  const proxyPort = (value as Record<string, unknown>).port;
+  if (typeof proxyPort === "number" && proxyPort === listenerPort) {
+    return "schema_invalid: unauthenticatedLoopbackListener.port: must differ from the proxy port";
+  }
+  return null;
+}
+
 export function validateConfigCandidate(value: unknown): { ok: true; config: OcxConfig } | { ok: false; error: string } {
   const boundaryError = blankHostnameError(value)
     ?? claudeSubagentEffortError(value)
     ?? appOwnedMemoryBudgetError(value)
+    ?? upstreamHostCircuitThresholdError(value)
     ?? googleAntigravityStaticCatalogVersionError(value)
     ?? codexAccountPrioritiesError(value)
-    ?? codexAccountPickerEnabledError(value);
+    ?? codexAccountPickerEnabledError(value)
+    ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
   if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };

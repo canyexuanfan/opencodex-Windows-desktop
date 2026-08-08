@@ -7,6 +7,7 @@
  * unchanged. The Responses output (SSE or JSON) is converted back to Anthropic shape.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
+import { sseFieldValue } from "../lib/sse-decoder";
 import { enforceAnthropicImageLimits, sniffImageDimensions } from "../adapters/anthropic-image-guard";
 import { normalizeAnthropicImages } from "../adapters/anthropic-image-normalize";
 import { AnthropicRequestError, anthropicToResponsesTranslation, extractOcxEffortDirective, extractOcxRouteDirective, resolveInboundModel, type ClaudeCacheKeySource } from "../claude/inbound";
@@ -171,7 +172,11 @@ export function tapAnthropicSseForLog(
     while ((sep = buffer.indexOf("\n\n")) !== -1) {
       const frame = buffer.slice(0, sep);
       buffer = buffer.slice(sep + 2);
-      const dataLine = frame.split("\n").filter(l => l.startsWith("data: ")).map(l => l.slice(6)).join("");
+      const dataLine = frame
+        .split("\n")
+        .map(l => sseFieldValue(l, "data"))
+        .filter((v): v is string => v !== null)
+        .join("");
       if (!dataLine) continue;
       let data: unknown;
       try { data = JSON.parse(dataLine); } catch { continue; }

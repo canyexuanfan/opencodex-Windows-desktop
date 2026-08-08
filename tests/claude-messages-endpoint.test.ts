@@ -415,6 +415,34 @@ function freshLogCtx(): RequestLogContext {
 
 const MESSAGE_START_FRAME = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n';
 
+// #1170: the space after `data:` is optional in text/event-stream. This tap extracted usage with
+// a hardcoded `data: ` prefix, so a compliant provider that omits the space produced a logged turn
+// with no usage at all.
+const UNSPACED_USAGE_FRAMES = [
+  'event:message_start\ndata:{"type":"message_start","message":{"usage":{"input_tokens":11}}}\n\n',
+  'event:message_delta\ndata:{"type":"message_delta","usage":{"output_tokens":7}}\n\n',
+].join("");
+
+test("A0: usage extraction accepts unspaced data fields (#1170)", async () => {
+  const upstream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(sseEncoder.encode(UNSPACED_USAGE_FRAMES));
+      controller.close();
+    },
+  });
+  const { calls, finalize } = spyFinalize();
+  const ctx = freshLogCtx();
+  const tap = tapAnthropicSseForLog(upstream, ctx, finalize, { stallMs: 5_000, maxBytes: 0 });
+  const text = await new Response(tap).text();
+
+  // The bytes pass through untouched either way; what the strict prefix broke was the inspection.
+  expect(text).toContain("message_start");
+  // "terminal" rather than "eof" is itself part of the fix: recognizing the unspaced
+  // `message_delta` is what lets the tap classify the close as a real terminal frame.
+  expect(calls).toEqual([{ status: 200, closeReason: "terminal" }]);
+  expect(ctx.usage).toEqual(expect.objectContaining({ inputTokens: 11, outputTokens: 7 }));
+});
+
 test("A1: stalled upstream body gets an Anthropic timeout_error tail and body_stall close reason", async () => {
   const upstream = new ReadableStream<Uint8Array>({
     start(controller) {

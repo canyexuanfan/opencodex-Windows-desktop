@@ -352,6 +352,7 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
   let lastResult: TransitionStateUpdate | undefined;
   let initialIdentity: string | undefined;
   let databaseWasAbsent = false;
+  let databaseWasEmpty = false;
 
   try {
     try {
@@ -359,6 +360,12 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
       if (before.isSymbolicLink() || !before.isFile()) {
         throw new CodexUserIdentityRefusal("The coordinator database path is not a real file.");
       }
+      // sqlite3_open_v2(..., SQLITE_OPEN_CREATE) makes the pathname visible
+      // before the first schema write. A racing process can therefore observe a
+      // real but zero-byte file that carries no coordinator authority yet. Treat
+      // that exact state like ENOENT; any non-empty unversioned database remains
+      // legacy-ambiguous below.
+      databaseWasEmpty = before.size === 0;
       if (process.platform !== "win32") {
         const uid = process.getuid?.();
         // Ownership is decided here; MODE is not.
@@ -415,7 +422,7 @@ export function openCodexCoordinatorTransaction(finalDatabasePath: string): Code
     initialIdentity = `${opened.dev}:${opened.ino}`;
     database.exec("PRAGMA busy_timeout = 0; PRAGMA locking_mode = NORMAL; BEGIN IMMEDIATE");
     transactionOpen = true;
-    initialize(database, databaseWasAbsent);
+    initialize(database, databaseWasAbsent || databaseWasEmpty);
   } catch (cause) {
     if (transactionOpen) {
       try { database?.exec("ROLLBACK"); } catch { /* close releases the transaction */ }

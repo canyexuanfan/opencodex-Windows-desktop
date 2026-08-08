@@ -40,12 +40,12 @@ tells you exactly what to change:
   plan** (or equivalent substance). When the title or description mentions
   `gui`, the description must include a screenshot of the UI change; the check
   keeps the PR a draft and comments until the screenshot is present. A
-  maintainer (OWNER / COLLABORATOR / MEMBER — repository owners,
-  collaborators, and members) can waive the screenshot
-  requirement with an issue comment saying the change does not touch the GUI
-  (for example "no gui changes"); a contributor PR author cannot self-waive
-  (a maintainer who authors the PR can waive, but they already hold push
-  permission and are not gated by the contributor checklist).
+  maintainer can waive a false-positive GUI cue by adding the
+  `gui-screenshot-waived` label; adding or removing that label immediately
+  re-evaluates the gate. Legacy maintainer comments such as "no gui changes"
+  are still recognised on the next PR event for compatibility, but comments
+  themselves no longer trigger the privileged PR gate. A contributor cannot
+  self-waive the screenshot requirement.
   Contributor PRs (authors without repository push permission) open in draft
   and stay there until a four-box review-readiness checklist in the
   description is complete: local CI green, the branch on the latest `dev`
@@ -71,6 +71,13 @@ tells you exactly what to change:
   unticks the matching box and keeps the PR a draft. When the checklist is
   complete and every gate is green, the gate adds a `review-ready` label as a
   visible status marker at the ready moment.
+  CodeRabbit status-comment edits do not trigger the PR gate. CodeRabbit's
+  successful `CodeRabbit` commit status wakes the trusted default-branch gate
+  through the `status` event. The gate maps that status SHA to exactly one open
+  PR whose current head still matches, then re-reads live review threads and
+  review bodies before changing checklist, label, comment, or draft state. An
+  ambiguous or stale SHA association is ignored, and no PR-head code is
+  executed with the gate's write-capable token.
 
 - **Hygiene.** Behavior changes need a test; new lint or type suppressions,
   focused or skipped tests, empty catch blocks, edited generated output, and a
@@ -98,11 +105,12 @@ right; say why when it is wrong. It does not block a merge.
 
 ### When a workflow change takes effect
 
-`enforce-target` and `label` run on `pull_request_target`, which GitHub always
-loads from the repository **default branch**. A change to either takes effect
-only after it is promoted to `main` — merging it to `dev` does not change live
-behavior. The cross-platform CI workflow runs on `pull_request` and takes effect
-as soon as it is on the branch being targeted.
+`enforce-target` and `label` use trusted default-branch automation. The PR gate
+runs on `pull_request_target` and on CodeRabbit `status` events, both loaded
+from the repository default branch; the write-capable behavior therefore
+changes only after the gate revision is promoted to `main`. The cross-platform
+CI workflow runs on `pull_request` and takes effect as soon as it is on the
+branch being targeted.
 
 ## Sponsored surfaces
 

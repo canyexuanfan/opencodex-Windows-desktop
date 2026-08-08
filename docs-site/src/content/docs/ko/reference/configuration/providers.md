@@ -23,7 +23,8 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 | `autoSwitchThreshold?` | `number` | `80` | 사용량 기반 선제 전환 임계값입니다. `quota`는 바인딩된 작업과 바인딩 없는 작업의 다음 요청을 모두 재평가할 수 있고, `fill-first`는 바인딩 없는 작업 배정의 소진 기준으로만 사용하며, 기본 `round-robin` 선택은 이 값을 사용하지 않습니다. 알려진 5시간, 주간, 30일 quota window 중 가장 높은 점수를 씁니다. `0`은 사용량 기반 전환만 끄며 바인딩 없는 작업 배정이나 실패 복구는 끄지 않습니다. |
 | `accountPoolStrategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | 새 작업/바인딩 없는 Codex 요청의 계정 배정 전략입니다. `(parent thread id, quota scope)`의 live affinity가 없으면 바인딩 없는 요청이며, 프록시 재시작이나 affinity 초기화 뒤에는 기존에 보이던 작업도 바인딩이 없어질 수 있습니다. `quota`는 활성 계정이 없을 때 알려진 usage가 가장 낮은 적격 계정을 선택하고, 적격 활성 계정이 `autoSwitchThreshold` 미만이면 유지합니다. 임계값 도달 뒤에는 바인딩 없는 요청이나 바인딩된 작업의 다음 요청을 usage가 더 낮은 적격 계정으로 옮길 수 있습니다. `round-robin`은 바인딩 없는 요청을 균등 분배하고, `fill-first`는 cooldown, 사용 불가 또는 drain threshold까지 활성 계정에 배정합니다. |
 | `accountPoolStickyLimit?` | `number` | `1` | 한 round-robin 선택이 다음으로 넘어가기 전에 유지하는 새 작업/바인딩 없는 작업 배정 수입니다. 카운터는 업스트림 성공 뒤가 아니라 작업을 바인딩할 때 증가합니다. 범위 1–100이며 `accountPoolStrategy`가 `round-robin`일 때만 적용됩니다. |
-| `upstreamFailoverThreshold?` | `number` | `3` | 연속된 일시적 실패가 이 횟수에 도달하면 이후 새 세션은 failover됩니다. `0`으로 두면 비활성화됩니다. 입증된 연결 전 DNS/TCP 도달 불가 실패는 provider-host 범위로 기록되며 계정 상태, 쿨다운, 스레드/세션 선호도, 활성 계정 선택 또는 Pool 라우팅에 영향을 주지 않고 이 임계값에도 집계되지 않습니다. |
+| `upstreamFailoverThreshold?` | `number` | `3` | 연속된 일시적 실패가 이 횟수에 도달하면 이후 새 세션은 failover됩니다. `0`으로 두면 비활성화됩니다. 일반 Responses와 네이티브 compact 전송에서 입증된 연결 전 DNS/TCP 도달 불가 실패는 provider-host 범위로 기록되며 계정 상태, 계정 쿨다운, 스레드/세션 선호도, 활성 계정 선택 또는 Pool 라우팅에 영향을 주지 않고 이 임계값에도 집계되지 않습니다. |
+| `upstreamHostCircuitThreshold?` | `number` | `0` | 네이티브 OpenAI forward Responses와 compact 전송에서 입증된 연결 전 DNS/TCP 실패에 적용하는 선택적 회로 차단 임계값입니다. `0`은 비활성화하며, `1`~`20`은 이 횟수만큼 최종 논리 요청이 실패하면 provider-origin을 30초 동안 차단합니다. 차단 중에는 계정 선택이나 업스트림 전송 전에 `Retry-After`가 포함된 `503`을 반환하고, 시간이 지나면 반개방 요청 하나만 허용합니다. 타임아웃과 HTTP 응답은 집계하지 않으며, HTTP 응답이 하나라도 오면 회로를 닫습니다. Codex Pool 라우팅에서 계정이 고정되지 않은 경우에만 적용되며, `codexAccountMode: "direct"` 및 계정 한정 선택자에서는 동작하지 않습니다. |
 | `modelCacheTtlMs?` | `number` | `300000` | 공급자별 `/models` 캐시의 최신성 창입니다. |
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic 프롬프트 캐시 정책입니다. 비활성, 5분짜리 임시, 1시간짜리 확장 중 하나입니다. |
 | `tokenGuardian?` | `OcxTokenGuardianConfig` | 꺼짐 | 선택적 선제 OAuth 갱신과 Codex 계정 워밍업 정책입니다. |
@@ -61,8 +62,8 @@ target도 selector로 재사용할 수 없습니다. raw account id와 email은 
 | `models?` | `string[]` | 시드/폴백 모델 목록입니다. `liveModels: false`이면 이 목록만 발견된 모델로 취급합니다. |
 | `liveModels?` | `boolean` | 시작 또는 동기화 시 라이브 카탈로그를 가져옵니다. 기본값은 `true`입니다. 사용자 지정 공급자는 `${baseUrl}/models`를 사용하고, 내장은 레지스트리 URL을 사용한 뒤 필터링할 수 있습니다. |
 | `selectedModels?` | `string[]` | 발견 후 카탈로그 허용 목록입니다. 값이 비어 있지 않으면 그 id만 노출하고, 비어 있거나 생략하면 발견된 모델을 모두 노출합니다. |
-| `contextWindow?` | `number` | 공급자 전반의 Codex 표시 컨텍스트 상한입니다. 더 작은 라이브 메타데이터는 그대로 유지합니다. |
-| `modelContextWindows?` | `Record<string, number>` | 모델별 컨텍스트 상한입니다. 이 값은 `contextWindow`를 덮어쓰며, 더 작은 라이브 메타데이터를 절대 올리지 않습니다. |
+| `contextWindow?` | `number` | 업스트림 메타데이터가 없을 때 쓰이는 공급자 전반의 컨텍스트 값입니다. 메타데이터가 있으면 상한으로 동작해 더 작은 라이브 값을 그대로 둡니다. Models 대시보드에서 `providerContextCaps`와 별도로 설정합니다. |
+| `modelContextWindows?` | `Record<string, number>` | 모델별 컨텍스트 값이자 상한입니다. `contextWindow`보다 우선하며, 창 크기를 알 수 없으면 설정값을 쓰고 더 작은 라이브 메타데이터가 있으면 그쪽을 따릅니다. |
 | `modelInputModalities?` | `Record<string, string[]>` | `["text"]` 또는 `["text", "image"]` 같은 모델별 입력 힌트입니다. |
 | `modelMaxInputTokens?` | `Record<string, number>` | 카탈로그 자동 압축 힌트에 쓰는 양수 모델별 최대 입력 한도입니다. |
 | `defaultMaxOutputTokens?` | `number` | 클라이언트가 `max_output_tokens`를 생략했을 때 쓰는 공급자 전반의 `openai-chat` 폴백입니다. |

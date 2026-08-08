@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, shouldExposeRoutedModel } from "../src/codex/catalog";
+import { augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, shouldExposeRoutedModel } from "../src/codex/catalog";
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND } from "../src/codex/catalog/parsing";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import {
@@ -13,7 +13,7 @@ import {
   cursorModelInputModalities,
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
-import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
+import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
 import {
   clearModelCache,
   getProviderDiscoveryStatus,
@@ -25,6 +25,7 @@ import {
 import type { OcxConfig } from "../src/types";
 import type { NormalizedComboConfig } from "../src/combos/types";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { enrichProviderFromCatalog } from "../src/oauth/key-providers";
 import { handleManagementAPI } from "../src/server/management-api";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 import {
@@ -2682,7 +2683,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.max_context_window).toBe(350_000);
     expect(routed?.auto_compact_token_limit).toBe(315_000);
     expect(routed?.input_modalities).toEqual(["text"]);
-    expect(getJawcodeModelMetadata("opencode-go", "deepseek-v4-pro")?.contextWindow).toBe(1_000_000);
+    expect(getModelMetadata("opencode-go", "deepseek-v4-pro")?.contextWindow).toBe(1_000_000);
   });
 
   test("opencode-go high-risk models use official jawcode metadata in the Codex catalog", () => {
@@ -2704,12 +2705,12 @@ describe("Codex catalog routed normalization", () => {
       expect(routed?.max_context_window).toBe(item.context);
       expect(routed?.auto_compact_token_limit).toBe(item.auto);
       expect(routed?.input_modalities).toEqual(item.input);
-      expect(getJawcodeModelMetadata("opencode-go", item.id)?.contextWindow).toBe(item.context);
+      expect(getModelMetadata("opencode-go", item.id)?.contextWindow).toBe(item.context);
     }
   });
 
   test("opencode-go catalog sync appends official rows missing from /v1/models", () => {
-    const models = augmentRoutedModelsWithJawcodeMetadata(
+    const models = augmentRoutedModelsWithMetadata(
       [{ provider: "opencode-go", id: "glm-5.2" }],
       ["opencode-go"],
     );
@@ -2725,7 +2726,7 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("opencode-go catalog sync appends jawcode rows with provider context-cap metadata", () => {
-    const models = augmentRoutedModelsWithJawcodeMetadata(
+    const models = augmentRoutedModelsWithMetadata(
       [],
       ["opencode-go"],
       {
@@ -2798,7 +2799,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.context_window).toBe(1_000_000);
     expect(routed?.max_context_window).toBe(1_000_000);
     expect(routed?.auto_compact_token_limit).toBe(900_000);
-    expect(getJawcodeModelMetadata("anthropic", "claude-sonnet-4-6")?.contextWindow).toBe(1_000_000);
+    expect(getModelMetadata("anthropic", "claude-sonnet-4-6")?.contextWindow).toBe(1_000_000);
   });
 
   test("routed entries resolve jawcode provider aliases", () => {
@@ -2896,11 +2897,204 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.supports_reasoning_summaries).toBe(true);
   });
 
+  test("built-in DeepSeek and GLM effort models opt into Codex reasoning propagation (#1100)", async () => {
+    const expected = [
+      { slug: "deepseek/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "deepseek/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "opencode-go/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zai/glm-5.2[1m]", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.6", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-4.7", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+      { slug: "zhipu-bigmodel/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+    ];
+    const models = await gatherRoutedModels({
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        },
+        "opencode-go": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/go/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "glm-5.1", "glm-5"],
+        },
+        zai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.z.ai/api/coding/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-5.2", "glm-5.2[1m]"],
+        },
+        "zhipu-bigmodel": {
+          adapter: "openai-chat",
+          baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+          authMode: "key",
+          apiKey: "sk-test",
+          liveModels: false,
+          models: ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"],
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+
+    for (const item of expected) {
+      const routed = entries.find(entry => entry.slug === item.slug);
+      expect(
+        (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+      ).toEqual(item.efforts);
+      expect(routed?.supports_reasoning_summaries).toBe(true);
+    }
+  });
+
+  test("a custom-named provider on a known vendor endpoint still gets the opt-in (#1100)", () => {
+    // The reporter's ACTUAL configuration, verbatim from #1100: a hand-added provider literally
+    // named "GLM", model glm-5.2, on BigModel's Coding Plan endpoint. Routing worked, so the row
+    // looked healthy, but no registry id is called "GLM" and every piece of registry metadata was
+    // skipped — the ladder was advertised with summaries left false, which is the exact
+    // inconsistency that makes Codex drop the inbound reasoning object.
+    //
+    // This case used to substitute Z.AI's coding endpoint while claiming to be the reporter's
+    // shape. That passed while the reported configuration stayed broken: `/api/coding/paas/v4`
+    // on open.bigmodel.cn had no registry row at all, so the destination lookup found nothing.
+    const reported: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", reported);
+    expect(reported.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Z.AI's own Coding Plan endpoint is a different vendor route and keeps working.
+    const custom: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", custom);
+    expect(custom.modelSupportsReasoningSummaries?.["glm-5.2"]).toBe(true);
+
+    // Same for a renamed row pointing at the BigModel pay-as-you-go endpoint.
+    const renamed: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("my-glm", renamed);
+    expect(renamed.modelSupportsReasoningSummaries?.["glm-4.6"]).toBe(true);
+  });
+
+  test("the destination fallback never claims an unrelated custom endpoint (#1100)", () => {
+    // The fallback matches by vendor endpoint. A provider pointing somewhere we do not
+    // recognize must stay untouched — silently opting a random backend into summary delivery
+    // would produce upstream 400s the user never asked for.
+    const unknown: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.invalid/v1",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("GLM", unknown);
+    expect(unknown.modelSupportsReasoningSummaries).toBeUndefined();
+
+    // An explicit user value wins PER KEY — it does not suppress the other registry defaults.
+    // An earlier revision of this fallback bailed whenever any user map existed, which
+    // recreated the whole-record bug the per-key merge was written to avoid: setting one
+    // model's flag would silently disable the opt-in for every sibling model.
+    const opinionated: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "glm-5.2": false },
+    };
+    enrichProviderFromRegistry("GLM", opinionated);
+    expect(opinionated.modelSupportsReasoningSummaries).toEqual({
+      "glm-5.2": false,
+      "glm-5.2[1m]": true,
+    });
+  });
+
+  test("registry summary defaults are never persisted into saved config (#1100)", () => {
+    // enrichProviderFromCatalog feeds a config that is about to be written to disk. Persisting
+    // today's registry defaults would freeze them as the user's own overrides, so a later
+    // registry correction — e.g. learning a model's backend rejects summary delivery — would
+    // never reach anyone who created their provider first.
+    const created: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+    };
+    enrichProviderFromCatalog("deepseek", created);
+    expect(created.modelSupportsReasoningSummaries).toBeUndefined();
+    // Other registry seeding still reaches the saved config.
+    expect(created.models?.length).toBeGreaterThan(0);
+
+    // A value the user actually submitted is preserved verbatim.
+    const submitted: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+    enrichProviderFromCatalog("deepseek", submitted);
+    expect(submitted.modelSupportsReasoningSummaries).toEqual({ "deepseek-v4-flash": false });
+  });
+
+  test("explicit per-model overrides survive registry backfill", () => {
+    const provider: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.deepseek.com",
+      authMode: "key",
+      modelSupportsReasoningSummaries: { "deepseek-v4-flash": false },
+    };
+
+    enrichProviderFromRegistry("deepseek", provider);
+
+    expect(provider.modelSupportsReasoningSummaries).toEqual({
+      "deepseek-v4-flash": false,
+      "deepseek-v4-pro": true,
+    });
+  });
+
+  test("routed effort ladders without an opt-in stay conservative about summaries (#1100)", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        plain: {
+          adapter: "openai-chat",
+          baseUrl: "https://plain.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["effort-model"],
+          modelReasoningEfforts: { "effort-model": ["low", "high"] },
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "plain/effort-model");
+
+    expect(
+      (routed?.supported_reasoning_levels as Array<{ effort: string }> | undefined)?.map(level => level.effort),
+    ).toEqual(["low", "high", "max", "ultra"]);
+    expect(routed?.supports_reasoning_summaries).toBe(false);
+  });
+
   test("generated jawcode snapshot is restricted to mapped providers", () => {
-    expect(resolveJawcodeProvider("kimi")).toBe("moonshot");
-    expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();
-    expect(getJawcodeModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
-    expect(getJawcodeModelMetadata("nanogpt", "some-model")).toBeUndefined();
+    expect(resolveMetadataProvider("kimi")).toBe("moonshot");
+    expect(resolveMetadataProvider("nanogpt")).toBeUndefined();
+    expect(getModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
+    expect(getModelMetadata("nanogpt", "some-model")).toBeUndefined();
   });
 
   test("provider config model metadata reaches Codex catalog for static models", async () => {
@@ -2927,6 +3121,117 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.max_context_window).toBe(321_000);
     expect(routed?.auto_compact_token_limit).toBe(288_900);
     expect(routed?.input_modalities).toEqual(["text", "image"]);
+  });
+
+  // #1073's exact reproduction: a provider whose /models returns nothing but ids. Two cases,
+  // deliberately not one — a single test that sets `modelContextWindows` would keep passing
+  // with the provider-wide `?? prov.contextWindow` fallback deleted, because the per-model
+  // value is chosen first. Each ablation needs its own oracle.
+  //
+  // No `modelMaxInputTokens` in either fixture: auto_compact_token_limit is
+  // min(floor(contextWindow * 0.9), maxInputTokens), so setting one would move the expectation.
+  test("an id-only /models honors the provider-wide contextWindow fallback (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 350_000,
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    expect(routed?.context_window).toBe(350_000);
+    expect(routed?.max_context_window).toBe(350_000);
+    expect(routed?.auto_compact_token_limit).toBe(315_000);
+  });
+
+  test("a per-model contextWindow outranks the provider-wide one (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }, { id: "other-model" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 256_000,
+          modelContextWindows: { "gpt-5.6-luna": 350_000 },
+        },
+      },
+    });
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+
+    expect(entries.find(e => e.slug === "sub2api/gpt-5.6-luna")?.context_window).toBe(350_000);
+    // The model without an override still gets the provider default, which is what makes this
+    // a comparison rather than a restatement of the previous test.
+    expect(entries.find(e => e.slug === "sub2api/other-model")?.context_window).toBe(256_000);
+  });
+
+  test("an id-only model with no configured window keeps the conservative fallback (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.max_context_window).toBe(128_000);
+    expect(routed?.auto_compact_token_limit).toBe(115_200);
+  });
+
+  test("upstream metadata smaller than the configured window wins (#1073)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-luna", context_length: 64_000 }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+          contextWindow: 350_000,
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-luna");
+
+    // The configured value supplies capacity when upstream has none; it never inflates a
+    // capacity upstream actually reported.
+    expect(routed?.context_window).toBe(64_000);
   });
 
   test("liveModels false preserves configured catalog metadata without live fetch", async () => {

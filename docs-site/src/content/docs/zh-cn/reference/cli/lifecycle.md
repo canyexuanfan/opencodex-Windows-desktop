@@ -28,7 +28,9 @@ ocx start --port 8080
 
 ### `ocx restart`
 
-执行 `stop` 然后执行 `ensure`：停止代理/服务，恢复原生 Codex，在后台启动代理，并将当前端口重新同步回 Codex。
+代理正在运行时，请求经过验证的准确 PID 和端口执行原位重启，等待正常排空，并确认同一端口上出现不同的运行时 PID。整个过程保留托管路由和服务监督；若请求结果不确定，也不会将其重放为单独的 stop/start。只有没有代理运行时，命令才回退到常规的 `ensure` 启动。
+
+如果无法将正在运行的监听器验证为对应的运行时 PID（包括升级前的代理），重启会安全失败，不会回退到 `ensure` 或 stop/start。确认所有权后，请依次运行一次 `ocx stop` 和 `ocx start`。
 
 ### `ocx ensure`
 
@@ -209,7 +211,7 @@ ocx codex-shim uninstall
 
 ### `ocx update [--tag latest|preview]`
 
-从 npm 自更新 opencodex。稳定版安装使用 `@latest`；预览版安装保持在 `@preview`，除非你传入 `--tag latest|preview`。它会检测源码检出，并提示你改为运行 `git pull && bun install`；如果你已经是该标签的最新版本，则不会执行任何操作。在替换文件之前会先停止正在运行的代理；已安装的服务会自动重建并启动，而前台安装则会打印 `ocx start` 作为下一步。
+从 npm 自更新 opencodex。稳定版安装使用 `@latest`；预览版安装保持在 `@preview`，除非你传入 `--tag latest|preview`。它会检测源码检出，并提示你改为运行 `git pull && bun install`；如果你已经是该标签的最新版本，则不会执行任何操作。对于 npm 安装，它会在停止任何进程之前，对 Unix 缓存的所有权和访问权限执行有界检查。嵌套符号链接会通过 `lstat` 检查但不会跟随；Windows 会明确跳过这项仅适用于 Unix 的检查。检查失败时，更新会在托盘和代理仍运行的情况下中止。随后才会在替换文件之前停止正在运行的代理；已安装的服务会自动重建并启动，而前台安装则会打印 `ocx start` 作为下一步。持久化前，仪表板更新记录会隐去用户配置文件/缓存路径以及 UID/GID 值。
 
 ```bash
 ocx update

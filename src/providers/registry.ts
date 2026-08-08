@@ -196,6 +196,8 @@ export interface ProviderRegistryEntry {
   supportsServiceTier?: boolean;
   /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
   preserveResponsesReasoningContent?: boolean;
+  /** Registry defaults for per-model Codex reasoning propagation; explicit user keys win during enrichment. */
+  modelSupportsReasoningSummaries?: Record<string, boolean>;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -1104,6 +1106,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ...Object.fromEntries(OPENCODE_GO_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP])),
       ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     },
+    modelSupportsReasoningSummaries: {
+      "glm-5.2": true,
+      "glm-5.1": true,
+      "glm-5": true,
+      ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, true])),
+    },
     thinkingToggleModels: OPENCODE_GO_THINKING_TOGGLE_MODELS,
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
@@ -1307,10 +1315,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       // for no gain.
       "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
     },
-    // DeepSeek's Codex Responses stream can deliver output without closing on the
-    // terminal event. Keep Codex on WebSocket, but use the provider's bounded JSON
-    // response upstream so the bridge can synthesize a complete WS event sequence.
-    modelResponsesUpstreamStreaming: { "deepseek-v4-flash": false },
+    // The #875-era bounded-JSON force (`modelResponsesUpstreamStreaming`) is retired
+    // for this entry: the official guide documents a `response.completed` /
+    // `response.incomplete` / `response.failed` terminal with NO `data: [DONE]`
+    // sentinel, and live probes (2026-08-07, including the tool-result replay shape
+    // that originally stalled) close on the terminal. The relay's terminal boundary
+    // (src/server/relay.ts) already cuts the stream at that event and synthesizes
+    // `[DONE]`, so forcing stream:false only delayed every byte until generation
+    // finished (28-46 s of silence on long turns). The registry knob itself remains
+    // for providers that need it — re-adding one line here restores the old policy.
+    // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
+    // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
     // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
     // clients stuck on an uncommitted turn (#938). Client-facing only — raw
     // continuation snapshots keep the upstream ids.
@@ -1340,6 +1355,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     */
     modelReasoningEfforts: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
+    modelSupportsReasoningSummaries: Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: DEEPSEEK_THINKING_MODELS,
     // Issue #88: every DeepSeek API model is text-only input (no image support upstream) — the
     // vision sidecar describes attached images for them, and the catalog advertises image input
@@ -1653,6 +1669,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelSuffixBracketStrip: true,
     noVisionModels: ZAI_GLM_52_MODELS,
     modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: ZAI_GLM_52_MODELS,
   },
   // Zhipu's domestic BigModel platform: OpenAI-compatible pay-as-you-go on open.bigmodel.cn — a
@@ -1689,10 +1706,49 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: Object.fromEntries(
       ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, THINKING_TOGGLE_MAP]),
     ),
+    modelSupportsReasoningSummaries: Object.fromEntries(
+      ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, true]),
+    ),
     preserveReasoningContentModels: ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS,
     // No liveModels: GET /api/paas/v4/models has not been observed to answer on this host, and a
     // false live claim yields an empty picker at runtime. Flip it on once someone verifies it.
     note: "Domestic BigModel pay-as-you-go endpoint (open.bigmodel.cn)",
+  },
+  // BigModel's Coding Plan is a SEPARATE endpoint from the pay-as-you-go row above, and that is
+  // the whole reason this one exists. #1100 was reported against
+  // `https://open.bigmodel.cn/api/coding/paas/v4`; the row above covers only `/api/paas/v4`, so
+  // destination enrichment matched nothing, `modelSupportsReasoningSummaries` stayed unset, and
+  // Codex kept dropping the inbound reasoning object — effort displayed as `-`.
+  //
+  // A prefix or fuzzy endpoint match would have been the shortcut. It is also how a config
+  // pointed at one vendor route silently inherits another route's metadata, so endpoints stay
+  // exact and each one gets its own row.
+  //
+  // The id is NOT `glm-cn`, which the free-provider directory already binds to this same coding
+  // path: registering it here would let routedProviderConfig() canonicalize a saved `glm-cn`
+  // config onto this baseUrl. Same reasoning as `zhipu-bigmodel` above.
+  //
+  // Models follow Z.AI's coding-plan list rather than the pay-as-you-go one. This endpoint is
+  // the subscription product, and the reporter's `glm-5.2` is only on that side.
+  {
+    id: "zhipu-bigmodel-coding",
+    label: "Zhipu AI — BigModel Coding Plan",
+    baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
+    defaultModel: "glm-5.2",
+    models: ["glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    jawcodeBundle: "zai",
+    modelContextWindows: { "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    modelSuffixBracketStrip: true,
+    noVisionModels: ZAI_GLM_52_MODELS,
+    modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
+    preserveReasoningContentModels: ZAI_GLM_52_MODELS,
+    // No liveModels: the same reasoning as the pay-as-you-go row — an unverified live claim
+    // yields an empty picker at runtime.
+    note: "Domestic BigModel Coding Plan endpoint (open.bigmodel.cn)",
   },
   { id: "nanogpt", label: "NanoGPT", baseUrl: "https://nano-gpt.com/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://nano-gpt.com/api" },
   { id: "synthetic", label: "Synthetic", baseUrl: "https://api.synthetic.new/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://synthetic.new" },
@@ -2016,6 +2072,34 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     defaultModel: "mimo-auto",
     models: ["mimo-auto"],
     note: "No key needed — uses Xiaomi MiMo's free public tier (limited-time offer). A JWT is bootstrapped automatically with an anonymous random client id stored locally. The endpoint contract mirrors the official MiMoCode client and is not publicly documented — Xiaomi may change or restrict it at any time. Prompts may be processed/retained by Xiaomi; do not send confidential material.",
+  },
+  // Xiaomi MiMo paid token plan. Separate host and wire from both `xiaomi` (Anthropic) and
+  // `mimo-free` (free tier, bespoke adapter), so it needs its own entry rather than a variant.
+  //
+  // Pinned to openai-chat deliberately (#1158). The endpoint answers the Responses wire for
+  // plain turns, which is why users configuring it by hand pick `openai-responses` — MiMo
+  // documents Responses support. But its gateway rejects `type: "custom"` tools with
+  // `400 responses_feature_not_supported`, and `apply_patch` is a custom tool, so every agentic
+  // turn fails while chat turns succeed. The Chat path lowers custom tools to `{input: string}`
+  // functions and restores them as `custom_tool_call`, so the capability survives intact.
+  // Stripping the tools instead would stop the 400 and disable the agent loop.
+  {
+    id: "mimo",
+    label: "Xiaomi MiMo (token plan)",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://xiaomimimo.com",
+    defaultModel: "mimo-v2.5-pro",
+    models: ["mimo-v2.5-pro", "mimo-v2.5"],
+    // The gateway validates the ladder strictly and rejects anything above `high`.
+    reasoningEfforts: ["low", "medium", "high"],
+    reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
+    // A user may already have hand-rolled a provider under this id against a different host;
+    // without this, routedProviderConfig() would canonicalize their base URL onto ours and send
+    // their key somewhere they did not choose.
+    preserveCustomDestination: true,
+    note: "Xiaomi MiMo paid token plan. Pinned to the Chat wire: the Responses endpoint rejects freeform (custom) tools such as apply_patch with 400 responses_feature_not_supported, so agentic turns fail there while plain turns succeed. Reasoning tiers above high are clamped.",
   },
   { id: "cloudflare-ai-gateway", label: "Cloudflare AI Gateway", baseUrl: "https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic", adapter: "anthropic", authKind: "key", dashboardUrl: "https://dash.cloudflare.com/?to=/:account/ai/ai-gateway" },
   {
