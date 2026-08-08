@@ -14,7 +14,7 @@ import {
 import { knownModelIdsForProvider, routeModel } from "../src/router";
 import { buildCatalogEntries, resetCatalogRuntimeStateForTests } from "../src/codex/catalog";
 import { clearModelCache } from "../src/codex/model-cache";
-import { getJawcodeModelMetadata } from "../src/generated/jawcode-model-metadata";
+import { getModelMetadata } from "../src/generated/model-metadata";
 import type { RawEntry } from "../src/codex/catalog";
 import type { OcxConfig } from "../src/types";
 
@@ -164,7 +164,7 @@ describe("catalog emission (Codex-facing)", () => {
   });
 
   test("jawcode metadata resolves on the native id (template + null-template)", () => {
-    const meta = getJawcodeModelMetadata("openrouter", "anthropic/claude-sonnet-5");
+    const meta = getModelMetadata("openrouter", "anthropic/claude-sonnet-5");
     expect(meta?.contextWindow).toBe(1_000_000);
     const model = { provider: "openrouter", id: "anthropic/claude-sonnet-5" };
 

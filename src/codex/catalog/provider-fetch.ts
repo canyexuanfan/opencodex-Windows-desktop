@@ -27,7 +27,7 @@ import {
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
-import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
+import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
@@ -1222,7 +1222,7 @@ async function gatherRoutedModelsUncached(
     config,
     capture.openAiApiPolicy,
   );
-  const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(provider => provider.name), config.providers, config)
+  const all = augmentRoutedModelsWithMetadata(apiAugmented, activeProviders.map(provider => provider.name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).
@@ -1413,7 +1413,7 @@ function augmentRoutedModelsWithCapturedOpenAiApiRows(
   ];
 }
 
-export function augmentRoutedModelsWithJawcodeMetadata(
+export function augmentRoutedModelsWithMetadata(
   models: CatalogModel[],
   providerNames: string[],
   providers?: Record<string, OcxProviderConfig>,
@@ -1424,9 +1424,9 @@ export function augmentRoutedModelsWithJawcodeMetadata(
   for (const provider of providerNames) {
     if (!JAWCODE_CATALOG_AUGMENT_PROVIDERS.has(provider)) continue;
     if (providers?.[provider]?.liveModels === false) continue;
-    const jawcodeProvider = resolveJawcodeProvider(provider);
+    const jawcodeProvider = resolveMetadataProvider(provider);
     if (!jawcodeProvider) continue;
-    for (const meta of listJawcodeModelMetadata(jawcodeProvider)) {
+    for (const meta of listModelMetadata(jawcodeProvider)) {
       const key = `${provider}/${meta.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

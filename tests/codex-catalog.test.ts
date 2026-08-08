@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { augmentRoutedModelsWithJawcodeMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, shouldExposeRoutedModel } from "../src/codex/catalog";
+import { augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, shouldExposeRoutedModel } from "../src/codex/catalog";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import {
   CURSOR_STATIC_MODELS,
@@ -12,7 +12,7 @@ import {
   cursorModelInputModalities,
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
-import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
+import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
 import {
   clearModelCache,
   getProviderDiscoveryStatus,
@@ -2176,7 +2176,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.max_context_window).toBe(350_000);
     expect(routed?.auto_compact_token_limit).toBe(315_000);
     expect(routed?.input_modalities).toEqual(["text"]);
-    expect(getJawcodeModelMetadata("opencode-go", "deepseek-v4-pro")?.contextWindow).toBe(1_000_000);
+    expect(getModelMetadata("opencode-go", "deepseek-v4-pro")?.contextWindow).toBe(1_000_000);
   });
 
   test("opencode-go high-risk models use official jawcode metadata in the Codex catalog", () => {
@@ -2198,12 +2198,12 @@ describe("Codex catalog routed normalization", () => {
       expect(routed?.max_context_window).toBe(item.context);
       expect(routed?.auto_compact_token_limit).toBe(item.auto);
       expect(routed?.input_modalities).toEqual(item.input);
-      expect(getJawcodeModelMetadata("opencode-go", item.id)?.contextWindow).toBe(item.context);
+      expect(getModelMetadata("opencode-go", item.id)?.contextWindow).toBe(item.context);
     }
   });
 
   test("opencode-go catalog sync appends official rows missing from /v1/models", () => {
-    const models = augmentRoutedModelsWithJawcodeMetadata(
+    const models = augmentRoutedModelsWithMetadata(
       [{ provider: "opencode-go", id: "glm-5.2" }],
       ["opencode-go"],
     );
@@ -2219,7 +2219,7 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("opencode-go catalog sync appends jawcode rows with provider context-cap metadata", () => {
-    const models = augmentRoutedModelsWithJawcodeMetadata(
+    const models = augmentRoutedModelsWithMetadata(
       [],
       ["opencode-go"],
       {
@@ -2290,7 +2290,7 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.context_window).toBe(1_000_000);
     expect(routed?.max_context_window).toBe(1_000_000);
     expect(routed?.auto_compact_token_limit).toBe(900_000);
-    expect(getJawcodeModelMetadata("anthropic", "claude-sonnet-4-6")?.contextWindow).toBe(1_000_000);
+    expect(getModelMetadata("anthropic", "claude-sonnet-4-6")?.contextWindow).toBe(1_000_000);
   });
 
   test("routed entries resolve jawcode provider aliases", () => {
@@ -2582,10 +2582,10 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("generated jawcode snapshot is restricted to mapped providers", () => {
-    expect(resolveJawcodeProvider("kimi")).toBe("moonshot");
-    expect(resolveJawcodeProvider("nanogpt")).toBeUndefined();
-    expect(getJawcodeModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
-    expect(getJawcodeModelMetadata("nanogpt", "some-model")).toBeUndefined();
+    expect(resolveMetadataProvider("kimi")).toBe("moonshot");
+    expect(resolveMetadataProvider("nanogpt")).toBeUndefined();
+    expect(getModelMetadata("moonshot", "kimi-k2.5")?.contextWindow).toBe(262_144);
+    expect(getModelMetadata("nanogpt", "some-model")).toBeUndefined();
   });
 
   test("provider config model metadata reaches Codex catalog for static models", async () => {

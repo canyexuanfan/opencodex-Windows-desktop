@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex/catalog";
-import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
+import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
 import { buildInitProviders } from "../src/cli/init";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 import { enrichProviderFromCatalog, KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
@@ -767,8 +767,8 @@ describe("provider registry parity", () => {
       "zhipu-bigmodel": "zai",
       "zhipu-bigmodel-coding": "zai",
     });
-    expect(resolveJawcodeProvider("gemini")).toBe("google");
-    expect(resolveJawcodeProvider("minimax-cn")).toBe("minimax");
+    expect(resolveMetadataProvider("gemini")).toBe("google");
+    expect(resolveMetadataProvider("minimax-cn")).toBe("minimax");
   });
 
   test("legacy azure adapter spelling remains accepted", () => {
@@ -782,8 +782,8 @@ describe("provider registry parity", () => {
   });
 
   test("MiniMax metadata lookup tolerates routed lowercase ids", () => {
-    expect(getJawcodeModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
-    expect(getJawcodeModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
+    expect(getModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
+    expect(getModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
 
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "minimax", id: "minimax-m2.5" },
