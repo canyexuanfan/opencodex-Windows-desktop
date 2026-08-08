@@ -13,7 +13,7 @@ description: 공급자 항목, 인증, 엔드포인트, 모델 카탈로그, 할
 | `openaiProviderTierVersion?` | `2` | 마이그레이션으로 설정됨 | 옵션을 인식하는 단일 OpenAI 투영이 완료되었음을 표시합니다. |
 | `disabledModels?` | `string[]` | — | Codex catalog와 `/v1/models`에서는 숨기지만 직접 proxy 호출은 차단하지 않습니다. routed id는 목록에서 제거됩니다. account-qualified native id는 해당 selector row만 숨기고, bare native GPT id는 bare row와 그 model의 모든 account-selector row를 숨깁니다. Models 페이지에는 bare native 행과 routed 행만 표시됩니다. selector-qualified 행 하나만 숨기려면 이 설정 필드에 직접 추가하세요. |
 | `providerContextCaps?` | `Record<string, number>` | `{}` | 공급자별 Codex 표시 컨텍스트 상한입니다. 상한은 이미 알려진 컨텍스트 윈도만 낮춥니다. |
-| `contextCapValue?` | `number` | `350000` | 대시보드의 컨텍스트 상한 컨트롤이 사용하는 값입니다. 이 값을 바꾸면 활성화된 모든 `providerContextCaps` 항목이 함께 갱신됩니다. |
+| `contextCapValue?` | `number` | `350000` | 대시보드의 컨텍스트 상한 컨트롤이 사용하는 기본값입니다. "모든 라우팅된 공급자에 적용" 토글이 켜져 있을 때만 값을 변경하면 기존 `providerContextCaps` 항목이 없는 공급자를 포함해 모든 라우팅된 공급자에 값이 적용됩니다. 그렇지 않으면 각 공급자는 자체 상한을 유지합니다. |
 | `codexAccounts?` | `CodexAccount[]` | `[]` | Codex Auth가 관리하는 ChatGPT/Codex 풀 계정 메타데이터입니다. 비밀 정보는 `codex-accounts.json`에 따로 저장됩니다. |
 | `pausedCodexAccountIds?` | `string[]` | `[]` | 일시 중지된 `__main__` 계정을 포함해, 재개될 때까지 Pool 선택에서 제외되는 계정입니다. |
 | `codexAccountNamespaces?` | `Record<string, string>` | — | 임의의 공개 model selector를 저장된 Codex 계정 target에 연결하는 선택적 map입니다. target이 존재하는 각 selector는 Codex picker에 별도의 `<selector>/<native-openai-model>` row를 추가하며, 각 row는 해당 계정만 사용합니다. selector가 하나라도 활성화되면 bare native row는 picker에서 숨겨지지만, 명시적으로 비활성화하지 않는 한 해당 id는 계속 routing 가능하고 raw `/v1/models`에 표시됩니다. |
