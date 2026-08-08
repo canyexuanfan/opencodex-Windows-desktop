@@ -1,3 +1,4 @@
+import { saveConfigPreservingClaudeCode, withConfigMutationLockSync } from "../config";
 import { removeCodexAccountCredential } from "./account-store";
 import { clearAccountNeedsReauth } from "./account-runtime-state";
 import { getMainChatgptAccountId } from "./auth-collision";
@@ -12,6 +13,13 @@ import { codexAccountNamespaceEntries, codexAccountPickerEnabled } from "./accou
 import type { OcxConfig } from "../types";
 
 let observedMainChatgptAccountId: string | undefined;
+
+export class CodexAccountDeleteCleanupError extends Error {
+  constructor() {
+    super("Account deletion was saved, but local credential cleanup did not complete. Retry removal.");
+    this.name = "CodexAccountDeleteCleanupError";
+  }
+}
 
 export function purgeCodexAccountRuntimeState(accountId: string): void {
   clearAccountNeedsReauth(accountId);
@@ -71,25 +79,61 @@ export function resetMainCodexAccountIdentityTrackingForTests(): void {
   clearMainAccountCredentialPresence();
 }
 
+function restoreRuntimeConfig(target: OcxConfig, snapshot: OcxConfig): void {
+  for (const key of Object.keys(target) as Array<keyof OcxConfig>) delete target[key];
+  Object.assign(target, snapshot);
+}
+
 /**
  * Delete a stored account while retaining its selector binding.
+ *
+ * Config deletion is committed before credentials or runtime state are destroyed. This prevents a
+ * failed config write from leaving a still-configured account with a tombstoned credential. The
+ * whole sequence shares the config mutation coordinator so a cooperating writer cannot re-add the
+ * account between the durable config commit and credential cleanup.
+ *
  * Returns true when a picker-visible row disappeared and the catalog must converge.
  */
 export function deleteCodexAccount(runtimeConfig: OcxConfig, accountId: string): boolean {
-  const hadStoredAccount = (runtimeConfig.codexAccounts ?? [])
-    .some(account => !account.isMain && account.id === accountId);
-  const hadVisiblePickerBinding = hadStoredAccount
-    && codexAccountPickerEnabled(runtimeConfig)
-    && codexAccountNamespaceEntries(runtimeConfig)
-      .some(([, boundAccountId]) => boundAccountId === accountId);
-  removeCodexAccountCredential(accountId);
-  runtimeConfig.codexAccounts = (runtimeConfig.codexAccounts ?? [])
-    .filter(account => account.isMain || account.id !== accountId);
-  forgetCodexAccountPause(runtimeConfig, accountId);
-  forgetCodexAccountPriority(runtimeConfig, accountId);
-  clearCodexAccountPin(runtimeConfig, accountId);
-  if (runtimeConfig.activeCodexAccountId === accountId) runtimeConfig.activeCodexAccountId = undefined;
-  purgeCodexAccountRuntimeState(accountId);
-  invalidateCodexWebSocketsForAccount(accountId);
-  return hadVisiblePickerBinding;
+  let cleanupFailed = false;
+  const pickerVisibilityChanged = withConfigMutationLockSync(() => {
+    const previousConfig = structuredClone(runtimeConfig);
+    const hadStoredAccount = (runtimeConfig.codexAccounts ?? [])
+      .some(account => !account.isMain && account.id === accountId);
+    const hadVisiblePickerBinding = hadStoredAccount
+      && codexAccountPickerEnabled(runtimeConfig)
+      && codexAccountNamespaceEntries(runtimeConfig)
+        .some(([, boundAccountId]) => boundAccountId === accountId);
+
+    runtimeConfig.codexAccounts = (runtimeConfig.codexAccounts ?? [])
+      .filter(account => account.isMain || account.id !== accountId);
+    forgetCodexAccountPause(runtimeConfig, accountId);
+    forgetCodexAccountPriority(runtimeConfig, accountId);
+    clearCodexAccountPin(runtimeConfig, accountId);
+    if (runtimeConfig.activeCodexAccountId === accountId) runtimeConfig.activeCodexAccountId = undefined;
+
+    try {
+      // Persist first. Destructive cleanup below must never run for a deletion that did not become
+      // durable. The auth API's existing follow-up save is intentionally idempotent.
+      saveConfigPreservingClaudeCode(runtimeConfig);
+    } catch (error) {
+      restoreRuntimeConfig(runtimeConfig, previousConfig);
+      throw error;
+    }
+
+    try {
+      removeCodexAccountCredential(accountId);
+      purgeCodexAccountRuntimeState(accountId);
+      invalidateCodexWebSocketsForAccount(accountId);
+    } catch {
+      // Do not throw through the mutation coordinator after config.json committed: that would roll
+      // back only the SQLite generation transaction, not the already-atomic file replacement.
+      cleanupFailed = true;
+    }
+
+    return hadVisiblePickerBinding;
+  });
+
+  if (cleanupFailed) throw new CodexAccountDeleteCleanupError();
+  return pickerVisibilityChanged;
 }
