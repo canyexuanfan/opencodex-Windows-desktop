@@ -6,15 +6,14 @@ Scope: the complete CL-00 contract set on
 `feat/cl-00-compatibility-contracts`, based on
 `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296`. The initial delayed-review
 acceptance was recorded at `12e50a3502fb4af25283538cc717ead2291edd8b`.
-A later CodeRabbit re-review was validated against current production code and
-contract semantics; its accepted contract corrections are incorporated through
-`b62e29395d25b2cd9a1dfd852101dbf7a2c91507` and this record supersedes the
-stale acceptance/status statements from the earlier pass.
+CodeRabbit re-reviews were validated against current production code and the
+contract authority before any change was accepted. This record supersedes the
+stale acceptance/status statements from the earlier passes.
 
-The review was read-only and separate from the original authoring pass. Every
-validated Critical, High, and Medium finding was corrected and re-reviewed
-before this record was finalized. Valid deterministic/security contract defects
-were also corrected even when review severity was lower.
+The review is contract-focused and separate from the original authoring pass.
+Every validated Critical, High, and Medium finding was corrected. Valid
+deterministic and security-contract defects were also corrected regardless of
+review label. CL-02 was not started.
 
 ## Findings and corrections
 
@@ -128,15 +127,14 @@ None.
   append-only, limited the profile claim to compatibility policy, and noted the
   explicit state-mutating `ocx doctor --fix-codex-runtime` mode.
 
-## CodeRabbit re-review remediation
+## CodeRabbit remediation: first pass
 
-All ten unresolved CodeRabbit threads visible on PR #1286 were inspected against
-current branch code/contracts before editing. The valid findings were resolved
-as follows:
+All ten unresolved CodeRabbit threads in the first remediation pass were
+inspected against current branch code/contracts before editing.
 
 1. Stack audit metadata used a non-SHA dependency label where an exact CL-01
-   base revision is required. The stack ledger is refreshed after this review
-   with exact base/head fields and the CL-01 correction requirement.
+   base revision is required. The stack ledger now records exact base/head
+   revisions and the CL-01 correction requirement.
 2. `BehaviorFingerprintV1` did not define deterministic ordering for every
    array-valued closed key. V1 now classifies each allowed array as `set` or
    `ordered`, defines JCS-byte sorting/deduplication for sets, preserves source
@@ -147,63 +145,110 @@ as follows:
    claim/unknown semantics, while attempted environmental blockers remain
    `BLOCKED`.
 4. `[DONE]` handling was selected by the client-facing surface even for a Chat
-   upstream response fixture. Sentinel interpretation now follows the protocol
-   of the byte stream being normalized: an `upstream_response` uses its single
-   resolved upstream protocol, and only OpenAI Chat recognizes exact `[DONE]`.
+   upstream fixture. Sentinel interpretation now follows the protocol of the
+   byte stream being normalized; only OpenAI Chat recognizes exact `[DONE]`.
 5. Two Chat-backed tool-result assertions incorrectly selected Responses
    `input[].call_id`. Production `openai-chat` emits the continuation as
-   `messages[1].tool_call_id`; both canonical selectors now assert that actual
-   Chat wire shape.
+   `messages[1].tool_call_id`; both selectors now assert the actual Chat wire.
 6. Live-probe destination authorization could drift between endpoint
    fingerprinting, credential binding and connect. The security contract now
    requires one immutable per-run `LabDestinationV1` snapshot for every stage
    and fails closed before credential transmission on mutation/re-resolution or
    mismatch.
-7. Ambient environment/proxy handling was not executable enough. The V1
-   inherited-environment allowlist is empty; the runner constructs only
-   `TZ=UTC` and `NO_COLOR=1`, rejects uppercase and lowercase proxy variables,
-   and cannot derive behavior from ambient variables.
+7. Ambient environment/proxy handling was not executable enough. The inherited
+   environment allowlist is empty; the runner constructs only `TZ=UTC` and
+   `NO_COLOR=1`, rejects uppercase/lowercase proxy variables, and cannot derive
+   behavior from ambient variables.
 8. Custom-header fingerprinting lacked resource/canonicalization bounds. The
    broker now enforces entry, duplicate-value, field-name, per-value and
    aggregate byte ceilings before JCS/HMAC, with unknown credential
    classification or overflow failing closed.
 9. Ordinary invalidation wording allowed deletion of shared contract artifacts.
    Only event-private non-contract artifacts may be deleted after invalidation;
-   shared scenario/suite/fixture artifacts survive until no non-invalidated
-   observation references them.
+   shared scenario/suite/fixture artifacts survive until no usable observation
+   references them.
 10. Security acceptance coverage omitted the new invariants. Required tests now
     cover environment/proxy denial, destination snapshot mutation/address drift,
     custom-header canonicalization and bounds, subject-salt rotation, and
     retention expiry/cleanup/unavailable markers.
 
-These corrections remain CL-00 contracts only. No CL-02 implementation or
-runtime live-probe feature was started.
+## CodeRabbit remediation: second pass
+
+CodeRabbit reviewed the remediation again and raised additional deterministic
+and security-contract issues. Every Major finding in that pass was validated as
+material and corrected within CL-00:
+
+1. `invalidation` had no executable payload. It now has a non-empty bounded,
+   sorted/unique target-event set, a closed reason set, all-or-nothing target
+   validation, earlier-event/type constraints, and no implicit uninvalidation.
+2. `sourceManifestDigest` was not reproducible. `ClaimSourceManifestV1` now
+   defines a closed sanitized source snapshot, a domain-separated digest,
+   content-addressed retention, and replay validation. Missing/mismatched source
+   bytes cannot produce `CLAIMED`.
+3. Sidecar dependency sorting omitted `providerInstanceFingerprint`, so two
+   otherwise-equal dependencies could compare as equal. The canonical total
+   ordering now includes it.
+4. Synthetic fixture trust was prose-only. Every expanded protocol V1
+   `fixtureRef` now includes mandatory `ocx-lab-synthetic-v1` marker and
+   `lab_authored` provenance bound to the authority and source commit; these
+   fields participate in the scenario-manifest digest and are validated before
+   fixture admission.
+5. `synthetic_tool` did not say what MCP cases execute. The four MCP V1 cases
+   now carry exact scenario-specific action tokens with closed fixture schemas,
+   deterministic invocation/list/read/boundary behavior, and fail-closed
+   registration for missing/wrong/multiple actions.
+6. The credential broker could still expose the selected secret to Lab code.
+   The contract now keeps secret bytes in trusted credential/transport plumbing
+   and gives the Lab only a non-serializable, destination/auth-transport-bound,
+   one-run/request `LabCredentialLeaseV1` capability.
+7. Required execution limits had no hard maxima. V1 now freezes hard ceilings
+   for wall/connect/first-byte/inactivity time, requests, aggregate input/output
+   bytes, output tokens, tool calls, resident memory, child processes and
+   artifacts; manifests/config/profiles/environment/callers can only tighten
+   them.
+8. Artifact path validation was vulnerable to path-race/symlink substitution if
+   implemented like the unrelated current image-artifact helper. The future Lab
+   store is now required to use trusted-directory-handle, no-follow,
+   descriptor-bound validation/read/write and atomic publication. CL-00 did not
+   alter `src/images/artifacts.ts`; that runtime is outside this contract-only
+   phase.
+9. Physical sensitive-evidence purge did not define canonical projection state.
+   The ledger now defines privacy-safe `purge_tombstone` events, clean atomic
+   ledger replacement, SQLite rebuild/removal, typed `purged_unavailable`
+   artifacts, and mandatory exclusion of every verdict/claim that depended on
+   purged evidence.
+
+The protocol-authority rewrite also fixed the flagged missing final newline.
+Two remaining review notes were editorial-only (`falsey` -> `falsy` in the
+incident prose and a master-plan acceptance phrase); they do not change any
+contract, deterministic behavior, security boundary, acceptance criterion, or
+CL-01 implementation input and are handled as non-blocking review-thread
+responses rather than expanding this contract remediation.
 
 ## Mechanical review evidence
 
-- `022_protocol_v1_cases.json` parses as JSON.
-- 35 unique cases cover all required members of the eight initial suites.
-- 46 fixture artifacts are present: 35 primary vectors and 11 initiating
-  requests.
-- Every fixture digest matches
-  `sha256("ocx-lab:fixture:v1\0" || UTF8(bytesUtf8))`.
-- Every response fixture has one initiating request.
-- The MCP bound vector is exactly 64/65 UTF-8 bytes.
-- All named verifier selectors have one closed deterministic definition.
-- `vision-core.protocol.modality-gate` is the sole V1 negative control and is
-  represented as such in case and suite expansion.
-- Base failure rules contain no control effect; the vision case alone expands
-  the conformance-control rule.
+- `022_protocol_v1_cases.json` remains valid JSON by inspection through the
+  GitHub file API and contains the same 35 case objects / 46 fixture records as
+  the accepted authority.
+- Fixture `bytesUtf8` and fixture digest values were not changed by the
+  CodeRabbit selector/provenance/MCP-action remediation.
 - The two corrected Chat continuation selectors target
   `/upstream/requests/1/json/messages/1/tool_call_id`, matching the current
   `openai-chat` request builder's assistant-call then tool-result message order.
-- The selector-only `022` correction did not change any fixture bytes or fixture
-  digest; it changes expanded scenario/suite manifest digests as expected for
-  the corrected pre-release V1 authority.
+- `fixtureRef` expansion now adds mandatory marker/provenance fields. Therefore
+  all expanded protocol scenario-manifest digests and dependent suite-manifest
+  digests change even though fixture bytes/digests remain unchanged.
+- Four MCP `requiredHarnessFeatures` arrays now additionally contain their exact
+  closed action token. Those four scenario-manifest digests therefore also
+  change for semantic reasons.
+- `vision-core.protocol.modality-gate` remains the sole V1 negative control.
+- Base failure rules contain no control effect; the vision case alone expands
+  the conformance-control rule.
+- The MCP bound fixture remains the accepted exact 64/65 UTF-8-byte vector.
 
 ## Repository verification
 
-Initial acceptance verification:
+Initial acceptance verification remains the last executed local-suite evidence:
 
 - `bun run typecheck`: passed.
 - `bun run privacy:scan`: passed.
@@ -211,17 +256,15 @@ Initial acceptance verification:
 - Focused protocol/compatibility suite excluding Windows privileged-symlink
   state cases: 395 passed, 0 failed across 24 files.
 - Focused continuation-state semantics: 2 passed, 95 filtered, 0 failed.
-- Serial isolation of failures observed in the full run:
-  - `tests/codex-models-cache-invalidate.test.ts`: 6 passed, 0 failed.
-  - `tests/codex-native-residue.test.ts`: 63 passed, 2 platform skips,
-    0 failed.
-- Local link validation, canonical case/digest validation, and
-  `git diff --check`: passed.
+- `tests/codex-models-cache-invalidate.test.ts`: 6 passed, 0 failed.
+- `tests/codex-native-residue.test.ts`: 63 passed, 2 platform skips, 0 failed.
+- Original local link/case/digest checks and `git diff --check`: passed.
 
-The current CodeRabbit remediation is documentation/contract-only. Final branch
-CI/status and the refreshed unresolved-thread set are checked after the status
-ledger sync; this record must not be read as claiming a new full local Bun test
-run from the connector environment.
+The CodeRabbit remediation is documentation/contract-only. The GitHub connector
+does not provide a local Bun execution environment, so this review does **not**
+claim a new typecheck/privacy/test run after these documentation changes. Final
+GitHub status/workflow contexts and unresolved review threads are checked after
+the status-ledger sync.
 
 The earlier full `bun run test` result was **not green**. On Windows with Bun
 1.3.14 it exited 3 after a cache-invalidation failure, an empty effective-account
@@ -236,48 +279,56 @@ suite passed.
 1. Protocol conformance, live compatibility, and task effectiveness are
    separated: **PASS**.
 2. Environmental failures cannot poison compatibility verdicts: **PASS**.
-3. `VERIFIED` is reproducible from immutable evidence and cannot be vacuous:
+3. `VERIFIED` is reproducible, non-vacuous, and invalidation/purge aware:
    **PASS**.
-4. Exact route identity prevents false evidence reuse: **PASS**.
-5. Routing Profiles remain the sole compatibility-policy surface: **PASS**.
-6. The Lab cannot become a second router: **PASS**.
-7. The Lab cannot become a second provider registry: **PASS**.
-8. Probes cannot access user data or arbitrary tools, and live destinations,
-   environment and custom-header fingerprints are fail-closed: **PASS**.
-9. Historical incidents are representable as deterministic versioned
+4. Exact route/dependency identity prevents false evidence reuse: **PASS**.
+5. `CLAIMED` is reproducible from retained sanitized source manifests:
+   **PASS**.
+6. Routing Profiles remain the sole compatibility-policy surface: **PASS**.
+7. The Lab cannot become a second router or provider registry: **PASS**.
+8. Synthetic-fixture admission, credentials, destinations, environment,
+   resources, artifacts and purge behavior are fail-closed: **PASS**.
+9. Historical incidents remain representable as deterministic versioned
    scenarios: **PASS**.
 10. CL-01 remains implementable without semantic invention after synchronizing
-    the corrected V1 authority: **PASS WITH REQUIRED CL-01 CORRECTION**.
+    the refreshed V1 authority: **PASS WITH REQUIRED CL-01 REBASE, CORRECTION,
+    AND REVALIDATION**.
 
 ## CL-01 impact
 
 The independently accepted CL-01 branch exists at
-`feat/cl-01-conformance-harness` and was built on an earlier CL-00 contract tip.
+`feat/cl-01-conformance-harness` at accepted head
+`cc447ce9d19d5fb4e03988899f5fb495f9de8d0e`. It was built from the older CL-00
+revision `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66`.
+
 Its acceptance record explicitly documents a harness-only projection of
 Chat-wire `messages` tool rows into a synthetic Responses-shaped `input[]` to
 satisfy the old CL-00 selectors. That workaround is no longer authoritative:
-CL-00 now selects the actual Chat wire `messages[].tool_call_id` field.
+CL-00 selects the actual Chat `messages[].tool_call_id` field. CL-01 also copied
+the pre-remediation case authority and its SSE helper retained client-surface
+sentinel selection.
 
 Before CL-01 is stacked or merged it must therefore:
 
-- rebase onto the refreshed CL-00 accepted contract head;
-- synchronize its copied `protocol-v1-cases.json` authority with the two new
-  Chat selectors;
+- rebase onto the final refreshed CL-00 accepted contract head;
+- synchronize the two corrected Chat result selectors;
 - remove or narrow the synthetic Chat-to-Responses `input[]` observation
-  projection so the asserted upstream JSON remains the actual Chat request;
-- align the harness SSE-normalizer contract with source-protocol sentinel
-  selection (current Chat upstream execution already goes through the
-  production Chat parser, but the helper/API contract must not retain the stale
-  client-surface rule); and
-- rerun the 24 canonical CL-01 scenarios, negative controls, digest/manifest
-  checks and its acceptance review.
+  projection so upstream observations remain the actual Chat request;
+- align SSE normalization with source-protocol `[DONE]` selection;
+- implement/validate the mandatory synthetic fixture marker/provenance in
+  expanded `fixtureRef` values and recompute all scenario/suite manifests;
+- synchronize the four exact MCP action tokens and their closed execution
+  semantics; and
+- rerun the canonical CL-01 scenarios, negative controls, digest/manifest
+  checks and independent CL-01 acceptance review.
 
 This CL-00 remediation does not modify CL-01 and does not start CL-02.
 
 ## Verdict
 
-No validated unresolved Critical, High, Medium, deterministic-contract, or
-security-contract finding remains in the CL-00 contract set after the
-CodeRabbit remediation above, subject to the final GitHub thread/CI re-check.
+All validated Critical, High, Medium, deterministic-contract and
+security-contract findings found through the two CodeRabbit remediation passes
+are corrected in the CL-00 contract set. Final GitHub thread/status checks are
+recorded after the stack ledger is synchronized.
 
 **CL-00: ACCEPTED AFTER CODERABBIT REMEDIATION**
