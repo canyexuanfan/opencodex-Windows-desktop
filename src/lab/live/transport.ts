@@ -1,3 +1,4 @@
+import type { FailureClassification } from "../conformance/types";
 import { assertLeaseScope, LabCredentialError } from "./credential-lease";
 import type {
   LabCredentialLeaseV1, LabDestinationV1, LabPinnedSender, LabTransport, LabTransportRequest,
@@ -95,7 +96,7 @@ export class TransportError extends Error {
   constructor(readonly code: TransportErrorCode, message: string) { super(message); }
 }
 
-export function classifyTransportError(error: unknown): { classification: string; secondaryCode: string } {
+export function classifyTransportError(error: unknown): { classification: FailureClassification; secondaryCode: string } {
   const code = error instanceof TransportError ? error.code : undefined;
   switch (code) {
     case "auth_blocked": return { classification: "authentication_blocked", secondaryCode: code };
