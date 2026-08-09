@@ -21,7 +21,7 @@ independent review, blockers, and whether a later phase is authorized.
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
-| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (phase-2 review fixes pending push) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (phase-2 review fixes in progress) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED |
 | CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
@@ -99,9 +99,13 @@ Independent CL-00 acceptance review is frozen at
 
 - **Branch:** `feat/cl-02-evidence-ledger`
 - **Starting/base SHA:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` (CL-01 merge via #1320)
-- **Scope:** immutable JSONL evidence ledger, content-addressed artifact store,
-  disposable/rebuildable SQLite projection, ClaimSourceManifestV1, invalidation
-  and sensitive purge tombstones, CL-01 → observation persistence seam.
+- **Scope:** append-only JSONL evidence ledger with an explicit sensitive-purge
+  exception: when the `ledger` purge action is requested, targeted evidence is
+  physically removed by atomic ledger rewrite and a `purge_tombstone` remains as
+  the auditable record; SQLite is rebuilt from the rewritten ledger and retained
+  content-addressed artifacts. The phase also includes the content-addressed
+  artifact store, disposable/rebuildable SQLite projection, ClaimSourceManifestV1,
+  invalidation semantics, and the CL-01 → observation persistence seam.
 - **Explicitly out of scope:** CL-03 live probes, CL-04 CLI/API, CL-05 UI,
   CL-06 profile fields, Fabric, shadow workflows.
 
@@ -125,10 +129,12 @@ Claims cannot produce `PROBED`/`VERIFIED`.
   applicability, historical manifest no-substitution, closed event admission,
   corrupt superseding claims, ArtifactStore lifecycle, frozen behaviour
   fingerprint).
-- **Local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`,
+- **Previous local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`,
   `tests/lab-evidence-ledger.test.ts` (41/41), `tests/lab-conformance-harness.test.ts`
   (17/17), `tests/repo-hygiene.test.ts` (11/11), `git diff --check` green on
-  Windows host.
+  Windows host before the current CodeRabbit remediation pass.
+- **Current CodeRabbit remediation:** committed on draft PR #1333; current CI and
+  review reconciliation are required before this head may be recorded as accepted.
 - **Independent acceptance:** not yet — draft PR #1333 remains open for review.
 - **CL-03:** not started.
 
