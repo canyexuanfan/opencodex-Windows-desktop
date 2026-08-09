@@ -495,9 +495,6 @@ function validatePurge(raw: Record<string, unknown>): PurgeTombstoneEvent {
     "targetArtifactDigests",
     { nonEmpty: false, max: MAX_INVALIDATION_TARGETS },
   );
-  if (targetEventIds.length === 0 && targetArtifactDigests.length === 0) {
-    throw new LabValidationError("empty_purge_targets", "at least one purge target required");
-  }
   if (raw.reason !== "sensitive_evidence") {
     throw new LabValidationError("invalid_purge_reason", "reason must be sensitive_evidence");
   }
@@ -519,6 +516,17 @@ function validatePurge(raw: Record<string, unknown>): PurgeTombstoneEvent {
     if (purgeActions[i] !== sortedActions[i]) {
       throw new LabValidationError("unsorted_purge_actions", "purgeActions must be sorted");
     }
+  }
+  // Directory-scoped actions (scratch/export) are meaningful without event or
+  // artifact ids — default sensitive purge wipes those trees and still records
+  // a tombstone. Ledger/sqlite/artifact-only tombstones still need a target.
+  const hasDirectoryPurge = purgeActions.includes("scratch") || purgeActions.includes("export");
+  if (
+    targetEventIds.length === 0
+    && targetArtifactDigests.length === 0
+    && !hasDirectoryPurge
+  ) {
+    throw new LabValidationError("empty_purge_targets", "at least one purge target required");
   }
   return {
     schemaVersion: LAB_EVENT_SCHEMA_VERSION,

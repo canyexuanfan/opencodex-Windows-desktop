@@ -5,9 +5,11 @@ import { join } from "node:path";
 import {
   assignEventId,
   jcsStringify,
+  LabValidationError,
   purgeSensitiveEvidence,
   replayLabLedger,
   subjectIdForSubject,
+  validateLabEvent,
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
 } from "../src/lab";
@@ -258,4 +260,18 @@ test("default sensitive purge removes export evidence", () => {
 
   purgeSensitiveEvidence({ configDir: home, recordedAt: 1_700_000_000_500 });
   expect(existsSync(secret)).toBe(false);
+});
+
+test("purge tombstone without targets still requires a directory-scoped action", () => {
+  expect(() => validateLabEvent(assignEventId({
+    schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+    eventKind: "purge_tombstone",
+    recordedAt: 1_700_000_000_500,
+    producer: LAB_PRODUCER,
+    producerVersion: "test",
+    targetEventIds: [],
+    targetArtifactDigests: [],
+    reason: "sensitive_evidence",
+    purgeActions: ["artifact", "ledger", "sqlite"],
+  }))).toThrow(LabValidationError);
 });
