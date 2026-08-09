@@ -271,17 +271,19 @@ function isMissingArtifactError(err: unknown): boolean {
 }
 
 function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): void {
+  revalidateDir(dir);
+  assertRelativeName(name);
   try {
-    const fd = openAtDir(dir, name, openFlags(O_RDONLY, true));
-    try {
-      const stats = fstatSync(fd);
-      assertRegularFileStats(stats, "artifact create target");
-      harnessFailure("artifact target exists but is not reusable");
-    } finally {
-      closeSync(fd);
+    const stats = lstatSync(childPath(dir, name));
+    if (stats.isSymbolicLink()) {
+      harnessFailure("artifact target is a symbolic link");
     }
+    assertRegularFileStats(stats, "artifact create target");
+    harnessFailure("artifact target exists but is not reusable");
   } catch (err) {
-    if (isMissingArtifactError(err)) return;
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+      return;
+    }
     if (err instanceof ArtifactFsError) throw err;
     harnessFailure(`artifact create target check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
