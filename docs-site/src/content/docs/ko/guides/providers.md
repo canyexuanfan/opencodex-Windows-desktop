@@ -128,6 +128,19 @@ Providers 페이지에서 계정을 추가하고, 다른 계정을 로그아웃�
 `chatgpt`는 Codex 계정 풀에 별도 저장소가 있어 항상 단일 슬롯만 씁니다. 토큰은 `~/.opencodex/auth.json`에 저장되고,
 `/api/oauth/accounts`는 마스킹된 메타데이터만 반환합니다.
 
+### Cockpit Tools Antigravity 가져오기
+
+v1에서 OpenCodex는 `google-antigravity` 공급자의 **Cockpit Tools Antigravity** JSON 내보내기만 가져옵니다. Providers 대시보드에서 해당 공급자의 Accounts 탭을 열고 로컬 JSON 파일을 선택하세요. 대시보드는 파일 내용이나 자격 증명 값을 표시하지 않으며 가져온, 업데이트된, 실패한, 지원되지 않는 항목의 수만 보고합니다. 다른 Cockpit 공급자는 v1에서 지원되지 않습니다.
+
+CLI는 파일 또는 stdin에서만 내보내기를 받으며 명령 인수에 붙여넣을 수 없습니다:
+
+```bash
+ocx account import google-antigravity --format cockpit-tools --file <path> [--json]
+cat accounts.json | ocx account import google-antigravity --format cockpit-tools --stdin [--json]
+```
+
+인라인 JSON과 추가 위치 인수는 거부됩니다. 내보낸 파일은 비공개로 보관하고 가져온 뒤 삭제하거나 안전하게 저장하세요.
+
 ### Kiro 자격 증명 가져오기
 
 Kiro 로그인에는 Kiro CLI가 필요합니다. Unix에서는 `curl -fsSL https://cli.kiro.dev/install | bash`, Windows PowerShell에서는 `irm 'https://cli.kiro.dev/install.ps1' | iex`로 설치한 뒤 먼저 `kiro-cli login`으로 로그인하세요. `kiro-cli` 세션이 없으면 `ocx login kiro`는 붙여 넣은 액세스 토큰이나 `KIRO_ACCESS_TOKEN` 환경 변수로 폴백합니다.

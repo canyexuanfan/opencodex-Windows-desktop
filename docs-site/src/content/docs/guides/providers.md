@@ -135,6 +135,19 @@ active slot; Kiro accounts are keyed by profile ARN. `chatgpt` is always single-
 pool accounts have a separate ledger.
 Tokens stay in `~/.opencodex/auth.json`; `/api/oauth/accounts` returns masked metadata only.
 
+### Cockpit Tools Antigravity import
+
+For v1, OpenCodex imports only a **Cockpit Tools Antigravity** JSON export for the `google-antigravity` provider. In the Providers dashboard, choose the local JSON file from that provider's Accounts tab. The dashboard does not show the file contents or credential values; it reports only imported, updated, failed, and unsupported counts. Other Cockpit providers are unsupported in v1.
+
+The CLI accepts the export from a file or standard input only — never paste it into a command argument:
+
+```bash
+ocx account import google-antigravity --format cockpit-tools --file <path> [--json]
+cat accounts.json | ocx account import google-antigravity --format cockpit-tools --stdin [--json]
+```
+
+Inline JSON and extra positional arguments are rejected. Keep exported files private and delete or store them securely after import.
+
 ### OAuth reliability
 
 opencodex coordinates token refresh and Codex pool routing so concurrent requests do not race the

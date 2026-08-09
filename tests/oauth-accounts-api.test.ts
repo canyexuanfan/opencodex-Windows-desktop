@@ -10,6 +10,8 @@ import { clearModelCache, getStaleCached, setCached } from "../src/codex/model-c
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
+import { getAccountSet } from "../src/oauth/store";
+import { ACCOUNT_IMPORT_MAX_BYTES, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../src/oauth/account-import/types";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -179,6 +181,193 @@ describe("multiauth accounts API", () => {
         body: JSON.stringify({ provider: "not-a-provider", accountId: "x" }),
       });
       expect(badProvider.status).toBe(400);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("POST Cockpit import admits only the exact provider, format, and array document", async () => {
+    const server = startServer(0);
+    try {
+      for (const [body, code] of [
+        [{ provider: "openai", format: "cockpit-tools", document: [] }, "unsupported_provider"],
+        [{ provider: "unknown", format: "cockpit-tools", document: [] }, "unsupported_provider"],
+        [{ provider: "google-antigravity", format: "unknown", document: [] }, "unsupported_format"],
+        [{ provider: "google-antigravity", format: "cockpit-tools", document: { accounts: [] } }, "invalid_document"],
+        [{ provider: "google-antigravity", format: "cockpit-tools", document: "not-an-array" }, "invalid_document"],
+      ] as const) {
+        const response = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ code });
+      }
+      expect(getAccountSet("google-antigravity")).toBeNull();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("POST Cockpit import validates live identity/project, atomically updates duplicates, and returns a secret-free DTO", async () => {
+    const canary = "cockpit-api-canary-refresh-DO-NOT-LEAK";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = input instanceof Request ? input.url : String(input);
+      if (raw.includes("oauth2.googleapis.com/token")) {
+        const refresh = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+        return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
+      }
+      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "imported@example.com" });
+      if (raw.includes(":loadCodeAssist")) return Response.json({ cloudaicompanionProject: "project-import" });
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const server = startServer(0);
+    try {
+      const send = (refreshToken: string) => fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "google-antigravity",
+          format: "cockpit-tools",
+          document: [{ email: "IMPORTED@example.com", refresh_token: refreshToken, tags: ["tag"], notes: "ignored" }],
+        }),
+      });
+
+      const first = await send(canary);
+      expect(first.status).toBe(200);
+      const firstText = await first.text();
+      expect(firstText).not.toContain(canary);
+      expect(JSON.parse(firstText)).toEqual({
+        totalCount: 1,
+        importedCount: 1,
+        updatedCount: 0,
+        failedCount: 0,
+        unsupportedCount: 0,
+        results: [{ index: 0, status: "imported", code: "imported" }],
+      });
+
+      const second = await send("rotated-refresh-safe");
+      expect(second.status).toBe(200);
+      expect(await second.json()).toEqual({
+        totalCount: 1,
+        importedCount: 0,
+        updatedCount: 1,
+        failedCount: 0,
+        unsupportedCount: 0,
+        results: [{ index: 0, status: "updated", code: "updated" }],
+      });
+
+      const boundaryDocument = [{
+        email: "imported@example.com",
+        refresh_token: "boundary-refresh-safe",
+        notes: "",
+      }];
+      const encoder = new TextEncoder();
+      const emptyDocumentBytes = encoder.encode(JSON.stringify(boundaryDocument)).byteLength;
+      boundaryDocument[0]!.notes = "x".repeat(ACCOUNT_IMPORT_MAX_BYTES - emptyDocumentBytes);
+      const boundaryBody = JSON.stringify({
+        provider: "google-antigravity",
+        format: "cockpit-tools",
+        document: boundaryDocument,
+      });
+      expect(encoder.encode(JSON.stringify(boundaryDocument)).byteLength).toBe(ACCOUNT_IMPORT_MAX_BYTES);
+      expect(encoder.encode(boundaryBody).byteLength).toBeGreaterThan(ACCOUNT_IMPORT_MAX_BYTES);
+      expect(encoder.encode(boundaryBody).byteLength).toBeLessThanOrEqual(ACCOUNT_IMPORT_MAX_REQUEST_BYTES);
+      const boundary = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: boundaryBody,
+      });
+      expect(boundary.status).toBe(200);
+      expect(await boundary.json()).toMatchObject({ updatedCount: 1, failedCount: 0 });
+
+      const set = getAccountSet("google-antigravity");
+      expect(set?.accounts).toHaveLength(1);
+      expect(set?.accounts[0]?.credential.refresh).toBe("boundary-refresh-safe");
+      expect(set?.accounts[0]?.credential.projectId).toBe("project-import");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("POST Cockpit import never persists mismatched, rejected, missing-project, invalid, or oversized records", async () => {
+    const canary = "cockpit-negative-canary-DO-NOT-LEAK";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = input instanceof Request ? input.url : String(input);
+      if (raw.includes("oauth2.googleapis.com/token")) {
+        const refresh = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+        if (refresh === "rejected-token") return new Response("raw upstream secret detail", { status: 400 });
+        return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
+      }
+      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "provider@example.com" });
+      if (raw.includes(":loadCodeAssist")) {
+        const authorization = new Headers(init?.headers).get("Authorization") ?? "";
+        return authorization.includes("missing-project")
+          ? Response.json({})
+          : Response.json({ cloudaicompanionProject: "project-safe" });
+      }
+      if (raw.includes(":onboardUser")) return new Response("forbidden", { status: 403 });
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "google-antigravity",
+          format: "cockpit-tools",
+          document: [
+            { email: "claimed@example.com", refresh_token: canary },
+            { email: "provider@example.com", refresh_token: "rejected-token" },
+            { email: "provider@example.com", refresh_token: "missing-project" },
+            { email: "provider@example.com", refresh_token: "control\nvalue" },
+          ],
+        }),
+      });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain(canary);
+      expect(text).not.toContain("raw upstream secret detail");
+      expect(JSON.parse(text)).toEqual({
+        totalCount: 4,
+        importedCount: 0,
+        updatedCount: 0,
+        failedCount: 4,
+        unsupportedCount: 0,
+        results: [
+          { index: 0, status: "failed", code: "identity_mismatch" },
+          { index: 1, status: "failed", code: "credential_rejected" },
+          { index: 2, status: "failed", code: "missing_project" },
+          { index: 3, status: "failed", code: "invalid_record" },
+        ],
+      });
+      expect(getAccountSet("google-antigravity")).toBeNull();
+
+      const oversized = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "google-antigravity",
+          format: "cockpit-tools",
+          document: [{ email: "provider@example.com", refresh_token: "safe", notes: "x".repeat(256 * 1024) }],
+        }),
+      });
+      expect(oversized.status).toBe(400);
+      expect(await oversized.json()).toEqual({ code: "invalid_document" });
+      expect(getAccountSet("google-antigravity")).toBeNull();
+
+      const oversizedRaw = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: `${" ".repeat(ACCOUNT_IMPORT_MAX_REQUEST_BYTES)}{}`,
+      });
+      expect(oversizedRaw.status).toBe(400);
+      expect(await oversizedRaw.json()).toEqual({ code: "invalid_document" });
+      expect(getAccountSet("google-antigravity")).toBeNull();
     } finally {
       await server.stop(true);
     }

@@ -29,7 +29,7 @@ import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/ke
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
-import { clearProviderQuotaCache, fetchProviderAccountQuotas, fetchProviderQuotaReports, supportsPerAccountQuota } from "../../providers/quota";
+import { clearAccountQuotaCache, clearProviderQuotaCache, fetchProviderAccountQuotas, fetchProviderQuotaReports, supportsPerAccountQuota } from "../../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import {
@@ -69,6 +69,8 @@ import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, C
 import type { ManagementContext } from "./context";
 import { readManagementJsonBody, readManagementJsonBodyOr, rethrowManagementBodyTooLarge } from "./body";
 import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
+import { ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../../oauth/account-import/types";
+import { readBoundedJsonRequestBody } from "../request-decompress";
 
 /**
  * Parses a bounded JSON object body, or null. Malformed JSON is swallowed; an
@@ -382,6 +384,32 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
     const { clearAnthropicAccountCooldown } = await import("../../oauth/anthropic-routing");
     const cleared = clearAnthropicAccountCooldown(accountId);
     return jsonResponse({ ok: true, cleared });
+  }
+
+  if (url.pathname === "/api/oauth/accounts/import" && req.method === "POST") {
+    let rawBody: unknown;
+    try {
+      rawBody = await readBoundedJsonRequestBody(req, ACCOUNT_IMPORT_MAX_REQUEST_BYTES);
+    } catch {
+      return jsonResponse({ code: "invalid_document" }, 400);
+    }
+    if (!isPlainRecord(rawBody)) return jsonResponse({ code: "invalid_document" }, 400);
+    const provider = typeof rawBody.provider === "string" ? rawBody.provider : "";
+    const format = typeof rawBody.format === "string" ? rawBody.format : "";
+    const { importAccounts } = await import("../../oauth/account-import");
+    const imported = await importAccounts({ provider, format, document: rawBody.document });
+    if (!imported.ok) return jsonResponse({ code: imported.code }, imported.status);
+
+    if (imported.result.importedCount > 0 || imported.result.updatedCount > 0) {
+      reconcileLiveStateStores();
+      const { clearModelCache } = await import("../../codex/model-cache");
+      const { clearGatherRoutedModelsInflight } = await import("../../codex/catalog");
+      clearModelCache(provider);
+      clearGatherRoutedModelsInflight();
+      clearProviderQuotaCache();
+      clearAccountQuotaCache(provider);
+    }
+    return jsonResponse(imported.result);
   }
 
   if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {

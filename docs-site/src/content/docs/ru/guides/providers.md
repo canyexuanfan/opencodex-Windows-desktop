@@ -139,6 +139,19 @@ OAuth-провайдеры, чьи учётные данные содержат 
 `chatgpt` всегда занимает один слот, поскольку у пула аккаунтов Codex отдельный реестр. Токены остаются в `~/.opencodex/auth.json`;
 `/api/oauth/accounts` возвращает только маскированные метаданные.
 
+### Импорт Cockpit Tools Antigravity
+
+В v1 OpenCodex импортирует только JSON-экспорт **Cockpit Tools Antigravity** для провайдера `google-antigravity`. На вкладке «Аккаунты» этого провайдера в панели Providers выберите локальный JSON-файл. Панель не показывает содержимое файла или значения учётных данных: она выводит только числа импортированных, обновлённых, ошибочных и неподдерживаемых записей. Другие провайдеры Cockpit в v1 не поддерживаются.
+
+CLI принимает экспорт только из файла или stdin — не вставляйте его в аргумент команды:
+
+```bash
+ocx account import google-antigravity --format cockpit-tools --file <path> [--json]
+cat accounts.json | ocx account import google-antigravity --format cockpit-tools --stdin [--json]
+```
+
+Inline JSON и лишние позиционные аргументы отклоняются. Храните экспортированные файлы приватно и удаляйте их или защищайте после импорта.
+
 ### Импорт учётных данных Kiro
 
 Для входа Kiro требуется Kiro CLI: в Unix установите его командой `curl -fsSL https://cli.kiro.dev/install | bash`, в Windows PowerShell — `irm 'https://cli.kiro.dev/install.ps1' | iex`, затем сначала выполните `kiro-cli login`. Если сессии `kiro-cli` нет, `ocx login kiro` использует вставленный токен доступа или переменную окружения `KIRO_ACCESS_TOKEN`.

@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { PassThrough, Readable } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { cmdAccount, classifyAccount, formatAccountTable, type AccountDeps } from "../src/cli/account";
 import type { AccountStdin } from "../src/cli/account-api";
 import { printSubcommandUsage } from "../src/cli/help";
@@ -230,6 +233,21 @@ async function mockManagementApi(req: Request): Promise<Response> {
       return json({ error: "anthropic account nope was not found" }, 404);
     }
     return json({ ok: true, activeAccountId: accountId });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/oauth/accounts/import") {
+    const payload = body as { provider?: string; format?: string; document?: unknown };
+    if (payload.provider !== "google-antigravity") return json({ code: "unsupported_provider" }, 400);
+    if (payload.format !== "cockpit-tools") return json({ code: "unsupported_format" }, 400);
+    if (!Array.isArray(payload.document)) return json({ code: "invalid_document" }, 400);
+    return json({
+      totalCount: payload.document.length,
+      importedCount: payload.document.length,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: payload.document.map((_, index) => ({ index, status: "imported", code: "imported" })),
+    });
   }
 
   if (req.method === "PUT" && url.pathname === "/api/oauth/accounts/alias") {
@@ -1598,6 +1616,71 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     } finally {
       sleepSpy.mockRestore();
     }
+  });
+
+  test("Cockpit import accepts only bounded file/stdin sources and never renders the token", async () => {
+    const canary = "cli-cockpit-canary-DO-NOT-LEAK";
+    const document = JSON.stringify([{ email: "user@example.com", refresh_token: canary }]);
+
+    const beforeInline = requests.length;
+    const inline = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", document,
+    ]);
+    expect(inline.code).toBe(1);
+    expect(requests).toHaveLength(beforeInline);
+    expect(inline.output).not.toContain(canary);
+
+    const unsupported = await run([
+      "import", "openai", "--format", "cockpit-tools", "--file", "/definitely/not/read.json",
+    ]);
+    expect(unsupported.code).toBe(1);
+    expect(unsupported.stderr).toContain("unsupported_provider");
+    expect(unsupported.stderr).not.toContain("source_read_failed");
+
+    const stdin = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(stdin.code).toBe(0);
+    expect(JSON.parse(stdin.stdout)).toEqual({
+      totalCount: 1,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: [{ index: 0, status: "imported", code: "imported" }],
+    });
+    expect(stdin.output).not.toContain(canary);
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/api/oauth/accounts/import",
+      body: {
+        provider: "google-antigravity",
+        format: "cockpit-tools",
+        document: [{ email: "user@example.com", refresh_token: canary }],
+      },
+    });
+
+    const directory = mkdtempSync(join(tmpdir(), "ocx-cli-account-import-"));
+    const path = join(directory, "accounts.json");
+    writeFileSync(path, document);
+    try {
+      const file = await run([
+        "import", "google-antigravity", "--format", "cockpit-tools", "--file", path,
+      ]);
+      expect(file.code).toBe(0);
+      expect(file.stdout).toContain("1 imported, 0 updated, 0 failed");
+      expect(file.output).not.toContain(canary);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+
+    const beforeOversized = requests.length;
+    const oversized = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(256 * 1024 + 1)) });
+    expect(oversized.code).toBe(1);
+    expect(oversized.stderr).toContain("invalid_document");
+    expect(requests).toHaveLength(beforeOversized);
   });
 
   test("pending Codex login keeps success and prints generic recovery guidance", async () => {
