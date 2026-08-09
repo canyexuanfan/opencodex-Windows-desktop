@@ -30,10 +30,37 @@ interface TrustedLiveResultReceipt {
   scenarioManifestDigest: string;
   suiteManifestDigest: string;
   routeSubjectId: string;
+  resultDigest: string;
 }
 
 const TRUSTED_RESULT_RECEIPTS = new WeakMap<object, TrustedLiveResultReceipt>();
 const LIVE_AUTHORITY_DOMAIN = "ocx-lab:live-authority:v1";
+const TRUSTED_LIVE_RESULT_DOMAIN = "ocx-lab:trusted-live-result:v1";
+
+function trustedResultDigest(result: LiveScenarioRunResult): string {
+  const payload = {
+    scenarioId: result.scenarioId,
+    suite: result.suite,
+    startedAt: result.startedAt,
+    completedAt: result.completedAt,
+    passed: result.passed,
+    classification: result.classification,
+    secondaryCode: result.secondaryCode ?? null,
+    assertionResults: result.assertionResults.map((row) => ({
+      id: row.id,
+      operator: row.operator,
+      required: row.required,
+      passed: row.passed,
+      observedSummary: row.observedSummary,
+      reason: row.reason ?? null,
+    })),
+    diagnostics: [...result.diagnostics],
+    routeSubject: result.routeSubject ?? null,
+    transportError: result.transportError ?? null,
+    executionAuthority: result.executionAuthority,
+  };
+  return domainHash(TRUSTED_LIVE_RESULT_DOMAIN, jcsStringify(payload));
+}
 
 function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): TrustedLiveResultReceipt {
   if (!result.routeSubject) throw new Error("trusted live result has no route subject");
@@ -44,6 +71,7 @@ function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, autho
     scenarioManifestDigest: scenarioManifestDigest(expandLiveScenario(caseRecord, authority)),
     suiteManifestDigest: suiteManifestDigest(liveSuiteManifestObjectForCase(caseRecord, authority)),
     routeSubjectId: subjectIdForSubject(result.routeSubject),
+    resultDigest: trustedResultDigest(result),
   };
 }
 
