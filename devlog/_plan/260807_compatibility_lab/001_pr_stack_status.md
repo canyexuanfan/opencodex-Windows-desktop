@@ -22,7 +22,7 @@ independent review, blockers, and whether a later phase is authorized.
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
 | CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) MERGED at `eee2dab4d1bbacefce56057adad51d734f346702`; FINAL CLOSURE GATE [#1348](https://github.com/lidge-jun/opencodex/pull/1348) |
-| CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | — | — | IN PROGRESS (implementation) |
+| CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | `003f7402f49bfe8dd710a7beba52f717051bfadf` | [#1352](https://github.com/lidge-jun/opencodex/pull/1352) | DRAFT PR OPEN (implementation; not accepted) |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -156,4 +156,37 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
 - CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening #1343 is also **MERGED** at `eee2dab4d1bbacefce56057adad51d734f346702`; final closure is tracked in #1348.
-- CL-03: **IN PROGRESS** on `feat/cl-03-live-route-probes` from `4f746d13799888ea0a8c7a111aa2ad61c2126ea0`.
+- CL-03: **DRAFT PR OPEN** ([#1352](https://github.com/lidge-jun/opencodex/pull/1352)) on
+  `feat/cl-03-live-route-probes` from `4f746d13799888ea0a8c7a111aa2ad61c2126ea0`;
+  implementation head `003f7402f49bfe8dd710a7beba52f717051bfadf`. Not accepted.
+- CL-04: **NOT STARTED** (blocked until CL-03 independent acceptance and review reconciliation).
+
+## CL-03 implementation log (2026-08-09)
+
+- **Branch:** `feat/cl-03-live-route-probes`
+- **Starting/base SHA:** `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` (#1348 merge on `dev`)
+- **Implementation head:** `003f7402f49bfe8dd710a7beba52f717051bfadf`
+- **PR:** [#1352](https://github.com/lidge-jun/opencodex/pull/1352) (DRAFT → `lidge-jun/opencodex:dev`)
+- **Scope:** bounded live-route probes for `live_route_compatibility`; live manifest
+  authority; `RouteSubjectV1` builder; `LabDestinationV1` / credential lease sandbox;
+  inert tool/MCP stubs; live runner/executor; `observe/from-live` persistence;
+  projection applicability for route subjects.
+- **Explicitly out of scope:** CL-04 CLI/API, CL-05 UI, CL-06 profile fields, Fabric,
+  shadow/automatic probing, production request-path probes.
+
+### CL-03 validation (local, 2026-08-09)
+
+- `bun x tsc --noEmit`: passed
+- `bun test tests/lab-conformance-harness.test.ts`: 17/17 passed
+- `bun test tests/lab-evidence-ledger.test.ts`: 37/41 passed (4 Windows SQLite `EPERM`
+  flakes in `wipeSqlite`; `rebuild.ts` unchanged vs `upstream/dev` — pre-existing)
+- `bun test tests/lab-live-probe.test.ts`: 12/12 passed
+- `bun test tests/lab-live-sandbox.test.ts`: 12/12 passed
+- `bun run privacy:scan`: passed
+- Cross-platform CI on #1352: pending at open time
+
+### CL-03 blockers
+
+- Independent acceptance review not performed
+- Draft PR review findings not yet reconciled
+- Full local ledger suite not green on Windows host (pre-existing SQLite EPERM)
