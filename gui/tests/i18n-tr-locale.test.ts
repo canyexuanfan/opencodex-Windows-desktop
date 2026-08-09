@@ -74,37 +74,46 @@ describe("Turkish (tr) i18n locale", () => {
   });
 
   test("detectInitial detects tr from navigator language cleanly isolated from localStorage", () => {
-    const origNav = globalThis.navigator;
-    const origStorage = globalThis.localStorage;
+    const origNav = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const origStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     try {
-      // @ts-expect-error test isolation mock
-      globalThis.navigator = { language: "tr-TR" };
-      // @ts-expect-error test isolation mock
-      globalThis.localStorage = {
-        getItem: () => null,
-        setItem: () => {},
-        removeItem: () => {},
-      };
+      Object.defineProperty(globalThis, "navigator", {
+        value: { language: "tr-TR" },
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "localStorage", {
+        value: {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+        },
+        configurable: true,
+        writable: true,
+      });
       expect(detectInitial()).toBe("tr");
     } finally {
-      globalThis.navigator = origNav;
-      globalThis.localStorage = origStorage;
+      if (origNav) Object.defineProperty(globalThis, "navigator", origNav);
+      if (origStorage) Object.defineProperty(globalThis, "localStorage", origStorage);
     }
   });
 
   test("detectInitial detects tr from stored preference", () => {
-    const origStorage = globalThis.localStorage;
+    const origStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     try {
       const store = new Map<string, string>([["ocx-lang", "tr"]]);
-      // @ts-expect-error test isolation mock
-      globalThis.localStorage = {
-        getItem: (k: string) => store.get(k) ?? null,
-        setItem: (k: string, v: string) => store.set(k, v),
-        removeItem: (k: string) => store.delete(k),
-      };
+      Object.defineProperty(globalThis, "localStorage", {
+        value: {
+          getItem: (k: string) => store.get(k) ?? null,
+          setItem: (k: string, v: string) => store.set(k, v),
+          removeItem: (k: string) => store.delete(k),
+        },
+        configurable: true,
+        writable: true,
+      });
       expect(detectInitial()).toBe("tr");
     } finally {
-      globalThis.localStorage = origStorage;
+      if (origStorage) Object.defineProperty(globalThis, "localStorage", origStorage);
     }
   });
 });
