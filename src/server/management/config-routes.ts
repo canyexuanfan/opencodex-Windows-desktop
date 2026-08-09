@@ -54,6 +54,12 @@ import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../../reasoning-effort";
 import { normalizeVisionReasoningForModel } from "../../vision/reasoning";
+import {
+  visionCandidateRows,
+  visionDescriberIsProvablyBlind,
+  visionDescriberRejection,
+  visionModelOptionsFor,
+} from "./vision-sidecar-options";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -382,6 +388,13 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     const vs = config.visionSidecar ?? {};
     const visionModel = vs.model || "gpt-5.4-mini";
     const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
+    const visionModels = await visionModelOptionsFor(config);
+    // Display-only grandfather: a currently-configured model stays selectable even
+    // when it is no longer eligible. The write gate remains stricter and still
+    // rejects re-submitting a proven-blind id (asymmetric by design).
+    if (!visionModels.some(option => option.value === visionModel)) {
+      visionModels.unshift({ value: visionModel, label: visionModel, backend: vs.backend ?? "openai" });
+    }
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
@@ -390,6 +403,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
+      visionModels,
     });
   }
 
@@ -421,6 +435,21 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     }
     if (body.vision?.reasoning !== undefined && !isVisionReasoningEffort(body.vision.reasoning)) {
       return jsonResponse({ error: `vision.reasoning must be ${VISION_REASONING_EFFORTS.join(", ")}` }, 400);
+    }
+    // Reject ONLY a model we can prove is blind. An id nothing knows about stays
+    // allowed: the operator may be ahead of our catalog, and the runtime never
+    // required catalog membership (`tests/vision-reasoning-contract.test.ts`
+    // pins `custom-vision` → 200). The catalog is read ONCE and reused for the
+    // rejection body, so a 400 cannot cost two provider fetches.
+    if (body.vision && typeof body.vision.model === "string" && body.vision.model !== "") {
+      const requested = body.vision.model;
+      const candidates = await visionCandidateRows(config);
+      const hint = body.vision.backend === "anthropic" || body.vision.backend === "openai"
+        ? body.vision.backend
+        : config.visionSidecar?.backend;
+      if (visionDescriberIsProvablyBlind(config, requested, candidates, hint)) {
+        return jsonResponse(visionDescriberRejection("vision.model", requested, config, candidates), 400);
+      }
     }
 
     let normalizedVisionReasoning: ReturnType<typeof normalizeVisionReasoningForModel>;
@@ -471,6 +500,12 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     const vs = config.visionSidecar ?? {};
     const visionModel = vs.model || "gpt-5.4-mini";
     const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
+    const visionModels = await visionModelOptionsFor(config);
+    // Display-only grandfather: same asymmetry as GET so optimistic clients and a
+    // refetch agree about the currently-configured model.
+    if (!visionModels.some(option => option.value === visionModel)) {
+      visionModels.unshift({ value: visionModel, label: visionModel, backend: vs.backend ?? "openai" });
+    }
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
@@ -480,6 +515,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
+      visionModels,
     });
   }
 

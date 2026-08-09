@@ -1,0 +1,241 @@
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleManagementAPI } from "../src/server/management-api";
+import * as modelRows from "../src/server/management/model-rows";
+import type { OcxConfig } from "../src/types";
+import { BASELINE_VISION_MODELS } from "../src/vision/eligibility";
+import { ManagementRequest as Request } from "./helpers/management-auth";
+
+async function getSidecarSettings(config: OcxConfig): Promise<Response> {
+  const url = new URL("http://localhost/api/sidecar-settings");
+  const response = await handleManagementAPI(new Request(url), url, config);
+  if (!response) throw new Error("sidecar settings route did not handle GET");
+  return response;
+}
+
+async function putSidecarSettings(config: OcxConfig, vision: Record<string, unknown>): Promise<Response> {
+  const url = new URL("http://localhost/api/sidecar-settings");
+  const response = await handleManagementAPI(
+    new Request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ vision }),
+    }),
+    url,
+    config,
+  );
+  if (!response) throw new Error("sidecar settings route did not handle PUT");
+  return response;
+}
+
+async function putClaudeCode(config: OcxConfig, body: Record<string, unknown>): Promise<Response> {
+  const url = new URL("http://localhost/api/claude-code");
+  const response = await handleManagementAPI(
+    new Request(url, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    url,
+    config,
+  );
+  if (!response) throw new Error("claude-code route did not handle PUT");
+  return response;
+}
+
+function emptyConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  return {
+    port: 10100,
+    defaultProvider: "none",
+    providers: {},
+    ...overrides,
+  } as OcxConfig;
+}
+
+describe("sidecar-settings vision model filter", () => {
+  let previousHome: string | undefined;
+  let isolatedHome: string | undefined;
+
+  beforeEach(() => {
+    previousHome = process.env.OPENCODEX_HOME;
+    isolatedHome = mkdtempSync(join(tmpdir(), "ocx-sidecar-vision-filter-"));
+    process.env.OPENCODEX_HOME = isolatedHome;
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    if (isolatedHome) rmSync(isolatedHome, { recursive: true, force: true });
+    isolatedHome = undefined;
+  });
+
+  test("1. GET returns the allowed list containing gpt-5.6-luna", async () => {
+    const config = emptyConfig();
+    const response = await getSidecarSettings(config);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      visionModels?: Array<{ value: string; label: string; backend: string; baseline?: boolean }>;
+    };
+    expect(Array.isArray(body.visionModels)).toBe(true);
+    expect(body.visionModels!.some(option => option.value === BASELINE_VISION_MODELS.openai)).toBe(true);
+    expect(body.visionModels!.some(option => option.value === "gpt-5.6-luna")).toBe(true);
+  });
+
+  test("2. GET keeps a configured-but-ineligible model selectable", async () => {
+    const config = emptyConfig({
+      visionSidecar: { model: "o3-mini", backend: "openai" },
+    });
+    const response = await getSidecarSettings(config);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      vision: { model: string };
+      visionModels: Array<{ value: string }>;
+    };
+    expect(body.vision.model).toBe("o3-mini");
+    expect(body.visionModels.some(option => option.value === "o3-mini")).toBe(true);
+  });
+
+  test("3. PUT rejects an ineligible model with 400 and does not persist", async () => {
+    const config = emptyConfig({
+      visionSidecar: { model: "gpt-5.6-luna", reasoning: "low" },
+    });
+    const before = structuredClone(config.visionSidecar);
+    const response = await putSidecarSettings(config, { model: "o3-mini" });
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error?: string; allowed?: string[] };
+    expect(typeof body.error).toBe("string");
+    expect(Array.isArray(body.allowed)).toBe(true);
+    expect(body.allowed!.length).toBeGreaterThan(0);
+    expect(config.visionSidecar).toEqual(before);
+  });
+
+  test("4. PUT accepts an eligible model", async () => {
+    const config = emptyConfig();
+    const response = await putSidecarSettings(config, { model: "claude-haiku-4-5" });
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      vision: { model: string };
+      visionModels: Array<{ value: string }>;
+    };
+    expect(body.vision.model).toBe("claude-haiku-4-5");
+    expect(config.visionSidecar?.model).toBe("claude-haiku-4-5");
+    expect(Array.isArray(body.visionModels)).toBe(true);
+  });
+
+  test("5. PUT with model: \"\" still clears the override", async () => {
+    const config = emptyConfig({
+      visionSidecar: { model: "gpt-5.6-luna", reasoning: "low" },
+    });
+    const response = await putSidecarSettings(config, { model: "" });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { vision: { model: string } };
+    // Empty string clears the override; the effective reported model is the fallback.
+    expect(config.visionSidecar?.model).toBeUndefined();
+    expect(body.vision.model).toBe("gpt-5.4-mini");
+  });
+
+  test("6. catalog failure degrades to baselines", async () => {
+    const rowsSpy = spyOn(modelRows, "listManagementModelRows").mockImplementation(async () => {
+      throw new Error("catalog unavailable");
+    });
+    try {
+      const config = emptyConfig();
+      const response = await getSidecarSettings(config);
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        visionModels: Array<{ value: string; baseline?: boolean }>;
+      };
+      const values = body.visionModels.map(option => option.value);
+      expect(values).toContain(BASELINE_VISION_MODELS.openai);
+      expect(values).toContain(BASELINE_VISION_MODELS.anthropic);
+    } finally {
+      rowsSpy.mockRestore();
+    }
+  });
+
+  test("7. PUT keeps an UNKNOWN id (regression guard)", async () => {
+    const config = emptyConfig({ providers: {} });
+    const response = await putSidecarSettings(config, { model: "custom-vision" });
+    expect(response.status).toBe(200);
+    expect(config.visionSidecar).toMatchObject({ model: "custom-vision" });
+  });
+
+  test("8. PUT /api/claude-code rejects a provably blind vision override and accepts unknown", async () => {
+    const rejectConfig = emptyConfig({
+      claudeCode: {
+        visionSidecar: { model: "gpt-5.6-luna" },
+      },
+    });
+    const before = structuredClone(rejectConfig.claudeCode);
+    const rejected = await putClaudeCode(rejectConfig, {
+      visionSidecar: { model: "o3-mini" },
+    });
+    expect(rejected.status).toBe(400);
+    const rejectedBody = await rejected.json() as { error?: string; allowed?: string[] };
+    expect(typeof rejectedBody.error).toBe("string");
+    expect(Array.isArray(rejectedBody.allowed)).toBe(true);
+    expect(rejectConfig.claudeCode).toEqual(before);
+
+    const acceptConfig = emptyConfig();
+    const accepted = await putClaudeCode(acceptConfig, {
+      visionSidecar: { model: "custom-vision" },
+    });
+    expect(accepted.status).toBe(200);
+    expect(acceptConfig.claudeCode?.visionSidecar?.model).toBe("custom-vision");
+  });
+
+  test("9. a blind model cannot be laundered by claiming the other backend", async () => {
+    // Regression: the gate used to synthesize the candidate's provider from the
+    // caller's `backend`, so `backend: "anthropic"` made a known text-only OpenAI
+    // model look merely unknown (absent from the Anthropic table) and it saved.
+    // The backend is a hint, never the authority.
+    for (const backend of ["openai", "anthropic"] as const) {
+      const config = emptyConfig();
+      const response = await putSidecarSettings(config, { model: "o3-mini", backend });
+      expect(response.status).toBe(400);
+      expect(config.visionSidecar?.model).toBeUndefined();
+    }
+
+    const claudeConfig = emptyConfig();
+    const claudeResponse = await putClaudeCode(claudeConfig, {
+      visionSidecar: { model: "o3-mini", backend: "anthropic" },
+    });
+    expect(claudeResponse.status).toBe(400);
+    expect(claudeConfig.claudeCode?.visionSidecar?.model).toBeUndefined();
+  });
+
+  test("10. the reject path does not persist to disk", async () => {
+    // In-memory equality alone would not prove a disk write did not happen if the
+    // gate were ever reordered after the mutation block.
+    const configModule = await import("../src/config");
+    const saveSpy = spyOn(configModule, "saveConfigPreservingClaudeCode");
+    try {
+      const config = emptyConfig();
+      const response = await putSidecarSettings(config, { model: "o3-mini" });
+      expect(response.status).toBe(400);
+      expect(saveSpy).not.toHaveBeenCalled();
+    } finally {
+      saveSpy.mockRestore();
+    }
+  });
+
+  test("11. the web-search sidecar is deliberately NOT gated", async () => {
+    // False-positive guard: only the vision describer needs eyes. If this ever
+    // starts failing, the gate has leaked into the wrong field.
+    const config = emptyConfig();
+    const url = new URL("http://localhost/api/sidecar-settings");
+    const response = await handleManagementAPI(
+      new Request(url, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ webSearch: { model: "o3-mini" } }),
+      }),
+      url,
+      config,
+    );
+    expect(response?.status).toBe(200);
+    expect(config.webSearchSidecar?.model).toBe("o3-mini");
+  });
+});
