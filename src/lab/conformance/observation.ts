@@ -56,14 +56,21 @@ function parseToolArguments(raw: unknown, kind: "function" | "custom"): unknown 
   return raw;
 }
 
-/** Build toolCalls projection from Responses output items or SSE events (manifest §5). */
-export function projectToolCallsFromOutput(output: unknown[]): ToolCallProjection[] {
+interface ToolCallProjectionResult {
+  calls: ToolCallProjection[];
+  sawCallItems: boolean;
+  duplicateIds: boolean;
+}
+
+function projectToolCallsDetailed(output: unknown[]): ToolCallProjectionResult {
   const calls: ToolCallProjection[] = [];
   let ordinal = 0;
+  let sawCallItems = false;
   for (const item of output) {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
     if (rec.type === "function_call") {
+      sawCallItems = true;
       const id = rec.call_id ?? rec.id;
       const name = rec.name;
       if (typeof id !== "string" || id.length === 0 || typeof name !== "string" || name.length === 0) continue;
@@ -71,6 +78,7 @@ export function projectToolCallsFromOutput(output: unknown[]): ToolCallProjectio
       if (args === null) continue;
       calls.push({ id, name, arguments: args, kind: "function", ordinal: ordinal++ });
     } else if (rec.type === "custom_tool_call") {
+      sawCallItems = true;
       const id = rec.call_id ?? rec.id;
       const name = rec.name;
       if (typeof id !== "string" || id.length === 0 || typeof name !== "string" || name.length === 0) continue;
@@ -84,10 +92,16 @@ export function projectToolCallsFromOutput(output: unknown[]): ToolCallProjectio
     }
   }
   const ids = calls.map((call) => call.id);
-  return new Set(ids).size === ids.length ? calls : [];
+  const duplicateIds = new Set(ids).size !== ids.length;
+  return { calls: duplicateIds ? [] : calls, sawCallItems, duplicateIds };
 }
 
-export function projectToolCallsFromEvents(events: NormalizedEvent[]): ToolCallProjection[] {
+/** Build toolCalls projection from Responses output items or SSE events (manifest §5). */
+export function projectToolCallsFromOutput(output: unknown[]): ToolCallProjection[] {
+  return projectToolCallsDetailed(output).calls;
+}
+
+function projectToolCallsFromEventsDetailed(events: NormalizedEvent[]): ToolCallProjectionResult {
   const output: unknown[] = [];
   for (const ev of events) {
     if (ev.event === "response.output_item.done" && ev.data && typeof ev.data === "object") {
@@ -96,7 +110,11 @@ export function projectToolCallsFromEvents(events: NormalizedEvent[]): ToolCallP
       if (item && typeof item === "object") output.push(item);
     }
   }
-  return projectToolCallsFromOutput(output);
+  return projectToolCallsDetailed(output);
+}
+
+export function projectToolCallsFromEvents(events: NormalizedEvent[]): ToolCallProjection[] {
+  return projectToolCallsFromEventsDetailed(events).calls;
 }
 
 export function projectMcpCalls(toolCalls: ToolCallProjection[]): Array<{ namespace: string; name: string }> {
@@ -168,14 +186,14 @@ export function finalizeObservation(
   json: unknown = null,
   status = 200,
 ): void {
-  const eventToolCalls = projectToolCallsFromEvents(events);
-  const resolvedToolCalls = eventToolCalls.length > 0
-    ? eventToolCalls
-    : projectToolCallsFromOutput(
-      json && typeof json === "object" && !Array.isArray(json)
-        ? ((json as { output?: unknown[] }).output ?? [])
-        : [],
-    );
+  const eventProjection = projectToolCallsFromEventsDetailed(events);
+  const jsonProjection = projectToolCallsDetailed(
+    json && typeof json === "object" && !Array.isArray(json)
+      ? ((json as { output?: unknown[] }).output ?? [])
+      : [],
+  );
+  const selectedProjection = eventProjection.sawCallItems ? eventProjection : jsonProjection;
+  const resolvedToolCalls = selectedProjection.calls;
   const terminal = deriveTerminal(events);
   setClientResponse(observation, {
     events,
@@ -186,6 +204,7 @@ export function finalizeObservation(
     json,
     status,
   });
+  observation.verifiers.duplicate_tool_call_ids = selectedProjection.duplicateIds;
 }
 
 export function attachVerifiers(observation: NormalizedObservation, caseRecord: CaseRecord): void {
@@ -232,25 +251,26 @@ function evaluateCallResultOrder(observation: NormalizedObservation): string {
   const request = observation.upstream.requests[0]?.json as { input?: unknown[] } | undefined;
   const input = request?.input;
   if (!Array.isArray(input)) return "fail";
-  let pendingCallId: string | undefined;
+  const pendingCallIds = new Set<string>();
+  let callCount = 0;
   let resultCount = 0;
   for (const item of input) {
     if (!item || typeof item !== "object") continue;
     const record = item as { type?: string; call_id?: unknown };
     if (record.type === "function_call") {
-      if (pendingCallId !== undefined) return "fail";
       if (typeof record.call_id !== "string" || record.call_id.length === 0) return "fail";
-      pendingCallId = record.call_id;
+      if (pendingCallIds.has(record.call_id)) return "fail";
+      pendingCallIds.add(record.call_id);
+      callCount++;
       continue;
     }
     if (record.type === "function_call_output") {
-      if (pendingCallId === undefined) return "fail";
-      if (typeof record.call_id !== "string" || record.call_id !== pendingCallId) return "fail";
+      if (typeof record.call_id !== "string" || record.call_id.length === 0) return "fail";
+      if (!pendingCallIds.delete(record.call_id)) return "fail";
       resultCount++;
-      if (resultCount > 1) return "fail";
     }
   }
-  return pendingCallId !== undefined && resultCount === 1 ? "pass" : "fail";
+  return callCount > 0 && resultCount === callCount && pendingCallIds.size === 0 ? "pass" : "fail";
 }
 
 function evaluateCompactionReplayed(caseRecord: CaseRecord): boolean {
