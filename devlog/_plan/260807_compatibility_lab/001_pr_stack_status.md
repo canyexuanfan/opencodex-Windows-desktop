@@ -22,7 +22,7 @@ independent review, blockers, and whether a later phase is authorized.
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
 | CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) MERGED at `eee2dab4d1bbacefce56057adad51d734f346702`; FINAL CLOSURE GATE [#1348](https://github.com/lidge-jun/opencodex/pull/1348) |
-| CL-03 | — | — | — | — | NOT STARTED; AUTHORIZATION ACTIVATES ON #1348 MERGE AFTER GREEN CI/REVIEW |
+| CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | — | — | IN PROGRESS (implementation) |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -156,4 +156,4 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
 - CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening #1343 is also **MERGED** at `eee2dab4d1bbacefce56057adad51d734f346702`; final closure is tracked in #1348.
-- CL-03: **NOT STARTED**. Authorization is activated by merge of #1348 after green required CI and zero unresolved valid CodeRabbit findings.
+- CL-03: **IN PROGRESS** on `feat/cl-03-live-route-probes` from `4f746d13799888ea0a8c7a111aa2ad61c2126ea0`.

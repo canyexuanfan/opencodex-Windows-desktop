@@ -1,4 +1,4 @@
-import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
+import type { ObservationEvent, ProtocolSubjectV1, RouteSubjectV1 } from "../events/types";
 import { EVIDENCE_LAYERS, type ExecutionMode } from "../constants";
 import type { SuiteManifestV1 } from "../conformance/suite-manifest";
 import type { VerificationRole } from "../conformance/types";
@@ -18,6 +18,7 @@ export interface ScenarioRequirements {
   inboundProtocols?: string[];
   upstreamProtocols?: string[];
   surfaces?: string[];
+  requiredClaims?: string[];
   freshness?: { maxAgeMs: number | null };
 }
 
@@ -51,6 +52,25 @@ function scenarioApplicableToRequirements(
   );
 }
 
+/** Applicability for live_route_compatibility using RouteSubjectV1 fields. */
+export function routeSubjectApplicableToRequirements(
+  requirements: ScenarioRequirements,
+  subject: RouteSubjectV1,
+  routeRequiredClaims: string[] = [],
+): boolean {
+  const inbound = requirements.inboundProtocols ?? [];
+  const upstream = requirements.upstreamProtocols ?? [];
+  const surfaces = requirements.surfaces ?? [];
+  const requiredClaims = requirements.requiredClaims ?? [];
+  const claimsOk = requiredClaims.every((claim) => routeRequiredClaims.includes(claim));
+  return (
+    inbound.includes(subject.inboundProtocol) &&
+    upstream.includes(subject.upstreamProtocol) &&
+    surfaces.includes(subject.surface) &&
+    claimsOk
+  );
+}
+
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
@@ -79,9 +99,10 @@ function scenarioContractFromManifest(
   const upstreamProtocols = parseStringArray(row.upstreamProtocols);
   const surfaces = parseStringArray(row.surfaces);
   if (!inboundProtocols || !upstreamProtocols || !surfaces) return null;
+  const requiredClaims = parseStringArray(row.requiredClaims) ?? [];
   const freshness = parseFreshness(scenarioManifest.freshness);
   if (!freshness) return null;
-  return { inboundProtocols, upstreamProtocols, surfaces, freshness };
+  return { inboundProtocols, upstreamProtocols, surfaces, requiredClaims, freshness };
 }
 
 function effectiveMaxAgeMs(
@@ -117,7 +138,8 @@ export function evaluateAllApplicableRequiredPassV1(
   observations: ObservationEvent[],
   executionMode: ExecutionMode,
   opts: {
-    subject?: ProtocolSubjectV1;
+    subject?: ProtocolSubjectV1 | RouteSubjectV1;
+    routeRequiredClaims?: string[];
     loadScenarioManifest?: LoadScenarioManifest;
     loadScenarioRequirements?: LoadScenarioRequirements;
     asOf?: number;
@@ -160,8 +182,11 @@ export function evaluateAllApplicableRequiredPassV1(
       }
     }
 
-    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
+    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject?.subjectKind === "protocol") {
       if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
+    }
+    if (suiteManifest.evidenceLayer === "live_route_compatibility" && opts.subject?.subjectKind === "route") {
+      if (!routeSubjectApplicableToRequirements(requirements, opts.subject, opts.routeRequiredClaims ?? [])) continue;
     }
     applicableRequired.push(s.id);
     scenarioMaxAgeById.set(s.id, requirements.freshness?.maxAgeMs ?? null);

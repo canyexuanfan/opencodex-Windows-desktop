@@ -1,140 +1,39 @@
 /**
- * Persistence seam: transform CL-01 conformance results into valid observation events.
- * Deterministic harness execution stays separate from ledger persistence.
+ * Persistence seam: transform CL-03 live probe results into valid observation events.
  */
-import { createHash } from "node:crypto";
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
 import {
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
   LAB_PRODUCER_VERSION,
+  OBSERVATION_LIMIT_NAMES,
   type ObservationOutcome,
 } from "../constants";
-import {
-  jcsStringify,
-  scenarioManifestDigest,
-  subjectIdForSubject,
-  suiteManifestDigest,
-} from "../digest";
-import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
+import { fixtureDigest, scenarioManifestDigest, subjectIdForSubject, suiteManifestDigest } from "../digest";
+import type { ObservationEvent } from "../events/types";
 import { assignEventId } from "../events/validate";
 import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
-import type {
-  CaseAuthority,
-  CaseRecord,
-  ProtocolExecutionContextV1,
-  ScenarioRunResult,
-} from "../conformance/types";
-import { expandScenario } from "../conformance/manifest";
-import { suiteManifestObjectForCase } from "../conformance/suite-manifest";
-import { fixtureDigest } from "../conformance/digest";
-import { resolveProtocolExecutionContext } from "../conformance/executor";
+import type { CaseAuthority, CaseRecord } from "../conformance/types";
+import { expandLiveScenario } from "../live/manifest";
+import { liveSuiteManifestObjectForCase } from "../live/suite-manifest";
+import type { LiveScenarioRunResult } from "../live/types";
 
-const COMPAT_VERSION = "protocol-v1";
-
-export interface PersistConformanceOptions {
+export interface PersistLiveOptions {
   configDir?: string;
   recordedAt?: number;
-  /** Optional explicit override for the runner-provided execution timestamps. */
   startedAt?: number;
   completedAt?: number;
   producerVersion?: string;
   artifactStore?: ArtifactStore;
 }
 
-export interface PersistedConformanceObservation {
+export interface PersistedLiveObservation {
   event: ObservationEvent;
   ledgerPath: string;
 }
 
-function validateExecutionContext(
-  caseRecord: CaseRecord,
-  ctx: ProtocolExecutionContextV1,
-): ProtocolExecutionContextV1 {
-  const checks: Array<[string, string[], string]> = [
-    ["inboundProtocols", caseRecord.requirements.inboundProtocols, ctx.inboundProtocol],
-    ["upstreamProtocols", caseRecord.requirements.upstreamProtocols, ctx.upstreamProtocol],
-    ["surfaces", caseRecord.requirements.surfaces, ctx.surface],
-  ];
-  for (const [name, declared, actual] of checks) {
-    if (declared.length === 0) throw new Error(`case ${caseRecord.id} has empty ${name}`);
-    if (!declared.includes(actual)) {
-      throw new Error(`case ${caseRecord.id} execution context violates ${name}`);
-    }
-  }
-  return ctx;
-}
-
-function behaviorFingerprintForCase(
-  caseRecord: CaseRecord,
-  executionContext?: ProtocolExecutionContextV1,
-): string {
-  const ctx = validateExecutionContext(
-    caseRecord,
-    executionContext ?? resolveProtocolExecutionContext(caseRecord),
-  );
-  const adapter = upstreamAdapter(ctx.upstreamProtocol);
-  const values = {
-    schemaVersion: 1,
-    resolverVersion: 1,
-    values: {
-      "wire.adapter": {
-        source: "lab_forced",
-        value: adapter,
-      },
-      "wire.upstreamProtocol": {
-        source: "lab_forced",
-        value: ctx.upstreamProtocol,
-      },
-      "runtime.arch": {
-        source: "lab_forced",
-        value: process.arch,
-      },
-      "runtime.bunVersion": {
-        source: "lab_forced",
-        value: process.versions.bun ?? Bun.version,
-      },
-      "runtime.platform": {
-        source: "lab_forced",
-        value: process.platform,
-      },
-    },
-  };
-  return createHash("sha256").update(jcsStringify(values)).digest("hex");
-}
-
-function protocolSubject(caseRecord: CaseRecord, result: ScenarioRunResult): ProtocolSubjectV1 {
-  const ctx = validateExecutionContext(
-    caseRecord,
-    result.executionContext ?? resolveProtocolExecutionContext(caseRecord),
-  );
-  return {
-    subjectSchemaVersion: 1,
-    subjectKind: "protocol",
-    opencodexCompatibilityVersion: COMPAT_VERSION,
-    effectiveAdapter: upstreamAdapter(ctx.upstreamProtocol),
-    inboundProtocol: ctx.inboundProtocol,
-    upstreamProtocol: ctx.upstreamProtocol,
-    surface: ctx.surface,
-    behaviorFingerprint: behaviorFingerprintForCase(caseRecord, ctx),
-  };
-}
-
-function upstreamAdapter(protocol: string): string {
-  switch (protocol) {
-    case "openai-responses":
-      return "openai-responses";
-    case "anthropic-messages":
-      return "anthropic";
-    case "openai-chat":
-      return "openai-chat";
-    default:
-      throw new Error(`unsupported protocol identity: ${protocol}`);
-  }
-}
-
-function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
+function outcomeFromLiveResult(result: LiveScenarioRunResult): ObservationOutcome {
   if (result.passed) return "pass";
   switch (result.classification) {
     case "timeout":
@@ -152,37 +51,31 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
     case "capability_failure":
     case "behavioral_failure":
       return "fail";
-    default: {
-      const _never: never = result.classification;
-      throw new Error(`unmapped failure classification: ${String(_never)}`);
-    }
+    default:
+      return "inconclusive";
   }
 }
 
 function requireExecutionTimes(
-  result: ScenarioRunResult,
-  opts: PersistConformanceOptions,
+  result: LiveScenarioRunResult,
+  opts: PersistLiveOptions,
 ): { startedAt: number; completedAt: number } {
   const startedAt = opts.startedAt ?? result.startedAt;
   const completedAt = opts.completedAt ?? result.completedAt;
   if (!Number.isInteger(startedAt) || !Number.isInteger(completedAt)) {
-    throw new Error("real startedAt/completedAt are required for persisted conformance evidence");
+    throw new Error("real startedAt/completedAt are required for persisted live evidence");
   }
   if (startedAt < 0 || completedAt < startedAt) {
-    throw new Error("invalid persisted conformance execution timestamps");
+    throw new Error("invalid persisted live execution timestamps");
   }
   return { startedAt, completedAt };
 }
 
-/**
- * Build a valid protocol_conformance observation from one CL-01 scenario result.
- * Does not append; use persistConformanceResult for ledger write.
- */
-export function observationFromConformanceResult(
-  result: ScenarioRunResult,
+export function observationFromLiveResult(
+  result: LiveScenarioRunResult,
   caseRecord: CaseRecord,
   authority: CaseAuthority,
-  opts: PersistConformanceOptions = {},
+  opts: PersistLiveOptions = {},
 ): { event: ObservationEvent; artifacts: ReturnType<ArtifactStore["put"]>[] } {
   const paths = ensureLabDirs(opts.configDir);
   const ownsStore = !opts.artifactStore;
@@ -191,9 +84,9 @@ export function observationFromConformanceResult(
     const { startedAt, completedAt } = requireExecutionTimes(result, opts);
     const recordedAt = opts.recordedAt ?? completedAt;
 
-    const expandedScenario = expandScenario(caseRecord, authority);
+    const expandedScenario = expandLiveScenario(caseRecord, authority);
     const scenarioDigest = scenarioManifestDigest(expandedScenario);
-    const suiteExpanded = suiteManifestObjectForCase(caseRecord, authority);
+    const suiteExpanded = liveSuiteManifestObjectForCase(caseRecord, authority);
     const suiteDigest = suiteManifestDigest(suiteExpanded);
 
     const fixtureDigests: string[] = [];
@@ -248,10 +141,14 @@ export function observationFromConformanceResult(
     });
     artifacts.push(assertionReport);
 
-    const subject = protocolSubject(caseRecord, result);
+    const subject = result.routeSubject;
     const subjectId = subjectIdForSubject(subject);
-    const outcome = outcomeFromResult(result);
+    const outcome = outcomeFromLiveResult(result);
     const authorityLimits = authority.manifestDefaults.executionLimits;
+    const limits: Record<string, number | null> = {};
+    for (const key of OBSERVATION_LIMIT_NAMES) {
+      if (key in authorityLimits) limits[key] = authorityLimits[key] ?? null;
+    }
 
     const eventWithoutId = {
       schemaVersion: LAB_EVENT_SCHEMA_VERSION,
@@ -259,7 +156,7 @@ export function observationFromConformanceResult(
       recordedAt,
       producer: LAB_PRODUCER,
       producerVersion: opts.producerVersion ?? LAB_PRODUCER_VERSION,
-      evidenceLayer: "protocol_conformance" as const,
+      evidenceLayer: "live_route_compatibility" as const,
       scenarioId: caseRecord.id,
       scenarioVersion: String(authority.manifestDefaults.version),
       scenarioManifestDigest: scenarioDigest,
@@ -271,9 +168,9 @@ export function observationFromConformanceResult(
       subjectId,
       startedAt,
       completedAt,
-      executionMode: "fixture" as const,
+      executionMode: "live" as const,
       attempt: 1,
-      limits: { ...authorityLimits },
+      limits: { ...limits },
       outcome,
       assertions: result.assertionResults.map((a) => ({
         id: a.id,
@@ -305,7 +202,9 @@ export function observationFromConformanceResult(
               attribution:
                 result.classification === "harness_failure"
                   ? ("harness" as const)
-                  : ("opencodex" as const),
+                  : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "budget_exhausted"].includes(result.classification)
+                    ? ("environment" as const)
+                    : ("route" as const),
             },
           }),
     };
@@ -317,18 +216,17 @@ export function observationFromConformanceResult(
   }
 }
 
-/** Transform → validate → append one CL-01 result into the canonical JSONL ledger. */
-export function persistConformanceResult(
-  result: ScenarioRunResult,
+export function persistLiveResult(
+  result: LiveScenarioRunResult,
   caseRecord: CaseRecord,
   authority: CaseAuthority,
-  opts: PersistConformanceOptions = {},
-): PersistedConformanceObservation {
+  opts: PersistLiveOptions = {},
+): PersistedLiveObservation {
   const paths = ensureLabDirs(opts.configDir);
   const ownsStore = !opts.artifactStore;
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
-    const { event } = observationFromConformanceResult(result, caseRecord, authority, {
+    const { event } = observationFromLiveResult(result, caseRecord, authority, {
       ...opts,
       artifactStore: store,
     });
@@ -338,5 +236,3 @@ export function persistConformanceResult(
     if (ownsStore) store.close();
   }
 }
-
-export { behaviorFingerprintForCase };
