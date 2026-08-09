@@ -148,14 +148,21 @@ describe("apply", () => {
     expect(readFileSync(configPath, "utf8")).toBe("{{{ not yaml\n");
   });
 
-  test("refuses a loopback-only client on a remote bind", () => {
-    mkdirSync(join(home, ".gjc"), { recursive: true });
-    const result = applyIntegration(input({
-      clientId: "gajae",
-      config: { ...CONFIG, hostname: "0.0.0.0" } as OcxConfig,
-    }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("non_loopback");
+  test("refuses a loopback-only client on a remote bind without denying manual OMP headers", () => {
+    for (const clientId of ["gajae", "omp"] as const) {
+      const spec = INTEGRATION_CLIENTS[clientId];
+      mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+      const result = applyIntegration(input({
+        clientId,
+        config: { ...CONFIG, hostname: "0.0.0.0" } as OcxConfig,
+      }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("non_loopback");
+        expect(result.message).toContain(`generated ${clientId} integration is loopback-only`);
+        expect(result.message).not.toContain("writing one by hand would not help");
+      }
+    }
   });
 
   test("a write failure reports the snapshot rather than claiming success", () => {
