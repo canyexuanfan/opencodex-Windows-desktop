@@ -45,8 +45,9 @@ describe("Windows identity lookup popup fix (#1236)", () => {
     const options = windowsIdentityPowerShellSpawnOptionsForTests();
     expect(options.windowsHide).toBe(true);
     expect(options.stdin).toBe("ignore");
-    expect(Number.isFinite(options.timeout)).toBe(true);
-    expect(options.timeout).toBeGreaterThan(0);
+    // Assert the exact budget: the identity lookup contract is an 8-second
+    // bound, and a looser assertion would let a silent re-tune through.
+    expect(options.timeout).toBe(8_000);
   });
 
   test("the hidden trusted lookup resolves the real token on Windows", () => {
