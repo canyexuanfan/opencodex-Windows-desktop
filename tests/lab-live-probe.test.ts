@@ -9,10 +9,11 @@ import {
   registerMcpStubTool, routeSubjectApplicableToRequirements, runLiveScenario, runLiveSuite,
   scenarioManifestDigest, subjectIdForSubject,
 } from "../src/lab";
+import { createTrustedLabRouteExecutor } from "../src/lib/lab-live-execution-authority";
 import { replayLabLedger } from "../src/lab/ledger/store";
 import { clearMcpStub } from "../src/lab/live/mcp-loopback";
 import { expandLiveSuiteManifest } from "../src/lab/live/suite-manifest";
-import type { LabBehaviorValues, LabRouteContext } from "../src/lab/live/types";
+import { REQUIRED_LAB_SANDBOX_BOUNDARIES, type LabBehaviorValues, type LabRouteContext } from "../src/lab/live/types";
 import type { RouteSubjectV1 } from "../src/lab/events/types";
 import type { NormalizedObservation } from "../src/lab/conformance/types";
 
@@ -47,15 +48,23 @@ function transportForCase(caseRecord: ReturnType<typeof discoverLiveScenarios>[n
   return createMockTransport({ entries: caseRecord.initiatingRequest ? [{ status: 200, headers: { "content-type": caseRecord.fixture.mediaType }, body: caseRecord.fixture.bytesUtf8 }] : [] });
 }
 
-function reasoningObservation(): NormalizedObservation {
+function passObservation(): NormalizedObservation {
   return {
-    client: { request: { status: 200, headers: {}, json: {}, rawBytes: 0 }, response: { status: 200, headers: {}, json: {}, events: [], toolCalls: [], mcpCalls: [], terminal: "completed", normalizedText: "" } },
-    upstream: { requests: [
-      { status: 200, headers: {}, json: {}, rawBytes: 0 },
-      { status: 200, headers: {}, json: { input: [{ signature: "sig_fixture" }] }, rawBytes: 0 },
-    ], responses: [] },
-    process: { exitCode: null }, verifiers: {},
+    client: { request: { status: 200, headers: {}, json: {}, rawBytes: 0 }, response: { status: 200, headers: {}, json: {}, events: [], toolCalls: [], mcpCalls: [], terminal: "completed", normalizedText: "OK" } },
+    upstream: { requests: [], responses: [] }, process: { exitCode: null }, verifiers: {},
   };
+}
+function reasoningObservation(): NormalizedObservation {
+  const observation = passObservation();
+  observation.upstream.requests = [
+    { status: 200, headers: {}, json: {}, rawBytes: 0 },
+    { status: 200, headers: {}, json: { input: [{ signature: "sig_fixture" }] }, rawBytes: 0 },
+  ];
+  observation.client.response.normalizedText = "";
+  return observation;
+}
+function trustedObservation(observation: NormalizedObservation) {
+  return createTrustedLabRouteExecutor(async () => observation, REQUIRED_LAB_SANDBOX_BOUNDARIES);
 }
 
 describe("CL-03 live probe harness", () => {
@@ -71,23 +80,31 @@ describe("CL-03 live probe harness", () => {
   test("runs only applicable live suite scenarios with an injected test transport", async () => {
     const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority();
     const summary = await runLiveSuite(mockRoute(), ["responses-core", "chat-core"], { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], transport: createMockTransport({ entries: [{ status: 200, body: authority.cases.find((c) => c.id === "responses-core.live.basic-turn")!.fixture.bytesUtf8 }] }) });
-    expect(summary.total).toBe(1); expect(summary.results[0]?.routeSubject?.subjectKind).toBe("route");
+    expect(summary.total).toBe(1); expect(summary.results[0]?.routeSubject?.subjectKind).toBe("route"); expect(summary.results[0]?.executionAuthority).toBe("test_transport");
   });
 
   test("inert tool round-trips validate args and return static results", () => { expect(listInertToolDefinitions().map((t) => t.name)).toContain("lookup"); expect(executeInertTool("lookup", { q: "x" }).output).toBe("RESULT"); expect(() => executeInertTool("lookup", { q: 1 })).toThrow(); });
   test("MCP lab stub only", () => { registerMcpStubTool({ namespace: "lab", name: "echo" }); expect(invokeMcpStub("lab", "echo", { x: 1 }, { content: [{ type: "text", text: "ECHO" }] }).content[0]?.text).toBe("ECHO"); });
 
-  test("raw URLs and secrets never appear in persisted live evidence", async () => {
+  test("test transports can exercise normalization but cannot create live evidence", async () => {
     const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases.find((c) => c.id === "responses-core.live.basic-turn")!;
     const result = await runLiveScenario(caseRecord, mockRoute(), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], transport: transportForCase(caseRecord) });
+    expect(result.executionAuthority).toBe("test_transport");
+    expect(() => observationFromLiveResult(result, caseRecord, authority, { configDir: home })).toThrow("trusted-route");
+  });
+
+  test("raw URLs and secrets never appear in persisted trusted live evidence", async () => {
+    const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases.find((c) => c.id === "responses-core.live.basic-turn")!;
+    const result = await runLiveScenario(caseRecord, mockRoute(), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: trustedObservation(passObservation()) });
+    expect(result.executionAuthority).toBe("trusted_route");
     const { event } = observationFromLiveResult(result, caseRecord, authority, { configDir: home }); const serialized = JSON.stringify(event);
     expect(serialized).not.toContain("api.example.com"); expect(serialized).not.toContain("https://"); expect(serialized).not.toContain("apiKey"); expect(event.evidenceLayer).toBe("live_route_compatibility"); expect(event.executionMode).toBe("live");
   });
 
-  test("JSONL persistence and SQLite rebuild for live evidence", async () => {
+  test("JSONL persistence and SQLite rebuild for trusted live evidence", async () => {
     const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases.find((c) => c.id === "chat-core.live.basic-turn")!;
     const route = mockRoute({ effectiveAdapter: "openai-chat", upstreamProtocol: "openai-chat", surface: "responses-sse" });
-    const result = await runLiveScenario(caseRecord, route, { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], transport: transportForCase(caseRecord) });
+    const result = await runLiveScenario(caseRecord, route, { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: trustedObservation(passObservation()) });
     persistLiveResult(result, caseRecord, authority, { configDir: home }); const projection = rebuildLabProjection(home); expect(projection.events).toBeGreaterThan(0); expect(projection.corruptions).toHaveLength(0); expect(replayLabLedger(join(home, "lab", "compatibility.jsonl")).events.length).toBeGreaterThan(0);
   });
 
@@ -118,7 +135,7 @@ describe("CL-03 live probe harness", () => {
 
   test("reasoning replay persists no private reasoning material", async () => {
     const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority(); const scenario = authority.cases.find((c) => c.id === "reasoning-core.live.replay")!;
-    const result = await runLiveScenario(scenario, mockRoute({ requiredClaims: ["reasoning"] }), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: async () => reasoningObservation() });
+    const result = await runLiveScenario(scenario, mockRoute({ requiredClaims: ["reasoning"] }), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: trustedObservation(reasoningObservation()) });
     expect(result.passed).toBe(true); const { event } = observationFromLiveResult(result, scenario, authority, { configDir: home }); expect(JSON.stringify(event)).not.toContain("PLAN");
   });
 });

@@ -108,7 +108,7 @@ export function classifyTransportError(error: unknown): { classification: string
     case "request_limit": case "input_byte_limit": case "output_byte_limit": case "output_token_limit":
     case "tool_call_limit": case "artifact_byte_limit": case "memory_limit": case "child_process_limit":
       return { classification: "budget_exhausted", secondaryCode: code };
-    case "redirect_blocked": case "destination_mismatch": case "host_sni_mismatch": case "harness_failure":
+    case "live_transport_required": case "untrusted_route_executor": case "redirect_blocked": case "destination_mismatch": case "host_sni_mismatch": case "harness_failure":
       return { classification: "harness_failure", secondaryCode: code };
     default: return { classification: "harness_failure", secondaryCode: "execution_error" };
   }

@@ -92,6 +92,8 @@ export type TransportErrorCode =
   | "artifact_byte_limit"
   | "memory_limit"
   | "child_process_limit"
+  | "live_transport_required"
+  | "untrusted_route_executor"
   | "harness_failure";
 
 export interface LabTransportRequest {
@@ -150,8 +152,34 @@ export interface LabRouteExecutorInput {
   environment: Readonly<Record<string, string>>;
 }
 
-/** Trusted exact-route execution seam. It must use existing route/adapters and return client-observed normalization. */
+/** Trusted exact-route execution function. The wrapper capability is branded outside Lab. */
 export type LabRouteExecutor = (input: LabRouteExecutorInput) => Promise<NormalizedObservation>;
+
+export const REQUIRED_LAB_SANDBOX_BOUNDARIES = [
+  "destination_pinning",
+  "credential_binding",
+  "wall_clock",
+  "connect_timeout",
+  "first_byte_timeout",
+  "inactivity_timeout",
+  "request_budget",
+  "input_byte_budget",
+  "output_byte_budget",
+  "output_token_budget",
+  "tool_call_budget",
+  "memory_limit",
+  "child_process_limit",
+  "artifact_budget",
+] as const;
+export type LabSandboxBoundary = typeof REQUIRED_LAB_SANDBOX_BOUNDARIES[number];
+
+/** Opaque-ish internal capability; runtime trust is established by a WeakSet in src/lib. */
+export interface TrustedLabRouteExecutor {
+  execute(input: LabRouteExecutorInput): Promise<NormalizedObservation>;
+  readonly enforcedBoundaries: readonly LabSandboxBoundary[];
+}
+
+export type LiveExecutionAuthority = "trusted_route" | "test_transport" | "none";
 
 export interface LiveScenarioRunResult {
   scenarioId: string;
@@ -165,4 +193,5 @@ export interface LiveScenarioRunResult {
   diagnostics: string[];
   routeSubject?: RouteSubjectV1;
   transportError?: TransportErrorCode;
+  executionAuthority: LiveExecutionAuthority;
 }

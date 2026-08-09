@@ -29,6 +29,7 @@ function requireExecutionTimes(result: LiveScenarioRunResult, opts: PersistLiveO
 }
 
 export function observationFromLiveResult(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority, opts: PersistLiveOptions = {}): { event: ObservationEvent; artifacts: ReturnType<ArtifactStore["put"]>[] } {
+  if (result.executionAuthority !== "trusted_route") throw new Error("only trusted-route execution may be persisted as live evidence");
   if (!result.routeSubject) throw new Error("live evidence without an exact RouteSubjectV1 is not persistable");
   const paths = ensureLabDirs(opts.configDir); const ownsStore = !opts.artifactStore; const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {

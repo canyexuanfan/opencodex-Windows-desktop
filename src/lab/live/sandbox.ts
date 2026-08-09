@@ -18,24 +18,33 @@ export function rejectProxyEnvironment(env: NodeJS.ProcessEnv = process.env): vo
 export function labSandboxEnvironment(): Readonly<Record<string, string>> { return Object.freeze({ ...ALLOWED_ENV }); }
 
 export interface SandboxResourceState {
-  requests: number; inputBytes: number; outputBytes: number; outputTokens: number; toolCalls: number;
-  artifacts: number; artifactBytes: number; childProcesses: number; peakMemoryBytes: number;
+  requests: number;
+  inputBytes: number;
+  outputBytes: number;
+  outputTokens: number;
+  toolCalls: number;
+  artifacts: number;
+  artifactBytes: number;
+  childProcesses: number;
 }
 
 export function createSandboxResourceState(): SandboxResourceState {
-  return { requests: 0, inputBytes: 0, outputBytes: 0, outputTokens: 0, toolCalls: 0, artifacts: 0, artifactBytes: 0, childProcesses: 0, peakMemoryBytes: process.memoryUsage().rss };
+  return { requests: 0, inputBytes: 0, outputBytes: 0, outputTokens: 0, toolCalls: 0, artifacts: 0, artifactBytes: 0, childProcesses: 0 };
 }
 
+/**
+ * Counter-based ceilings enforce the resources observable in this process. The hard resident-memory
+ * boundary is NOT inferred from the hosting Bun test/server process RSS; a trusted exact-route
+ * executor must attest/enforce that isolated boundary before its result is evidence-eligible.
+ */
 export function enforceSandboxLimits(state: SandboxResourceState, limits: LiveRunConfig, delta: Partial<SandboxResourceState> = {}): void {
   const next: SandboxResourceState = {
     requests: state.requests + (delta.requests ?? 0), inputBytes: state.inputBytes + (delta.inputBytes ?? 0),
     outputBytes: state.outputBytes + (delta.outputBytes ?? 0), outputTokens: state.outputTokens + (delta.outputTokens ?? 0),
     toolCalls: state.toolCalls + (delta.toolCalls ?? 0), artifacts: state.artifacts + (delta.artifacts ?? 0),
     artifactBytes: state.artifactBytes + (delta.artifactBytes ?? 0), childProcesses: state.childProcesses + (delta.childProcesses ?? 0),
-    peakMemoryBytes: Math.max(state.peakMemoryBytes, delta.peakMemoryBytes ?? process.memoryUsage().rss),
   };
   if (next.childProcesses > limits.maxChildProcesses) throw new LabSandboxError("child process limit exceeded", "child_process_limit");
-  if (next.peakMemoryBytes > limits.maxMemoryBytes) throw new LabSandboxError("runner resident memory limit exceeded", "memory_limit");
   if (next.requests > limits.maxRequests) throw new LabSandboxError("request limit exceeded", "request_limit");
   if (next.inputBytes > limits.maxInputBytes) throw new LabSandboxError("input byte limit exceeded", "input_byte_limit");
   if (next.outputBytes > limits.maxOutputBytes) throw new LabSandboxError("output byte limit exceeded", "output_byte_limit");

@@ -3,17 +3,18 @@ import { emptyObservation, finalizeObservation, setClientResponse } from "../con
 import { normalizeSseBytes } from "../conformance/sse-normalize";
 import type { CaseRecord, FailureClassification, FailureRule, NormalizedEvent, NormalizedObservation } from "../conformance/types";
 import type { RouteSubjectV1 } from "../events/types";
+import { isTrustedLabRouteExecutor } from "../../lib/lab-live-execution-authority";
 import { buildRouteSubjectV1 } from "../subject/route-subject";
 import { createLabDestination, LabDestinationError } from "./destination";
 import { expandLiveScenario } from "./manifest";
 import { createSandboxResourceState, enforceSandboxLimits, LabSandboxError, prepareLiveSandbox } from "./sandbox";
 import { classifyTransportError, TransportError } from "./transport";
-import type { DnsResolver, LabRouteContext, LabRouteExecutor, LabTransport, LiveRunConfig, LiveScenarioRunResult } from "./types";
+import type { DnsResolver, LabRouteContext, LabTransport, LiveExecutionAuthority, LiveRunConfig, LiveScenarioRunResult, TrustedLabRouteExecutor } from "./types";
 
 export interface LiveExecutorOptions {
-  /** Trusted exact-route executor for production use; owns adapter + credential plumbing. */
-  routeExecutor?: LabRouteExecutor;
-  /** Injectable byte transport used by deterministic tests. Never created implicitly. */
+  /** Branded exact-route capability for evidence-eligible production execution. */
+  routeExecutor?: TrustedLabRouteExecutor;
+  /** Test-only byte transport. Results are deliberately not evidence-eligible. */
   transport?: LabTransport;
   resolve?: DnsResolver;
   configDir?: string;
@@ -125,7 +126,7 @@ function responsesObservation(body: string, status: number): NormalizedObservati
   return observation;
 }
 
-function normalizeTransportObservation(caseRecord: CaseRecord, route: LabRouteContext, response: { status: number; body: string }): NormalizedObservation {
+function normalizeTransportObservation(route: LabRouteContext, response: { status: number; body: string }): NormalizedObservation {
   const observation = route.upstreamProtocol === "openai-chat" ? chatObservation(response.body, response.status) : responsesObservation(response.body, response.status);
   if (route.surface.startsWith("anthropic-") && observation.client.response.terminal === "completed") {
     setClientResponse(observation, { terminal: "message_stop" });
@@ -148,7 +149,8 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
   const diagnostics: string[] = [];
   const startedAt = Date.now();
   let routeSubject: RouteSubjectV1 | undefined;
-  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt">): LiveScenarioRunResult => ({ ...partial, startedAt, completedAt: Math.max(startedAt, Date.now()) });
+  let executionAuthority: LiveExecutionAuthority = "none";
+  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt" | "executionAuthority">): LiveScenarioRunResult => ({ ...partial, executionAuthority, startedAt, completedAt: Math.max(startedAt, Date.now()) });
   try {
     const environment = prepareLiveSandbox(opts.env);
     if (!isLiveCaseApplicableToRoute(caseRecord, routeContext)) {
@@ -166,8 +168,11 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
     const state = createSandboxResourceState();
     let observation: NormalizedObservation;
     if (opts.routeExecutor) {
-      observation = await withTotalTimeout(limits.totalTimeoutMs, (signal) => opts.routeExecutor!({ routeContext, destination, routeSubject: routeSubject!, scenarioId: caseRecord.id, initiatingRequest: caseRecord.initiatingRequest?.bytesUtf8, limits, signal, environment }));
+      if (!isTrustedLabRouteExecutor(opts.routeExecutor)) throw new TransportError("untrusted_route_executor", "untrusted route executor capability");
+      executionAuthority = "trusted_route";
+      observation = await withTotalTimeout(limits.totalTimeoutMs, (signal) => opts.routeExecutor!.execute({ routeContext, destination, routeSubject: routeSubject!, scenarioId: caseRecord.id, initiatingRequest: caseRecord.initiatingRequest?.bytesUtf8, limits, signal, environment }));
     } else if (opts.transport && caseRecord.initiatingRequest) {
+      executionAuthority = "test_transport";
       const body = caseRecord.initiatingRequest.bytesUtf8;
       const inputBytes = new TextEncoder().encode(body).byteLength;
       enforceSandboxLimits(state, limits, { requests: 1, inputBytes });
@@ -177,10 +182,10 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
       if (response.status === 451) throw new TransportError("region_blocked", "HTTP 451");
       if (response.status >= 500) throw new TransportError("provider_transient", `HTTP ${response.status}`);
       const outputBytes = new TextEncoder().encode(response.body).byteLength;
-      enforceSandboxLimits(state, limits, { outputBytes, outputTokens: Math.ceil(outputBytes / 4), peakMemoryBytes: process.memoryUsage().rss });
-      observation = normalizeTransportObservation(caseRecord, routeContext, response);
+      enforceSandboxLimits(state, limits, { outputBytes, outputTokens: Math.ceil(outputBytes / 4) });
+      observation = normalizeTransportObservation(routeContext, response);
     } else {
-      throw new TransportError("harness_failure", caseRecord.initiatingRequest ? "live_transport_required" : "live_route_executor_required");
+      throw new TransportError("live_transport_required", caseRecord.initiatingRequest ? "live transport or trusted route executor required" : "trusted route executor required");
     }
     const assertionResults = evaluateAssertions(caseRecord.assertions, observation);
     const requiredFailures = assertionResults.filter((row) => row.required && !row.passed);
