@@ -2455,7 +2455,7 @@ function removeServiceInstallState(): void {
 type UninstallServiceHooksForTests = {
   platform: typeof process.platform;
   assertEnvironment: () => void;
-  queryWindowsTask: () => string;
+  probeWindowsTask: () => WindowsSchedulerTaskProbe;
   uninstallWindowsTask: () => void;
   nativeStatus: () => WinswStatus;
   uninstallNative: () => void;
@@ -2472,7 +2472,8 @@ export function setUninstallServiceHooksForTests(hooks: UninstallServiceHooksFor
 /**
  * Best-effort service removal for full uninstall. Unlike `ocx service uninstall`, this is quiet
  * when no service exists or the platform has no service manager. An installed native Windows
- * service that cannot be removed throws so the caller cannot erase state and report success.
+ * service or scheduler task that cannot be removed throws so the caller cannot erase state and
+ * report success.
  */
 export function uninstallServiceIfInstalled(): boolean {
   const hooks = uninstallServiceHooksForTests;
@@ -2484,10 +2485,14 @@ export function uninstallServiceIfInstalled(): boolean {
     }
   } else if (platform === "win32") {
     let removed = false;
-    try {
-      const q = (hooks?.queryWindowsTask ?? (() => schtasks(["/query", "/tn", TASK])))();
-      if (q.includes(TASK)) { (hooks?.uninstallWindowsTask ?? uninstallWindows)(); removed = true; }
-    } catch { /* task not found */ }
+    const scheduler = (hooks?.probeWindowsTask ?? probeWindowsSchedulerTask)();
+    if (scheduler.status === "unknown") {
+      throw new Error(`Could not determine Task Scheduler state: ${scheduler.detail}`);
+    }
+    if (scheduler.status === "present") {
+      (hooks?.uninstallWindowsTask ?? uninstallWindows)();
+      removed = true;
+    }
     if ((hooks?.nativeStatus ?? statusWinswRaw)() !== "nonexistent") {
       (hooks?.uninstallNative ?? uninstallWinswService)();
       removed = true;

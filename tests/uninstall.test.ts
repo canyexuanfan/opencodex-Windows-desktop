@@ -53,7 +53,7 @@ describe("full uninstall command", () => {
     setUninstallServiceHooksForTests({
       platform: "win32",
       assertEnvironment: () => {},
-      queryWindowsTask: () => "opencodex-proxy",
+      probeWindowsTask: () => ({ status: "present" }),
       uninstallWindowsTask: () => { calls.push("scheduler"); },
       nativeStatus: () => "started",
       uninstallNative: () => {
@@ -65,6 +65,22 @@ describe("full uninstall command", () => {
 
     expect(() => uninstallServiceIfInstalled()).toThrow("native removal failed");
     expect(calls).toEqual(["scheduler", "native"]);
+    expect(stateRemovals).toBe(0);
+  });
+
+  test("scheduler removal failure propagates without deleting install state", () => {
+    let stateRemovals = 0;
+    setUninstallServiceHooksForTests({
+      platform: "win32",
+      assertEnvironment: () => {},
+      probeWindowsTask: () => ({ status: "present" }),
+      uninstallWindowsTask: () => { throw new Error("scheduler removal failed"); },
+      nativeStatus: () => "nonexistent",
+      uninstallNative: () => {},
+      removeInstallState: () => { stateRemovals++; },
+    });
+
+    expect(() => uninstallServiceIfInstalled()).toThrow("scheduler removal failed");
     expect(stateRemovals).toBe(0);
   });
 
