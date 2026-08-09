@@ -6,7 +6,7 @@ import type { FailureRecordV1, ObservationEvent } from "../events/types";
 import { assignEventId } from "../events/validate";
 import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
-import type { CaseAuthority, CaseRecord } from "../conformance/types";
+import type { CaseAuthority, CaseRecord, FailureRule } from "../conformance/types";
 import { assertTrustedLiveResultReceipt } from "../live/executor";
 import { expandLiveScenario } from "../live/manifest";
 import { liveSuiteManifestObjectForCase } from "../live/suite-manifest";
@@ -36,17 +36,27 @@ function outcomeFromLiveResult(result: LiveScenarioRunResult): ObservationOutcom
   }
 }
 
-function failureFromLiveResult(result: LiveScenarioRunResult): FailureRecordV1 | undefined {
+function selectedFailureRule(result: LiveScenarioRunResult, authority: CaseAuthority): FailureRule | undefined {
+  const rules = authority.failureRuleSets[authority.manifestDefaults.failureRuleSet] ?? [];
+  return rules.find((rule) =>
+    (result.transportError !== undefined && rule.match.includes(result.transportError))
+    || (result.secondaryCode !== undefined && (rule.match.includes(result.secondaryCode) || rule.secondaryCode === result.secondaryCode))
+    || rule.classification === result.classification,
+  );
+}
+
+function failureFromLiveResult(result: LiveScenarioRunResult, authority: CaseAuthority): FailureRecordV1 | undefined {
   if (result.passed || result.classification === "inconclusive") return undefined;
   const attribution: FailureRecordV1["attribution"] = result.classification === "harness_failure"
     ? "harness"
     : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "budget_exhausted"].includes(result.classification)
       ? "environment"
       : "route";
+  const rule = selectedFailureRule(result, authority);
   return {
     class: result.classification,
     code: result.secondaryCode ?? result.classification,
-    retryable: false,
+    retryable: rule?.retry === "bounded",
     attribution,
   };
 }
@@ -78,7 +88,7 @@ export function observationFromLiveResult(result: LiveScenarioRunResult, caseRec
       assertions: result.assertionResults.map((row) => ({ id: row.id, operator: row.operator, required: row.required, passed: row.passed, observedSummary: row.observedSummary, reason: row.reason })) } }));
     const subject = result.routeSubject; const subjectId = subjectIdForSubject(subject); const authorityLimits = authority.manifestDefaults.executionLimits;
     const limits: Record<string, number | null> = {}; for (const key of OBSERVATION_LIMIT_NAMES) if (key in authorityLimits) limits[key] = authorityLimits[key] ?? null;
-    const failure = failureFromLiveResult(result);
+    const failure = failureFromLiveResult(result, authority);
     const eventWithoutId = {
       schemaVersion: LAB_EVENT_SCHEMA_VERSION, eventKind: "observation" as const, recordedAt, producer: LAB_PRODUCER, producerVersion: opts.producerVersion ?? LAB_PRODUCER_VERSION,
       evidenceLayer: "live_route_compatibility" as const, scenarioId: caseRecord.id, scenarioVersion: String(authority.manifestDefaults.version), scenarioManifestDigest: scenarioDigest,
