@@ -48,6 +48,7 @@ export const en = {
   "theme.dark": "Dark",
   "theme.system": "System",
   "lang.label": "Language",
+  "lang.nativeName": "English",
   "provider.name.commandCodeAuth": "Command Code - Auth",
   "provider.name.commandCodeApi": "Command Code - API",
   "provider.name.volcengine": "Volcengine Ark",

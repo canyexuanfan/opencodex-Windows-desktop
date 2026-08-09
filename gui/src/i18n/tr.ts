@@ -47,6 +47,7 @@ export const tr: Record<TKey, string> = {
   "theme.dark": "Koyu",
   "theme.system": "Sistem",
   "lang.label": "Dil",
+  "lang.nativeName": "Türkçe",
   "provider.name.commandCodeAuth": "Command Code - Auth",
   "provider.name.commandCodeApi": "Command Code - API",
   "provider.name.volcengine": "Volcengine Ark",

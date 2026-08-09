@@ -13,7 +13,7 @@ import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { SidebarGithubRow } from "./components/sidebar-github-row";
 import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX } from "./icons";
-import { useI18n, useT, LOCALES, LOCALE_NAMES, type Locale, type TKey } from "./i18n/shared";
+import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
 import { type Page } from "./app-routing";
@@ -252,7 +252,7 @@ export default function App() {
             <IconGlobe aria-hidden />
             <Select
               value={locale}
-              options={LOCALES.map(l => ({ value: l.code, label: LOCALE_NAMES[l.code] }))}
+              options={LOCALES.map(l => ({ value: l.code, label: localeDisplayName(l.code) }))}
               onChange={v => setLocale(v as Locale)}
               label={t("lang.label")}
               placement="right"
