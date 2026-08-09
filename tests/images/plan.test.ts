@@ -92,6 +92,25 @@ describe("planImageBridge", () => {
     expect(plan!.auth.baseUrl).toBe("https://api.x.ai/v1");
   });
 
+  test("tool_choice cannot arm an excluded image sidecar", async () => {
+    const cfg = makeConfig({ xai: { baseUrl: "https://api.x.ai", apiKey: "test-token" } }, { bridgeEnabled: true });
+    const parsed = makeParsed(true);
+
+    parsed.options.toolChoice = "none";
+    expect(await planImageBridge(cfg, parsed, routed)).toBeUndefined();
+    parsed.options.toolChoice = { name: "read_file" };
+    expect(await planImageBridge(cfg, parsed, routed)).toBeUndefined();
+    parsed.options.toolChoice = { allowedTools: ["read_file"], mode: "required" };
+    expect(await planImageBridge(cfg, parsed, routed)).toBeUndefined();
+
+    parsed.options.toolChoice = { name: "image_gen" };
+    expect(await planImageBridge(cfg, parsed, routed)).toBeDefined();
+
+    parsed._imageGeneration?.toolNames.add("generate_image");
+    parsed.options.toolChoice = { name: "generate_image" };
+    expect(await planImageBridge(cfg, parsed, routed)).toBeDefined();
+  });
+
   test("xAI provider with OAuth only (no API key) → undefined (API-key-only bridge)", async () => {
     tokenResult = "fake-oauth-123";
     const cfg = makeConfig({ xai: { baseUrl: "https://api.x.ai" } }, { bridgeEnabled: true });

@@ -223,6 +223,19 @@ export function isAllowedToolChoice(value: OcxToolChoice | undefined): value is 
   return typeof value === "object" && value !== null && "allowedTools" in value;
 }
 
+/** Compile the request's tool-choice policy into a reusable advertisement/restoration predicate. */
+export function toolChoiceToolPredicate(
+  choice: OcxToolChoice | undefined,
+): (tool: Pick<OcxTool, "namespace" | "name">) => boolean {
+  if (!choice || choice === "auto" || choice === "required") return () => true;
+  if (choice === "none") return () => false;
+  if (isAllowedToolChoice(choice)) {
+    const allowed = new Set(choice.allowedTools);
+    return tool => toolAllowedByChoice(tool, allowed);
+  }
+  return tool => toolChoiceAliases(tool).includes(choice.name);
+}
+
 export interface OcxRequestOptions {
   maxOutputTokens?: number;
   temperature?: number;
