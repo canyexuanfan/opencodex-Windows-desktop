@@ -29,6 +29,10 @@ interface OutputItem {
   content?: OutputTextBlock[];
 }
 
+// ChatGPT's Codex backend does not accept `max_output_tokens` on sidecar requests. Bound the raw
+// streamed response here, before decoded text and authoritative/delta copies can accumulate.
+export const MAX_SIDECAR_RESPONSE_BYTES = 64 * 1024;
+
 /** Push a `url_citation` annotation as a source, de-duplicated by URL. */
 function collectAnnotation(ann: AnnotationLike | undefined, sources: WebSearchSource[], seen: Set<string>): void {
   if (!ann || ann.type !== "url_citation" || typeof ann.url !== "string" || seen.has(ann.url)) return;
@@ -175,6 +179,15 @@ function fromOutputArray(output: OutputItem[], seen: Set<string>): WebSearchResu
   return { text, sources };
 }
 
+function cancelReaderWithoutWaiting(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reason: string,
+): void {
+  try {
+    void reader.cancel(reason).catch(() => undefined);
+  } catch { /* best-effort body teardown */ }
+}
+
 /**
  * Parse the sidecar's streamed Responses SSE into a final answer + sources. Tolerant of the full set of
  * Responses streaming events: prefers the authoritative `response.completed` output[], then the
@@ -188,6 +201,7 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let responseBytes = 0;
   const seen = new Set<string>();
   // Holder object — fields are mutated inside the closure, so they can't live as narrowed locals.
   const acc: {
@@ -242,12 +256,22 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      const remaining = MAX_SIDECAR_RESPONSE_BYTES - responseBytes;
+      const accepted = value.byteLength <= remaining ? value : value.subarray(0, remaining);
+      responseBytes += accepted.byteLength;
+      buffer += decoder.decode(accepted, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         const data = sseFieldValue(line, "data");
         if (data !== null) handle(data.trim());
+      }
+      if (responseBytes >= MAX_SIDECAR_RESPONSE_BYTES) {
+        // Preserve complete events accepted up to the cap, but discard any unterminated line and
+        // TextDecoder carry. Do not let a rejecting/hung cancel turn bounded partial output into
+        // an error or keep this parser waiting on upstream teardown.
+        cancelReaderWithoutWaiting(reader, "sidecar response byte limit reached");
+        break;
       }
     }
   } finally {
