@@ -414,6 +414,9 @@ async function runReasoningEffortMapping(
 ): Promise<NormalizedObservation> {
   const provider: OcxProviderConfig = {
     ...fixtureProviderConfig("openai-chat"),
+    // This vector explicitly exercises the non-native gateway-object wire contract.
+    // Keep it off api.openai.com so native Chat's reasoning_effort branch is tested separately.
+    baseUrl: "http://127.0.0.1:1/v1",
     reasoningEffortMap: vector.reasoningEffortMap as Record<string, string>,
     reasoningWireFormat: vector.reasoningWireFormat as OcxProviderConfig["reasoningWireFormat"],
   };
