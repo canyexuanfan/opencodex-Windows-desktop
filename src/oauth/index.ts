@@ -1179,8 +1179,16 @@ export function getLoginStatus(provider: string): { loggedIn: boolean; email?: s
     ...(a.needsReauth ? { needsReauth: true } : {}),
     expiresAt: a.credential.expires,
   }));
+
+  // A stored credential counts as "logged in" when it exists and is not marked for
+  // re-authentication. An expired access token with a valid refresh token is still
+  // logged in: request resolution refreshes expired/near-expiry credentials lazily.
+  // Invalid/unknown local-import expiries are handled at parse/adoption time
+  // (local-token-detect.ts), never by over-reporting login state here.
+  const activeNeedsReauth = set?.accounts
+    .find(a => a.id === set.activeAccountId)?.needsReauth === true;
   return {
-    loggedIn: !!cred,
+    loggedIn: !!cred && !activeNeedsReauth,
     email: maskEmail(cred?.email) ?? undefined,
     source: cred?.source,
     error: st?.error,
