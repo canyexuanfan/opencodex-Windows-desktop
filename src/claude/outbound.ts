@@ -328,9 +328,14 @@ export function responsesSseToAnthropicSse(
           ))));
           return;
         }
-        ensureStarted();
-        closeOpenBlock();
         const type = upstreamDerived && isTransientUpstreamStatus(status) ? "overloaded_error" : undefined;
+        if (!started) {
+          // An initial upstream failure is an Anthropic error stream, not a partial message.
+          // Do not manufacture message_start/ping before the terminal error.
+          emit("error", anthropicErrorBody(status, message, type, code));
+          return;
+        }
+        closeOpenBlock();
         emit("error", anthropicErrorBody(status, message, type, code));
       };
 
