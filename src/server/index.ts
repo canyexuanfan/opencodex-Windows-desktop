@@ -43,7 +43,11 @@ import {
 } from "../lib/app-owned-memory-stores";
 import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
 import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
-import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
+import {
+  scheduleStorageCleanupStartupRun,
+  startStorageCleanupScheduler,
+  stopStorageCleanupScheduler,
+} from "../storage/policy-scheduler";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
@@ -188,6 +192,8 @@ import {
 } from "../lib/local-management-attestation";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
+
+let activeServerBackgroundLoopsOwner: symbol | null = null;
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -488,14 +494,14 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   hydrateRequestLogsFromDisk();
   // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
   // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
-  startMemoryWatchdog();
+  const memoryWatchdog = startMemoryWatchdog();
   registerDefaultAppOwnedMemoryStores();
   registerDefaultAppOwnedObservedBuffers();
   registerAppOwnedMemorySweepFallback();
   configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
   enforceAppOwnedMemoryBudget();
   registerCodexCooldownRecoveryProbeWorker(config);
-  startStateStoreSweeper();
+  const stateStoreSweeper = startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
   // Heavy work runs in a Worker via the single-flight job controller.
@@ -506,6 +512,20 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   setStorageCleanupPolicyLiveSink(applyPolicy);
   setStorageCleanupPolicyJobLiveApply(applyPolicy);
   startStorageCleanupScheduler();
+  const backgroundLoopsOwner = Symbol("server-background-loops");
+  activeServerBackgroundLoopsOwner = backgroundLoopsOwner;
+  let backgroundLoopsStopped = false;
+  const stopBackgroundLoops = () => {
+    if (backgroundLoopsStopped) return;
+    backgroundLoopsStopped = true;
+    if (activeServerBackgroundLoopsOwner !== backgroundLoopsOwner) return;
+    activeServerBackgroundLoopsOwner = null;
+    memoryWatchdog.stop();
+    stateStoreSweeper.stop();
+    stopStorageCleanupScheduler();
+    setStorageCleanupPolicyLiveSink(null);
+    setStorageCleanupPolicyJobLiveApply(null);
+  };
 
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
@@ -1527,6 +1547,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
     }
   } catch (error) {
+    stopBackgroundLoops();
     void nativeMainLifecycle.release();
     throw error;
   }
@@ -1546,7 +1567,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             ? [() => loopbackListenerRef.stop(closeActiveConnections)]
             : []),
         ],
-        () => releaseNativeMainStartupLifecycle(server),
+        async () => {
+          stopBackgroundLoops();
+          await releaseNativeMainStartupLifecycle(server);
+        },
       );
     },
   });
