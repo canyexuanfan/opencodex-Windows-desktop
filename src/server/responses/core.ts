@@ -631,6 +631,12 @@ export interface HandleResponsesOptions {
   inboundWire?: InboundWire;
   /** Internal transport identity for route-scoped upstream compatibility policy. */
   inboundTransport?: "websocket";
+  /**
+   * Claude replay may add native-main auth so OpenAI sidecars remain available.
+   * Strip only that internal credential when the final route is a noncanonical
+   * forward destination; final routing can differ from Claude's preflight route.
+   */
+  stripClaudeMainAuthForNoncanonicalForward?: boolean;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
@@ -1701,7 +1707,24 @@ async function handleResponsesInner(
     parsed.options.promptCacheKey,
     route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
   );
-  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+  let adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+  const stripClaudeMainAuth = options.stripClaudeMainAuthForNoncanonicalForward === true
+    && adapterProvider.adapter === "openai-responses"
+    && adapterProvider.authMode === "forward"
+    && !isCanonicalOpenAiForwardProvider(adapterProvider);
+  if (stripClaudeMainAuth) {
+    releaseCodexAuthContextProbeLease(authCtx);
+    authCtx = { kind: "main", accountId: null };
+    route.provider = stripCodexRuntimeProviderFields(route.provider);
+    adapterProvider = stripCodexRuntimeProviderFields(adapterProvider);
+    selectedForwardHeaders = new Headers(selectedForwardHeaders);
+    selectedForwardHeaders.delete("authorization");
+    selectedForwardHeaders.delete("chatgpt-account-id");
+    delete route.codexAccountMode;
+    delete route.codexAccountId;
+    delete route.codexAccountNamespace;
+    logCtx.provider = route.providerName;
+  }
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   logCtx.providerAdapter = adapter.name;
   // Ordinary requests receive one durable attempt only after their final initial
