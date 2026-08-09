@@ -9,6 +9,7 @@
  *  - message_delta.usage is cumulative; message_start embeds a full message snapshot.
  *  - errors: {type:"error", error:{type,message}}; may arrive mid-stream after HTTP 200.
  */
+import { createHash } from "node:crypto";
 import { isTransientUpstreamStatus } from "../lib/upstream-retry";
 import {
   isTranslatorBudgetExceededError,
@@ -22,6 +23,27 @@ type Rec = Record<string, unknown>;
 
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function reasoningIdentityDigest(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+/** Fixed-size identity that preserves protocol boundaries without retaining upstream strings. */
+function boundedReasoningIdentity(value: unknown): string {
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value >= 0) return `n${value}`;
+    if (Number.isFinite(value)) return `d${value}`;
+    return Number.isNaN(value) ? "dnan" : value > 0 ? "dinf" : "d-inf";
+  }
+  if (typeof value === "string") {
+    return `s${reasoningIdentityDigest(value)}`;
+  }
+  if (value === null) return "z";
+  if (typeof value === "boolean") return value ? "b1" : "b0";
+  if (Array.isArray(value)) return `a${reasoningIdentityDigest(JSON.stringify(value) ?? "[]")}`;
+  // Preserve the prior String(record) category semantics without serializing untrusted trees.
+  return typeof value === "object" ? "o" : "u";
 }
 
 function uuid(): string {
@@ -188,7 +210,7 @@ interface OpenBlock {
   argsBufBytes?: number;
   webSearchArgsEmitted?: boolean;
   callId?: string;
-  /** Last reasoning part identity (item + summary/content index) seen by this thinking block. */
+  /** Last fixed-size reasoning identity (item + summary/content index) seen by this block. */
   reasoningPartKey?: string;
 }
 
@@ -364,9 +386,12 @@ export function responsesSseToAnthropicSse(
             // so multi-part summaries do not glue into one run-on paragraph. Frames
             // without part indices produce a constant key and never get a separator.
             const slot = eventName === "response.reasoning_summary_text.delta"
-              ? `s${String(data.summary_index)}`
-              : `c${String(data.content_index)}`;
-            const partKey = `${String(data.item_id)}:${slot}`;
+              ? `s${boundedReasoningIdentity(data.summary_index)}`
+              : `c${boundedReasoningIdentity(data.content_index)}`;
+            // Upstream string metadata can be arbitrarily large. Hash strings into fixed-size
+            // components while retaining item and part equality, rather than dropping item_id and
+            // accidentally joining distinct malformed reasoning items.
+            const partKey = `${boundedReasoningIdentity(data.item_id)}:${slot}`;
             if (open!.reasoningPartKey !== undefined && open!.reasoningPartKey !== partKey) {
               emit("content_block_delta", {
                 type: "content_block_delta", index: open!.index,
