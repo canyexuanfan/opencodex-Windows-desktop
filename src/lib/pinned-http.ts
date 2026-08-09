@@ -3,6 +3,13 @@ import https from "node:https";
 
 export type PinnedAddress = { address: string; family: number };
 
+export type PinnedHttpErrorCode = "connect_timeout";
+
+export class PinnedHttpError extends Error {
+  override readonly name = "PinnedHttpError";
+  constructor(readonly code: PinnedHttpErrorCode, message: string) { super(message); }
+}
+
 export interface PinnedHttpRequestOptions {
   headers?: HeadersInit;
   maxBytes?: number;
@@ -158,7 +165,7 @@ function pinnedHttpRequest(
     req.on("socket", (socket) => {
       if (!socket.connecting || connectTimeoutMs === undefined) return;
       const connectedEvent = parsed.protocol === "https:" ? "secureConnect" : "connect";
-      connectTimer = setTimeout(() => fail(new Error(`${context} connect timed out`)), connectTimeoutMs);
+      connectTimer = setTimeout(() => fail(new PinnedHttpError("connect_timeout", `${context} connect timed out`)), connectTimeoutMs);
       socket.once(connectedEvent, clearConnectTimer);
       socket.once("error", clearConnectTimer);
       socket.once("close", clearConnectTimer);
