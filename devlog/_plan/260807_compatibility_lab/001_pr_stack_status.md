@@ -21,8 +21,8 @@ independent review, blockers, and whether a later phase is authorized.
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
-| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) IN PROGRESS |
-| CL-03 | — | — | — | — | NOT STARTED |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) MERGED at `eee2dab4d1bbacefce56057adad51d734f346702`; FINAL CLOSURE GATE [#1348](https://github.com/lidge-jun/opencodex/pull/1348) |
+| CL-03 | — | — | — | — | NOT STARTED; AUTHORIZATION ACTIVATES ON #1348 MERGE AFTER GREEN CI/REVIEW |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -127,21 +127,33 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 
 - **Prior accepted review-fix head:** `cf626d14c823413fbcd6ac2625d1da16bbac714e`
 - **Final #1333 source head:** `1eed4ffbc9772c64f4f22e37869ccb0b9efa90e1`
-- **Merge commit:** `025c37916225dd685d9217e5b40190600f06d278`
+- **#1333 merge commit:** `025c37916225dd685d9217e5b40190600f06d278`
 - A final CodeRabbit review batch arrived immediately before the #1333 merge and
   identified additional hardening work in ledger replay, artifact publication,
   sensitive purge, event privacy admission, contract-artifact error
   classification, conformance execution timestamps, and regression coverage.
 - **Post-merge hardening branch:** `fix/cl-02-post-merge-hardening`
-- **Post-merge hardening PR:** [#1343](https://github.com/lidge-jun/opencodex/pull/1343), based exactly on merge commit `025c37916225dd685d9217e5b40190600f06d278`.
-- The follow-up preserves frozen CL-00 semantics and does not add CL-03 work.
-- Current CI/review reconciliation for #1343 must complete before the hardening
-  follow-up is considered closed.
-- **CL-03:** not started.
+- **Post-merge hardening PR:** [#1343](https://github.com/lidge-jun/opencodex/pull/1343), based exactly on #1333 merge commit `025c37916225dd685d9217e5b40190600f06d278`.
+- **Final #1343 source head:** `953e75f498056edabb9c4f2b33945f6a3d081780`.
+- **#1343 merged to `dev`:** `eee2dab4d1bbacefce56057adad51d734f346702` on 2026-08-09.
+- #1343 preserved frozen CL-00 semantics and did not add CL-03 work.
+- React Doctor for final #1343 head passed. Cross-platform CI run `31305383591`
+  remained in progress when the closure follow-up was opened; its completed jobs
+  included green gates/typecheck/privacy and green test shards 1/4, 2/4, and 4/4.
+- One final CodeRabbit test-quality finding remained on the merged PR: the
+  targetless purge validation regression asserted only `LabValidationError`
+  rather than the exact `empty_purge_targets` code.
+- **Closure branch:** `fix/cl-02-closure-final`, based on then-current `dev`
+  `f197529c7d8c6adbaf3f859547414698d349340d`, which contains #1343.
+- **Closure PR:** [#1348](https://github.com/lidge-jun/opencodex/pull/1348).
+- #1348 strengthens the purge regression to assert the exact error code and
+  records the closure gate in `053_cl02_closure_gate.md`.
+- **CL-03:** not started. Authorization requires #1348 green CI, zero unresolved
+  valid CodeRabbit findings, and merge to `dev`.
 
 ## Authorization
 
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
-- CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening is tracked in #1343.
-- CL-03: **NOT STARTED** pending completion/reconciliation of the CL-02 post-merge hardening follow-up.
+- CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening #1343 is also **MERGED** at `eee2dab4d1bbacefce56057adad51d734f346702`; final closure is tracked in #1348.
+- CL-03: **NOT STARTED**. Authorization is activated by merge of #1348 after green required CI and zero unresolved valid CodeRabbit findings.
