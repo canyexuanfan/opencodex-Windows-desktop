@@ -1838,12 +1838,12 @@ describe("opencodex config defaults", () => {
 
   test("pid validation does not execute ps from PATH", () => {
     const attackerDir = join(testDir, "attacker-bin");
-    const markerPath = join(testDir, "executed");
     const fakePs = join(attackerDir, "ps");
+    const markerPath = `${fakePs}.executed`;
     const previousPath = process.env.PATH;
     const probes: string[] = [];
     mkdirSync(attackerDir);
-    writeFileSync(fakePs, `#!/bin/sh\ntouch '${markerPath}'\necho 'ocx start'\n`, { mode: 0o755 });
+    writeFileSync(fakePs, `#!/bin/sh\ntouch "$0.executed"\necho 'ocx start'\n`, { mode: 0o755 });
 
     setOcxStartProcessCacheForTests([]);
     try {
