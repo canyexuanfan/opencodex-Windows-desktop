@@ -35,6 +35,7 @@ export function enforceSandboxLimits(state: SandboxResourceState, limits: LiveRu
     peakMemoryBytes: Math.max(state.peakMemoryBytes, delta.peakMemoryBytes ?? process.memoryUsage().rss),
   };
   if (next.childProcesses > limits.maxChildProcesses) throw new LabSandboxError("child process limit exceeded", "child_process_limit");
+  if (next.peakMemoryBytes > limits.maxMemoryBytes) throw new LabSandboxError("runner resident memory limit exceeded", "memory_limit");
   if (next.requests > limits.maxRequests) throw new LabSandboxError("request limit exceeded", "request_limit");
   if (next.inputBytes > limits.maxInputBytes) throw new LabSandboxError("input byte limit exceeded", "input_byte_limit");
   if (next.outputBytes > limits.maxOutputBytes) throw new LabSandboxError("output byte limit exceeded", "output_byte_limit");

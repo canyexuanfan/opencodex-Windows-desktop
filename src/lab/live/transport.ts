@@ -27,6 +27,7 @@ export function createMockTransport(opts: MockTransportOptions = {}): LabTranspo
         const ok = typeof entry.matchPath === "string" ? req.path.includes(entry.matchPath) : entry.matchPath.test(req.path);
         if (!ok) throw new TransportError("harness_failure", "mock path mismatch");
       }
+      if (entry.status >= 300 && entry.status < 400) throw new TransportError("redirect_blocked", "redirect response");
       return { status: entry.status, headers: { "content-type": "application/json", ...(entry.headers ?? {}) }, body: entry.body };
     },
   };

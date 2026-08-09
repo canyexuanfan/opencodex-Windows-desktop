@@ -7,6 +7,7 @@ export class LabCredentialError extends Error {
 
 interface LeaseState { destinationFingerprint: string; transportId: string; remaining: number }
 const LEASE_STATE = new WeakMap<object, LeaseState>();
+type InternalLease = LabCredentialLeaseV1 & { toJSON(): never };
 
 export interface CreateLeaseOptions {
   destination: LabDestinationV1;
@@ -14,22 +15,22 @@ export interface CreateLeaseOptions {
   budget?: number;
 }
 
-/** Trusted credential owner may attach its own secret state to this opaque capability. */
+/** Trusted credential owner may associate secret state with this opaque capability outside Lab. */
 export function createCredentialLease(opts: CreateLeaseOptions): LabCredentialLeaseV1 {
   const budget = opts.budget ?? 1;
   if (!Number.isInteger(budget) || budget <= 0) throw new LabCredentialError("invalid credential lease budget", "harness_failure");
-  const lease = {
-    [LAB_CREDENTIAL_LEASE]: true as const,
-    get remainingRequests() { return LEASE_STATE.get(lease)?.remaining ?? 0; },
-    consume() {
+  let lease!: InternalLease;
+  lease = {
+    [LAB_CREDENTIAL_LEASE]: true,
+    get remainingRequests(): number { return LEASE_STATE.get(lease)?.remaining ?? 0; },
+    consume(): void {
       const state = LEASE_STATE.get(lease);
       if (!state) throw new LabCredentialError("unknown credential lease", "harness_failure");
       if (state.remaining <= 0) throw new LabCredentialError("credential lease exhausted", "budget_exhausted");
       state.remaining -= 1;
     },
-    toString() { return "[LabCredentialLeaseV1]"; },
-    toJSON() { throw new LabCredentialError("credential lease is non-serializable", "harness_failure"); },
-  } satisfies LabCredentialLeaseV1 & { toString(): string; toJSON(): never };
+    toJSON(): never { throw new LabCredentialError("credential lease is non-serializable", "harness_failure"); },
+  };
   LEASE_STATE.set(lease, {
     destinationFingerprint: opts.destination.fingerprint,
     transportId: opts.transportId ?? "default",
