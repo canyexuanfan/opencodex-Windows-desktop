@@ -17,6 +17,8 @@ import {
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
+import { resolveTrustedWindowsPowerShellExe } from "../lib/windows-elevation";
+
 import type {
   ResolveCodexCoordinatorDatabasePath,
   ResolveCodexCatalogSerializationDatabasePath,
@@ -29,6 +31,13 @@ const POSIX_PRIVATE_MODE = 0o700;
 const POSIX_TMP_REQUIRED_MODE = 0o1003;
 const POSIX_TMP_PATH = "/tmp";
 const SID_PATTERN = /^S-1-(?:\d+-)+\d+$/i;
+
+/**
+ * Hard budget for the Windows identity-lookup PowerShell child. These lookups
+ * run at startup and on config writes; a hung child must fail the lookup
+ * (recoverable — the caller refuses) rather than wedge the proxy indefinitely.
+ */
+const WINDOWS_POWERSHELL_LOOKUP_TIMEOUT_MS = 8_000;
 
 export class CodexUserIdentityRefusal extends Error {
   readonly code = "CODEX_USER_IDENTITY_REFUSED";
@@ -43,24 +52,66 @@ function refuse(message: string, cause?: unknown): never {
   throw new CodexUserIdentityRefusal(message, cause === undefined ? undefined : { cause });
 }
 
+function windowsIdentityPowerShellCommand(expression: string): string[] {
+  return [
+    resolveTrustedWindowsPowerShellExe(),
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-WindowStyle",
+    "Hidden",
+    "-Command",
+    expression,
+  ];
+}
+
+function windowsIdentityPowerShellSpawnOptions(): {
+  stdin: "ignore";
+  stdout: "pipe";
+  stderr: "pipe";
+  timeout: number;
+  windowsHide: boolean;
+} {
+  return {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: WINDOWS_POWERSHELL_LOOKUP_TIMEOUT_MS,
+    windowsHide: true,
+  };
+}
+
+/** Test-only readback of the trusted executable and static arguments (#1236). */
+export function windowsIdentityPowerShellCommandForTests(expression: string): string[] {
+  return windowsIdentityPowerShellCommand(expression);
+}
+
+/** Test-only readback of the spawn options shared by the identity lookups (#1236). */
+export function windowsIdentityPowerShellSpawnOptionsForTests(): ReturnType<
+  typeof windowsIdentityPowerShellSpawnOptions
+> {
+  return windowsIdentityPowerShellSpawnOptions();
+}
+
 function powershellValue(expression: string): string {
-  let result: ReturnType<typeof Bun.spawnSync>;
+  let command: string[];
   try {
-    result = Bun.spawnSync([
-      "powershell.exe",
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      expression,
-    ], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+    command = windowsIdentityPowerShellCommand(expression);
   } catch (cause) {
     refuse("Windows effective-account lookup could not start.", cause);
   }
+  let result: ReturnType<typeof Bun.spawnSync>;
+  try {
+    // `windowsHide` is the popup fix (#1236): the desktop proxy parent runs
+    // without a console, so a console-subsystem child spawned without
+    // CREATE_NO_WINDOW gets a fresh visible console window at startup and on
+    // every config write. `-WindowStyle Hidden` alone does not stop the
+    // allocation; the flag behind `windowsHide` does.
+    result = Bun.spawnSync(command, windowsIdentityPowerShellSpawnOptions());
+  } catch (cause) {
+    refuse("Windows effective-account lookup could not start.", cause);
+  }
+  if (result.exitedDueToTimeout) refuse("Windows effective-account lookup timed out.");
   if (result.exitCode !== 0) refuse("Windows effective-account lookup failed.");
   const value = new TextDecoder().decode(result.stdout).trim();
   if (!value) refuse("Windows effective-account lookup returned an empty value.");
