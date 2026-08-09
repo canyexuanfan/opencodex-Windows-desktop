@@ -10,6 +10,7 @@ import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
 import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 import { modelRecordValue } from "../reasoning-effort";
 import type { TranslatorBudget } from "../lib/translator-budget";
+import { rewriteRoutedCustomToolsForUpstream } from "../responses/custom-tool-compat";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -1244,6 +1245,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // rewrite while the server still routes it as a summarizer turn (#422).
       if (parsed._compactionRequest === true && !isCanonicalOpenAiForwardProvider(provider)) {
         outBody = buildRoutedCompactionBody(outBody);
+      }
+      if (provider.authMode !== "forward") {
+        outBody = rewriteRoutedCustomToolsForUpstream(outBody).body;
       }
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody), { preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true })))))));
       const body = JSON.stringify(stripDisabledReasoningSummaries(

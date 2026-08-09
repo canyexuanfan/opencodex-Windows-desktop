@@ -213,6 +213,8 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
+import { collectRoutedCustomToolNames, restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
+import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
@@ -1899,6 +1901,9 @@ async function handleResponsesInner(
     const imageGenCallAliases = route.provider.authMode === "forward"
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
+    const routedCustomToolNames = route.provider.authMode === "forward"
+      ? new Set<string>()
+      : collectRoutedCustomToolNames(parsed._rawBody);
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -2303,6 +2308,9 @@ async function handleResponsesInner(
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
           : undefined,
+        routedCustomToolNames.size > 0
+          ? createRoutedCustomToolRestoreBlockRewrite(routedCustomToolNames, translatorBudget)
+          : undefined,
         githubCopilotRepairEnabled
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
           : undefined,
@@ -2487,7 +2495,10 @@ async function handleResponsesInner(
         } catch { /* non-JSON despite content-type; recording is best-effort */ }
       }
       const clientJson = (() => {
-        const restored = restoreImageGenCallsInJson(text, imageGenCallAliases);
+        const restored = restoreRoutedCustomCallsInJson(
+          restoreImageGenCallsInJson(text, imageGenCallAliases),
+          routedCustomToolNames,
+        );
         const repaired = (() => {
           if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
           let outbound: unknown;
