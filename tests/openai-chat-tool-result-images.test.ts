@@ -4,8 +4,8 @@ import type { OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig } 
 
 // Issue #888: role:"tool" content is text-only on chat-completions providers, so images inside a
 // tool result ride in a follow-up user vision message released when the tool round closes. When
-// text is present, the tool row carries only that literal text; image markers are not duplicated
-// into a row whose actual images are delivered separately.
+// text is present, the tool row carries that literal text plus fallback markers only for images
+// that cannot be transported in the follow-up carrier.
 
 const provider: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -88,7 +88,7 @@ test("tool-result images ride a follow-up user message; text, detail, and https 
   ]);
   assertRoundsUnbroken(messages);
   const tool = messages.find(m => m.role === "tool")!;
-  expect(tool.content).toBe("1 match found");
+  expect(tool.content).toBe("1 match found[image]");
   const carrier = messages.find(isImageCarrier)!;
   expect(carrier).toBeDefined();
   expect(messages.indexOf(carrier)).toBe(messages.indexOf(tool) + 1);
