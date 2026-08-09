@@ -323,7 +323,7 @@ describe("combo catalog capability intersection", () => {
       expect(row.owned_by).toBe("combo");
       expect(row.base_instructions).toContain("mixed");
       expect(row).not.toHaveProperty("model_messages");
-      expect(row).not.toHaveProperty("tool_mode");
+      expect(row.tool_mode).toBe("code_mode_only");
       expect(row.web_search_tool_type).toBe("text_and_image");
       expect(row.supports_search_tool).toBe(true);
     }
@@ -2231,13 +2231,13 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
-  test("normalizeRoutedCatalogEntry strips native-only routed selectors", () => {
+  test("normalizeRoutedCatalogEntry strips native-only selectors and applies routed tool mode", () => {
     const entry = nativeTemplate();
 
     normalizeRoutedCatalogEntry(entry);
 
     expect(entry).not.toHaveProperty("model_messages");
-    expect(entry).not.toHaveProperty("tool_mode");
+    expect(entry.tool_mode).toBe("code_mode_only");
     expect(entry).not.toHaveProperty("multi_agent_version");
     expect(entry).not.toHaveProperty("use_responses_lite");
     expect(entry).not.toHaveProperty("supports_websockets");
@@ -2257,7 +2257,7 @@ describe("Codex catalog routed normalization", () => {
 
     expect(routed).toBeDefined();
     expect(routed).not.toHaveProperty("model_messages");
-    expect(routed).not.toHaveProperty("tool_mode");
+    expect(routed?.tool_mode).toBe("code_mode_only");
     // Routed entries do not inherit a native template's surface pin; the global
     // Codex v2 flag can choose the surface freely unless upstream pins the model.
     expect(routed).not.toHaveProperty("multi_agent_version");
@@ -2520,6 +2520,31 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.supports_search_tool).toBe(true);
     expect(native?.service_tier).toBe("priority");
     expect(native?.service_tiers).toEqual([{ id: "priority" }]);
+  });
+
+  test("buildCatalogEntries assigns code-only tools to routed fallback rows", () => {
+    const rows = buildCatalogEntries(null, [], [
+      { provider: "deepseek", id: "deepseek-v4-flash", owned_by: "deepseek" },
+    ]);
+
+    const routed = rows.find(row => row.slug === "deepseek/deepseek-v4-flash");
+    expect(routed?.tool_mode).toBe("code_mode_only");
+  });
+
+  test("buildCatalogEntries preserves native tool mode on account-qualified rows", () => {
+    const rows = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.5"],
+      [],
+      undefined,
+      false,
+      "default",
+      new Set(),
+      ["team"],
+    );
+
+    expect(rows.find(row => row.slug === "gpt-5.5")?.tool_mode).toBe("code");
+    expect(rows.find(row => row.slug === "team/gpt-5.5")?.tool_mode).toBe("code");
   });
 
   test("catalog sync keeps native OpenAI rows when adopted providers expose matching ids", () => {
