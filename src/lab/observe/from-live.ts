@@ -2,11 +2,12 @@
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
 import { LAB_EVENT_SCHEMA_VERSION, LAB_PRODUCER, LAB_PRODUCER_VERSION, OBSERVATION_LIMIT_NAMES, type ObservationOutcome } from "../constants";
 import { fixtureDigest, scenarioManifestDigest, subjectIdForSubject, suiteManifestDigest } from "../digest";
-import type { ObservationEvent } from "../events/types";
+import type { FailureRecordV1, ObservationEvent } from "../events/types";
 import { assignEventId } from "../events/validate";
 import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import type { CaseAuthority, CaseRecord } from "../conformance/types";
+import { assertTrustedLiveResultReceipt } from "../live/executor";
 import { expandLiveScenario } from "../live/manifest";
 import { liveSuiteManifestObjectForCase } from "../live/suite-manifest";
 import type { LiveScenarioRunResult } from "../live/types";
@@ -16,10 +17,38 @@ export interface PersistedLiveObservation { event: ObservationEvent; ledgerPath:
 
 function outcomeFromLiveResult(result: LiveScenarioRunResult): ObservationOutcome {
   if (result.passed) return "pass";
-  if (["timeout", "budget_exhausted", "authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient"].includes(result.classification)) return "blocked";
-  if (["inconclusive", "harness_failure"].includes(result.classification)) return "inconclusive";
-  if (["protocol_failure", "capability_failure", "behavioral_failure"].includes(result.classification)) return "fail";
-  return "inconclusive";
+  switch (result.classification) {
+    case "timeout":
+    case "budget_exhausted":
+    case "authentication_blocked":
+    case "quota_blocked":
+    case "region_blocked":
+    case "network_failure":
+    case "provider_transient":
+      return "blocked";
+    case "protocol_failure":
+    case "capability_failure":
+    case "behavioral_failure":
+      return "fail";
+    case "inconclusive":
+    case "harness_failure":
+      return "inconclusive";
+  }
+}
+
+function failureFromLiveResult(result: LiveScenarioRunResult): FailureRecordV1 | undefined {
+  if (result.passed || result.classification === "inconclusive") return undefined;
+  const attribution: FailureRecordV1["attribution"] = result.classification === "harness_failure"
+    ? "harness"
+    : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "budget_exhausted"].includes(result.classification)
+      ? "environment"
+      : "route";
+  return {
+    class: result.classification,
+    code: result.secondaryCode ?? result.classification,
+    retryable: false,
+    attribution,
+  };
 }
 
 function requireExecutionTimes(result: LiveScenarioRunResult, opts: PersistLiveOptions): { startedAt: number; completedAt: number } {
@@ -29,11 +58,12 @@ function requireExecutionTimes(result: LiveScenarioRunResult, opts: PersistLiveO
 }
 
 export function observationFromLiveResult(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority, opts: PersistLiveOptions = {}): { event: ObservationEvent; artifacts: ReturnType<ArtifactStore["put"]>[] } {
-  if (result.executionAuthority !== "trusted_route") throw new Error("only trusted-route execution may be persisted as live evidence");
+  assertTrustedLiveResultReceipt(result, caseRecord, authority);
   if (!result.routeSubject) throw new Error("live evidence without an exact RouteSubjectV1 is not persistable");
+  const { startedAt, completedAt } = requireExecutionTimes(result, opts);
   const paths = ensureLabDirs(opts.configDir); const ownsStore = !opts.artifactStore; const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
-    const { startedAt, completedAt } = requireExecutionTimes(result, opts); const recordedAt = opts.recordedAt ?? completedAt;
+    const recordedAt = opts.recordedAt ?? completedAt;
     const expandedScenario = expandLiveScenario(caseRecord, authority); const scenarioDigest = scenarioManifestDigest(expandedScenario);
     const suiteExpanded = liveSuiteManifestObjectForCase(caseRecord, authority); const suiteDigest = suiteManifestDigest(suiteExpanded);
     const fixtureDigests: string[] = []; const artifacts: ReturnType<ArtifactStore["put"]>[] = [];
@@ -48,6 +78,7 @@ export function observationFromLiveResult(result: LiveScenarioRunResult, caseRec
       assertions: result.assertionResults.map((row) => ({ id: row.id, operator: row.operator, required: row.required, passed: row.passed, observedSummary: row.observedSummary, reason: row.reason })) } }));
     const subject = result.routeSubject; const subjectId = subjectIdForSubject(subject); const authorityLimits = authority.manifestDefaults.executionLimits;
     const limits: Record<string, number | null> = {}; for (const key of OBSERVATION_LIMIT_NAMES) if (key in authorityLimits) limits[key] = authorityLimits[key] ?? null;
+    const failure = failureFromLiveResult(result);
     const eventWithoutId = {
       schemaVersion: LAB_EVENT_SCHEMA_VERSION, eventKind: "observation" as const, recordedAt, producer: LAB_PRODUCER, producerVersion: opts.producerVersion ?? LAB_PRODUCER_VERSION,
       evidenceLayer: "live_route_compatibility" as const, scenarioId: caseRecord.id, scenarioVersion: String(authority.manifestDefaults.version), scenarioManifestDigest: scenarioDigest,
@@ -56,8 +87,7 @@ export function observationFromLiveResult(result: LiveScenarioRunResult, caseRec
       assertions: result.assertionResults.map((row) => ({ id: row.id, operator: row.operator, required: row.required, passed: row.passed, expectedSummary: "see_assertion_report", observedSummary: row.observedSummary.slice(0, 512), ...(row.reason ? { reason: row.reason } : {}) })),
       ...(caseRecord.expectedFailure ? { expectedFailure: { ...caseRecord.expectedFailure } } : {}),
       environment: { runtime: { platform: process.platform, arch: process.arch, bunVersion: process.versions.bun ?? Bun.version } }, artifactRefs: artifacts,
-      ...(result.passed ? {} : { failure: { class: result.classification, code: result.secondaryCode ?? result.classification, retryable: false,
-        attribution: result.classification === "harness_failure" ? "harness" as const : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "budget_exhausted"].includes(result.classification) ? "environment" as const : "route" as const } }),
+      ...(failure ? { failure } : {}),
     };
     return { event: assignEventId(eventWithoutId) as ObservationEvent, artifacts };
   } finally { if (ownsStore) store.close(); }
