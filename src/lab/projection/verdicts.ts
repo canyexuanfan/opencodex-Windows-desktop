@@ -1,6 +1,7 @@
 import type { CompatibilityVerdict } from "../constants";
 import { LAB_PROJECTION_SPEC_VERSION } from "../constants";
 import type { SuiteManifestV1 } from "../conformance/suite-manifest";
+import { jcsStringify } from "../digest";
 import type {
   ClaimSnapshotEvent,
   LabEvent,
@@ -14,7 +15,11 @@ import {
   usableObservations,
   type InvalidationIndex,
 } from "../ledger/invalidation";
-import { evaluateAllApplicableRequiredPassV1, newestObservationByScenario } from "./verification";
+import {
+  evaluateAllApplicableRequiredPassV1,
+  newestObservationByScenario,
+  type ScenarioRequirements,
+} from "./verification";
 
 export interface ProjectionKey {
   subjectId: string;
@@ -25,15 +30,23 @@ export interface ProjectionKey {
   projectionSpecVersion: string;
 }
 
+function componentKey(parts: readonly string[]): string {
+  return jcsStringify([...parts]);
+}
+
 export function projectionKeyString(key: ProjectionKey): string {
-  return [
+  return componentKey([
     key.subjectId,
     key.evidenceLayer,
     key.suiteId,
     key.suiteVersion,
     key.suiteManifestDigest,
     key.projectionSpecVersion,
-  ].join("|");
+  ]);
+}
+
+export function claimKeyString(subjectId: string, capability: string): string {
+  return componentKey([subjectId, capability]);
 }
 
 export interface DerivedVerdict {
@@ -61,11 +74,7 @@ export interface ProjectVerdictsOptions {
   unusableClaimEventIds?: Set<string>;
   loadSuiteManifest?: (digest: string) => SuiteManifestV1 | null;
   loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
-  loadScenarioRequirements?: (digest: string) => {
-    inboundProtocols?: string[];
-    upstreamProtocols?: string[];
-    surfaces?: string[];
-  } | null;
+  loadScenarioRequirements?: (digest: string) => ScenarioRequirements | null;
 }
 
 /**
@@ -74,15 +83,20 @@ export interface ProjectVerdictsOptions {
  */
 export function resolveClaimStates(
   claims: ClaimSnapshotEvent[],
-  opts: { unusableClaimEventIds?: Set<string> } = {},
+  opts: {
+    unusableClaimEventIds?: Set<string>;
+    purgedEventIds?: ReadonlySet<string>;
+  } = {},
 ): {
   states: Map<string, ClaimState>;
   corruptions: LedgerCorruption[];
 } {
   const unusableClaims = opts.unusableClaimEventIds ?? new Set<string>();
+  const purgedEventIds = opts.purgedEventIds ?? new Set<string>();
   const byKey = new Map<string, ClaimSnapshotEvent[]>();
+  const allById = new Map(claims.map((claim) => [claim.eventId, claim]));
   for (const claim of claims) {
-    const key = `${claim.subjectId}|${claim.capability}`;
+    const key = claimKeyString(claim.subjectId, claim.capability);
     const list = byKey.get(key) ?? [];
     list.push(claim);
     byKey.set(key, list);
@@ -99,12 +113,16 @@ export function resolveClaimStates(
     });
 
     const superseded = new Set<string>();
-    const byId = new Map(sorted.map((c) => [c.eventId, c]));
 
     for (const claim of sorted) {
       for (const pred of claim.supersedes) {
-        const prev = byId.get(pred);
+        const prev = allById.get(pred);
         if (!prev) {
+          if (purgedEventIds.has(pred)) {
+            // A purge may physically remove a superseded predecessor. The ID remains
+            // valid provenance but is not a live claim candidate.
+            continue;
+          }
           corruptions.push({
             kind: "claim_corruption",
             eventId: claim.eventId,
@@ -173,6 +191,7 @@ export function projectVerdicts(
   const claims = usableClaims(events, index).filter((c) => c.effectiveAt <= asOf);
   const { states: claimStates, corruptions: claimCorruptions } = resolveClaimStates(claims, {
     unusableClaimEventIds: unusableClaims,
+    purgedEventIds: index.purgedEventIds,
   });
   corruptions.push(...claimCorruptions);
 
@@ -259,12 +278,25 @@ export function projectVerdicts(
   return { verdicts, corruptions, index };
 }
 
+function isMatchedCapabilityAbsenceControl(obs: ObservationEvent): boolean {
+  const expected = obs.expectedFailure;
+  return (
+    obs.outcome === "pass" &&
+    !!expected &&
+    expected.controlKind === "capability_absence_control" &&
+    expected.onMatch === "unsupported"
+  );
+}
+
 function projectObservationGroup(
   key: ProjectionKey,
   ordered: ObservationEvent[],
   asOf: number,
   suiteManifest: SuiteManifestV1 | null,
-  opts: { loadScenarioManifest?: (digest: string) => Record<string, unknown> | null; loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"] } = {},
+  opts: {
+    loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
+    loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"];
+  } = {},
 ): DerivedVerdict {
   const contributing: string[] = [];
   const contradicting: string[] = [];
@@ -283,6 +315,12 @@ function projectObservationGroup(
   const currentPasses = currentObservations.filter((o) => o.outcome === "pass");
   const currentBlocked = currentObservations.some((o) => o.outcome === "blocked");
   const currentInconclusive = currentObservations.some((o) => o.outcome === "inconclusive");
+  const matchedCapabilityAbsence = currentObservations.some(isMatchedCapabilityAbsenceControl);
+  const currentModes = new Set(currentObservations.map((o) => o.executionMode));
+  const newestCurrent = [...currentObservations].sort((a, b) => {
+    if (a.completedAt !== b.completedAt) return a.completedAt - b.completedAt;
+    return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
+  }).at(-1);
 
   let verdict: CompatibilityVerdict = "UNKNOWN";
   if (
@@ -291,21 +329,16 @@ function projectObservationGroup(
     key.evidenceLayer !== "task_effectiveness"
   ) {
     verdict = "UNKNOWN";
+  } else if (matchedCapabilityAbsence) {
+    verdict = "UNSUPPORTED";
+    notes.push("capability_absence_control");
   } else if (currentFails.length > 0) {
-    const lastFail = currentFails.sort((a, b) => {
-      if (a.completedAt !== b.completedAt) return a.completedAt - b.completedAt;
-      return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
-    })[currentFails.length - 1]!;
-    if (lastFail.failure?.class === "capability_failure" && lastFail.expectedFailure) {
-      verdict = "UNSUPPORTED";
-      notes.push("capability_absence_control");
-    } else {
-      verdict = "DEGRADED";
-    }
+    verdict = "DEGRADED";
   } else if (currentPasses.length > 0 && !currentInconclusive && !currentBlocked) {
-    const executionMode = ordered[0]!.executionMode;
-    const subject = ordered[0]!.subject;
-    if (key.evidenceLayer === "protocol_conformance" && executionMode === "fixture") {
+    if (currentModes.size > 1) {
+      verdict = "PROBED";
+      notes.push("mixed_execution_modes");
+    } else if (key.evidenceLayer === "protocol_conformance" && newestCurrent?.executionMode === "fixture") {
       if (!suiteManifest) {
         verdict = "PROBED";
         notes.push("suite_manifest_unavailable");
@@ -313,11 +346,12 @@ function projectObservationGroup(
         const evaluation = evaluateAllApplicableRequiredPassV1(
           suiteManifest,
           ordered,
-          executionMode,
+          newestCurrent.executionMode,
           {
-            subject: subject.subjectKind === "protocol" ? subject : undefined,
+            subject: newestCurrent.subject.subjectKind === "protocol" ? newestCurrent.subject : undefined,
             loadScenarioManifest: opts.loadScenarioManifest,
             loadScenarioRequirements: opts.loadScenarioRequirements,
+            asOf,
           },
         );
         notes.push(...evaluation.notes);
