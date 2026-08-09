@@ -7,6 +7,7 @@ import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
 import {
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
+  LAB_PRODUCER_VERSION,
   type ObservationOutcome,
 } from "../constants";
 import {
@@ -19,18 +20,25 @@ import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
 import { assignEventId } from "../events/validate";
 import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
-import type { CaseAuthority, CaseRecord, ScenarioRunResult } from "../conformance/types";
+import type {
+  CaseAuthority,
+  CaseRecord,
+  ProtocolExecutionContextV1,
+  ScenarioRunResult,
+} from "../conformance/types";
 import { expandScenario } from "../conformance/manifest";
-import { expandSuiteManifest } from "../conformance/suite-manifest";
+import { suiteManifestObjectForCase } from "../conformance/suite-manifest";
 import { fixtureDigest } from "../conformance/digest";
 import { resolveProtocolExecutionContext } from "../conformance/executor";
 
-const PACKAGE_VERSION = "2.10.2";
 const COMPAT_VERSION = "protocol-v1";
 
 export interface PersistConformanceOptions {
   configDir?: string;
   recordedAt?: number;
+  /** Actual execution timestamps from the CL-01 runner; never fabricated. */
+  startedAt?: number;
+  completedAt?: number;
   producerVersion?: string;
   artifactStore?: ArtifactStore;
 }
@@ -40,9 +48,33 @@ export interface PersistedConformanceObservation {
   ledgerPath: string;
 }
 
-function behaviorFingerprintForCase(caseRecord: CaseRecord): string {
-  const upstream = caseRecord.requirements.upstreamProtocols[0] ?? "openai-chat";
-  const adapter = upstreamAdapter(upstream);
+function validateExecutionContext(
+  caseRecord: CaseRecord,
+  ctx: ProtocolExecutionContextV1,
+): ProtocolExecutionContextV1 {
+  const checks: Array<[string, string[], string]> = [
+    ["inboundProtocols", caseRecord.requirements.inboundProtocols, ctx.inboundProtocol],
+    ["upstreamProtocols", caseRecord.requirements.upstreamProtocols, ctx.upstreamProtocol],
+    ["surfaces", caseRecord.requirements.surfaces, ctx.surface],
+  ];
+  for (const [name, declared, actual] of checks) {
+    if (declared.length === 0) throw new Error(`case ${caseRecord.id} has empty ${name}`);
+    if (!declared.includes(actual)) {
+      throw new Error(`case ${caseRecord.id} execution context violates ${name}`);
+    }
+  }
+  return ctx;
+}
+
+function behaviorFingerprintForCase(
+  caseRecord: CaseRecord,
+  executionContext?: ProtocolExecutionContextV1,
+): string {
+  const ctx = validateExecutionContext(
+    caseRecord,
+    executionContext ?? resolveProtocolExecutionContext(caseRecord),
+  );
+  const adapter = upstreamAdapter(ctx.upstreamProtocol);
   const values = {
     schemaVersion: 1,
     resolverVersion: 1,
@@ -53,7 +85,7 @@ function behaviorFingerprintForCase(caseRecord: CaseRecord): string {
       },
       "wire.upstreamProtocol": {
         source: "lab_forced",
-        value: upstream,
+        value: ctx.upstreamProtocol,
       },
       "runtime.arch": {
         source: "lab_forced",
@@ -73,17 +105,19 @@ function behaviorFingerprintForCase(caseRecord: CaseRecord): string {
 }
 
 function protocolSubject(caseRecord: CaseRecord, result: ScenarioRunResult): ProtocolSubjectV1 {
-  const ctx = result.executionContext ?? resolveProtocolExecutionContext(caseRecord);
-  const upstream = ctx.upstreamProtocol;
+  const ctx = validateExecutionContext(
+    caseRecord,
+    result.executionContext ?? resolveProtocolExecutionContext(caseRecord),
+  );
   return {
     subjectSchemaVersion: 1,
     subjectKind: "protocol",
     opencodexCompatibilityVersion: COMPAT_VERSION,
-    effectiveAdapter: upstreamAdapter(upstream),
+    effectiveAdapter: upstreamAdapter(ctx.upstreamProtocol),
     inboundProtocol: ctx.inboundProtocol,
     upstreamProtocol: ctx.upstreamProtocol,
     surface: ctx.surface,
-    behaviorFingerprint: behaviorFingerprintForCase(caseRecord),
+    behaviorFingerprint: behaviorFingerprintForCase(caseRecord, ctx),
   };
 }
 
@@ -93,20 +127,43 @@ function upstreamAdapter(protocol: string): string {
       return "openai-responses";
     case "anthropic-messages":
       return "anthropic";
-    default:
+    case "openai-chat":
       return "openai-chat";
+    default:
+      throw new Error(`unsupported protocol identity: ${protocol}`);
   }
 }
 
 function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
   if (result.passed) return "pass";
-  if (result.classification === "timeout" || result.classification === "budget_exhausted") {
-    return "blocked";
+  switch (result.classification) {
+    case "timeout":
+    case "budget_exhausted":
+      return "blocked";
+    case "inconclusive":
+    case "harness_failure":
+      return "inconclusive";
+    case "protocol_failure":
+    case "capability_failure":
+    case "behavioral_failure":
+      return "fail";
+    default: {
+      const _never: never = result.classification;
+      return _never;
+    }
   }
-  if (result.classification === "inconclusive" || result.classification === "harness_failure") {
-    return "inconclusive";
+}
+
+function requireExecutionTimes(opts: PersistConformanceOptions): { startedAt: number; completedAt: number } {
+  if (!Number.isInteger(opts.startedAt) || !Number.isInteger(opts.completedAt)) {
+    throw new Error("real startedAt/completedAt are required for persisted conformance evidence");
   }
-  return "fail";
+  const startedAt = opts.startedAt!;
+  const completedAt = opts.completedAt!;
+  if (startedAt < 0 || completedAt < startedAt) {
+    throw new Error("invalid persisted conformance execution timestamps");
+  }
+  return { startedAt, completedAt };
 }
 
 /**
@@ -123,13 +180,12 @@ export function observationFromConformanceResult(
   const ownsStore = !opts.artifactStore;
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
-    const recordedAt = opts.recordedAt ?? Date.now();
-    const startedAt = recordedAt - 1;
-    const completedAt = recordedAt;
+    const { startedAt, completedAt } = requireExecutionTimes(opts);
+    const recordedAt = opts.recordedAt ?? completedAt;
 
     const expandedScenario = expandScenario(caseRecord, authority);
     const scenarioDigest = scenarioManifestDigest(expandedScenario);
-    const suiteExpanded = expandSuiteManifest(caseRecord.suite, authority) as unknown as Record<string, unknown>;
+    const suiteExpanded = suiteManifestObjectForCase(caseRecord, authority);
     const suiteDigest = suiteManifestDigest(suiteExpanded);
 
     const fixtureDigests: string[] = [];
@@ -194,7 +250,7 @@ export function observationFromConformanceResult(
       eventKind: "observation" as const,
       recordedAt,
       producer: LAB_PRODUCER,
-      producerVersion: opts.producerVersion ?? PACKAGE_VERSION,
+      producerVersion: opts.producerVersion ?? LAB_PRODUCER_VERSION,
       evidenceLayer: "protocol_conformance" as const,
       scenarioId: caseRecord.id,
       scenarioVersion: String(authority.manifestDefaults.version),
@@ -220,6 +276,9 @@ export function observationFromConformanceResult(
         observedSummary: a.observedSummary.slice(0, 512),
         ...(a.reason ? { reason: a.reason } : {}),
       })),
+      ...(caseRecord.expectedFailure
+        ? { expectedFailure: { ...caseRecord.expectedFailure } }
+        : {}),
       environment: {
         runtime: {
           platform: process.platform,
