@@ -8,6 +8,7 @@
  * present they still take precedence. Distinct from the keyless desktop
  * ~200 requests / 5h quota documented on `opencode-free`.
  */
+import { validateClientRetryAfterHeader } from "../lib/retry-after";
 import { registryEntryForProviderDestination } from "./registry";
 
 const OPENCODE_ZEN_PROVIDER_IDS = new Set(["opencode-zen", "opencode-free"]);
@@ -42,6 +43,20 @@ export function isOpenCodeZenRateLimitProvider(opts: {
 }
 
 /**
+ * Same-key `retryOn429` only applies on key-authenticated HTTP paths — not
+ * keyless `opencode-free` traffic and not custom `runTurn` transports.
+ */
+export function supportsOpenCodeZenRetryOn429Guidance(opts: {
+  authMode?: string;
+  hasApiKey?: boolean;
+  supportsHttpSameKeyRetry?: boolean;
+}): boolean {
+  if (opts.supportsHttpSameKeyRetry === false) return false;
+  if (opts.authMode !== undefined && opts.authMode !== "key") return false;
+  return opts.hasApiKey === true;
+}
+
+/**
  * Append actionable Zen rate-limit context to a generic upstream 429 message and
  * embed a parseable `try again in Ns` hint so {@link resolveClientRetryAfter}
  * surfaces a useful Retry-After when the gateway sent none.
@@ -53,6 +68,13 @@ export function enrichOpenCodeZenRateLimitMessage(
     providerName?: string;
     baseUrl?: string;
     adapter?: string;
+    authMode?: string;
+    hasApiKey?: boolean;
+    /** Upstream Retry-After header; when valid, skip the synthetic 15s text hint. */
+    upstreamRetryAfter?: string | null;
+    /** False for custom `runTurn` transports outside the HTTP retry loop. */
+    supportsHttpSameKeyRetry?: boolean;
+    now?: number;
   },
 ): string {
   if (opts.status !== 429) return message;
@@ -60,14 +82,21 @@ export function enrichOpenCodeZenRateLimitMessage(
   if (!/rate\s*limit/i.test(message)) return message;
   if (message.includes(ENRICHMENT_MARKER)) return message;
 
-  const retryHint = /try again in \d/i.test(message)
+  const upstreamRetry = validateClientRetryAfterHeader(
+    opts.upstreamRetryAfter,
+    opts.now ?? Date.now(),
+  );
+  const retryHint = upstreamRetry || /try again in \d/i.test(message)
     ? ""
     : ` Try again in ${OPENCODE_ZEN_SYNTHETIC_RETRY_AFTER_SEC}s.`;
+  const paceHint = supportsOpenCodeZenRetryOn429Guidance(opts)
+    ? " Slow the request pace, or set providers.opencode-zen.retryOn429 for same-key backoff."
+    : " Slow the request pace.";
   return (
     `${message}`
     + ` OpenCode Zen free-model traffic is often limited to ${OPENCODE_ZEN_OBSERVED_RPM_HINT}`
     + ` (observed; OpenCode does not publish this RPM, and may omit rate-limit headers).`
     + `${retryHint}`
-    + " Slow the request pace, or set providers.opencode-zen.retryOn429 for same-key backoff."
+    + paceHint
   );
 }

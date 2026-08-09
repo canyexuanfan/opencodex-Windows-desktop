@@ -3155,6 +3155,7 @@ async function handleResponsesInner(
       }
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
+      const upstreamRetryAfter = upstreamResponse.headers.get("retry-after");
       const message = enrichOpenCodeZenRateLimitMessage(
         `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
         {
@@ -3162,12 +3163,18 @@ async function handleResponsesInner(
           providerName: route.providerName,
           baseUrl: route.provider.baseUrl,
           adapter: route.provider.adapter,
+          authMode: route.provider.authMode,
+          hasApiKey: Boolean(route.provider.apiKey?.trim()),
+          upstreamRetryAfter,
+          // This recovery path is the HTTP Responses wire; custom runTurn transports
+          // never reach enrichOpenCodeZenRateLimitMessage here.
+          supportsHttpSameKeyRetry: true,
         },
       );
       const retryAfter = resolveClientRetryAfter({
         status: upstreamResponse.status,
         message,
-        upstreamRetryAfter: upstreamResponse.headers.get("retry-after"),
+        upstreamRetryAfter,
       });
       return formatErrorResponse(upstreamResponse.status, "upstream_error", message, {
         ...(retryAfter !== undefined ? { retryAfter } : {}),

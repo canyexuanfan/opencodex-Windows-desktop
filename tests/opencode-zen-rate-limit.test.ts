@@ -63,14 +63,54 @@ describe("opencode-zen rate-limit guidance (#1145)", () => {
   test("enrichOpenCodeZenRateLimitMessage adds guidance and a parseable retry hint", () => {
     const enriched = enrichOpenCodeZenRateLimitMessage(
       "Provider error 429: Rate limit exceeded. Please try again later.",
-      { status: 429, providerName: "opencode-zen" },
+      { status: 429, providerName: "opencode-zen", hasApiKey: true },
     );
     expect(enriched).toContain(OPENCODE_ZEN_OBSERVED_RPM_HINT);
     expect(enriched).toContain(`Try again in ${OPENCODE_ZEN_SYNTHETIC_RETRY_AFTER_SEC}s`);
+    expect(enriched).toContain("retryOn429");
     expect(resolveClientRetryAfter({
       status: 429,
       message: enriched,
     })).toBe(String(OPENCODE_ZEN_SYNTHETIC_RETRY_AFTER_SEC));
+  });
+
+  test("enrichOpenCodeZenRateLimitMessage skips synthetic hint when upstream Retry-After is set", () => {
+    const enriched = enrichOpenCodeZenRateLimitMessage(
+      "Provider error 429: Rate limit exceeded.",
+      {
+        status: 429,
+        providerName: "opencode-zen",
+        hasApiKey: true,
+        upstreamRetryAfter: "120",
+      },
+    );
+    expect(enriched).toContain(OPENCODE_ZEN_OBSERVED_RPM_HINT);
+    expect(enriched).not.toContain(`Try again in ${OPENCODE_ZEN_SYNTHETIC_RETRY_AFTER_SEC}s`);
+    expect(resolveClientRetryAfter({
+      status: 429,
+      message: enriched,
+      upstreamRetryAfter: "120",
+    })).toBe("120");
+  });
+
+  test("enrichOpenCodeZenRateLimitMessage omits retryOn429 tip on keyless or non-HTTP routes", () => {
+    const keyless = enrichOpenCodeZenRateLimitMessage(
+      "Provider error 429: Rate limit exceeded.",
+      { status: 429, providerName: "opencode-free", hasApiKey: false },
+    );
+    expect(keyless).toContain("Slow the request pace.");
+    expect(keyless).not.toContain("retryOn429");
+
+    const runTurn = enrichOpenCodeZenRateLimitMessage(
+      "Provider error 429: Rate limit exceeded.",
+      {
+        status: 429,
+        providerName: "opencode-zen",
+        hasApiKey: true,
+        supportsHttpSameKeyRetry: false,
+      },
+    );
+    expect(runTurn).not.toContain("retryOn429");
   });
 
   test("enrichOpenCodeZenRateLimitMessage is a no-op for other providers and non-429s", () => {
@@ -88,11 +128,12 @@ describe("opencode-zen rate-limit guidance (#1145)", () => {
   test("enrichOpenCodeZenRateLimitMessage does not double-append", () => {
     const once = enrichOpenCodeZenRateLimitMessage(
       "Provider error 429: Rate limit exceeded.",
-      { status: 429, providerName: "opencode-zen" },
+      { status: 429, providerName: "opencode-zen", hasApiKey: true },
     );
     expect(enrichOpenCodeZenRateLimitMessage(once, {
       status: 429,
       providerName: "opencode-zen",
+      hasApiKey: true,
     })).toBe(once);
   });
 });
