@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DICTS, LOCALES, detectInitial } from "../src/i18n/shared";
+import { DICTS, LOCALES, LOCALE_NAMES, detectInitial } from "../src/i18n/shared";
 import { en } from "../src/i18n/en";
 import { tr } from "../src/i18n/tr";
 import { formatUptime } from "../src/formatUptime";
@@ -7,9 +7,9 @@ import { formatUptime } from "../src/formatUptime";
 describe("Turkish (tr) i18n locale", () => {
   test("registers tr in LOCALES array with correct metadata", () => {
     const trLocale = LOCALES.find(l => l.code === "tr");
-    expect(trLocale).toBeDefined();
-    expect(trLocale?.name).toBe("Türkçe");
-    expect(trLocale?.htmlLang).toBe("tr");
+    expect(trLocale).toEqual({ code: "tr", htmlLang: "tr" });
+    expect("name" in (trLocale ?? {})).toBe(false);
+    expect(LOCALE_NAMES.tr).toBe("Türkçe");
   });
 
   test("includes tr in DICTS map", () => {

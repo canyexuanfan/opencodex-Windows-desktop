@@ -1,25 +1,16 @@
 import { createContext, useContext } from "react";
-import { en, type TKey } from "./en";
-import { de } from "./de";
-import { ko } from "./ko";
-import { zh } from "./zh";
-import { ru } from "./ru";
-import { ja } from "./ja";
-import { tr } from "./tr";
+import { DICTS, LOCALE_NAMES, type Locale, type TKey } from "./catalogs";
 
-export type Locale = "en" | "de" | "ko" | "zh" | "ru" | "ja" | "tr";
-export type { TKey };
+export { DICTS, LOCALE_NAMES, type Locale, type TKey };
 
-export const DICTS: Record<Locale, Record<TKey, string>> = { en, de, ko, zh, ru, ja, tr };
-
-export const LOCALES: { code: Locale; name: string; htmlLang: string }[] = [
-  { code: "en", name: "English", htmlLang: "en" },
-  { code: "de", name: "Deutsch", htmlLang: "de" },
-  { code: "ko", name: "한국어", htmlLang: "ko" },
-  { code: "zh", name: "中文", htmlLang: "zh-CN" },
-  { code: "ru", name: "Русский", htmlLang: "ru" },
-  { code: "ja", name: "日本語", htmlLang: "ja" },
-  { code: "tr", name: "Türkçe", htmlLang: "tr" },
+export const LOCALES: { code: Locale; htmlLang: string }[] = [
+  { code: "en", htmlLang: "en" },
+  { code: "de", htmlLang: "de" },
+  { code: "ko", htmlLang: "ko" },
+  { code: "zh", htmlLang: "zh-CN" },
+  { code: "ru", htmlLang: "ru" },
+  { code: "ja", htmlLang: "ja" },
+  { code: "tr", htmlLang: "tr" },
 ];
 
 const LANG_KEY = "ocx-lang";
