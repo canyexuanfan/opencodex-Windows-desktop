@@ -29,9 +29,13 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
   const bytes = new TextEncoder().encode(line);
   const fd = openSync(ledgerPath, "a", 0o600);
   try {
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.byteLength) {
-      throw new LabValidationError("short_write", "ledger append short write");
+    let written = 0;
+    while (written < bytes.byteLength) {
+      const n = writeSync(fd, bytes, written, bytes.byteLength - written);
+      if (n <= 0) {
+        throw new LabValidationError("short_write", "ledger append made no progress");
+      }
+      written += n;
     }
     fsyncSync(fd);
   } finally {
