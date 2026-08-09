@@ -18,16 +18,24 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<string> {
   }
 }
 
-test("an initial Responses failure becomes one Anthropic error event without a synthetic message start", async () => {
-  const frame = [
-    "event: response.failed",
-    'data: {"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","code":"overloaded","message":"fixture"}}}',
-    "",
-    "",
-  ].join("\n");
+test("a created-then-failed Responses stream becomes one Anthropic error event", async () => {
+  const frames = [
+    [
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_fixture","status":"in_progress"}}',
+      "",
+      "",
+    ].join("\n"),
+    [
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","code":"overloaded","message":"fixture"}}}',
+      "",
+      "",
+    ].join("\n"),
+  ].join("");
   const upstream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode(frame));
+      controller.enqueue(new TextEncoder().encode(frames));
       controller.close();
     },
   });
