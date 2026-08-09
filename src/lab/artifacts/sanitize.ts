@@ -9,6 +9,7 @@ import { redactSecretString } from "../../lib/redact";
 
 const FORBIDDEN_KEY = /^(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|token|secret|password|email|prompt|messages|content|body|url|hostname|baseUrl|path|account|alias)$/i;
 const SECRETISH = /sk-[a-z0-9]{10,}|Bearer\s+[A-Za-z0-9._\-]+|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}/i;
+const SECRETISH_GLOBAL = /sk-[a-z0-9]{10,}|Bearer\s+[A-Za-z0-9._\-]+|ghp_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}/gi;
 
 export function redactForArtifact(artifactClass: ArtifactClass, payload: unknown): unknown {
   if (
@@ -28,7 +29,9 @@ export function redactForArtifact(artifactClass: ArtifactClass, payload: unknown
 const FORBIDDEN_CONTRACT_KEYS = /^(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-api-key|token|secret|password|email|prompt|messages|baseUrl|hostname|account|alias)$/i;
 
 function assertNoSecretMaterial(value: unknown, depth: number): void {
-  if (depth > 8) return;
+  if (depth > 8) {
+    throw new Error("contract artifact exceeds sanitization inspection depth");
+  }
   if (typeof value === "string") {
     if (SECRETISH.test(value)) {
       throw new Error("contract artifact contains forbidden secret-shaped material");
@@ -78,9 +81,9 @@ function scrubValue(value: unknown, depth: number): unknown {
 
 function scrubString(value: string): string {
   let s = redactSecretString(value);
-  if (SECRETISH.test(s)) s = s.replace(SECRETISH, "[REDACTED]");
+  s = s.replace(SECRETISH_GLOBAL, "[REDACTED]");
   // Strip absolute filesystem paths (coarse)
-  s = s.replace(/(?:[A-Za-z]:\\|\/(?:home|Users|tmp|var|etc)\/)[^\s"']+/g, "[path]");
+  s = s.replace(/(?:[A-Za-z]:\\|\/(?:home|Users|tmp|var|etc|root|mnt)\/)[^\s"']+/g, "[path]");
   // Strip URL userinfo / private hosts roughly
   s = s.replace(/https?:\/\/[^\s"']+/gi, (url) => {
     try {
@@ -99,6 +102,11 @@ function scrubString(value: string): string {
     return new TextDecoder().decode(bytes.slice(0, MAX_SANITIZED_STRING_FIELD));
   }
   return s;
+}
+
+/** Stable privacy boundary for diagnostic text that may be persisted. */
+export function sanitizeDiagnostic(value: unknown): string {
+  return scrubString(value instanceof Error ? value.message : String(value));
 }
 
 export function sanitizedJsonBytes(value: unknown): Uint8Array {
