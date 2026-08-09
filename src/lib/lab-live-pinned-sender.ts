@@ -1,4 +1,5 @@
-import { pinnedHttpGet, pinnedHttpPost } from "./pinned-http";
+import { PinnedHttpError, pinnedHttpGet, pinnedHttpPost } from "./pinned-http";
+import { TransportError } from "../lab/live/transport";
 import type { LabCredentialLeaseV1, LabPinnedSender } from "../lab/live/types";
 
 /** Only response metadata required by current live assertions crosses into Lab. */
@@ -22,9 +23,17 @@ export function createLabAuthorizedPinnedSender(
       rejectUnauthorized: true,
       context: "Lab provider response",
     };
-    const response = request.method === "POST"
-      ? await pinnedHttpPost(url, pinned, request.body ?? "", signal, options)
-      : await pinnedHttpGet(url, pinned, signal, options);
+    let response: Response;
+    try {
+      response = request.method === "POST"
+        ? await pinnedHttpPost(url, pinned, request.body ?? "", signal, options)
+        : await pinnedHttpGet(url, pinned, signal, options);
+    } catch (error) {
+      if (error instanceof PinnedHttpError && error.code === "connect_timeout") {
+        throw new TransportError("connect_timeout", "pinned provider connection timed out");
+      }
+      throw error;
+    }
     const body = await response.text();
     const responseHeaders: Record<string, string> = {};
     for (const headerName of LAB_RESPONSE_HEADER_ALLOWLIST) {
