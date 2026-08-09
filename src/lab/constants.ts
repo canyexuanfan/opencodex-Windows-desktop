@@ -14,6 +14,21 @@ export const MAX_EVENT_NESTING_DEPTH = 8;
 export const MAX_OBJECT_KEYS_PER_EVENT = 64;
 export const MAX_ARRAY_ELEMENTS_PER_EVENT = 256;
 
+export const OBSERVATION_LIMIT_NAMES = [
+  "totalTimeoutMs",
+  "connectTimeoutMs",
+  "firstByteTimeoutMs",
+  "inactivityTimeoutMs",
+  "maxRequests",
+  "maxInputBytes",
+  "maxOutputBytes",
+  "maxOutputTokens",
+  "maxToolCalls",
+  "maxArtifactBytes",
+] as const;
+
+export type ObservationLimitName = (typeof OBSERVATION_LIMIT_NAMES)[number];
+
 export const EVENT_KINDS = [
   "observation",
   "claim_snapshot",

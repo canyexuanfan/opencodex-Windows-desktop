@@ -12,6 +12,7 @@ import {
   MAX_INVALIDATION_TARGETS,
   MAX_SANITIZED_STRING_FIELD,
   MAX_SERIALIZED_EVENT_BYTES,
+  OBSERVATION_LIMIT_NAMES,
   OUTCOMES,
   PURGE_ACTIONS,
   type ArtifactClass,
@@ -253,6 +254,113 @@ function enforceSerializedSize(event: LabEvent): void {
   }
 }
 
+function validateAssertionRecord(raw: unknown, index: number): ObservationEvent["assertions"][number] {
+  if (!isPlainObject(raw)) throw new LabValidationError("invalid_assertions", `assertions[${index}]`);
+  const allowed = new Set(["id", "operator", "required", "passed", "expectedSummary", "observedSummary", "reason"]);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) {
+      throw new LabValidationError("unknown_assertion_key", `assertions[${index}].${key}`);
+    }
+  }
+  const record = {
+    id: assertString(raw.id, `assertions[${index}].id`),
+    operator: assertString(raw.operator, `assertions[${index}].operator`),
+    required: raw.required === true || raw.required === false
+      ? raw.required
+      : (() => { throw new LabValidationError("invalid_assertions", `assertions[${index}].required`); })(),
+    passed: raw.passed === true || raw.passed === false
+      ? raw.passed
+      : (() => { throw new LabValidationError("invalid_assertions", `assertions[${index}].passed`); })(),
+    expectedSummary: assertString(raw.expectedSummary, `assertions[${index}].expectedSummary`),
+    observedSummary: assertString(raw.observedSummary, `assertions[${index}].observedSummary`),
+    ...(raw.reason !== undefined ? { reason: assertString(raw.reason, `assertions[${index}].reason`) } : {}),
+  };
+  return record;
+}
+
+function validateObservationLimits(raw: unknown): Record<string, number | null> {
+  if (!isPlainObject(raw)) throw new LabValidationError("invalid_limits", "limits");
+  const out: Record<string, number | null> = {};
+  for (const key of Object.keys(raw)) {
+    if (!(OBSERVATION_LIMIT_NAMES as readonly string[]).includes(key)) {
+      throw new LabValidationError("unknown_limit", `limits.${key}`);
+    }
+    const value = raw[key];
+    if (value === null) {
+      out[key] = null;
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      throw new LabValidationError("invalid_limits", `limits.${key}`);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function validateObservationEnvironment(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw new LabValidationError("invalid_environment", "environment");
+  const topKeys = Object.keys(raw);
+  if (topKeys.length !== 1 || topKeys[0] !== "runtime") {
+    throw new LabValidationError("invalid_environment", "environment must contain only runtime");
+  }
+  const runtime = raw.runtime;
+  if (!isPlainObject(runtime)) throw new LabValidationError("invalid_environment", "environment.runtime");
+  const runtimeKeys = Object.keys(runtime);
+  const allowedRuntime = new Set(["platform", "arch", "bunVersion"]);
+  for (const key of runtimeKeys) {
+    if (!allowedRuntime.has(key)) {
+      throw new LabValidationError("unknown_environment_key", `environment.runtime.${key}`);
+    }
+  }
+  const out: Record<string, unknown> = {
+    runtime: {
+      platform: assertString(runtime.platform, "environment.runtime.platform"),
+      arch: assertString(runtime.arch, "environment.runtime.arch"),
+      ...(runtime.bunVersion !== undefined
+        ? { bunVersion: assertString(runtime.bunVersion, "environment.runtime.bunVersion") }
+        : {}),
+    },
+  };
+  return out;
+}
+
+function validateExpectedFailure(raw: unknown): Record<string, unknown> {
+  if (!isPlainObject(raw)) throw new LabValidationError("invalid_expected_failure", "expectedFailure");
+  const allowed = new Set([
+    "controlKind",
+    "expectedClass",
+    "expectedCode",
+    "assertionIds",
+    "onMatch",
+    "onMismatch",
+  ]);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) {
+      throw new LabValidationError("unknown_expected_failure_key", `expectedFailure.${key}`);
+    }
+  }
+  if (!Array.isArray(raw.assertionIds) || !raw.assertionIds.every((id) => typeof id === "string")) {
+    throw new LabValidationError("invalid_expected_failure", "expectedFailure.assertionIds");
+  }
+  return {
+    controlKind: assertClosed(raw.controlKind, "expectedFailure.controlKind", [
+      "conformance_negative_control",
+      "capability_absence_control",
+    ] as const),
+    expectedClass: assertString(raw.expectedClass, "expectedFailure.expectedClass"),
+    expectedCode: assertString(raw.expectedCode, "expectedFailure.expectedCode"),
+    assertionIds: raw.assertionIds as string[],
+    onMatch: assertClosed(raw.onMatch, "expectedFailure.onMatch", ["pass", "unsupported"] as const),
+    onMismatch: assertClosed(raw.onMismatch, "expectedFailure.onMismatch", ["fail", "inconclusive"] as const),
+  };
+}
+
+function validateSourceRefs(raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new LabValidationError("invalid_source_refs", "sourceRefs");
+  return raw.map((r, i) => assertString(r, `sourceRefs[${i}]`));
+}
+
 function validateObservation(raw: Record<string, unknown>): ObservationEvent {
   const evidenceLayer = assertClosed(raw.evidenceLayer, "evidenceLayer", EVIDENCE_LAYERS);
   const subject = validateSubject(raw.subject, evidenceLayer);
@@ -298,14 +406,10 @@ function validateObservation(raw: Record<string, unknown>): ObservationEvent {
     attempt: typeof raw.attempt === "number" && Number.isInteger(raw.attempt) && raw.attempt >= 1
       ? raw.attempt
       : (() => { throw new LabValidationError("invalid_attempt", "attempt"); })(),
-    limits: isPlainObject(raw.limits) ? raw.limits as Record<string, number | null> : (() => {
-      throw new LabValidationError("invalid_limits", "limits");
-    })(),
+    limits: validateObservationLimits(raw.limits),
     outcome: assertClosed(raw.outcome, "outcome", OUTCOMES),
-    assertions: raw.assertions as ObservationEvent["assertions"],
-    environment: isPlainObject(raw.environment) ? raw.environment : (() => {
-      throw new LabValidationError("invalid_environment", "environment");
-    })(),
+    assertions: raw.assertions.map(validateAssertionRecord),
+    environment: validateObservationEnvironment(raw.environment),
     artifactRefs: raw.artifactRefs.map(validateArtifactRef),
   };
   if (raw.failure !== undefined) {
@@ -323,12 +427,10 @@ function validateObservation(raw: Record<string, unknown>): ObservationEvent {
     };
   }
   if (raw.expectedFailure !== undefined) {
-    if (!isPlainObject(raw.expectedFailure)) throw new LabValidationError("invalid_expected_failure", "expectedFailure");
-    event.expectedFailure = raw.expectedFailure;
+    event.expectedFailure = validateExpectedFailure(raw.expectedFailure);
   }
   if (raw.sourceRefs !== undefined) {
-    if (!Array.isArray(raw.sourceRefs)) throw new LabValidationError("invalid_source_refs", "sourceRefs");
-    event.sourceRefs = raw.sourceRefs.map((r, i) => assertString(r, `sourceRefs[${i}]`));
+    event.sourceRefs = validateSourceRefs(raw.sourceRefs);
   }
   if (event.completedAt < event.startedAt) {
     throw new LabValidationError("invalid_time_range", "completedAt < startedAt");

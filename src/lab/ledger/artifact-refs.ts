@@ -32,6 +32,50 @@ function addObservationArtifacts(obs: ObservationEvent, refs: Set<string>): void
   for (const ref of obs.artifactRefs) refs.add(ref.digest);
 }
 
+export function eventReferencesArtifactDigest(event: LabEvent, digest: string): boolean {
+  if (event.eventKind === "observation") {
+    if (event.scenarioManifestDigest === digest) return true;
+    if (event.suiteManifestDigest === digest) return true;
+    if (event.fixtureDigests.includes(digest)) return true;
+    return event.artifactRefs.some((ref) => ref.digest === digest);
+  }
+  if (event.eventKind === "claim_snapshot") {
+    return event.sourceManifestDigest === digest;
+  }
+  return false;
+}
+
+/**
+ * Expand purge targets so explicitly sensitive artifact digests cannot survive
+ * while still-referenced evidence remains.
+ */
+export function expandSensitiveArtifactEventTargets(
+  events: LabEvent[],
+  index: InvalidationIndex,
+  targetEventIds: Set<string>,
+  explicitArtifactDigests: Set<string>,
+): Set<string> {
+  const expanded = new Set(targetEventIds);
+  if (explicitArtifactDigests.size === 0) return expanded;
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const event of events) {
+      if (expanded.has(event.eventId)) continue;
+      if (isEventExcluded(event.eventId, index)) continue;
+      for (const digest of explicitArtifactDigests) {
+        if (eventReferencesArtifactDigest(event, digest)) {
+          expanded.add(event.eventId);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return expanded;
+}
+
 /**
  * Artifact digests still required by surviving usable evidence after excluding
  * the given event IDs (e.g. purge targets).
@@ -51,6 +95,7 @@ export function deletableArtifactDigests(
   targetEventIds: Set<string>,
   explicitArtifactDigests: string[],
 ): string[] {
+  const explicit = new Set(explicitArtifactDigests);
   const stillRequired = artifactsStillRequired(events, index, targetEventIds);
   const candidates = new Set<string>(explicitArtifactDigests);
 
@@ -66,7 +111,7 @@ export function deletableArtifactDigests(
   }
 
   return [...candidates]
-    .filter((digest) => !stillRequired.has(digest))
+    .filter((digest) => explicit.has(digest) || !stillRequired.has(digest))
     .sort();
 }
 

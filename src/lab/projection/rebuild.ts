@@ -6,7 +6,7 @@ import { LAB_PROJECTION_SPEC_VERSION } from "../constants";
 import { expandScenario, loadCaseAuthority } from "../conformance/manifest";
 import { scenarioManifestDigest, jcsStringify } from "../digest";
 import { parseSuiteManifestFromArtifact } from "./verification";
-import type { LabEvent, LedgerCorruption } from "../events/types";
+import type { ClaimSnapshotEvent, LabEvent, LedgerCorruption } from "../events/types";
 import { loadClaimSourceManifest } from "../artifacts/store";
 import { buildInvalidationIndex, isEventExcluded } from "../ledger/invalidation";
 import { replayLabLedger } from "../ledger/store";
@@ -81,10 +81,14 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
   const validation = validateRequiredArtifacts(replay.events, index, artifactStore, corruptions);
 
   const authority = loadCaseAuthority();
-  const scenarioManifestByDigest = new Map<string, Record<string, unknown>>();
+  const scenarioRequirementsByDigest = new Map<string, {
+    inboundProtocols?: string[];
+    upstreamProtocols?: string[];
+    surfaces?: string[];
+  }>();
   for (const caseRecord of authority.cases) {
     const expanded = expandScenario(caseRecord, authority);
-    scenarioManifestByDigest.set(scenarioManifestDigest(expanded), expanded);
+    scenarioRequirementsByDigest.set(scenarioManifestDigest(expanded), caseRecord.requirements);
   }
 
   const loadSuiteManifest = (digest: string) => {
@@ -101,9 +105,10 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
       const bytes = artifactStore.get(digest);
       return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
     } catch {
-      return scenarioManifestByDigest.get(digest) ?? null;
+      return null;
     }
   };
+  const loadScenarioRequirements = (digest: string) => scenarioRequirementsByDigest.get(digest) ?? null;
 
   const db = new Database(paths.sqlitePath);
   try {
@@ -159,11 +164,23 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
 
     const excluded = excludeEventIds(index);
     const usableClaimEvents = replay.events.filter(
-      (e) => e.eventKind === "claim_snapshot" && !isEventExcluded(e.eventId, index),
+      (e): e is ClaimSnapshotEvent =>
+        e.eventKind === "claim_snapshot" && !isEventExcluded(e.eventId, index),
     );
-    const claimStates = resolveClaimStates(
-      usableClaimEvents.filter((e) => e.eventKind === "claim_snapshot") as never,
-    );
+
+    for (const claim of usableClaimEvents) {
+      const loaded = loadClaimSourceManifest(artifactStore, claim.sourceManifestDigest, {
+        subjectId: claim.subjectId,
+        capability: claim.capability,
+      });
+      if (loaded.corruption) {
+        validation.unusableClaimEventIds.add(claim.eventId);
+      }
+    }
+
+    const claimStates = resolveClaimStates(usableClaimEvents, {
+      unusableClaimEventIds: validation.unusableClaimEventIds,
+    });
 
     for (const event of replay.events) {
       const isExcluded = excluded.has(event.eventId);
@@ -218,7 +235,7 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
         const key = `${event.subjectId}|${event.capability}`;
         const state = claimStates.states.get(key);
         const current = state?.current?.eventId === event.eventId ? 1 : 0;
-        let usable = !isExcluded && !state?.corruption ? 1 : 0;
+        let usable = !isExcluded && !state?.corruption && !validation.unusableClaimEventIds.has(event.eventId) ? 1 : 0;
 
         if (!isExcluded) {
           const loaded = loadClaimSourceManifest(artifactStore, event.sourceManifestDigest, {
@@ -227,7 +244,6 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
           });
           if (loaded.corruption) {
             usable = 0;
-            validation.unusableClaimEventIds.add(event.eventId);
             corruptions.push({
               kind: "claim_corruption",
               eventId: event.eventId,
@@ -295,6 +311,7 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
       unusableClaimEventIds: validation.unusableClaimEventIds,
       loadSuiteManifest,
       loadScenarioManifest,
+      loadScenarioRequirements,
     });
     for (const c of verdictCorruptions) {
       if (!corruptions.some((x) => x.detail === c.detail && x.eventId === c.eventId)) {

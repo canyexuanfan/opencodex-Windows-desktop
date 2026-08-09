@@ -24,6 +24,20 @@ export function isScenarioApplicable(
   return true;
 }
 
+function scenarioApplicableToRequirements(
+  requirements: { inboundProtocols?: string[]; upstreamProtocols?: string[]; surfaces?: string[] },
+  subject: ProtocolSubjectV1,
+): boolean {
+  const inbound = requirements.inboundProtocols ?? [];
+  const upstream = requirements.upstreamProtocols ?? [];
+  const surfaces = requirements.surfaces ?? [];
+  return (
+    inbound.includes(subject.inboundProtocol) &&
+    upstream.includes(subject.upstreamProtocol) &&
+    surfaces.includes(subject.surface)
+  );
+}
+
 function scenarioApplicableToProtocolSubject(
   scenarioManifest: Record<string, unknown> | null,
   subject: ProtocolSubjectV1,
@@ -37,12 +51,11 @@ function scenarioApplicableToProtocolSubject(
   return (
     inbound.includes(subject.inboundProtocol) &&
     upstream.includes(subject.upstreamProtocol) &&
-    surfaces.includes(subject.surface) &&
-    surfaces[0] === subject.surface
+    surfaces.includes(subject.surface)
   );
 }
 
-function newestObservationByScenario(
+export function newestObservationByScenario(
   observations: ObservationEvent[],
 ): Map<string, ObservationEvent> {
   const byScenario = new Map<string, ObservationEvent>();
@@ -61,6 +74,12 @@ function newestObservationByScenario(
  * Positive VERIFIED requires a non-empty applicable required set and a current
  * pass for every applicable required scenario.
  */
+export type LoadScenarioRequirements = (digest: string) => {
+  inboundProtocols?: string[];
+  upstreamProtocols?: string[];
+  surfaces?: string[];
+} | null;
+
 export function evaluateAllApplicableRequiredPassV1(
   suiteManifest: SuiteManifestV1,
   observations: ObservationEvent[],
@@ -68,6 +87,7 @@ export function evaluateAllApplicableRequiredPassV1(
   opts: {
     subject?: ProtocolSubjectV1;
     loadScenarioManifest?: LoadScenarioManifest;
+    loadScenarioRequirements?: LoadScenarioRequirements;
   } = {},
 ): VerificationEvaluation {
   const notes: string[] = [];
@@ -82,17 +102,37 @@ export function evaluateAllApplicableRequiredPassV1(
   }
 
   const requiredScenarios = suiteManifest.scenarios.filter((s) => s.role === "required");
-  const applicableRequired = requiredScenarios
-    .filter((s) => {
-      if (!isScenarioApplicable(s.id, executionMode, suiteManifest.evidenceLayer)) return false;
-      if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
-        const scenarioManifest = opts.loadScenarioManifest?.(s.manifestDigest) ?? null;
-        return scenarioApplicableToProtocolSubject(scenarioManifest, opts.subject);
+  const applicableRequired: string[] = [];
+  const unavailableManifests: string[] = [];
+
+  for (const s of requiredScenarios) {
+    if (!isScenarioApplicable(s.id, executionMode, suiteManifest.evidenceLayer)) continue;
+    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
+      const scenarioManifest = opts.loadScenarioManifest?.(s.manifestDigest) ?? null;
+      if (scenarioManifest) {
+        if (!scenarioApplicableToProtocolSubject(scenarioManifest, opts.subject)) continue;
+      } else {
+        const requirements = opts.loadScenarioRequirements?.(s.manifestDigest) ?? null;
+        if (!requirements) {
+          unavailableManifests.push(s.id);
+          continue;
+        }
+        if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
       }
-      return true;
-    })
-    .map((s) => s.id)
-    .sort();
+    }
+    applicableRequired.push(s.id);
+  }
+  applicableRequired.sort();
+
+  if (unavailableManifests.length > 0) {
+    return {
+      applicableRequiredScenarioIds: applicableRequired,
+      passingRequiredScenarioIds: [],
+      missingRequiredScenarioIds: [...new Set([...applicableRequired, ...unavailableManifests])].sort(),
+      canVerify: false,
+      notes: unavailableManifests.map((id) => `scenario_manifest_unavailable:${id}`),
+    };
+  }
 
   if (applicableRequired.length === 0) {
     return {

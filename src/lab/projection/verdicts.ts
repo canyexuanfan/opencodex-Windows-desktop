@@ -14,7 +14,7 @@ import {
   usableObservations,
   type InvalidationIndex,
 } from "../ledger/invalidation";
-import { evaluateAllApplicableRequiredPassV1 } from "./verification";
+import { evaluateAllApplicableRequiredPassV1, newestObservationByScenario } from "./verification";
 
 export interface ProjectionKey {
   subjectId: string;
@@ -51,6 +51,7 @@ export interface ClaimState {
   key: string;
   current: ClaimSnapshotEvent | null;
   corruption?: string;
+  unusable?: boolean;
 }
 
 export interface ProjectVerdictsOptions {
@@ -60,16 +61,25 @@ export interface ProjectVerdictsOptions {
   unusableClaimEventIds?: Set<string>;
   loadSuiteManifest?: (digest: string) => SuiteManifestV1 | null;
   loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
+  loadScenarioRequirements?: (digest: string) => {
+    inboundProtocols?: string[];
+    upstreamProtocols?: string[];
+    surfaces?: string[];
+  } | null;
 }
 
 /**
  * Resolve current claims after purge/invalidation and supersession.
  * Multiple unsuperseded claims, missing predecessors, cross-key supersession, or cycles → UNKNOWN + corruption.
  */
-export function resolveClaimStates(claims: ClaimSnapshotEvent[]): {
+export function resolveClaimStates(
+  claims: ClaimSnapshotEvent[],
+  opts: { unusableClaimEventIds?: Set<string> } = {},
+): {
   states: Map<string, ClaimState>;
   corruptions: LedgerCorruption[];
 } {
+  const unusableClaims = opts.unusableClaimEventIds ?? new Set<string>();
   const byKey = new Map<string, ClaimSnapshotEvent[]>();
   for (const claim of claims) {
     const key = `${claim.subjectId}|${claim.capability}`;
@@ -127,7 +137,12 @@ export function resolveClaimStates(claims: ClaimSnapshotEvent[]): {
       states.set(key, { key, current: null, corruption: "conflicting current claims" });
       continue;
     }
-    states.set(key, { key, current: current[0] ?? null });
+    const currentClaim = current[0] ?? null;
+    states.set(key, {
+      key,
+      current: currentClaim,
+      unusable: currentClaim ? unusableClaims.has(currentClaim.eventId) : undefined,
+    });
   }
 
   return { states, corruptions };
@@ -155,10 +170,10 @@ export function projectVerdicts(
   const observations = usableObservations(events, index)
     .filter((o) => o.completedAt <= asOf)
     .filter((o) => !unusableObs.has(o.eventId));
-  const claims = usableClaims(events, index)
-    .filter((c) => c.effectiveAt <= asOf)
-    .filter((c) => !unusableClaims.has(c.eventId));
-  const { states: claimStates, corruptions: claimCorruptions } = resolveClaimStates(claims);
+  const claims = usableClaims(events, index).filter((c) => c.effectiveAt <= asOf);
+  const { states: claimStates, corruptions: claimCorruptions } = resolveClaimStates(claims, {
+    unusableClaimEventIds: unusableClaims,
+  });
   corruptions.push(...claimCorruptions);
 
   const groups = new Map<string, ObservationEvent[]>();
@@ -197,6 +212,7 @@ export function projectVerdicts(
     verdicts.push(
       projectObservationGroup(key, ordered, asOf, suiteManifest, {
         loadScenarioManifest: opts.loadScenarioManifest,
+        loadScenarioRequirements: opts.loadScenarioRequirements,
       }),
     );
   }
@@ -204,7 +220,6 @@ export function projectVerdicts(
   for (const [, state] of claimStates) {
     if (!state.current || state.current.polarity !== "supported") continue;
     if (state.corruption) continue;
-    if (unusableClaims.has(state.current.eventId)) continue;
     const claim = state.current;
     const key: ProjectionKey = {
       subjectId: claim.subjectId,
@@ -216,6 +231,19 @@ export function projectVerdicts(
     };
     const ks = projectionKeyString(key);
     if (verdicts.some((v) => projectionKeyString(v.key) === ks)) continue;
+    if (state.unusable) {
+      verdicts.push({
+        key,
+        verdict: "UNKNOWN",
+        asOf,
+        scenarioManifestDigests: [],
+        claimSourceDigest: claim.sourceManifestDigest,
+        contributingEventIds: [claim.eventId],
+        contradictingEventIds: [],
+        notes: ["current_claim_unusable"],
+      });
+      continue;
+    }
     verdicts.push({
       key,
       verdict: "CLAIMED",
@@ -236,32 +264,25 @@ function projectObservationGroup(
   ordered: ObservationEvent[],
   asOf: number,
   suiteManifest: SuiteManifestV1 | null,
-  opts: { loadScenarioManifest?: (digest: string) => Record<string, unknown> | null } = {},
+  opts: { loadScenarioManifest?: (digest: string) => Record<string, unknown> | null; loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"] } = {},
 ): DerivedVerdict {
   const contributing: string[] = [];
   const contradicting: string[] = [];
   const digests = new Set<string>();
   const notes: string[] = [];
 
-  let sawPass = false;
-  let sawFail = false;
-  let sawBlocked = false;
-  let sawInconclusive = false;
-
   for (const obs of ordered) {
     digests.add(obs.scenarioManifestDigest);
     contributing.push(obs.eventId);
-    if (obs.outcome === "pass") sawPass = true;
-    else if (obs.outcome === "fail") {
-      sawFail = true;
-      contradicting.push(obs.eventId);
-    } else if (obs.outcome === "blocked") sawBlocked = true;
-    else if (obs.outcome === "inconclusive") sawInconclusive = true;
-    else {
-      const _never: never = obs.outcome;
-      void _never;
-    }
+    if (obs.outcome === "fail") contradicting.push(obs.eventId);
   }
+
+  const newest = newestObservationByScenario(ordered);
+  const currentObservations = [...newest.values()];
+  const currentFails = currentObservations.filter((o) => o.outcome === "fail");
+  const currentPasses = currentObservations.filter((o) => o.outcome === "pass");
+  const currentBlocked = currentObservations.some((o) => o.outcome === "blocked");
+  const currentInconclusive = currentObservations.some((o) => o.outcome === "inconclusive");
 
   let verdict: CompatibilityVerdict = "UNKNOWN";
   if (
@@ -270,18 +291,18 @@ function projectObservationGroup(
     key.evidenceLayer !== "task_effectiveness"
   ) {
     verdict = "UNKNOWN";
-  } else if (sawFail && sawPass) {
-    verdict = "DEGRADED";
-    notes.push("contradiction_conservative_v1");
-  } else if (sawFail) {
-    const last = ordered[ordered.length - 1]!;
-    if (last.failure?.class === "capability_failure" && last.expectedFailure) {
+  } else if (currentFails.length > 0) {
+    const lastFail = currentFails.sort((a, b) => {
+      if (a.completedAt !== b.completedAt) return a.completedAt - b.completedAt;
+      return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
+    })[currentFails.length - 1]!;
+    if (lastFail.failure?.class === "capability_failure" && lastFail.expectedFailure) {
       verdict = "UNSUPPORTED";
       notes.push("capability_absence_control");
     } else {
       verdict = "DEGRADED";
     }
-  } else if (sawPass && !sawInconclusive && !sawBlocked) {
+  } else if (currentPasses.length > 0 && !currentInconclusive && !currentBlocked) {
     const executionMode = ordered[0]!.executionMode;
     const subject = ordered[0]!.subject;
     if (key.evidenceLayer === "protocol_conformance" && executionMode === "fixture") {
@@ -296,14 +317,15 @@ function projectObservationGroup(
           {
             subject: subject.subjectKind === "protocol" ? subject : undefined,
             loadScenarioManifest: opts.loadScenarioManifest,
+            loadScenarioRequirements: opts.loadScenarioRequirements,
           },
         );
         notes.push(...evaluation.notes);
-        if (evaluation.canVerify) {
+        if (evaluation.applicableRequiredScenarioIds.length === 0) {
+          verdict = "UNKNOWN";
+        } else if (evaluation.canVerify) {
           verdict = "VERIFIED";
           notes.push("all-applicable-required-pass-v1");
-        } else if (evaluation.applicableRequiredScenarioIds.length === 0) {
-          verdict = "PROBED";
         } else {
           verdict = "PROBED";
           notes.push("incomplete_required_coverage");
@@ -312,9 +334,9 @@ function projectObservationGroup(
     } else {
       verdict = "PROBED";
     }
-  } else if (sawPass) {
+  } else if (currentPasses.length > 0) {
     verdict = "PROBED";
-  } else if (sawBlocked) {
+  } else if (currentBlocked) {
     verdict = "BLOCKED";
   } else {
     verdict = "UNKNOWN";

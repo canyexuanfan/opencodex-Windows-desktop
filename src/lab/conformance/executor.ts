@@ -23,7 +23,19 @@ import {
   recordUpstreamRequest,
 } from "./observation";
 import { normalizeSseBytes } from "./sse-normalize";
-import type { CaseRecord, NormalizedObservation, ScenarioRunResult } from "./types";
+import type { CaseRecord, NormalizedObservation, ScenarioRunResult, ProtocolExecutionContextV1 } from "./types";
+
+export function resolveProtocolExecutionContext(caseRecord: CaseRecord): ProtocolExecutionContextV1 {
+  const inbound = caseRecord.requirements.inboundProtocols[0] ?? "openai-responses";
+  const upstream = caseRecord.requirements.upstreamProtocols[0] ?? "openai-chat";
+  let surface = caseRecord.requirements.surfaces[0] ?? "responses-http";
+  if (caseRecord.id === "responses-core.protocol.json-sse-equivalence") {
+    surface = "responses-sse";
+  } else if (caseRecord.requirements.surfaces.length === 1) {
+    surface = caseRecord.requirements.surfaces[0]!;
+  }
+  return { inboundProtocol: inbound, upstreamProtocol: upstream, surface };
+}
 
 async function collectAdapterEvents(gen: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
   const events: AdapterEvent[] = [];
@@ -663,6 +675,7 @@ export async function executeScenario(caseRecord: CaseRecord): Promise<Normalize
 
 export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunResult> {
   const diagnostics: string[] = [];
+  const executionContext = resolveProtocolExecutionContext(caseRecord);
   try {
     const observation = await executeScenario(caseRecord);
     const assertionResults = evaluateAssertions(caseRecord.assertions, observation);
@@ -688,6 +701,7 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
         assertionResults,
         expectedFailureMatched,
         diagnostics,
+        executionContext,
       };
     }
 
@@ -700,6 +714,7 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
       secondaryCode: passed ? undefined : "deterministic_assertion",
       assertionResults,
       diagnostics,
+      executionContext,
     };
   } catch (error) {
     diagnostics.push(String(error));
@@ -711,6 +726,7 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
       secondaryCode: "execution_error",
       assertionResults: [],
       diagnostics,
+      executionContext,
     };
   }
 }

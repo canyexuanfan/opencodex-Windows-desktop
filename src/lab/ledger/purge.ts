@@ -8,14 +8,28 @@ import { ArtifactFsError } from "../artifacts/secure-fs";
 import { LAB_EVENT_SCHEMA_VERSION, LAB_PRODUCER, PURGE_ACTIONS } from "../constants";
 import type { LabEvent, PurgeTombstoneEvent } from "../events/types";
 import { assignEventId, validateLabEvent } from "../events/validate";
-import { deletableArtifactDigests } from "./artifact-refs";
+import {
+  deletableArtifactDigests,
+  expandSensitiveArtifactEventTargets,
+} from "./artifact-refs";
 import { buildInvalidationIndex } from "./invalidation";
 import { appendLabEvent, replayLabLedger } from "./store";
 import { ensureLabDirs } from "../paths";
 import { rebuildLabProjection } from "../projection/rebuild";
 import { jcsStringify } from "../digest";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
 
 export class PurgeError extends Error {
   readonly code: string;
@@ -38,7 +52,7 @@ export interface SensitivePurgeRequest {
 function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
   const body = events.map((e) => jcsStringify(e)).join("\n") + (events.length ? "\n" : "");
   const bytes = new TextEncoder().encode(body);
-  const tmpPath = join(dirname(ledgerPath), `.purge-${process.pid}-${Date.now()}.jsonl.tmp`);
+  const tmpPath = join(join(ledgerPath, ".."), `.purge-${process.pid}-${Date.now()}.jsonl.tmp`);
   const fd = openSync(tmpPath, "w", 0o600);
   try {
     const written = writeSync(fd, bytes);
@@ -75,6 +89,22 @@ function deleteArtifactsFailClosed(dir: TrustedArtifactDir, digests: string[]): 
   }
 }
 
+function purgeBoundedDirectory(dirPath: string): void {
+  if (!existsSync(dirPath)) return;
+  const entries = readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = join(dirPath, entry.name);
+    try {
+      rmSync(full, { recursive: entry.isDirectory(), force: true });
+    } catch (err) {
+      throw new PurgeError(
+        "scratch_export_delete_failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
 /**
  * Exceptional sensitive-evidence purge:
  * physically remove targeted JSONL lines and artifacts, append purge_tombstone,
@@ -85,10 +115,16 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   const targetEventIds = [...(req.targetEventIds ?? [])].sort();
   const targetArtifactDigests = [...(req.targetArtifactDigests ?? [])].sort();
   const purgeActions = [...(req.purgeActions ?? ["ledger", "sqlite", "artifact", "scratch"])].sort();
+  const explicitSensitive = new Set(targetArtifactDigests);
 
   const replay = replayLabLedger(paths.ledgerPath);
-  const removeIds = new Set(targetEventIds);
   const index = buildIndexFromReplay(replay.events);
+  const removeIds = expandSensitiveArtifactEventTargets(
+    replay.events,
+    index,
+    new Set(targetEventIds),
+    explicitSensitive,
+  );
 
   const tombstonePayload = {
     schemaVersion: LAB_EVENT_SCHEMA_VERSION,
@@ -96,7 +132,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
     recordedAt: req.recordedAt ?? Date.now(),
     producer: LAB_PRODUCER,
     producerVersion: req.producerVersion ?? "2.10.2",
-    targetEventIds,
+    targetEventIds: [...removeIds].sort(),
     targetArtifactDigests,
     reason: "sensitive_evidence" as const,
     purgeActions,
@@ -107,8 +143,26 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
     ? deletableArtifactDigests(replay.events, index, removeIds, targetArtifactDigests)
     : [];
 
+  if (purgeActions.includes("artifact") && explicitSensitive.size > 0) {
+    for (const digest of explicitSensitive) {
+      if (!deletable.includes(digest)) {
+        throw new PurgeError(
+          "sensitive_artifact_not_deletable",
+          `explicit sensitive artifact ${digest} could not be removed`,
+        );
+      }
+    }
+  }
+
   let dir: TrustedArtifactDir | null = null;
   try {
+    if (purgeActions.includes("scratch")) {
+      purgeBoundedDirectory(paths.scratchDir);
+    }
+    if (purgeActions.includes("export")) {
+      purgeBoundedDirectory(paths.exportDir);
+    }
+
     if (purgeActions.includes("artifact") && deletable.length > 0) {
       dir = openTrustedArtifactDir(paths.artifactsDir);
       deleteArtifactsFailClosed(dir, deletable);

@@ -84,6 +84,9 @@ export function enforceEventStructureLimits(
   if (typeof value === "number" || typeof value === "boolean") return;
 
   if (Array.isArray(value)) {
+    if (depth >= MAX_EVENT_NESTING_DEPTH) {
+      throw new LabValidationError("nesting_depth", `${path} exceeds nesting depth ${MAX_EVENT_NESTING_DEPTH}`);
+    }
     if (value.length > MAX_ARRAY_ELEMENTS_PER_EVENT) {
       throw new LabValidationError("array_too_large", `${path} exceeds ${MAX_ARRAY_ELEMENTS_PER_EVENT} elements`);
     }

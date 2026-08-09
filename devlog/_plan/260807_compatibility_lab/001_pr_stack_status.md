@@ -21,7 +21,7 @@ independent review, blockers, and whether a later phase is authorized.
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
-| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (review fixes pending push) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — VALIDATION IN PROGRESS — NOT INDEPENDENTLY ACCEPTED |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (phase-2 review fixes pending push) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED |
 | CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
@@ -116,11 +116,19 @@ sensitive purge with shared-artifact retention, recursive event admission
 ceilings, and unusable-evidence exclusion from projection are implemented.
 Claims cannot produce `PROBED`/`VERIFIED`.
 
-### CL-02 validation status (2026-08-09 review fixes)
+### CL-02 validation status (2026-08-09 phase-2 review fixes)
 
-- **Implementation:** complete on `feat/cl-02-evidence-ledger` (pending push).
-- **Local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`, CL-01/CL-02
-  tests, and repo hygiene checks green on Windows host.
+- **Prior accepted review-fix head:** `cf626d14c823413fbcd6ac2625d1da16bbac714e`
+- **Phase-2 scope:** eleven independent-review blockers (artifact dirfd I/O,
+  purge scratch/export + explicit sensitive artifacts, streaming JSONL replay,
+  zero-applicable UNKNOWN, `newest-required-observation-v1`, multi-surface
+  applicability, historical manifest no-substitution, closed event admission,
+  corrupt superseding claims, ArtifactStore lifecycle, frozen behaviour
+  fingerprint).
+- **Local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`,
+  `tests/lab-evidence-ledger.test.ts` (41/41), `tests/lab-conformance-harness.test.ts`
+  (17/17), `tests/repo-hygiene.test.ts` (11/11), `git diff --check` green on
+  Windows host.
 - **Independent acceptance:** not yet — draft PR #1333 remains open for review.
 - **CL-03:** not started.
 
@@ -128,5 +136,5 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
-- CL-02: **IMPLEMENTATION COMPLETE — VALIDATION IN PROGRESS — NOT INDEPENDENTLY ACCEPTED** on `feat/cl-02-evidence-ledger` (draft #1333).
+- CL-02: **IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED** on `feat/cl-02-evidence-ledger` (draft #1333).
 - CL-03: **NOT STARTED**.

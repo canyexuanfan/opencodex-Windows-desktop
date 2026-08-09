@@ -141,6 +141,12 @@ export interface AssertionResult {
   reason?: string;
 }
 
+export interface ProtocolExecutionContextV1 {
+  inboundProtocol: string;
+  upstreamProtocol: string;
+  surface: string;
+}
+
 export interface ScenarioRunResult {
   scenarioId: string;
   suite: string;
@@ -150,6 +156,7 @@ export interface ScenarioRunResult {
   assertionResults: AssertionResult[];
   expectedFailureMatched?: boolean;
   diagnostics: string[];
+  executionContext: ProtocolExecutionContextV1;
 }
 
 /** All eight protocol-conformance suites frozen by CL-00 Protocol V1. */

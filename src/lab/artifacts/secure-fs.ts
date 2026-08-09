@@ -1,15 +1,17 @@
 /**
  * Descriptor/handle-bound, no-follow artifact I/O for the Compatibility Lab store.
  *
- * The trusted artifact directory fd remains open for the store session lifetime.
- * Child opens use openat semantics when the runtime supports them; otherwise
- * operations use revalidated absolute paths under the pinned directory identity.
+ * POSIX runtimes use directory-relative `dir` opens. Windows uses the same pinned
+ * directory identity checks as other reviewed OpenCodex bounded readers, because
+ * directory-relative child opens are not durable there.
  */
 import {
   closeSync,
   constants as fsConstants,
+  existsSync,
   fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readSync,
@@ -45,7 +47,9 @@ const O_EXCL = fsConstants.O_EXCL;
 const O_NOFOLLOW = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
 const O_DIRECTORY = (fsConstants as { O_DIRECTORY?: number }).O_DIRECTORY;
 
-let openAtSupported: boolean | null = null;
+type ArtifactIoMode = "dirfd" | "win32_pinned";
+
+let artifactIoMode: ArtifactIoMode | null = null;
 
 export function assertDigestName(digest: string): string {
   if (!isSha256Hex(digest)) harnessFailure("artifact digest must be lowercase sha256 hex");
@@ -107,26 +111,39 @@ export interface TrustedArtifactDir {
   identity: string;
 }
 
-function detectOpenAt(dir: TrustedArtifactDir): boolean {
-  if (openAtSupported !== null) return openAtSupported;
-  const probe = `.openat-probe-${process.pid}`;
-  try {
-    const fd = (openSync as unknown as (p: string, f: number, o: { fd: number }) => number)(
-      probe,
-      O_CREAT | O_EXCL | O_RDWR,
-      { fd: dir.fd },
-    );
-    closeSync(fd);
-    try {
-      (unlinkSync as (p: string, o: { fd: number }) => void)(probe, { fd: dir.fd });
-    } catch {
-      unlinkSync(join(dir.path, probe));
-    }
-    openAtSupported = true;
-  } catch {
-    openAtSupported = false;
+type OpenSyncWithDir = (
+  path: string,
+  flags: number,
+  mode: number,
+  options: { dir: number },
+) => number;
+
+type RenameSyncWithDir = (from: string, to: string, options: { dir: number }) => void;
+type UnlinkSyncWithDir = (path: string, options: { dir: number }) => void;
+
+function detectArtifactIoMode(dir: TrustedArtifactDir): ArtifactIoMode {
+  if (artifactIoMode !== null) return artifactIoMode;
+  if (process.platform === "win32") {
+    artifactIoMode = "win32_pinned";
+    return artifactIoMode;
   }
-  return openAtSupported;
+  const probe = `.dirfd-probe-${process.pid}`;
+  const finalName = `${probe}.ok`;
+  try {
+    const openWithDir = openSync as unknown as OpenSyncWithDir;
+    const fd = openWithDir(probe, O_CREAT | O_EXCL | O_RDWR, 0o600, { dir: dir.fd });
+    closeSync(fd);
+    (renameSync as unknown as RenameSyncWithDir)(probe, finalName, { dir: dir.fd });
+    if (!existsSync(join(dir.path, finalName))) {
+      artifactIoMode = "win32_pinned";
+      return artifactIoMode;
+    }
+    (unlinkSync as unknown as UnlinkSyncWithDir)(finalName, { dir: dir.fd });
+    artifactIoMode = "dirfd";
+  } catch {
+    artifactIoMode = "win32_pinned";
+  }
+  return artifactIoMode;
 }
 
 function childPath(dir: TrustedArtifactDir, name: string): string {
@@ -135,41 +152,53 @@ function childPath(dir: TrustedArtifactDir, name: string): string {
   return join(dir.path, name);
 }
 
-function openAtDir(dir: TrustedArtifactDir, name: string, flags: number, mode?: number): number {
+function assertOpenedPathMatchesDescriptor(dir: TrustedArtifactDir, name: string, fd: number): void {
+  if (detectArtifactIoMode(dir) !== "win32_pinned") return;
+  const opened = fstatSync(fd);
+  assertRegularFileStats(opened, "artifact fd");
+  const pathEntry = lstatSync(childPath(dir, name));
+  if (
+    !pathEntry.isFile() ||
+    pathEntry.isSymbolicLink() ||
+    pathEntry.dev !== opened.dev ||
+    pathEntry.ino !== opened.ino
+  ) {
+    closeSync(fd);
+    harnessFailure("artifact path identity mismatch after open");
+  }
+}
+
+function openAtDir(dir: TrustedArtifactDir, name: string, flags: number, mode = 0): number {
   revalidateDir(dir);
   assertRelativeName(name);
-  if (detectOpenAt(dir)) {
-    const openAt = openSync as unknown as (
-      p: string,
-      f: number,
-      o: { fd: number; mode?: number },
-    ) => number;
-    if (mode !== undefined) return openAt(name, flags, { fd: dir.fd, mode });
-    return openAt(name, flags, { fd: dir.fd });
+  const mode_ = detectArtifactIoMode(dir);
+  if (mode_ === "dirfd") {
+    return (openSync as unknown as OpenSyncWithDir)(name, flags, mode, { dir: dir.fd });
   }
-  const full = join(dir.path, name);
-  return mode !== undefined ? openSync(full, flags, mode) : openSync(full, flags);
+  const fd = openSync(childPath(dir, name), flags, mode);
+  assertOpenedPathMatchesDescriptor(dir, name, fd);
+  return fd;
 }
 
 function renameAtDir(dir: TrustedArtifactDir, from: string, to: string): void {
   revalidateDir(dir);
   assertRelativeName(from);
   assertRelativeName(to);
-  if (detectOpenAt(dir)) {
-    (renameSync as (a: string, b: string, o: { fd: number }) => void)(from, to, { fd: dir.fd });
+  if (detectArtifactIoMode(dir) === "dirfd") {
+    (renameSync as unknown as RenameSyncWithDir)(from, to, { dir: dir.fd });
     return;
   }
-  renameSync(join(dir.path, from), join(dir.path, to));
+  renameSync(childPath(dir, from), childPath(dir, to));
 }
 
 function unlinkAtDir(dir: TrustedArtifactDir, name: string): void {
   revalidateDir(dir);
   assertRelativeName(name);
-  if (detectOpenAt(dir)) {
-    (unlinkSync as (p: string, o: { fd: number }) => void)(name, { fd: dir.fd });
+  if (detectArtifactIoMode(dir) === "dirfd") {
+    (unlinkSync as unknown as UnlinkSyncWithDir)(name, { dir: dir.fd });
     return;
   }
-  unlinkSync(join(dir.path, name));
+  unlinkSync(childPath(dir, name));
 }
 
 function revalidateDir(dir: TrustedArtifactDir): void {
@@ -198,7 +227,9 @@ export function openTrustedArtifactDir(artifactsDir: string): TrustedArtifactDir
 
   const stats = fstatSync(fd);
   assertDirectoryStats(stats, "artifacts dir");
-  return { path: abs, fd, identity: identityOf(stats) };
+  const trusted = { path: abs, fd, identity: identityOf(stats) };
+  detectArtifactIoMode(trusted);
+  return trusted;
 }
 
 export function closeTrustedArtifactDir(dir: TrustedArtifactDir): void {
@@ -230,6 +261,13 @@ function readAllFromFd(fd: number, size: number): Buffer {
   }
   if (offset !== size) harnessFailure("short read from artifact descriptor");
   return buf;
+}
+
+function isMissingArtifactError(err: unknown): boolean {
+  if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+    return true;
+  }
+  return err instanceof ArtifactFsError && err.message.includes("missing");
 }
 
 function writeTempArtifact(
@@ -295,7 +333,7 @@ export function readArtifactBytes(
     if (got !== digest) harnessFailure("artifact digest mismatch on descriptor");
     return { digest, bytes: new Uint8Array(buf), byteCount: stats.size };
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+    if (isMissingArtifactError(err)) {
       harnessFailure(`artifact missing: ${digest}`);
     }
     if (err instanceof ArtifactFsError) throw err;
@@ -324,8 +362,8 @@ export function putArtifactBytes(
   try {
     return readArtifactBytes(dir, digest, bytes.byteLength);
   } catch (err) {
-    if (!(err instanceof ArtifactFsError) || !err.message.includes("missing")) {
-      if (err instanceof ArtifactFsError && err.message.includes("mismatch")) throw err;
+    if (!isMissingArtifactError(err)) {
+      throw err;
     }
   }
 
@@ -338,7 +376,7 @@ export function putNamedDigestBytes(
   dir: TrustedArtifactDir,
   digest: string,
   bytes: Uint8Array,
-  contentDigest: (bytes: Uint8Array) => string,
+  contentDigest: (b: Uint8Array) => string,
 ): StoredArtifactBytes {
   revalidateDir(dir);
   assertDigestName(digest);
@@ -352,7 +390,7 @@ export function putNamedDigestBytes(
   try {
     return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
   } catch (err) {
-    if (!(err instanceof ArtifactFsError) || !err.message.includes("missing")) {
+    if (!isMissingArtifactError(err)) {
       throw err;
     }
   }
@@ -390,7 +428,7 @@ export function artifactExists(dir: TrustedArtifactDir, digest: string): boolean
       closeSync(fd);
     }
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+    if (isMissingArtifactError(err)) {
       return false;
     }
     if (err instanceof ArtifactFsError) throw err;

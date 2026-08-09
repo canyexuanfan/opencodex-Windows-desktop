@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { jcsStringify } from "../digest";
+import { MAX_SERIALIZED_EVENT_BYTES } from "../constants";
 import type { LabEvent, LedgerCorruption, ReplayResult } from "../events/types";
 import { LabValidationError, validateLabEvent } from "../events/validate";
 import { ensureLabDirs, labLedgerPath } from "../paths";
@@ -41,13 +42,12 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
 function processLine(
   line: string,
   lineNumber: number,
-  hasTrailingNewline: boolean,
-  isLastBufferedLine: boolean,
+  lineHasTrailingNewline: boolean,
   events: LabEvent[],
   seenIds: Set<string>,
   corruptions: LedgerCorruption[],
 ): void {
-  if (!hasTrailingNewline && isLastBufferedLine) {
+  if (!lineHasTrailingNewline) {
     corruptions.push({
       kind: "partial_line",
       lineNumber,
@@ -93,6 +93,72 @@ function processLine(
   events.push(event);
 }
 
+function splitIncompleteUtf8Tail(buf: Buffer): { processable: Buffer; remainder: Buffer } {
+  if (buf.length === 0) return { processable: buf, remainder: Buffer.alloc(0) };
+  for (let back = 1; back <= 4 && back <= buf.length; back++) {
+    const byte = buf[buf.length - back]!;
+    if ((byte & 0xc0) === 0x80) continue;
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    const seqStart = buf.length - back;
+    const available = buf.length - seqStart;
+    if (available < needed) {
+      return { processable: buf.subarray(0, seqStart), remainder: buf.subarray(seqStart) };
+    }
+    break;
+  }
+  return { processable: buf, remainder: Buffer.alloc(0) };
+}
+
+function processBufferedLines(
+  buf: Buffer,
+  state: {
+    lineNumber: number;
+    totalLineCount: number;
+    skippingOversizedLine: boolean;
+    events: LabEvent[];
+    seenIds: Set<string>;
+    corruptions: LedgerCorruption[];
+  },
+): { carry: Buffer; skippingOversizedLine: boolean } {
+  let start = 0;
+  let skipping = state.skippingOversizedLine;
+
+  while (start < buf.length) {
+    const newlineIdx = buf.indexOf(0x0a, start);
+    if (newlineIdx < 0) {
+      const tail = buf.subarray(start);
+      if (skipping) {
+        return { carry: Buffer.alloc(0), skippingOversizedLine: true };
+      }
+      if (tail.length > MAX_SERIALIZED_EVENT_BYTES) {
+        state.lineNumber += 1;
+        state.totalLineCount += 1;
+        state.corruptions.push({
+          kind: "malformed_line",
+          lineNumber: state.lineNumber,
+          detail: `line exceeds ${MAX_SERIALIZED_EVENT_BYTES} bytes without newline`,
+        });
+        return { carry: tail, skippingOversizedLine: true };
+      }
+      return { carry: tail, skippingOversizedLine: false };
+    }
+
+    const lineBytes = buf.subarray(start, newlineIdx);
+    start = newlineIdx + 1;
+
+    if (skipping) {
+      skipping = false;
+      continue;
+    }
+
+    state.lineNumber += 1;
+    state.totalLineCount += 1;
+    processLine(lineBytes.toString("utf8"), state.lineNumber, true, state.events, state.seenIds, state.corruptions);
+  }
+
+  return { carry: Buffer.alloc(0), skippingOversizedLine: skipping };
+}
+
 /**
  * Replay the JSONL ledger using chunked reads (no whole-file string buffer).
  * Malformed or partial lines contribute no evidence and are reported as corruption.
@@ -116,12 +182,21 @@ export function replayLabLedger(ledgerPath: string): ReplayResult {
   const fd = openSync(ledgerPath, "r");
   const chunkSize = 64 * 1024;
   const chunk = Buffer.alloc(chunkSize);
-  let carry = "";
+  let carry: Buffer = Buffer.alloc(0);
   let lineNumber = 0;
   let totalLineCount = 0;
   const seenIds = new Set<string>();
   let offset = 0;
-  let hasTrailingNewline = false;
+  let skippingOversizedLine = false;
+
+  const state = {
+    lineNumber,
+    totalLineCount,
+    skippingOversizedLine,
+    events,
+    seenIds,
+    corruptions,
+  };
 
   try {
     while (offset < size) {
@@ -129,23 +204,45 @@ export function replayLabLedger(ledgerPath: string): ReplayResult {
       const n = readSync(fd, chunk, 0, toRead, offset);
       if (n <= 0) break;
       offset += n;
-      carry += chunk.toString("utf8", 0, n);
-      let idx = carry.indexOf("\n");
-      while (idx >= 0) {
-        const line = carry.slice(0, idx);
-        carry = carry.slice(idx + 1);
-        lineNumber += 1;
-        totalLineCount += 1;
-        hasTrailingNewline = true;
-        processLine(line, lineNumber, true, false, events, seenIds, corruptions);
-        idx = carry.indexOf("\n");
-      }
+
+      const combined = carry.length > 0
+        ? Buffer.concat([carry, chunk.subarray(0, n)])
+        : chunk.subarray(0, n);
+      const { processable, remainder } = splitIncompleteUtf8Tail(combined);
+      carry = remainder;
+
+      const result = processBufferedLines(processable, state);
+      carry = result.carry.length > 0
+        ? Buffer.from(Buffer.concat([carry, result.carry]))
+        : carry;
+      skippingOversizedLine = result.skippingOversizedLine;
+      state.skippingOversizedLine = skippingOversizedLine;
+      lineNumber = state.lineNumber;
+      totalLineCount = state.totalLineCount;
     }
 
     if (carry.length > 0) {
-      lineNumber += 1;
-      totalLineCount += 1;
-      processLine(carry, lineNumber, hasTrailingNewline, true, events, seenIds, corruptions);
+      if (skippingOversizedLine) {
+        lineNumber += 1;
+        totalLineCount += 1;
+        corruptions.push({
+          kind: "malformed_line",
+          lineNumber,
+          detail: `oversized line exceeds ${MAX_SERIALIZED_EVENT_BYTES} bytes`,
+        });
+      } else if (carry.length > MAX_SERIALIZED_EVENT_BYTES) {
+        lineNumber += 1;
+        totalLineCount += 1;
+        corruptions.push({
+          kind: "malformed_line",
+          lineNumber,
+          detail: `partial line exceeds ${MAX_SERIALIZED_EVENT_BYTES} bytes`,
+        });
+      } else {
+        lineNumber += 1;
+        totalLineCount += 1;
+        processLine(carry.toString("utf8"), lineNumber, false, events, seenIds, corruptions);
+      }
     }
   } finally {
     closeSync(fd);
