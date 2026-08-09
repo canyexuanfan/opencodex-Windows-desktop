@@ -693,24 +693,41 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (parsed.options.stopSequences !== undefined) body.stop = parsed.options.stopSequences;
       const reasoningDisabled = modelInList(provider.noReasoningModels, parsed.modelId);
       const reasoningEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
+      const nativeOpenAI = isNativeOpenAIChatTarget(provider);
       let reasoningLog: AdapterRequest["reasoningLog"];
       if (!reasoningDisabled && provider.reasoningWireFormat === "gateway-object" && parsed.options.reasoning === "none") {
-        body.reasoning = { enabled: false };
-        reasoningLog = {
-          effectiveEffort: "none",
-          wireField: "reasoning.enabled",
-          wireValue: false,
-        };
+        if (nativeOpenAI) {
+          body.reasoning_effort = "none";
+          reasoningLog = {
+            effectiveEffort: "none",
+            wireField: "reasoning_effort",
+            wireValue: "none",
+          };
+        } else {
+          body.reasoning = { enabled: false };
+          reasoningLog = {
+            effectiveEffort: "none",
+            wireField: "reasoning.enabled",
+            wireValue: false,
+          };
+        }
       } else if (reasoningEffort !== undefined) {
         if (provider.reasoningWireFormat === "gateway-object") {
-          body.reasoning = isNativeOpenAIChatTarget(provider)
-            ? { effort: reasoningEffort }
-            : { enabled: true, effort: reasoningEffort };
-          reasoningLog = {
-            effectiveEffort: reasoningEffort,
-            wireField: "reasoning.effort",
-            wireValue: reasoningEffort,
-          };
+          if (nativeOpenAI) {
+            body.reasoning_effort = reasoningEffort;
+            reasoningLog = {
+              effectiveEffort: reasoningEffort,
+              wireField: "reasoning_effort",
+              wireValue: reasoningEffort,
+            };
+          } else {
+            body.reasoning = { enabled: true, effort: reasoningEffort };
+            reasoningLog = {
+              effectiveEffort: reasoningEffort,
+              wireField: "reasoning.effort",
+              wireValue: reasoningEffort,
+            };
+          }
         } else if (modelInList(provider.thinkingBudgetModels, parsed.modelId)) {
           const budget = thinkingBudgetForEffort(parsed, reasoningEffort, maxTokens);
           if (budget !== undefined) {
