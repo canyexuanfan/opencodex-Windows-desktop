@@ -16,7 +16,13 @@ import {
   previousResponseReplayFailure,
   rememberResponseState,
 } from "../../responses/state";
-import { comboRouteDecisionTrace, NoEligiblePolicyCandidateError, routeModel, type RouteResult } from "../../router";
+import {
+  comboRouteDecisionTrace,
+  NoEligiblePolicyCandidateError,
+  routeConcreteModel,
+  routeModel,
+  type RouteResult,
+} from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
@@ -1069,7 +1075,7 @@ export async function handleComboResponses(
     const provider = config.providers[target.provider];
     if (!provider || provider.disabled === true) return false;
     try {
-      const route = routeModel(config, `${target.provider}/${target.model}`);
+      const route = routeConcreteModel(config, `${target.provider}/${target.model}`);
       return isCanonicalOpenAiForwardProvider(route.provider);
     } catch {
       return false;
@@ -1103,7 +1109,7 @@ export async function handleComboResponses(
       ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
       ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     };
-    const targetRoute = routeModel(config, `${pick.target.provider}/${pick.target.model}`);
+    const targetRoute = routeConcreteModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
       rawBody,
       pick.target,
@@ -1469,7 +1475,9 @@ async function handleResponsesInner(
 
   let route: RouteResult;
   try {
-    route = routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
+    route = options.comboAttempt
+      ? routeConcreteModel(config, parsed.modelId)
+      : routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
     logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {

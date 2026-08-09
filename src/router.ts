@@ -684,6 +684,11 @@ export function routeModel(
   return route;
 }
 
+/** Resolve a combo-selected provider/model target without consulting public combo aliases again. */
+export function routeConcreteModel(config: OcxConfig, modelId: string): RouteResult {
+  return routeModelInternal(config, modelId, true, undefined);
+}
+
 function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResult | undefined {
   for (const { providerNames, prefixes } of MODEL_PROVIDER_PATTERNS) {
     if (prefixes.some(prefix => modelId.startsWith(prefix))) {
