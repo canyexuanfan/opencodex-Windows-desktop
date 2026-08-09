@@ -1836,22 +1836,31 @@ describe("opencodex config defaults", () => {
     expect(readFileSync(getPidPath(), "utf-8")).toBe(String(process.pid));
   });
 
-  test.if(process.platform !== "win32")("pid validation does not execute ps from PATH", () => {
+  test("pid validation does not execute ps from PATH", () => {
     const attackerDir = join(testDir, "attacker-bin");
     const markerPath = join(testDir, "executed");
     const fakePs = join(attackerDir, "ps");
     const previousPath = process.env.PATH;
+    const probes: string[] = [];
     mkdirSync(attackerDir);
     writeFileSync(fakePs, `#!/bin/sh\ntouch '${markerPath}'\necho 'ocx start'\n`, { mode: 0o755 });
 
     setOcxStartProcessCacheForTests([]);
     try {
+      setProcessCommandLinePlatformForTests("darwin");
+      setProcessCommandLineExecForTests((executable) => {
+        probes.push(executable);
+        throw new Error("fixed ps probe unavailable");
+      });
       process.env.PATH = `${attackerDir}${delimiter}${previousPath ?? ""}`;
       writePid(process.pid);
 
       expect(readPid()).toBeNull();
+      expect(probes).toEqual(["/bin/ps", "/usr/bin/ps"]);
       expect(existsSync(markerPath)).toBe(false);
     } finally {
+      setProcessCommandLineExecForTests(null);
+      setProcessCommandLinePlatformForTests(null);
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
       setOcxStartProcessCacheForTests([]);
