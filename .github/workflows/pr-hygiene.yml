@@ -39,11 +39,11 @@ jobs:
         with:
           script: |
             const path = require("node:path");
-            const { assessHygiene } = require(
+            const {
+              collectDeterministicHygieneFailures,
+              HYGIENE_FAILURE_HINTS,
+            } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-hygiene.cjs"),
-            );
-            const { assessSponsoredSurface } = require(
-              path.join(process.cwd(), ".github", "scripts", "pr-sponsored-surface.cjs"),
             );
             const {
               GATE_MARKER,
@@ -107,16 +107,13 @@ jobs:
             // Sponsorship is head-independent: it is about which surfaces the
             // change touches, not about the state of a particular revision, so
             // it is NOT cleared by the synchronize sweep above.
-            const failures = [
-              ...assessHygiene({ files, labels: [...labels] }),
-              ...assessSponsoredSurface({
-                authorHasPushPermission: ["OWNER", "MEMBER", "COLLABORATOR"].includes(
-                  pr.author_association,
-                ),
-                changedFiles: files.map((file) => file.filename),
-                labels: [...labels],
-              }),
-            ];
+            const failures = collectDeterministicHygieneFailures({
+              files,
+              labels: [...labels],
+              authorHasPushPermission: ["OWNER", "MEMBER", "COLLABORATOR"].includes(
+                pr.author_association,
+              ),
+            });
 
             async function setBlocked(blocked) {
               if (blocked && !labels.has(blockedLabel)) {
@@ -169,20 +166,11 @@ jobs:
               return;
             }
 
-            const explanations = {
-              missing_regression_test: "Behavior changed under `src/` or `gui/src/` without a test change. Add focused coverage or obtain `test-exception-approved`.",
-              generated_output: "Generated build output is committed. Remove it or obtain `generated-change-approved`.",
-              orphan_lockfile: "`bun.lock` changed without `package.json`. Revert accidental churn or obtain `dependency-change-approved`.",
-              new_suppression: "A new TypeScript, lint, formatter, or similar suppression was added. Fix the underlying issue or obtain `suppression-approved`.",
-              focused_or_skipped_test: "A focused or skipped test was added. Restore the complete suite or obtain `test-exception-approved`.",
-              empty_catch: "An empty catch block was added. Handle, report, or deliberately propagate the error.",
-              unsponsored_surface: "This changes an authentication, workflow, release-automation, or dependency surface. `MAINTAINERS.md` requires security review for these; ask a maintainer to apply `maintainer-sponsored` once they have reviewed it.",
-            };
             const lines = failures.map((failure) => {
               const paths = failure.paths?.length
                 ? ` Paths: ${failure.paths.map((p) => `\`${p}\``).join(", ")}.`
                 : "";
-              return `- **${failure.code}** — ${explanations[failure.code]}${paths}`;
+              return `- **${failure.code}** — ${HYGIENE_FAILURE_HINTS[failure.code] ?? failure.code}${paths}`;
             });
 
             await setBlocked(true);

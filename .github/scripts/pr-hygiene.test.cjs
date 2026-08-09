@@ -5,6 +5,9 @@ const assert = require("node:assert/strict");
 const {
   addedLines,
   assessHygiene,
+  collectDeterministicHygieneFailures,
+  HYGIENE_FAILURE_HINTS,
+  HYGIENE_GATE_LABELS,
   hasEmptyCatch,
   resultLines,
   resultLinesByHunk,
@@ -201,5 +204,37 @@ describe("assessHygiene", () => {
       ],
     });
     assert.deepEqual(failures, []);
+  });
+});
+
+describe("collectDeterministicHygieneFailures", () => {
+  it("combines patch hygiene and sponsored-surface failures", () => {
+    const failures = collectDeterministicHygieneFailures({
+      files: [
+        { filename: "src/codex/auth-api.ts", patch: "+change" },
+      ],
+      authorHasPushPermission: false,
+    });
+    assert.deepEqual(
+      failures.map((failure) => failure.code).sort(),
+      ["missing_regression_test", "unsponsored_surface"],
+    );
+  });
+
+  it("skips sponsorship for maintainers with push permission", () => {
+    const failures = collectDeterministicHygieneFailures({
+      files: [
+        { filename: "src/codex/auth-api.ts", patch: "+change" },
+        { filename: "tests/codex-auth-api.test.ts", patch: "+test" },
+      ],
+      authorHasPushPermission: true,
+    });
+    assert.deepEqual(failures, []);
+  });
+
+  it("exposes hints and gate labels for the Ready coupling", () => {
+    assert.equal(typeof HYGIENE_FAILURE_HINTS.unsponsored_surface, "string");
+    assert.ok(HYGIENE_GATE_LABELS.includes("maintainer-sponsored"));
+    assert.ok(HYGIENE_GATE_LABELS.includes("intake: hygiene-blocked"));
   });
 });

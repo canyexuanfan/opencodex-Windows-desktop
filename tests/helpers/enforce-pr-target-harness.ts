@@ -199,6 +199,26 @@ export type RunOptions = {
    */
   labels?: string[];
   /**
+   * Changed files `pulls.listFiles` reports for the PR. Used by the embedded
+   * hygiene reassessment that blocks Ready while deterministic hygiene fails.
+   * Defaults to an empty list (no hygiene failures).
+   */
+  files?: Array<{
+    filename: string;
+    status?: string;
+    patch?: string;
+    previous_filename?: string;
+  }>;
+  /** Page-keyed file fixtures for `pulls.listFiles` pagination tests. */
+  filePages?: Array<
+    Array<{
+      filename: string;
+      status?: string;
+      patch?: string;
+      previous_filename?: string;
+    }>
+  >;
+  /**
    * GraphQL query fragments that should reject. Unlike `failOn: ["graphql"]`,
    * which fails the review-threads read, this lets a test fail a specific
    * mutation (e.g. `markPullRequestReadyForReview`) while the threads read
@@ -616,11 +636,15 @@ export async function runEnforcePrTarget(
     (options.openPulls && options.openPulls.length > 0 ? [options.openPulls] : []);
   const associatedPullRequestPages: unknown[][] =
     options.associatedPullRequestPages ?? [options.associatedPullRequests ?? [pr]];
+  const filePages: unknown[][] =
+    options.filePages ??
+    (options.files && options.files.length > 0 ? [options.files] : [[]]);
   const paginatePageCount = Math.max(
     pages.length,
     issueEventPages.length,
     openPullPages.length,
     associatedPullRequestPages.length,
+    filePages.length,
     1,
   );
 
@@ -717,6 +741,10 @@ export async function runEnforcePrTarget(
         return respond("pulls.list", args, openPullPages[page - 1] ?? []);
       },
       listReviews: (args: unknown) => respond("pulls.listReviews", args, options.reviews ?? []),
+      listFiles: (args: unknown) => {
+        const page = Number((args as { page?: number })?.page ?? 1);
+        return respond("pulls.listFiles", args, filePages[page - 1] ?? []);
+      },
     },
     issues: {
       // Honours `page`, so a caller that skips `paginate` sees only page one —
