@@ -20,10 +20,16 @@ independent review, blockers, and whether a later phase is authorized.
 | Phase | Branch | Starting/base SHA | Accepted head | PR | State |
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
-| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [draft Wibias #10](https://github.com/Wibias/opencodex/pull/10) | ACCEPTED (contract-corrected revalidation) |
+| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | *(this branch tip)* | *(draft upstream PR)* | IMPLEMENTATION IN REVIEW |
+| CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
+
+CL-02 starts from the exact CL-01 merge commit on `dev`
+(`4bb249b756abd468c675d2d92fffe4da95ad3e2a` / upstream #1320). It does **not**
+base on the pre-merge CL-01 feature branch tip.
 
 ## CL-00 acceptance log
 
@@ -62,6 +68,7 @@ Independent CL-00 acceptance review is frozen at
 - **CL-00 merge base on `dev`:** `243c3f4905797aa11c62ba933bb03d6d721266fd`
 - **Post-rebase harness commit:** `cfe27b0dcb26a1bf0bb56f68f952e6e4f4d80fe9` (rebase-only)
 - **Correction head:** `574f1d5eb93c091494549ffc0e26ea7a4879c12c` (implementation); **tip:** `22d608c82d82e2746c0cef9cd761db19a8e465ee`
+- **Merged to `dev`:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` via upstream [#1320](https://github.com/lidge-jun/opencodex/pull/1320).
 
 ### Corrections applied
 
@@ -88,8 +95,28 @@ Independent CL-00 acceptance review is frozen at
 - None for CL-01 correction.
 - Full-suite green remains unavailable on this host for documented Windows/Bun reasons.
 
+## CL-02 implementation log
+
+- **Branch:** `feat/cl-02-evidence-ledger`
+- **Starting/base SHA:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` (CL-01 merge via #1320)
+- **Scope:** immutable JSONL evidence ledger, content-addressed artifact store,
+  disposable/rebuildable SQLite projection, ClaimSourceManifestV1, invalidation
+  and sensitive purge tombstones, CL-01 → observation persistence seam.
+- **Explicitly out of scope:** CL-03 live probes, CL-04 CLI/API, CL-05 UI,
+  CL-06 profile fields, Fabric, shadow workflows.
+
+### Boundary note (verdict algorithm)
+
+CL-02 implements reusable projection primitives and a conservative
+protocol-conformance projection sufficient to persist and rebuild derived
+verdict rows with required provenance (`asOf`, projection spec version,
+manifest digests, contributing event IDs). Full suite-manifest-driven coverage
+rules for live-route and task layers remain later-phase work; claims cannot
+produce `PROBED`/`VERIFIED`.
+
 ## Authorization
 
 - CL-00: **ACCEPTED** (merged #1286).
-- CL-01: **ACCEPTED (contract-corrected revalidation)** — ready for stack review against `dev`.
-- CL-02: **NOT STARTED / NOT AUTHORIZED**.
+- CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
+- CL-02: **IMPLEMENTATION IN REVIEW** on `feat/cl-02-evidence-ledger`.
+- CL-03: **NOT STARTED**.
