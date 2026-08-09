@@ -374,7 +374,7 @@
       "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-chat"], "surfaces": ["responses-http"], "requiredClaims": ["reasoning"], "requiredHarnessFeatures": ["adapter_vector"], "platforms": [], "routePreconditions": [] },
       "fixture": { "id": "reasoning-effort", "role": "adapter_vector", "mediaType": "application/vnd.opencodex.adapter-vector+json", "bytesUtf8": "{\"requested\":\"high\",\"reasoningEffortMap\":{\"high\":\"adaptive\"},\"reasoningWireFormat\":\"gateway-object\"}", "digest": "d9d5cce104809764d5edbc833088a0a9bb3b4d678a4f135353cc5fecf62e8b57" },
       "assertions": [
-        { "id": "wire", "operator": "json_path_equals", "selector": "/upstream/requests/0/json/reasoning", "expected": {"effort":"adaptive"}, "required": true },
+        { "id": "wire", "operator": "json_path_equals", "selector": "/upstream/requests/0/json/reasoning", "expected": {"enabled":true,"effort":"adaptive"}, "required": true },
         { "id": "legacy-absent", "operator": "json_path_absent", "selector": "/upstream/requests/0/json/reasoning_effort", "expected": true, "required": true }
       ]
     },
