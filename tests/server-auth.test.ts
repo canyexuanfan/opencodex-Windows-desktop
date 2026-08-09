@@ -13,6 +13,7 @@ import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
+  getCodexQuotaHealthSnapshot,
   getCodexUpstreamHealth,
   isCodexAccountSoftAvoided,
   recordCodexUpstreamOutcome,
@@ -194,6 +195,7 @@ async function startPoolRetryHarness(
     pausedAccountIds?: string[];
     reauthAccountIds?: string[];
     omitCredentialAccountIds?: string[];
+    combos?: OcxConfig["combos"];
   } = {},
 ): Promise<PoolRetryHarness> {
   await removeTestDirBestEffort(TEST_DIR);
@@ -250,6 +252,7 @@ async function startPoolRetryHarness(
     ...(options.visionSidecarModel ? { visionSidecar: { model: options.visionSidecarModel } } : {}),
     ...(options.websockets ? { websockets: true } : {}),
     ...(options.streamMode ? { streamMode: options.streamMode } : {}),
+    ...(options.combos ? { combos: options.combos } : {}),
   } as OcxConfig;
   saveConfig(config);
   if (!options.omitCredentialAccountIds?.includes("pool-a")) {
@@ -2317,6 +2320,111 @@ describe("server local API auth", () => {
       await stopPoolRetryHarness(harness);
     }
   });
+
+  test("#584: Retry-After cools the first account even when its account retry fails", async () => {
+    const harness = await startPoolRetryHarness(accountId => accountId === "acct-pool-a"
+      ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      })
+      : new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }));
+    try {
+      const response = await harness.request();
+      expect(response.status).toBe(503);
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      expect(getCodexUpstreamHealth("pool-a")).toMatchObject({
+        cooldownUntil: expect.any(Number),
+        cooldownSource: "retry-after",
+      });
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral still cools the first account when its account retry succeeds", async () => {
+    const harness = await startPoolRetryHarness(
+      accountId => accountId === "acct-pool-a"
+        ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+          },
+        })
+        : Response.json({ id: "combo-account-retry-success", status: "completed", output: [] }),
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-account-retry-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toMatchObject({
+        cooldownUntil: expect.any(Number),
+        cooldownSource: "reset-derived",
+        quotaScope: "shared",
+      });
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral preserves the first account when its account retry also fails", async () => {
+    const harness = await startPoolRetryHarness(
+      async (accountId, request) => {
+        const body = await request.json() as { model?: string };
+        if (body.model === `${POOL_RETRY_MODEL}-fallback`) {
+          return Response.json({ id: "combo-later-model-success", status: "completed", output: [] });
+        }
+        if (accountId === "acct-pool-a") {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+            },
+          });
+        }
+        return new Response(JSON.stringify({ error: { message: "retry later" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "60" },
+        });
+      },
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-later-model-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b", "acct-pool-a"]);
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#584: pre-stream 429 with one eligible account preserves the original 429", async () => {
     const body = JSON.stringify({ error: { message: "rate limited" } });

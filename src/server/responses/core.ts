@@ -435,7 +435,11 @@ async function retryCodexPoolOnAlternateAccount(
       firstAuthCtx.writerGeneration,
     );
   }
-  if (!shouldDeferCodexResetDerivedCooldown(firstResponse, options.deferCodexResetDerivedCooldown)) {
+  const deferFirstOutcome = shouldDeferCodexResetDerivedCooldown(
+    firstResponse,
+    options.deferCodexResetDerivedCooldown,
+  );
+  const recordFirstOutcome = (): void => {
     recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
       ...quotaMeta,
       threadId: req.headers.get("x-codex-parent-thread-id"),
@@ -446,8 +450,10 @@ async function retryCodexPoolOnAlternateAccount(
       // Retry already advanced the RR ring via excludeAccountId — reuse for promotion.
       ...(retryAuthCtx.accountId ? { promoteAccountId: retryAuthCtx.accountId } : {}),
     });
-  }
-
+  };
+  // Only a combo reset-derived outcome is deferred. Retry-After, defaults, and
+  // ordinary requests must block the first account before the alternate send.
+  if (!deferFirstOutcome) recordFirstOutcome();
   const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
   const retryProvider = applyCodexAuthContextToProvider(
     stripCodexRuntimeProviderFields(route.provider),
@@ -474,8 +480,9 @@ async function retryCodexPoolOnAlternateAccount(
   );
 
   noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+  let upstreamResponse: Response;
   try {
-    const upstreamResponse = await fetchWithHeaderTimeout(
+    upstreamResponse = await fetchWithHeaderTimeout(
       request.url,
       {
         method: request.method,
@@ -490,26 +497,33 @@ async function retryCodexPoolOnAlternateAccount(
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
     );
-    // A real HTTP response proves the host was reached (#914).
-    const retryHostKey = upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url));
-    if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0) {
-      resetUpstreamHostHealth(retryHostKey, null);
-    } else {
-      resetUpstreamHostHealth(retryHostKey);
-    }
-    return {
-      kind: "retried",
-      authCtx: retryAuthCtx,
-      request,
-      upstreamResponse,
-      selectedForwardHeaders: retryHeaders,
-    };
   } catch (error) {
     // Attribute the transport failure to the alternate account (already selected).
     return { kind: "transport", error, authCtx: retryAuthCtx };
   } finally {
     request.releaseBodyObservation?.();
   }
+  // A real HTTP response proves the host was reached (#914).
+  const retryHostKey = upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url));
+  if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0) {
+    resetUpstreamHostHealth(retryHostKey, null);
+  } else {
+    resetUpstreamHostHealth(retryHostKey);
+  }
+  if (deferFirstOutcome && upstreamResponse.ok) {
+    // Deferral keeps the first account eligible for a later combo model while an
+    // alternate attempt is still fallible. Commit its quota outcome only once the
+    // alternate account returns a successful HTTP response; otherwise the combo may
+    // still need the first account for its next target.
+    recordFirstOutcome();
+  }
+  return {
+    kind: "retried",
+    authCtx: retryAuthCtx,
+    request,
+    upstreamResponse,
+    selectedForwardHeaders: retryHeaders,
+  };
 }
 
 
