@@ -1367,6 +1367,11 @@ switch (command) {
     process.exitCode = await handleConfigCommand(args.slice(1));
     break;
   }
+  case "lab": {
+    const { handleLabCommand } = await import("./lab");
+    process.exitCode = await handleLabCommand(args.slice(1));
+    break;
+  }
   case "claude": {
     const { cmdClaude } = await import("./claude");
     // "ocx claude desktop" → write Desktop 3P config

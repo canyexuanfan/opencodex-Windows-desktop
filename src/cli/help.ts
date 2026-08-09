@@ -264,6 +264,20 @@ const helpEntries: Record<string, HelpEntry> = {
       "Invalid or unknown arguments exit 64. Not-ready, pending, failed, timeout, and unreachable exit 1.",
     ],
   },
+  lab: {
+    usage: "ocx lab <status|verdicts|subjects|subject|observations|events|event|artifacts|artifact|catalog> [options] [--json]",
+    summary: "Read-only Compatibility Lab projection inspection (local SQLite; no daemon).",
+    details: [
+      "status                Projection availability, schema versions, and row counts.",
+      "verdicts              Paginated derived compatibility verdicts with filters.",
+      "subjects              List subjects; subject <id> returns one typed subject.",
+      "observations          Paginated observation rows from the projection.",
+      "events                Event history; event <id> returns one safe typed event.",
+      "artifacts             Artifact metadata only (no content download).",
+      "catalog               Packaged protocol/live scenario catalogue metadata.",
+      "Reads never rebuild the projection, trigger probes, or require the proxy.",
+    ],
+  },
 };
 
 function packageVersion(): string {
@@ -318,6 +332,7 @@ Usage:
   ocx grok <sub>              Grok Build model selection and apply
   ocx system <sub>            Runtime settings, startup, sync, and updates
   ocx config <sub>            Validated configuration show/get/set/import/export
+  ocx lab <sub>               Read-only Compatibility Lab projection inspection
   ocx claude [args...]        Launch Claude Code wired to the proxy (model discovery on)
   ocx claude desktop [sub]    Manage and apply Claude Desktop's four-family profile
   ocx opencode [args...]      Launch opencode wired to the proxy (runtime provider config)

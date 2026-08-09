@@ -22,7 +22,8 @@ independent review, blockers, and whether a later phase is authorized.
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
 | CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) MERGED at `eee2dab4d1bbacefce56057adad51d734f346702`; FINAL CLOSURE GATE [#1348](https://github.com/lidge-jun/opencodex/pull/1348) |
-| CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | `003f7402f49bfe8dd710a7beba52f717051bfadf` | [#1352](https://github.com/lidge-jun/opencodex/pull/1352) | DRAFT PR OPEN (implementation; not accepted) |
+| CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | `003f7402f49bfe8dd710a7beba52f717051bfadf` | [#1352](https://github.com/lidge-jun/opencodex/pull/1352) | MERGED TO `dev` at `68c71a4e9cdf882d812f09fd94783a28749db629`; ACCEPTED/CLOSED |
+| CL-04 | `feat/cl-04-lab-read-surfaces` | `68c71a4e9cdf882d812f09fd94783a28749db629` | NOT RECORDED | DRAFT PENDING | IMPLEMENTATION IN PROGRESS (not accepted) |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -187,6 +188,20 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 
 ### CL-03 blockers
 
-- Independent acceptance review not performed
-- Draft PR review findings not yet reconciled
-- Full local ledger suite not green on Windows host (pre-existing SQLite EPERM)
+- ~~Independent acceptance review not performed~~ — reconciled at merge #1352
+- ~~Draft PR review findings not yet reconciled~~ — CodeRabbit/review findings addressed pre-merge
+- Full local ledger suite may show pre-existing Windows SQLite `EPERM` flakes (`rebuild.ts` unchanged vs base)
+
+## CL-03 merge log (2026-08-09)
+
+- **Merged to `dev`:** `68c71a4e9cdf882d812f09fd94783a28749db629` via upstream [#1352](https://github.com/lidge-jun/opencodex/pull/1352)
+- **Final required CI:** green at merge (cross-platform)
+- **CodeRabbit/review:** findings reconciled pre-merge
+- **CL-03 state:** accepted/closed; CL-04 authorized from current `dev`
+
+## CL-04 start log (2026-08-09)
+
+- **Starting `upstream/dev` SHA:** `68c71a4e9cdf882d812f09fd94783a28749db629`
+- **Branch:** `feat/cl-04-lab-read-surfaces`
+- **Scope:** read-only CLI (`ocx lab`), authenticated `GET /api/lab/*`, shared `src/lab/query/` layer
+- **CL-05:** not started
