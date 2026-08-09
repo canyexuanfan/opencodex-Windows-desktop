@@ -151,6 +151,11 @@ interface CapturedProviderGather {
   readonly policy: CatalogProviderDiscoveryPolicySnapshot;
   readonly request: CapturedModelsRequest;
   readonly observedAuth?: ModelsAuthResolution;
+  /**
+   * Configured model ids this provider must keep even when live discovery omits
+   * them — currently every combo target on this provider (OCX-111 / #1308).
+   */
+  readonly retainConfiguredModelIds?: ReadonlySet<string>;
 }
 
 interface GatherFlightCapture {
@@ -381,6 +386,7 @@ function captureProviderGather(
   name: string,
   configured: OcxProviderConfig,
   authResolver: ModelsAuthResolver,
+  retainConfiguredModelIds?: ReadonlySet<string>,
 ): CapturedProviderGather {
   const enriched = detachedClone(configured);
   enrichProviderFromRegistry(name, enriched);
@@ -422,7 +428,30 @@ function captureProviderGather(
     policy,
     request,
     ...(observedAuth ? { observedAuth: Object.freeze({ ...observedAuth }) } : {}),
+    ...(retainConfiguredModelIds && retainConfiguredModelIds.size > 0
+      ? { retainConfiguredModelIds }
+      : {}),
   });
+}
+
+/** Model ids each provider must retain for combo catalog derivation (OCX-111). */
+export function configuredComboTargetModelsByProvider(
+  config: Pick<OcxConfig, "combos">,
+): Map<string, ReadonlySet<string>> {
+  const byProvider = new Map<string, Set<string>>();
+  for (const id of listComboIds(config)) {
+    const combo = getCombo(config, id);
+    if (!combo) continue;
+    for (const target of combo.targets) {
+      let models = byProvider.get(target.provider);
+      if (!models) {
+        models = new Set();
+        byProvider.set(target.provider, models);
+      }
+      models.add(target.model);
+    }
+  }
+  return byProvider;
 }
 
 function captureGatherFlight(
@@ -431,9 +460,15 @@ function captureGatherFlight(
 ): GatherFlightCapture {
   const providerAuthOutcomes: CatalogGatherProviderAuthOutcome[] = [];
   const authResolver = createAuthResolver(providerAuthOutcomes);
+  const comboTargetsByProvider = configuredComboTargetModelsByProvider(config);
   const providers = Object.entries(config.providers)
     .filter(([, provider]) => provider.disabled !== true)
-    .map(([name, provider]) => captureProviderGather(name, provider, authResolver));
+    .map(([name, provider]) => captureProviderGather(
+      name,
+      provider,
+      authResolver,
+      comboTargetsByProvider.get(name),
+    ));
   const discoveryPolicySnapshots = Object.freeze(providers.map(provider => provider.policy));
   return Object.freeze({
     discoveryPolicyIdentity: keyedGatherIdentity("catalog-discovery-policy-v1", discoveryPolicySnapshots),
@@ -1249,7 +1284,11 @@ async function fetchProviderModelsWithAuth(
       if (dated) {
         // Reapply config hints so alias-keyed overrides (modelContextWindows etc.) win.
         live.push(applyProviderConfigHints(name, prov, { ...dated, id: m.id }, contextCap));
-      } else if (seedVertexDefault || shouldRetainConfiguredProviderModel(name, m.id)) {
+      } else if (
+        seedVertexDefault
+        || shouldRetainConfiguredProviderModel(name, m.id)
+        || captured.retainConfiguredModelIds?.has(m.id) === true
+      ) {
         live.push(m);
       } else {
         droppedConfiguredIds.push(m.id);

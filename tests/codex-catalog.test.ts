@@ -1517,6 +1517,93 @@ describe("combo catalog capability intersection", () => {
       warn.mockRestore();
     }
   }, 15_000);
+
+  test("retains configured combo targets when authoritative live discovery omits them (OCX-111)", async () => {
+    // Repro from #1308 / OCX-111: live /models returns a different roster than the
+    // configured combo targets. Before the retain path, those ids were dropped from
+    // the authoritative catalog and the combo was omitted as incomplete.
+    clearModelCache("openrouter");
+    clearModelCache("opencode-go");
+    clearModelCache("command-code");
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const id = url.includes("openrouter")
+        ? "openrouter/other-model"
+        : url.includes("opencode")
+          ? "other-flash"
+          : "other-pro";
+      return new Response(JSON.stringify({ data: [{ id, owned_by: "provider" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      resetCatalogRuntimeStateForTests();
+      const rows = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "openrouter",
+        providers: {
+          openrouter: {
+            adapter: "openai-chat",
+            baseUrl: "https://openrouter.example.test/v1",
+            authMode: "key",
+            apiKey: "sk-test",
+            liveModels: true,
+            models: ["openai/gpt-5.6-luna"],
+            modelContextWindows: { "openai/gpt-5.6-luna": 200_000 },
+          },
+          "opencode-go": {
+            adapter: "openai-chat",
+            baseUrl: "https://opencode.example.test/go/v1",
+            authMode: "key",
+            apiKey: "sk-test",
+            liveModels: true,
+            models: ["deepseek-v4-flash"],
+            modelContextWindows: { "deepseek-v4-flash": 128_000 },
+          },
+          "command-code": {
+            adapter: "openai-chat",
+            baseUrl: "https://command-code.example.test/v1",
+            authMode: "key",
+            apiKey: "sk-test",
+            liveModels: true,
+            models: ["xiaomi/mimo-v2.5-pro"],
+            modelContextWindows: { "xiaomi/mimo-v2.5-pro": 160_000 },
+          },
+        },
+        combos: {
+          failover: {
+            strategy: "failover",
+            targets: [
+              { provider: "openrouter", model: "openai/gpt-5.6-luna", weight: 1 },
+              { provider: "opencode-go", model: "deepseek-v4-flash", weight: 1 },
+              { provider: "command-code", model: "xiaomi/mimo-v2.5-pro", weight: 1 },
+            ],
+          },
+        },
+      });
+
+      const combo = rows.find(r => r.provider === "combo" && r.id === "failover");
+      expect(combo).toBeDefined();
+      expect(combo!.contextWindow).toBe(128_000);
+      expect(rows.some(r => r.provider === "openrouter" && r.id === "openai/gpt-5.6-luna")).toBe(true);
+      expect(rows.some(r => r.provider === "opencode-go" && r.id === "deepseek-v4-flash")).toBe(true);
+      expect(rows.some(r => r.provider === "command-code" && r.id === "xiaomi/mimo-v2.5-pro")).toBe(true);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).not.toContain("member capabilities are incomplete");
+      expect(warningText).not.toContain("omitted configured model ids");
+      const { getLastComboCatalogOmissions } = await import("../src/codex/catalog");
+      expect(getLastComboCatalogOmissions().some(item => item.id === "failover")).toBe(false);
+    } finally {
+      warning.mockRestore();
+      globalThis.fetch = originalFetch;
+      clearModelCache("openrouter");
+      clearModelCache("opencode-go");
+      clearModelCache("command-code");
+    }
+  }, 15_000);
 });
 
 describe("Google Gemini catalog metadata", () => {
