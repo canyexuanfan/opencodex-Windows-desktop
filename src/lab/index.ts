@@ -33,3 +33,4 @@ export * from "./subject/route-subject";
 export * from "./subject/behavior-fingerprint";
 export * from "./subject/installation-salt";
 export { CL03_LIVE_SUITES } from "./conformance/types";
+export * from "./query";
