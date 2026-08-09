@@ -54,6 +54,7 @@ import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../../reasoning-effort";
 import { normalizeVisionReasoningForModel } from "../../vision/reasoning";
+import { findAnthropicVisionProvider, resolveEffectiveVisionModel, resolveVisionBackend } from "../../vision";
 import {
   visionCandidateRows,
   visionDescriberIsProvablyBlind,
@@ -85,6 +86,27 @@ import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostR
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
+
+async function sidecarVisionResponseSettings(config: OcxConfig): Promise<{
+  model: string;
+  reasoning: string;
+  models: Awaited<ReturnType<typeof visionModelOptionsFor>>;
+}> {
+  const vs = config.visionSidecar ?? {};
+  // Match the runtime's one selected Anthropic executor for both backend fallback
+  // and catalog reachability; resolving it once prevents the two projections drifting.
+  const anthropicSidecar = findAnthropicVisionProvider(config);
+  const backend = resolveVisionBackend(vs.backend, anthropicSidecar);
+  const model = resolveEffectiveVisionModel(config, backend);
+  const reasoning = normalizeVisionReasoningForModel(model, vs.reasoning) ?? "low";
+  const models = await visionModelOptionsFor(config, anthropicSidecar);
+  // Display-only grandfather: a persisted id stays selectable, but the write gate
+  // remains stricter and rejects a model that is positively proven blind.
+  if (!models.some(option => option.value === model)) {
+    models.unshift({ value: model, label: model, backend });
+  }
+  return { model, reasoning, models };
+}
 
 export async function handleConfigRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, convergeCodexCatalog, syncClaudeAgentDefsBestEffort } = ctx;
@@ -386,24 +408,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
-    const visionModel = vs.model || "gpt-5.4-mini";
-    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
-    const visionModels = await visionModelOptionsFor(config);
-    // Display-only grandfather: a currently-configured model stays selectable even
-    // when it is no longer eligible. The write gate remains stricter and still
-    // rejects re-submitting a proven-blind id (asymmetric by design).
-    if (!visionModels.some(option => option.value === visionModel)) {
-      visionModels.unshift({ value: visionModel, label: visionModel, backend: vs.backend ?? "openai" });
-    }
+    const vision = await sidecarVisionResponseSettings(config);
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: visionModel,
+        model: vision.model,
         backend: vs.backend,
-        reasoning: visionReasoning,
+        reasoning: vision.reasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
-      visionModels,
+      visionModels: vision.models,
     });
   }
 
@@ -498,24 +512,17 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
-    const visionModel = vs.model || "gpt-5.4-mini";
-    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
-    const visionModels = await visionModelOptionsFor(config);
-    // Display-only grandfather: same asymmetry as GET so optimistic clients and a
-    // refetch agree about the currently-configured model.
-    if (!visionModels.some(option => option.value === visionModel)) {
-      visionModels.unshift({ value: visionModel, label: visionModel, backend: vs.backend ?? "openai" });
-    }
+    const vision = await sidecarVisionResponseSettings(config);
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: visionModel,
+        model: vision.model,
         backend: vs.backend,
-        reasoning: visionReasoning,
+        reasoning: vision.reasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
-      visionModels,
+      visionModels: vision.models,
     });
   }
 

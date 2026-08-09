@@ -201,6 +201,16 @@ export function resolveOpenAiVisionModel(config: Pick<OcxConfig, "visionSidecar"
   return config.visionSidecar?.model || DEFAULT_VISION_MODEL;
 }
 
+/** Effective describer model for the backend `planVisionSidecar` selected. */
+export function resolveEffectiveVisionModel(
+  config: Pick<OcxConfig, "visionSidecar">,
+  backend: "openai" | "anthropic",
+): string {
+  return backend === "anthropic"
+    ? config.visionSidecar?.model || DEFAULT_ANTHROPIC_VISION_MODEL
+    : resolveOpenAiVisionModel(config);
+}
+
 /** A user/developer/toolResult message can carry images (toolResult: e.g. Codex view_image output). */
 function carriesImages(role: string): boolean {
   return role === "user" || role === "developer" || role === "toolResult";
@@ -250,11 +260,11 @@ export function planVisionSidecar(
   if (cfg.enabled === false) return undefined;
   const anthropicSidecar = findAnthropicVisionProvider(config);
   const backend = resolveVisionBackend(cfg.backend, anthropicSidecar);
+  const model = resolveEffectiveVisionModel(config, backend);
   const maxDescriptionsPerTurn = resolveMaxDescriptionsPerTurn(cfg.maxDescriptionsPerTurn);
 
   if (backend === "anthropic") {
     if (!anthropicSidecar) return undefined;
-    const model = cfg.model || DEFAULT_ANTHROPIC_VISION_MODEL;
     return {
       backend,
       anthropicSidecar,
@@ -268,7 +278,6 @@ export function planVisionSidecar(
   }
 
   if (!openAiSidecar) return undefined;
-  const model = resolveOpenAiVisionModel(config);
   return {
     backend,
     forwardSidecar: openAiSidecar,

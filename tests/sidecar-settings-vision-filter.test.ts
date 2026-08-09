@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleManagementAPI } from "../src/server/management-api";
@@ -155,14 +155,85 @@ describe("sidecar-settings vision model filter", () => {
     }
   });
 
-  test("7. PUT keeps an UNKNOWN id (regression guard)", async () => {
+  test("7. PUT keeps an id no source knows (regression guard)", async () => {
     const config = emptyConfig({ providers: {} });
     const response = await putSidecarSettings(config, { model: "custom-vision" });
     expect(response.status).toBe(200);
     expect(config.visionSidecar).toMatchObject({ model: "custom-vision" });
   });
 
-  test("8. PUT /api/claude-code rejects a provably blind vision override and accepts unknown", async () => {
+  test("8. a custom image declaration cannot mask an authoritative blind OpenAI model", async () => {
+    // Custom rows may declare modalities, but their claim cannot overrule the native
+    // OpenAI table for a bare OpenAI model id. The write gate must inspect both.
+    const rowsSpy = spyOn(modelRows, "listManagementModelRows").mockResolvedValue([{
+      provider: "custom",
+      id: "o3-mini",
+      namespaced: "custom/o3-mini",
+      disabled: false,
+      inputModalities: ["text", "image"],
+    }]);
+    try {
+      const config = emptyConfig();
+      const response = await putSidecarSettings(config, { model: "o3-mini" });
+      expect(response.status).toBe(400);
+      expect(config.visionSidecar?.model).toBeUndefined();
+    } finally {
+      rowsSpy.mockRestore();
+    }
+  });
+
+  test("9. GET reports the runtime Anthropic default when that backend has no override", async () => {
+    const config = emptyConfig({ visionSidecar: { backend: "anthropic" } });
+    const response = await getSidecarSettings(config);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { vision: { model: string; backend?: string } };
+    expect(body.vision).toMatchObject({ model: "claude-sonnet-5", backend: "anthropic" });
+  });
+
+  test("10. GET exposes only catalog rows reachable by the executing Anthropic OAuth provider", async () => {
+    writeFileSync(join(isolatedHome!, "auth.json"), JSON.stringify({
+      "anthropic-oauth": {
+        activeAccountId: "active",
+        accounts: [{
+          id: "active",
+          credential: { access: "access", refresh: "refresh", expires: 9_999_999_999_999 },
+        }],
+      },
+    }));
+    const rowsSpy = spyOn(modelRows, "listManagementModelRows").mockResolvedValue([
+      {
+        provider: "anthropic-key",
+        id: "key-only-vision",
+        namespaced: "anthropic-key/key-only-vision",
+        disabled: false,
+        inputModalities: ["text", "image"],
+      },
+      {
+        provider: "anthropic-oauth",
+        id: "oauth-vision",
+        namespaced: "anthropic-oauth/oauth-vision",
+        disabled: false,
+        inputModalities: ["text", "image"],
+      },
+    ]);
+    try {
+      const config = emptyConfig({
+        providers: {
+          "anthropic-key": { adapter: "anthropic", authMode: "key", baseUrl: "https://api.anthropic.com" },
+          "anthropic-oauth": { adapter: "anthropic", authMode: "oauth", baseUrl: "https://api.anthropic.com" },
+        },
+      });
+      const response = await getSidecarSettings(config);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { visionModels: Array<{ value: string; backend: string }> };
+      expect(body.visionModels).toContainEqual(expect.objectContaining({ value: "oauth-vision", backend: "anthropic" }));
+      expect(body.visionModels.some(option => option.value === "key-only-vision")).toBe(false);
+    } finally {
+      rowsSpy.mockRestore();
+    }
+  });
+
+  test("11. PUT /api/claude-code rejects a provably blind vision override and accepts unknown", async () => {
     const rejectConfig = emptyConfig({
       claudeCode: {
         visionSidecar: { model: "gpt-5.6-luna" },
@@ -186,7 +257,7 @@ describe("sidecar-settings vision model filter", () => {
     expect(acceptConfig.claudeCode?.visionSidecar?.model).toBe("custom-vision");
   });
 
-  test("9. a blind model cannot be laundered by claiming the other backend", async () => {
+  test("12. a blind model cannot be laundered by claiming the other backend", async () => {
     // Regression: the gate used to synthesize the candidate's provider from the
     // caller's `backend`, so `backend: "anthropic"` made a known text-only OpenAI
     // model look merely unknown (absent from the Anthropic table) and it saved.
@@ -206,7 +277,7 @@ describe("sidecar-settings vision model filter", () => {
     expect(claudeConfig.claudeCode?.visionSidecar?.model).toBeUndefined();
   });
 
-  test("10. the reject path does not persist to disk", async () => {
+  test("13. the reject path does not persist to disk", async () => {
     // In-memory equality alone would not prove a disk write did not happen if the
     // gate were ever reordered after the mutation block.
     const configModule = await import("../src/config");
@@ -221,7 +292,7 @@ describe("sidecar-settings vision model filter", () => {
     }
   });
 
-  test("11. the web-search sidecar is deliberately NOT gated", async () => {
+  test("14. the web-search sidecar is deliberately NOT gated", async () => {
     // False-positive guard: only the vision describer needs eyes. If this ever
     // starts failing, the gate has leaked into the wrong field.
     const config = emptyConfig();

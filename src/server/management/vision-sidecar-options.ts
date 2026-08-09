@@ -8,7 +8,7 @@
  * the same as no gate at all.
  */
 import type { OcxConfig } from "../../types";
-import { findAnthropicVisionProvider } from "../../vision";
+import { findAnthropicVisionProvider, type AnthropicVisionProvider } from "../../vision";
 import {
   modelAcceptsImageInput,
   visionEligibleModelOptions,
@@ -20,12 +20,15 @@ import { listOpenAiForwardSidecarCandidates } from "../../providers/openai-sidec
 import { listManagementModelRows } from "./model-rows";
 
 /** Backends whose executor could actually run: openai forward, anthropic OAuth. */
-export function enabledVisionBackends(config: OcxConfig): VisionSidecarBackend[] {
+export function enabledVisionBackends(
+  config: OcxConfig,
+  anthropicSidecar = findAnthropicVisionProvider(config),
+): VisionSidecarBackend[] {
   const backends: VisionSidecarBackend[] = [];
   // The OpenAI describer needs a CANONICAL ChatGPT forward provider, not merely a
   // provider keyed "openai" — same predicate the runtime sidecar resolver uses.
   if (listOpenAiForwardSidecarCandidates(config).length > 0) backends.push("openai");
-  if (findAnthropicVisionProvider(config)) backends.push("anthropic");
+  if (anthropicSidecar) backends.push("anthropic");
   // Neither side resolvable (fresh install, no login): fall back to both so the
   // picker is populated rather than empty, matching the permissive-unknown rule.
   return backends.length > 0 ? backends : ["openai", "anthropic"];
@@ -48,13 +51,22 @@ export async function visionCandidateRows(config: OcxConfig): Promise<VisionCand
 export function visionModelOptionsFrom(
   config: OcxConfig,
   candidates: readonly VisionCandidateModel[],
+  anthropicSidecar: AnthropicVisionProvider | undefined = findAnthropicVisionProvider(config),
 ): VisionModelOption[] {
-  return visionEligibleModelOptions(config, candidates, enabledVisionBackends(config));
+  return visionEligibleModelOptions(
+    config,
+    candidates,
+    enabledVisionBackends(config, anthropicSidecar),
+    anthropicSidecar?.providerName,
+  );
 }
 
 /** Convenience for read paths that have no candidate list in hand yet. */
-export async function visionModelOptionsFor(config: OcxConfig): Promise<VisionModelOption[]> {
-  return visionModelOptionsFrom(config, await visionCandidateRows(config));
+export async function visionModelOptionsFor(
+  config: OcxConfig,
+  anthropicSidecar: AnthropicVisionProvider | undefined = findAnthropicVisionProvider(config),
+): Promise<VisionModelOption[]> {
+  return visionModelOptionsFrom(config, await visionCandidateRows(config), anthropicSidecar);
 }
 
 /**
@@ -78,8 +90,10 @@ export function visionDescriberIsProvablyBlind(
   candidates: readonly VisionCandidateModel[],
   backendHint: VisionSidecarBackend | undefined,
 ): boolean {
-  const row = candidates.find(candidate => candidate.id === requested);
-  if (row) return modelAcceptsImageInput(config, row) === false;
+  // Catalog rows can carry operator-authored modalities. A positive claim from one
+  // must not hide another row or canonical metadata that proves this id is blind.
+  if (candidates.some(candidate => candidate.id === requested
+    && modelAcceptsImageInput(config, candidate) === false)) return true;
 
   const hinted: VisionSidecarBackend = backendHint === "anthropic" ? "anthropic" : "openai";
   const probed: VisionSidecarBackend[] = hinted === "anthropic"
