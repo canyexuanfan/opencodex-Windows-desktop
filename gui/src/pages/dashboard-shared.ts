@@ -215,6 +215,12 @@ export function sidecarModelOptions(models: ModelInfo[]) {
 /**
  * Server list when present, else the legacy openai+anthropic list.
  *
+ * `undefined` and `[]` mean different things and must not be collapsed. A server that
+ * predates this field sends no key at all, and falling back to the provider-name list is
+ * the documented degrade path for it. A current server that sends `[]` has computed that
+ * nothing is eligible, and repopulating the picker from `/api/models` would put back
+ * exactly the text-only rows this feature exists to remove.
+ *
  * `currentBackend` is the backend already persisted for `current`. It travels with the
  * grandfathered entry because the legacy fallback path has no server backend to read and
  * would otherwise infer one from `/api/models`, where anything not literally provided by
@@ -227,7 +233,7 @@ export function visionModelOptions(
   current: string | undefined,
   currentBackend?: SidecarBackend,
 ): Array<{ value: string; label: string; backend?: SidecarBackend }> {
-  const options = serverOptions && serverOptions.length > 0
+  const options = serverOptions
     ? serverOptions.map(option => ({ value: option.value, label: option.label, backend: option.backend }))
     : sidecarModelOptions(models);
   if (current && !options.some(option => option.value === current)) {

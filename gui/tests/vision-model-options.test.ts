@@ -26,13 +26,18 @@ test("the server list wins over the legacy provider-name list", () => {
   expect(options.some(option => option.value === "o3-mini")).toBe(false);
 });
 
-test("an absent or empty server list falls back instead of emptying the picker", () => {
+test("an absent server list falls back instead of emptying the picker", () => {
   // A server that predates this field must not leave the user with no options at
   // all; the legacy openai+anthropic list is the documented degrade path.
-  for (const absent of [undefined, [] as VisionModelOption[]]) {
-    const options = visionModelOptions(absent, models, undefined);
-    expect(options.map(option => option.value)).toEqual(["gpt-5.6-luna", "o3-mini", "claude-haiku-4-5"]);
-  }
+  const options = visionModelOptions(undefined, models, undefined);
+  expect(options.map(option => option.value)).toEqual(["gpt-5.6-luna", "o3-mini", "claude-haiku-4-5"]);
+});
+
+test("an empty server list is authoritative and does not resurrect text-only rows", () => {
+  // A current server that computed no eligible describer is not a legacy server. Falling
+  // back here would re-offer o3-mini, the exact row the filter exists to remove.
+  const options = visionModelOptions([], models, undefined);
+  expect(options).toEqual([]);
 });
 
 test("the configured model stays selectable, exactly once", () => {
@@ -81,9 +86,12 @@ test("an older server with no option list cannot rewrite the persisted anthropic
   expect(sidecarBackendForModel([], model)).toBe("openai");
 });
 
-test("an empty server list is still treated as legacy, and preserves the persisted backend", () => {
+test("an authoritative empty list still keeps the configured model and its backend", () => {
   const model = "claude-grandfathered";
   const options = visionModelOptions([], [], model, "anthropic");
 
+  // Nothing is eligible, but the user's own configured model stays visible and keeps the
+  // backend it was saved with, so opening the picker cannot silently rewrite it.
+  expect(options.map(option => option.value)).toEqual([model]);
   expect(visionSidecarBackendForModel([], options, model)).toBe("anthropic");
 });
