@@ -154,6 +154,11 @@
 
   .dash-sidecar-row-card .dash-delegation-controls {
     justify-content: flex-start;
+    /* Stacking gives the group the full card width, but the two selects still floor at
+       10.5rem + 6.5rem, which is wider than the viewport this query targets. Once the
+       controls own their own line, wrapping is free — the reason to hold `nowrap` in the
+       row layout (children sliding under the hint) no longer applies. */
+    flex-wrap: wrap;
   }
 }
 
