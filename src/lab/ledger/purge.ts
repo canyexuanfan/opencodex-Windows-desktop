@@ -28,7 +28,6 @@ import {
   fsyncSync,
   openSync,
   readdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   unlinkSync,
@@ -97,20 +96,13 @@ function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
   }
 }
 
-function isArtifactMissing(err: unknown): boolean {
-  return err instanceof ArtifactFsError && (
-    err.code === "artifact_missing" ||
-    (err.code === "harness_failure" && err.message.includes("missing"))
-  );
-}
-
 function deleteArtifactsFailClosed(dir: TrustedArtifactDir, digests: string[]): void {
   const errors: string[] = [];
   for (const digest of digests) {
     try {
       deleteArtifactBytes(dir, digest);
     } catch (err) {
-      if (isArtifactMissing(err)) continue;
+      if (err instanceof ArtifactFsError && err.code === "artifact_missing") continue;
       errors.push(err instanceof Error ? err.message : String(err));
     }
   }
@@ -231,10 +223,4 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   } finally {
     if (dir) closeTrustedArtifactDir(dir);
   }
-}
-
-/** Test helper retained temporarily for compatibility; production callers should replay validated events. */
-export function readLedgerText(configDir?: string): string {
-  const paths = ensureLabDirs(configDir);
-  return readFileSync(paths.ledgerPath, "utf8");
 }
