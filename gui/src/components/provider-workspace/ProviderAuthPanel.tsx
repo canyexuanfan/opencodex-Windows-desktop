@@ -218,7 +218,14 @@ export default function ProviderAuthPanel({
       }
       setImportResult(result);
       setImportStatus("complete");
-      await authHandlers.onRetryAccounts?.(item.name);
+      // The validated import is complete independently of the best-effort list refresh.
+      // The account-pool owner reports refresh failure through accountLoadState, which
+      // remains visible beside this completed import result.
+      try {
+        await authHandlers.onRetryAccounts?.(item.name);
+      } catch {
+        /* Preserve the completed import state; accountLoadState owns refresh errors. */
+      }
     } catch {
       setImportStatus("failed");
     } finally {

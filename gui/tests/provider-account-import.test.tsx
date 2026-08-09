@@ -144,6 +144,18 @@ test("rejects an oversized export before reading its contents or calling the API
   expect(input().value).toBe("");
 });
 
+test("keeps a completed import result when the subsequent account refresh rejects", async () => {
+  retryAccounts.mockImplementationOnce(async () => { throw new Error(CANARY); });
+  await mount();
+  await select(JSON.stringify([{ email: "person@example.test", refresh_token: CANARY }]));
+
+  expect(retryAccounts).toHaveBeenCalledWith("google-antigravity");
+  expect(host.textContent).toContain("Import complete: 1 imported, 0 updated, 0 failed, 0 unsupported.");
+  expect(host.textContent).not.toContain("The account import could not be completed.");
+  expect(host.textContent).not.toContain(CANARY);
+  expect(input().value).toBe("");
+});
+
 test("handles unsupported result codes without exposing them and resets for repeat selection", async () => {
   fetchMock.mockImplementation(async () => new Response(JSON.stringify({
     totalCount: 1, importedCount: 0, updatedCount: 0, failedCount: 0, unsupportedCount: 1,

@@ -1110,7 +1110,7 @@ export const ru: Record<TKey, string> = {
   "pws.cockpitImporting": "Импорт…",
   "pws.cockpitImportInvalid": "Выбранный файл не является корректным JSON-экспортом или слишком велик.",
   "pws.cockpitImportFailed": "Не удалось завершить импорт аккаунтов.",
-  "pws.cockpitImportComplete": "Импорт завершён: импортировано — {imported}, обновлено — {updated}, ошибок — {failed}, не поддерживается — {unsupported}.",
+  "pws.cockpitImportComplete": "Импорт завершён: импортировано — {imported}, обновлено — {updated}, ошибок — {failed}, неподдерживаемых — {unsupported}.",
   "pws.accountSwitching": "Переключение…",
   "pws.accountCurrent": "Текущий аккаунт",
   "pws.defaultModelNone": "Нет (использовать значение провайдера)",

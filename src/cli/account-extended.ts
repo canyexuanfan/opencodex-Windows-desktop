@@ -46,6 +46,7 @@ const EXTENDED_USAGE = `Usage:
 const PIPE_GUIDANCE = `Pipe the API key on stdin, for example:
   ocx account add-key <provider> <<< "$MY_KEY"
   security find-generic-password -w <item> | ocx account add-key <provider>`;
+const ACCOUNT_IMPORT_TIMEOUT_MS = 600_000;
 
 function flag(args: string[], value: string): boolean {
   const index = args.indexOf(value);
@@ -473,10 +474,10 @@ export async function cmdAddKey(args: string[], deps: AccountDeps): Promise<numb
 
 export async function cmdImport(args: string[], deps: AccountDeps): Promise<number> {
   const wantsJson = flag(args, "--json");
-  const provider = args.shift();
   const formatArg = flagValue(args, "--format");
   const fileArg = flagValue(args, "--file");
   const fromStdin = flag(args, "--stdin");
+  const provider = args.shift();
 
   // Admission happens before source I/O. In particular, an inline JSON positional argument is
   // rejected without inspecting or echoing it, keeping secrets out of any subsequent surface.
@@ -513,11 +514,22 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
 
   const baseUrl = await resolveBaseUrl(deps);
   if (!baseUrl) return proxyUnreachable();
-  const response = await apiJson(deps, baseUrl, "POST", "/api/oauth/accounts/import", {
-    provider,
-    format: formatArg.value,
-    document,
-  });
+  const configuredImportTimeout = deps.importTimeoutMs;
+  const importTimeoutMs = typeof configuredImportTimeout === "number" && Number.isFinite(configuredImportTimeout)
+    ? Math.min(ACCOUNT_IMPORT_TIMEOUT_MS, Math.max(1, Math.floor(configuredImportTimeout)))
+    : ACCOUNT_IMPORT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), importTimeoutMs);
+  let response;
+  try {
+    response = await apiJson(deps, baseUrl, "POST", "/api/oauth/accounts/import", {
+      provider,
+      format: formatArg.value,
+      document,
+    }, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
   if (response.status === 0) return proxyUnreachable();
   if (response.status !== 200) {
     const code = IMPORT_CODES.has(response.json.code as AccountImportCode)

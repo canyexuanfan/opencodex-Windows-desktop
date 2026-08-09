@@ -20,6 +20,7 @@ import {
   MIN_ACCOUNT_PRIORITY as GUI_MIN_PRIORITY,
 } from "../gui/src/account-priority";
 import type { OcxConfig } from "../src/types";
+import { ACCOUNT_IMPORT_MAX_BYTES } from "../src/oauth/account-import";
 
 const RAW_SENTINEL = "test-key-rawsentinel1234567890";
 const MASKED_SENTINEL = "test****7890";
@@ -1681,10 +1682,130 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     const beforeOversized = requests.length;
     const oversized = await run([
       "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
-    ], { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(256 * 1024 + 1)) });
+    ], { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(ACCOUNT_IMPORT_MAX_BYTES + 1)) });
     expect(oversized.code).toBe(1);
     expect(oversized.stderr).toContain("invalid_document");
     expect(requests).toHaveLength(beforeOversized);
+  });
+
+  test("Cockpit import parses options before provider and rejects residual secrets before I/O", async () => {
+    const canary = "options-before-provider-canary-DO-NOT-LEAK";
+    const document = '[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]';
+    const ordered = await run([
+      "import", "--json", "--format", "cockpit-tools", "--stdin", "google-antigravity",
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(ordered.code).toBe(0);
+    expect(JSON.parse(ordered.stdout).importedCount).toBe(1);
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/api/oauth/accounts/import",
+    });
+
+    const beforeExtra = requests.length;
+    const extra = await run([
+      "import", "--format", "cockpit-tools", "--stdin", "google-antigravity", canary,
+    ], { ...defaultDeps(), stdinImpl: stdinFrom(document) });
+    expect(extra.code).toBe(1);
+    expect(requests).toHaveLength(beforeExtra);
+    expect(extra.output).not.toContain(canary);
+  });
+
+  test("Cockpit import source admission fails closed before POST", async () => {
+    const canary = "source-admission-canary-DO-NOT-LEAK";
+    const document = '[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]';
+    const sourceCases: Array<{ args: string[]; deps?: AccountDeps; expected?: string }> = [
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--file", `/not-read-${canary}.json`],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom(document) },
+      },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools"] },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools", "--file"] },
+      { args: ["import", "google-antigravity", "--format", "cockpit-tools", "--file", ""] },
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin"],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom(document, true) },
+        expected: "stdin_required",
+      },
+      {
+        args: ["import", "google-antigravity", "--format", "cockpit-tools", "--stdin"],
+        deps: { ...defaultDeps(), stdinImpl: stdinFrom("x".repeat(ACCOUNT_IMPORT_MAX_BYTES + 1)) },
+        expected: "invalid_document",
+      },
+    ];
+
+    for (const fixture of sourceCases) {
+      const before = requests.length;
+      const result = await run(fixture.args, fixture.deps ?? defaultDeps());
+      expect(result.code).toBe(1);
+      expect(requests).toHaveLength(before);
+      if (fixture.expected) expect(result.stderr).toContain(fixture.expected);
+      expect(result.output).not.toContain(canary);
+    }
+
+    const silent = new PassThrough() as AccountStdin;
+    silent.isTTY = false;
+    const beforeSilent = requests.length;
+    const timedOut = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], { ...defaultDeps(), stdinImpl: silent, stdinTimeoutMs: 5 });
+    expect(timedOut.code).toBe(1);
+    expect(timedOut.stderr).toContain("stdin_timeout");
+    expect(requests).toHaveLength(beforeSilent);
+    expect(silent.listenerCount("data")).toBe(0);
+    expect(silent.listenerCount("end")).toBe(0);
+    expect(silent.listenerCount("error")).toBe(0);
+  });
+
+  test("Cockpit import aborts only its hung POST at the injected timeout", async () => {
+    let capturedSignal: AbortSignal | null = null;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? null;
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!capturedSignal) return reject(new Error("missing signal"));
+        if (capturedSignal.aborted) return reject(capturedSignal.reason);
+        capturedSignal.addEventListener("abort", () => reject(capturedSignal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], {
+      ...defaultDeps(),
+      fetchImpl,
+      importTimeoutMs: 5,
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Proxy not reachable");
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  test("Cockpit import clears its POST timer after a successful response", async () => {
+    let capturedSignal: AbortSignal | null = null;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? null;
+      return json({
+        totalCount: 1,
+        importedCount: 1,
+        updatedCount: 0,
+        failedCount: 0,
+        unsupportedCount: 0,
+        results: [{ index: 0, status: "imported", code: "imported" }],
+      });
+    }) as typeof fetch;
+
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+    ], {
+      ...defaultDeps(),
+      fetchImpl,
+      importTimeoutMs: 5,
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+    expect(result.code).toBe(0);
+    expect(capturedSignal?.aborted).toBe(false);
+    await Bun.sleep(15);
+    expect(capturedSignal?.aborted).toBe(false);
   });
 
   test("Cockpit import rejects malformed HTTP 200 result DTO without echoing payload", async () => {
