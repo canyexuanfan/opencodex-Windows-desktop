@@ -19,10 +19,17 @@ import {
 import { listOpenAiForwardSidecarCandidates } from "../../providers/openai-sidecar";
 import { listManagementModelRows } from "./model-rows";
 
-/** Backends whose executor could actually run: openai forward, anthropic OAuth. */
+/**
+ * Backends whose executor could actually run: openai forward, anthropic OAuth.
+ *
+ * `anthropicSidecar` is REQUIRED rather than defaulted. `findAnthropicVisionProvider`
+ * reads the OAuth account store from disk, and a default argument made every helper
+ * in this chain re-resolve it whenever a caller passed an explicit `undefined` —
+ * which is exactly the no-executor case. Passing it in keeps one read per request.
+ */
 export function enabledVisionBackends(
   config: OcxConfig,
-  anthropicSidecar = findAnthropicVisionProvider(config),
+  anthropicSidecar: AnthropicVisionProvider | undefined,
 ): VisionSidecarBackend[] {
   const backends: VisionSidecarBackend[] = [];
   // The OpenAI describer needs a CANONICAL ChatGPT forward provider, not merely a
@@ -51,7 +58,7 @@ export async function visionCandidateRows(config: OcxConfig): Promise<VisionCand
 export function visionModelOptionsFrom(
   config: OcxConfig,
   candidates: readonly VisionCandidateModel[],
-  anthropicSidecar: AnthropicVisionProvider | undefined = findAnthropicVisionProvider(config),
+  anthropicSidecar: AnthropicVisionProvider | undefined,
 ): VisionModelOption[] {
   return visionEligibleModelOptions(
     config,
@@ -64,7 +71,7 @@ export function visionModelOptionsFrom(
 /** Convenience for read paths that have no candidate list in hand yet. */
 export async function visionModelOptionsFor(
   config: OcxConfig,
-  anthropicSidecar: AnthropicVisionProvider | undefined = findAnthropicVisionProvider(config),
+  anthropicSidecar: AnthropicVisionProvider | undefined,
 ): Promise<VisionModelOption[]> {
   return visionModelOptionsFrom(config, await visionCandidateRows(config), anthropicSidecar);
 }
@@ -111,6 +118,8 @@ export function visionDescriberRejection(
 ): { error: string; allowed: string[] } {
   return {
     error: `${field} "${requested}" cannot describe images: it has no image input support, or it is a model the vision sidecar describes FOR.`,
-    allowed: visionModelOptionsFrom(config, candidates).map(option => option.value),
+    // The rejection path is not hot, so it resolves the executor itself rather than
+    // making every 400 caller thread one through.
+    allowed: visionModelOptionsFrom(config, candidates, findAnthropicVisionProvider(config)).map(option => option.value),
   };
 }

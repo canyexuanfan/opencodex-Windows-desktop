@@ -182,7 +182,10 @@ describe("sidecar-settings vision model filter", () => {
     }
   });
 
-  test("9. GET reports the runtime Anthropic default when that backend has no override", async () => {
+  test("9. GET reports the effective Anthropic default for an explicitly selected backend", async () => {
+    // Reports what the runtime WOULD use for this backend. No OAuth account is set up
+    // here, so no plan would run; the point is that the projection stops answering
+    // gpt-5.4-mini for a configuration the OpenAI describer does not own.
     const config = emptyConfig({ visionSidecar: { backend: "anthropic" } });
     const response = await getSidecarSettings(config);
     expect(response.status).toBe(200);
