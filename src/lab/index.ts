@@ -12,4 +12,8 @@ export * from "./ledger/purge";
 export * from "./projection/schema";
 export * from "./projection/verdicts";
 export * from "./projection/rebuild";
+export * from "./events/limits";
+export * from "./conformance/suite-manifest";
+export * from "./ledger/artifact-refs";
+export * from "./projection/verification";
 export * from "./observe/from-conformance";

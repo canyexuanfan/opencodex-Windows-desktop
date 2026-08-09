@@ -11,6 +11,7 @@ import {
 import type { ArtifactRefV1, ClaimSourceManifestV1 } from "../events/types";
 import { artifactClassMediaType, validateClaimSourceManifest } from "../events/validate";
 import {
+  closeTrustedArtifactDir,
   ArtifactFsError,
   deleteArtifactBytes,
   openTrustedArtifactDir,
@@ -40,6 +41,7 @@ export interface ArtifactStore {
   get(digest: string, expectedByteCount?: number): Uint8Array;
   getVerified(digest: string, expectedByteCount?: number): { bytes: Uint8Array; digest: string };
   remove(digest: string): void;
+  close(): void;
 }
 
 function toBytes(payload: Uint8Array | string | unknown): Uint8Array {
@@ -151,6 +153,9 @@ export function createArtifactStore(artifactsDir: string): ArtifactStore {
     },
     remove(digest: string): void {
       deleteArtifactBytes(dir, digest);
+    },
+    close(): void {
+      closeTrustedArtifactDir(dir);
     },
   };
 }

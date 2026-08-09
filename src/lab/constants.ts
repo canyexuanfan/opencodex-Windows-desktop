@@ -10,6 +10,9 @@ export const MAX_AGGREGATE_ARTIFACT_BYTES = 1024 * 1024;
 export const MAX_ARTIFACTS_PER_RUN = 16;
 export const MAX_SERIALIZED_EVENT_BYTES = 64 * 1024;
 export const MAX_SANITIZED_STRING_FIELD = 4 * 1024;
+export const MAX_EVENT_NESTING_DEPTH = 8;
+export const MAX_OBJECT_KEYS_PER_EVENT = 64;
+export const MAX_ARRAY_ELEMENTS_PER_EVENT = 256;
 
 export const EVENT_KINDS = [
   "observation",

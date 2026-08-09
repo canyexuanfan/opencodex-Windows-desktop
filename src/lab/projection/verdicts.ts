@@ -1,5 +1,6 @@
 import type { CompatibilityVerdict } from "../constants";
 import { LAB_PROJECTION_SPEC_VERSION } from "../constants";
+import type { SuiteManifestV1 } from "../conformance/suite-manifest";
 import type {
   ClaimSnapshotEvent,
   LabEvent,
@@ -13,6 +14,7 @@ import {
   usableObservations,
   type InvalidationIndex,
 } from "../ledger/invalidation";
+import { evaluateAllApplicableRequiredPassV1 } from "./verification";
 
 export interface ProjectionKey {
   subjectId: string;
@@ -49,6 +51,15 @@ export interface ClaimState {
   key: string;
   current: ClaimSnapshotEvent | null;
   corruption?: string;
+}
+
+export interface ProjectVerdictsOptions {
+  asOf?: number;
+  index?: InvalidationIndex;
+  unusableObservationIds?: Set<string>;
+  unusableClaimEventIds?: Set<string>;
+  loadSuiteManifest?: (digest: string) => SuiteManifestV1 | null;
+  loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
 }
 
 /**
@@ -123,18 +134,16 @@ export function resolveClaimStates(claims: ClaimSnapshotEvent[]): {
 }
 
 /**
- * CL-02 verdict projection primitives.
- *
- * Full live-route/task coverage algorithms belong to later phases. This implements
- * the reusable precedence/freshness/invalidation semantics for protocol_conformance
- * observations and claim snapshots needed for persistence tests.
+ * CL-02 verdict projection primitives with frozen CL-00 verification semantics.
  */
 export function projectVerdicts(
   events: LabEvent[],
-  opts: { asOf?: number; index?: InvalidationIndex } = {},
+  opts: ProjectVerdictsOptions = {},
 ): { verdicts: DerivedVerdict[]; corruptions: LedgerCorruption[]; index: InvalidationIndex } {
   const index = opts.index ?? buildInvalidationIndex(events);
   const corruptions = [...index.corruptions];
+  const unusableObs = opts.unusableObservationIds ?? new Set<string>();
+  const unusableClaims = opts.unusableClaimEventIds ?? new Set<string>();
   const asOf =
     opts.asOf ??
     events.reduce((max, event) => {
@@ -143,8 +152,12 @@ export function projectVerdicts(
       return Math.max(max, event.recordedAt);
     }, 0);
 
-  const observations = usableObservations(events, index).filter((o) => o.completedAt <= asOf);
-  const claims = usableClaims(events, index).filter((c) => c.effectiveAt <= asOf);
+  const observations = usableObservations(events, index)
+    .filter((o) => o.completedAt <= asOf)
+    .filter((o) => !unusableObs.has(o.eventId));
+  const claims = usableClaims(events, index)
+    .filter((c) => c.effectiveAt <= asOf)
+    .filter((c) => !unusableClaims.has(c.eventId));
   const { states: claimStates, corruptions: claimCorruptions } = resolveClaimStates(claims);
   corruptions.push(...claimCorruptions);
 
@@ -180,12 +193,18 @@ export function projectVerdicts(
       if (a.completedAt !== b.completedAt) return a.completedAt - b.completedAt;
       return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
     });
-    verdicts.push(projectObservationGroup(key, ordered, asOf));
+    const suiteManifest = opts.loadSuiteManifest?.(key.suiteManifestDigest) ?? null;
+    verdicts.push(
+      projectObservationGroup(key, ordered, asOf, suiteManifest, {
+        loadScenarioManifest: opts.loadScenarioManifest,
+      }),
+    );
   }
 
-  // Claim-only keys (live_route_compatibility) when no executable observations exist.
   for (const [, state] of claimStates) {
     if (!state.current || state.current.polarity !== "supported") continue;
+    if (state.corruption) continue;
+    if (unusableClaims.has(state.current.eventId)) continue;
     const claim = state.current;
     const key: ProjectionKey = {
       subjectId: claim.subjectId,
@@ -197,7 +216,6 @@ export function projectVerdicts(
     };
     const ks = projectionKeyString(key);
     if (verdicts.some((v) => projectionKeyString(v.key) === ks)) continue;
-    // Claims cannot produce PROBED/VERIFIED.
     verdicts.push({
       key,
       verdict: "CLAIMED",
@@ -217,18 +235,13 @@ function projectObservationGroup(
   key: ProjectionKey,
   ordered: ObservationEvent[],
   asOf: number,
+  suiteManifest: SuiteManifestV1 | null,
+  opts: { loadScenarioManifest?: (digest: string) => Record<string, unknown> | null } = {},
 ): DerivedVerdict {
   const contributing: string[] = [];
   const contradicting: string[] = [];
   const digests = new Set<string>();
   const notes: string[] = [];
-
-  // Conservative protocol projection for CL-02:
-  // - all required-role passes for covered scenarios → VERIFIED when every obs passes
-  // - mix of pass/fail → DEGRADED (newer required failure prevents VERIFIED)
-  // - only passes but incomplete suite metadata → PROBED
-  // - blocked → BLOCKED if no conclusive result
-  // Protocol claims are forbidden — never CLAIMED here.
 
   let sawPass = false;
   let sawFail = false;
@@ -251,10 +264,13 @@ function projectObservationGroup(
   }
 
   let verdict: CompatibilityVerdict = "UNKNOWN";
-  if (key.evidenceLayer !== "protocol_conformance" && key.evidenceLayer !== "live_route_compatibility" && key.evidenceLayer !== "task_effectiveness") {
+  if (
+    key.evidenceLayer !== "protocol_conformance" &&
+    key.evidenceLayer !== "live_route_compatibility" &&
+    key.evidenceLayer !== "task_effectiveness"
+  ) {
     verdict = "UNKNOWN";
   } else if (sawFail && sawPass) {
-    // Newer failure prevents VERIFIED; remain DEGRADED until repair coverage.
     verdict = "DEGRADED";
     notes.push("contradiction_conservative_v1");
   } else if (sawFail) {
@@ -266,13 +282,36 @@ function projectObservationGroup(
       verdict = "DEGRADED";
     }
   } else if (sawPass && !sawInconclusive && !sawBlocked) {
-    // Full verification rule evaluation is suite-manifest driven in later phases.
-    // CL-02 treats an all-pass observation set for this projection key as VERIFIED
-    // only when every observation is protocol_conformance fixture mode; otherwise PROBED.
-    const allFixtureProtocol = ordered.every(
-      (o) => o.evidenceLayer === "protocol_conformance" && o.executionMode === "fixture",
-    );
-    verdict = allFixtureProtocol ? "VERIFIED" : "PROBED";
+    const executionMode = ordered[0]!.executionMode;
+    const subject = ordered[0]!.subject;
+    if (key.evidenceLayer === "protocol_conformance" && executionMode === "fixture") {
+      if (!suiteManifest) {
+        verdict = "PROBED";
+        notes.push("suite_manifest_unavailable");
+      } else {
+        const evaluation = evaluateAllApplicableRequiredPassV1(
+          suiteManifest,
+          ordered,
+          executionMode,
+          {
+            subject: subject.subjectKind === "protocol" ? subject : undefined,
+            loadScenarioManifest: opts.loadScenarioManifest,
+          },
+        );
+        notes.push(...evaluation.notes);
+        if (evaluation.canVerify) {
+          verdict = "VERIFIED";
+          notes.push("all-applicable-required-pass-v1");
+        } else if (evaluation.applicableRequiredScenarioIds.length === 0) {
+          verdict = "PROBED";
+        } else {
+          verdict = "PROBED";
+          notes.push("incomplete_required_coverage");
+        }
+      }
+    } else {
+      verdict = "PROBED";
+    }
   } else if (sawPass) {
     verdict = "PROBED";
   } else if (sawBlocked) {

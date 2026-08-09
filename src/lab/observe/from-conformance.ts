@@ -21,6 +21,7 @@ import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import type { CaseAuthority, CaseRecord, ScenarioRunResult } from "../conformance/types";
 import { expandScenario } from "../conformance/manifest";
+import { expandSuiteManifest } from "../conformance/suite-manifest";
 import { fixtureDigest } from "../conformance/digest";
 
 const PACKAGE_VERSION = "2.10.2";
@@ -39,20 +40,20 @@ export interface PersistedConformanceObservation {
 }
 
 function behaviorFingerprintForCase(caseRecord: CaseRecord): string {
+  const upstream = caseRecord.requirements.upstreamProtocols[0] ?? "openai-chat";
+  const adapter = upstreamAdapter(upstream);
   const values = {
     schemaVersion: 1,
     resolverVersion: 1,
     values: {
       "wire.adapter": {
         source: "lab_forced",
-        value: caseRecord.requirements.upstreamProtocols[0] ?? "unknown",
+        value: adapter,
       },
       "wire.upstreamProtocol": {
         source: "lab_forced",
-        value: caseRecord.requirements.upstreamProtocols[0] ?? "unknown",
+        value: upstream,
       },
-      "lab.suite": { source: "lab_forced", value: caseRecord.suite },
-      "lab.scenario": { source: "lab_forced", value: caseRecord.id },
     },
   };
   return createHash("sha256").update(jcsStringify(values)).digest("hex");
@@ -96,17 +97,6 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
   return "fail";
 }
 
-function expandSuiteManifest(caseRecord: CaseRecord, authority: CaseAuthority): Record<string, unknown> {
-  const defaults = authority.manifestDefaults;
-  return {
-    schemaVersion: authority.schemaVersion,
-    id: caseRecord.suite,
-    version: defaults.suiteVersion,
-    evidenceLayer: defaults.evidenceLayer,
-    scenarioIds: authority.cases.filter((c) => c.suite === caseRecord.suite).map((c) => c.id).sort(),
-  };
-}
-
 /**
  * Build a valid protocol_conformance observation from one CL-01 scenario result.
  * Does not append; use persistConformanceResult for ledger write.
@@ -125,7 +115,7 @@ export function observationFromConformanceResult(
 
   const expandedScenario = expandScenario(caseRecord, authority);
   const scenarioDigest = scenarioManifestDigest(expandedScenario);
-  const suiteExpanded = expandSuiteManifest(caseRecord, authority);
+  const suiteExpanded = expandSuiteManifest(caseRecord.suite, authority) as unknown as Record<string, unknown>;
   const suiteDigest = suiteManifestDigest(suiteExpanded);
 
   const fixtureDigests: string[] = [];

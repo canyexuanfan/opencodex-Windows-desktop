@@ -3,7 +3,9 @@ import { existsSync, unlinkSync } from "node:fs";
 import { createArtifactStore } from "../artifacts/store";
 import { ArtifactFsError } from "../artifacts/secure-fs";
 import { LAB_PROJECTION_SPEC_VERSION } from "../constants";
-import { jcsStringify } from "../digest";
+import { expandScenario, loadCaseAuthority } from "../conformance/manifest";
+import { scenarioManifestDigest, jcsStringify } from "../digest";
+import { parseSuiteManifestFromArtifact } from "./verification";
 import type { LabEvent, LedgerCorruption } from "../events/types";
 import { loadClaimSourceManifest } from "../artifacts/store";
 import { buildInvalidationIndex, isEventExcluded } from "../ledger/invalidation";
@@ -25,7 +27,6 @@ export interface RebuildResult {
 }
 
 function wipeSqlite(path: string): void {
-  // Prefer deleting the file; on Windows fall back to leaving it for truncate recreate.
   for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
@@ -58,6 +59,11 @@ function resetProjectionSchema(db: Database): void {
   db.exec(LAB_SQLITE_DDL);
 }
 
+interface ArtifactValidationResult {
+  unusableObservationIds: Set<string>;
+  unusableClaimEventIds: Set<string>;
+}
+
 /**
  * Deterministic rebuild:
  * delete compatibility.sqlite → replay JSONL → validate artifacts → project.
@@ -72,7 +78,32 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
   corruptions.push(...index.corruptions);
 
   const artifactStore = createArtifactStore(paths.artifactsDir);
-  validateRequiredArtifacts(replay.events, index, artifactStore, corruptions);
+  const validation = validateRequiredArtifacts(replay.events, index, artifactStore, corruptions);
+
+  const authority = loadCaseAuthority();
+  const scenarioManifestByDigest = new Map<string, Record<string, unknown>>();
+  for (const caseRecord of authority.cases) {
+    const expanded = expandScenario(caseRecord, authority);
+    scenarioManifestByDigest.set(scenarioManifestDigest(expanded), expanded);
+  }
+
+  const loadSuiteManifest = (digest: string) => {
+    try {
+      const bytes = artifactStore.get(digest);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes));
+      return parseSuiteManifestFromArtifact(parsed);
+    } catch {
+      return null;
+    }
+  };
+  const loadScenarioManifest = (digest: string) => {
+    try {
+      const bytes = artifactStore.get(digest);
+      return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    } catch {
+      return scenarioManifestByDigest.get(digest) ?? null;
+    }
+  };
 
   const db = new Database(paths.sqlitePath);
   try {
@@ -153,7 +184,8 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
 
       if (event.eventKind === "observation") {
         insertSubject.run(event.subjectId, event.subject.subjectKind, jcsStringify(event.subject));
-        if (!isExcluded) {
+        const usable = !isExcluded && !validation.unusableObservationIds.has(event.eventId);
+        if (usable) {
           insertObs.run(
             event.eventId,
             event.subjectId,
@@ -171,13 +203,14 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
         }
         for (const ref of event.artifactRefs) {
           const purged = index.purgedArtifactDigests.has(ref.digest);
+          const corrupt = validation.unusableObservationIds.has(event.eventId);
           insertArtifact.run(
             ref.digest,
             ref.artifactClass,
             ref.mediaType,
             ref.byteCount,
-            purged ? "purged_unavailable" : "present",
-            null,
+            purged ? "purged_unavailable" : corrupt ? "corrupt" : "present",
+            corrupt ? "required artifact unusable" : null,
           );
         }
       } else if (event.eventKind === "claim_snapshot") {
@@ -194,6 +227,7 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
           });
           if (loaded.corruption) {
             usable = 0;
+            validation.unusableClaimEventIds.add(event.eventId);
             corruptions.push({
               kind: "claim_corruption",
               eventId: event.eventId,
@@ -255,7 +289,13 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
       }
     }
 
-    const { verdicts, corruptions: verdictCorruptions } = projectVerdicts(replay.events, { index });
+    const { verdicts, corruptions: verdictCorruptions } = projectVerdicts(replay.events, {
+      index,
+      unusableObservationIds: validation.unusableObservationIds,
+      unusableClaimEventIds: validation.unusableClaimEventIds,
+      loadSuiteManifest,
+      loadScenarioManifest,
+    });
     for (const c of verdictCorruptions) {
       if (!corruptions.some((x) => x.detail === c.detail && x.eventId === c.eventId)) {
         corruptions.push(c);
@@ -272,10 +312,8 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
     );
 
     for (const v of verdicts) {
-      // Purged evidence must not contribute to cached verdicts.
       if (v.contributingEventIds.every((id) => index.purgedEventIds.has(id))) continue;
       if (v.contributingEventIds.some((id) => index.purgedEventIds.has(id) || index.invalidatedBy.has(id))) {
-        // Drop any verdict that still lists excluded evidence as contributing.
         const remaining = v.contributingEventIds.filter(
           (id) => !index.purgedEventIds.has(id) && !index.invalidatedBy.has(id),
         );
@@ -307,6 +345,7 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
     };
   } finally {
     db.close();
+    artifactStore.close();
   }
 }
 
@@ -315,7 +354,10 @@ function validateRequiredArtifacts(
   index: ReturnType<typeof buildInvalidationIndex>,
   artifactStore: ReturnType<typeof createArtifactStore>,
   corruptions: LedgerCorruption[],
-): void {
+): ArtifactValidationResult {
+  const unusableObservationIds = new Set<string>();
+  const unusableClaimEventIds = new Set<string>();
+
   for (const event of events) {
     if (isEventExcluded(event.eventId, index)) continue;
     if (event.eventKind === "observation") {
@@ -324,6 +366,7 @@ function validateRequiredArtifacts(
         event.suiteManifestDigest,
         ...event.fixtureDigests,
       ];
+      let unusable = false;
       for (const digest of required) {
         if (index.purgedArtifactDigests.has(digest)) {
           corruptions.push({
@@ -331,6 +374,7 @@ function validateRequiredArtifacts(
             eventId: event.eventId,
             detail: `required artifact purged: ${digest}`,
           });
+          unusable = true;
           continue;
         }
         try {
@@ -343,10 +387,14 @@ function validateRequiredArtifacts(
             eventId: event.eventId,
             detail: err instanceof Error ? err.message : String(err),
           });
+          unusable = true;
         }
       }
+      if (unusable) unusableObservationIds.add(event.eventId);
     }
   }
+
+  return { unusableObservationIds, unusableClaimEventIds };
 }
 
 /** Snapshot derived verdict rows for rebuild-determinism tests (excludes asOf wall clock). */

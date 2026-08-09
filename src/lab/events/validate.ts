@@ -1,3 +1,4 @@
+import { enforceEventStructureLimits } from "./limits";
 import {
   ARTIFACT_CLASSES,
   ARTIFACT_FILENAME_EXT,
@@ -466,6 +467,7 @@ export function validateLabEvent(raw: unknown): LabEvent {
     }
   }
   enforceEventId(event);
+  enforceEventStructureLimits(event);
   enforceSerializedSize(event);
   return event;
 }

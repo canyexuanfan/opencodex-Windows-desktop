@@ -4,7 +4,8 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
+  statSync,
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -37,8 +38,63 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
   }
 }
 
+function processLine(
+  line: string,
+  lineNumber: number,
+  hasTrailingNewline: boolean,
+  isLastBufferedLine: boolean,
+  events: LabEvent[],
+  seenIds: Set<string>,
+  corruptions: LedgerCorruption[],
+): void {
+  if (!hasTrailingNewline && isLastBufferedLine) {
+    corruptions.push({
+      kind: "partial_line",
+      lineNumber,
+      detail: "partial final JSONL line (missing trailing newline)",
+    });
+    return;
+  }
+  if (line.trim() === "") {
+    corruptions.push({ kind: "malformed_line", lineNumber, detail: "empty line" });
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    corruptions.push({ kind: "malformed_line", lineNumber, detail: "JSON parse failed" });
+    return;
+  }
+
+  let event: LabEvent;
+  try {
+    event = validateLabEvent(parsed);
+  } catch (err) {
+    corruptions.push({
+      kind: "invalid_event",
+      lineNumber,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  if (seenIds.has(event.eventId)) {
+    corruptions.push({
+      kind: "duplicate_event",
+      lineNumber,
+      eventId: event.eventId,
+      detail: "duplicate eventId",
+    });
+    return;
+  }
+  seenIds.add(event.eventId);
+  events.push(event);
+}
+
 /**
- * Replay the JSONL ledger.
+ * Replay the JSONL ledger using chunked reads (no whole-file string buffer).
  * Malformed or partial lines contribute no evidence and are reported as corruption.
  */
 export function replayLabLedger(ledgerPath: string): ReplayResult {
@@ -47,8 +103,8 @@ export function replayLabLedger(ledgerPath: string): ReplayResult {
   if (!existsSync(ledgerPath)) {
     return { events, corruptions, validLineCount: 0, totalLineCount: 0 };
   }
-  const text = readFileSync(ledgerPath, "utf8");
-  if (text.length === 0) {
+  const size = statSync(ledgerPath).size;
+  if (size === 0) {
     return {
       events,
       corruptions: [{ kind: "empty_ledger", detail: "ledger file is empty" }],
@@ -57,67 +113,42 @@ export function replayLabLedger(ledgerPath: string): ReplayResult {
     };
   }
 
-  const hasTrailingNewline = text.endsWith("\n");
-  const rawLines = text.split("\n");
-  // split yields a trailing empty string when file ends with \n
-  if (hasTrailingNewline && rawLines.length > 0 && rawLines[rawLines.length - 1] === "") {
-    rawLines.pop();
-  }
-
-  const seenIds = new Set<string>();
+  const fd = openSync(ledgerPath, "r");
+  const chunkSize = 64 * 1024;
+  const chunk = Buffer.alloc(chunkSize);
+  let carry = "";
+  let lineNumber = 0;
   let totalLineCount = 0;
+  const seenIds = new Set<string>();
+  let offset = 0;
+  let hasTrailingNewline = false;
 
-  for (let i = 0; i < rawLines.length; i++) {
-    const lineNumber = i + 1;
-    const line = rawLines[i]!;
-    totalLineCount += 1;
-
-    // Partial final line: file does not end with newline
-    if (!hasTrailingNewline && i === rawLines.length - 1) {
-      corruptions.push({
-        kind: "partial_line",
-        lineNumber,
-        detail: "partial final JSONL line (missing trailing newline)",
-      });
-      continue;
+  try {
+    while (offset < size) {
+      const toRead = Math.min(chunkSize, size - offset);
+      const n = readSync(fd, chunk, 0, toRead, offset);
+      if (n <= 0) break;
+      offset += n;
+      carry += chunk.toString("utf8", 0, n);
+      let idx = carry.indexOf("\n");
+      while (idx >= 0) {
+        const line = carry.slice(0, idx);
+        carry = carry.slice(idx + 1);
+        lineNumber += 1;
+        totalLineCount += 1;
+        hasTrailingNewline = true;
+        processLine(line, lineNumber, true, false, events, seenIds, corruptions);
+        idx = carry.indexOf("\n");
+      }
     }
 
-    if (line.trim() === "") {
-      corruptions.push({ kind: "malformed_line", lineNumber, detail: "empty line" });
-      continue;
+    if (carry.length > 0) {
+      lineNumber += 1;
+      totalLineCount += 1;
+      processLine(carry, lineNumber, hasTrailingNewline, true, events, seenIds, corruptions);
     }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      corruptions.push({ kind: "malformed_line", lineNumber, detail: "JSON parse failed" });
-      continue;
-    }
-
-    let event: LabEvent;
-    try {
-      event = validateLabEvent(parsed);
-    } catch (err) {
-      corruptions.push({
-        kind: "invalid_event",
-        lineNumber,
-        detail: err instanceof Error ? err.message : String(err),
-      });
-      continue;
-    }
-
-    if (seenIds.has(event.eventId)) {
-      corruptions.push({
-        kind: "duplicate_event",
-        lineNumber,
-        eventId: event.eventId,
-        detail: "duplicate eventId",
-      });
-      continue;
-    }
-    seenIds.add(event.eventId);
-    events.push(event);
+  } finally {
+    closeSync(fd);
   }
 
   return {

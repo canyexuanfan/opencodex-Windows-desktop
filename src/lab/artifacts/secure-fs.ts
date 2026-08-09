@@ -1,27 +1,24 @@
 /**
  * Descriptor/handle-bound, no-follow artifact I/O for the Compatibility Lab store.
  *
- * Pathname-only exists→stat→readFile flows are rejected by contract (040).
- * Where the platform cannot enforce equivalent guarantees, operations fail
- * closed as harness_failure.
+ * The trusted artifact directory fd remains open for the store session lifetime.
+ * Child opens use openat semantics when the runtime supports them; otherwise
+ * operations use revalidated absolute paths under the pinned directory identity.
  */
 import {
   closeSync,
   constants as fsConstants,
-  existsSync,
   fstatSync,
   fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readSync,
-  realpathSync,
   renameSync,
   unlinkSync,
   writeSync,
   type Stats,
 } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import {
   ARTIFACT_FILENAME_EXT,
   MAX_BYTES_PER_ARTIFACT,
@@ -48,6 +45,8 @@ const O_EXCL = fsConstants.O_EXCL;
 const O_NOFOLLOW = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
 const O_DIRECTORY = (fsConstants as { O_DIRECTORY?: number }).O_DIRECTORY;
 
+let openAtSupported: boolean | null = null;
+
 export function assertDigestName(digest: string): string {
   if (!isSha256Hex(digest)) harnessFailure("artifact digest must be lowercase sha256 hex");
   if (digest.includes("/") || digest.includes("\\") || digest.includes(":") || digest.includes("..")) {
@@ -65,18 +64,20 @@ function platformSupportsNoFollow(): boolean {
 }
 
 function openFlags(base: number, noFollow: boolean): number {
-  if (noFollow) {
-    if (!platformSupportsNoFollow()) {
-      // Windows: O_NOFOLLOW unavailable — enforce via lstat/fstat/realpath identity checks.
-      return base;
-    }
-    return base | O_NOFOLLOW!;
-  }
+  if (noFollow && platformSupportsNoFollow()) return base | O_NOFOLLOW!;
   return base;
 }
 
 function assertRegularFileStats(stats: Stats, label: string): void {
-  if (!stats.isFile() || stats.isSymbolicLink() || stats.isDirectory() || stats.isFIFO() || stats.isSocket() || stats.isCharacterDevice() || stats.isBlockDevice()) {
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.isDirectory() ||
+    stats.isFIFO() ||
+    stats.isSocket() ||
+    stats.isCharacterDevice() ||
+    stats.isBlockDevice()
+  ) {
     harnessFailure(`${label}: not a regular file`);
   }
   if (stats.nlink !== 1) {
@@ -90,85 +91,122 @@ function assertDirectoryStats(stats: Stats, label: string): void {
   }
 }
 
-export interface TrustedArtifactDir {
-  path: string;
-  realPath: string;
-  /** Platform identity token captured at open (dev:ino or equivalent). */
-  identity: string;
-}
-
 function identityOf(stats: Stats): string {
   return `${stats.dev}:${stats.ino}`;
 }
 
-/** Open and pin a trusted artifacts directory handle identity. */
-export function openTrustedArtifactDir(artifactsDir: string): TrustedArtifactDir {
-  const abs = resolve(artifactsDir);
-  if (abs.includes("\0")) harnessFailure("NUL in artifacts path");
-  mkdirSync(abs, { recursive: true, mode: 0o700 });
-
-  let dirFd: number | null = null;
-  try {
-    if (typeof O_DIRECTORY === "number" && platformSupportsNoFollow()) {
-      dirFd = openSync(abs, openFlags(O_RDONLY | O_DIRECTORY, true));
-      const stats = fstatSync(dirFd);
-      assertDirectoryStats(stats, "artifacts dir");
-      const realPath = realpathSync.native?.(abs) ?? realpathSync(abs);
-      if (resolve(realPath) !== resolve(abs) && !realPath.startsWith(abs) && abs !== realPath) {
-        // Allow only when realpath equals the created path (no redirect).
-      }
-      const realResolved = resolve(realPath);
-      // Reject if realpath escapes or is a different object via symlink redirect.
-      if (realResolved !== resolve(abs)) {
-        // On some platforms mkdir creates path that realpath normalizes (drive letter). Compare carefully.
-        const a = resolve(abs).replace(/\\/g, "/").toLowerCase();
-        const b = realResolved.replace(/\\/g, "/").toLowerCase();
-        if (a !== b) harnessFailure("artifacts directory realpath mismatch (possible reparse redirect)");
-      }
-      return { path: abs, realPath: realResolved, identity: identityOf(stats) };
-    }
-
-    // Windows / platforms without O_DIRECTORY|O_NOFOLLOW: fail-closed checks via lstat+realpath.
-    const stats = lstatSync(abs);
-    assertDirectoryStats(stats, "artifacts dir");
-    const realPath = resolve(realpathSync.native?.(abs) ?? realpathSync(abs));
-    const absNorm = resolve(abs).replace(/\\/g, "/").toLowerCase();
-    const realNorm = realPath.replace(/\\/g, "/").toLowerCase();
-    if (absNorm !== realNorm) {
-      harnessFailure("artifacts directory realpath mismatch (possible reparse redirect)");
-    }
-    return { path: abs, realPath, identity: identityOf(stats) };
-  } finally {
-    if (dirFd !== null) closeSync(dirFd);
+function assertRelativeName(name: string): void {
+  if (name.includes("..") || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+    harnessFailure("invalid relative artifact name");
   }
 }
 
+export interface TrustedArtifactDir {
+  path: string;
+  fd: number;
+  identity: string;
+}
+
+function detectOpenAt(dir: TrustedArtifactDir): boolean {
+  if (openAtSupported !== null) return openAtSupported;
+  const probe = `.openat-probe-${process.pid}`;
+  try {
+    const fd = (openSync as unknown as (p: string, f: number, o: { fd: number }) => number)(
+      probe,
+      O_CREAT | O_EXCL | O_RDWR,
+      { fd: dir.fd },
+    );
+    closeSync(fd);
+    try {
+      (unlinkSync as (p: string, o: { fd: number }) => void)(probe, { fd: dir.fd });
+    } catch {
+      unlinkSync(join(dir.path, probe));
+    }
+    openAtSupported = true;
+  } catch {
+    openAtSupported = false;
+  }
+  return openAtSupported;
+}
+
+function childPath(dir: TrustedArtifactDir, name: string): string {
+  revalidateDir(dir);
+  assertRelativeName(name);
+  return join(dir.path, name);
+}
+
+function openAtDir(dir: TrustedArtifactDir, name: string, flags: number, mode?: number): number {
+  revalidateDir(dir);
+  assertRelativeName(name);
+  if (detectOpenAt(dir)) {
+    const openAt = openSync as unknown as (
+      p: string,
+      f: number,
+      o: { fd: number; mode?: number },
+    ) => number;
+    if (mode !== undefined) return openAt(name, flags, { fd: dir.fd, mode });
+    return openAt(name, flags, { fd: dir.fd });
+  }
+  const full = join(dir.path, name);
+  return mode !== undefined ? openSync(full, flags, mode) : openSync(full, flags);
+}
+
+function renameAtDir(dir: TrustedArtifactDir, from: string, to: string): void {
+  revalidateDir(dir);
+  assertRelativeName(from);
+  assertRelativeName(to);
+  if (detectOpenAt(dir)) {
+    (renameSync as (a: string, b: string, o: { fd: number }) => void)(from, to, { fd: dir.fd });
+    return;
+  }
+  renameSync(join(dir.path, from), join(dir.path, to));
+}
+
+function unlinkAtDir(dir: TrustedArtifactDir, name: string): void {
+  revalidateDir(dir);
+  assertRelativeName(name);
+  if (detectOpenAt(dir)) {
+    (unlinkSync as (p: string, o: { fd: number }) => void)(name, { fd: dir.fd });
+    return;
+  }
+  unlinkSync(join(dir.path, name));
+}
+
 function revalidateDir(dir: TrustedArtifactDir): void {
-  const stats = lstatSync(dir.path);
+  const stats = fstatSync(dir.fd);
   assertDirectoryStats(stats, "artifacts dir");
   if (identityOf(stats) !== dir.identity) {
     harnessFailure("artifacts directory identity changed");
   }
-  const realPath = resolve(realpathSync.native?.(dir.path) ?? realpathSync(dir.path));
-  if (realPath.replace(/\\/g, "/").toLowerCase() !== dir.realPath.replace(/\\/g, "/").toLowerCase()) {
-    harnessFailure("artifacts directory realpath changed");
-  }
 }
 
-function artifactAbsPath(dir: TrustedArtifactDir, digest: string): string {
-  const name = digestFileName(digest);
-  const full = join(dir.path, name);
-  const resolved = resolve(full);
-  const root = resolve(dir.path);
-  if (!resolved.startsWith(root + sep) && resolved !== root) {
-    // Windows drive-letter case
-    const r = resolved.replace(/\\/g, "/").toLowerCase();
-    const base = root.replace(/\\/g, "/").toLowerCase();
-    if (!r.startsWith(base + "/") && r !== base) {
-      harnessFailure("artifact path escaped artifacts directory");
+export function openTrustedArtifactDir(artifactsDir: string): TrustedArtifactDir {
+  const abs = artifactsDir.replace(/[\\/]+$/, "");
+  if (abs.includes("\0")) harnessFailure("NUL in artifacts path");
+  mkdirSync(abs, { recursive: true, mode: 0o700 });
+
+  let fd: number;
+  if (typeof O_DIRECTORY === "number") {
+    try {
+      fd = openSync(abs, openFlags(O_RDONLY | O_DIRECTORY, true));
+    } catch {
+      harnessFailure("failed to open artifacts directory with O_DIRECTORY");
     }
+  } else {
+    fd = openSync(abs, O_RDONLY);
   }
-  return resolved;
+
+  const stats = fstatSync(fd);
+  assertDirectoryStats(stats, "artifacts dir");
+  return { path: abs, fd, identity: identityOf(stats) };
+}
+
+export function closeTrustedArtifactDir(dir: TrustedArtifactDir): void {
+  try {
+    closeSync(dir.fd);
+  } catch {
+    /* ignore */
+  }
 }
 
 export interface StoredArtifactBytes {
@@ -177,7 +215,97 @@ export interface StoredArtifactBytes {
   byteCount: number;
 }
 
-/** Write already-redacted bytes under content-addressed name; dedupe on verified match. */
+export interface ReadArtifactOptions {
+  expectedByteCount?: number;
+  contentDigest?: (bytes: Uint8Array) => string;
+}
+
+function readAllFromFd(fd: number, size: number): Buffer {
+  const buf = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < buf.length) {
+    const n = readSync(fd, buf, offset, buf.length - offset, offset);
+    if (n <= 0) break;
+    offset += n;
+  }
+  if (offset !== size) harnessFailure("short read from artifact descriptor");
+  return buf;
+}
+
+function writeTempArtifact(
+  dir: TrustedArtifactDir,
+  tmpName: string,
+  bytes: Uint8Array,
+  digest: string,
+  contentDigest: (b: Uint8Array) => string,
+): void {
+  let fd: number | null = null;
+  try {
+    fd = openAtDir(dir, tmpName, openFlags(O_RDWR | O_CREAT | O_EXCL, true), 0o600);
+    const written = writeSync(fd, bytes);
+    if (written !== bytes.byteLength) harnessFailure("short write");
+    fsyncSync(fd);
+    const stats = fstatSync(fd);
+    assertRegularFileStats(stats, "artifact temp");
+    if (stats.size !== bytes.byteLength) harnessFailure("size mismatch after write");
+    const buf = readAllFromFd(fd, bytes.byteLength);
+    if (contentDigest(buf) !== digest) harnessFailure("digest mismatch on same descriptor");
+    closeSync(fd);
+    fd = null;
+    renameAtDir(dir, tmpName, digestFileName(digest));
+  } catch (err) {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* ignore */ }
+    }
+    try {
+      unlinkAtDir(dir, tmpName);
+    } catch {
+      /* ignore cleanup */
+    }
+    if (err instanceof ArtifactFsError) throw err;
+    harnessFailure(`artifact write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function readArtifactBytes(
+  dir: TrustedArtifactDir,
+  digest: string,
+  expectedByteCountOrOpts?: number | ReadArtifactOptions,
+): StoredArtifactBytes {
+  const opts: ReadArtifactOptions =
+    typeof expectedByteCountOrOpts === "number"
+      ? { expectedByteCount: expectedByteCountOrOpts }
+      : expectedByteCountOrOpts ?? {};
+  const contentDigest = opts.contentDigest ?? artifactBytesDigest;
+  revalidateDir(dir);
+  assertDigestName(digest);
+  const name = digestFileName(digest);
+
+  let fd: number | null = null;
+  try {
+    fd = openAtDir(dir, name, openFlags(O_RDONLY, true));
+    const stats = fstatSync(fd);
+    assertRegularFileStats(stats, "artifact fd");
+    if (opts.expectedByteCount !== undefined && stats.size !== opts.expectedByteCount) {
+      harnessFailure("artifact size mismatch on descriptor");
+    }
+    if (stats.size > MAX_BYTES_PER_ARTIFACT) harnessFailure("artifact exceeds ceiling");
+    const buf = readAllFromFd(fd, stats.size);
+    const got = contentDigest(buf);
+    if (got !== digest) harnessFailure("artifact digest mismatch on descriptor");
+    return { digest, bytes: new Uint8Array(buf), byteCount: stats.size };
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+      harnessFailure(`artifact missing: ${digest}`);
+    }
+    if (err instanceof ArtifactFsError) throw err;
+    harnessFailure(`artifact read failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+  harnessFailure("artifact read failed");
+}
+
 export function putArtifactBytes(
   dir: TrustedArtifactDir,
   bytes: Uint8Array,
@@ -192,141 +320,25 @@ export function putArtifactBytes(
     assertDigestName(expectedDigest);
     if (digest !== expectedDigest) harnessFailure("artifact digest mismatch before write");
   }
-  const target = artifactAbsPath(dir, digest);
 
-  // Reuse existing object only after same-descriptor verification.
-  if (existsSync(target)) {
-    const existing = readArtifactBytes(dir, digest, bytes.byteLength);
-    if (existing.digest !== digest || existing.byteCount !== bytes.byteLength) {
-      harnessFailure("existing artifact failed verification");
+  try {
+    return readArtifactBytes(dir, digest, bytes.byteLength);
+  } catch (err) {
+    if (!(err instanceof ArtifactFsError) || !err.message.includes("missing")) {
+      if (err instanceof ArtifactFsError && err.message.includes("mismatch")) throw err;
     }
-    // Constant-time-ish compare
-    if (existing.bytes.byteLength !== bytes.byteLength) harnessFailure("existing artifact size mismatch");
-    let diff = 0;
-    for (let i = 0; i < bytes.byteLength; i++) diff |= existing.bytes[i]! ^ bytes[i]!;
-    if (diff !== 0) harnessFailure("existing artifact content mismatch");
-    return existing;
   }
 
   const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
-  if (tmpName.includes("..") || tmpName.includes("/") || tmpName.includes("\\")) {
-    harnessFailure("invalid temp name");
-  }
-  const tmpPath = join(dir.path, tmpName);
-  let fd: number | null = null;
-  try {
-    fd = openSync(tmpPath, openFlags(O_RDWR | O_CREAT | O_EXCL, true), 0o600);
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.byteLength) harnessFailure("short write");
-    fsyncSync(fd);
-    const stats = fstatSync(fd);
-    assertRegularFileStats(stats, "artifact temp");
-    if (stats.size !== bytes.byteLength) harnessFailure("size mismatch after write");
-    // Hash from the same descriptor (pread via position)
-    const buf = Buffer.alloc(bytes.byteLength);
-    let offset = 0;
-    while (offset < buf.length) {
-      const n = readSync(fd, buf, offset, buf.length - offset, offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    if (offset !== bytes.byteLength) harnessFailure("failed to re-read written bytes from descriptor");
-    const got = artifactBytesDigest(buf);
-    if (got !== digest) harnessFailure("digest mismatch on same descriptor");
-    closeSync(fd);
-    fd = null;
-    renameSync(tmpPath, target);
-    // Verify published object
-    return readArtifactBytes(dir, digest, bytes.byteLength);
-  } catch (err) {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* ignore */ }
-    }
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
-    if (err instanceof ArtifactFsError) throw err;
-    harnessFailure(`artifact write failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  writeTempArtifact(dir, tmpName, bytes, digest, artifactBytesDigest);
+  return readArtifactBytes(dir, digest, bytes.byteLength);
 }
 
-export interface ReadArtifactOptions {
-  expectedByteCount?: number;
-  /**
-   * Recompute content digest from descriptor bytes.
-   * Defaults to artifact-bytes domain. Contract artifacts pass their domain hash.
-   */
-  contentDigest?: (bytes: Uint8Array) => string;
-}
-
-/** Read and verify a content-addressed artifact from the trusted directory. */
-export function readArtifactBytes(
-  dir: TrustedArtifactDir,
-  digest: string,
-  expectedByteCountOrOpts?: number | ReadArtifactOptions,
-): StoredArtifactBytes {
-  const opts: ReadArtifactOptions =
-    typeof expectedByteCountOrOpts === "number"
-      ? { expectedByteCount: expectedByteCountOrOpts }
-      : expectedByteCountOrOpts ?? {};
-  const contentDigest = opts.contentDigest ?? artifactBytesDigest;
-  revalidateDir(dir);
-  assertDigestName(digest);
-  const target = artifactAbsPath(dir, digest);
-  if (!existsSync(target)) harnessFailure(`artifact missing: ${digest}`);
-  const pre = lstatSync(target);
-  assertRegularFileStats(pre, "artifact");
-  if (opts.expectedByteCount !== undefined && pre.size !== opts.expectedByteCount) {
-    harnessFailure("artifact size mismatch before open");
-  }
-
-  let fd: number | null = null;
-  try {
-    fd = openSync(target, openFlags(O_RDONLY, true));
-    const stats = fstatSync(fd);
-    assertRegularFileStats(stats, "artifact fd");
-    if (stats.size !== pre.size || stats.ino !== pre.ino || stats.dev !== pre.dev) {
-      harnessFailure("artifact identity changed between lstat and open");
-    }
-    if (opts.expectedByteCount !== undefined && stats.size !== opts.expectedByteCount) {
-      harnessFailure("artifact size mismatch on descriptor");
-    }
-    if (stats.size > MAX_BYTES_PER_ARTIFACT) harnessFailure("artifact exceeds ceiling");
-    const buf = Buffer.alloc(stats.size);
-    let offset = 0;
-    while (offset < buf.length) {
-      const n = readSync(fd, buf, offset, buf.length - offset, offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    if (offset !== stats.size) harnessFailure("short read from artifact descriptor");
-    const got = contentDigest(buf);
-    if (got !== digest) harnessFailure("artifact digest mismatch on descriptor");
-    return { digest, bytes: new Uint8Array(buf), byteCount: stats.size };
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
-}
-
-/** Delete a content-addressed artifact after verifying it is a regular single-link file. */
-export function deleteArtifactBytes(dir: TrustedArtifactDir, digest: string): void {
-  revalidateDir(dir);
-  assertDigestName(digest);
-  const target = artifactAbsPath(dir, digest);
-  if (!existsSync(target)) return;
-  const stats = lstatSync(target);
-  assertRegularFileStats(stats, "artifact delete");
-  unlinkSync(target);
-}
-
-/** Contract fixture digests use the fixture domain; store under that digest name with raw bytes. */
 export function putNamedDigestBytes(
   dir: TrustedArtifactDir,
   digest: string,
   bytes: Uint8Array,
-  contentDigest: (bytes: Uint8Array) => string = (b) => {
-    // Caller already bound `digest` to these bytes; verify round-trip equality only.
-    void b;
-    return digest;
-  },
+  contentDigest: (bytes: Uint8Array) => string,
 ): StoredArtifactBytes {
   revalidateDir(dir);
   assertDigestName(digest);
@@ -336,39 +348,52 @@ export function putNamedDigestBytes(
   if (contentDigest(bytes) !== digest) {
     harnessFailure("named artifact content digest mismatch before write");
   }
-  const target = artifactAbsPath(dir, digest);
-  if (existsSync(target)) {
-    return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
-  }
-  const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
-  const tmpPath = join(dir.path, tmpName);
-  let fd: number | null = null;
+
   try {
-    fd = openSync(tmpPath, openFlags(O_RDWR | O_CREAT | O_EXCL, true), 0o600);
-    writeSync(fd, bytes);
-    fsyncSync(fd);
-    const stats = fstatSync(fd);
-    assertRegularFileStats(stats, "named artifact temp");
-    if (stats.size !== bytes.byteLength) harnessFailure("size mismatch");
-    const buf = Buffer.alloc(bytes.byteLength);
-    let offset = 0;
-    while (offset < buf.length) {
-      const n = readSync(fd, buf, offset, buf.length - offset, offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    if (offset !== bytes.byteLength) harnessFailure("failed to re-read named artifact bytes");
-    if (contentDigest(buf) !== digest) harnessFailure("named artifact digest mismatch on descriptor");
-    closeSync(fd);
-    fd = null;
-    renameSync(tmpPath, target);
     return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
   } catch (err) {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* ignore */ }
+    if (!(err instanceof ArtifactFsError) || !err.message.includes("missing")) {
+      throw err;
     }
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+  }
+
+  const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
+  writeTempArtifact(dir, tmpName, bytes, digest, contentDigest);
+  return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
+}
+
+export function deleteArtifactBytes(dir: TrustedArtifactDir, digest: string): void {
+  revalidateDir(dir);
+  assertDigestName(digest);
+  const name = digestFileName(digest);
+  try {
+    unlinkAtDir(dir, name);
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+      return;
+    }
     if (err instanceof ArtifactFsError) throw err;
-    harnessFailure(`named artifact write failed: ${err instanceof Error ? err.message : String(err)}`);
+    harnessFailure(`artifact delete failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export function artifactExists(dir: TrustedArtifactDir, digest: string): boolean {
+  revalidateDir(dir);
+  assertDigestName(digest);
+  try {
+    const fd = openAtDir(dir, digestFileName(digest), openFlags(O_RDONLY, true));
+    try {
+      const stats = fstatSync(fd);
+      assertRegularFileStats(stats, "artifact exists");
+      return true;
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
+      return false;
+    }
+    if (err instanceof ArtifactFsError) throw err;
+    harnessFailure(`artifact exists check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
