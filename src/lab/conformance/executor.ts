@@ -529,9 +529,29 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
   const upstreamBytes = new TextEncoder().encode(caseRecord.fixture.bytesUtf8);
   await recordInitiatingRequest(caseRecord, observation);
 
+  if (caseRecord.id === "chat-core.protocol.nonstream-envelope") {
+    const adapter = withHarnessTranslatorBudget(createOpenAIChatAdapter(fixtureProviderConfig("openai-chat")));
+    try {
+      // Protocol V1 carries no separate HTTP-status field for this synthetic fixture. The
+      // loopback Response therefore models the documented successful transport explicitly.
+      const responseStatus = 200;
+      const response = new Response(caseRecord.fixture.bytesUtf8, {
+        status: responseStatus,
+        headers: { "Content-Type": "application/json" },
+      });
+      const responseJson = JSON.parse(caseRecord.fixture.bytesUtf8);
+      const parsedEvents = adapter.parseResponse ? await adapter.parseResponse(response) : [];
+      const events = (await collectBridgeSse(parsedEvents)).events;
+      const json = buildResponseJSON(parsedEvents, "fixture-model") as Record<string, unknown> ?? responseJson;
+      finalizeObservation(observation, events, json, responseStatus);
+      attachVerifiers(observation, caseRecord);
+      return observation;
+    } finally {
+      adapter.dispose();
+    }
+  }
+
   let events: ReturnType<typeof normalizeSseBytes>;
-  let json: Record<string, unknown> | null = null;
-  let responseStatus = 200;
 
   if (upstreamProtocol === "openai-chat") {
     const adapter = withHarnessTranslatorBudget(createOpenAIChatAdapter(fixtureProviderConfig("openai-chat")));
@@ -600,21 +620,7 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
     throw new Error(`unsupported upstream protocol: ${upstreamProtocol}`);
   }
 
-  if (caseRecord.id === "chat-core.protocol.nonstream-envelope") {
-    const adapter = withHarnessTranslatorBudget(createOpenAIChatAdapter(fixtureProviderConfig("openai-chat")));
-    try {
-      const response = new Response(caseRecord.fixture.bytesUtf8, { status: 200, headers: { "Content-Type": "application/json" } });
-      responseStatus = response.status;
-      const responseJson = JSON.parse(caseRecord.fixture.bytesUtf8);
-      const parsedEvents = adapter.parseResponse ? await adapter.parseResponse(response) : [];
-      events = (await collectBridgeSse(parsedEvents)).events;
-      json = buildResponseJSON(parsedEvents, "fixture-model") as Record<string, unknown> ?? responseJson;
-    } finally {
-      adapter.dispose();
-    }
-  }
-
-  finalizeObservation(observation, events, json, responseStatus);
+  finalizeObservation(observation, events, null, 200);
   attachVerifiers(observation, caseRecord);
   return observation;
 }
@@ -651,6 +657,9 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
 
     if (caseRecord.expectedFailure) {
       const listed = caseRecord.expectedFailure.assertionIds;
+      if (listed.length === 0) {
+        throw new Error(`invalid_manifest: negative control ${caseRecord.id} lists no assertionIds`);
+      }
       const controlPassed = listed.every((id) => assertionResults.find((r) => r.id === id)?.passed === true);
       const expectedFailureMatched = controlPassed && requiredFailures.length === 0;
       return {
