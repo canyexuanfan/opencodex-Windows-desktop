@@ -276,6 +276,15 @@ free-experimentation model.
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …and more | opencode zen, Vercel AI Gateway, Venice, NanoGPT, Synthetic, Qianfan, Alibaba, Parallel, ZenMux, LiteLLM |
 
+**OpenCode Zen** (`opencode-zen`) and the keyless **OpenCode Free** preset share
+`https://opencode.ai/zen/v1`. Free models on that gateway often hit a short-window burst
+limit around 15–20 requests/minute (community-measured; OpenCode does not publish RPM or
+`Retry-After` / `X-RateLimit-*` headers). That is separate from the keyless desktop quota
+OpenCode advertises (~200 Big Pickle/free-model requests per 5 hours on `opencode-free`).
+When Zen returns a generic rate-limit 429 without backoff headers, opencodex adds provider
+guidance to the client error and a synthetic `Retry-After` so Codex-shaped clients can wait.
+Same-key wait-and-retry remains opt-in via [`retryOn429`](/reference/configuration/).
+
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
 Volcengine Agent Plan uses its native Responses endpoint through `openai-responses`.

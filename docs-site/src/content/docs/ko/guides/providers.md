@@ -203,6 +203,9 @@ Cline IDE/CLI에서만 제공되며 API로는 사용할 수 없습니다. `minim
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …그 외 다수 | opencode zen, Vercel AI Gateway, Venice, NanoGPT, Synthetic, Qianfan, Alibaba, Parallel, ZenMux, LiteLLM |
 
+**OpenCode Zen**(`opencode-zen`)과 키 없는 **OpenCode Free** 프리셋은
+`https://opencode.ai/zen/v1`을 공유합니다. 그 게이트웨이의 무료 모델은 종종 분당 약 15–20회 요청의 짧은 창 속도 제한에 걸립니다(커뮤니티 측정; OpenCode는 RPM을 공개하지 않으며 `Retry-After` / `X-RateLimit-*` 헤더도 보내지 않음). 이는 키 없는 데스크톱 할당량(`opencode-free`에서 약 5시간당 Big Pickle/무료 모델 200회)과 별개입니다. Zen이 백오프 헤더 없는 일반 429를 반환하면 opencodex는 클라이언트 오류에 안내를 더하고 합성 `Retry-After`를 붙입니다. 동일 키 대기 재시도는 [`retryOn429`](/ko/reference/configuration/)로 선택합니다.
+
 대부분은 bearer 키와 함께 `openai-chat` 어댑터를 사용하며, Anthropic 호환 엔드포인트만 노출하는 일부
 (예: **Xiaomi MiMo**)는 `anthropic` 어댑터(`x-api-key`)를 사용합니다.
 Volcengine Agent Plan은 `openai-responses` 어댑터로 네이티브 Responses 엔드포인트를 사용합니다.

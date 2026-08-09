@@ -35,6 +35,7 @@ import {
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
+import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
 import { modelInList, namespacedToolName } from "../../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
 import {
@@ -3154,7 +3155,15 @@ async function handleResponsesInner(
       }
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
-      const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
+      const message = enrichOpenCodeZenRateLimitMessage(
+        `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+        {
+          status: upstreamResponse.status,
+          providerName: route.providerName,
+          baseUrl: route.provider.baseUrl,
+          adapter: route.provider.adapter,
+        },
+      );
       const retryAfter = resolveClientRetryAfter({
         status: upstreamResponse.status,
         message,

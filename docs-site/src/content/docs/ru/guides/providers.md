@@ -214,6 +214,14 @@ opencodex поставляется с 76 встроенными пресетам
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …и другие | opencode zen, Vercel AI Gateway, Venice, NanoGPT, Synthetic, Qianfan, Alibaba, Parallel, ZenMux, LiteLLM |
 
+**OpenCode Zen** (`opencode-zen`) и бесключевой пресет **OpenCode Free** используют один
+`https://opencode.ai/zen/v1`. Бесплатные модели на этом шлюзе часто упираются в короткое окно
+примерно 15–20 запросов в минуту (оценка сообщества; OpenCode не публикует RPM и не отдаёт
+`Retry-After` / `X-RateLimit-*`). Это отдельно от бесключевой десктопной квоты
+(~200 запросов Big Pickle/бесплатных моделей за 5 часов на `opencode-free`). Когда Zen отвечает
+общим 429 без заголовков отката, opencodex добавляет пояснение в ошибку клиента и синтетический
+`Retry-After`. Повтор с тем же ключом по-прежнему включается через [`retryOn429`](/ru/reference/configuration/).
+
 Большинство использует адаптер `openai-chat` с bearer-ключом; немногие провайдеры, предоставляющие
 только Anthropic-совместимую конечную точку (например, **Xiaomi MiMo**), используют адаптер
 `anthropic` (`x-api-key`).
