@@ -52,17 +52,17 @@ function scenarioApplicableToRequirements(
   );
 }
 
-/** Applicability for live_route_compatibility using RouteSubjectV1 fields. */
+/** Applicability for live_route_compatibility using exact RouteSubjectV1 plus validated claim state. */
 export function routeSubjectApplicableToRequirements(
   requirements: ScenarioRequirements,
   subject: RouteSubjectV1,
-  routeRequiredClaims: string[] = [],
+  supportedClaims: readonly string[],
 ): boolean {
   const inbound = requirements.inboundProtocols ?? [];
   const upstream = requirements.upstreamProtocols ?? [];
   const surfaces = requirements.surfaces ?? [];
   const requiredClaims = requirements.requiredClaims ?? [];
-  const claimsOk = requiredClaims.every((claim) => routeRequiredClaims.includes(claim));
+  const claimsOk = requiredClaims.every((claim) => supportedClaims.includes(claim));
   return (
     inbound.includes(subject.inboundProtocol) &&
     upstream.includes(subject.upstreamProtocol) &&
@@ -99,7 +99,8 @@ function scenarioContractFromManifest(
   const upstreamProtocols = parseStringArray(row.upstreamProtocols);
   const surfaces = parseStringArray(row.surfaces);
   if (!inboundProtocols || !upstreamProtocols || !surfaces) return null;
-  const requiredClaims = parseStringArray(row.requiredClaims) ?? [];
+  const requiredClaims = row.requiredClaims === undefined ? [] : parseStringArray(row.requiredClaims);
+  if (!requiredClaims) return null;
   const freshness = parseFreshness(scenarioManifest.freshness);
   if (!freshness) return null;
   return { inboundProtocols, upstreamProtocols, surfaces, requiredClaims, freshness };
@@ -139,7 +140,8 @@ export function evaluateAllApplicableRequiredPassV1(
   executionMode: ExecutionMode,
   opts: {
     subject?: ProtocolSubjectV1 | RouteSubjectV1;
-    routeRequiredClaims?: string[];
+    /** For live projection this must come from validated current claim snapshots for subjectId. */
+    routeSupportedClaims?: readonly string[];
     loadScenarioManifest?: LoadScenarioManifest;
     loadScenarioRequirements?: LoadScenarioRequirements;
     asOf?: number;
@@ -154,6 +156,14 @@ export function evaluateAllApplicableRequiredPassV1(
       canVerify: false,
       notes: ["unsupported_verification_rule"],
     };
+  }
+  if (suiteManifest.evidenceLayer === "live_route_compatibility") {
+    if (opts.subject?.subjectKind !== "route") {
+      return { applicableRequiredScenarioIds: [], passingRequiredScenarioIds: [], missingRequiredScenarioIds: [], canVerify: false, notes: ["route_subject_required"] };
+    }
+    if (opts.routeSupportedClaims === undefined) {
+      return { applicableRequiredScenarioIds: [], passingRequiredScenarioIds: [], missingRequiredScenarioIds: [], canVerify: false, notes: ["route_claim_state_required"] };
+    }
   }
 
   const requiredScenarios = suiteManifest.scenarios.filter(
@@ -186,7 +196,7 @@ export function evaluateAllApplicableRequiredPassV1(
       if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
     }
     if (suiteManifest.evidenceLayer === "live_route_compatibility" && opts.subject?.subjectKind === "route") {
-      if (!routeSubjectApplicableToRequirements(requirements, opts.subject, opts.routeRequiredClaims ?? [])) continue;
+      if (!routeSubjectApplicableToRequirements(requirements, opts.subject, opts.routeSupportedClaims!)) continue;
     }
     applicableRequired.push(s.id);
     scenarioMaxAgeById.set(s.id, requirements.freshness?.maxAgeMs ?? null);
