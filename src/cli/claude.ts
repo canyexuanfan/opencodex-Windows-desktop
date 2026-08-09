@@ -12,6 +12,7 @@ import { injectClaudeAgentDefs } from "../claude/agents-inject";
 import { effectiveModelEnv, resolveAutoContext } from "../claude/context-windows";
 import { refreshGatewayModelCacheFromProxy } from "../claude/gateway-cache";
 import { commandInvocation } from "../lib/win-exec";
+import { isProxyAdmissionSecret } from "../server/auth-cors";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig } from "../types";
 import { configuredAdminToken } from "../lib/admin-secrets";
@@ -34,6 +35,29 @@ export type ClaudeEnvDeps = {
   preBunAnthropicSlots?: readonly AnthropicParentEnvSlot[] | null;
 };
 
+function isClaudeLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "[::1]";
+}
+
+function targetsLocalClaudeProxy(value: string | undefined, port: number): boolean {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const effectivePort = parsed.port === "" ? 80 : Number(parsed.port);
+    return parsed.protocol === "http:"
+      && isClaudeLoopbackHostname(parsed.hostname)
+      && effectivePort === port
+      && parsed.username === ""
+      && parsed.password === "";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Pure env assembly (unit-tested): never sets ANTHROPIC_API_KEY (setting both
  * token vars triggers Claude Code's auth-conflict warning, 003 E1), and never
@@ -54,7 +78,7 @@ export function buildClaudeEnv(
   // stale marker left in place would suppress the admission key and then be removed,
   // leaving the child with no token at all (audit R2-1). It is opencodex state, never
   // user auth, so dropping it unconditionally is safe.
-  if (env.ANTHROPIC_AUTH_TOKEN === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
+  if (env.ANTHROPIC_AUTH_TOKEN?.trim() === PROXY_MARKER) delete env.ANTHROPIC_AUTH_TOKEN;
   // Step 1b — drop Anthropic credentials AND destinations that Bun may have synthesized
   // from a project `.env`/`.env.local`. The plain-Node launcher records genuine parent
   // exports before Bun starts and pairs that context with an argv proof, so with a
@@ -95,8 +119,7 @@ export function buildClaudeEnv(
   if (existingBaseUrl) {
     try {
       const parsed = new URL(existingBaseUrl);
-      const isLoopback = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-      if (isLoopback && parsed.port !== "" && Number(parsed.port) !== port) {
+      if (isClaudeLoopbackHostname(parsed.hostname) && parsed.port !== "" && Number(parsed.port) !== port) {
         const replacement = `http://127.0.0.1:${port}`;
         console.error(`⚠ Replacing stale opencodex ANTHROPIC_BASE_URL ${existingBaseUrl} with ${replacement}.`);
         env.ANTHROPIC_BASE_URL = replacement;
@@ -110,8 +133,26 @@ export function buildClaudeEnv(
   // the user's Claude login. Only inject a token when the proxy actually requires an
   // admission key; otherwise Claude Code keeps its own OAuth and sends it to us —
   // native claude models then pass through verbatim (see server/claude-messages.ts).
-  if ((config.apiKeys?.length ?? 0) > 0) {
-    setDefault("ANTHROPIC_AUTH_TOKEN", config.apiKeys![0].key);
+  const ownTokens = ownAdmissionTokens(config);
+  const targetsLocalProxy = targetsLocalClaudeProxy(env.ANTHROPIC_BASE_URL, port);
+  const inheritedApiKey = env.ANTHROPIC_API_KEY;
+  if (typeof inheritedApiKey === "string" && isProxyAdmissionSecret(inheritedApiKey, config)) {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  const hasUserApiKey = Boolean(env.ANTHROPIC_API_KEY?.trim());
+  const inheritedAuthToken = env.ANTHROPIC_AUTH_TOKEN;
+  const inheritedTokenIsOurs = typeof inheritedAuthToken === "string"
+    && isProxyAdmissionSecret(inheritedAuthToken, config);
+  // system-env may have injected the proxy's admission key into the parent. A
+  // proof-bound external BASE_URL is still user-owned, so never let our inherited
+  // key follow it. A user API key also wins on a local launch; remove only the token
+  // values recognized by the shared proxy-admission contract and preserve every
+  // other token.
+  if (inheritedTokenIsOurs && (!targetsLocalProxy || hasUserApiKey)) {
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+  if (targetsLocalProxy && !hasUserApiKey && ownTokens.length > 0) {
+    setDefault("ANTHROPIC_AUTH_TOKEN", ownTokens[0]);
   }
   // Detection reads the SANITIZED launch env — the exact object spawned below — so the
   // resolver and the spawned process cannot disagree. It deliberately does NOT read the
@@ -126,9 +167,9 @@ export function buildClaudeEnv(
     ...defaultAuthDetectDeps(env as NodeJS.ProcessEnv),
     ...(deps.authDetect ?? {}),
     env: () => env as NodeJS.ProcessEnv,
-    ownTokens: ownAdmissionTokens(config),
+    ownTokens,
   }));
-  if (!env.ANTHROPIC_AUTH_TOKEN && resolved.markerMode === "proxy") {
+  if (!env.ANTHROPIC_AUTH_TOKEN && !hasUserApiKey && targetsLocalProxy && resolved.markerMode === "proxy") {
     env.ANTHROPIC_AUTH_TOKEN = PROXY_MARKER;
   }
   if (resolved.origin === "auto-unknown") {
