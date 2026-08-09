@@ -2,7 +2,7 @@
  * Disposable SQLite projection schema for Compatibility Lab (CL-02).
  * Not canonical storage — rebuildable from JSONL + content-addressed artifacts.
  */
-export const LAB_SQLITE_SCHEMA_VERSION = 1;
+export const LAB_SQLITE_SCHEMA_VERSION = 2;
 
 export const LAB_SQLITE_DDL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -12,12 +12,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 CREATE TABLE IF NOT EXISTS events (
   event_id TEXT PRIMARY KEY,
-  event_kind TEXT NOT NULL,
+  event_kind TEXT NOT NULL CHECK (event_kind IN ('observation', 'claim_snapshot', 'invalidation', 'purge_tombstone')),
   recorded_at INTEGER NOT NULL,
   producer TEXT NOT NULL,
   producer_version TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  excluded INTEGER NOT NULL DEFAULT 0,
+  excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
   exclusion_reason TEXT
 );
 
@@ -33,16 +33,16 @@ CREATE TABLE IF NOT EXISTS subjects (
 CREATE TABLE IF NOT EXISTS observations (
   event_id TEXT PRIMARY KEY,
   subject_id TEXT NOT NULL,
-  evidence_layer TEXT NOT NULL,
+  evidence_layer TEXT NOT NULL CHECK (evidence_layer IN ('protocol_conformance', 'live_route_compatibility', 'task_effectiveness')),
   suite_id TEXT NOT NULL,
   suite_version TEXT NOT NULL,
   suite_manifest_digest TEXT NOT NULL,
   scenario_id TEXT NOT NULL,
   scenario_version TEXT NOT NULL,
   scenario_manifest_digest TEXT NOT NULL,
-  outcome TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('pass', 'fail', 'blocked', 'inconclusive')),
   completed_at INTEGER NOT NULL,
-  execution_mode TEXT NOT NULL,
+  execution_mode TEXT NOT NULL CHECK (execution_mode IN ('fixture', 'live', 'fabric')),
   FOREIGN KEY(event_id) REFERENCES events(event_id)
 );
 
@@ -54,13 +54,13 @@ CREATE TABLE IF NOT EXISTS claims (
   event_id TEXT PRIMARY KEY,
   subject_id TEXT NOT NULL,
   capability TEXT NOT NULL,
-  polarity TEXT NOT NULL,
+  polarity TEXT NOT NULL CHECK (polarity IN ('supported', 'not_supported', 'withdrawn')),
   source_manifest_digest TEXT NOT NULL,
   effective_at INTEGER NOT NULL,
   recorded_at INTEGER NOT NULL,
   supersedes_json TEXT NOT NULL,
-  current INTEGER NOT NULL DEFAULT 0,
-  usable INTEGER NOT NULL DEFAULT 1,
+  current INTEGER NOT NULL DEFAULT 0 CHECK (current IN (0, 1)),
+  usable INTEGER NOT NULL DEFAULT 1 CHECK (usable IN (0, 1)),
   FOREIGN KEY(event_id) REFERENCES events(event_id)
 );
 
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS invalidations (
   reason TEXT NOT NULL,
   targets_json TEXT NOT NULL,
   recorded_at INTEGER NOT NULL,
-  applied INTEGER NOT NULL DEFAULT 0,
+  applied INTEGER NOT NULL DEFAULT 0 CHECK (applied IN (0, 1)),
   FOREIGN KEY(event_id) REFERENCES events(event_id)
 );
 
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
   artifact_class TEXT,
   media_type TEXT,
   byte_count INTEGER,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('present', 'corrupt', 'purged_unavailable')),
   last_error TEXT
 );
 
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
   suite_version TEXT NOT NULL,
   suite_manifest_digest TEXT NOT NULL,
   projection_spec_version TEXT NOT NULL,
-  verdict TEXT NOT NULL,
+  verdict TEXT NOT NULL CHECK (verdict IN ('UNKNOWN', 'CLAIMED', 'PROBED', 'VERIFIED', 'DEGRADED', 'BLOCKED', 'UNSUPPORTED')),
   as_of INTEGER NOT NULL,
   scenario_manifest_digests_json TEXT NOT NULL,
   claim_source_digest TEXT,
