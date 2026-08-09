@@ -54,10 +54,13 @@ const SOURCES_WORD_RE = /^sources?/i;
 /** Match the legacy Sources-header grammar without overlapping regex quantifiers. */
 function isSourcesHeader(line: string): boolean {
   let cursor = 0;
+  /** Match one code unit using JavaScript's existing `\s` semantics. */
   const isWhitespace = (char: string | undefined): boolean => char !== undefined && /\s/u.test(char);
+  /** Advance over the current contiguous whitespace run. */
   const skipWhitespace = (): void => {
     while (isWhitespace(line[cursor])) cursor += 1;
   };
+  /** Advance over the current contiguous Markdown-star run. */
   const skipStars = (): void => {
     while (line[cursor] === "*") cursor += 1;
   };

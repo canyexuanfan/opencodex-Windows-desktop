@@ -6,6 +6,7 @@ function sse(events: { type: string; [k: string]: unknown }[]): Response {
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
 }
 
+/** Parse one authoritative completed-text event through the production SSE path. */
 async function parseCompletedText(text: string) {
   return parseSidecarSSE(sse([
     { type: "response.completed", response: { output: [{ type: "message", content: [{ type: "output_text", annotations: [], text }] }] } },
