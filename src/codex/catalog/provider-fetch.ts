@@ -153,7 +153,9 @@ interface CapturedProviderGather {
   readonly observedAuth?: ModelsAuthResolution;
   /**
    * Configured model ids this provider must keep even when live discovery omits
-   * them — currently every combo target on this provider (OCX-111 / #1308).
+   * them — combo targets that are also listed in providers.*.models (OCX-111).
+   * Combo-only ids (not in models[]) stay out of the public catalog and are
+   * synthesized for combo derivation instead (#1305).
    */
   readonly retainConfiguredModelIds?: ReadonlySet<string>;
 }
@@ -1033,17 +1035,7 @@ async function fetchProviderModelsWithAuth(
     && prov.googleMode === "vertex"
     && (prov.models?.length ?? 0) === 0
     && Boolean(prov.defaultModel);
-  const listedConfiguredIds = seedVertexDefault && prov.defaultModel
-    ? [prov.defaultModel]
-    : [...(prov.models ?? [])];
-  // Combo targets may exist only under `combos.*.targets` (not in providers.*.models).
-  // Seed those ids here so the live-discovery retain loop can keep them (OCX-111).
-  const configuredIdSet = new Set(listedConfiguredIds);
-  for (const id of captured.retainConfiguredModelIds ?? []) configuredIdSet.add(id);
-  const configuredIds = [
-    ...listedConfiguredIds,
-    ...[...configuredIdSet].filter(id => !listedConfiguredIds.includes(id)),
-  ];
+  const configuredIds = seedVertexDefault && prov.defaultModel ? [prov.defaultModel] : (prov.models ?? []);
   const configured: CatalogModel[] = configuredIds.map(id => ({
     id,
     provider: name,

@@ -1520,18 +1520,20 @@ describe("combo catalog capability intersection", () => {
 
   test("retains configured combo targets when authoritative live discovery omits them (OCX-111)", async () => {
     // Repro from #1308 / OCX-111: live /models returns a different roster than the
-    // configured combo targets. Combo-only targets (not listed in providers.*.models)
-    // must still be retained via provider hints so the failover combo catalogs.
-    clearModelCache("openrouter");
-    clearModelCache("opencode-go");
-    clearModelCache("command-code");
+    // configured combo targets. Ids listed in providers.*.models are retained when
+    // they are combo targets. Combo-only ids (not in models[]) still catalog the
+    // combo via synthesis without leaking a standalone provider row (#1305).
+    // Use non-registry provider names so enrichProviderFromRegistry cannot seed models[].
+    clearModelCache("or-test");
+    clearModelCache("go-test");
+    clearModelCache("cc-test");
     const warning = spyOn(console, "warn").mockImplementation(() => {});
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      const id = url.includes("openrouter")
+      const id = url.includes("or-test")
         ? "openrouter/other-model"
-        : url.includes("opencode")
+        : url.includes("go-test")
           ? "other-flash"
           : "other-pro";
       return new Response(JSON.stringify({ data: [{ id, owned_by: "provider" }] }), {
@@ -1543,30 +1545,30 @@ describe("combo catalog capability intersection", () => {
       resetCatalogRuntimeStateForTests();
       const rows = await gatherRoutedModels({
         port: 10100,
-        defaultProvider: "openrouter",
+        defaultProvider: "or-test",
         providers: {
-          openrouter: {
+          "or-test": {
             adapter: "openai-chat",
-            baseUrl: "https://openrouter.example.test/v1",
+            baseUrl: "https://or-test.example.test/v1",
             authMode: "key",
             apiKey: "sk-test",
             liveModels: true,
             models: ["openai/gpt-5.6-luna"],
             modelContextWindows: { "openai/gpt-5.6-luna": 200_000 },
           },
-          "opencode-go": {
+          "go-test": {
             adapter: "openai-chat",
-            baseUrl: "https://opencode.example.test/go/v1",
+            baseUrl: "https://go-test.example.test/v1",
             authMode: "key",
             apiKey: "sk-test",
             liveModels: true,
-            // Combo-only target: listed in combos but not providers.*.models.
+            // Combo-only target: not listed in providers.*.models — synthesis only.
             models: [],
             modelContextWindows: { "deepseek-v4-flash": 128_000 },
           },
-          "command-code": {
+          "cc-test": {
             adapter: "openai-chat",
-            baseUrl: "https://command-code.example.test/v1",
+            baseUrl: "https://cc-test.example.test/v1",
             authMode: "key",
             apiKey: "sk-test",
             liveModels: true,
@@ -1578,9 +1580,9 @@ describe("combo catalog capability intersection", () => {
           failover: {
             strategy: "failover",
             targets: [
-              { provider: "openrouter", model: "openai/gpt-5.6-luna", weight: 1 },
-              { provider: "opencode-go", model: "deepseek-v4-flash", weight: 1 },
-              { provider: "command-code", model: "xiaomi/mimo-v2.5-pro", weight: 1 },
+              { provider: "or-test", model: "openai/gpt-5.6-luna", weight: 1 },
+              { provider: "go-test", model: "deepseek-v4-flash", weight: 1 },
+              { provider: "cc-test", model: "xiaomi/mimo-v2.5-pro", weight: 1 },
             ],
           },
         },
@@ -1589,9 +1591,10 @@ describe("combo catalog capability intersection", () => {
       const combo = rows.find(r => r.provider === "combo" && r.id === "failover");
       expect(combo).toBeDefined();
       expect(combo!.contextWindow).toBe(128_000);
-      expect(rows.some(r => r.provider === "openrouter" && r.id === "openai/gpt-5.6-luna")).toBe(true);
-      expect(rows.some(r => r.provider === "opencode-go" && r.id === "deepseek-v4-flash")).toBe(true);
-      expect(rows.some(r => r.provider === "command-code" && r.id === "xiaomi/mimo-v2.5-pro")).toBe(true);
+      expect(rows.some(r => r.provider === "or-test" && r.id === "openai/gpt-5.6-luna")).toBe(true);
+      expect(rows.some(r => r.provider === "cc-test" && r.id === "xiaomi/mimo-v2.5-pro")).toBe(true);
+      // Combo-only member must not leak as a standalone routed row.
+      expect(rows.some(r => r.provider === "go-test" && r.id === "deepseek-v4-flash")).toBe(false);
       const warningText = warning.mock.calls.flat().join(" ");
       expect(warningText).not.toContain("member capabilities are incomplete");
       expect(warningText).not.toContain("omitted configured model ids");
@@ -1600,9 +1603,9 @@ describe("combo catalog capability intersection", () => {
     } finally {
       warning.mockRestore();
       globalThis.fetch = originalFetch;
-      clearModelCache("openrouter");
-      clearModelCache("opencode-go");
-      clearModelCache("command-code");
+      clearModelCache("or-test");
+      clearModelCache("go-test");
+      clearModelCache("cc-test");
     }
   }, 15_000);
 });
