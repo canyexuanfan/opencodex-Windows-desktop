@@ -38,7 +38,7 @@ export interface AssertionSpec {
 
 export interface ExpectedFailureSpec {
   controlKind: "conformance_negative_control" | "capability_absence_control";
-  expectedClass: string;
+  expectedClass: FailureClassification;
   expectedCode: string;
   assertionIds: string[];
   onMatch: "pass" | "unsupported";
