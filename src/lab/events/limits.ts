@@ -4,7 +4,7 @@ import {
   MAX_OBJECT_KEYS_PER_EVENT,
   MAX_SANITIZED_STRING_FIELD,
 } from "../constants";
-import { LabValidationError } from "./validate";
+import { LabValidationError } from "./errors";
 
 const FORBIDDEN_KEY_RE =
   /(?:^|_)(?:secret|token|apikey|api_key|password|credential|authorization|cookie|bearer|prompt|repository|filepath|file_path|baseurl|base_url|hostname|rawrequest|raw_request)(?:$|_)/i;
