@@ -612,7 +612,7 @@ export const en = {
   "sub.workspace.priority": "Priority",
   "sub.ultraMode": "Ultra mode",
   "sub.ultraModeHint": "Enable the Proactive multi-agent delegation policy for every model and reasoning effort (does not change reasoning effort itself). Writes multi_agent_mode_hint_text in config.toml.",
-  "sub.ultraModeV2Required": "Requires the multi_agent_v2 feature — enable it with ocx v2 on first.",
+  "sub.ultraModeV2Required": "Requires the v2 multi-agent surface — enable multi_agent_v2 and select v2 in the Sub-agent mode control first.",
   "sub.ultraModeText": "Ultra mode delegation text",
   "sub.ultraModePreset": "Restore preset",
   "sub.ultraModeLoadFail": "Failed to load Ultra mode settings — is the proxy running?",

@@ -28,21 +28,37 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
   const [ultraMode, setUltraMode] = useState<UltraModeState>({ enabled: false, hintText: null, multiAgentV2Enabled: false });
   const [ultraSaving, setUltraSaving] = useState(false);
   const [ultraLoadFailed, setUltraLoadFailed] = useState(false);
+  const ultraLoadGeneration = useRef(0);
+  const currentUltraApiBase = useRef(apiBase);
+  useEffect(() => {
+    currentUltraApiBase.current = apiBase;
+    ultraLoadGeneration.current++;
+  }, [apiBase]);
 
   // Shared loader for /api/v2 state (multi-agent v2 flag + mode hint). Initial-load
   // failures surface sub.ultraModeLoadFail; refresh failures are rethrown so
   // saveUltraMode can report them against the save action.
   const loadUltraMode = useCallback(async (signal?: AbortSignal) => {
+    if (currentUltraApiBase.current !== apiBase) return false;
+    const generation = ++ultraLoadGeneration.current;
     const res = await fetch(`${apiBase}/api/v2`, { signal });
-    const data = await readJsonOrThrow<{ enabled?: boolean; multiAgentModeHintText?: string | null }>(res, t("sub.ultraModeLoadFail"));
-    if (!data) return;
-    if (signal?.aborted) return;
+    const data = await readJsonOrThrow<{
+      enabled?: boolean;
+      multiAgentMode?: "v1" | "default" | "v2";
+      multiAgentModeHintText?: string | null;
+    }>(res, t("sub.ultraModeLoadFail"));
+    if (!data) return false;
+    if (signal?.aborted || generation !== ultraLoadGeneration.current || currentUltraApiBase.current !== apiBase) return false;
     setUltraLoadFailed(false);
     setUltraMode({
       enabled: data.enabled ?? false,
       hintText: data.multiAgentModeHintText ?? null,
-      multiAgentV2Enabled: data.enabled ?? false,
+      // Ultra mode replaces Codex's effort-derived policy for every model. The
+      // `default` surface still preserves upstream V1 pins (for example luna),
+      // so only an explicitly forced V2 catalog is an effective surface here.
+      multiAgentV2Enabled: data.enabled === true && data.multiAgentMode === "v2",
     });
+    return true;
   }, [apiBase, t]);
 
   useEffect(() => {
@@ -61,6 +77,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
 
   const saveUltraMode = async (patch: UltraModePatch) => {
     if (ultraSaving) return;
+    const requestApiBase = apiBase;
     setUltraSaving(true);
     setStatus("");
     try {
@@ -70,16 +87,31 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
         body: JSON.stringify(patch),
       });
       await readJsonOrThrow(res, t("sub.ultraModeSaveFail"));
-      await loadUltraMode();
+      if (currentUltraApiBase.current !== requestApiBase || !await loadUltraMode()) return;
       setOk(true);
       setStatus(t("sub.ultraModeSaved"));
     } catch (error) {
+      if (currentUltraApiBase.current !== requestApiBase) return;
       setOk(false);
       setStatus(error instanceof Error && error.message ? error.message : t("sub.networkError"));
     } finally {
       setUltraSaving(false);
     }
   };
+
+  const retryUltraMode = useCallback(async () => {
+    try {
+      if (!await loadUltraMode()) return;
+      // A successful retry replaces the failed initial load; do not leave the
+      // page-level load error visible after the controls have recovered.
+      setOk(false);
+      setStatus(current => current === t("sub.ultraModeLoadFail") ? "" : current);
+    } catch {
+      setOk(false);
+      setUltraLoadFailed(true);
+      setStatus(t("sub.ultraModeLoadFail"));
+    }
+  }, [loadUltraMode, t]);
 
   const loadSubagents = useCallback(async (): Promise<CachedSubagents> => {
     const res = await fetch(`${apiBase}/api/subagent-models`);
@@ -193,7 +225,7 @@ export default function Subagents({ apiBase }: { apiBase: string }) {
           ultraSaving,
           onUltraModeSave: patch => { void saveUltraMode(patch); },
           ultraLoadFailed,
-          onUltraModeRetry: () => { void loadUltraMode().catch(() => { setOk(false); setUltraLoadFailed(true); setStatus(t("sub.ultraModeLoadFail")); }); },
+          onUltraModeRetry: () => { void retryUltraMode(); },
         }}
       />
     </>

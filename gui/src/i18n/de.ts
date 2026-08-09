@@ -591,7 +591,7 @@ export const de: Record<TKey, string> = {
   "sub.workspace.selector": "Öffentlicher Selektor",
   "sub.ultraMode": "Ultra-Modus",
   "sub.ultraModeHint": "Aktiviert die proaktive Multi-Agent-Delegierungsrichtlinie für alle Modelle und Reasoning-Efforts (ändert den Reasoning-Effort selbst nicht). Schreibt multi_agent_mode_hint_text in config.toml.",
-  "sub.ultraModeV2Required": "Benötigt das multi_agent_v2-Feature — aktivieren Sie es zuerst mit ocx v2 on.",
+  "sub.ultraModeV2Required": "Erfordert die v2-Multi-Agent-Oberfläche — aktivieren Sie zuerst multi_agent_v2 und wählen Sie v2 in der Subagentenmodus-Steuerung.",
   "sub.ultraModeText": "Delegierungstext des Ultra-Modus",
   "sub.ultraModePreset": "Voreinstellung wiederherstellen",
   "sub.ultraModeLoadFail": "Ultra-Modus-Einstellungen konnten nicht geladen werden — läuft der Proxy?",

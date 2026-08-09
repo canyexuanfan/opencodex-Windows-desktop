@@ -145,7 +145,9 @@ export async function cmdV2(args: string[], deps: V2CliDeps = {}, findPort?: () 
         : "multi_agent_mode_hint_text already unset — nothing to do.");
       return 0;
     }
-    if (value.trim().length === 0 || value.startsWith("-")) {
+    // `--clear` is the only reserved token; hints are otherwise arbitrary
+    // nonblank text and may legitimately begin with a hyphen.
+    if (value.trim().length === 0) {
       log.error("v2 mode-hint: pass the hint text, or --clear to unset it.");
       return 1;
     }

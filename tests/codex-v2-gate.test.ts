@@ -4,7 +4,7 @@
  * config.toml reader + max_concurrent_threads_per_session writer fixtures.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -33,6 +33,7 @@ import {
   isMultiAgentV2Enabled,
   isTranslatableV1ChildLimit,
   isTranslatableV2TotalLimit,
+  probeCodexSupportsModeHint,
   setAgentsEnabled,
   setAgentsMaxDepth,
   setMaxConcurrentThreads,
@@ -42,6 +43,7 @@ import {
   v1ChildLimitToV2TotalLimit,
   v2TotalLimitToV1ChildLimit,
 } from "../src/codex/features";
+import { resetCodexRuntimeResolveCacheForTests, setCodexRuntimeResolveCacheForTests } from "../src/codex/runtime";
 import { cmdV2, codexFeaturesInvocation, v2StatusLine, multiAgentModeLine } from "../src/cli/v2";
 import { handleManagementAPI } from "../src/server/management-api";
 import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
@@ -456,6 +458,248 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
     expect(getMultiAgentModeHintText(basic)).toBe("Proactive\nmulti-line\n");
     const literal = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = '''\nLiteral\\path\n'''\n");
     expect(getMultiAgentModeHintText(literal)).toBe("Literal\\path\n");
+  });
+
+  test("reader applies full multi-line newline and continuation semantics", () => {
+    const basic = fixtureConfig("[features.multi_agent_v2]\r\nmulti_agent_mode_hint_text = \"\"\"\r\nPro\\\r\n  active\r\n\"\"\"\r\n");
+    expect(getMultiAgentModeHintText(basic)).toBe("Proactive\n");
+    const literal = fixtureConfig("[features.multi_agent_v2]\r\nmulti_agent_mode_hint_text = '''\r\nLiteral\\\r\n  text\r\n'''\r\n");
+    expect(getMultiAgentModeHintText(literal)).toBe("Literal\\\n  text\n");
+    const slashParity = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = \"\"\"\na\\\\\nb\n\"\"\"\n");
+    expect(getMultiAgentModeHintText(slashParity)).toBe("a\\\nb\n");
+  });
+
+  test("reader keeps bracket-shaped prose inside a multi-line hint", () => {
+    const path = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = \"\"\"\nhello\n[bracketed]\nworld\n\"\"\"\nenabled = true\n");
+    expect(getMultiAgentModeHintText(path)).toBe("hello\n[bracketed]\nworld\n");
+  });
+
+  test("writer updates and clears quoted dedicated-table keys without duplicates", () => {
+    for (const quoted of ['"multi_agent_mode_hint_text"', "'multi_agent_mode_hint_text'"]) {
+      const path = fixtureConfig(`[features.multi_agent_v2]\n${quoted} = "old"\nenabled = true\n`);
+      expect(getMultiAgentModeHintText(path)).toBe("old");
+      expect(setMultiAgentModeHintText(PRESET, path)).toEqual({ ok: true, changed: true });
+      expect((readFileSync(path, "utf8").match(/multi_agent_mode_hint_text/g) ?? [])).toHaveLength(1);
+      expect(getMultiAgentModeHintText(path)).toBe(PRESET);
+      expect(setMultiAgentModeHintText(null, path)).toEqual({ ok: true, changed: true });
+      expect(readFileSync(path, "utf8")).not.toContain("multi_agent_mode_hint_text");
+    }
+  });
+
+  test("writer refuses dotted V2 definitions without changing config bytes", () => {
+    for (const original of [
+      "features.multi_agent_v2.enabled = true\n",
+      "[features]\nmulti_agent_v2.enabled = true\n",
+      '"features"."multi_agent_v2"."enabled" = true\n',
+    ]) {
+      const path = fixtureConfig(original);
+      expect(setMultiAgentModeHintText(PRESET, path)).toMatchObject({ ok: false });
+      expect(readFileSync(path, "utf8")).toBe(original);
+    }
+  });
+
+  test("dotted-looking prose inside a multi-line value does not block a supported table", () => {
+    const path = fixtureConfig('[features.multi_agent_v2]\nenabled = true\nother = """\nfeatures.multi_agent_v2.enabled = false\n"""\n');
+    expect(setMultiAgentModeHintText(PRESET, path)).toEqual({ ok: true, changed: true });
+    expect(getMultiAgentModeHintText(path)).toBe(PRESET);
+  });
+
+  test("inline V2 after bracket-shaped multiline prose is read and fails closed on edit", () => {
+    const original = '[features]\nother = """\n[prose]\n"""\nmulti_agent_v2 = { enabled = true, multi_agent_mode_hint_text = "inline" }\n';
+    const path = fixtureConfig(original);
+    expect(getMultiAgentModeHintText(path)).toBe("inline");
+    expect(setMultiAgentModeHintText(PRESET, path)).toMatchObject({ ok: false });
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
+
+  test("dedicated key after bracket-shaped multiline prose fails closed without duplication", () => {
+    const original = '[features.multi_agent_v2]\nother = """\n[prose]\n"""\nmulti_agent_mode_hint_text = "old"\n';
+    const path = fixtureConfig(original);
+    expect(getMultiAgentModeHintText(path)).toBe("old");
+    expect(setMultiAgentModeHintText(PRESET, path)).toMatchObject({ ok: false });
+    expect(setMultiAgentModeHintText(null, path)).toMatchObject({ ok: false });
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
+});
+
+describe("multi_agent_mode_hint_text native capability probe", () => {
+  const native = (supported: boolean, windows = false) => Buffer.concat([
+    windows ? Buffer.from("MZ00") : Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+    Buffer.from(supported ? "multi_agent_mode_hint_text" : "older_codex_schema"),
+  ]);
+  const selectRuntime = (command: string, version = "test") => {
+    resetCodexRuntimeResolveCacheForTests();
+    setCodexRuntimeResolveCacheForTests({ runtime: { command, version, source: "fallback" }, failures: [] });
+  };
+
+  test("clear bypasses an unsupported runtime probe so invalid old config can recover", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-clear-"));
+    const command = join(dir, "codex-old");
+    writeFileSync(command, native(false));
+    selectRuntime(command);
+    const path = fixtureConfig('[features.multi_agent_v2]\nmulti_agent_mode_hint_text = "new-only"\n');
+    try {
+      expect(setMultiAgentModeHintText(null, path)).toEqual({ ok: true, changed: true });
+      expect(getMultiAgentModeHintText(path)).toBe(null);
+    } finally {
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe caches by selected command/version and invalidates on selection change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-cache-"));
+    const supported = join(dir, "codex-supported");
+    const unsupported = join(dir, "codex-unsupported");
+    writeFileSync(supported, native(true));
+    writeFileSync(unsupported, native(false));
+    try {
+      selectRuntime(supported, "1");
+      expect(probeCodexSupportsModeHint()).toBe(true);
+      writeFileSync(supported, native(false));
+      expect(probeCodexSupportsModeHint()).toBe(true);
+      selectRuntime(unsupported, "1");
+      expect(probeCodexSupportsModeHint()).toBe(false);
+    } finally {
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe ignores unrelated PATH installations and script wrappers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-selected-"));
+    const selected = join(dir, "selected-old");
+    const unrelated = join(dir, "unrelated-bin");
+    mkdirSync(unrelated);
+    writeFileSync(selected, native(false));
+    writeFileSync(join(unrelated, "codex.opencodex-real"), native(true));
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${unrelated}:${oldPath ?? ""}`;
+    try {
+      selectRuntime(selected);
+      expect(probeCodexSupportsModeHint()).toBe(false);
+      const wrapperOnly = join(dir, "wrapper-only.cmd");
+      writeFileSync(wrapperOnly, "@echo off\r\nnode codex.js %*\r\n");
+      selectRuntime(wrapperOnly);
+      expect(probeCodexSupportsModeHint()).toBe(null);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe resolves the selected Windows npm wrapper's platform package", () => {
+    const prefix = mkdtempSync(join(tmpdir(), "ocx-mode-hint-win-"));
+    const command = join(prefix, "codex.cmd");
+    const pkg = join(prefix, "node_modules", "@openai", "codex-win32-x64");
+    const binary = join(pkg, "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe");
+    mkdirSync(dirname(binary), { recursive: true });
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", version: "test" }));
+    writeFileSync(binary, native(true, true));
+    writeFileSync(command, "@echo off\r\nnode node_modules\\@openai\\codex\\bin\\codex.js %*\r\n");
+    try {
+      selectRuntime(command);
+      expect(probeCodexSupportsModeHint()).toBe(true);
+    } finally {
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe resolves an exact bare PATH command without scanning peer installs", () => {
+    const prefix = mkdtempSync(join(tmpdir(), "ocx-mode-hint-bare-"));
+    const binDir = join(prefix, "bin");
+    const js = join(prefix, "node_modules", "@openai", "codex", "bin", "codex.js");
+    const pkg = join(prefix, "node_modules", "@openai", "codex-darwin-arm64");
+    const binary = join(pkg, "vendor", "aarch64-apple-darwin", "bin", "codex");
+    mkdirSync(dirname(js), { recursive: true });
+    mkdirSync(dirname(binary), { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(js, "#!/usr/bin/env node\n");
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", version: "test" }));
+    writeFileSync(binary, native(true));
+    symlinkSync(js, join(binDir, "codex.opencodex-real"));
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+    try {
+      selectRuntime("codex.opencodex-real");
+      expect(probeCodexSupportsModeHint()).toBe(true);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe cache distinguishes different PATH targets for the same bare command", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-mode-hint-path-swap-"));
+    const supportedDir = join(root, "supported");
+    const oldDir = join(root, "old");
+    const command = "codex.opencodex-real";
+    mkdirSync(supportedDir);
+    mkdirSync(oldDir);
+    writeFileSync(join(supportedDir, command), native(true));
+    writeFileSync(join(oldDir, command), native(false));
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = `${supportedDir}:${oldPath ?? ""}`;
+      selectRuntime(command, "same-version");
+      expect(probeCodexSupportsModeHint()).toBe(true);
+      process.env.PATH = `${oldDir}:${oldPath ?? ""}`;
+      selectRuntime(command, "same-version");
+      expect(probeCodexSupportsModeHint()).toBe(false);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("a bare selected command is resolved from PATH, never a same-named cwd file", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-mode-hint-cwd-shadow-"));
+    const cwd = join(root, "cwd");
+    const bin = join(root, "bin");
+    const command = "codex-cwd-shadow";
+    mkdirSync(cwd);
+    mkdirSync(bin);
+    writeFileSync(join(cwd, command), native(true));
+    writeFileSync(join(bin, command), native(false));
+    const oldCwd = process.cwd();
+    const oldPath = process.env.PATH;
+    process.chdir(cwd);
+    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    try {
+      selectRuntime(command);
+      expect(probeCodexSupportsModeHint()).toBe(false);
+    } finally {
+      process.chdir(oldCwd);
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      resetCodexRuntimeResolveCacheForTests();
+    }
+  });
+
+  test("probe follows only the selected OCX shim's recorded backing runtime", () => {
+    const prefix = mkdtempSync(join(tmpdir(), "ocx-mode-hint-shim-"));
+    const ocxHome = join(prefix, "ocx-home");
+    const shim = join(prefix, "bin", "codex");
+    const backing = join(prefix, "node_modules", "@openai", "codex", "bin", "codex.js");
+    const pkg = join(prefix, "node_modules", "@openai", "codex-darwin-arm64");
+    const binary = join(pkg, "vendor", "aarch64-apple-darwin", "bin", "codex");
+    mkdirSync(dirname(shim), { recursive: true });
+    mkdirSync(dirname(backing), { recursive: true });
+    mkdirSync(dirname(binary), { recursive: true });
+    mkdirSync(ocxHome, { recursive: true });
+    writeFileSync(shim, `#!/bin/sh\nexec '${backing}' "$@"\n`);
+    writeFileSync(backing, "#!/usr/bin/env node\n");
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", version: "test" }));
+    writeFileSync(binary, native(true));
+    writeFileSync(join(ocxHome, "codex-shim.json"), JSON.stringify({
+      wrappers: [{ wrapperPath: shim, originalPath: shim, backupPath: backing }],
+    }));
+    const oldHome = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = ocxHome;
+    try {
+      selectRuntime(shim);
+      expect(probeCodexSupportsModeHint()).toBe(true);
+    } finally {
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldHome;
+      resetCodexRuntimeResolveCacheForTests();
+    }
   });
 });
 
@@ -1276,12 +1520,14 @@ describe("cli surface", () => {
       // Raw leading/trailing whitespace is preserved, matching the API contract.
       expect(await cmdV2(["mode-hint", "  spaced hint  "], { log })).toBe(0);
       expect(getMultiAgentModeHintText(path)).toBe("  spaced hint  ");
+      expect(await cmdV2(["mode-hint", "- Delegate independent work early"], { log })).toBe(0);
+      expect(getMultiAgentModeHintText(path)).toBe("- Delegate independent work early");
       // A present whitespace-only value is rejected (API rejects it with 400).
       expect(await cmdV2(["mode-hint", "   "], { log })).toBe(1);
-      expect(getMultiAgentModeHintText(path)).toBe("  spaced hint  ");
+      expect(getMultiAgentModeHintText(path)).toBe("- Delegate independent work early");
       // A missing argument is a usage error, never a destructive clear.
       expect(await cmdV2(["mode-hint"], { log })).toBe(1);
-      expect(getMultiAgentModeHintText(path)).toBe("  spaced hint  ");
+      expect(getMultiAgentModeHintText(path)).toBe("- Delegate independent work early");
       // Explicit --clear still removes the hint.
       expect(await cmdV2(["mode-hint", "--clear"], { log })).toBe(0);
       expect(getMultiAgentModeHintText(path)).toBe(null);

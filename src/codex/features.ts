@@ -31,9 +31,10 @@
  * `configPath` parameter without fighting the module-load-time const in paths.ts.
  */
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
-import { AtomicWriteResidualTempError, AtomicWriteSecretResidualError, atomicWriteFile, expandUserPath } from "../config";
+import { AtomicWriteResidualTempError, AtomicWriteSecretResidualError, atomicWriteFile, expandUserPath, getConfigDir } from "../config";
 import { forgetEphemeralSecretPath } from "../lib/windows-secret-acl";
 import { CODEX_CONFIG_PATH } from "./paths";
 import { resolveAndPersistCodexRuntime } from "./runtime";
@@ -455,13 +456,13 @@ function decodeTomlStringToken(token: string): string | null {
   // Multi-line literal string: `'''...'''` verbatim (backslashes not special).
   if (token.startsWith("'''")) {
     return token.endsWith("'''") && token.length >= 6
-      ? token.slice(3, -3)
+      ? normalizeTomlMultilineBody(token.slice(3, -3))
       : null;
   }
   // Multi-line basic string: `"""..."""` with escapes.
   if (token.startsWith('"""')) {
     if (!token.endsWith('"""') || token.length < 6) return null;
-    return decodeBasicStringBody(token.slice(3, -3));
+    return decodeBasicStringBody(normalizeTomlMultilineBody(token.slice(3, -3)), true);
   }
   if (token.startsWith("'")) {
     return token.endsWith("'") ? token.slice(1, -1) : null;
@@ -470,13 +471,28 @@ function decodeTomlStringToken(token: string): string | null {
   return decodeBasicStringBody(token.slice(1, -1));
 }
 
+/** Apply TOML's multi-line newline rules before string-body decoding. */
+function normalizeTomlMultilineBody(body: string): string {
+  const normalized = body.replace(/\r\n/g, "\n");
+  return normalized.startsWith("\n") ? normalized.slice(1) : normalized;
+}
+
 /** Unescape the body of a TOML basic string (single- or multi-line). */
-function decodeBasicStringBody(body: string): string | null {
+function decodeBasicStringBody(body: string, multiline = false): string | null {
   let out = "";
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
     if (ch !== "\\") { out += ch; continue; }
     const esc = body[++i];
+    if (multiline) {
+      let newline = i;
+      while (body[newline] === " " || body[newline] === "\t") newline++;
+      if (body[newline] === "\n") {
+        i = newline;
+        while (body[i + 1] === " " || body[i + 1] === "\t" || body[i + 1] === "\n") i++;
+        continue;
+      }
+    }
     switch (esc) {
       case "\\": out += "\\"; break;
       case '"': out += '"'; break;
@@ -581,6 +597,40 @@ function findInlineTableEnd(text: string, openIdx: number): number {
 
 interface InlineEntry { keyStart: number; valueStart: number; valueEnd: number }
 
+/** Locate a top-level assignment while skipping complete (possibly multiline) values. */
+function findTomlAssignment(text: string, key: string): InlineEntry | null {
+  let lineStart = 0;
+  while (lineStart < text.length) {
+    let i = lineStart;
+    while (text[i] === " " || text[i] === "\t") i++;
+    const keyStart = i;
+    let keyText = "";
+    if (text[i] === '"' || text[i] === "'") {
+      const keyEnd = scanTomlValueEnd(text, i);
+      keyText = decodeTomlStringToken(text.slice(i, keyEnd)) ?? "";
+      i = keyEnd;
+    } else {
+      const match = /^[A-Za-z0-9_-]+/.exec(text.slice(i));
+      if (match) {
+        keyText = match[0];
+        i += match[0].length;
+      }
+    }
+    while (text[i] === " " || text[i] === "\t") i++;
+    if (keyText && text[i] === "=") {
+      const valueStart = i + 1;
+      const valueEnd = scanTomlValueEnd(text, valueStart);
+      if (keyText === key) return { keyStart, valueStart, valueEnd };
+      const nextLine = text.indexOf("\n", valueEnd);
+      lineStart = nextLine === -1 ? text.length : nextLine + 1;
+      continue;
+    }
+    const nextLine = text.indexOf("\n", lineStart);
+    lineStart = nextLine === -1 ? text.length : nextLine + 1;
+  }
+  return null;
+}
+
 /**
  * Locate `key = value` inside the inline-table body spanning [bodyStart, bodyEnd)
  * (exclusive of the braces), string-aware on both keys and values, or null.
@@ -637,7 +687,7 @@ function editScalarInTable(content: string, table: string, key: string, encoded:
   for (let i = headerIdx + 1; i < lines.length; i++) {
     if (/^\s*\[/.test(lines[i])) { end = i; break; }
   }
-  const keyRe = new RegExp(`^(\\s*)${key}\\s*=\\s*`);
+  const keyRe = new RegExp(`^(\\s*)${tomlKeyPattern(key)}\\s*=\\s*`);
   for (let i = headerIdx + 1; i < end; i++) {
     const m = lines[i].match(keyRe);
     if (!m) continue;
@@ -713,9 +763,9 @@ export function setAgentsMaxDepth(value: number | null, configPath?: string): Co
 function getV2StringField(key: string, configPath?: string): string | null {
   const content = readConfigText(configPath);
   if (content === null) return null;
-  const table = tomlTableBody(content, "features.multi_agent_v2");
+  const table = tomlTableBodyForStringFields(content, "features.multi_agent_v2");
   if (table !== null) {
-    const keyRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*`, "m");
+    const keyRe = new RegExp(`^\\s*${tomlKeyPattern(key)}\\s*=\\s*`, "m");
     const m = table.match(keyRe);
     if (m) {
       const valueStart = m.index! + m[0].length;
@@ -724,11 +774,13 @@ function getV2StringField(key: string, configPath?: string): string | null {
     }
     return null;
   }
-  const features = tomlTableBody(content, "features");
+  const features = tomlTableBodyForStringFields(content, "features");
   if (features === null) return null;
-  const m = features.match(/multi_agent_v2\s*=\s*\{/);
-  if (!m) return null;
-  const openIdx = m.index! + m[0].length - 1;
+  const v2Entry = findTomlAssignment(features, "multi_agent_v2");
+  if (!v2Entry) return null;
+  let openIdx = v2Entry.valueStart;
+  while (features[openIdx] === " " || features[openIdx] === "\t") openIdx++;
+  if (features[openIdx] !== "{") return null;
   const closeIdx = findInlineTableEnd(features, openIdx);
   if (closeIdx === -1) return null;
   const entry = findInlineEntry(features, openIdx + 1, closeIdx, key);
@@ -736,8 +788,52 @@ function getV2StringField(key: string, configPath?: string): string | null {
   return decodeTomlStringToken(features.slice(entry.valueStart, entry.valueEnd).trim());
 }
 
+/**
+ * A table body scanner that skips complete TOML values before recognizing the
+ * next header. Unlike the legacy line scanner, bracket-shaped prose inside a
+ * multi-line string cannot truncate the table.
+ */
+function tomlTableBodyForStringFields(content: string, header: string): string | null {
+  const escaped = escapeRegExp(header);
+  const match = new RegExp(`^\\s*\\[${escaped}\\]\\s*(?:#.*)?$`, "m").exec(content);
+  if (!match) return null;
+  const newline = content.indexOf("\n", match.index + match[0].length);
+  if (newline === -1) return "";
+  const bodyStart = newline + 1;
+  let lineStart = bodyStart;
+  while (lineStart < content.length) {
+    let cursor = lineStart;
+    while (content[cursor] === " " || content[cursor] === "\t") cursor++;
+    if (content[cursor] === "[") return content.slice(bodyStart, lineStart);
+    const lineEnd = content.indexOf("\n", cursor);
+    const boundedEnd = lineEnd === -1 ? content.length : lineEnd;
+    let keyEnd = cursor;
+    if (content[keyEnd] === '"' || content[keyEnd] === "'") {
+      keyEnd = scanTomlValueEnd(content, keyEnd);
+    } else {
+      const keyMatch = /^[A-Za-z0-9_.-]+/.exec(content.slice(keyEnd, boundedEnd));
+      if (keyMatch) keyEnd += keyMatch[0].length;
+    }
+    while (content[keyEnd] === " " || content[keyEnd] === "\t") keyEnd++;
+    if (content[keyEnd] === "=" && keyEnd < boundedEnd) {
+      const valueEnd = scanTomlValueEnd(content, keyEnd + 1);
+      const nextLine = content.indexOf("\n", valueEnd);
+      lineStart = nextLine === -1 ? content.length : nextLine + 1;
+    } else {
+      lineStart = lineEnd === -1 ? content.length : lineEnd + 1;
+    }
+  }
+  return content.slice(bodyStart);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Bare and quoted TOML forms of one known-safe key. */
+function tomlKeyPattern(key: string): string {
+  const escaped = escapeRegExp(key);
+  return `(?:${escaped}|"${escaped}"|'${escaped}')`;
 }
 
 export function getSubagentDeveloperInstructions(configPath?: string): string | null {
@@ -771,12 +867,30 @@ function setV2StringField(key: string, value: string | null, configPath?: string
   // the document (scanTomlValueEnd stops at the second quote). Refuse the edit
   // rather than write invalid TOML; the user can convert the value to a single
   // line first. Single-line literals and basic strings are unaffected.
-  const multilinePrefix = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*("""|''')`, "m");
+  const multilinePrefix = new RegExp(`^\\s*${tomlKeyPattern(key)}\\s*=\\s*("""|''')`, "m");
   if (multilinePrefix.test(content)) {
     return { ok: false, error: `multi-line TOML string for ${key} is not editable; convert it to a single-line string first` };
   }
 
-  if (tomlTableBody(content, "features.multi_agent_v2") !== null) {
+  // A parsed V2 object without one of the supported source forms came from
+  // dotted/quoted path segments. Appending a dedicated table would redefine it
+  // and make Codex reject the file, so fail closed without changing any bytes.
+  const parsedFeatures = parsedTomlTable(content, "features");
+  const parsedV2 = parsedFeatures === null ? null : plainTomlRecord(parsedFeatures.multi_agent_v2);
+  const dedicatedV2 = tomlTableBodyForStringFields(content, "features.multi_agent_v2") !== null;
+  const featuresBody = tomlTableBodyForStringFields(content, "features");
+  const featuresV2Entry = featuresBody === null ? null : findTomlAssignment(featuresBody, "multi_agent_v2");
+  const supportedFeaturesEntry = featuresV2Entry !== null;
+  if (parsedV2 !== null && !dedicatedV2 && !supportedFeaturesEntry) {
+    return { ok: false, error: "dotted or quoted multi_agent_v2 config is not supported for managed string fields" };
+  }
+
+  const dedicatedStringBody = tomlTableBodyForStringFields(content, "features.multi_agent_v2");
+  if (dedicatedStringBody !== null) {
+    const legacyDedicatedBody = tomlTableBody(content, "features.multi_agent_v2") ?? "";
+    if (findTomlAssignment(dedicatedStringBody, key) !== null && findTomlAssignment(legacyDedicatedBody, key) === null) {
+      return { ok: false, error: `cannot edit ${key} after a header-shaped multiline value safely` };
+    }
     const next = editScalarInTable(content, "features.multi_agent_v2", key, encoded);
     if (next === content) return { ok: true, changed: false };
     atomicWriteFile(path, next);
@@ -840,6 +954,9 @@ function setV2StringField(key: string, value: string | null, configPath?: string
         return { ok: true, changed: true };
       }
     }
+    if (featuresV2Entry !== null) {
+      return { ok: false, error: "multi_agent_v2 inside a multiline [features] table is not editable safely" };
+    }
   }
 
   if (encoded === null) return { ok: true, changed: false };
@@ -868,15 +985,19 @@ export function setMultiAgentModeHintText(value: string | null, configPath?: str
   // binary provably lacks it. A probe that cannot run (missing binary,
   // unreadable file) does not block: that is the test/hermetic path and the
   // headless runtime fallback.
-  const probe = probeCodexSupportsModeHint();
-  if (probe === false) {
-    return {
-      ok: false,
-      error: "installed Codex does not support multi_agent_mode_hint_text; update Codex first",
-    };
+  if (value !== null) {
+    const probe = probeCodexSupportsModeHint();
+    if (probe === false) {
+      return {
+        ok: false,
+        error: "installed Codex does not support multi_agent_mode_hint_text; update Codex first",
+      };
+    }
   }
   return setV2StringField("multi_agent_mode_hint_text", value, configPath);
 }
+
+const modeHintCapabilityCache = new Map<string, boolean | null>();
 
 /**
  * True when the installed Codex runtime binary contains the
@@ -886,14 +1007,21 @@ export function setMultiAgentModeHintText(value: string | null, configPath?: str
 export function probeCodexSupportsModeHint(): boolean | null {
   try {
     const runtime = resolveAndPersistCodexRuntime({ env: process.env }).runtime;
+    const selectedPath = resolveSelectedCommandPath(runtime.command);
+    let selectedIdentity = selectedPath ?? "";
+    try { if (selectedPath) selectedIdentity = realpathSync(selectedPath); } catch { /* keep lexical path */ }
+    const cacheKey = `${runtime.command}\0${runtime.version ?? ""}\0${selectedIdentity}`;
+    if (modeHintCapabilityCache.has(cacheKey)) return modeHintCapabilityCache.get(cacheKey)!;
     const candidates = codexNativeBinaryCandidates(runtime.command);
     let sawBinary = false;
     for (const candidate of candidates) {
       try {
         if (!existsSync(candidate)) continue;
         const buf = readFileSync(candidate);
+        if (!isNativeExecutable(buf)) continue;
         sawBinary = true;
         if (buf.includes(Buffer.from("multi_agent_mode_hint_text", "utf8"))) {
+          modeHintCapabilityCache.set(cacheKey, true);
           return true;
         }
       } catch {
@@ -901,10 +1029,31 @@ export function probeCodexSupportsModeHint(): boolean | null {
       }
     }
     // At least one real binary was inspected and none contained the key.
-    return sawBinary ? false : null;
+    const result = sawBinary ? false : null;
+    modeHintCapabilityCache.set(cacheKey, result);
+    return result;
   } catch {
     return null;
   }
+}
+
+const CODEX_PLATFORM_PACKAGES = [
+  ["codex-darwin-arm64", "aarch64-apple-darwin", "codex"],
+  ["codex-darwin-x64", "x86_64-apple-darwin", "codex"],
+  ["codex-linux-x64", "x86_64-unknown-linux-musl", "codex"],
+  ["codex-linux-arm64", "aarch64-unknown-linux-musl", "codex"],
+  ["codex-win32-x64", "x86_64-pc-windows-msvc", "codex.exe"],
+  ["codex-win32-arm64", "aarch64-pc-windows-msvc", "codex.exe"],
+] as const;
+
+function isNativeExecutable(buf: Buffer): boolean {
+  if (buf.length < 4) return false;
+  if (buf[0] === 0x4d && buf[1] === 0x5a) return true; // PE/COFF
+  const magic = buf.readUInt32BE(0);
+  return magic === 0x7f454c46 // ELF
+    || magic === 0xfeedface || magic === 0xfeedfacf
+    || magic === 0xcefaedfe || magic === 0xcffaedfe
+    || magic === 0xcafebabe || magic === 0xbebafeca; // Mach-O/fat Mach-O
 }
 
 /**
@@ -914,58 +1063,84 @@ export function probeCodexSupportsModeHint(): boolean | null {
  * platform package's `vendor/<triple>/bin/codex`; also try adjacent wrappers.
  */
 function codexNativeBinaryCandidates(command: string): string[] {
-  const out: string[] = [command];
-  // The opencodex autostart shim (`codex`) forwards to `codex.opencodex-real`
-  // (the npm JS wrapper). Add the real wrapper's resolved native binary when it
-  // is discoverable on PATH, so probing the shim still reaches the Rust binary.
-  const pathDirs = (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":");
-  for (const dir of pathDirs) {
-    const wrapper = join(dir, process.platform === "win32" ? "codex.opencodex-real.cmd" : "codex.opencodex-real");
-    if (existsSync(wrapper)) {
-      out.push(wrapper);
-      try {
-        const real = realpathSync(wrapper);
-        const pkgRoot = resolve(real, "..", "..");
-        out.push(join(pkgRoot, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex"));
-        out.push(join(pkgRoot, "node_modules", "@openai", "codex-darwin-x64", "vendor", "x86_64-apple-darwin", "bin", "codex"));
-        out.push(join(pkgRoot, "node_modules", "@openai", "codex-linux-x64", "vendor", "x86_64-unknown-linux-musl", "bin", "codex"));
-        out.push(join(pkgRoot, "node_modules", "@openai", "codex-linux-arm64", "vendor", "aarch64-unknown-linux-musl", "bin", "codex"));
-      } catch {
-        // keep the wrapper as a candidate
-      }
+  const out = new Set<string>();
+  const resolverBases = new Set<string>();
+  const selectedPath = resolveSelectedCommandPath(command);
+
+  const addSelectedTarget = (target: string) => {
+    try {
+      const real = realpathSync(target);
+      out.add(target);
+      out.add(real);
+      if (/[\\/]@openai[\\/]codex[\\/]bin[\\/]/.test(real)) resolverBases.add(real);
+    } catch {
+      // Missing backing paths cannot establish capability either way.
     }
-  }
-  const managedRoot = process.env.CODEX_MANAGED_PACKAGE_ROOT;
-  if (managedRoot) {
-    out.push(
-      join(managedRoot, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "bin", "codex"),
-      join(managedRoot, "node_modules", "@openai", "codex-darwin-x64", "vendor", "x86_64-apple-darwin", "bin", "codex"),
-      join(managedRoot, "node_modules", "@openai", "codex-linux-x64", "vendor", "x86_64-unknown-linux-musl", "bin", "codex"),
-      join(managedRoot, "node_modules", "@openai", "codex-linux-arm64", "vendor", "aarch64-unknown-linux-musl", "bin", "codex"),
-      join(managedRoot, "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
-      join(managedRoot, "node_modules", "@openai", "codex-win32-arm64", "vendor", "aarch64-pc-windows-msvc", "bin", "codex.exe"),
-    );
-  }
+  };
+
   // Follow the resolved command to its real location. The opencodex shim and
   // the npm JS wrapper resolve to `@openai/codex/bin/codex.js`; the native
   // binary lives in the sibling platform package's vendor directory.
+  if (selectedPath) {
+    addSelectedTarget(selectedPath);
+    for (const target of selectedShimBackingPaths(selectedPath)) addSelectedTarget(target);
+  }
+
+  // npm's Windows wrappers are ordinary scripts. Resolve from both the global
+  // prefix layout and a project-local node_modules/.bin layout; createRequire
+  // then follows the selected installation's own dependency tree (including
+  // pnpm/nested optional dependencies) without consulting unrelated PATH bins.
+  const wrapperPath = selectedPath ?? command;
+  if (/\.(?:cmd|ps1)$/i.test(wrapperPath)) {
+    resolverBases.add(resolve(dirname(wrapperPath), "node_modules", "@openai", "codex", "bin", "codex.js"));
+    resolverBases.add(resolve(dirname(wrapperPath), "..", "@openai", "codex", "bin", "codex.js"));
+  }
+
+  for (const base of resolverBases) {
+    const requireFromSelected = createRequire(base);
+    for (const [pkg, triple, exe] of CODEX_PLATFORM_PACKAGES) {
+      try {
+        const manifest = requireFromSelected.resolve(`@openai/${pkg}/package.json`);
+        out.add(join(dirname(manifest), "vendor", triple, "bin", exe));
+      } catch {
+        // Optional platform packages for other targets are normally absent.
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Backing paths tied to this exact OCX shim entry in codex-shim.json. */
+function selectedShimBackingPaths(commandPath: string): string[] {
   try {
-    const real = realpathSync(command);
-    const pkgRoot = resolve(real, "..", "..");
-    for (const [pkg, triple, exe] of [
-      ["codex-darwin-arm64", "aarch64-apple-darwin", "codex"],
-      ["codex-darwin-x64", "x86_64-apple-darwin", "codex"],
-      ["codex-linux-x64", "x86_64-unknown-linux-musl", "codex"],
-      ["codex-linux-arm64", "aarch64-unknown-linux-musl", "codex"],
-      ["codex-win32-x64", "x86_64-pc-windows-msvc", "codex.exe"],
-      ["codex-win32-arm64", "aarch64-pc-windows-msvc", "codex.exe"],
-    ] as const) {
-      out.push(join(pkgRoot, "node_modules", "@openai", pkg, "vendor", triple, "bin", exe));
+    const state = JSON.parse(readFileSync(join(getConfigDir(), "codex-shim.json"), "utf8")) as {
+      wrapperPath?: unknown;
+      originalPath?: unknown;
+      backupPath?: unknown;
+      realPath?: unknown;
+      wrappers?: Array<Record<string, unknown>>;
+    };
+    const entries = Array.isArray(state.wrappers) && state.wrappers.length > 0 ? state.wrappers : [state];
+    const selected = resolve(commandPath);
+    for (const entry of entries) {
+      if (typeof entry.wrapperPath !== "string" || resolve(entry.wrapperPath) !== selected) continue;
+      return [entry.backupPath, entry.realPath, entry.originalPath]
+        .filter((value): value is string => typeof value === "string" && value.length > 0 && resolve(value) !== selected);
     }
   } catch {
-    // leave the raw command as the only candidate
+    // Not an OCX-owned shim, or no readable state.
   }
-  return out;
+  return [];
+}
+
+/** Resolve only the selected bare command against PATH; never enumerate peers. */
+function resolveSelectedCommandPath(command: string): string | null {
+  if (command.includes("/") || command.includes("\\")) return existsSync(command) ? resolve(command) : null;
+  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    const candidate = join(dir, command);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 function editAgentsMaxThreads(value: number | null, configPath?: string, migratedComment?: string): ConfigEditResult {
