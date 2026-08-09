@@ -479,6 +479,23 @@ describe("Codex catalog sync hardening", () => {
     expect(rows.some(row => row.slug.startsWith("team/"))).toBe(false);
   });
 
+  test("native model fallback remains reachable without a live catalog", () => {
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      'model_catalog_json = "missing-catalog.json"\n',
+      "utf8",
+    );
+    const r = runScript(codexHome, opencodexHome, `
+      const { listCatalogNativeSlugs, nativeOpenAiSlugs, NATIVE_OPENAI_MODELS } = await import("./src/codex/catalog");
+      console.log(JSON.stringify({ picker: listCatalogNativeSlugs(), native: nativeOpenAiSlugs(), fallback: NATIVE_OPENAI_MODELS }));
+    `);
+
+    expect(r.status).toBe(0);
+    const result = JSON.parse(r.stdout) as { picker: string[]; native: string[]; fallback: string[] };
+    expect(result.picker).toContain("gpt-5.3-codex-spark");
+    expect(result.native).toEqual(result.fallback);
+  });
+
   test("account sync recovers supported natives that were hidden before selectors existed", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
