@@ -65,7 +65,14 @@ function normalizeReadOptions(value?: number | ArtifactReadOptions): ArtifactRea
 function jsonDigest(
   digest: (value: Record<string, unknown>) => string,
 ): (bytes: Uint8Array) => string {
-  return (bytes) => digest(JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+  return (bytes) => {
+    try {
+      return digest(JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+    } catch (err) {
+      if (err instanceof ArtifactFsError) throw err;
+      throw new ArtifactFsError("artifact_mismatch", "artifact content is not valid contract JSON");
+    }
+  };
 }
 
 function digestForArtifactClass(artifactClass: ArtifactClass): (bytes: Uint8Array) => string {
@@ -78,8 +85,13 @@ function digestForArtifactClass(artifactClass: ArtifactClass): (bytes: Uint8Arra
       return jsonDigest(suiteManifestDigest);
     case "claim_source_manifest":
       return (bytes) => {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes));
-        return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(bytes));
+          return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
+        } catch (err) {
+          if (err instanceof ArtifactFsError) throw err;
+          throw new ArtifactFsError("artifact_mismatch", "claim-source artifact failed validation");
+        }
       };
     default:
       return artifactBytesDigest;
