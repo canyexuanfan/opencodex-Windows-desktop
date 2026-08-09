@@ -6,6 +6,12 @@ function sse(events: { type: string; [k: string]: unknown }[]): Response {
   return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
 }
 
+async function parseCompletedText(text: string) {
+  return parseSidecarSSE(sse([
+    { type: "response.completed", response: { output: [{ type: "message", content: [{ type: "output_text", annotations: [], text }] }] } },
+  ]));
+}
+
 describe("parseSidecarSSE trailing Sources block", () => {
   test("extracts sources from a markdown Sources block when annotations are empty", async () => {
     const text = "Node 24.18.0 is the latest LTS.\n\nSources:\n" +
@@ -82,6 +88,58 @@ describe("parseSidecarSSE trailing Sources block", () => {
     ]);
     expect(out.text).toBe("Latest is 24.18.0.");
     expect(out.text).not.toContain("Sources");
+  });
+
+  test.each([
+    "Source",
+    "sources",
+    "  Sources :  ",
+    "### Sources:",
+    "######> *Sources***",
+    "**Sources**",
+    "Sources* *",
+    "Sources:*",
+    "Sources* : *",
+    "\u00a0Sources\u2003:\t*",
+  ])("preserves accepted Sources-header forms: %s", async header => {
+    const out = await parseCompletedText(`Answer.\n\n${header}\n- https://x.test/source`);
+    expect(out.text).toBe("Answer.");
+    expect(out.sources).toEqual([{ url: "https://x.test/source" }]);
+  });
+
+  test.each([
+    "Sources* * *",
+    "Sources:* *",
+    "Sources* *:",
+    "####### Sources",
+    "# # Sources",
+    "> # Sources",
+    "SourcesX",
+    "Sources-",
+    "Sources#",
+    "Sources::",
+    "Sources:*:",
+    "Sources * * :",
+  ])("preserves rejected Sources-header forms: %s", async header => {
+    const text = `Answer.\n\n${header}\n- https://x.test/source`;
+    const out = await parseCompletedText(text);
+    expect(out.text).toBe(text);
+    expect(out.sources).toEqual([]);
+  });
+
+  test("handles a long valid Sources header with two star runs", async () => {
+    const header = `Sources${"*".repeat(50_000)} : ${"*".repeat(49_999)}`;
+    const out = await parseCompletedText(`Answer.\n\n${header}\n- https://x.test/source`);
+    expect(out.text).toBe("Answer.");
+    expect(out.sources).toEqual([{ url: "https://x.test/source" }]);
+  });
+
+  test("rejects a long near-miss with a third separated star run", async () => {
+    const header = `Sources${"*".repeat(33_333)} ${"*".repeat(33_333)} ${"*".repeat(33_334)}`;
+    const text = `Answer.\n\n${header}\n- https://x.test/source`;
+    const out = await parseCompletedText(text);
+    expect(out.text).toBe(text);
+    expect(out.sources).toEqual([]);
   });
 
   test("pairs a title line with the URL on the FOLLOWING line (multiline entry)", async () => {
