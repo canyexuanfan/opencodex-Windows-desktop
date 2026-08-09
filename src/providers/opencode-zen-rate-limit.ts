@@ -1,10 +1,11 @@
 /**
  * OpenCode Zen short-window rate-limit guidance (#1145 / OCX-56).
  *
- * OpenCode's keyed and keyless Zen chat endpoints share `https://opencode.ai/zen/v1`
- * and return opaque `429 Rate limit exceeded` bodies without `Retry-After` or
- * `X-RateLimit-*` headers. Community request logs show a burst ceiling around
- * 15–20 requests/minute on free models — distinct from the keyless desktop
+ * OpenCode's keyed and keyless Zen chat endpoints share `https://opencode.ai/zen/v1`.
+ * Free-model traffic can hit a short-window burst ceiling around 15–20 RPM
+ * (community-measured). Zen often answers with opaque `429 Rate limit exceeded`
+ * bodies and may omit `Retry-After` / `X-RateLimit-*`; when those headers are
+ * present they still take precedence. Distinct from the keyless desktop
  * ~200 requests / 5h quota documented on `opencode-free`.
  */
 import { registryEntryForProviderDestination } from "./registry";
@@ -65,7 +66,7 @@ export function enrichOpenCodeZenRateLimitMessage(
   return (
     `${message}`
     + ` OpenCode Zen free-model traffic is often limited to ${OPENCODE_ZEN_OBSERVED_RPM_HINT}`
-    + ` (observed; OpenCode does not publish this RPM or rate-limit headers).`
+    + ` (observed; OpenCode does not publish this RPM, and may omit rate-limit headers).`
     + `${retryHint}`
     + " Slow the request pace, or set providers.opencode-zen.retryOn429 for same-key backoff."
   );

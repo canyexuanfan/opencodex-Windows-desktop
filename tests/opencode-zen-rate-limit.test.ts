@@ -16,6 +16,7 @@ describe("opencode-zen rate-limit guidance (#1145)", () => {
     expect(entry?.note).toBeDefined();
     expect(entry!.note!.toLowerCase()).toContain("15-20");
     expect(entry!.note!.toLowerCase()).toContain("retry-after");
+    expect(entry!.note!.toLowerCase()).toMatch(/may return|when retry-after is omitted/);
     expect(entry!.note!.toLowerCase()).toContain("opencode-free");
   });
 
