@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -25,6 +26,21 @@ function baseRoute(overrides: Partial<LabRouteContext> = {}): LabRouteContext {
   const merged = { ...base, ...overrides }; return { ...merged, behaviorValues: overrides.behaviorValues ?? behavior(merged.effectiveAdapter, merged.upstreamProtocol) };
 }
 const limits = { totalTimeoutMs: 120000, connectTimeoutMs: 10000, firstByteTimeoutMs: 30000, inactivityTimeoutMs: 30000, maxRequests: 16, maxInputBytes: 8388608, maxOutputBytes: 16777216, maxOutputTokens: 32768, maxToolCalls: 32, maxMemoryBytes: 536870912, maxChildProcesses: 0, maxArtifacts: 16, perArtifactBytes: 262144, aggregateArtifactBytes: 1048576 };
+
+function runSaltInitializer(script: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = "";
+    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`salt initializer exited ${code}: ${stderr.trim()}`));
+    });
+  });
+}
 
 describe("CL-03 live sandbox security seams", () => {
   test("rejects proxy environment variables", () => { expect(() => rejectProxyEnvironment({ HTTP_PROXY: "http://evil" })).toThrow(LabSandboxError); expect(() => rejectProxyEnvironment({ no_proxy: "localhost" })).toThrow(LabSandboxError); });
@@ -70,6 +86,15 @@ describe("CL-03 live sandbox security seams", () => {
   test("installation salt is stable across repeated reads", () => {
     const home = tempHome(); const first = readInstallationSalt(home); const second = readInstallationSalt(home);
     expect(first).toEqual(second); expect(first.byteLength).toBe(32);
+  });
+
+  test("concurrent first-run salt initialization converges on one completed salt", async () => {
+    const home = tempHome();
+    const saltModule = new URL("../src/lab/subject/installation-salt.ts", import.meta.url).href;
+    const script = `import { readInstallationSalt } from ${JSON.stringify(saltModule)};\nconst salt = readInstallationSalt(${JSON.stringify(home)});\nprocess.stdout.write(Buffer.from(salt).toString("hex"));`;
+    const [first, second] = await Promise.all([runSaltInitializer(script), runSaltInitializer(script)]);
+    expect(first).toHaveLength(64); expect(second).toBe(first);
+    expect(Buffer.from(readInstallationSalt(home)).toString("hex")).toBe(first);
   });
 
   test("endpoint fingerprint comes from immutable destination snapshot only", async () => { const home = tempHome(); process.env.OPENCODEX_HOME = home; const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1/custom", labRunApproval: true, resolve: async () => [{ address: "93.184.216.34", family: 4 }], configDir: home }); const subject = buildRouteSubjectV1(baseRoute({ baseUrl: "https://api.example.com/v1/custom" }), destination, home); expect(subject.endpointFingerprint).toHaveLength(64); expect(JSON.stringify(subject)).not.toContain("api.example.com"); expect(JSON.stringify(subject)).not.toContain("https://"); });
