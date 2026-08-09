@@ -18,7 +18,7 @@ import {
 import { loadConfig, saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import { clearRequestLogsForTests, getRequestLogEntries } from "../src/server/request-log";
-import { handleSearch } from "../src/server/search";
+import { handleSearch, SEARCH_RESPONSE_MAX_BYTES } from "../src/server/search";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
@@ -483,7 +483,7 @@ test("relays arbitrary search response bytes and content type verbatim", async (
 });
 
 test("cancels an oversized streaming search response without draining the stream", async () => {
-  const cap = 16 * 1024 * 1024;
+  const cap = SEARCH_RESPONSE_MAX_BYTES;
   let upstreamCanceled = false;
   let tailPulled = false;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -499,7 +499,7 @@ test("cancels an oversized streaming search response without draining the stream
       pull(controller) {
         const chunk = chunks.shift();
         if (!chunk) return controller.close();
-        if (chunk[0] === 0x7e) tailPulled = true;
+        if (chunk.byteLength === 1 && chunk[0] === 0x7e) tailPulled = true;
         controller.enqueue(chunk);
       },
       cancel() { upstreamCanceled = true; },
@@ -592,6 +592,37 @@ test("a client abort during search body reading maps to 499 and cancels upstream
   parent.abort(new Error("client stopped"));
 
   const response = await reading;
+  expect(response.status).toBe(499);
+  expect(upstreamCanceled).toBe(true);
+});
+
+test("a client abort before the search reader attaches cancels the untouched upstream body", async () => {
+  const parent = new AbortController();
+  let upstreamCanceled = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (new URL(requestUrl).hostname === "chatgpt.com") {
+      const response = new Response(new ReadableStream<Uint8Array>({
+        cancel() { upstreamCanceled = true; },
+      }), { headers: { "content-type": "application/json" } });
+      parent.abort(new Error("client stopped before body read"));
+      return response;
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const request = new Request("http://127.0.0.1/v1/alpha/search", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${DIRECT_CHATGPT_TOKEN}`,
+      "chatgpt-account-id": "acct-123",
+    },
+    body: JSON.stringify({ id: "search-session", model: "gpt-test" }),
+    signal: parent.signal,
+  });
+
+  const response = await handleSearch(request, forwardConfig(), { model: "", provider: "" });
   expect(response.status).toBe(499);
   expect(upstreamCanceled).toBe(true);
 });

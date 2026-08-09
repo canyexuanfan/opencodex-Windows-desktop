@@ -52,7 +52,13 @@ export interface BoundedBytesOptions {
 }
 
 export interface BoundedBytesResult {
-	/** Exact raw bytes retained from the response. Empty when the cap was exceeded. */
+	/**
+	 * Exact raw bytes retained from the response. Empty when the cap was exceeded.
+	 *
+	 * This is a view over internal storage, so `bytes.buffer.byteLength` can exceed
+	 * `bytes.byteLength`. Consumers must honor the view's byteOffset and byteLength
+	 * instead of reading or transferring the backing buffer directly.
+	 */
 	bytes: Uint8Array<ArrayBuffer>;
 	/** True when the body was observed to exceed the byte cap. */
 	oversized: boolean;

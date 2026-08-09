@@ -420,13 +420,34 @@ describe("readBoundedResponseBody", () => {
 		const listener = (reason: unknown) => unhandled.push(reason);
 		process.on("unhandledRejection", listener);
 		try {
+			// Bun's test runner fails a test on a real unhandled rejection even when a
+			// process listener is installed. Prove the pinned runtime's event path in an
+			// isolated process, then keep this process clean for the negative assertion.
+			const control = Bun.spawnSync({
+				cmd: [
+					process.execPath,
+					"-e",
+					'process.on("unhandledRejection", () => console.log("observed"));'
+						+ 'void Promise.reject(new Error("control"));setTimeout(() => {}, 10);',
+				],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			expect(control.exitCode).toBe(0);
+			expect(new TextDecoder().decode(control.stdout)).toContain("observed");
+
+			let cancelCalls = 0;
 			const response = new Response(new ReadableStream<Uint8Array>({
 				start(controller) { controller.enqueue(new Uint8Array(6)); },
-				cancel() { return Promise.reject(new Error("cancel failed")); },
+				cancel() {
+					cancelCalls++;
+					return Promise.reject(new Error("cancel failed"));
+				},
 			}));
 			const result = await readBoundedResponseBytes(response, { maxBytes: 5 });
 			expect(result.oversized).toBe(true);
-			await new Promise(resolve => setTimeout(resolve, 0));
+			await new Promise(resolve => setTimeout(resolve, 10));
+			expect(cancelCalls).toBe(1);
 			expect(unhandled).toEqual([]);
 		} finally {
 			process.off("unhandledRejection", listener);

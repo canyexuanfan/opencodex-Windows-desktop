@@ -45,7 +45,7 @@ import { codexAccountSelectionForTurn } from "./lifecycle";
  * long-running search).
  */
 const SEARCH_UPSTREAM_TIMEOUT_MS = 200_000;
-const SEARCH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+export const SEARCH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
 export async function handleSearch(
   req: Request,
@@ -145,8 +145,9 @@ export async function handleSearch(
   const timeoutMs = config.search?.timeoutMs ?? SEARCH_UPSTREAM_TIMEOUT_MS;
   const linkedSignal = signalWithTimeout(timeoutMs, req.signal);
   const sidecarExit = sidecarEnter("search");
+  let upstreamResponse: Response | undefined;
   try {
-    const upstreamResponse = await fetch(url, {
+    upstreamResponse = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(relayBody),
@@ -157,6 +158,7 @@ export async function handleSearch(
       signal: linkedSignal.signal,
     });
     if (observed.oversized) {
+      upstream.recordOutcome?.(upstreamResponse.status);
       return formatErrorResponse(
         502,
         "upstream_error",
@@ -185,5 +187,11 @@ export async function handleSearch(
   } finally {
     sidecarExit();
     linkedSignal.cleanup();
+    // A response that aborted before the reader attached still owns its upstream socket.
+    // Consumed/cancelled bodies are already closed; locked bodies remain owned by the reader.
+    const pendingBody = upstreamResponse?.body;
+    if (pendingBody && !pendingBody.locked) {
+      try { void pendingBody.cancel().catch(() => undefined); } catch { /* already closed */ }
+    }
   }
 }
