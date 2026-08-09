@@ -39,6 +39,15 @@ function count(text: string, fragment: string): number {
   return text.split(fragment).length - 1;
 }
 
+/** Match an executable shell line, not a fragment that could appear in echo or a comment. */
+function hasExactShellCommand(run: string | undefined, expected: string): boolean {
+  return (run ?? "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith("#"))
+    .includes(expected);
+}
+
 function expectSecureLinuxKeyringBootstrap(workflow: string): void {
   const smokeStep = workflow
     .split("- name: OS keyring create/read/delete smoke")[1]
@@ -164,7 +173,15 @@ describe("GitHub Actions hardening", () => {
     // the runner's disk and the suite passes against a tree that no longer
     // exists in git.
     const winSteps = (ci.jobs?.["platform-windows"] as { steps?: { if?: string; run?: string }[] })?.steps ?? [];
-    expect(winSteps.some(step => step.run?.includes(`--shard=\${{ matrix.shard }}/${windowsShards.length}`))).toBe(true);
+    const windowsTestCommand = `bun test --isolate tests --shard=\${{ matrix.shard }}/${windowsShards.length}`;
+    expect(hasExactShellCommand(`echo ${windowsTestCommand}`, windowsTestCommand)).toBe(false);
+    // Binding the assertion to an executable line is only half the guarantee: a
+    // step carrying the exact command still runs nothing under `if: false`, and
+    // the suite would stay green against a Windows leg that never tests. Require
+    // the matching step to be unconditional.
+    const windowsTestSteps = winSteps.filter(step => hasExactShellCommand(step.run, windowsTestCommand));
+    expect(windowsTestSteps.length).toBeGreaterThan(0);
+    expect(windowsTestSteps.every(step => step.if === undefined)).toBe(true);
     expect(winSteps.some(step => step.if === "runner.environment == 'self-hosted'"
       && step.run?.includes("git clean -xffd"))).toBe(true);
 
@@ -679,6 +696,10 @@ describe("GitHub Actions hardening", () => {
     on?: {
       pull_request_target?: { types?: string[] };
       issue_comment?: { types?: string[] };
+      workflow_run?: { workflows?: string[]; types?: string[] };
+      pull_request_review?: { types?: string[] };
+      pull_request_review_comment?: { types?: string[] };
+      status?: unknown;
     };
     permissions?: Record<string, string> | string;
     concurrency?: Record<string, unknown> & { group?: string };
@@ -823,9 +844,8 @@ describe("GitHub Actions hardening", () => {
   test("PR target enforcement's structure is an exact allowlist, not a deny-list", async () => {
     const { workflow, jobs, steps } = await readEnforcePrTarget();
 
-    // Top level: these five keys and nothing else.
+    // Top level: concurrency lives on the write job after read-only PR resolution.
     expect(Object.keys(workflow).sort()).toEqual([
-      "concurrency",
       "jobs",
       "name",
       "on",
@@ -839,14 +859,12 @@ describe("GitHub Actions hardening", () => {
     // workflow YAML under a write token against base-pinned scripts — a
     // mismatch that crashes the gate and breaks the trusted-base model.
     //
-    // `issue_comment` is the one extra trigger: a maintainer's GUI-waiver
-    // comment ("not touching gui") must re-run the gate, and issue comments
-    // are not a `pull_request_target` activity type. It never touches PR head
-    // code — the checkout stays on the trusted base/default branch — so it
-    // does not open the escalation path review events would.
+    // `status` is the only extra trigger. CodeRabbit publishes a legacy
+    // commit status; this privileged workflow is loaded from the default branch
+    // and re-reads live review evidence before any mutation.
     expect(Object.keys(workflow.on ?? {}).sort()).toEqual([
-      "issue_comment",
       "pull_request_target",
+      "status",
     ]);
 
     // And the trigger is exactly a `types:` list — nothing else.
@@ -859,7 +877,7 @@ describe("GitHub Actions hardening", () => {
     // additive, both look like ordinary scoping in a diff, and neither failed a
     // single assertion.
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
-    expect(Object.keys(workflow.on?.issue_comment ?? {})).toEqual(["types"]);
+    expect(Object.prototype.hasOwnProperty.call(workflow.on ?? {}, "status")).toBe(true);
 
     // Exactly the scopes this gate needs. `pull-requests: write` covers title
     // and comment updates. `contents: write` is required for the draft GraphQL
@@ -871,53 +889,59 @@ describe("GitHub Actions hardening", () => {
       "pull-requests": "write",
     });
 
-    // One run per PR, so two rapid events cannot race on the title/draft state,
-    // and no `cancel-in-progress` — cancelling the in-flight run mid-mutation is
-    // how the bot ends up having prefixed the title but not recorded that it did.
-    // `issue_comment` events carry the PR's number under `issue`, not
-    // `pull_request`, so the group resolves from whichever payload exists.
-    expect(workflow.concurrency).toEqual({
-      group:
-        "pr-gate-comment-${{ github.event.pull_request.number || github.event.issue.number }}",
-    });
+    expect(workflow.concurrency).toBeUndefined();
 
-    // The hygiene workflow reads and rewrites the same consolidated gate
-    // comment, so it must share the gate's per-PR concurrency group. Separate
-    // groups would let a gate rebuild and a hygiene update run concurrently
-    // from stale snapshots, and the last write would drop the other's section.
+    const resolver = workflow.jobs?.["resolve-pr"] as WorkflowJob | undefined;
+    expect(resolver).toBeDefined();
+    expect(Object.keys(resolver ?? {}).sort()).toEqual([
+      "if",
+      "outputs",
+      "permissions",
+      "runs-on",
+      "steps",
+    ]);
+    expect(resolver?.["runs-on"]).toBe("ubuntu-latest");
+    expect(resolver?.permissions).toEqual({
+      contents: "read",
+      "pull-requests": "read",
+    });
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.context == 'CodeRabbit'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.state == 'success'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.login == 'coderabbitai[bot]'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.id == 136622811");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'gui-screenshot-waived'");
+
     const hygieneWorkflow = Bun.YAML.parse(
       await readText(".github/workflows/pr-hygiene.yml"),
     ) as { concurrency?: { group?: string; "cancel-in-progress"?: boolean } };
     expect(hygieneWorkflow.concurrency?.group).toBe(
       "pr-gate-comment-${{ github.event.pull_request.number }}",
     );
-    // Both comment-writing workflows share the group and neither cancels:
-    // `cancel-in-progress: true` would kill an in-flight gate mutation when a
-    // newer hygiene run starts, losing that read-modify-write.
     expect(hygieneWorkflow.concurrency?.["cancel-in-progress"]).toBe(false);
 
-    // One job, and it is this one. An audit round added a `sidecar:` job that
-    // inherited the PR-write token and un-drafted the PR — every assertion below
-    // still passed, because they only ever looked at `enforce-target`.
-    expect(jobs.map(([name]) => name)).toEqual(["enforce-target"]);
+    expect(jobs.map(([name]) => name)).toEqual(["resolve-pr", "enforce-target"]);
 
-    // The job is a runner plus steps, with one deliberate `if:` guard. The
-    // guard restricts the `issue_comment` trigger to maintainer comments on
-    // PRs — a comment on a plain issue, or from a non-maintainer, must not
-    // start this write-capable gate. On `pull_request_target` events the guard
-    // is always true, so it never disables the gate.
-    // No `permissions:` (a job-level block overrides the narrow workflow-level
-    // one), no `container:`/`strategy:`/`outputs:`/`env:`/`defaults:`, and no
-    // `<<:` merge key to reintroduce any of them sideways.
-    const [, job] = jobs[0]!;
-    expect(Object.keys(job).sort()).toEqual(["if", "runs-on", "steps"]);
-    expect(job["runs-on"]).toBe("ubuntu-latest");
-    expect(job["if"]).toContain("github.event_name != 'issue_comment'");
-    expect(job["if"]).toContain("github.event.issue.pull_request != null");
-    expect(job["if"]).toContain("coderabbitai[bot]");
-    expect(job["if"]).toContain("'OWNER'");
-    expect(job["if"]).toContain("'COLLABORATOR'");
-    expect(job["if"]).toContain("'MEMBER'");
+    const job = workflow.jobs?.["enforce-target"] as WorkflowJob | undefined;
+    expect(job).toBeDefined();
+    expect(Object.keys(job ?? {}).sort()).toEqual([
+      "concurrency",
+      "if",
+      "needs",
+      "permissions",
+      "runs-on",
+      "steps",
+    ]);
+    expect(job?.["runs-on"]).toBe("ubuntu-latest");
+    expect(job?.permissions).toEqual({
+      contents: "write",
+      "pull-requests": "write",
+    });
+    expect(job?.needs).toBe("resolve-pr");
+    expect(job?.["if"]).toBe("needs.resolve-pr.outputs.pull-number != ''");
+    expect(job?.concurrency).toEqual({
+      group: "pr-gate-comment-${{ needs.resolve-pr.outputs.pull-number }}",
+      "cancel-in-progress": false,
+    });
 
     // Checkout trusted scripts, then run the gate. Anything more is an extra
     // privileged action nobody reviewed.
@@ -933,19 +957,21 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout",
     ]);
     expect(checkout.with).toEqual({
-      // The event's base commit, not the repository default: pull_request_target
-      // runs this workflow from the base revision, and the scripts must match
-      // it — a merged gate would otherwise run against pre-promotion `main`
-      // scripts. The immutable SHA pins the checkout to the event's base commit.
+      // Normal PR events pin scripts to the event's base SHA. A trusted
+      // `status` event has no pull_request payload, so it loads scripts from
+      // the same default-branch trust boundary that owns the event.
       ref:
-        "${{ github.event_name == 'issue_comment' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
+        "${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.
       "sparse-checkout": ".github/scripts\nMAINTAINERS.md\n",
     });
 
-    expect(Object.keys(scriptStep).sort()).toEqual(["name", "uses", "with"]);
+    expect(Object.keys(scriptStep).sort()).toEqual(["env", "name", "uses", "with"]);
+    expect(scriptStep.env).toEqual({
+      RESOLVED_PULL_NUMBER: "${{ needs.resolve-pr.outputs.pull-number }}",
+    });
 
     // `github-script` is the action, pinned to a 40-hex commit SHA: this
     // workflow hands a write token to whatever the ref resolves to, so a tag or
@@ -984,20 +1010,18 @@ describe("GitHub Actions hardening", () => {
     const types = workflow.on?.pull_request_target?.types ?? [];
     expect([...types].sort()).toEqual([
       "edited",
+      "labeled",
       "opened",
       "ready_for_review",
       "reopened",
       "synchronize",
+      "unlabeled",
     ]);
 
-    // A maintainer's GUI-waiver comment must re-run the gate. Issue comments
-    // are delivered as the `issue_comment` event, which is the only way the
-    // waiver can take effect without a PR edit or push.
-    expect(workflow.on?.issue_comment?.types).toBeDefined();
-    expect([...(workflow.on?.issue_comment?.types ?? [])].sort()).toEqual([
-      "created",
-      "edited",
-    ]);
+    // GUI-waiver labels re-run immediately through pull_request_target.
+    // CodeRabbit reviews re-run through the default-branch status event instead
+    // of using bot status-comment edits as workflow synchronisation.
+    expect(Object.prototype.hasOwnProperty.call(workflow.on ?? {}, "status")).toBe(true);
 
     // Review events must NOT be added: they load the workflow from the PR
     // head branch, breaking the base-pinned checkout (`pull_request_review`
@@ -1018,18 +1042,11 @@ describe("GitHub Actions hardening", () => {
     expect(script).toMatch(/const ALLOWED_BASES = \["dev"\];/);
     expect(script).toMatch(/const DEFAULT_BASE = "dev";/);
 
-    // Every mutation targets the PR the event fired for. `pull_number` is the
-    // only handle the script has, and an audit round repointed it at
-    // `Number(context.payload.pull_request.title)` — a value the PR author
-    // controls, which turns the bot into a write primitive against any PR
-    // number the author can name. Bind it to the immutable event field.
-    // `issue_comment` events carry the number under `issue`, so the resolution
-    // falls back from the PR object to the issue object — both are immutable
-    // event fields, never author-controlled title text.
-    expect(script).toMatch(
-      /const pull_number =\s*context\.payload\.pull_request\?\.number \?\?\s*context\.payload\.issue\?\.number;/,
-    );
-    expect(script.match(/pull_number\s*=/g) ?? []).toHaveLength(1);
+    // The read-only resolver is the single authority for PR identity. The
+    // write job consumes exactly that output, so its mutation target and
+    // concurrency key cannot diverge or perform a second SHA-to-PR lookup.
+    expect(script).toContain("process.env.RESOLVED_PULL_NUMBER");
+    expect(script).not.toContain("listPullRequestsAssociatedWithCommit");
 
     // Nothing may write back into the fetched PR. The audit round preserved the
     // required comparison line verbatim and defeated it one line earlier with
@@ -1129,6 +1146,8 @@ describe("GitHub Actions hardening", () => {
           name !== "github.rest.pulls.listReviews" &&
           name !== "github.rest.repos.getCollaboratorPermissionLevel" &&
           name !== "github.rest.repos.compareCommitsWithBasehead" &&
+          name !== "github.rest.repos.listPullRequestsAssociatedWithCommit" &&
+          name !== "github.rest.issues.listEvents" &&
           // The claim check reads check-runs; it must never count as a write.
           name !== "github.rest.checks.listForRef",
       );
@@ -2659,12 +2678,7 @@ describe("GitHub Actions hardening", () => {
       expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
     });
 
-    test("an issue_comment event re-runs the gate and the waiver takes effect", async () => {
-      // This is the scenario that PR #1119 hit: a maintainer posts the waiver
-      // as an issue comment, and the gate must re-evaluate on that event —
-      // `pull_request_target` types do not include issue comments, so the
-      // separate `issue_comment` trigger carries it. The payload has no
-      // `pull_request` object; the PR number comes from `issue.number`.
+    test("the gui-screenshot-waived label clears the sole screenshot failure and reports the waiver", async () => {
       const result = await run({
         pr: {
           base: { ref: "dev" },
@@ -2677,51 +2691,115 @@ describe("GitHub Actions hardening", () => {
             "- Ran bun test tests/ci-workflows.test.ts",
           ].join("\n"),
         },
-        eventName: "issue_comment",
-        eventAction: "created",
-        comments: [
-          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
-        ],
+        labels: ["gui-screenshot-waived"],
+        maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "synchronize",
+        senderLogin: "contributor",
+        issueEvents: [{
+          id: 101,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "lidge-jun" },
+          label: { name: "gui-screenshot-waived" },
+        }],
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
       expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
-      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by a maintainer comment");
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by the `gui-screenshot-waived` label");
     });
 
-    test("an issue_comment rerun does not accept a checklist with no recorded head", async () => {
-      // `issue_comment` events carry no `pull_request.head.sha`. A contributor
-      // who ticked the readiness checklist, then pushed, must not have that
-      // stale attestation accepted by a maintainer-waiver comment rerun — the
-      // gate must reset the boxes and re-draft.
+
+    test("the gui-screenshot-waived label is reported after it clears the sole failure on the ready path", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          title: "GUI: fix provider list spacing",
+          body: readinessChecklistBody(4),
+        },
+        labels: ["gui-screenshot-waived"],
+        maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "edited",
+        senderLogin: "contributor",
+        issueEvents: [{
+          id: 101,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "lidge-jun" },
+          label: { name: "gui-screenshot-waived" },
+        }],
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+      expect(lastEnforcerCommentBody(result)).toContain("## ✅ READY");
+      expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot waived by the `gui-screenshot-waived` label");
+    });
+
+    test("the gui-screenshot-waived label from an unauthorized sender does not waive the screenshot requirement", async () => {
       const result = await run({
         pr: {
           base: { ref: "dev" },
           title: "GUI: fix provider list spacing",
-          body: readinessChecklistBody(4),
+          body: [
+            "## Summary",
+            "This change fixes the provider list spacing in the dashboard.",
+            "",
+            "## Test plan",
+            "- Ran bun test tests/ci-workflows.test.ts",
+          ].join("\n"),
         },
-        eventName: "issue_comment",
-        eventAction: "created",
-        comments: [
-          { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "not touching gui" },
-          readinessComment({
-            version: 2,
-            autoDraftedByBot: false,
-            maintainersPinged: true,
-            completedAtHeadSha: null,
-          }),
-        ],
+        labels: ["gui-screenshot-waived"],
         maintainersFile: MAINTAINERS_FIXTURE,
+        eventName: "pull_request_target",
+        eventAction: "synchronize",
+        senderLogin: "lidge-jun",
+        issueEvents: [{
+          id: 102,
+          event: "labeled",
+          created_at: "2026-08-08T06:00:00Z",
+          actor: { login: "unauthorized-contributor" },
+          label: { name: "gui-screenshot-waived" },
+        }],
       });
 
-      // The comment-triggered rerun delivers no head SHA, so the completed
-      // checklist cannot be attributed to the live head: the gate resets the
-      // boxes and keeps the PR in draft.
-      const resetBody = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(resetBody[0]!.body).toContain(CHECKLIST_START);
-      expect(resetBody[0]!.body).not.toContain("- [x]");
-      expect(resetBody[0]!.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(resetBody[0]!.body).toContain("- [ ] My PR is ready for review.");
+      // The screenshot failure must remain because the label was applied by
+      // an unauthorized user (not in MAINTAINERS.md).
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+      expect(lastEnforcerCommentBody(result)).not.toContain("UI screenshot waived");
+      expect(result.logs.join(" ")).toContain("unauthorized-contributor");
+      expect(result.logs.join(" ")).toContain("not in MAINTAINERS.md");
+    });
+
+    test("a missing resolved PR number fails closed before PR lookup", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" } },
+        resolvedPullNumber: "",
+      });
+
+      expect(result.logs.join(" ")).toContain("No pull request could be resolved for this gate event; skipping");
+      expect(callsTo(result, "pulls.get")).toEqual([]);
+      expect(callsTo(result, "issues.createComment")).toEqual([]);
+      expect(callsTo(result, "issues.updateComment")).toEqual([]);
+      expect(callsTo(result, "graphql")).toEqual([]);
+    });
+
+    test("the write gate consumes the resolved PR number without re-resolving status SHA", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, number: 4242 },
+        eventName: "status",
+        resolvedPullNumber: 4242,
+      });
+
+      expect(callsTo(result, "pulls.get")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
+      ]);
+      expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toEqual([]);
+      expect(methodsOf(result)).toContain("issues.listComments");
     });
 
     test("a non-maintainer issue_comment does not re-run the gate", async () => {

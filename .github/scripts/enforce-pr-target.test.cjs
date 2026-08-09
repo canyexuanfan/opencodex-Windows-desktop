@@ -49,17 +49,17 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
-  it("re-runs on issue_comment so a maintainer GUI waiver takes effect", () => {
-    // The GUI-screenshot gate is waived by a maintainer issue comment
-    // ("not touching gui"). `pull_request_target` types do not include issue
-    // comments, so without this trigger the waiver sits unread until a PR
-    // edit or push re-runs the gate.
-    assert.match(workflow, /^  issue_comment:/m);
-    assert.match(workflow, /- created/);
-    assert.match(workflow, /- edited/);
-    // The script resolves the PR number from the issue payload, which is what
-    // an issue_comment event delivers instead of a pull_request object.
-    assert.match(workflow, /context\.payload\.issue\?\.number/);
+  it("uses label events for GUI waivers and a trusted CodeRabbit status signal", () => {
+    assert.doesNotMatch(workflow, /^  issue_comment:/m);
+    assert.match(workflow, /- labeled/);
+    assert.match(workflow, /- unlabeled/);
+    assert.match(workflow, /^  status:/m);
+    assert.match(workflow, /github\.event\.context == 'CodeRabbit'/);
+    assert.match(workflow, /github\.event\.state == 'success'/);
+    assert.match(workflow, /github\.event\.label\.name == 'gui-screenshot-waived'/);
+    assert.match(workflow, /listPullRequestsAssociatedWithCommit/);
+    assert.match(workflow, /candidate\.head\?\.sha === statusSha/);
+    assert.match(workflow, /candidates\.length !== 1/);
   });
 
   it("does not add review events that would break the trusted-base model", () => {
@@ -141,13 +141,12 @@ describe("enforce-pr-target workflow", () => {
       .split("- name: Checkout trusted PR-quality scripts")[1]
       .split(/\n {6}- name:/)[0];
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
-    // `pull_request_target` pins the PR base SHA. Privileged `issue_comment`
-    // runs must source scripts from the repository default branch, matching
-    // the branch that supplied the workflow itself; unpromoted `dev` scripts
-    // must never execute under the write-capable token.
+    // `pull_request_target` pins the PR base SHA. Trusted `status`
+    // revalidation has no pull_request payload, so it sources scripts from the
+    // repository default branch that supplied the privileged workflow itself.
     assert.match(
       checkoutStep,
-      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'issue_comment'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
+      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'status'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
     );
     assert.doesNotMatch(checkoutStep, /\|\|\s*'dev'/);
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.

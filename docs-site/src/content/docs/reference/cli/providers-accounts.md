@@ -228,7 +228,10 @@ unknown account id, or a value outside the accepted set exits 1. `--json` return
 ### `ocx account login|reauth|code|cancel ...`
 
 Run browser-based or manual-code account authentication from a headless shell. Use
-`ocx account --help` for the provider-specific command shape.
+`ocx account --help` for the provider-specific command shape. If a Codex account login is saved but
+its model-catalog refresh remains pending, human output still exits successfully and prints fixed
+`ocx sync` recovery guidance on stderr. `--json` keeps stdout parseable and carries
+`catalogRefreshPending: true` in the completed login state without the human warning.
 
 ### `ocx account remove <provider> <id|main> --yes [--json]`
 
@@ -240,9 +243,13 @@ account or reports none; API-key pools promote the first remaining key or report
 success and failure shapes are:
 
 ```text
-{ ok: true, provider, id, removedActive: boolean, promotedActiveId: string | null }
+{ ok: true, provider, id, removedActive: boolean, promotedActiveId: string | null, catalogRefreshPending?: boolean }
 { error: string } // stderr, exit 1
 ```
+
+`catalogRefreshPending` is present on Codex removals only. When it is `true`, the account deletion is
+already saved; human output prints generic `ocx sync` recovery guidance on stderr and still exits 0.
+OAuth-account and API-key removal envelopes do not gain this field.
 
 ### `ocx account add-key <provider> [--label <label>] [--json]`
 
@@ -341,7 +348,7 @@ proxy to be running (`ocx start`, or an installed service).
 | `disable <provider/model\|native-model>` | `--native`, `--json` | Hide one model from Codex. |
 | `provider <name> <on\|off>` | `--json` | Enable or disable every model of one provider in a single write. |
 | `selected <provider>` | `--set <id,id...>`, `--clear`, `--json` | Read or replace the provider model allowlist. `--clear` removes the allowlist so every model is offered. |
-| `context <status\|value <tokens>\|provider <name> <on\|off>\|all <on\|off>>` | `--json` | Read or set the context-window cap, globally or per provider. |
+| `context <status\|value <tokens> [--set-all]\|provider <name> on [--value <tokens>]\|provider <name> off\|all <on\|off>>` | `--json` | Read or set the context-window cap, globally or per provider. `value <tokens> --set-all` also re-points every routed provider (like the dashboard toggle); without it the value only becomes the default. `provider ... on --value <tokens>` sets an explicit cap for that provider only (`--value` is valid with `on` only). |
 | `shadow <status\|set> [model\|-]` | `--enabled <on\|off>`, `--json` | Read or set the replacement model for Codex's background helper calls. `-` clears the model. `status` also reports `sourceModels`, the helper slugs the proxy intercepts (default: `gpt-5.6-luna`; clients through 0.144.x used `gpt-5.4-mini`, which an explicit `sourceModels` override can restore). |
 
 ```bash

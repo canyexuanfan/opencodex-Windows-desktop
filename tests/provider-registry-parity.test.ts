@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex/catalog";
-import { getJawcodeModelMetadata, resolveJawcodeProvider } from "../src/generated/jawcode-model-metadata";
+import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
 import { buildInitProviders } from "../src/cli/init";
 import { OAUTH_PROVIDERS } from "../src/oauth";
 import { enrichProviderFromCatalog, KEY_LOGIN_PROVIDERS } from "../src/oauth/key-providers";
@@ -234,8 +234,8 @@ describe("provider registry parity", () => {
       baseUrl: "https://api.deepseek.com",
       defaultModel: "deepseek-v4-flash",
       modelContextWindows: {
-        "deepseek-v4-flash": 1_000_000,
-        "deepseek-v4-pro": 1_000_000,
+        "deepseek-v4-flash": 1_048_576,
+        "deepseek-v4-pro": 1_048_576,
       },
     });
 
@@ -640,9 +640,9 @@ describe("provider registry parity", () => {
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEfforts?.["grok-4.5"]).toEqual(["low", "medium", "high"]);
     expect(OAUTH_PROVIDERS.xai.providerConfig.noVisionModels).toContain("grok-build-0.1");
     const antigravityRegistry = PROVIDER_REGISTRY.find(entry => entry.id === "google-antigravity");
-    expect(antigravityRegistry?.liveModels).toBe(false);
-    expect(providerConfigSeed(antigravityRegistry!).liveModels).toBe(false);
-    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.liveModels).toBe(false);
+    expect(antigravityRegistry?.liveModels).toBe(true);
+    expect(providerConfigSeed(antigravityRegistry!).liveModels).toBe(true);
+    expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.liveModels).toBe(true);
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.defaultModel).toBe("gemini-3.6-flash");
     // Collapsed picker: base models only, no effort-suffix variants.
     expect(OAUTH_PROVIDERS["google-antigravity"].providerConfig.models).toContain("gemini-3.6-flash");
@@ -761,14 +761,18 @@ describe("provider registry parity", () => {
       "google-antigravity": "google",
       "antigravity": "google",
       "gemini-antigravity": "google",
+      deepseek: "deepseek",
       moonshot: "moonshot",
       minimax: "minimax",
       "minimax-cn": "minimax",
       "zhipu-bigmodel": "zai",
       "zhipu-bigmodel-coding": "zai",
     });
-    expect(resolveJawcodeProvider("gemini")).toBe("google");
-    expect(resolveJawcodeProvider("minimax-cn")).toBe("minimax");
+    expect(resolveMetadataProvider("gemini")).toBe("google");
+    expect(resolveMetadataProvider("minimax-cn")).toBe("minimax");
+    expect(resolveMetadataProvider("deepseek")).toBe("deepseek");
+    // User-saved provider keys can be title-cased ("DeepSeek"); alias lookup folds case.
+    expect(resolveMetadataProvider("DeepSeek")).toBe("deepseek");
   });
 
   test("legacy azure adapter spelling remains accepted", () => {
@@ -782,8 +786,8 @@ describe("provider registry parity", () => {
   });
 
   test("MiniMax metadata lookup tolerates routed lowercase ids", () => {
-    expect(getJawcodeModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
-    expect(getJawcodeModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
+    expect(getModelMetadata("minimax", "MiniMax-M2.5")?.contextWindow).toBe(204_800);
+    expect(getModelMetadata("minimax", "minimax-m2.5")).toBeUndefined();
 
     const entries = buildCatalogEntries(nativeTemplate(), [], [
       { provider: "minimax", id: "minimax-m2.5" },

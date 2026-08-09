@@ -7,10 +7,12 @@ import { CODEX_CONFIG_PATH, CODEX_MODELS_CACHE_PATH, DEFAULT_CATALOG_PATH, readR
 import {
   clearModelCache,
   clearProviderDiscoveryStatus,
+  captureModelCacheGeneration,
   DEFAULT_MODEL_CACHE_TTL_MS,
   getFreshCached,
   getStaleCached,
   isModelsFetchCoolingDown,
+  isModelCacheGenerationCurrent,
   markModelsFetchFailure,
   markProviderDiscoveryFailed,
   markProviderDiscoveryOk,
@@ -20,6 +22,7 @@ import {
 } from "../model-cache";
 import {
   buildModelsRequest,
+  getValidAccessTokenSnapshot,
   observeActiveOAuthAccessToken,
   resolveModelsAuthToken,
   type OAuthActiveTokenObservation,
@@ -27,9 +30,10 @@ import {
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
-import { getJawcodeModelMetadata, getJawcodeModelMetadataCaseInsensitive, listJawcodeModelMetadata, resolveJawcodeProvider } from "../../generated/jawcode-model-metadata";
+import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
-import { getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
+import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
+import { parseAntigravityAvailableModels } from "../../providers/antigravity-models";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
 import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../../adapters/identity";
@@ -47,6 +51,7 @@ import type { NormalizedComboConfig } from "../../combos/types";
 import {
   ProviderOutboundPolicyError,
   providerOutboundGet,
+  providerOutboundPost,
   providerRedirectError,
 } from "../../lib/provider-outbound";
 import { redactSecretString } from "../../lib/redact";
@@ -62,9 +67,9 @@ import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } from "../../lib/admission";
 
 
-import { JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
+import { CODEX_CUSTOM_MODEL_CATALOG_KIND, JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
-import { disabledNativeSlugs, hasComboTargets, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
+import { disabledNativeSlugs, hasComboTargets, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
@@ -87,9 +92,16 @@ export interface CatalogGatherProviderAuthOutcome {
   readonly state: OAuthActiveTokenObservation["kind"];
 }
 
+export interface CatalogGatherProviderModelOutcome {
+  readonly provider: string;
+  readonly state: "authoritative" | "degraded";
+}
+
 export interface GatherRoutedModelsOptions {
   comboOmissions?: ComboCatalogOmission[];
   providerAuthOutcomes?: CatalogGatherProviderAuthOutcome[];
+  /** Flight-local authority of each provider's returned model rows. */
+  providerModelOutcomes?: CatalogGatherProviderModelOutcome[];
   /** Internal convergence sink for the immutable policy that produced the returned rows. */
   discoveryPolicySnapshots?: CatalogProviderDiscoveryPolicySnapshot[];
 }
@@ -98,13 +110,20 @@ interface GatherFlightResult {
   models: CatalogModel[];
   comboOmissions: ComboCatalogOmission[];
   providerAuthOutcomes: readonly CatalogGatherProviderAuthOutcome[];
+  providerModelOutcomes: readonly CatalogGatherProviderModelOutcome[];
   discoveryPolicySnapshots: readonly CatalogProviderDiscoveryPolicySnapshot[];
+}
+
+interface ProviderModelsResult {
+  readonly models: CatalogModel[];
+  readonly outcome: CatalogGatherProviderModelOutcome;
 }
 
 interface ModelsAuthResolution {
   readonly apiKey: string | undefined;
   readonly observed: boolean;
   readonly oauthApiBaseUrl?: string;
+  readonly oauthProjectId?: string;
 }
 
 type ModelsAuthResolver =
@@ -119,7 +138,7 @@ type ModelsAuthResolverFactory = (
 ) => ModelsAuthResolver;
 
 interface CapturedModelsRequest {
-  readonly method: "GET";
+  readonly method: "GET" | "POST";
   readonly url: string;
   readonly headersWithoutCredential: Readonly<Record<string, string>>;
   readonly headersWithCredential: Readonly<Record<string, string>>;
@@ -346,11 +365,12 @@ function captureModelsRequest(
     : undefined;
   const withoutCredential = buildModelsRequest(provider, undefined, name, observed);
   const withCredential = buildModelsRequest(provider, REQUEST_CREDENTIAL_SENTINEL, name, observed);
-  if (withoutCredential.url !== withCredential.url) {
+  const method = withoutCredential.method ?? "GET";
+  if (withoutCredential.url !== withCredential.url || method !== (withCredential.method ?? "GET")) {
     throw new TypeError(`Provider model discovery URL for ${name} depends on credential bytes.`);
   }
   return detachedFrozen({
-    method: "GET" as const,
+    method,
     url: withoutCredential.url,
     headersWithoutCredential: withoutCredential.headers,
     headersWithCredential: withCredential.headers,
@@ -607,6 +627,141 @@ export function applyConfigHintsToCachedModels(name: string, prov: OcxProviderCo
   return models.map(model => applyProviderConfigHints(name, prov, model, contextCap));
 }
 
+
+/**
+ * Last-resort context window for combo member synthesis when discovery and
+ * provider config both omit one. Matches the catalog entry default in
+ * `normalizeRoutedCatalogEntry` so incomplete live rows still catalog.
+ */
+const COMBO_MEMBER_CONTEXT_FALLBACK = 128_000;
+
+interface ComboCatalogMemberFallback {
+  readonly contextWindow?: number;
+  readonly inputModalities?: readonly string[];
+  readonly reasoningEfforts?: readonly string[];
+}
+
+/**
+ * Resolve a combo target to a catalog member for derivation.
+ * Prefer discovery metadata; when the target is missing from the gather map or
+ * lacks a positive contextWindow, synthesize from the (registry-enriched)
+ * provider config so combos remain catalogued when targets are configured but
+ * discovery metadata is incomplete. Disabled providers stay unresolved.
+ * When hints still omit contextWindow, prefer known maxInputTokens, else
+ * COMBO_MEMBER_CONTEXT_FALLBACK so a live row without ctx does not drop the
+ * whole combo from the public catalog.
+ */
+export function resolveComboCatalogMember(
+  target: { provider: string; model: string },
+  memberByKey: ReadonlyMap<string, CatalogModel>,
+  providers: ReadonlyMap<string, OcxProviderConfig>,
+  contextCap?: number,
+  fallback?: ComboCatalogMemberFallback,
+): CatalogModel | undefined {
+  const existing = memberByKey.get(targetKey(target));
+  const prov = providers.get(target.provider);
+  // Disabled providers never contribute members — even a complete discovery row
+  // is unusable for catalog derivation while the provider is off.
+  if (prov?.disabled === true) return undefined;
+
+  const withFallbackMetadata = (member: CatalogModel): CatalogModel => {
+    if (!fallback) return member;
+    const contextWindow = typeof member.contextWindow === "number" && member.contextWindow > 0
+      ? member.contextWindow
+      : undefined;
+    const addMaxInput = contextWindow !== undefined
+      && !(typeof member.maxInputTokens === "number" && member.maxInputTokens > 0);
+    const addModalities = (!Array.isArray(member.inputModalities) || member.inputModalities.length === 0)
+      && fallback.inputModalities !== undefined;
+    const addReasoning = member.reasoningEfforts === undefined
+      && fallback.reasoningEfforts !== undefined;
+    if (!addMaxInput && !addModalities && !addReasoning) return member;
+    return {
+      ...member,
+      ...(addMaxInput ? { maxInputTokens: contextWindow } : {}),
+      ...(addModalities ? { inputModalities: [...fallback.inputModalities!] } : {}),
+      ...(addReasoning ? { reasoningEfforts: [...fallback.reasoningEfforts!] } : {}),
+    };
+  };
+
+  // Complete live/configured rows still honour providerContextCaps so a high
+  // discovery window cannot outrun an operator-configured cap. Native-alias
+  // fallback metadata may fill only capability gaps; it never raises an explicit
+  // discovered/configured context window.
+  if (
+    existing
+    && typeof existing.contextWindow === "number"
+    && existing.contextWindow > 0
+  ) {
+    const capped = applyProviderContextCap(existing.contextWindow, contextCap);
+    if (capped === undefined || capped === existing.contextWindow) {
+      return withFallbackMetadata(existing);
+    }
+    const maxInput = typeof existing.maxInputTokens === "number" && existing.maxInputTokens > 0
+      ? Math.min(existing.maxInputTokens, capped)
+      : capped;
+    return withFallbackMetadata({
+      ...existing,
+      contextWindow: capped,
+      maxInputTokens: maxInput,
+      contextCap,
+      contextCapped: true as const,
+    });
+  }
+
+  const base: CatalogModel = existing ?? {
+    id: target.model,
+    provider: target.provider,
+  };
+  const hinted = prov
+    ? applyProviderConfigHints(target.provider, prov, base, contextCap)
+    : base;
+  const hintedContext = typeof hinted.contextWindow === "number" && hinted.contextWindow > 0
+    ? hinted.contextWindow
+    : undefined;
+  const knownMaxInput = typeof hinted.maxInputTokens === "number" && hinted.maxInputTokens > 0
+    ? hinted.maxInputTokens
+    : (typeof base.maxInputTokens === "number" && base.maxInputTokens > 0
+      ? base.maxInputTokens
+      : undefined);
+  // Real discovery/config values win. A native alias is the next fallback tier.
+  // The generic 128k/text synthesis from #1305 remains the final fallback.
+  const fallbackContext = existing || prov ? fallback?.contextWindow : undefined;
+  const uncappedContext = hintedContext
+    ?? knownMaxInput
+    ?? fallbackContext
+    ?? (existing || prov ? COMBO_MEMBER_CONTEXT_FALLBACK : undefined);
+  if (uncappedContext === undefined) return undefined;
+  const usedFallback = hintedContext === undefined;
+  const cappedContext = applyProviderContextCap(uncappedContext, contextCap);
+  const contextWindow = cappedContext ?? uncappedContext;
+  const fallbackCapped = usedFallback
+    && contextCap !== undefined
+    && cappedContext !== undefined
+    && cappedContext !== uncappedContext;
+
+  const inputModalities = hinted.inputModalities
+    ?? base.inputModalities
+    ?? (fallback?.inputModalities ? [...fallback.inputModalities] : undefined)
+    ?? ["text"];
+  const reasoningEfforts = hinted.reasoningEfforts
+    ?? (prov ? configuredReasoningEfforts(prov, target.model) : undefined)
+    ?? base.reasoningEfforts
+    ?? (fallback?.reasoningEfforts ? [...fallback.reasoningEfforts] : undefined);
+  const maxInputTokens = knownMaxInput !== undefined
+    ? Math.min(knownMaxInput, contextWindow)
+    : contextWindow;
+
+  return {
+    ...hinted,
+    inputModalities,
+    ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
+    contextWindow,
+    maxInputTokens,
+    ...(fallbackCapped ? { contextCap, contextCapped: true as const } : {}),
+  };
+}
+
 export function isDatedVariantId(liveId: string, configuredId: string): boolean {
   if (!liveId.startsWith(`${configuredId}-`)) return false;
   return /^\d{8}$/.test(liveId.slice(configuredId.length + 1));
@@ -817,6 +972,7 @@ function observedModelsAuthResolver(
         apiKey: observation.snapshot.accessToken,
         observed: true,
         ...(observation.snapshot.apiBaseUrl ? { oauthApiBaseUrl: observation.snapshot.apiBaseUrl } : {}),
+        ...(observation.snapshot.projectId ? { oauthProjectId: observation.snapshot.projectId } : {}),
       };
     },
   };
@@ -827,9 +983,17 @@ async function fetchProviderModelsWithAuth(
   ttlMs: number,
   contextCap: number | undefined,
   resolveAuth: ModelsAuthResolver,
-): Promise<CatalogModel[]> {
+): Promise<ProviderModelsResult> {
   const { name, provider: prov, discovery, request } = captured;
-  if (prov.authMode === "forward") return []; // ChatGPT backend has no /models
+  const observed = (
+    models: CatalogModel[],
+    state: CatalogGatherProviderModelOutcome["state"],
+  ): ProviderModelsResult => ({ models, outcome: { provider: name, state } });
+  // Capture before any credential refresh or outbound await. OAuth account changes clear this
+  // generation, so a request started with the former account cannot later publish its result.
+  const cacheGeneration = captureModelCacheGeneration(name);
+  const isCurrentCacheGeneration = () => isModelCacheGenerationCurrent(name, cacheGeneration);
+  if (prov.authMode === "forward") return observed([], "authoritative"); // ChatGPT backend has no /models
   const seedVertexDefault = prov.adapter === "google"
     && prov.googleMode === "vertex"
     && (prov.models?.length ?? 0) === 0
@@ -844,10 +1008,18 @@ async function fetchProviderModelsWithAuth(
   // discovery failure left by an older live configuration even when the account is logged out.
   if (prov.liveModels === false) {
     clearProviderDiscoveryStatus(name);
-    return configured;
+    return observed(configured, "authoritative");
   }
   const auth: ModelsAuthResolution = captured.observedAuth ?? (resolveAuth.kind === "refreshing"
-    ? { apiKey: await resolveModelsAuthToken(name, prov), observed: false }
+    ? prov.authMode === "oauth" && effectiveGoogleMode(name, prov) === "cloud-code-assist"
+      ? await getValidAccessTokenSnapshot(name)
+        .then(snapshot => ({
+          apiKey: snapshot.accessToken,
+          observed: false,
+          ...(snapshot.projectId ? { oauthProjectId: snapshot.projectId } : {}),
+        }))
+        .catch(() => ({ apiKey: undefined, observed: false }))
+      : { apiKey: await resolveModelsAuthToken(name, prov), observed: false }
     : resolveAuth.resolve(name, prov));
   const apiKey = auth.apiKey;
   // A configured default is a real callable selector and must remain discoverable when a
@@ -868,47 +1040,70 @@ async function fetchProviderModelsWithAuth(
       : models
   );
   if (prov.adapter === "cursor") {
-    if (!apiKey) return configured;
+    if (!apiKey) return observed(configured, "degraded");
     // Cursor uses a bespoke GetUsableModels RPC (not /models), returning the full effort-suffixed
     // variants this PLAN can use. Keep the base-model UX (the request builder appends the effort
     // suffix) but filter the static seed to the bases the account actually has — so models not on the
     // plan (e.g. claude-fable-5) drop out instead of failing ERROR_BAD_MODEL_NAME. Fall back to the seed.
     const cachedCursor = getFreshCached(name, ttlMs);
-    if (cachedCursor) return applyConfigHintsToCachedModels(name, prov, cachedCursor);
+    if (cachedCursor) {
+      return observed(applyConfigHintsToCachedModels(name, prov, cachedCursor), "authoritative");
+    }
     if (isModelsFetchCoolingDown(name)) {
       const cooling = getStaleCached(name);
-      return cooling ? applyConfigHintsToCachedModels(name, prov, cooling) : configured;
+      return observed(
+        cooling ? applyConfigHintsToCachedModels(name, prov, cooling) : configured,
+        "degraded",
+      );
     }
     const liveResult = await fetchCursorUsableModels({ apiKey, baseUrl: prov.baseUrl });
     if (liveResult.ok) {
       const available = filterCursorConfiguredModelsByLiveDiscovery(configured, liveResult.models);
       const result = available.length > 0 ? available : configured;
       // Count what discovery actually returned, not the configured rows we fall back to.
+      if (!setCached(name, result, Date.now(), cacheGeneration)) return observed(configured, "degraded");
       markProviderDiscoveryOk(name, liveResult.models.length);
-      setCached(name, result);
-      return result;
+      return observed(result, "authoritative");
     }
-    markModelsFetchFailure(name);
-    markProviderDiscoveryFailed(name, { reason: "provider" });
-    console.warn(
-      `[opencodex] Cursor model discovery for "${name}" failed [${liveResult.error}]${liveResult.detail ? `: ${liveResult.detail}` : ""}; using stale/static catalog degradation.`,
-    );
+    if (isCurrentCacheGeneration()) {
+      markModelsFetchFailure(name);
+      markProviderDiscoveryFailed(name, { reason: "provider" });
+      console.warn(
+        `[opencodex] Cursor model discovery for "${name}" failed [${liveResult.error}]${liveResult.detail ? `: ${liveResult.detail}` : ""}; using stale/static catalog degradation.`,
+      );
+    }
     const staleCursor = getStaleCached(name);
-    return staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured;
+    return observed(
+      staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured,
+      "degraded",
+    );
   }
   if (prov.authMode === "oauth" && !apiKey) {
     // No usable token (logged out, or account marked needsReauth). Still surface the
     // configured static catalog so the GUI Models tab / rail counts are not empty —
     // matching Cursor's !apiKey → configured degradation and fetch-failure fallback.
-    return configured;
+    return observed(configured, "degraded");
   }
+  const cloudCodeAssist = effectiveGoogleMode(name, prov) === "cloud-code-assist";
+  const project = prov.project ?? auth.oauthProjectId;
+  if (cloudCodeAssist && !project) return observed(configured, "degraded");
   const fresh = getFreshCached(name, ttlMs);
-  if (fresh) return withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, fresh, contextCap)); // dedups Codex's frequent /v1/models polling within the TTL
+  if (fresh) {
+    return observed(
+      withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, fresh, contextCap)),
+      "authoritative",
+    ); // dedups Codex's frequent /v1/models polling within the TTL
+  }
   if (isModelsFetchCoolingDown(name)) {
     // A recently-failed provider (unreachable API, missing proxy, bad key) must not re-pay the
     // fetch timeout on every catalog poll — the dashboard polls this path per page load.
     const stale = getStaleCached(name);
-    return stale ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap)) : failedDiscoveryConfigured;
+    return observed(
+      stale
+        ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
+        : failedDiscoveryConfigured,
+      "degraded",
+    );
   }
   const url = request.url;
   const headers = materializeCapturedHeaders(request, apiKey);
@@ -918,6 +1113,9 @@ async function fetchProviderModelsWithAuth(
   const failedDiscoveryFallback = (
     failure: ProviderModelDiscoveryFailure,
   ): { models: CatalogModel[]; fallback: "stale" | "configured"; shouldLog: boolean } => {
+    if (!isCurrentCacheGeneration()) {
+      return { models: failedDiscoveryConfigured, fallback: "configured", shouldLog: false };
+    }
     // Decide logging BEFORE recording the new status, so we can compare against the prior one and
     // suppress an identical repeated failure (#395 log flood). The failure stays observable via the
     // discovery-status API regardless.
@@ -934,10 +1132,16 @@ async function fetchProviderModelsWithAuth(
     };
   };
   try {
-    const res = await providerOutboundGet(name, prov, url, {
-      headers,
-      signal: AbortSignal.timeout(8000),
-    });
+    const res = request.method === "POST"
+      ? await providerOutboundPost(name, prov, url, {
+        headers,
+        body: JSON.stringify({ project }),
+        signal: AbortSignal.timeout(8000),
+      })
+      : await providerOutboundGet(name, prov, url, {
+        headers,
+        signal: AbortSignal.timeout(8000),
+      });
     const redirectError = await providerRedirectError(res, url);
     if (redirectError) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
@@ -946,7 +1150,7 @@ async function fetchProviderModelsWithAuth(
           `[opencodex] Provider model discovery for "${name}" ${redirectError} [urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
-      return models;
+      return observed(models, "degraded");
     }
     if (!res.ok) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "http", httpStatus: res.status });
@@ -955,7 +1159,7 @@ async function fetchProviderModelsWithAuth(
           `[opencodex] Provider model discovery for "${name}" failed with HTTP ${res.status} [urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
-      return models;
+      return observed(models, "degraded");
     }
 
     const contentType = (
@@ -974,7 +1178,33 @@ async function fetchProviderModelsWithAuth(
           `[opencodex] Provider model discovery for "${name}" ${diagnostic} [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
-      return models;
+      return observed(models, "degraded");
+    }
+    const antigravity = cloudCodeAssist
+      ? parseAntigravityAvailableModels(bounded.value, discovery.maxModels)
+      : undefined;
+    if (cloudCodeAssist && !antigravity) {
+      const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "invalid_response" });
+      if (shouldLog) {
+        console.warn(
+          `[opencodex] Provider model discovery for "${name}" returned malformed CCA model data [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
+        );
+      }
+      return observed(models, "degraded");
+    }
+    if (antigravity) {
+      const live = antigravity.map(model => applyProviderConfigHints(name, prov, {
+        id: model.id,
+        provider: name,
+        // CCA only exposes a numeric thinking budget. Until the adapter owns an exact Codex
+        // effort-to-wire mapping for a newly discovered model, do not advertise a false ladder.
+        reasoningEfforts: [],
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        ...(model.inputModalities ? { inputModalities: model.inputModalities } : {}),
+      }, contextCap));
+      if (!setCached(name, live, Date.now(), cacheGeneration)) return observed(configured, "degraded");
+      markProviderDiscoveryOk(name, live.length);
+      return observed(live, "authoritative");
     }
     const extracted = extractProviderModelItems(bounded.value, discovery);
     if (!extracted.ok) {
@@ -990,7 +1220,7 @@ async function fetchProviderModelsWithAuth(
           `[opencodex] Provider model discovery for "${name}" ${diagnostic[extracted.reason]} [status=${res.status}, contentType=${contentType}, urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
-      return models;
+      return observed(models, "degraded");
     }
     const items = extracted.items;
     const live = items.map(m => {
@@ -1034,9 +1264,9 @@ async function fetchProviderModelsWithAuth(
       && !QUIET_AUTHORITATIVE_CATALOG_PROVIDERS.has(name)) {
       warnDroppedConfiguredIdsOnce(name, droppedConfiguredIds);
     }
+    if (!setCached(name, live, Date.now(), cacheGeneration)) return observed(configured, "degraded");
     markProviderDiscoveryOk(name, liveModelCount);
-    setCached(name, live);
-    return live;
+    return observed(live, "authoritative");
   } catch (error) {
     if (error instanceof ProviderOutboundPolicyError) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "blocked" });
@@ -1045,7 +1275,7 @@ async function fetchProviderModelsWithAuth(
           `[opencodex] Provider model discovery for "${name}" was blocked by destination policy: ${error.message} [urlClass=${urlClass}, fallback=${fallback}].`,
         );
       }
-      return models;
+      return observed(models, "degraded");
     }
     const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "network" });
     if (shouldLog) {
@@ -1053,7 +1283,7 @@ async function fetchProviderModelsWithAuth(
         `[opencodex] Provider model discovery for "${name}" threw ${error instanceof Error ? error.name : "unknown"} [urlClass=${urlClass}, fallback=${fallback}].`,
       );
     }
-    return models;
+    return observed(models, "degraded");
   }
 }
 
@@ -1064,7 +1294,12 @@ export async function fetchProviderModels(
   contextCap?: number,
 ): Promise<CatalogModel[]> {
   const captured = captureProviderGather(name, prov, refreshingModelsAuthResolver);
-  return fetchProviderModelsWithAuth(captured, ttlMs, contextCap, refreshingModelsAuthResolver);
+  return (await fetchProviderModelsWithAuth(
+    captured,
+    ttlMs,
+    contextCap,
+    refreshingModelsAuthResolver,
+  )).models;
 }
 
 export function shouldExposeProviderModel(providerName: string, modelId: string): boolean {
@@ -1089,11 +1324,12 @@ export function filterCatalogVisibleModels(
     if (Array.isArray(sel) && sel.length > 0) allowByProvider.set(name, new Set(sel));
   }
   return models.filter(m => {
+    const nativeAlias = m.provider === COMBO_NAMESPACE && m.nativeAlias === true;
     // disabledModels may be stored raw (canonical) or encoded (legacy UI writes).
     for (const stored of disabled) {
       // Combo management stores the public alias, while canonical `combo/<id>` references
       // remain valid for backward compatibility through slugEquals below.
-      if (m.alias !== undefined && stored === catalogModelSlug(m)) return false;
+      if (m.alias !== undefined && stored === catalogModelSlug(m) && !nativeAlias) return false;
       if (slugEquals(stored, m.provider, m.id)) return false;
     }
     const allow = allowByProvider.get(m.provider);
@@ -1176,6 +1412,7 @@ async function gatherRoutedModelsWithAuth(
     models,
     comboOmissions,
     providerAuthOutcomes,
+    providerModelOutcomes,
     discoveryPolicySnapshots,
   } = await entry.promise;
   if (options?.comboOmissions) {
@@ -1185,6 +1422,10 @@ async function gatherRoutedModelsWithAuth(
   if (options?.providerAuthOutcomes) {
     options.providerAuthOutcomes.length = 0;
     options.providerAuthOutcomes.push(...providerAuthOutcomes);
+  }
+  if (options?.providerModelOutcomes) {
+    options.providerModelOutcomes.length = 0;
+    options.providerModelOutcomes.push(...providerModelOutcomes);
   }
   if (options?.discoveryPolicySnapshots) {
     options.discoveryPolicySnapshots.length = 0;
@@ -1209,7 +1450,7 @@ async function gatherRoutedModelsUncached(
   // vision-sidecar model advertised text-only, blocking image attachments app-side).
   // Enrich a CLONE: hydrated defaults must never leak into the persisted config.
   const activeProviders = capture.providers;
-  const lists = await Promise.all(
+  const providerResults = await Promise.all(
     activeProviders.map(provider => fetchProviderModelsWithAuth(
       provider,
       ttlMs,
@@ -1217,12 +1458,13 @@ async function gatherRoutedModelsUncached(
       resolveAuth,
     )),
   );
+  const lists = providerResults.map(result => result.models);
   const apiAugmented = augmentRoutedModelsWithCapturedOpenAiApiRows(
     lists.flat(),
     config,
     capture.openAiApiPolicy,
   );
-  const all = augmentRoutedModelsWithJawcodeMetadata(apiAugmented, activeProviders.map(provider => provider.name), config.providers, config)
+  const all = augmentRoutedModelsWithMetadata(apiAugmented, activeProviders.map(provider => provider.name), config.providers, config)
     // Drop image/video generation models (e.g. Grok image/video) by default. Cursor's static catalog
     // intentionally mirrors Cursor's public model table, including Gemini image preview, so the
     // exposure decision goes through shouldExposeRoutedModel (single choke point).
@@ -1253,8 +1495,16 @@ async function gatherRoutedModelsUncached(
     // configs that will never need it.
   } else {
     const disabled = disabledNativeSlugs(config);
+    const requiredNativeComboTargets = new Set(listComboIds(config).flatMap(id => {
+      const combo = getCombo(config, id);
+      return combo?.targets.flatMap(target => (
+        target.provider === "openai" ? [target.model] : []
+      )) ?? [];
+    }));
     for (const slug of nativeOpenAiSlugs()) {
-      if (disabled.has(slug)) continue;
+      // A bare native disable key hides the native row, not a combo that targets it.
+      // Keep synthetic native metadata available to those combos.
+      if (disabled.has(slug) && !requiredNativeComboTargets.has(slug)) continue;
       const contextWindow = nativeOpenAiContextWindow(slug);
       if (contextWindow === undefined) continue;
       const synthetic: CatalogModel = {
@@ -1273,21 +1523,47 @@ async function gatherRoutedModelsUncached(
       if (!memberByKey.has(key)) memberByKey.set(key, synthetic);
     }
   }
+  // Enriched (registry-hydrated) provider clones — shared by combo member synthesis and
+  // custom-model vision-sidecar inheritance so both see the same merged registry view.
+  const enrichedByName = new Map(activeProviders.map(provider => [provider.name, provider.provider]));
   for (const id of listComboIds(config)) {
     const combo = getCombo(config, id);
     if (!combo) continue;
+    const nativeContextWindow = combo.nativeAlias && combo.alias
+      ? nativeOpenAiContextWindow(combo.alias)
+      : undefined;
+    const nativeAliasFallback = combo.nativeAlias && combo.alias && nativeContextWindow !== undefined
+      ? {
+        contextWindow: nativeContextWindow,
+        inputModalities: nativeInputModalities(combo.alias),
+        reasoningEfforts: nativeReasoningEfforts(combo.alias),
+      }
+      : undefined;
     const members = combo.targets
-      .map(target => memberByKey.get(targetKey(target)))
+      .map(target => resolveComboCatalogMember(
+        target,
+        memberByKey,
+        enrichedByName,
+        providerContextCap(config, target.provider),
+        nativeAliasFallback,
+      ))
       .filter((member): member is CatalogModel => member !== undefined);
     const derived = deriveComboCatalogModel(id, combo, members);
-    if (derived) all.push(derived);
+    if (derived) {
+      const nativeDefault = combo.nativeAlias && combo.alias
+        ? nativeDefaultReasoningEffort(combo.alias)
+        : undefined;
+      if (combo.defaultEffort === null
+        && nativeDefault
+        && derived.reasoningEfforts?.includes(nativeDefault)) {
+        derived.defaultReasoningEffort = nativeDefault;
+      }
+      all.push(derived);
+    }
     else warnUncataloguedComboOnce(id, combo, members, localOmissions);
   }
   replaceLastComboCatalogOmissions(localOmissions);
   all.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)));
-  // Enriched (registry-hydrated) provider clones, keyed by name — the same view used above so
-  // custom rows get the same noVisionModels / inputModalities treatment as discovered rows.
-  const enrichedByName = new Map(activeProviders.map(provider => [provider.name, provider.provider]));
   // Provider-derived rows keyed by their Codex-facing slug: a custom override replaces the row
   // with the same slug below, so that row's provider capability metadata is the inheritance source.
   const replacedByRoutedSlug = new Map(all.map(model => [routedSlug(model.provider, model.id), model]));
@@ -1297,6 +1573,7 @@ async function gatherRoutedModelsUncached(
     const base: CatalogModel = {
       id: cm.modelId,
       provider: cm.provider,
+      catalogKind: CODEX_CUSTOM_MODEL_CATALOG_KIND,
       // Display-only label: never feeds routing (customModels are keyed by routedSlug below).
       ...(cm.displayName ? { displayName: cm.displayName } : {}),
       ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
@@ -1339,10 +1616,18 @@ async function gatherRoutedModelsUncached(
   // Custom rows override discovered rows that encode to the same Codex-facing slug.
   const customKeys = new Set(customModels.map(c => routedSlug(c.provider, c.id)));
   const deduped = all.filter(m => !customKeys.has(routedSlug(m.provider, m.id)));
+  const providerModelOutcomes = providerResults.map(result => (
+    result.outcome.provider === OPENAI_API_PROVIDER_ID
+      && capture.openAiApiPolicy.state === "captured"
+      && capture.openAiApiPolicy.models !== undefined
+      ? { provider: result.outcome.provider, state: "authoritative" as const }
+      : result.outcome
+  ));
   return {
     models: [...deduped, ...customModels],
     comboOmissions: localOmissions,
     providerAuthOutcomes: localProviderAuthOutcomes,
+    providerModelOutcomes,
     discoveryPolicySnapshots: capture.discoveryPolicySnapshots,
   };
 }
@@ -1413,7 +1698,7 @@ function augmentRoutedModelsWithCapturedOpenAiApiRows(
   ];
 }
 
-export function augmentRoutedModelsWithJawcodeMetadata(
+export function augmentRoutedModelsWithMetadata(
   models: CatalogModel[],
   providerNames: string[],
   providers?: Record<string, OcxProviderConfig>,
@@ -1424,9 +1709,9 @@ export function augmentRoutedModelsWithJawcodeMetadata(
   for (const provider of providerNames) {
     if (!JAWCODE_CATALOG_AUGMENT_PROVIDERS.has(provider)) continue;
     if (providers?.[provider]?.liveModels === false) continue;
-    const jawcodeProvider = resolveJawcodeProvider(provider);
+    const jawcodeProvider = resolveMetadataProvider(provider);
     if (!jawcodeProvider) continue;
-    for (const meta of listJawcodeModelMetadata(jawcodeProvider)) {
+    for (const meta of listModelMetadata(jawcodeProvider)) {
       const key = `${provider}/${meta.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

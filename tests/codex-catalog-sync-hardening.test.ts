@@ -138,7 +138,80 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).not.toContain("codex-auto-review");  // legacy dropped
   });
 
-  test("Gap A: an empty routed fetch preserves existing routed entries on disk", () => {
+  test("native-alias suppression preserves authoritative metadata on account-qualified rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        {
+          ...nativeEntry("gpt-5.6-sol", 0),
+          display_name: "Original Sol",
+          comp_hash: "native-sol-hash",
+          base_instructions: "Native Sol instructions",
+          model_messages: { instructions_template: "Native Sol instructions" },
+          tool_mode: "code_mode_only",
+        },
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      const config = {
+        port: 10100,
+        defaultProvider: "Nova1",
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            liveModels: false
+          },
+          Nova1: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["codex/gpt-5.6-sol"]
+          }
+        },
+        codexAccounts: [{ id: "stored-team-account", isMain: false }],
+        codexAccountNamespaces: { team: "stored-team-account" },
+        combos: {
+          "nova-sol": {
+            alias: "gpt-5.6-sol",
+            nativeAlias: true,
+            displayName: "Nova Sol",
+            targets: [{ provider: "Nova1", model: "codex/gpt-5.6-sol" }]
+          }
+        }
+      };
+      syncCatalogModels(config).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      display_name?: string;
+      comp_hash?: string;
+      base_instructions?: string;
+      model_messages?: { instructions_template?: string };
+      tool_mode?: string | null;
+      opencodex_catalog_kind?: string;
+    }>;
+    expect(rows.filter(row => row.slug === "gpt-5.6-sol")).toEqual([
+      expect.objectContaining({
+        display_name: "Nova Sol",
+        opencodex_catalog_kind: "combo-native-alias-v1",
+      }),
+    ]);
+    expect(rows.find(row => row.slug === "team/gpt-5.6-sol")).toMatchObject({
+      comp_hash: "native-sol-hash",
+      base_instructions: "Native Sol instructions",
+      model_messages: { instructions_template: "Native Sol instructions" },
+      tool_mode: "code_mode_only",
+      opencodex_catalog_kind: "account-selector-v1",
+    });
+  });
+
+  test("providers absent from config preserve foreign routed entries without an outage warning", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     writeFileSync(catalogPath, JSON.stringify({
@@ -149,21 +222,22 @@ describe("Codex catalog sync hardening", () => {
       ],
     }, null, 2) + "\n");
 
-    // config has NO providers => gatherRoutedModels returns [] (transient empty fetch).
+    // No provider claims these foreign rows, so an empty gather preserves them without
+    // misreporting a provider outage.
     const r = runScript(codexHome, opencodexHome, `
       const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+    expect(r.stderr).not.toContain("provider discovery degraded");
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
-    expect(slugs).toContain("kiro/claude-opus-4.8");   // routed preserved despite empty fetch
+    expect(slugs).toContain("kiro/claude-opus-4.8");
     expect(slugs).toContain("opencode-go/glm-5.2");
     expect(slugs).toContain("gpt-5.5");
   });
 
-  test("account rows reconcile idempotently and independently from provider outages", () => {
+  test("account rows reconcile idempotently and independently from authoritative provider empties", () => {
     const catalogPath = join(codexHome, "catalog.json");
     const firstCatalogPath = join(opencodexHome, "first-catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
@@ -232,7 +306,7 @@ describe("Codex catalog sync hardening", () => {
       await syncCatalogModels(config);
     `);
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+    expect(r.stderr).not.toContain("provider discovery degraded");
     expect(r.stderr).not.toContain("account selector collision");
 
     const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
@@ -470,7 +544,7 @@ describe("Codex catalog sync hardening", () => {
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `, { CODEX_CLI_PATH: codexCliPath });
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+    expect(r.stderr).not.toContain("provider discovery degraded");
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
     expect(slugs).toContain("gpt-5.5");
@@ -479,7 +553,7 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("opencode-go/glm-5.2");
   });
 
-  test("empty routed refresh drops compatibility-excluded rows while preserving other routed entries", () => {
+  test("provider absence drops compatibility-excluded rows while preserving foreign routed entries", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     writeFileSync(catalogPath, JSON.stringify({
@@ -496,7 +570,7 @@ describe("Codex catalog sync hardening", () => {
       syncCatalogModels({ providers: {} }).then(res => console.log(JSON.stringify(res)));
     `);
     expect(r.status).toBe(0);
-    expect(r.stderr).toContain("routed model fetch returned empty; preserving 2 existing routed entries");
+    expect(r.stderr).not.toContain("provider discovery degraded");
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
     expect(slugs).toContain("kiro/claude-opus-4.8");
@@ -592,7 +666,7 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("openai/fresh-model");
   });
 
-  test("empty-gather transient protection still drops deleted-provider ghost rows", () => {
+  test("authoritative empty providers drop their own rows and deleted-provider ghosts", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
     writeFileSync(catalogPath, JSON.stringify({
@@ -604,10 +678,8 @@ describe("Codex catalog sync hardening", () => {
       ],
     }, null, 2) + "\n");
 
-    // A configured provider that gathers zero rows: sync takes the
-    // preserve-existing branch. The deleted provider's authored row must
-    // still go; the configured provider's authored row and the foreign row
-    // stay (transient protection).
+    // Static discovery is authoritative even when its configured allowlist is empty. Both the
+    // configured provider's stale row and the deleted provider's ghost must go; foreign rows stay.
     const r = runScript(codexHome, opencodexHome, `
       const { syncCatalogModels } = require("./src/codex/catalog");
       syncCatalogModels({
@@ -625,7 +697,48 @@ describe("Codex catalog sync hardening", () => {
 
     const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
     expect(slugs).not.toContain("future-grok/old-model");
-    expect(slugs).toContain("openai/keep-model");
+    expect(slugs).not.toContain("openai/keep-model");
+    expect(slugs).toContain("cursor/composer-2.5");
+  });
+
+  test("a degraded provider preserves only its own prior rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        ocxAuthoredEntry("offline/keep-model", 5),
+        ocxAuthoredEntry("offline/disabled-model", 6),
+        ocxAuthoredEntry("removed/ghost", 7),
+        routedEntry("cursor/composer-2.5", 8),
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      globalThis.fetch = async () => new Response("{}", { status: 503 });
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        disabledModels: ["offline/disabled-model"],
+        providers: {
+          offline: {
+            adapter: "openai-chat",
+            authMode: "key",
+            apiKey: "fixture-key",
+            baseUrl: "https://api.example.test/v1",
+            allowPrivateNetwork: true,
+            models: ["fallback-model"]
+          }
+        }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain("provider discovery degraded; preserving 1 existing routed entry");
+
+    const slugs = (JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>).map(m => m.slug);
+    expect(slugs).toContain("offline/keep-model");
+    expect(slugs).toContain("offline/fallback-model");
+    expect(slugs).not.toContain("offline/disabled-model");
+    expect(slugs).not.toContain("removed/ghost");
     expect(slugs).toContain("cursor/composer-2.5");
   });
 

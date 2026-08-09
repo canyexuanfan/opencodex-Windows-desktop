@@ -209,6 +209,37 @@ describe("headless GUI parity CLI", () => {
     expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { setAll: true } });
   });
 
+  test("model context value maps with an explicit set-all flag", async () => {
+    const runtime = fakeRuntime();
+    const code = await handleModelsRuntimeCommand("context", ["value", "128_000", "--set-all", "--json"], runtime.deps);
+    expect(code).toBe(0);
+    expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { value: 128_000, setAll: true } });
+
+    // Without --set-all only the shared default changes.
+    const defaultRuntime = fakeRuntime();
+    const defaultCode = await handleModelsRuntimeCommand("context", ["value", "256_000", "--json"], defaultRuntime.deps);
+    expect(defaultCode).toBe(0);
+    expect(defaultRuntime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { value: 256_000 } });
+  });
+
+  test("model context provider maps to the atomic GUI endpoint with an optional value", async () => {
+    const runtime = fakeRuntime();
+    const code = await handleModelsRuntimeCommand("context", ["provider", "openai", "on", "--value", "128_000", "--json"], runtime.deps);
+    expect(code).toBe(0);
+    expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: true, value: 128_000 } });
+
+    const offRuntime = fakeRuntime();
+    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], offRuntime.deps);
+    expect(offCode).toBe(0);
+    expect(offRuntime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
+
+    // --value is only valid with `on`; the rejected form must not send any request.
+    const rejectedRuntime = fakeRuntime();
+    const rejectedCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--value", "128_000", "--json"], rejectedRuntime.deps);
+    expect(rejectedCode).toBe(2);
+    expect(rejectedRuntime.requests).toEqual([]);
+  });
+
   test("combo set parses ordered weighted targets", async () => {
     const runtime = fakeRuntime();
     const code = await handleComboCommand([
@@ -224,6 +255,28 @@ describe("headless GUI parity CLI", () => {
           { provider: "ark", model: "model-a", weight: 2 },
           { provider: "openai", model: "gpt-5.5" },
         ],
+      },
+    });
+  });
+
+  test("combo set forwards the explicit native-alias compatibility contract", async () => {
+    const runtime = fakeRuntime();
+    const code = await handleComboCommand([
+      "set", "nova-sol",
+      "--targets", "Nova1/codex/gpt-5.6-sol",
+      "--alias", "gpt-5.6-sol",
+      "--native-alias",
+      "--display-name", "Nova1 - codex-gpt-5.6-sol",
+      "--json",
+    ], runtime.deps);
+    expect(code).toBe(0);
+    expect(runtime.requests[0]?.body).toMatchObject({
+      id: "nova-sol",
+      combo: {
+        alias: "gpt-5.6-sol",
+        nativeAlias: true,
+        displayName: "Nova1 - codex-gpt-5.6-sol",
+        targets: [{ provider: "Nova1", model: "codex/gpt-5.6-sol" }],
       },
     });
   });
