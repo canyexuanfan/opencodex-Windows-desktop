@@ -6,7 +6,7 @@ export type PinnedAddress = { address: string; family: number };
 export interface PinnedHttpRequestOptions {
   headers?: HeadersInit;
   maxBytes?: number;
-  /** Deadline for establishing the TCP connection and, for HTTPS, completing TLS. */
+  /** Optional deadline for establishing the TCP connection and, for HTTPS, completing TLS. */
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   rejectUnauthorized?: boolean;
@@ -29,7 +29,7 @@ function pinnedHttpRequest(
     throw new Error(`${options?.context ?? "request"} must use HTTP or HTTPS, got ${parsed.protocol}`);
   }
   const context = options?.context ?? "request";
-  const connectTimeoutMs = options?.connectTimeoutMs ?? 10_000;
+  const connectTimeoutMs = options?.connectTimeoutMs;
   const idleTimeoutMs = options?.idleTimeoutMs ?? 60_000;
   const maxBytes = options?.maxBytes;
   const headers = new Headers(options?.headers);
@@ -156,7 +156,7 @@ function pinnedHttpRequest(
     const onAbort = () => fail(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
     signal?.addEventListener("abort", onAbort, { once: true });
     req.on("socket", (socket) => {
-      if (!socket.connecting) return;
+      if (!socket.connecting || connectTimeoutMs === undefined) return;
       const connectedEvent = parsed.protocol === "https:" ? "secureConnect" : "connect";
       connectTimer = setTimeout(() => fail(new Error(`${context} connect timed out`)), connectTimeoutMs);
       socket.once(connectedEvent, clearConnectTimer);
