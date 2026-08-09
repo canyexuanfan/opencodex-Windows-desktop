@@ -29,7 +29,11 @@ import { enrichProviderFromRegistry } from "../providers/derive";
 /** The two wire protocols `planVisionSidecar` can actually dispatch to. */
 export type VisionSidecarBackend = "openai" | "anthropic";
 
-/** Guaranteed entry per backend: cheap, image-capable, and present in every deployment. */
+/**
+ * Default entry per backend: cheap, image-capable, and present in every deployment. Offered
+ * whenever its side is enabled, and withheld only when that provider explicitly lists it as a
+ * model the sidecar describes FOR — never merely because a metadata table stayed silent.
+ */
 export const BASELINE_VISION_MODELS: Record<VisionSidecarBackend, string> = {
   openai: "gpt-5.6-luna",
   anthropic: "claude-haiku-4-5",
@@ -149,17 +153,18 @@ export function visionBackendForCandidate(
   anthropicProviderName?: string,
 ): VisionSidecarBackend | undefined {
   if (candidate.native || candidate.provider === "openai") return "openai";
-  // The runtime dispatches through one OAuth Anthropic provider, never every provider that
-  // happens to speak the Messages wire. Without a resolved executor, retain the canonical row
-  // so a fresh install's permissive fallback still has a useful suggestion.
-  if (anthropicProviderName !== undefined) {
-    return candidate.provider === anthropicProviderName ? "anthropic" : undefined;
-  }
-  // Unresolved executor: the canonical name alone is not enough, because a row may be named
-  // "anthropic" while speaking another wire. The adapter still has to agree.
-  if (candidate.provider !== "anthropic") return undefined;
-  const adapter = config.providers?.anthropic?.adapter;
-  return adapter === undefined || adapter === "anthropic" ? "anthropic" : undefined;
+  // The runtime dispatches through exactly ONE Anthropic provider — the enabled OAuth row
+  // with a healthy active account that `findAnthropicVisionProvider` picks. Speaking the
+  // Messages wire is not enough: a key-auth row of the same adapter is unreachable, and an
+  // option that cannot be dispatched is worse than a missing one, because selecting it fails
+  // at describe time rather than at pick time.
+  //
+  // So the executor's name is REQUIRED for an Anthropic suggestion. When the caller has no
+  // executor to name, no catalog row qualifies; the side's baseline is added separately and
+  // keeps the picker populated. Narrowing here never widens the write gate, which is a
+  // different predicate (`modelAcceptsImageInput`) and still treats unknown as allowed.
+  if (anthropicProviderName === undefined) return undefined;
+  return candidate.provider === anthropicProviderName ? "anthropic" : undefined;
 }
 
 function baselineCandidate(
@@ -177,9 +182,11 @@ function baselineCandidate(
 
 /**
  * The picker's option list: every eligible row reachable by one of the two
- * executors, plus each enabled side's baseline, de-duplicated and stably ordered
- * (openai side first, baselines first within a side). Anthropic rows must belong
- * to the selected OAuth executor when its name is known.
+ * executors, plus each enabled side's baseline unless that baseline is explicitly
+ * excluded, de-duplicated and stably ordered (openai side first, baselines first
+ * within a side). Anthropic rows must belong to the OAuth provider that would
+ * actually execute them, so `anthropicProviderName` is what makes that side's
+ * catalog rows eligible at all.
  *
  * This is the SUGGESTION list (narrow): it emits only rows an executor can reach
  * and some source has heard of. It is deliberately NOT the same set as the write

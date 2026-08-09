@@ -164,6 +164,25 @@ describe("vision eligibility core", () => {
     expect(options.map(option => option.value)).not.toContain("umans-coder");
   });
 
+  test("12b. with no resolvable Anthropic executor, no Anthropic catalog row is offered", () => {
+    // `findAnthropicVisionProvider` requires an enabled OAuth row with a healthy account, so a
+    // key-auth canonical provider dispatches nothing. Offering its rows would surface an option
+    // that only fails later, at describe time. The baseline still keeps the side populated.
+    const config = configWithProviders({
+      anthropic: {
+        adapter: "anthropic",
+        authMode: "key",
+        baseUrl: "https://api.anthropic.com",
+      },
+    });
+    const options = visionEligibleModelOptions(
+      config,
+      [{ provider: "anthropic", id: "claude-key-only", inputModalities: ["text", "image"] }],
+      ["anthropic"],
+    );
+    expect(options.map(option => option.value)).toEqual([BASELINE_VISION_MODELS.anthropic]);
+  });
+
   test("13. a baseline listed as blind is dropped without removing the other backend baseline", () => {
     const config = configWithProviders({
       openai: {
