@@ -14,7 +14,14 @@ import { atomicWriteFile, getConfigDir } from "../config";
 export const MAX_ROLLOUT_ZST_DECOMPRESSED_BYTES = 64 * 1024 * 1024;
 
 const STATE_DB_PATH = join(CODEX_HOME, "state_5.sqlite");
-function historyBackupPathFor(stateDbPath: string): string {
+/**
+ * The manifest that shadows one state database.
+ *
+ * Exported because the history job must resolve it at CALL time for a Worker
+ * that does not inherit this module's load-time constants — and must resolve it
+ * the same way, since a manifest addressed differently is a different manifest.
+ */
+export function historyBackupPathFor(stateDbPath: string): string {
   const normalized = process.platform === "win32" ? resolve(stateDbPath).toLowerCase() : resolve(stateDbPath);
   const id = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
   return join(getConfigDir(), `codex-history-backup-${id}.json`);
@@ -157,7 +164,9 @@ function patchFirstLineProviderInPlace(path: string, expectedId: string, provide
   }
 }
 
-type CodexHistoryProvider = "openai" | "opencodex";
+export type CodexHistoryProvider = "openai" | "opencodex";
+
+export type CodexHistoryFailureReason = "busy" | "permission";
 
 export interface CodexHistorySyncResult {
   rows: number;
@@ -165,6 +174,8 @@ export interface CodexHistorySyncResult {
   ejectedRows?: number;
   /** Set when a lock/busy error survived retries and the sync was SKIPPED, not empty. */
   failed?: true;
+  /** Why the retry budget was exhausted when `failed` is set. */
+  failureReason?: CodexHistoryFailureReason;
 }
 
 interface ThreadRow {
@@ -508,19 +519,24 @@ function ejectRemainingOpencodexHistory(db: Database): { rows: number; files: nu
   return { rows: rows.length, files };
 }
 
-export function isRecoverableHistoryError(error: unknown): boolean {
+export function classifyRecoverableHistoryError(error: unknown): CodexHistoryFailureReason | null {
   const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return code === "SQLITE_BUSY"
+  if (code === "SQLITE_BUSY"
     || code === "SQLITE_LOCKED"
     || code === "EBUSY"
-    || code === "EPERM"
-    || code === "EACCES"
     || message.includes("database is locked")
     || message.includes("database is busy")
-    || message.includes("resource busy")
+    || message.includes("resource busy")) return "busy";
+  if (code === "EPERM"
+    || code === "EACCES"
     || message.includes("operation not permitted")
-    || message.includes("permission denied");
+    || message.includes("permission denied")) return "permission";
+  return null;
+}
+
+export function isRecoverableHistoryError(error: unknown): boolean {
+  return classifyRecoverableHistoryError(error) !== null;
 }
 
 const HISTORY_RETRY_DELAY_MS = 500;
@@ -533,19 +549,27 @@ const HISTORY_RETRY_ATTEMPTS = 2;
  * error — callers surface that as `failed: true` instead of a silent no-op. Hard errors
  * (corruption, programming bugs) still throw.
  */
-export function withHistoryRetry<T>(fn: () => T, io: { sleepFn?: (ms: number) => void; attempts?: number; delayMs?: number } = {}): T | null {
+function withHistoryRetryResult<T>(fn: () => T, io: { sleepFn?: (ms: number) => void; attempts?: number; delayMs?: number } = {}):
+  | { ok: true; value: T }
+  | { ok: false; reason: CodexHistoryFailureReason } {
   const sleepFn = io.sleepFn ?? Bun.sleepSync;
   const attempts = Math.max(1, io.attempts ?? HISTORY_RETRY_ATTEMPTS);
   const delayMs = io.delayMs ?? HISTORY_RETRY_DELAY_MS;
   for (let attempt = 0; ; attempt++) {
     try {
-      return fn();
+      return { ok: true, value: fn() };
     } catch (error) {
-      if (!isRecoverableHistoryError(error)) throw error;
-      if (attempt >= attempts - 1) return null;
+      const reason = classifyRecoverableHistoryError(error);
+      if (!reason) throw error;
+      if (attempt >= attempts - 1) return { ok: false, reason };
       try { sleepFn(delayMs); } catch { /* sleep is best-effort */ }
     }
   }
+}
+
+export function withHistoryRetry<T>(fn: () => T, io: { sleepFn?: (ms: number) => void; attempts?: number; delayMs?: number } = {}): T | null {
+  const result = withHistoryRetryResult(fn, io);
+  return result.ok ? result.value : null;
 }
 
 /**
@@ -574,8 +598,8 @@ export function syncCodexHistoryProvider(
     && openaiRestoreIsNoop(stateDbPath, backupPath)) {
     return { rows: 0, files: 0 };
   }
-  return withHistoryRetry(() => syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath))
-    ?? { rows: 0, files: 0, failed: true };
+  const retried = withHistoryRetryResult(() => syncCodexHistoryProviderUnsafe(provider, stateDbPath, backupPath));
+  return retried.ok ? retried.value : { rows: 0, files: 0, failed: true, failureReason: retried.reason };
 }
 
 function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbPath: string, backupPath: string): CodexHistorySyncResult {
@@ -698,16 +722,17 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
   }
 }
 
-export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): { rows: number; files: number; failed?: true } {
+export function restoreLegacyOpenaiHistory(stateDbPath = STATE_DB_PATH): CodexHistorySyncResult {
   if (!existsSync(stateDbPath)) return { rows: 0, files: 0 };
-  return withHistoryRetry(() => {
+  const retried = withHistoryRetryResult(() => {
     const db = openStateDb(stateDbPath);
     try {
       return ejectRemainingOpencodexHistory(db);
     } finally {
       db.close();
     }
-  }) ?? { rows: 0, files: 0, failed: true };
+  });
+  return retried.ok ? retried.value : { rows: 0, files: 0, failed: true, failureReason: retried.reason };
 }
 
 /**
@@ -727,8 +752,8 @@ export function migrateHistoryToOpenai(
   // nothing. A missing DB with a leftover backup manifest does NOT satisfy the gate
   // (backupEntries > 0), so the guardian's fresh-reinstall re-count protection holds.
   if (openaiRestoreIsNoop(stateDbPath, backupPath)) return { rows: 0, files: 0 };
-  return withHistoryRetry(() => syncCodexHistoryProviderUnsafe("openai", stateDbPath, backupPath), opts)
-    ?? { rows: 0, files: 0, failed: true };
+  const retried = withHistoryRetryResult(() => syncCodexHistoryProviderUnsafe("openai", stateDbPath, backupPath), opts);
+  return retried.ok ? retried.value : { rows: 0, files: 0, failed: true, failureReason: retried.reason };
 }
 
 export interface PendingHistoryCount {

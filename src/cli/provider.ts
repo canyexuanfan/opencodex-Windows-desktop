@@ -12,6 +12,7 @@ import { apiKeyTransportConfigError, hasOwnProvider, isValidProviderName, loadCo
 import { hasHelpFlag } from "./help";
 import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "../providers/registry";
 import { providerConfigSeed } from "../providers/derive";
+import { dropProviderCustomModels } from "../providers/provider-id-rewrite";
 import type { OcxProviderConfig } from "../types";
 import { findLiveProxy } from "../server/proxy-liveness";
 import { syncModelsToCodex } from "../codex/sync";
@@ -229,12 +230,18 @@ async function handleAdd(args: string[]): Promise<void> {
     return;
   }
 
+  let codexSyncSkipped = false;
   if (wantsSync) {
     const live = await findLiveProxy();
     if (live) {
-      await syncModelsToCodex(live.port).catch(e => {
+      const synced = await syncModelsToCodex(live.port).catch(e => {
         console.error(`Warning: sync failed: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
       });
+      if (synced?.status === "skipped") {
+        codexSyncSkipped = true;
+        console.log("Provider saved; Codex integration is OFF, so Codex sync was skipped.");
+      }
     }
   }
 
@@ -249,7 +256,7 @@ async function handleAdd(args: string[]): Promise<void> {
     console.log(`   Set API key with: ocx provider add ${name} --api-key <key> --force`);
     console.log(`   Or set env var: ${envKey}`);
   }
-  if (wantsSync) {
+  if (wantsSync && !codexSyncSkipped) {
     console.log(`   Models synced to Codex.`);
   } else {
     console.log(`   Apply to Codex: ocx sync`);
@@ -296,6 +303,7 @@ function handleRemove(args: string[]): void {
   }
 
   delete config.providers[name];
+  const droppedCustomModels = dropProviderCustomModels(config, name);
   validateAndSave(config);
 
 
@@ -306,11 +314,16 @@ function handleRemove(args: string[]): void {
       remainingProviders: Object.keys(config.providers),
       defaultProvider: config.defaultProvider,
       needsSync: true,
+      ...(droppedCustomModels > 0 ? { droppedCustomModels } : {}),
     }, null, 2));
     return;
   }
 
   console.log(`✅ Provider "${name}" removed.`);
+  if (droppedCustomModels > 0) {
+    const plural = droppedCustomModels === 1 ? "model" : "models";
+    console.log(`   Also removed ${droppedCustomModels} custom ${plural} that belonged to it.`);
+  }
 }
 
 // ---------------------------------------------------------------------------

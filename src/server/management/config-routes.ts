@@ -40,6 +40,11 @@ import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../provid
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
+import {
+  codexAccountPickerEnabled,
+  initializeDefaultCodexAccountNamespaces,
+} from "../../codex/account-namespaces";
+import { catalogRefreshIsPending } from "../../codex/catalog-refresh-status";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { readUsageEntries } from "../../usage/log";
@@ -47,6 +52,8 @@ import { getUsageDebugLogEntries } from "../../usage/debug";
 import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
+import { VISION_REASONING_EFFORTS, isVisionReasoningEffort } from "../../reasoning-effort";
+import { normalizeVisionReasoningForModel } from "../../vision/reasoning";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
@@ -74,7 +81,7 @@ import type { ManagementContext } from "./context";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 
 export async function handleConfigRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
+  const { req, url, config, deps, convergeCodexCatalog, syncClaudeAgentDefsBestEffort } = ctx;
   if (url.pathname === "/api/config" && req.method === "GET") {
     return jsonResponse(safeConfigDTO(config));
   }
@@ -129,6 +136,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       hostname: config.hostname ?? "127.0.0.1",
       streamMode: config.streamMode ?? "auto",
       appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
+      codexAccountPickerEnabled: codexAccountPickerEnabled(config),
       startupHealth: await getCachedStartupHealth(config),
       codexRuntime: {
         path: displayCodexRuntimePath(resolved.runtime.command),
@@ -205,16 +213,30 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     // (a Windows service does not inherit shell env). A stream-shape
     // change applies to NEW turns only — the config object is shared by
     // reference with the request handlers, no restart needed.
-    let body: { codexAutoStart?: unknown; streamMode?: unknown; appOwnedMemoryBudgetMb?: unknown };
-    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
-    if (body.codexAutoStart === undefined && body.streamMode === undefined && body.appOwnedMemoryBudgetMb === undefined) {
-      return jsonResponse({ error: "provide codexAutoStart, streamMode, or appOwnedMemoryBudgetMb" }, 400);
+    let parsedBody: unknown;
+    try { parsedBody = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(parsedBody)) return jsonResponse({ error: "settings body must be an object" }, 400);
+    const body = parsedBody as {
+      codexAutoStart?: unknown;
+      streamMode?: unknown;
+      appOwnedMemoryBudgetMb?: unknown;
+      codexAccountPickerEnabled?: unknown;
+    };
+    if (body.codexAutoStart === undefined
+      && body.streamMode === undefined
+      && body.appOwnedMemoryBudgetMb === undefined
+      && body.codexAccountPickerEnabled === undefined) {
+      return jsonResponse({ error: "provide codexAutoStart, streamMode, appOwnedMemoryBudgetMb, or codexAccountPickerEnabled" }, 400);
     }
     if (body.codexAutoStart !== undefined && typeof body.codexAutoStart !== "boolean") {
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
     }
     if (body.streamMode !== undefined && !isStreamMode(body.streamMode)) {
       return jsonResponse({ error: "streamMode must be auto, legacy-tee, or eager-relay" }, 400);
+    }
+    if (body.codexAccountPickerEnabled !== undefined
+      && typeof body.codexAccountPickerEnabled !== "boolean") {
+      return jsonResponse({ error: "codexAccountPickerEnabled boolean is required" }, 400);
     }
     if (body.appOwnedMemoryBudgetMb !== undefined && (
       typeof body.appOwnedMemoryBudgetMb !== "number"
@@ -224,30 +246,76 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     )) {
       return jsonResponse({ error: `appOwnedMemoryBudgetMb must be an integer from ${MIN_APP_OWNED_MEMORY_BUDGET_MB} to ${MAX_APP_OWNED_MEMORY_BUDGET_MB}` }, 400);
     }
-    if (typeof body.codexAutoStart === "boolean") {
-      config.codexAutoStart = body.codexAutoStart;
-    }
-    if (body.streamMode !== undefined) {
-      if (body.streamMode === "auto") {
-        delete config.streamMode;
-      } else {
-        config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
+    const previousSettings = {
+      codexAutoStart: config.codexAutoStart,
+      hasCodexAutoStart: Object.hasOwn(config, "codexAutoStart"),
+      streamMode: config.streamMode,
+      hasStreamMode: Object.hasOwn(config, "streamMode"),
+      appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb,
+      hasAppOwnedMemoryBudgetMb: Object.hasOwn(config, "appOwnedMemoryBudgetMb"),
+      codexAccountNamespaces: config.codexAccountNamespaces,
+      hasCodexAccountNamespaces: Object.hasOwn(config, "codexAccountNamespaces"),
+      codexAccountPickerEnabled: config.codexAccountPickerEnabled,
+      hasCodexAccountPickerEnabled: Object.hasOwn(config, "codexAccountPickerEnabled"),
+    };
+    const pickerWasEnabled = codexAccountPickerEnabled(config);
+    let pickerIsEnabled = pickerWasEnabled;
+    try {
+      if (typeof body.codexAutoStart === "boolean") {
+        config.codexAutoStart = body.codexAutoStart;
       }
+      if (body.streamMode !== undefined) {
+        if (body.streamMode === "auto") {
+          delete config.streamMode;
+        } else {
+          config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
+        }
+      }
+      if (typeof body.appOwnedMemoryBudgetMb === "number") {
+        config.appOwnedMemoryBudgetMb = body.appOwnedMemoryBudgetMb;
+      }
+      if (body.codexAccountPickerEnabled === true) {
+        config.codexAccountPickerEnabled = true;
+        initializeDefaultCodexAccountNamespaces(config);
+      } else if (body.codexAccountPickerEnabled === false) {
+        config.codexAccountPickerEnabled = false;
+      }
+      pickerIsEnabled = codexAccountPickerEnabled(config);
+      (deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode)(config);
+    } catch (error) {
+      if (previousSettings.hasCodexAutoStart) config.codexAutoStart = previousSettings.codexAutoStart;
+      else delete config.codexAutoStart;
+      if (previousSettings.hasStreamMode) config.streamMode = previousSettings.streamMode;
+      else delete config.streamMode;
+      if (previousSettings.hasAppOwnedMemoryBudgetMb) {
+        config.appOwnedMemoryBudgetMb = previousSettings.appOwnedMemoryBudgetMb;
+      } else delete config.appOwnedMemoryBudgetMb;
+      if (previousSettings.hasCodexAccountNamespaces) {
+        config.codexAccountNamespaces = previousSettings.codexAccountNamespaces;
+      } else delete config.codexAccountNamespaces;
+      if (previousSettings.hasCodexAccountPickerEnabled) {
+        config.codexAccountPickerEnabled = previousSettings.codexAccountPickerEnabled;
+      } else delete config.codexAccountPickerEnabled;
+      throw error;
     }
-    if (typeof body.appOwnedMemoryBudgetMb === "number") {
-      config.appOwnedMemoryBudgetMb = body.appOwnedMemoryBudgetMb;
-    }
-    saveConfigPreservingClaudeCode(config);
     if (typeof body.appOwnedMemoryBudgetMb === "number") {
       configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(body.appOwnedMemoryBudgetMb));
       enforceAppOwnedMemoryBudget();
     }
+    const catalogRefresh = pickerWasEnabled !== pickerIsEnabled
+      ? await convergeCodexCatalog()
+      : undefined;
+    const catalogRefreshPending = catalogRefresh
+      ? catalogRefreshIsPending(catalogRefresh)
+      : false;
     invalidateStartupHealthCache();
     return jsonResponse({
       ok: true,
       codexAutoStart: codexAutoStartEnabled(config),
       streamMode: config.streamMode ?? "auto",
       appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
+      codexAccountPickerEnabled: pickerIsEnabled,
+      catalogRefreshPending,
       startupHealth: await getCachedStartupHealth(config),
     });
   }
@@ -261,11 +329,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sync" && req.method === "POST") {
     const { syncModelsToCodex } = await import("../../codex/sync");
     const { attachStaleAppServerHint } = await import("../../codex/app-server-processes");
-    const result = await syncModelsToCodex(undefined, config, null);
+    const { readRuntimePort, loadConfig } = await import("../../config");
+    // Never use the server-captured startup object for a durable integration
+    // decision. A toggle may have persisted while this process was gathering.
+    const runtime = readRuntimePort(process.pid);
+    const result = await syncModelsToCodex(runtime?.port, loadConfig(), null);
+    const status = result.status === "refused" ? 409 : (result.status === "skipped" || result.ok ? 200 : 500);
     return jsonResponse({
       ...attachStaleAppServerHint(result),
       ...(result.ok ? {} : { error: result.message }),
-    }, result.ok ? 200 : 500);
+    }, status);
   }
 
   if (url.pathname === "/api/update/check" && req.method === "GET") {
@@ -307,11 +380,14 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
   if (url.pathname === "/api/sidecar-settings" && req.method === "GET") {
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });
@@ -327,7 +403,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
     const body = raw as {
       webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown };
-      vision?: { model?: unknown; backend?: unknown; maxDescriptionsPerTurn?: unknown };
+      vision?: { model?: unknown; backend?: unknown; reasoning?: unknown; maxDescriptionsPerTurn?: unknown };
     };
     if (body.webSearch && body.webSearch.backend !== undefined && body.webSearch.backend !== null
       && body.webSearch.backend !== "openai" && body.webSearch.backend !== "anthropic") {
@@ -343,6 +419,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         || body.vision.maxDescriptionsPerTurn <= 0)) {
       return jsonResponse({ error: "vision.maxDescriptionsPerTurn must be a positive integer" }, 400);
     }
+    if (body.vision?.reasoning !== undefined && !isVisionReasoningEffort(body.vision.reasoning)) {
+      return jsonResponse({ error: `vision.reasoning must be ${VISION_REASONING_EFFORTS.join(", ")}` }, 400);
+    }
+
+    let normalizedVisionReasoning: ReturnType<typeof normalizeVisionReasoningForModel>;
+    let visionReasoningTouched = false;
+    if (body.vision && (body.vision.model !== undefined || body.vision.reasoning !== undefined)) {
+      visionReasoningTouched = true;
+      const model = typeof body.vision.model === "string"
+        ? (body.vision.model === "" ? "gpt-5.4-mini" : body.vision.model)
+        : (config.visionSidecar?.model || "gpt-5.4-mini");
+      const sourceReasoning = body.vision.reasoning ?? config.visionSidecar?.reasoning;
+      normalizedVisionReasoning = sourceReasoning === undefined
+        ? undefined
+        : normalizeVisionReasoningForModel(model, sourceReasoning);
+    }
+
     if (body.webSearch) {
       config.webSearchSidecar = { ...config.webSearchSidecar };
       if (typeof body.webSearch.model === "string") {
@@ -368,16 +461,23 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (typeof body.vision.maxDescriptionsPerTurn === "number") {
         config.visionSidecar.maxDescriptionsPerTurn = body.vision.maxDescriptionsPerTurn;
       }
+      if (visionReasoningTouched) {
+        if (normalizedVisionReasoning === undefined) delete config.visionSidecar.reasoning;
+        else config.visionSidecar.reasoning = normalizedVisionReasoning;
+      }
     }
     saveConfigPreservingClaudeCode(config);
     const ws = config.webSearchSidecar ?? {};
     const vs = config.visionSidecar ?? {};
+    const visionModel = vs.model || "gpt-5.4-mini";
+    const visionReasoning = normalizeVisionReasoningForModel(visionModel, vs.reasoning) ?? "low";
     return jsonResponse({
       ok: true,
       webSearch: { model: ws.model ?? "gpt-5.6-luna", backend: ws.backend },
       vision: {
-        model: vs.model ?? "gpt-5.6-luna",
+        model: visionModel,
         backend: vs.backend,
+        reasoning: visionReasoning,
         maxDescriptionsPerTurn: vs.maxDescriptionsPerTurn,
       },
     });

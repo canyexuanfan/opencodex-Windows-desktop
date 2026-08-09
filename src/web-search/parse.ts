@@ -1,3 +1,5 @@
+import { sseFieldValue } from "../lib/sse-decoder";
+
 /** A single web source backing the sidecar's answer. */
 export interface WebSearchSource {
   url: string;
@@ -153,11 +155,23 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
 
   const handle = (payload: string): void => {
     if (!payload || payload === "[DONE]") return;
-    let data: Record<string, unknown>;
-    try { data = JSON.parse(payload) as Record<string, unknown>; } catch {
-      console.warn(`[web-search-parse] malformed SSE JSON (${payload.length} chars): ${payload.slice(0, 120)}`);
+    // Neither warning below copies the frame's content. An upstream SSE payload can carry model
+    // output or credential material, and a malformed frame is exactly the case where the content
+    // is least trustworthy. Length plus a classification separates the two failure modes in a log
+    // without reproducing anything from the wire.
+    let parsed: unknown;
+    try { parsed = JSON.parse(payload); } catch {
+      console.warn(`[web-search-parse] malformed SSE JSON (${payload.length} chars)`);
       return;
     }
+    // `JSON.parse("null")` returns null rather than throwing, so the catch above cannot cover it
+    // and the `data.type` read below threw out of parseSidecarSSE.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      const shape = Array.isArray(parsed) ? "array" : parsed === null ? "null" : typeof parsed;
+      console.warn(`[web-search-parse] non-record SSE JSON frame (${payload.length} chars, ${shape})`);
+      return;
+    }
+    const data = parsed as Record<string, unknown>;
     const type = data.type as string | undefined;
     if (type === "response.output_text.delta" && typeof data.delta === "string") {
       acc.deltaText += data.delta;
@@ -187,7 +201,8 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.startsWith("data: ")) handle(line.slice(6).trim());
+        const data = sseFieldValue(line, "data");
+        if (data !== null) handle(data.trim());
       }
     }
   } finally {

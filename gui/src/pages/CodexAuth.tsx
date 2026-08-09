@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../i18n/shared";
 import CodexAccountPool from "../components/CodexAccountPool";
+import DefaultModeRequestUserInputSetting from "../components/DefaultModeRequestUserInputSetting";
+import CodexAccountPickerSetting from "../components/CodexAccountPickerSetting";
 import { codexAccountModeState, type CodexAccountModeState } from "../codex-multi-state";
 import { ensureOpenAiProvider, openAiAccountProviderState, OpenAiEnableError } from "../provider-payload";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
@@ -174,5 +176,11 @@ export default function CodexAuth({ apiBase }: { apiBase: string }) {
     {enableError && <div className="notice notice-err" role="alert">{enableError}</div>}
   </>;
 
-  return <CodexAccountPool apiBase={apiBase} accountModeState={accountModeState} banner={banner} />;
+  return (
+    <>
+      <CodexAccountPool apiBase={apiBase} accountModeState={accountModeState} banner={banner} />
+      <CodexAccountPickerSetting apiBase={apiBase} />
+      <DefaultModeRequestUserInputSetting apiBase={apiBase} />
+    </>
+  );
 }

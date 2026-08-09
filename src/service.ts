@@ -12,10 +12,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { expandUserPath, getConfigDir, readPid, removePid, removeRuntimePort, verifyPidIdentity } from "./config";
 import { loadConfig } from "./config";
-import { restoreNativeCodex } from "./codex/inject";
+import { restoreNativeCodex, restoreNativeCodexAsync } from "./codex/inject";
 import { stripGrokConfig } from "./grok/inject";
 import { isWslRuntime } from "./codex/home";
-import { durableBunPath, durableBunRuntime } from "./lib/bun-runtime";
+import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from "./lib/bun-runtime";
+import type { BunRuntimeSource } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
 import { randomUUID } from "node:crypto";
@@ -43,11 +44,15 @@ const TASK = "opencodex-proxy";
 
 export type ServiceBackend = "scheduler" | "native";
 
-function cliEntry(): { bun: string; cli: string } {
+function cliEntry(): { bun: string; bunRuntimeSource: BunRuntimeSource; cli: string } {
   // Bake the bundled Bun (npm global prefix, survives `ocx update`) rather than
   // a transient system Bun, so launchd/systemd/schtasks keep resolving even if a
   // standalone Bun is later removed. The CLI entry lives at src/cli/index.ts.
-  return { bun: durableBunPath(), cli: join(import.meta.dir, "cli", "index.ts") };
+  //
+  // Path and provenance come from ONE resolution so the marker can never describe a
+  // different binary than the one actually baked.
+  const runtime = durableBunRuntime();
+  return { bun: runtime.path, bunRuntimeSource: runtime.source, cli: join(import.meta.dir, "cli", "index.ts") };
 }
 
 function plistPath(): string {
@@ -169,13 +174,80 @@ function readServiceInstallState(): ServiceInstallState | null {
   return null;
 }
 
-/** Single accessor for update/reinstall code — v1/legacy state maps to scheduler. */
+/** What ONE state path said. Absent, unreadable and invalid are different answers. */
+export type ServiceStateEvidence =
+  | { readonly path: string; readonly kind: "absent" }
+  | { readonly path: string; readonly kind: "unreadable"; readonly reason: string }
+  | { readonly path: string; readonly kind: "invalid" }
+  | { readonly path: string; readonly kind: "valid"; readonly state: ServiceInstallState };
+
+/**
+ * Every state path, with what each one said.
+ *
+ * `readServiceInstallState` returns the FIRST path that parsed and discards the
+ * rest, so a valid mirror beside a corrupt one reads as clean. That is the right
+ * behavior for callers that just need the install state; it is the wrong input
+ * for deciding ownership, where a disagreement between mirrors is exactly the
+ * evidence that matters.
+ */
+export function inspectServiceStateEvidence(
+  paths: readonly string[] = serviceStatePaths(),
+): readonly ServiceStateEvidence[] {
+  return paths.map((path): ServiceStateEvidence => {
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+      // ENOENT is an answer. EACCES, ENOTDIR and the rest are a failure to ask,
+      // and collapsing them into absence is how a locked-down state file would
+      // become permission to write.
+      if (code === "ENOENT") return { path, kind: "absent" };
+      return { path, kind: "unreadable", reason: code || String(error) };
+    }
+    let parsed: ServiceInstallState | null;
+    try {
+      parsed = parseServiceInstallState(JSON.parse(raw));
+    } catch {
+      return { path, kind: "invalid" };
+    }
+    return parsed ? { path, kind: "valid", state: parsed } : { path, kind: "invalid" };
+  });
+}
+
+/** The homes this process is actually using, for comparison against a claim. */
+export function currentServiceHomes(): { codexHome: string; opencodexHome: string } {
+  return { codexHome: currentCodexHome(), opencodexHome: currentOpenCodexHome() };
+}
+
+export function serviceHomeMatches(a: string, b: string): boolean {
+  return normalizePathForCompare(a) === normalizePathForCompare(b);
+}
+
+/** Single accessor for backend-sensitive service code — v1/legacy state maps to scheduler. */
 export function readServiceBackend(): ServiceBackend {
   return readServiceInstallState()?.backend === "native" ? "native" : "scheduler";
 }
 
-/** The `ocx` argv that reinstalls the currently-chosen service backend (update paths). */
+/**
+ * The `ocx` argv that refreshes an already-installed service after an update.
+ *
+ * `repair` discovers the installed backend itself and, on Windows scheduler installs,
+ * rewrites the wrapper assets and restarts the existing task WITHOUT `schtasks /create`
+ * (see repairService below). `install` always reaches `/create`, which requires
+ * elevation — so an ordinary non-elevated `ocx update` used to stop a working proxy and
+ * then fail to bring its service back.
+ *
+ * The historical export name is kept for callers outside this module.
+ */
 export function serviceReinstallArgs(): string[] {
+  return ["service", "repair"];
+}
+
+/** The `ocx` argv that registers a service from scratch, preserving the chosen backend. */
+export function serviceInstallArgs(): string[] {
   return readServiceBackend() === "native" ? ["service", "install", "--native"] : ["service", "install"];
 }
 
@@ -229,6 +301,7 @@ export function assertServiceEnvironmentMatchesInstall(): void {
   }
 }
 
+
 function plistString(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -243,13 +316,31 @@ function isLoopbackHostname(hostname: string | undefined): boolean {
   return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
 }
 
+/**
+ * The `ocx` command a user should rerun for the service state they actually have.
+ *
+ * `installed` alone is not enough: `repairService()` refuses a Task-Scheduler-plus-WinSW
+ * conflict outright, so recommending repair there names a command guaranteed to fail.
+ * Install IS the valid conflict recovery, because `installWindows` removes the native
+ * backend first. Exported so the guard tests the real selector rather than a copy of it.
+ */
+export function serviceRetryCommand(
+  diag: Pick<ServiceDiagnostic, "installed" | "conflict"> = diagnoseService(),
+): string {
+  return diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
+}
+
 export function assertServiceAuthEnvironment(): void {
   const config = loadConfig();
   if (isLoopbackHostname(config.hostname)) return;
   if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
+  // Reached from `service repair` as well as `install`, so name a command that can
+  // actually succeed (see serviceRetryCommand).
+  const diag = diagnoseService();
+  const retry = serviceRetryCommand(diag);
   throw new Error(
-    "OPENCODEX_API_AUTH_TOKEN is required before installing a service for non-loopback hostname. " +
-      "Set it in the same shell, then rerun `ocx service install`.",
+    `OPENCODEX_API_AUTH_TOKEN is required before ${diag.installed ? "refreshing" : "installing"} a service `
+      + `for non-loopback hostname. Set it in the same shell, then rerun \`${retry}\`.`,
   );
 }
 
@@ -268,13 +359,15 @@ function writeServiceApiTokenFile(): string | null {
 }
 
 export function buildPlist(): string {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = process.env.CODEX_HOME?.trim();
   const opencodexHome = process.env.OPENCODEX_HOME?.trim();
   const envLines = [
     `    <key>OCX_SERVICE</key><string>1</string>`,
+    `    <key>${BUN_RUNTIME_SOURCE_ENV}</key><string>${bunRuntimeSource}</string>`,
+    `    <key>${BUN_RUNTIME_PATH_ENV}</key><string>${plistString(bun)}</string>`,
     `    <key>PATH</key><string>${plistString(path)}</string>`,
     codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
     opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
@@ -491,17 +584,14 @@ async function reportServiceServing(
 }
 
 /**
- * The reinstall command for the CURRENTLY INSTALLED backend.
+ * The command that repairs the CURRENTLY INSTALLED backend without re-registering it.
  *
- * Plain `ocx service install` on a native/WinSW install runs installWindows's
- * transactional backend switch, which tears down WinSW and replaces it with the Task
- * Scheduler backend. Advising it in a repair hint would silently change the user's
- * backend, so the hint has to carry `--native` when that is what is installed.
+ * `ocx service repair` reads the recorded backend itself, so it cannot silently switch a
+ * WinSW install to Task Scheduler the way a plain `ocx service install` would, and on
+ * Windows it needs no elevation because it never calls `schtasks /create`.
  */
 function serviceRepairCommand(): string {
-  return process.platform === "win32" && readServiceBackend() === "native"
-    ? "ocx service install --native"
-    : "ocx service install";
+  return "ocx service repair";
 }
 
 function systemdQuote(value: string): string {
@@ -544,16 +634,28 @@ function sh(cmd: string): string {
 export function runLaunchctl(
   args: string[],
   deps: { run?: typeof spawnSync } = {},
-): { ok: boolean; stdout: string; stderr: string } {
+): { ok: boolean; stdout: string; stderr: string; status: number | null } {
   const run = deps.run ?? spawnSync;
   const result = run("/bin/launchctl", args, { encoding: "utf8", windowsHide: true });
   // `error` is set when the spawn itself failed (ENOENT off macOS) and `status` is
   // null for a signalled child; neither may be reported as success.
-  if (result.error) return { ok: false, stdout: "", stderr: String(result.error.message ?? "") };
+  if (result.error) {
+    return { ok: false, stdout: "", stderr: String(result.error.message ?? ""), status: null };
+  }
   return {
     ok: result.status === 0,
     stdout: String(result.stdout ?? "").trim(),
     stderr: String(result.stderr ?? "").trim(),
+    /*
+     * The NUMBER, not just its zero-ness.
+     *
+     * `launchctl print` distinguishes "that domain does not exist" (112) from
+     * "the domain answered and has no such service" (113), and an ownership
+     * probe needs that difference: the second proves absence, the first only
+     * proves we could not look. Collapsing both into `ok: false` forced callers
+     * to parse stderr, which Apple does not treat as a stable interface.
+     */
+    status: result.status ?? null,
   };
 }
 
@@ -788,6 +890,10 @@ export function windowsSchedulerTaskInstalled(taskName = TASK): boolean {
 export interface WindowsSchedulerInstallVerification {
   taskInstalled: boolean;
   registrationHealthy: boolean;
+  /** Well-formed XML that is PUBLISHED but policy-violating — permanent, never
+   * worth a settle retry (vs an empty/unreadable view, which is publication
+   * lag and transient). */
+  registrationInvalid: boolean;
   assetsHealthy: boolean;
   nativeServiceAbsent: boolean;
   /** True when SCM probe failed; not a proven WinSW presence. */
@@ -808,6 +914,10 @@ export function evaluateWindowsSchedulerInstallVerification(inputs: {
 }): WindowsSchedulerInstallVerification {
   const registrationHealthy = inputs.xml.length > 0
     && windowsTaskRegistrationHealthy(inputs.xml, inputs.wscript, inputs.launcher);
+  // Permanent invalidity: the XML IS published but violates the registration
+  // contract — no amount of settling changes it. Empty/unreadable XML stays
+  // transient (publication lag).
+  const registrationInvalid = inputs.taskInstalled && inputs.xml.length > 0 && !registrationHealthy;
   const assetsHealthy = inputs.assetsExist;
   const nativeServiceAbsent = inputs.nativeStatus === "nonexistent";
   const nativeStatusUnknown = inputs.nativeStatus === "unknown";
@@ -831,6 +941,7 @@ export function evaluateWindowsSchedulerInstallVerification(inputs: {
   return {
     taskInstalled: inputs.taskInstalled,
     registrationHealthy,
+    registrationInvalid,
     assetsHealthy,
     nativeServiceAbsent,
     nativeStatusUnknown,
@@ -909,6 +1020,8 @@ type FinalizeHooks = {
   /** Defense-in-depth: late reconciliation must still own this attempt. */
   stillOwnsAttempt?: (attemptId: string) => boolean;
   requestTimeoutMs?: number;
+  /** Test-only seam for the post-create settle backoff; real installs use a timer. */
+  settleDelay?: (ms: number) => Promise<void>;
 };
 
 let finalizeHooks: FinalizeHooks | null = null;
@@ -973,6 +1086,68 @@ function attemptStillOwned(options: ApplyElevatedOptions): boolean {
   return !check || check(options.attemptId);
 }
 
+/**
+ * Bounded post-create backoff, 1.1s total. Task Scheduler's non-elevated view can
+ * lag an elevated `/create` by a few hundred milliseconds, so a single verification
+ * would roll back a task that is merely not visible yet.
+ */
+const SCHEDULER_SETTLE_DELAYS_MS = [50, 150, 300, 600] as const;
+
+/**
+ * Whether a failed verification is still worth re-checking after a short delay.
+ *
+ * Retrying is confined to states that a lagging scheduler view actually produces:
+ * the task is not visible yet, or it is visible but its registration has not been
+ * published in full. Everything else keeps its existing fail-closed meaning and is
+ * rejected here so no delay can turn it into a pass:
+ *
+ * - a proven conflict (both backends present) is a real dual-backend install;
+ * - missing assets are missing on disk, which no amount of waiting creates;
+ * - a WinSW service that is proven present (`started`/`stopped`) is never absent
+ *   later. This is checked independently of `conflict`, which only becomes true
+ *   once the task itself is visible — while the task is still invisible the pair
+ *   is `conflict: false` with `nativeServiceAbsent: false`, and that must not retry;
+ * - unknown SCM status is unproven rather than transient, and has its own
+ *   task-preserving branch below.
+ */
+/** Exported for tests: the transient-vs-permanent settle decision. */
+export function schedulerVerificationMaySettle(v: WindowsSchedulerInstallVerification): boolean {
+  if (v.ok) return false;
+  if (v.conflict) return false;
+  if (!v.assetsHealthy) return false;
+  if (!v.nativeServiceAbsent) return false;
+  // A published-but-invalid registration is permanent: no delay repairs it.
+  if (v.registrationInvalid) return false;
+  return !v.taskInstalled || !v.registrationHealthy;
+}
+
+function settleDelay(ms: number): Promise<void> {
+  const hook = finalizeHooks?.settleDelay;
+  if (hook) return hook(ms);
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Verify the elevated install, re-checking only while the failure looks like a
+ * scheduler view that has not caught up yet. Returns `null` when this attempt lost
+ * ownership mid-settle: a newer attempt owns the task, so this one must neither
+ * write install state nor roll anything back.
+ */
+async function verifyWindowsSchedulerInstallAfterSettle(
+  options: ApplyElevatedOptions,
+): Promise<WindowsSchedulerInstallVerification | null> {
+  const verify = finalizeHooks?.verify ?? verifyWindowsSchedulerInstall;
+  let verification = verify();
+  for (const delayMs of SCHEDULER_SETTLE_DELAYS_MS) {
+    if (!schedulerVerificationMaySettle(verification)) break;
+    if (!attemptStillOwned(options)) return null;
+    await settleDelay(delayMs);
+    if (!attemptStillOwned(options)) return null;
+    verification = verify();
+  }
+  return verification;
+}
+
 async function applyElevatedSchedulerResult(
   result: ElevatedSchtasksCreateAndRunResult,
   options: ApplyElevatedOptions,
@@ -1002,7 +1177,9 @@ async function applyElevatedSchedulerResult(
     await reconcileUnknownElevatedOutcome(result.exitCode);
   }
 
-  const verification = (finalizeHooks?.verify ?? verifyWindowsSchedulerInstall)();
+  const verification = await verifyWindowsSchedulerInstallAfterSettle(options);
+  // Ownership moved to a newer attempt while settling; that attempt owns the outcome.
+  if (!verification) return;
   if (!verification.ok) {
     // Preserve a healthy elevated task when WinSW absence cannot be proven (unknown SCM status).
     // Unknown is not a confirmed dual-backend conflict; install state is still withheld.
@@ -1019,6 +1196,9 @@ async function applyElevatedSchedulerResult(
         "Installation state was not written.",
       ]);
     }
+    // Rollback deletes a real task, so it needs the same ownership fence as the
+    // state write below: a stale attempt must never delete a newer attempt's task.
+    if (!attemptStillOwned(options)) return;
     const rollbackError = await rollbackElevatedSchedulerTask();
     const parts = [
       "Elevated Task Scheduler registration did not produce a conflict-free install.",
@@ -1259,8 +1439,9 @@ function taskXmlRunLevelAcceptable(principal: string): boolean {
 }
 
 export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServiceListenPort()): string {
-  const { bun, cli } = entry;
-  const bunRuntime = durableBunRuntime();
+  // Provenance rides along with the entry: a second durableBunRuntime() call here could
+  // resolve differently from the binary the caller actually baked.
+  const { bun, bunRuntimeSource, cli } = entry;
   const path = process.env.PATH ?? "";
   const lines = [
     "@echo off",
@@ -1269,6 +1450,8 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     // it to UTF-8 is safe (no leak into user shells) and lets cmd parse UTF-8 remnants.
     "chcp 65001 >nul",
     windowsBatchSet("OCX_SERVICE", "1"),
+    windowsBatchSet(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
+    windowsBatchSet(BUN_RUNTIME_PATH_ENV, bun, "path"),
     windowsBatchSet("PATH", path, "pathList"),
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim(), "path"),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim(), "path"),
@@ -1282,7 +1465,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     ":loop",
     '>>"%OCX_SERVICE_LOG%" echo [%DATE% %TIME%] opencodex service wrapper start',
     '>>"%OCX_SERVICE_LOG%" echo bun="%OCX_BUN%"',
-    `>>"%OCX_SERVICE_LOG%" echo bun_source="${bunRuntime.source}"`,
+    `>>"%OCX_SERVICE_LOG%" echo bun_source="${bunRuntimeSource}"`,
     '>>"%OCX_SERVICE_LOG%" echo cli="%OCX_CLI%"',
     '>>"%OCX_SERVICE_LOG%" echo opencodex_home="%OPENCODEX_HOME%"',
     '>>"%OCX_SERVICE_LOG%" echo codex_home="%CODEX_HOME%"',
@@ -1523,6 +1706,9 @@ function installLaunchd(): void {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
   const p = plistPath();
+  // Capture this BEFORE writing: the write below makes the plist exist unconditionally,
+  // so a post-write existsSync would call every fresh install an "installed" service.
+  const wasInstalled = existsSync(p);
   writeFileSync(p, buildPlist(), "utf8");
   // Best-effort: an absent job is fine here, and a failed unload is caught by the
   // load verification below with a better message than a raw unload error.
@@ -1535,7 +1721,9 @@ function installLaunchd(): void {
       `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
       + "A previous job may still be bootstrapped. Try:\n"
       + `  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n`
-      + "then re-run 'ocx service install'.",
+      // macOS `service repair` delegates straight to installLaunchd, so this fires for
+      // an already-installed service too; repair reloads it without re-registering.
+      + `then re-run '${wasInstalled ? "ocx service repair" : "ocx service install"}'.`,
     );
   }
   writeServiceInstallState();
@@ -1572,8 +1760,8 @@ export function startLaunchd(deps: {
   throw new Error(
     `launchctl could not load ${p}: ${loaded.stderr || "load reported failure"}\n`
     + (live.loaded
-      ? `launchd is running an OLDER plist. Fix:\n  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n  ocx service install`
-      : "The job is not loaded. Run 'ocx service install' to re-register it."),
+      ? `launchd is running an OLDER plist. Fix:\n  launchctl bootout ${launchdGuiDomain()}/${LABEL}\n  ocx service repair`
+      : "The job is not loaded. Run 'ocx service repair' to reload it."),
   );
 }
 function stopLaunchd(): void { try { sh(`launchctl unload "${plistPath()}"`); } catch { /* not loaded */ } }
@@ -1836,7 +2024,7 @@ export function bakedServicePathsDiagnostic(): string | null {
   if (!state?.bunPath || !state?.cliPath) return null;
   const missing = [state.bunPath, state.cliPath].filter(path => !existsSync(path));
   if (missing.length === 0) return null;
-  return `STALE baked paths (missing: ${missing.join(", ")}) — run 'ocx service install' to re-bake`;
+  return `STALE baked paths (missing: ${missing.join(", ")}) — run 'ocx service repair' to re-bake`;
 }
 
 function serviceDiagnosticsSummary(): string {
@@ -1854,13 +2042,15 @@ function unitPath(): string {
 }
 
 export function buildUnit(): string {
-  const { bun, cli } = cliEntry();
+  const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const codexHome = systemdEnvironmentAssignment("CODEX_HOME", process.env.CODEX_HOME?.trim());
   const opencodexHome = systemdEnvironmentAssignment("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim());
   const envLines = [
     systemdEnvironmentAssignment("OCX_SERVICE", "1"),
+    systemdEnvironmentAssignment(BUN_RUNTIME_SOURCE_ENV, bunRuntimeSource),
+    systemdEnvironmentAssignment(BUN_RUNTIME_PATH_ENV, bun),
     systemdEnvironmentAssignment("PATH", path),
     codexHome,
     opencodexHome,
@@ -1987,6 +2177,11 @@ type ServiceOps = {
   status: () => string; uninstall: () => void;
 };
 
+type ServiceInstallCleanupOps = {
+  status: () => string | null;
+  stop: () => void;
+};
+
 function platformOps(backend: ServiceBackend = "scheduler"): ServiceOps | null {
   if (process.platform === "darwin")
     return { install: installLaunchd, start: startLaunchd, stop: stopLaunchd, status: statusLaunchd, uninstall: uninstallLaunchd };
@@ -2008,6 +2203,67 @@ function platformOps(backend: ServiceBackend = "scheduler"): ServiceOps | null {
       process.exit(1);
     }
     return { install: installSystemd, start: startSystemd, stop: stopSystemd, status: statusSystemd, uninstall: uninstallSystemd };
+  }
+  return null;
+}
+
+/**
+ * Install-only manager operations. Unlike the ordinary status/stop helpers, these
+ * distinguish confirmed absence from a failed manager query and propagate every
+ * non-benign stop failure. Installing new assets is unsafe while either answer is
+ * unknown because an old manager may still respawn a listener on the target port.
+ */
+function platformServiceInstallCleanupOps(backend: ServiceBackend): ServiceInstallCleanupOps | null {
+  if (process.platform === "darwin") {
+    return {
+      status: () => {
+        const listing = sh("launchctl list");
+        return listing.split("\n").some(line => line.includes(LABEL)) ? listing : null;
+      },
+      stop: () => { sh(`launchctl unload "${plistPath()}"`); },
+    };
+  }
+  if (process.platform === "win32") {
+    if (backend === "native") {
+      return {
+        status: () => {
+          const status = statusWinswRaw();
+          if (status === "unknown") throw new Error("Native service status could not be verified.");
+          return status === "nonexistent" ? null : status;
+        },
+        stop: stopWinswService,
+      };
+    }
+    return {
+      status: () => {
+        const probe = probeWindowsSchedulerTask(TASK);
+        if (probe.status === "unknown") throw new Error(`Task Scheduler status could not be verified: ${probe.detail}`);
+        return probe.status === "present" ? "present" : null;
+      },
+      stop: () => {
+        try {
+          schtasks(["/end", "/tn", TASK]);
+        } catch (error) {
+          if (!isWindowsSchedulerEndBenign(error)) throw error;
+        }
+      },
+    };
+  }
+  if (process.platform === "linux") {
+    return {
+      status: () => {
+        // `list-unit-files <name>` exits non-zero when the unit has never been
+        // installed, which made a clean first install look like an unknown manager
+        // failure. `show LoadState` gives us the tri-state we actually need: a
+        // healthy user manager returns `not-found` for a missing unit, while an
+        // unreachable/permission-denied manager still makes `sh()` throw and the
+        // caller therefore fails closed.
+        const loadState = sh(`systemctl --user show ${TASK} --property=LoadState --value`).trim().toLowerCase();
+        if (!loadState) throw new Error("systemd service status could not be verified.");
+        return loadState === "not-found" ? null : loadState;
+      },
+      stop: () => { sh(`systemctl --user stop ${TASK}`); },
+    };
   }
   return null;
 }
@@ -2105,6 +2361,60 @@ async function stopTrackedProxyForServiceCommand(): Promise<TrackedProxyCleanupR
     console.error(`⚠️  Failed to stop proxy: ${err instanceof Error ? err.message : String(err)}`);
     return "none";
   }
+}
+
+export interface ServiceInstallPreparationDeps {
+  diagnose?: () => ServiceDiagnostic;
+  managerOps?: (backend: ServiceBackend) => ServiceInstallCleanupOps | null;
+  stopTrackedProxy?: () => Promise<unknown>;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Stop every manager that could own the install port, then stop the tracked
+ * standalone listener. Any unknown status or cleanup failure rejects, so callers
+ * cannot write assets or report success over a surviving old listener.
+ */
+export async function prepareServiceInstall(
+  requestedBackend: ServiceBackend,
+  deps: ServiceInstallPreparationDeps = {},
+): Promise<void> {
+  const diagnostic = (deps.diagnose ?? diagnoseService)();
+  const platform = deps.platform ?? process.platform;
+  const resolveOps = deps.managerOps ?? platformServiceInstallCleanupOps;
+  const backends: ServiceBackend[] = [];
+  const addBackend = (backend: ServiceBackend) => {
+    if (!backends.includes(backend)) backends.push(backend);
+  };
+
+  if (platform === "win32") {
+    // The recorded backend owns the old installation and must be stopped first.
+    // A conflicting diagnostic means both managers exist, so stop both even when
+    // the requested backend happens to match the recorded one.
+    if (diagnostic.backend === "scheduler" || diagnostic.backend === "native") {
+      addBackend(diagnostic.backend);
+      if (diagnostic.conflict) addBackend(diagnostic.backend === "scheduler" ? "native" : "scheduler");
+    }
+    addBackend(requestedBackend);
+  } else {
+    addBackend(requestedBackend);
+  }
+
+  for (const backend of backends) {
+    const manager = resolveOps(backend);
+    if (!manager) throw new Error(`Background service manager is unavailable for ${backend}.`);
+    if (manager.status() !== null) manager.stop();
+  }
+  await (deps.stopTrackedProxy ?? stopTrackedProxyIfRunning)();
+}
+
+export async function installServiceSafely(
+  requestedBackend: ServiceBackend,
+  install: () => void | Promise<void>,
+  deps: ServiceInstallPreparationDeps = {},
+): Promise<void> {
+  await prepareServiceInstall(requestedBackend, deps);
+  await install();
 }
 
 /**
@@ -2251,7 +2561,7 @@ export function deriveWindowsServiceDiagnostic(inputs: WindowsServiceDiagnosticI
   const detail = conflict
     ? "CONFLICT: Task Scheduler and native WinSW are both present — run 'ocx service uninstall' then reinstall one"
     : stale
-      ? "stale or missing service assets — run 'ocx service install' to repair"
+      ? "stale or missing service assets — run 'ocx service repair'"
       : schedulerInstalled
         ? schedulerEnabled ? "Task Scheduler enabled" : "Task Scheduler disabled"
         : nativeInstalled
@@ -2373,7 +2683,7 @@ export async function serviceStatusReport(
     : null);
   const staleLine = stalePlist && stalePlist.loaded && !stalePlist.matchesPlist
     ? "   launchd is running an OLDER plist than the one on disk.\n"
-      + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service install\n`
+      + `   Fix:    launchctl bootout gui/$(id -u)/${LABEL} && ocx service repair\n`
     : "";
 
   return `⚠️  ${diag.summary}\n`
@@ -2455,7 +2765,19 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
     case "install":
       assertServiceEnvironmentMatchesInstall();
       assertServiceAuthEnvironment();
-      await ops.install();
+      // A manually started proxy can still own the configured port while the service
+      // registration is absent or unloaded. Stop both the registered manager and any
+      // tracked standalone listener before loading the freshly written service assets.
+      // Otherwise launchd/Task Scheduler can register successfully while its child
+      // restart-loops on EADDRINUSE, and the old standalone process makes the install
+      // verification report a false success.
+      try {
+        await installServiceSafely(backend, ops.install);
+      } catch (error) {
+        console.error(`❌ Service install cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+        break;
+      }
       // The wrapper was written moments ago in this process, so the configured port
       // and the baked one cannot have diverged yet — unlike `start`, which reads the
       // installed artifact instead.
@@ -2494,7 +2816,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
           process.exitCode = 1;
           break;
         }
-        const restore = restoreNativeCodex();
+        const restore = await restoreNativeCodexAsync();
         if (restore.success) console.log("✅ service stopped + native Codex restored.");
         else console.error(`⚠️ service stopped, but native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` (or check $CODEX_HOME/config.toml) before using native Codex.`);
         // The Grok fence is the other managed config this command owns. Leaving it behind
@@ -2532,7 +2854,7 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
         process.exit(1);
       }
       {
-        const restore = restoreNativeCodex();
+        const restore = await restoreNativeCodexAsync();
         if (!restore.success) {
           console.error(`⚠️ native Codex restore FAILED: ${restore.message}\nRun \`ocx restore\` before using native Codex.`);
         }

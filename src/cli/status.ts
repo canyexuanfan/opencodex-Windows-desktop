@@ -173,7 +173,7 @@ export async function collectStatus(): Promise<CliStatusView> {
   // either way. `live` was already identity-probed a few lines above, so cross-check
   // rather than print registration as if it were service.
   const serviceSummary = service.installed && !live
-    ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service install'`
+    ? `${service.summary} — registered but NOT serving; see ${serviceLogPath()} and re-run 'ocx service repair'`
     : service.summary;
   const codexShim = diagnoseCodexShim();
   const codexShimSummary = codexShim.summary;

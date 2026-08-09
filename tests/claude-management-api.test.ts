@@ -73,7 +73,7 @@ test("GET /api/claude-code returns defaults + available + aliases", async () => 
     expect(d.aliases.some((a: { id: string }) => a.id === "claude-ocx-mock--test-model")).toBe(true);
     expect(typeof d.port).toBe("number");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -119,7 +119,7 @@ test("PUT round-trips settings and persists to config", async () => {
     expect(after.claudeCode?.smallFastModel).toBe("mock/test-model");
     expect(after.claudeCode?.enabled).toBe(false);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -164,7 +164,7 @@ test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_a
     get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -178,7 +178,7 @@ test("GET exposes the resolved marker mode and its provenance", async () => {
     // The badge must say it is daemon-side: a terminal-exported key is invisible here.
     expect(get.detectionScope).toBe("daemon");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -198,7 +198,7 @@ test("an unrelated PUT leaves an auto config on auto", async () => {
     const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -218,7 +218,7 @@ test("auto survives a restart instead of being migrated back to subscription", a
     expect(put.status).toBe(200);
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    first.stop(true);
+    await first.stop(true);
   }
 
   // A restart runs the startup migration against what the PUT persisted.
@@ -228,7 +228,7 @@ test("auto survives a restart instead of being migrated back to subscription", a
     const get = await fetch(new URL("/api/claude-code", second.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.authMode).toBe("auto");
   } finally {
-    second.stop(true);
+    await second.stop(true);
   }
 });
 
@@ -243,13 +243,13 @@ test("toggling Claude on does not pin a fresh install to subscription", async ()
       body: JSON.stringify({ enabled: true }),
     });
   } finally {
-    first.stop(true);
+    await first.stop(true);
   }
   const second = startServer(0);
   try {
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    second.stop(true);
+    await second.stop(true);
   }
 });
 
@@ -263,7 +263,7 @@ test("PUT rejects an unknown authMode value", async () => {
     });
     expect(bad.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -280,7 +280,7 @@ test("PUT rejects invalid authMode values (invalid string + non-string)", async 
     }
     expect(loadConfig().claudeCode?.authMode).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -297,7 +297,7 @@ test("authMode-only PUT triggers system-env reconciliation (audit R2 #1)", async
     expect(applySpy).toHaveBeenCalled();
   } finally {
     applySpy.mockRestore();
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -359,7 +359,7 @@ test("Claude sidecar overrides round-trip, partially update, clear, and reject u
       expect(loadConfig().claudeCode).toEqual(beforeInvalid);
     }
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -399,7 +399,7 @@ test("PUT immediately restores generated agents after re-enable and roster chang
     expect(roster.status).toBe(200);
     expect(readdirSync(agentsDir)).toEqual(["ocx-gpt-5-6-terra.md"]);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -431,7 +431,7 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
     expect(persisted.claudeCode?.maxContextTokens).toBeUndefined();
     expect(persisted.claudeCode?.alwaysEnableEffort).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -471,7 +471,7 @@ test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
     expect(persisted.claudeCode?.autoCompactWindow).toBeUndefined();
     expect(persisted.claudeCode?.blockedSkills).toBeUndefined();
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -509,7 +509,7 @@ test("PUT/GET round-trips tierModels and GET exposes contextWindows + effectiveM
     });
     expect(bad.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -549,7 +549,7 @@ test("PUT validation rejects bad shapes", async () => {
     }
     expect(loadConfig().claudeCode).toBeUndefined(); // nothing persisted on rejects
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -562,7 +562,7 @@ test("GET /api/claude-code reports Auto-connect support on Darwin", async () => 
     const d = await r.json() as Record<string, any>;
     expect(d.autoConnectSupported).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -580,7 +580,7 @@ test("GET /api/claude-code reports Auto-connect unsupported outside Darwin", asy
     expect(d.systemEnv).toBe(true);              // raw stored preference
     expect(d.autoConnectSupported).toBe(false);  // effective capability
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -618,7 +618,7 @@ test("Claude Desktop profile GET, PUT and apply round-trip four-family assignmen
     const appliedConfig = JSON.parse(readFileSync(result.path, "utf8")) as { inferenceGatewayBaseUrl: string };
     expect(appliedConfig.inferenceGatewayBaseUrl).toBe(new URL(server.url).origin);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -651,7 +651,7 @@ test("Claude Desktop apply installs the alias registry in the serving process (#
     const alias = activeDesktop3pAlias("unique859", "test-model-x");
     expect(resolveDesktop3pAlias(alias)).toBe("unique859/test-model-x");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -683,7 +683,7 @@ test("Claude Desktop apply honors the profile in the request body over daemon-st
     });
     expect(badProfile.status).toBe(400);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -707,7 +707,7 @@ test("Claude Desktop apply validates the mode body", async () => {
     const written = JSON.parse(readFileSync(result.path, "utf8")) as { modelDiscoveryEnabled: boolean };
     expect(written.modelDiscoveryEnabled).toBe(true);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -723,7 +723,7 @@ test("Claude Desktop PUT rejects invalid JSON profile without mutating saved con
     expect(put.status).toBe(400);
     expect(loadConfig()).toEqual(before);
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });
 
@@ -756,6 +756,6 @@ test("Claude Desktop PUT retains but cannot move an unavailable route", async ()
     expect((await put.json() as { error: string }).error).toContain("사용할 수 없는 모델");
     expect(loadConfig().claudeCode?.desktopProfile?.assignments["missing/old-model"]?.family).toBe("opus");
   } finally {
-    server.stop(true);
+    await server.stop(true);
   }
 });

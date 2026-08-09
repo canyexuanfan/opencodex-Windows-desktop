@@ -96,7 +96,7 @@ import {
   sanitizePassthroughHeaders,
 } from "../relay";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
-import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
+import type { EffectiveSubagentModel, EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 import type { TranslatorBudget } from "../../lib/translator-budget";
 
 
@@ -169,6 +169,7 @@ export function collabSurface(parsed: OcxParsedRequest): "v1" | "v2" | null {
 
 export interface MultiAgentGuidanceOptions {
   multiAgentGuidanceEnabled?: boolean;
+  codexAccountNamespace?: string;
   injectionModel?: string;
   injectionEffort?: string;
   subagentModels?: string[];
@@ -207,6 +208,16 @@ export async function resolveEffectiveSubagentRoster(
   return effectiveSubagentRoster(configuredModels, surface);
 }
 
+/** Reuse one parsed catalog snapshot across every roster projection for this request. */
+async function createRequestScopedSubagentRosterResolver(): Promise<NonNullable<
+  MultiAgentGuidanceDeps["resolveEffectiveSubagentRoster"]
+>> {
+  const { effectiveSubagentRoster, readCatalog, readCodexCatalogPath } = await import("../../codex/catalog");
+  const catalogEntries = readCatalog(readCodexCatalogPath())?.models ?? [];
+  return (configuredModels, surface) =>
+    effectiveSubagentRoster(configuredModels, surface, catalogEntries);
+}
+
 
 
 export async function multiAgentGuidanceText(
@@ -218,10 +229,14 @@ export async function multiAgentGuidanceText(
   const {
     injectionModel,
     injectionEffort,
+    codexAccountNamespace,
     subagentModels,
     subagentModelFallback,
     injectionPrompt,
   } = options;
+  const activeAccountNamespace = codexAccountNamespace?.length
+    ? codexAccountNamespace
+    : undefined;
   const surface = collabSurface(parsed);
   if (surface === null) return null;
 
@@ -242,15 +257,51 @@ export async function multiAgentGuidanceText(
       ...(subagentModels ?? []),
       ...(injectionModel ? [injectionModel] : []),
     ];
-    const resolveRoster = deps.resolveEffectiveSubagentRoster ?? resolveEffectiveSubagentRoster;
+    const resolveRoster = deps.resolveEffectiveSubagentRoster
+      ?? await createRequestScopedSubagentRosterResolver();
     const effective = await resolveRoster(configuredForGuidance, "v2");
-    const rosterModels = effective.advertised.filter(candidate =>
-      (subagentModels ?? []).some(model => slugsEquivalent(model, candidate.model))
-    );
-    const roster = subagentRosterText(rosterModels);
-    const preferred = injectionModel
-      ? effective.candidates.find(candidate => slugsEquivalent(injectionModel, candidate.model))
+    // Resolve the roster and preferred roles independently so a bare native can project onto its
+    // generated account rows without making an unrelated provider/gpt-* row look equivalent.
+    // The intersection keeps both projections inside Codex's one global five-model window.
+    const candidateModels = new Set(effective.candidates.map(candidate => candidate.model));
+    const withinCandidateWindow = (candidate: EffectiveSubagentModel): boolean =>
+      candidateModels.has(candidate.model);
+    const configuredSubagents = subagentModels ?? [];
+    const subagentEffective = configuredSubagents.length > 0
+      ? injectionModel
+        ? await resolveRoster(configuredSubagents, "v2")
+        : effective
       : undefined;
+    const preferredEffective = injectionModel
+      ? configuredSubagents.length > 0
+        ? await resolveRoster([injectionModel], "v2")
+        : effective
+      : undefined;
+    const explicitlyConfigured = (candidate: EffectiveSubagentModel): boolean =>
+      configuredSubagents.some(model =>
+        model.includes("/") && slugsEquivalent(model, candidate.model)
+      );
+    const allowedForCurrentRoute = (candidate: EffectiveSubagentModel): boolean =>
+      explicitlyConfigured(candidate)
+      || !candidate.model.includes("/")
+      || (activeAccountNamespace !== undefined
+        && candidate.model.startsWith(`${activeAccountNamespace}/`));
+    const rosterModels = (subagentEffective?.advertised ?? [])
+      .filter(withinCandidateWindow)
+      .filter(allowedForCurrentRoute);
+    const roster = subagentRosterText(rosterModels);
+    const preferredCandidates = (preferredEffective?.advertised ?? []).filter(withinCandidateWindow);
+    const soleBarePreferred = preferredCandidates.length === 1
+      && !preferredCandidates[0]!.model.includes("/")
+      ? preferredCandidates[0]
+      : undefined;
+    const preferred = injectionModel?.includes("/")
+      ? preferredCandidates[0]
+      : activeAccountNamespace
+        ? preferredCandidates.find(candidate =>
+          candidate.model.startsWith(`${activeAccountNamespace}/`)
+        ) ?? soleBarePreferred
+        : soleBarePreferred;
 
     if (isInjectionDebugEnabled() && effective.excluded.length > 0) {
       injectionDebugLog(`[opencodex] multi-agent guidance excluded: ${effective.excluded
@@ -260,7 +311,11 @@ export async function multiAgentGuidanceText(
     const fallbackGuidance = subagentFallbackGuidanceText({ subagentModelFallback } as OcxConfig);
     if (!injectionModel && roster === "" && fallbackGuidance === "") return null;
     if (injectionPrompt) {
-      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, injectionModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
+      // Bare ids must resolve to a unique/current-route candidate. Preserve the legacy raw
+      // fallback only for explicit routed/account-qualified ids.
+      const promptModel = preferred?.model
+        ?? (injectionModel?.includes("/") ? injectionModel : undefined);
+      return `<multi_agent_mode>${applyInjectionPlaceholders(injectionPrompt, promptModel, injectionEffort, roster, fallbackGuidance)}</multi_agent_mode>`;
     }
     if (!preferred && roster === "" && fallbackGuidance === "") return null;
     let text = "When the active spawn_agent tool supports optional \"model\" or \"reasoning_effort\" overrides, "

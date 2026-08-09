@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { countPendingOpencodexHistory, isRecoverableHistoryError, migrateHistoryToOpenai, restoreLegacyOpenaiHistory, setHistoryDbBusyTimeoutForTests, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex/history-provider";
+import { classifyRecoverableHistoryError, countPendingOpencodexHistory, isRecoverableHistoryError, migrateHistoryToOpenai, restoreLegacyOpenaiHistory, setHistoryDbBusyTimeoutForTests, syncCodexHistoryProvider, withHistoryRetry } from "../src/codex/history-provider";
 
 // Windows CI: a transient file lock can consume the full production 5s busy timeout, tripping
 // bun's 5s default per-test timeout by itself. Fail fast into withHistoryRetry instead.
@@ -303,6 +303,12 @@ describe("history lock retry", () => {
     expect(isRecoverableHistoryError(new TypeError("undefined is not a function"))).toBe(false);
   });
 
+  test("classifies exhausted history failures for restore callers", () => {
+    expect(classifyRecoverableHistoryError(Object.assign(new Error("x"), { code: "SQLITE_BUSY" }))).toBe("busy");
+    expect(classifyRecoverableHistoryError(Object.assign(new Error("x"), { code: "EACCES" }))).toBe("permission");
+    expect(classifyRecoverableHistoryError(new Error("malformed database schema"))).toBeNull();
+  });
+
   test("withHistoryRetry succeeds after one recoverable failure, sleeping between attempts", () => {
     const sleeps: number[] = [];
     let calls = 0;
@@ -326,6 +332,22 @@ describe("history lock retry", () => {
 
     expect(result).toBeNull();
     expect(calls).toBe(2);
+  });
+
+  test("syncCodexHistoryProvider reports why the retry budget died", () => {
+    // A pending opencodex row makes the eject path actually write; with no rows
+    // the restore transaction never starts and nothing contends.
+    const fixture = makeFixture({ includeLegacy: true });
+    const holder = new Database(fixture.dbPath);
+    holder.exec("BEGIN IMMEDIATE");
+    try {
+      const result = syncCodexHistoryProvider("openai", fixture.dbPath, fixture.backupPath);
+      expect(result.failed).toBe(true);
+      expect(result.failureReason).toBe("busy");
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
   });
 
   test("withHistoryRetry rethrows hard errors immediately", () => {
