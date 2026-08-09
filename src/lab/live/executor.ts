@@ -31,6 +31,7 @@ interface TrustedLiveResultReceipt {
   suiteManifestDigest: string;
   routeSubjectId: string;
   resultDigest: string;
+  retryPolicy: FailureRule["retry"] | null;
 }
 
 const TRUSTED_RESULT_RECEIPTS = new WeakMap<object, TrustedLiveResultReceipt>();
@@ -62,7 +63,7 @@ function trustedResultDigest(result: LiveScenarioRunResult): string {
   return domainHash(TRUSTED_LIVE_RESULT_DOMAIN, jcsStringify(payload));
 }
 
-function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): TrustedLiveResultReceipt {
+function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority, retryPolicy: FailureRule["retry"] | null): TrustedLiveResultReceipt {
   if (!result.routeSubject) throw new Error("trusted live result has no route subject");
   return {
     authorityDigest: domainHash(LIVE_AUTHORITY_DOMAIN, jcsStringify(authority)),
@@ -72,11 +73,12 @@ function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, autho
     suiteManifestDigest: suiteManifestDigest(liveSuiteManifestObjectForCase(caseRecord, authority)),
     routeSubjectId: subjectIdForSubject(result.routeSubject),
     resultDigest: trustedResultDigest(result),
+    retryPolicy,
   };
 }
 
-function sealTrustedLiveResult(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): void {
-  TRUSTED_RESULT_RECEIPTS.set(result, receiptFor(result, caseRecord, authority));
+function sealTrustedLiveResult(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority, retryPolicy: FailureRule["retry"] | null): void {
+  TRUSTED_RESULT_RECEIPTS.set(result, receiptFor(result, caseRecord, authority, retryPolicy));
 }
 
 /** Verify the module-private execution receipt before any live result enters persistence. */
@@ -85,13 +87,19 @@ export function assertTrustedLiveResultReceipt(result: LiveScenarioRunResult, ca
   if (!actual || result.executionAuthority !== "trusted_route") {
     throw new Error("live result lacks trusted execution receipt");
   }
-  const expected = receiptFor(result, caseRecord, authority);
+  const expected = receiptFor(result, caseRecord, authority, actual.retryPolicy);
   for (const key of Object.keys(expected) as Array<keyof TrustedLiveResultReceipt>) {
     if (actual[key] !== expected[key]) throw new Error("live result trusted execution receipt mismatch");
   }
   if (result.scenarioId !== caseRecord.id || result.suite !== caseRecord.suite) {
     throw new Error("live result scenario identity mismatch");
   }
+}
+
+/** Return retryability sealed by the executor after validating the trusted receipt. */
+export function trustedLiveResultRetryable(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): boolean {
+  assertTrustedLiveResultReceipt(result, caseRecord, authority);
+  return TRUSTED_RESULT_RECEIPTS.get(result)?.retryPolicy === "bounded";
 }
 
 function liveLimitsFromAuthority(authorityLimits: Record<string, number>): LiveRunConfig {
@@ -123,10 +131,10 @@ function routePreconditionFailure(route: LabRouteContext, caseRecord: CaseRecord
   return null;
 }
 
-function classifyWithFailureRules(rules: FailureRule[], signal: string): { classification: FailureClassification; secondaryCode: string } {
+function classifyWithFailureRules(rules: FailureRule[], signal: string): { classification: FailureClassification; secondaryCode: string; retryPolicy: FailureRule["retry"] | null } {
   const rule = rules.find((row) => row.match.includes(signal));
-  return rule ? { classification: rule.classification, secondaryCode: rule.secondaryCode ?? signal }
-    : { classification: "inconclusive", secondaryCode: "unclassified" };
+  return rule ? { classification: rule.classification, secondaryCode: rule.secondaryCode ?? signal, retryPolicy: rule.retry }
+    : { classification: "inconclusive", secondaryCode: "unclassified", retryPolicy: null };
 }
 
 function pathForProtocol(protocol: string): string {
@@ -226,9 +234,10 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
   let authority: CaseAuthority | undefined;
   let activeCase = caseRecord;
   let trustedExecutionStarted = false;
-  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt" | "executionAuthority">): LiveScenarioRunResult => {
+  let failureRules: FailureRule[] = [];
+  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt" | "executionAuthority">, retryPolicy: FailureRule["retry"] | null = null): LiveScenarioRunResult => {
     const result: LiveScenarioRunResult = { ...partial, executionAuthority, startedAt, completedAt: Math.max(startedAt, Date.now()) };
-    if (trustedExecutionStarted && authority && result.routeSubject) sealTrustedLiveResult(result, activeCase, authority);
+    if (trustedExecutionStarted && authority && result.routeSubject) sealTrustedLiveResult(result, activeCase, authority, retryPolicy);
     return result;
   };
   try {
@@ -246,10 +255,11 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
     if (preconditionFailure) {
       return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: "inconclusive", secondaryCode: preconditionFailure, assertionResults: [], diagnostics: [preconditionFailure], routeSubject });
     }
+    const expanded = expandLiveScenario(activeCase, authority);
+    failureRules = expanded.failureRules as FailureRule[];
+    const limits = liveLimitsFromAuthority(expanded.executionLimits as Record<string, number>);
     const destination = await createLabDestination({ baseUrl: routeContext.baseUrl, allowPrivateNetwork: routeContext.allowPrivateNetwork, labRunApproval: routeContext.labRunApproval, resolve: opts.resolve, configDir: opts.configDir });
     routeSubject = buildRouteSubjectV1(routeContext, destination, opts.configDir);
-    const expanded = expandLiveScenario(activeCase, authority);
-    const limits = liveLimitsFromAuthority(expanded.executionLimits as Record<string, number>);
     const state = createSandboxResourceState();
     let observation: NormalizedObservation;
     if (opts.routeExecutor) {
@@ -275,14 +285,17 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
     }
     const assertionResults = evaluateAssertions(activeCase.assertions, observation);
     const requiredFailures = assertionResults.filter((row) => row.required && !row.passed);
-    const failureRules = expanded.failureRules as FailureRule[];
     if (activeCase.expectedFailure) {
       const matched = activeCase.expectedFailure.assertionIds.every((id) => assertionResults.find((row) => row.id === id)?.passed === true) && requiredFailures.length === 0;
-      return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: matched, classification: matched ? activeCase.expectedFailure.expectedClass : "protocol_failure", secondaryCode: matched ? activeCase.expectedFailure.expectedCode : "deterministic_assertion", assertionResults, diagnostics, routeSubject });
+      if (matched) {
+        return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: true, classification: activeCase.expectedFailure.expectedClass, secondaryCode: activeCase.expectedFailure.expectedCode, assertionResults, diagnostics, routeSubject });
+      }
+      const mismatch = classifyWithFailureRules(failureRules, "required_assertion_failed");
+      return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: mismatch.classification, secondaryCode: mismatch.secondaryCode, assertionResults, diagnostics, routeSubject }, mismatch.retryPolicy);
     }
     const passed = requiredFailures.length === 0;
-    const classified = passed ? { classification: "inconclusive" as FailureClassification, secondaryCode: "pass" } : classifyWithFailureRules(failureRules, "required_assertion_failed");
-    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed, classification: passed ? "inconclusive" : classified.classification, secondaryCode: passed ? undefined : classified.secondaryCode, assertionResults, diagnostics, routeSubject });
+    const classified = passed ? { classification: "inconclusive" as FailureClassification, secondaryCode: "pass", retryPolicy: null } : classifyWithFailureRules(failureRules, "required_assertion_failed");
+    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed, classification: passed ? "inconclusive" : classified.classification, secondaryCode: passed ? undefined : classified.secondaryCode, assertionResults, diagnostics, routeSubject }, passed ? null : classified.retryPolicy);
   } catch (error) {
     const diagnosticCode = error instanceof TransportError || error instanceof LabSandboxError || error instanceof LabDestinationError
       ? error.code
@@ -291,6 +304,8 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
     let classified = classifyTransportError(error);
     if (error instanceof LabSandboxError) classified = { classification: error.code === "harness_failure" ? "harness_failure" : "budget_exhausted", secondaryCode: error.code };
     if (error instanceof LabDestinationError) classified = { classification: error.code === "network_blocked" ? "network_failure" : "harness_failure", secondaryCode: error.code };
-    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: classified.classification, secondaryCode: classified.secondaryCode, assertionResults: [], diagnostics, routeSubject, transportError: error instanceof TransportError ? error.code : undefined });
+    const failureSignal = error instanceof TransportError || error instanceof LabSandboxError || error instanceof LabDestinationError ? error.code : "harness_failure";
+    const retryPolicy = failureRules.find((rule) => rule.match.includes(failureSignal))?.retry ?? null;
+    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: classified.classification, secondaryCode: classified.secondaryCode, assertionResults: [], diagnostics, routeSubject, transportError: error instanceof TransportError ? error.code : undefined }, retryPolicy);
   }
 }
