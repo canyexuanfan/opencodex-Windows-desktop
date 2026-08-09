@@ -22,4 +22,4 @@ CL-03 does not expose a management CLI/API or UI. Those surfaces remain CL-04+ w
 
 ## CL-05 GUI read surface
 
-CL-05 adds a read-only dashboard route (`#lab`) that visualizes the compatibility verdict matrix from existing `GET /api/lab/*` management APIs. The GUI never triggers probe execution, projection rebuilds, or evidence mutation. Verdicts remain per `(subject, evidence layer, suite)`; layers are not collapsed into a universal score.
+CL-05 adds a read-only Models tab (`#models/compatibility`) that visualizes the compatibility verdict matrix from existing `GET /api/lab/*` management APIs. The legacy `#lab` hash redirects to `#models/compatibility`. The GUI never triggers probe execution, projection rebuilds, or evidence mutation. Verdicts remain per `(subject, evidence layer, suite)`; layers are not collapsed into a universal score.

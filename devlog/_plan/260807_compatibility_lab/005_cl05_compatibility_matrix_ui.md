@@ -1,41 +1,42 @@
-# CL-05 implementation record — Compatibility Matrix UI
+# CL-05 implementation record - Compatibility Matrix UI
 
 ## Programme position
 
 - **Phase:** CL-05 (read-only GUI)
 - **Starting `upstream/dev` SHA:** `d517161aeaa3a974ad3c0360ff0c97b03b4c4520` (merge #1378 / CL-04)
 - **Branch:** `feat/cl-05-compatibility-matrix-ui`
-- **PR:** DRAFT PENDING → `lidge-jun/opencodex:dev`
+- **PR:** DRAFT → `lidge-jun/opencodex:dev` ([#1384](https://github.com/lidge-jun/opencodex/pull/1384))
 - **CL-06:** not started
 
 ## Scope delivered
 
 ### GUI (`gui/src/pages/`)
 
-- New sidebar route `#lab` — **Compatibility Lab**
-- `CompatibilityMatrix.tsx` — read-only verdict matrix over CL-04 management APIs
-- `compatibility-matrix-api.ts` — paginated fetch helpers for `/api/lab/status`, `/api/lab/verdicts`, `/api/lab/subjects`
-- `compatibility-matrix-shared.ts` — DTO parsing, matrix grouping, filters
-- `styles-compatibility-matrix.css` — scrollable matrix + detail tables (api-auth-matrix pattern)
+- **Models → Compatibility tab** at `#models/compatibility` (not a standalone sidebar page)
+- Legacy `#lab` hash redirects to `#models/compatibility`
+- `CompatibilityMatrix.tsx` - read-only verdict matrix over CL-04 management APIs
+- `compatibility-matrix-api.ts` - paginated fetch helpers for `/api/lab/status`, `/api/lab/verdicts`, `/api/lab/subjects`, detail reads
+- `compatibility-matrix-shared.ts` - DTO parsing, matrix grouping, filters
+- `styles-compatibility-matrix.css` - scrollable matrix + detail pane
 - i18n keys in all seven locales (`en`, `de`, `ko`, `zh`, `ru`, `ja`, `tr`)
-- Component/layout tests under `gui/tests/compatibility-matrix*.test.*`
+- Component/layout tests under `gui/tests/compatibility-lab.test.tsx`
 
 ### Behaviour
 
 - Projection status cards (subjects, verdicts, observations, events, built-at)
 - Subject × evidence-layer matrix with per-suite verdict badges
-- Filterable verdict detail table (layer, verdict, subject id)
+- Server-side verdict filters (layer, verdict, subjectId, suiteId) with paginated "Load more"
+- Verdict detail pane (subject, observations, contributing events, artifact metadata only)
 - Empty/unavailable/incompatible projection states via existing data-surface contract
+- Lazy mount with `active` / `pauseWhenHidden` gating inside Models workspace
 - No probe execution, projection rebuild, or evidence mutation
 
 ## Validation (local)
 
-- `bun x tsc --noEmit` — pending
-- `bun test tests/lab-read-surfaces.test.ts` — pending
-- `cd gui && bun test tests/compatibility-matrix.test.tsx tests/compatibility-matrix-layout.test.ts` — pending
-- `cd gui && bun run lint` — pending
-- `cd gui && bun run build` — pending
-- `bun run privacy:scan` — pending
+- `bun x tsc --noEmit` - pending
+- `bun test tests/lab-read-surfaces.test.ts tests/models-workspace-tabs.test.ts` - pending
+- `cd gui && bun test tests/compatibility-lab.test.tsx tests/models-workspace-panels.test.tsx` - pending
+- `bun run lint:gui && bun run doctor:gui && bun run build:gui && bun run privacy:scan` - pending
 
 ## Acceptance blockers
 

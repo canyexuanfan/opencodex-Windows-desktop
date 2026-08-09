@@ -10,7 +10,6 @@ export type Page =
   | "subagents"
   | "logs"
   | "usage"
-  | "lab"
   | "storage"
   | "codex-auth"
   | "integrations";
@@ -23,7 +22,6 @@ export const VALID_PAGES = new Set<Page>([
   "subagents",
   "logs",
   "usage",
-  "lab",
   "storage",
   "codex-auth",
   "integrations",
@@ -56,11 +54,11 @@ export function readPageFromHash(hash?: string): Page {
 export const DASHBOARD_TAB_HASHES = ["dashboard/providers", "dashboard/models"] as const;
 
 /**
- * Models owns three tabs: the catalog, Combos, and Routing. The catalog is the bare
- * `#models`, so it has no suffix entry here — same convention Dashboard uses for
- * Overview and Logs uses for the log list.
+ * Models owns four tabs: the catalog, Combos, Routing, and Compatibility. The catalog
+ * is the bare `#models`, so it has no suffix entry here - same convention Dashboard
+ * uses for Overview and Logs uses for the log list.
  */
-export const MODELS_TAB_HASHES = ["models/combos", "models/routing"] as const;
+export const MODELS_TAB_HASHES = ["models/combos", "models/routing", "models/compatibility"] as const;
 
 /**
  * `#dashboard/update` is an action deep link, not a tab: the sidebar update button uses
@@ -133,6 +131,9 @@ export function resolveAppHashChange(rawHash: string): AppHashChangeAction {
   }
   if (rawHash === "routing" || rawHash.startsWith("routing/")) {
     return { page: "models", replaceTo: "models/routing" };
+  }
+  if (rawHash === "lab" || rawHash.startsWith("lab/")) {
+    return { page: "models", replaceTo: "models/compatibility" };
   }
 
   /*

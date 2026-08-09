@@ -23,7 +23,7 @@ import {
 
 describe("nested Models hashes", () => {
   test("both tab hashes are registered and belong to the models page", () => {
-    expect([...MODELS_TAB_HASHES]).toEqual(["models/combos", "models/routing"]);
+    expect([...MODELS_TAB_HASHES]).toEqual(["models/combos", "models/routing", "models/compatibility"]);
     for (const hash of MODELS_TAB_HASHES) {
       expect(hashBelongsToPage(hash, "models")).toBe(true);
       // The first segment already answers the page; the suffix only picks the tab.
@@ -53,6 +53,7 @@ describe("readModelsTab", () => {
     expect(readModelsTab("#models")).toBe("catalog");
     expect(readModelsTab("#models/combos")).toBe("combos");
     expect(readModelsTab("#models/routing")).toBe("routing");
+    expect(readModelsTab("#models/compatibility")).toBe("compatibility");
   });
 
   test("accepts the bare and slash-prefixed hash forms", () => {
@@ -134,4 +135,12 @@ test("an unregistered deep hash normalises to the bare page, matching readModels
     expect(resolveAppHashChange(stray)).toEqual({ page: "models", replaceTo: "models" });
     expect(readModelsTab(`#${stray}`)).toBe("catalog");
   }
+});
+
+
+describe("legacy lab hash", () => {
+  test("#lab redirects to models/compatibility", () => {
+    expect(resolveAppHashChange("lab")).toEqual({ page: "models", replaceTo: "models/compatibility" });
+    expect(readModelsTab("#lab")).toBe("compatibility");
+  });
 });

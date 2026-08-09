@@ -9,11 +9,10 @@ import Usage from "./pages/Usage";
 import Storage from "./pages/Storage";
 import CodexAuth from "./pages/CodexAuth";
 import Integrations from "./pages/Integrations";
-import CompatibilityMatrix from "./pages/CompatibilityMatrix";
 import Startup from "./pages/Startup";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { SidebarGithubRow } from "./components/sidebar-github-row";
-import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconLab, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX } from "./icons";
+import { IconGrid, IconServer, IconBoxes, IconBot, IconList, IconActivity, IconHardDrive, IconKey, IconMenu, IconSun, IconMoon, IconMonitor, IconGlobe, IconPower, IconX } from "./icons";
 import { useI18n, useT, LOCALES, localeDisplayName, type Locale, type TKey } from "./i18n/shared";
 import { Select } from "./ui";
 import { installApiAuthFetch } from "./api";
@@ -34,7 +33,6 @@ const PAGE_TKEY: Record<Page, TKey> = {
   subagents: "nav.subagents",
   logs: "nav.logs",
   usage: "nav.usage",
-  lab: "nav.lab",
   storage: "nav.storage",
   "codex-auth": "nav.codexAuth",
   integrations: "nav.integrations",
@@ -65,7 +63,6 @@ const NAV: NavEntry[] = [
   { id: "subagents", tkey: "nav.subagents", Icon: IconBot },
   { id: "logs", tkey: "nav.logs", Icon: IconList },
   { id: "usage", tkey: "nav.usage", Icon: IconActivity },
-  { id: "lab", tkey: "nav.lab", Icon: IconLab },
   { id: "storage", tkey: "nav.storage", Icon: IconHardDrive },
   { id: "integrations", tkey: "nav.integrations", Icon: IconGlobe },
 ];
@@ -308,7 +305,6 @@ export default function App() {
             {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
             {page === "usage" && <Usage apiBase={API_BASE} />}
-            {page === "lab" && <CompatibilityMatrix apiBase={API_BASE} />}
             {page === "storage" && <Storage apiBase={API_BASE} />}
             {page === "codex-auth" && <CodexAuth apiBase={API_BASE} />}
             {page === "integrations" && <Integrations apiBase={API_BASE} />}
