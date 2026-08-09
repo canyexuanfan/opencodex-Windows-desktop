@@ -195,7 +195,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
       completed.push("scratch");
     }
     if (purgeActions.includes("export")) {
-      purgeBoundedDirectory(paths.exportDir);
+      purgeBoundedDirectory(paths.exportsDir);
       completed.push("export");
     }
 
