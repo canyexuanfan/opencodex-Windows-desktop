@@ -51,11 +51,26 @@ function addressSetKey(addresses: ReadonlyArray<{ address: string; family: 4 | 6
   return canonicalAddresses(addresses).map((row) => `${row.family}:${row.address}`).join(",");
 }
 
+async function withResolutionTimeout<T>(timeoutMs: number, operation: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new LabDestinationError("destination resolution timed out", "connect_timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export interface CreateDestinationOptions {
   baseUrl: string;
   allowPrivateNetwork?: boolean;
   labRunApproval?: boolean;
   resolve?: DnsResolver;
+  connectTimeoutMs?: number;
   configDir?: string;
 }
 
@@ -79,22 +94,31 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
     throw new LabDestinationError("private network requires allowPrivateNetwork and labRunApproval", "harness_failure");
   }
 
+  const connectTimeoutMs = opts.connectTimeoutMs ?? 10_000;
+  if (!Number.isInteger(connectTimeoutMs) || connectTimeoutMs <= 0) {
+    throw new LabDestinationError("invalid connect timeout", "harness_failure");
+  }
+
   let addresses: Array<{ address: string; family: 4 | 6 }>;
   let privateNetwork = literalPrivate;
   if (opts.resolve) {
-    try { addresses = await opts.resolve(parsed.hostname); }
-    catch { throw new LabDestinationError("DNS resolution failed", "network_blocked"); }
+    try { addresses = await withResolutionTimeout(connectTimeoutMs, () => opts.resolve!(parsed.hostname)); }
+    catch (error) {
+      if (error instanceof LabDestinationError) throw error;
+      throw new LabDestinationError("DNS resolution failed", "network_blocked");
+    }
     if (addresses.length === 0) throw new LabDestinationError("DNS resolution returned no addresses", "network_blocked");
     for (const row of addresses) privateNetwork = validateResolvedAddress(scheme, row, allowPrivate, approved) || privateNetwork;
   } else {
     try {
-      const resolved = await resolvePublicAddresses(parsed.toString(), {
+      const resolved = await withResolutionTimeout(connectTimeoutMs, () => resolvePublicAddresses(parsed.toString(), {
         context: "Lab provider destination",
         allowPrivateNetwork: allowPrivate && approved,
-      });
+      }));
       addresses = resolved.addresses.map((row) => ({ address: row.address, family: row.family === 6 ? 6 as const : 4 as const }));
       privateNetwork = resolved.privateNetwork || privateNetwork;
-    } catch {
+    } catch (error) {
+      if (error instanceof LabDestinationError) throw error;
       throw new LabDestinationError("DNS destination policy failed", "network_blocked");
     }
   }
