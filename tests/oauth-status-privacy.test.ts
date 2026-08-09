@@ -109,6 +109,18 @@ describe("OAuth status privacy", () => {
     expect(getLoginStatus("xai").loggedIn).toBe(false);
   });
 
+  test("getLoginStatus reports not logged in for an unknown (0) credential expiry", async () => {
+    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
+      xai: {
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: 0,
+      },
+    }), "utf8");
+
+    expect(getLoginStatus("xai").loggedIn).toBe(false);
+  });
+
   test("getLoginStatus reports not logged in for a non-finite credential expiry", async () => {
     writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
       xai: {

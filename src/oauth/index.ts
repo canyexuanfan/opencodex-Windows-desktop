@@ -1180,17 +1180,18 @@ export function getLoginStatus(provider: string): { loggedIn: boolean; email?: s
     expiresAt: a.credential.expires,
   }));
 
-  // A stored credential only counts as "logged in" when it is still usable: not marked for
-  // re-auth and not already expired (or unknown-expiry, which needs refresh validation).
+  // A stored credential only counts as "logged in" when it is confirmed usable:
+  // not marked for re-auth and carrying a finite, positive, still-future expiry.
+  // Unknown (0/NaN) or expired expiries mean refresh validation is required.
   const active = set?.accounts.find(a => a.id === set.activeAccountId);
-  const activeExpired = active
+  const activeUsable = active
     ? Number.isFinite(active.credential.expires)
       && active.credential.expires > 0
-      && active.credential.expires <= Date.now()
+      && active.credential.expires > Date.now()
     : false;
   const activeNeedsReauth = active?.needsReauth === true;
   return {
-    loggedIn: !!cred && !activeNeedsReauth && !activeExpired,
+    loggedIn: !!cred && activeUsable && !activeNeedsReauth,
     email: maskEmail(cred?.email) ?? undefined,
     source: cred?.source,
     error: st?.error,
