@@ -38,7 +38,8 @@ export function normalizeSseBytes(bytes: Uint8Array, sourceProtocol: string): No
       events.push({ event: eventName ?? "malformed", data: joined, ordinal: ordinal++ });
       continue;
     }
-    if (parsed === null || typeof parsed !== "object") continue;
+    // Protocol V1 treats null, scalar, and array data values as padding.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
     const inferred = eventName ?? (typeof (parsed as { type?: unknown }).type === "string"
       ? (parsed as { type: string }).type
       : "message");

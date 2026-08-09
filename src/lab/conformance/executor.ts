@@ -420,7 +420,13 @@ async function runReasoningReplay(
   observation: NormalizedObservation,
   vector: Record<string, unknown>,
 ): Promise<NormalizedObservation> {
-  const adapter = withHarnessTranslatorBudget(createResponsesPassthroughAdapter(fixtureProviderConfig("openai-responses")));
+  const provider: OcxProviderConfig = {
+    ...fixtureProviderConfig("openai-responses"),
+    // This Protocol V1 vector exercises a Responses-compatible target that accepts provider
+    // replay fields verbatim. The adapter must therefore preserve raw reasoning content.
+    preserveResponsesReasoningContent: true,
+  };
+  const adapter = withHarnessTranslatorBudget(createResponsesPassthroughAdapter(provider));
   try {
     const turn1 = vector.turn1 as {
       reasoning: { id: string; text: string; signature: string };
@@ -429,20 +435,32 @@ async function runReasoningReplay(
     const turn2 = vector.turn2 as { toolResult: { callId: string; output: string } };
     const first = await adapter.buildRequest(parseRequest({ model: "fixture-model", input: "PING", stream: false }), { headers: new Headers() });
     recordUpstreamRequest(observation, JSON.parse(first.body));
-    const replayInput = [
-      {
-        type: "reasoning",
-        id: turn1.reasoning.id,
-        content: [{ type: "reasoning_text", text: turn1.reasoning.text }],
-        signature: turn1.reasoning.signature,
-      },
-      {
-        type: "function_call_output",
-        call_id: turn2.toolResult.callId,
-        output: turn2.toolResult.output,
-      },
-    ];
-    const second = await adapter.buildRequest(parseRequest({ model: "fixture-model", input: replayInput, stream: false }), { headers: new Headers() });
+
+    const replayBody = {
+      model: "fixture-model",
+      input: [
+        {
+          type: "reasoning",
+          id: turn1.reasoning.id,
+          content: [{ type: "reasoning_text", text: turn1.reasoning.text }],
+          signature: turn1.reasoning.signature,
+        },
+        {
+          type: "function_call_output",
+          call_id: turn2.toolResult.callId,
+          output: turn2.toolResult.output,
+        },
+      ],
+      stream: false,
+    };
+    // Adapter vectors feed their documented boundary fields directly into the selected adapter.
+    // Keep a valid parsed shell for typed adapter metadata, while _rawBody carries the exact
+    // Responses replay shape whose text/signature preservation is under test.
+    const parsedReplay = {
+      ...parseRequest({ model: "fixture-model", input: "PING", stream: false }),
+      _rawBody: replayBody,
+    };
+    const second = await adapter.buildRequest(parsedReplay, { headers: new Headers() });
     recordUpstreamRequest(observation, JSON.parse(second.body));
     return observation;
   } finally {
