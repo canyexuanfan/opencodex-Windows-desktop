@@ -96,6 +96,46 @@ describe("OAuth status privacy", () => {
     expect(JSON.stringify(status)).not.toContain("oauth<script>");
   });
 
+  test("getLoginStatus reports not logged in for an expired credential", async () => {
+    await saveCredential("xai", {
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() - 60_000,
+      email: "person@example.test",
+      accountId: "acct-xai",
+      source: "local-cli",
+    });
+
+    expect(getLoginStatus("xai").loggedIn).toBe(false);
+  });
+
+  test("getLoginStatus reports not logged in for a non-finite credential expiry", async () => {
+    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
+      xai: {
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: NaN,
+      },
+    }), "utf8");
+
+    expect(getLoginStatus("xai").loggedIn).toBe(false);
+  });
+
+  test("getLoginStatus reports not logged in for a needsReauth account", async () => {
+    await saveCredential("xai", {
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: Date.now() + 3600_000,
+      accountId: "acct-xai",
+      source: "local-cli",
+    });
+    const { markAccountNeedsReauth, getAccountSet } = await import("../src/oauth/store");
+    await markAccountNeedsReauth("xai", getAccountSet("xai")!.activeAccountId, true);
+
+    expect(getLoginStatus("xai").loggedIn).toBe(false);
+    expect(getLoginStatus("xai").accounts?.[0]?.needsReauth).toBe(true);
+  });
+
   test("stale credentials for removed OAuth providers fail as unsupported provider config", async () => {
     await saveCredential("removed-provider", {
       access: "access-token",
