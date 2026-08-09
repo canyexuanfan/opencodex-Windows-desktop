@@ -38,7 +38,13 @@ jobs:
        github.event.sender.id == 136622811) ||
       (github.event_name == 'pull_request_target' &&
        ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-        github.event.label.name == 'gui-screenshot-waived'))
+        github.event.label.name == 'gui-screenshot-waived' ||
+        github.event.label.name == 'intake: hygiene-blocked' ||
+        github.event.label.name == 'maintainer-sponsored' ||
+        github.event.label.name == 'test-exception-approved' ||
+        github.event.label.name == 'suppression-approved' ||
+        github.event.label.name == 'generated-change-approved' ||
+        github.event.label.name == 'dependency-change-approved'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -138,6 +144,12 @@ jobs:
               resetReviewReadinessSection
             } = require(
               path.join(process.cwd(), ".github", "scripts", "pr-quality.cjs"),
+            );
+            const {
+              collectDeterministicHygieneFailures,
+              HYGIENE_FAILURE_HINTS,
+            } = require(
+              path.join(process.cwd(), ".github", "scripts", "pr-hygiene.cjs"),
             );
             const {
               parseGateState,
@@ -535,6 +547,26 @@ jobs:
               // GUI-screenshot gate; the comments are already fetched above.
               guiOverrideComments: comments
             });
+
+            // Hygiene is a separate workflow that owns the blocked label and
+            // the Hygiene comment section, but Ready / review-ready must not
+            // clear while those checks fail. Re-assess here from the same
+            // trusted scripts so the gate cannot race ahead of hygiene.
+            const changedFiles = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number, per_page: 100 }
+            );
+            const labelNames = (pr.labels ?? []).map(label => label.name);
+            failures = [
+              ...failures,
+              ...collectDeterministicHygieneFailures({
+                files: changedFiles,
+                labels: labelNames,
+                authorHasPushPermission:
+                  !permissionLookupFailed &&
+                  authorHasPushPermission(authorPermission),
+              }),
+            ];
 
             // A maintainer issue comment saying the change does not touch
             // the GUI waives the screenshot gate. The flag is what tells the
@@ -943,6 +975,14 @@ jobs:
                   "Add a screenshot of the UI change to the PR description."
                 );
               }
+              for (const failure of failures) {
+                const hint = HYGIENE_FAILURE_HINTS[failure.code];
+                if (!hint) continue;
+                const paths = failure.paths?.length
+                  ? ` Paths: ${failure.paths.map(p => inlineCode(p)).join(", ")}.`
+                  : "";
+                actions.push(`Fix **${failure.code}** — ${hint}${paths}`);
+              }
               if (checklistRequired && !checklistComplete) {
                 actions.push(
                   `Tick all four boxes in the PR description once you're done (currently ${readiness.checked}/${readiness.total}).`
@@ -1027,6 +1067,9 @@ jobs:
                     }
                     if (failure.code === "missing_ui_screenshot") {
                       return "UI screenshot required.";
+                    }
+                    if (HYGIENE_FAILURE_HINTS[failure.code]) {
+                      return `hygiene: ${failure.code}.`;
                     }
                     return failure.code;
                   })

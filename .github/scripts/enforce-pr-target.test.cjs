@@ -49,7 +49,7 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /synchronize/);
   });
 
-  it("uses label events for GUI waivers and a trusted CodeRabbit status signal", () => {
+  it("uses label events for GUI waivers, hygiene sponsorship, and a trusted CodeRabbit status signal", () => {
     assert.doesNotMatch(workflow, /^  issue_comment:/m);
     assert.match(workflow, /- labeled/);
     assert.match(workflow, /- unlabeled/);
@@ -57,6 +57,8 @@ describe("enforce-pr-target workflow", () => {
     assert.match(workflow, /github\.event\.context == 'CodeRabbit'/);
     assert.match(workflow, /github\.event\.state == 'success'/);
     assert.match(workflow, /github\.event\.label\.name == 'gui-screenshot-waived'/);
+    assert.match(workflow, /github\.event\.label\.name == 'intake: hygiene-blocked'/);
+    assert.match(workflow, /github\.event\.label\.name == 'maintainer-sponsored'/);
     assert.match(workflow, /listPullRequestsAssociatedWithCommit/);
     assert.match(workflow, /candidate\.head\?\.sha === statusSha/);
     assert.match(workflow, /candidates\.length !== 1/);
@@ -180,6 +182,9 @@ describe("enforce-pr-target workflow", () => {
   it("loads pr-quality via require from the checked-out scripts", () => {
     assert.match(workflow, /pr-quality\.cjs/);
     assert.match(workflow, /collectPrQualityFailures/);
+    assert.match(workflow, /pr-hygiene\.cjs/);
+    assert.match(workflow, /collectDeterministicHygieneFailures/);
+    assert.match(workflow, /pulls\.listFiles/);
   });
 
   it("checks stacked bases via open PR heads before wrong_base enforcement", () => {

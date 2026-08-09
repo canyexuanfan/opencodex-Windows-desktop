@@ -735,6 +735,7 @@ describe("GitHub Actions hardening", () => {
     "require",
     "require",
     "require",
+    "require",
   ] as const;
 
   /** Reads every allowed-base PR performs before any enforcement writes. */
@@ -746,6 +747,7 @@ describe("GitHub Actions hardening", () => {
       "repos.getCollaboratorPermissionLevel",
       "repos.compareCommitsWithBasehead",
       "repos.compareCommitsWithBasehead",
+      "pulls.listFiles",
       ...tail,
     ];
   }
@@ -758,6 +760,7 @@ describe("GitHub Actions hardening", () => {
       "issues.listComments",
       "repos.getCollaboratorPermissionLevel",
       "pulls.list",
+      "pulls.listFiles",
       ...tail,
     ];
   }
@@ -772,6 +775,10 @@ describe("GitHub Actions hardening", () => {
       "repos.getCollaboratorPermissionLevel",
       "repos.compareCommitsWithBasehead",
       "repos.compareCommitsWithBasehead",
+      // The harness walks every paginate call across the same page count, so
+      // listFiles appears once per comment page even when the file list is empty.
+      "pulls.listFiles",
+      "pulls.listFiles",
       ...tail,
     ];
   }
@@ -910,6 +917,12 @@ describe("GitHub Actions hardening", () => {
     expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.login == 'coderabbitai[bot]'");
     expect(String(resolver?.["if"] ?? "")).toContain("github.event.sender.id == 136622811");
     expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'gui-screenshot-waived'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'intake: hygiene-blocked'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'maintainer-sponsored'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'test-exception-approved'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'suppression-approved'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'generated-change-approved'");
+    expect(String(resolver?.["if"] ?? "")).toContain("github.event.label.name == 'dependency-change-approved'");
 
     const hygieneWorkflow = Bun.YAML.parse(
       await readText(".github/workflows/pr-hygiene.yml"),
@@ -1032,6 +1045,8 @@ describe("GitHub Actions hardening", () => {
     // The verdict is a live PR read plus ancestry/description checks.
     expect(script).toContain("github.rest.pulls.get");
     expect(script).toContain("collectPrQualityFailures");
+    expect(script).toContain("collectDeterministicHygieneFailures");
+    expect(script).toContain("github.rest.pulls.listFiles");
     // The GUI screenshot gate reads the title as well as the body.
     expect(script).toContain("title: pr.title");
     expect(script).toContain("github.rest.repos.getCollaboratorPermissionLevel");
@@ -1149,7 +1164,9 @@ describe("GitHub Actions hardening", () => {
           name !== "github.rest.repos.listPullRequestsAssociatedWithCommit" &&
           name !== "github.rest.issues.listEvents" &&
           // The claim check reads check-runs; it must never count as a write.
-          name !== "github.rest.checks.listForRef",
+          name !== "github.rest.checks.listForRef" &&
+          // Hygiene reassessment reads the changed-file list; not a write.
+          name !== "github.rest.pulls.listFiles",
       );
     expect([...new Set(restWrites)].sort()).toEqual([
       "github.rest.issues.addLabels",
@@ -1402,6 +1419,70 @@ describe("GitHub Actions hardening", () => {
       expect(readinessBody).toContain("Maintainers notified: @lidge-jun @Ingwannu @Wibias");
       expect(readinessBody).toContain('"maintainersPinged":true');
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+    });
+
+    test("unsponsored restricted surfaces keep Ready and review-ready blocked", async () => {
+      // Regression for #1324: hygiene failed on auth-api while the quality gate
+      // still posted READY and applied review-ready. The gate must re-assess
+      // deterministic hygiene itself and treat those failures like any other
+      // quality block.
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: false,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        files: [
+          { filename: "src/codex/auth-api.ts", patch: "+change" },
+          { filename: "tests/codex-auth-api.test.ts", patch: "+test" },
+        ],
+      });
+
+      expect(
+        result.warnings.some(
+          w => w.startsWith("setFailed:") && w.includes("unsponsored_surface"),
+        ),
+      ).toBe(true);
+      expect(methodsOf(result)).toContain("pulls.listFiles");
+      expect(methodsOf(result)).not.toContain("issues.addLabels");
+      expect(methodsOf(result)).not.toContain("markPullRequestReadyForReview");
+      const graphqlCalls = callsTo(result, "graphql") as Array<{ query: string }>;
+      expect(
+        graphqlCalls.some(call => call.query.includes("markPullRequestReadyForReview")),
+      ).toBe(false);
+      expect(
+        graphqlCalls.some(call => call.query.includes("convertPullRequestToDraft")),
+      ).toBe(true);
+      const gateBody = lastReadinessCommentBody(result);
+      expect(gateBody).toContain("## ⏳ DRAFT");
+      expect(gateBody).toContain("unsponsored_surface");
+      expect(gateBody).toContain("maintainer-sponsored");
+      expect(gateBody).not.toContain("## ✅ READY");
+    });
+
+    test("maintainer-sponsored clears the restricted-surface Ready block", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          draft: true,
+          body: readinessChecklistBody(4),
+        },
+        maintainersFile: MAINTAINERS_FIXTURE,
+        labels: ["maintainer-sponsored"],
+        files: [
+          { filename: "src/codex/auth-api.ts", patch: "+change" },
+          { filename: "tests/codex-auth-api.test.ts", patch: "+test" },
+        ],
+      });
+
+      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
+      expect(methodsOf(result)).toContain("issues.addLabels");
+      const graphqlCalls = callsTo(result, "graphql") as Array<{ query: string }>;
+      expect(
+        graphqlCalls.some(call => call.query.includes("markPullRequestReadyForReview")),
+      ).toBe(true);
+      expect(lastReadinessCommentBody(result)).toContain("## ✅ READY");
     });
 
     test("completing the checklist records the head it was completed on", async () => {
