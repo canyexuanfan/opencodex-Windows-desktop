@@ -110,6 +110,80 @@
   max-width: min(100%, 14rem);
 }
 
+/* The effort control holds one short wire value (low…max); it must not inherit
+   the model select's reserved width. Scoped to the vision card: the delegation
+   panel's controls end in a button today, but that is its markup's accident,
+   not a contract this rule should depend on. */
+.dash-vision-card .dash-delegation-controls .custom-select:last-child {
+  min-width: 6.5rem;
+  max-width: 9rem;
+}
+
+.dash-sidecar-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* The hint must wrap inside its own column, never run under the controls. The
+   copy block is the flex item that yields, so it needs a real basis: without
+   one, `flex-basis: auto` lets its max-content width win the negotiation and the
+   text overlaps the control group in longer locales (ko/ru/ja). */
+.dash-vision-card .dash-sidecar-copy {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+}
+
+/* The copy block yields; the control group holds its intrinsic width. Letting the
+   controls shrink (`0 1 auto`) does NOT wrap them — `.custom-select` keeps its own
+   min-width, so the children simply overflow their shrunken container and slide
+   left under the hint text. Hold the group at content width and make the copy the
+   only thing that gives way; the narrow-viewport case is handled by stacking the
+   whole card below. */
+.dash-vision-card .dash-delegation-controls {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+/* The model select carries the long value: give it a floor wide enough to read a
+   real model id, and ellipsize inside rather than growing without bound. */
+.dash-vision-card .dash-delegation-controls .custom-select:first-child {
+  min-width: 10.5rem;
+  max-width: 14rem;
+}
+
+.dash-vision-card .dash-delegation-controls .select-trigger {
+  width: 100%;
+  max-width: 100%;
+  justify-content: space-between;
+}
+
+.dash-vision-card .dash-delegation-controls .select-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* The vision panel is a delegation-style ROW, so it must not inherit
+   .dash-sidecar-card's flex-direction: column. It only ever needed min-width. */
+.dash-vision-card {
+  min-width: 0;
+}
+
+/* Below the width where a row can hold copy + two selects, stack instead of
+   overflowing. Measured: the row is clean down to ~320px viewport; under that the
+   controls would push past the panel edge. */
+@media (max-width: 22rem) {
+  .dash-vision-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dash-vision-card .dash-delegation-controls {
+    justify-content: flex-start;
+  }
+}
+
 .dash-sidecar-card__row .select-trigger {
   width: 100%;
   max-width: 100%;

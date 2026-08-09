@@ -57,7 +57,15 @@ export interface SettingsData {
 export type SidecarBackend = "openai" | "anthropic";
 export type VisionReasoning = "low" | "medium" | "high" | "xhigh" | "max";
 export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning }
-export interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
+export interface VisionModelOption { value: string; label: string; backend: SidecarBackend; baseline?: boolean }
+export interface SidecarData {
+  webSearch: SidecarSetting;
+  vision: SidecarSetting;
+  /** Server-computed eligible describers. Optional: an older server omits it and
+   *  the client falls back to the legacy provider-name list rather than showing
+   *  an empty picker. */
+  visionModels?: VisionModelOption[];
+}
 export interface SidecarPatch {
   webSearch?: { backend?: SidecarBackend | null; model?: string };
   vision?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning };
@@ -202,6 +210,21 @@ export function sidecarModelOptions(models: ModelInfo[]) {
     }
   }
   return out;
+}
+
+/** Server list when present, else the legacy openai+anthropic list. */
+export function visionModelOptions(
+  serverOptions: VisionModelOption[] | undefined,
+  models: ModelInfo[],
+  current: string | undefined,
+): Array<{ value: string; label: string }> {
+  const options = serverOptions && serverOptions.length > 0
+    ? serverOptions.map(option => ({ value: option.value, label: option.label }))
+    : sidecarModelOptions(models);
+  if (current && !options.some(option => option.value === current)) {
+    options.unshift({ value: current, label: current });
+  }
+  return options;
 }
 
 /** Options for shadow-call replacement models use the proxy's canonical routing id. */
