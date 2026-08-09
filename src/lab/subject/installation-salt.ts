@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { labInstallationSaltPath, labRoot } from "../paths";
 
 const SALT_BYTES = 32;
+const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
 
 function readSaltFile(path: string): Uint8Array {
   const bytes = readFileSync(path);
@@ -21,13 +22,21 @@ function removeStagingFile(path: string): void {
 }
 
 function fsyncDirectory(path: string): void {
-  // Node does not provide a portable directory-fsync primitive on Windows.
-  // POSIX publication is crash-durable; Windows still uses a fsync'd staging inode
-  // plus atomic hard-link publication so partially written salts are never visible.
+  // Windows has no portable directory-fsync primitive. Some POSIX-backed
+  // filesystems (notably virtual/shared filesystems) report directory fsync as
+  // unsupported. In those cases the fsync'd staging inode plus atomic same-dir
+  // hard-link publication is the supported durability fallback. Unexpected I/O
+  // errors remain fatal.
   if (process.platform === "win32") return;
   const dirFd = openSync(path, "r");
-  try { fsyncSync(dirFd); }
-  finally { closeSync(dirFd); }
+  try {
+    try { fsyncSync(dirFd); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code && UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)) return;
+      throw error;
+    }
+  } finally { closeSync(dirFd); }
 }
 
 /** Read or atomically publish the per-installation salt used for local fingerprinting. */
