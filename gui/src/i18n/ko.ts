@@ -6,6 +6,10 @@ import type { TKey } from "./en";
 export const ko: Record<TKey, string> = {
   // sidebar / nav / common
   "nav.dashboard": "대시보드",
+  "uptime.day": "일",
+  "uptime.hour": "시간",
+  "uptime.minute": "분",
+  "uptime.second": "초",
   "nav.startup": "시작 안전성",
   "nav.providers": "프로바이더",
   "nav.models": "모델",
@@ -84,6 +88,7 @@ export const ko: Record<TKey, string> = {
   "theme.dark": "다크",
   "theme.system": "시스템",
   "lang.label": "언어",
+  "lang.nativeName": "한국어",
   "provider.name.commandCodeAuth": "Command Code - Auth",
   "provider.name.commandCodeApi": "Command Code - API",
   "provider.name.volcengine": "Volcengine Ark",

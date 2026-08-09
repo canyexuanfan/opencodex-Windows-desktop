@@ -8,6 +8,10 @@
 export const en = {
   // sidebar / nav / common
   "nav.dashboard": "Dashboard",
+  "uptime.day": "d",
+  "uptime.hour": "h",
+  "uptime.minute": "m",
+  "uptime.second": "s",
   "nav.startup": "Startup",
   "nav.providers": "Providers",
   "nav.models": "Models",
@@ -44,6 +48,7 @@ export const en = {
   "theme.dark": "Dark",
   "theme.system": "System",
   "lang.label": "Language",
+  "lang.nativeName": "English",
   "provider.name.commandCodeAuth": "Command Code - Auth",
   "provider.name.commandCodeApi": "Command Code - API",
   "provider.name.volcengine": "Volcengine Ark",
