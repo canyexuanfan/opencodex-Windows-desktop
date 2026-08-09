@@ -138,35 +138,85 @@ const IMPORT_CODES = new Set<AccountImportCode>([
   "imported", "updated", "unsupported_provider", "unsupported_format", "invalid_document",
   "invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed",
 ]);
+const IMPORT_RESULT_FIELDS = new Set([
+  "totalCount", "importedCount", "updatedCount", "failedCount", "unsupportedCount", "results",
+]);
+const IMPORT_RECORD_FIELDS = new Set(["index", "status", "code"]);
+const IMPORT_STATUS_CODES: Record<AccountImportStatus, ReadonlySet<AccountImportCode>> = {
+  imported: new Set(["imported"]),
+  updated: new Set(["updated"]),
+  failed: new Set(["invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed"]),
+  unsupported: new Set(["unsupported_provider", "unsupported_format"]),
+};
 
-function nonNegativeInteger(value: unknown): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
-function safeImportResult(json: Record<string, unknown>): AccountImportResult | null {
+function hasExactFields(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  const fields = Object.keys(value);
+  return fields.length === allowed.size && fields.every(field => allowed.has(field));
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isSafeInteger(value) && value >= 0;
+}
+
+function safeImportResult(json: unknown): AccountImportResult | null {
+  if (!isPlainObject(json) || !hasExactFields(json, IMPORT_RESULT_FIELDS)) return null;
+  if (
+    !isNonNegativeSafeInteger(json.totalCount)
+    || !isNonNegativeSafeInteger(json.importedCount)
+    || !isNonNegativeSafeInteger(json.updatedCount)
+    || !isNonNegativeSafeInteger(json.failedCount)
+    || !isNonNegativeSafeInteger(json.unsupportedCount)
+  ) return null;
   if (!Array.isArray(json.results)) return null;
+  if (json.results.length !== json.totalCount) return null;
+
   const results: AccountImportRecordResult[] = [];
+  const indices = new Set<number>();
+  const aggregate: Record<AccountImportStatus, number> = {
+    imported: 0,
+    updated: 0,
+    failed: 0,
+    unsupported: 0,
+  };
   for (const raw of json.results) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const item = raw as Record<string, unknown>;
-    if (!Number.isSafeInteger(item.index) || (item.index as number) < 0) return null;
+    if (!isPlainObject(raw) || !hasExactFields(raw, IMPORT_RECORD_FIELDS)) return null;
+    const item = raw;
+    if (!isNonNegativeSafeInteger(item.index) || item.index >= json.totalCount || indices.has(item.index)) return null;
     if (!IMPORT_STATUSES.has(item.status as AccountImportStatus)) return null;
     if (!IMPORT_CODES.has(item.code as AccountImportCode)) return null;
+    const status = item.status as AccountImportStatus;
+    const code = item.code as AccountImportCode;
+    if (!IMPORT_STATUS_CODES[status].has(code)) return null;
+    indices.add(item.index);
+    aggregate[status] += 1;
     results.push({
-      index: item.index as number,
-      status: item.status as AccountImportStatus,
-      code: item.code as AccountImportCode,
+      index: item.index,
+      status,
+      code,
     });
   }
-  const result = {
-    totalCount: nonNegativeInteger(json.totalCount),
-    importedCount: nonNegativeInteger(json.importedCount),
-    updatedCount: nonNegativeInteger(json.updatedCount),
-    failedCount: nonNegativeInteger(json.failedCount),
-    unsupportedCount: nonNegativeInteger(json.unsupportedCount),
+  if (
+    indices.size !== json.totalCount
+    || aggregate.imported !== json.importedCount
+    || aggregate.updated !== json.updatedCount
+    || aggregate.failed !== json.failedCount
+    || aggregate.unsupported !== json.unsupportedCount
+  ) return null;
+
+  return {
+    totalCount: json.totalCount,
+    importedCount: json.importedCount,
+    updatedCount: json.updatedCount,
+    failedCount: json.failedCount,
+    unsupportedCount: json.unsupportedCount,
     results,
   };
-  return result.totalCount === results.length ? result : null;
 }
 
 function usage(message?: string): number {
@@ -478,7 +528,7 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
   }
   const result = safeImportResult(response.json);
   if (!result) {
-    console.error("Error: invalid_document");
+    console.error("Error: invalid_response");
     return 1;
   }
 

@@ -3,6 +3,7 @@ import { PassThrough, Readable } from "node:stream";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cmdAccount, classifyAccount, formatAccountTable, type AccountDeps } from "../src/cli/account";
 import type { AccountStdin } from "../src/cli/account-api";
 import { printSubcommandUsage } from "../src/cli/help";
@@ -61,6 +62,7 @@ let oauthActiveId: string | null = "acct_1";
 let oauthLoginStatus: Record<string, unknown> = { loggedIn: false };
 let codexLoginStatus: Record<string, unknown> = { status: "pending" };
 let codexDeleteCatalogRefreshPending = false;
+let importResultOverride: unknown | undefined;
 let keyEntries: Array<Record<string, unknown>> = [];
 let keyActiveId: string | null = "key_1";
 let logs: string[] = [];
@@ -240,6 +242,7 @@ async function mockManagementApi(req: Request): Promise<Response> {
     if (payload.provider !== "google-antigravity") return json({ code: "unsupported_provider" }, 400);
     if (payload.format !== "cockpit-tools") return json({ code: "unsupported_format" }, 400);
     if (!Array.isArray(payload.document)) return json({ code: "invalid_document" }, 400);
+    if (importResultOverride !== undefined) return json(importResultOverride);
     return json({
       totalCount: payload.document.length,
       importedCount: payload.document.length,
@@ -353,7 +356,7 @@ function stdinFrom(value: string, isTTY = false): AccountStdin {
 
 test("the login URL reaches piped stdout before the polling window (#1007)", async () => {
   const child = Bun.spawn({
-    cmd: [process.execPath, "run", new URL("./helpers/account-login-pipe-child.ts", import.meta.url).pathname],
+    cmd: [process.execPath, "run", fileURLToPath(new URL("./helpers/account-login-pipe-child.ts", import.meta.url))],
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -435,6 +438,7 @@ beforeEach(() => {
   oauthLoginStatus = { loggedIn: false };
   codexLoginStatus = { status: "pending" };
   codexDeleteCatalogRefreshPending = false;
+  importResultOverride = undefined;
   keyEntries = [{
     id: "key_1",
     label: "personal",
@@ -1681,6 +1685,50 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(oversized.code).toBe(1);
     expect(oversized.stderr).toContain("invalid_document");
     expect(requests).toHaveLength(beforeOversized);
+  });
+
+  test("Cockpit import rejects malformed HTTP 200 result DTO without echoing payload", async () => {
+    const canary = "ya29.token-shaped-cockpit-response-canary-DO-NOT-LEAK";
+    const validRecord = { index: 0, status: "imported", code: "imported" };
+    const validResult = {
+      totalCount: 1,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 0,
+      unsupportedCount: 0,
+      results: [validRecord],
+    };
+    const malformedResults: unknown[] = [
+      { ...validResult, debug: canary },
+      { ...validResult, results: [{ ...validRecord, token: canary }] },
+      { ...validResult, importedCount: -1 },
+      { ...validResult, importedCount: 0.5 },
+      { ...validResult, importedCount: Number.MAX_SAFE_INTEGER + 1 },
+      { totalCount: 1, importedCount: 1, updatedCount: 0, failedCount: 0, results: [validRecord] },
+      { ...validResult, totalCount: 2, importedCount: 2, results: [validRecord, validRecord] },
+      { ...validResult, results: [{ ...validRecord, index: 1 }] },
+      { ...validResult, results: [{ status: "imported", code: "imported" }] },
+      { ...validResult, importedCount: 0, failedCount: 1 },
+      { ...validResult, results: [{ ...validRecord, code: "updated" }] },
+      { ...validResult, importedCount: 0, failedCount: 1, results: [{ index: 0, status: "failed", code: "invalid_document" }] },
+      { ...validResult, importedCount: 0, unsupportedCount: 1, results: [{ index: 0, status: "unsupported", code: "credential_rejected" }] },
+      [validResult],
+    ];
+
+    for (const malformed of malformedResults) {
+      importResultOverride = malformed;
+      const result = await run([
+        "import", "google-antigravity", "--format", "cockpit-tools", "--stdin", "--json",
+      ], {
+        ...defaultDeps(),
+        stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+      });
+
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("Error: invalid_response");
+      expect(result.output).not.toContain(canary);
+    }
   });
 
   test("pending Codex login keeps success and prints generic recovery guidance", async () => {
