@@ -1,4 +1,4 @@
-import type { NormalizedObservation } from "../conformance/types";
+import type { FailureClassification, NormalizedObservation } from "../conformance/types";
 import type { RouteDependencyV1, RouteSubjectV1 } from "../events/types";
 
 export interface LabDestinationV1 {
@@ -152,7 +152,7 @@ export interface LabRouteExecutorInput {
   environment: Readonly<Record<string, string>>;
 }
 
-/** Trusted exact-route execution function. The wrapper capability is branded outside Lab. */
+/** Trusted exact-route execution function. The wrapper capability is issued only by the host integration. */
 export type LabRouteExecutor = (input: LabRouteExecutorInput) => Promise<NormalizedObservation>;
 
 export const REQUIRED_LAB_SANDBOX_BOUNDARIES = [
@@ -173,7 +173,7 @@ export const REQUIRED_LAB_SANDBOX_BOUNDARIES = [
 ] as const;
 export type LabSandboxBoundary = typeof REQUIRED_LAB_SANDBOX_BOUNDARIES[number];
 
-/** Opaque-ish internal capability; runtime trust is established by a WeakSet in src/lib. */
+/** Opaque host-issued capability; runtime trust is established outside Lab. */
 export interface TrustedLabRouteExecutor {
   execute(input: LabRouteExecutorInput): Promise<NormalizedObservation>;
   readonly enforcedBoundaries: readonly LabSandboxBoundary[];
@@ -187,7 +187,7 @@ export interface LiveScenarioRunResult {
   startedAt: number;
   completedAt: number;
   passed: boolean;
-  classification: string;
+  classification: FailureClassification;
   secondaryCode?: string;
   assertionResults: import("../conformance/types").AssertionResult[];
   diagnostics: string[];
