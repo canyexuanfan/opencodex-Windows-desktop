@@ -1,18 +1,22 @@
 import { Database } from "bun:sqlite";
 import { existsSync, unlinkSync } from "node:fs";
-import { createArtifactStore } from "../artifacts/store";
+import { createArtifactStore, loadClaimSourceManifest } from "../artifacts/store";
 import { ArtifactFsError } from "../artifacts/secure-fs";
+import { sanitizeDiagnostic } from "../artifacts/sanitize";
 import { LAB_PROJECTION_SPEC_VERSION } from "../constants";
 import { expandScenario, loadCaseAuthority } from "../conformance/manifest";
 import { scenarioManifestDigest, jcsStringify } from "../digest";
-import { parseSuiteManifestFromArtifact } from "./verification";
+import {
+  parseSuiteManifestFromArtifact,
+  type ScenarioRequirements,
+} from "./verification";
 import type { ClaimSnapshotEvent, LabEvent, LedgerCorruption } from "../events/types";
-import { loadClaimSourceManifest } from "../artifacts/store";
 import { buildInvalidationIndex, isEventExcluded } from "../ledger/invalidation";
 import { replayLabLedger } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import { LAB_SQLITE_DDL, LAB_SQLITE_SCHEMA_VERSION } from "./schema";
 import {
+  claimKeyString,
   excludeEventIds,
   projectVerdicts,
   projectionKeyString,
@@ -28,21 +32,27 @@ export interface RebuildResult {
 
 function wipeSqlite(path: string): void {
   for (const candidate of [path, `${path}-wal`, `${path}-shm`]) {
+    let removed = false;
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
         if (existsSync(candidate)) unlinkSync(candidate);
+        removed = true;
         break;
       } catch (err) {
-        const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+        const code = err && typeof err === "object" && "code" in err
+          ? String((err as { code: unknown }).code)
+          : "";
         if (code !== "EBUSY" && code !== "EPERM") throw err;
-        Bun.sleepSync(20 * (attempt + 1));
+        if (attempt < 7) Bun.sleepSync(20 * (attempt + 1));
       }
+    }
+    if (!removed) {
+      throw new Error(`failed to remove stale projection file after retries: ${candidate}`);
     }
   }
 }
 
 function resetProjectionSchema(db: Database): void {
-  db.exec("PRAGMA foreign_keys=OFF;");
   db.exec(`
     DROP TABLE IF EXISTS verdicts;
     DROP TABLE IF EXISTS corruption;
@@ -55,7 +65,6 @@ function resetProjectionSchema(db: Database): void {
     DROP TABLE IF EXISTS events;
     DROP TABLE IF EXISTS schema_meta;
   `);
-  db.exec("PRAGMA foreign_keys=ON;");
   db.exec(LAB_SQLITE_DDL);
 }
 
@@ -81,19 +90,20 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
   const validation = validateRequiredArtifacts(replay.events, index, artifactStore, corruptions);
 
   const authority = loadCaseAuthority();
-  const scenarioRequirementsByDigest = new Map<string, {
-    inboundProtocols?: string[];
-    upstreamProtocols?: string[];
-    surfaces?: string[];
-  }>();
+  const scenarioRequirementsByDigest = new Map<string, ScenarioRequirements>();
   for (const caseRecord of authority.cases) {
     const expanded = expandScenario(caseRecord, authority);
-    scenarioRequirementsByDigest.set(scenarioManifestDigest(expanded), caseRecord.requirements);
+    scenarioRequirementsByDigest.set(scenarioManifestDigest(expanded), {
+      inboundProtocols: [...caseRecord.requirements.inboundProtocols],
+      upstreamProtocols: [...caseRecord.requirements.upstreamProtocols],
+      surfaces: [...caseRecord.requirements.surfaces],
+      freshness: { ...authority.manifestDefaults.freshness },
+    });
   }
 
   const loadSuiteManifest = (digest: string) => {
     try {
-      const bytes = artifactStore.get(digest);
+      const bytes = artifactStore.get(digest, { artifactClass: "suite_manifest" });
       const parsed = JSON.parse(new TextDecoder().decode(bytes));
       return parseSuiteManifestFromArtifact(parsed);
     } catch {
@@ -102,7 +112,7 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
   };
   const loadScenarioManifest = (digest: string) => {
     try {
-      const bytes = artifactStore.get(digest);
+      const bytes = artifactStore.get(digest, { artifactClass: "scenario_manifest" });
       return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
     } catch {
       return null;
@@ -111,9 +121,14 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
   const loadScenarioRequirements = (digest: string) => scenarioRequirementsByDigest.get(digest) ?? null;
 
   const db = new Database(paths.sqlitePath);
+  let transactionOpen = false;
   try {
     db.exec("PRAGMA journal_mode=DELETE;");
+    db.exec("PRAGMA foreign_keys=OFF;");
+    db.exec("BEGIN IMMEDIATE;");
+    transactionOpen = true;
     resetProjectionSchema(db);
+
     db.prepare(
       "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
     ).run("schema_version", String(LAB_SQLITE_SCHEMA_VERSION));
@@ -158,8 +173,20 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
        VALUES (?, ?, ?, ?, ?)`,
     );
     const insertArtifact = db.prepare(
-      `INSERT OR REPLACE INTO artifacts(digest, artifact_class, media_type, byte_count, status, last_error)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO artifacts(digest, artifact_class, media_type, byte_count, status, last_error)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(digest) DO UPDATE SET
+         artifact_class = COALESCE(excluded.artifact_class, artifacts.artifact_class),
+         media_type = COALESCE(excluded.media_type, artifacts.media_type),
+         byte_count = COALESCE(excluded.byte_count, artifacts.byte_count),
+         status = CASE
+           WHEN artifacts.status = 'purged_unavailable' OR excluded.status = 'purged_unavailable'
+             THEN 'purged_unavailable'
+           WHEN artifacts.status = 'corrupt' OR excluded.status = 'corrupt'
+             THEN 'corrupt'
+           ELSE 'present'
+         END,
+         last_error = COALESCE(excluded.last_error, artifacts.last_error)`,
     );
 
     const excluded = excludeEventIds(index);
@@ -167,19 +194,9 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
       (e): e is ClaimSnapshotEvent =>
         e.eventKind === "claim_snapshot" && !isEventExcluded(e.eventId, index),
     );
-
-    for (const claim of usableClaimEvents) {
-      const loaded = loadClaimSourceManifest(artifactStore, claim.sourceManifestDigest, {
-        subjectId: claim.subjectId,
-        capability: claim.capability,
-      });
-      if (loaded.corruption) {
-        validation.unusableClaimEventIds.add(claim.eventId);
-      }
-    }
-
     const claimStates = resolveClaimStates(usableClaimEvents, {
       unusableClaimEventIds: validation.unusableClaimEventIds,
+      purgedEventIds: index.purgedEventIds,
     });
 
     for (const event of replay.events) {
@@ -232,42 +249,24 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
         }
       } else if (event.eventKind === "claim_snapshot") {
         insertSubject.run(event.subjectId, event.subject.subjectKind, jcsStringify(event.subject));
-        const key = `${event.subjectId}|${event.capability}`;
+        const key = claimKeyString(event.subjectId, event.capability);
         const state = claimStates.states.get(key);
         const current = state?.current?.eventId === event.eventId ? 1 : 0;
-        let usable = !isExcluded && !state?.corruption && !validation.unusableClaimEventIds.has(event.eventId) ? 1 : 0;
+        const claimCorruption = corruptions.find(
+          (c) => c.kind === "claim_corruption" && c.eventId === event.eventId,
+        );
+        const usable = !isExcluded && !state?.corruption &&
+          !validation.unusableClaimEventIds.has(event.eventId) ? 1 : 0;
 
         if (!isExcluded) {
-          const loaded = loadClaimSourceManifest(artifactStore, event.sourceManifestDigest, {
-            subjectId: event.subjectId,
-            capability: event.capability,
-          });
-          if (loaded.corruption) {
-            usable = 0;
-            corruptions.push({
-              kind: "claim_corruption",
-              eventId: event.eventId,
-              detail: loaded.corruption,
-            });
-            insertCorruption.run("claim_corruption", null, event.eventId, loaded.corruption);
-            insertArtifact.run(
-              event.sourceManifestDigest,
-              "claim_source_manifest",
-              "application/json",
-              null,
-              "corrupt",
-              loaded.corruption,
-            );
-          } else {
-            insertArtifact.run(
-              event.sourceManifestDigest,
-              "claim_source_manifest",
-              "application/json",
-              null,
-              "present",
-              null,
-            );
-          }
+          insertArtifact.run(
+            event.sourceManifestDigest,
+            "claim_source_manifest",
+            "application/json",
+            null,
+            claimCorruption ? "corrupt" : "present",
+            claimCorruption?.detail ?? null,
+          );
         }
 
         insertClaim.run(
@@ -329,13 +328,6 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
     );
 
     for (const v of verdicts) {
-      if (v.contributingEventIds.every((id) => index.purgedEventIds.has(id))) continue;
-      if (v.contributingEventIds.some((id) => index.purgedEventIds.has(id) || index.invalidatedBy.has(id))) {
-        const remaining = v.contributingEventIds.filter(
-          (id) => !index.purgedEventIds.has(id) && !index.invalidatedBy.has(id),
-        );
-        if (remaining.length === 0) continue;
-      }
       insertVerdict.run(
         projectionKeyString(v.key),
         v.key.subjectId,
@@ -354,13 +346,29 @@ export function rebuildLabProjection(configDir?: string): RebuildResult {
       );
     }
 
+    db.exec("COMMIT;");
+    transactionOpen = false;
     return {
       events: replay.events.length,
       verdicts: verdicts.length,
       corruptions,
       sqlitePath: paths.sqlitePath,
     };
+  } catch (err) {
+    if (transactionOpen) {
+      try {
+        db.exec("ROLLBACK;");
+      } catch {
+        // Preserve the original rebuild failure.
+      }
+    }
+    throw err;
   } finally {
+    try {
+      db.exec("PRAGMA foreign_keys=ON;");
+    } catch {
+      // Closing the disposable DB is still safe if pragma restoration fails.
+    }
     db.close();
     artifactStore.close();
   }
@@ -378,13 +386,13 @@ function validateRequiredArtifacts(
   for (const event of events) {
     if (isEventExcluded(event.eventId, index)) continue;
     if (event.eventKind === "observation") {
-      const required = [
-        event.scenarioManifestDigest,
-        event.suiteManifestDigest,
-        ...event.fixtureDigests,
+      const required: Array<{ digest: string; artifactClass: "scenario_manifest" | "suite_manifest" | "fixture" }> = [
+        { digest: event.scenarioManifestDigest, artifactClass: "scenario_manifest" },
+        { digest: event.suiteManifestDigest, artifactClass: "suite_manifest" },
+        ...event.fixtureDigests.map((digest) => ({ digest, artifactClass: "fixture" as const })),
       ];
       let unusable = false;
-      for (const digest of required) {
+      for (const { digest, artifactClass } of required) {
         if (index.purgedArtifactDigests.has(digest)) {
           corruptions.push({
             kind: "missing_artifact",
@@ -395,19 +403,46 @@ function validateRequiredArtifacts(
           continue;
         }
         try {
-          artifactStore.get(digest);
+          artifactStore.get(digest, { artifactClass });
         } catch (err) {
+          const detail = sanitizeDiagnostic(err);
           corruptions.push({
-            kind: err instanceof ArtifactFsError && err.message.includes("mismatch")
+            kind: err instanceof ArtifactFsError &&
+              (err.code === "artifact_mismatch" || err.message.includes("mismatch"))
               ? "artifact_mismatch"
               : "missing_artifact",
             eventId: event.eventId,
-            detail: err instanceof Error ? err.message : String(err),
+            detail,
           });
           unusable = true;
         }
       }
       if (unusable) unusableObservationIds.add(event.eventId);
+      continue;
+    }
+
+    if (event.eventKind === "claim_snapshot") {
+      if (index.purgedArtifactDigests.has(event.sourceManifestDigest)) {
+        unusableClaimEventIds.add(event.eventId);
+        corruptions.push({
+          kind: "claim_corruption",
+          eventId: event.eventId,
+          detail: `claim source artifact purged: ${event.sourceManifestDigest}`,
+        });
+        continue;
+      }
+      const loaded = loadClaimSourceManifest(artifactStore, event.sourceManifestDigest, {
+        subjectId: event.subjectId,
+        capability: event.capability,
+      });
+      if (!loaded.ok) {
+        unusableClaimEventIds.add(event.eventId);
+        corruptions.push({
+          kind: "claim_corruption",
+          eventId: event.eventId,
+          detail: loaded.corruption,
+        });
+      }
     }
   }
 
@@ -418,7 +453,7 @@ function validateRequiredArtifacts(
 export function readVerdictSnapshot(sqlitePath: string): unknown[] {
   const db = new Database(sqlitePath, { readonly: true });
   try {
-    const rows = db
+    return db
       .query(
         `SELECT projection_key, subject_id, evidence_layer, suite_id, suite_version,
                 suite_manifest_digest, projection_spec_version, verdict,
@@ -427,7 +462,6 @@ export function readVerdictSnapshot(sqlitePath: string): unknown[] {
          FROM verdicts ORDER BY projection_key`,
       )
       .all();
-    return rows;
   } finally {
     db.close();
   }
