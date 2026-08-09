@@ -270,6 +270,23 @@ function isMissingArtifactError(err: unknown): boolean {
   return err instanceof ArtifactFsError && err.message.includes("missing");
 }
 
+function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): void {
+  try {
+    const fd = openAtDir(dir, name, openFlags(O_RDONLY, true));
+    try {
+      const stats = fstatSync(fd);
+      assertRegularFileStats(stats, "artifact create target");
+      harnessFailure("artifact target exists but is not reusable");
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    if (isMissingArtifactError(err)) return;
+    if (err instanceof ArtifactFsError) throw err;
+    harnessFailure(`artifact create target check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 function writeTempArtifact(
   dir: TrustedArtifactDir,
   tmpName: string,
@@ -367,6 +384,7 @@ export function putArtifactBytes(
     }
   }
 
+  assertArtifactTargetCreatable(dir, digestFileName(digest));
   const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
   writeTempArtifact(dir, tmpName, bytes, digest, artifactBytesDigest);
   return readArtifactBytes(dir, digest, bytes.byteLength);
@@ -395,6 +413,7 @@ export function putNamedDigestBytes(
     }
   }
 
+  assertArtifactTargetCreatable(dir, digestFileName(digest));
   const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
   writeTempArtifact(dir, tmpName, bytes, digest, contentDigest);
   return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
