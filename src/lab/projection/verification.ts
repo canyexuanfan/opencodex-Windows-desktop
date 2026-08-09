@@ -1,6 +1,8 @@
 import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
-import type { ExecutionMode } from "../constants";
+import { EVIDENCE_LAYERS, type ExecutionMode } from "../constants";
 import type { SuiteManifestV1 } from "../conformance/suite-manifest";
+import type { VerificationRole } from "../conformance/types";
+import { isSha256Hex } from "../digest";
 
 export interface VerificationEvaluation {
   applicableRequiredScenarioIds: string[];
@@ -12,6 +14,15 @@ export interface VerificationEvaluation {
 
 export type LoadScenarioManifest = (digest: string) => Record<string, unknown> | null;
 
+export interface ScenarioRequirements {
+  inboundProtocols?: string[];
+  upstreamProtocols?: string[];
+  surfaces?: string[];
+  freshness?: { maxAgeMs: number | null };
+}
+
+export type LoadScenarioRequirements = (digest: string) => ScenarioRequirements | null;
+
 /** Live-reserved scenarios are inapplicable in fixture-mode protocol conformance. */
 export function isScenarioApplicable(
   scenarioId: string,
@@ -19,13 +30,15 @@ export function isScenarioApplicable(
   evidenceLayer: string,
 ): boolean {
   if (evidenceLayer === "protocol_conformance" && executionMode === "fixture") {
-    if (scenarioId.includes(".live.")) return false;
+    // The frozen CL-00 scenario schema has no explicit execution-mode field.
+    // Use an exact dot-delimited `live` segment rather than substring matching.
+    if (scenarioId.split(".").includes("live")) return false;
   }
   return true;
 }
 
 function scenarioApplicableToRequirements(
-  requirements: { inboundProtocols?: string[]; upstreamProtocols?: string[]; surfaces?: string[] },
+  requirements: ScenarioRequirements,
   subject: ProtocolSubjectV1,
 ): boolean {
   const inbound = requirements.inboundProtocols ?? [];
@@ -38,21 +51,46 @@ function scenarioApplicableToRequirements(
   );
 }
 
-function scenarioApplicableToProtocolSubject(
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function parseFreshness(value: unknown): { maxAgeMs: number | null } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const maxAgeMs = (value as { maxAgeMs?: unknown }).maxAgeMs;
+  if (maxAgeMs === null) return { maxAgeMs: null };
+  if (!isNonNegativeInteger(maxAgeMs)) return null;
+  return { maxAgeMs };
+}
+
+function parseStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
+  return value;
+}
+
+function scenarioContractFromManifest(
   scenarioManifest: Record<string, unknown> | null,
-  subject: ProtocolSubjectV1,
-): boolean {
-  if (!scenarioManifest) return false;
+): ScenarioRequirements | null {
+  if (!scenarioManifest) return null;
   const req = scenarioManifest.requirements;
-  if (!req || typeof req !== "object") return false;
-  const inbound = (req as { inboundProtocols?: string[] }).inboundProtocols ?? [];
-  const upstream = (req as { upstreamProtocols?: string[] }).upstreamProtocols ?? [];
-  const surfaces = (req as { surfaces?: string[] }).surfaces ?? [];
-  return (
-    inbound.includes(subject.inboundProtocol) &&
-    upstream.includes(subject.upstreamProtocol) &&
-    surfaces.includes(subject.surface)
-  );
+  if (!req || typeof req !== "object" || Array.isArray(req)) return null;
+  const row = req as Record<string, unknown>;
+  const inboundProtocols = parseStringArray(row.inboundProtocols);
+  const upstreamProtocols = parseStringArray(row.upstreamProtocols);
+  const surfaces = parseStringArray(row.surfaces);
+  if (!inboundProtocols || !upstreamProtocols || !surfaces) return null;
+  const freshness = parseFreshness(scenarioManifest.freshness);
+  if (!freshness) return null;
+  return { inboundProtocols, upstreamProtocols, surfaces, freshness };
+}
+
+function effectiveMaxAgeMs(
+  suiteMaxAgeMs: number | null,
+  scenarioMaxAgeMs: number | null,
+): number | null {
+  if (suiteMaxAgeMs === null) return scenarioMaxAgeMs;
+  if (scenarioMaxAgeMs === null) return suiteMaxAgeMs;
+  return Math.min(suiteMaxAgeMs, scenarioMaxAgeMs);
 }
 
 export function newestObservationByScenario(
@@ -71,15 +109,9 @@ export function newestObservationByScenario(
 
 /**
  * Evaluate `all-applicable-required-pass-v1` per frozen CL-00 semantics.
- * Positive VERIFIED requires a non-empty applicable required set and a current
- * pass for every applicable required scenario.
+ * Positive VERIFIED requires a non-empty applicable required/control set and a
+ * current, fresh pass for every applicable required scenario and negative control.
  */
-export type LoadScenarioRequirements = (digest: string) => {
-  inboundProtocols?: string[];
-  upstreamProtocols?: string[];
-  surfaces?: string[];
-} | null;
-
 export function evaluateAllApplicableRequiredPassV1(
   suiteManifest: SuiteManifestV1,
   observations: ObservationEvent[],
@@ -88,6 +120,7 @@ export function evaluateAllApplicableRequiredPassV1(
     subject?: ProtocolSubjectV1;
     loadScenarioManifest?: LoadScenarioManifest;
     loadScenarioRequirements?: LoadScenarioRequirements;
+    asOf?: number;
   } = {},
 ): VerificationEvaluation {
   const notes: string[] = [];
@@ -101,26 +134,37 @@ export function evaluateAllApplicableRequiredPassV1(
     };
   }
 
-  const requiredScenarios = suiteManifest.scenarios.filter((s) => s.role === "required");
+  const requiredScenarios = suiteManifest.scenarios.filter(
+    (s) => s.role === "required" || s.role === "negative_control",
+  );
   const applicableRequired: string[] = [];
   const unavailableManifests: string[] = [];
+  const scenarioMaxAgeById = new Map<string, number | null>();
 
   for (const s of requiredScenarios) {
     if (!isScenarioApplicable(s.id, executionMode, suiteManifest.evidenceLayer)) continue;
-    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
-      const scenarioManifest = opts.loadScenarioManifest?.(s.manifestDigest) ?? null;
-      if (scenarioManifest) {
-        if (!scenarioApplicableToProtocolSubject(scenarioManifest, opts.subject)) continue;
-      } else {
-        const requirements = opts.loadScenarioRequirements?.(s.manifestDigest) ?? null;
-        if (!requirements) {
-          unavailableManifests.push(s.id);
-          continue;
-        }
-        if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
+
+    let requirements: ScenarioRequirements | null = null;
+    const scenarioManifest = opts.loadScenarioManifest?.(s.manifestDigest) ?? null;
+    if (scenarioManifest) {
+      requirements = scenarioContractFromManifest(scenarioManifest);
+      if (!requirements) {
+        unavailableManifests.push(s.id);
+        continue;
+      }
+    } else {
+      requirements = opts.loadScenarioRequirements?.(s.manifestDigest) ?? null;
+      if (!requirements || !requirements.freshness) {
+        unavailableManifests.push(s.id);
+        continue;
       }
     }
+
+    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
+      if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
+    }
     applicableRequired.push(s.id);
+    scenarioMaxAgeById.set(s.id, requirements.freshness?.maxAgeMs ?? null);
   }
   applicableRequired.sort();
 
@@ -147,6 +191,7 @@ export function evaluateAllApplicableRequiredPassV1(
   const newest = newestObservationByScenario(observations);
   const passing: string[] = [];
   const missing: string[] = [];
+  const asOf = opts.asOf ?? observations.reduce((max, obs) => Math.max(max, obs.completedAt), 0);
 
   for (const scenarioId of applicableRequired) {
     const scenarioRef = requiredScenarios.find((s) => s.id === scenarioId)!;
@@ -158,6 +203,15 @@ export function evaluateAllApplicableRequiredPassV1(
     if (obs.scenarioManifestDigest !== scenarioRef.manifestDigest) {
       missing.push(scenarioId);
       notes.push(`digest_mismatch:${scenarioId}`);
+      continue;
+    }
+    const maxAgeMs = effectiveMaxAgeMs(
+      suiteManifest.freshness.maxAgeMs,
+      scenarioMaxAgeById.get(scenarioId) ?? null,
+    );
+    if (maxAgeMs !== null && asOf - obs.completedAt > maxAgeMs) {
+      missing.push(scenarioId);
+      notes.push(`stale_observation:${scenarioId}`);
       continue;
     }
     if (obs.outcome !== "pass") {
@@ -176,40 +230,68 @@ export function evaluateAllApplicableRequiredPassV1(
   };
 }
 
+function requireNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export function parseSuiteManifestFromArtifact(parsed: unknown): SuiteManifestV1 | null {
-  if (!parsed || typeof parsed !== "object") return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const raw = parsed as Record<string, unknown>;
   if (raw.schemaVersion !== 1) return null;
-  if (typeof raw.id !== "string" || typeof raw.version !== "string") return null;
-  if (typeof raw.verificationRule !== "string") return null;
-  if (!Array.isArray(raw.scenarios)) return null;
-  const scenarios = raw.scenarios.map((s) => {
-    if (!s || typeof s !== "object") return null;
+
+  const id = requireNonEmptyString(raw.id);
+  const version = requireNonEmptyString(raw.version);
+  const capability = requireNonEmptyString(raw.capability);
+  const assertionDslVersion = requireNonEmptyString(raw.assertionDslVersion);
+  const evidenceSchemaVersion = requireNonEmptyString(raw.evidenceSchemaVersion);
+  const contradictionRule = requireNonEmptyString(raw.contradictionRule);
+  const verificationRule = requireNonEmptyString(raw.verificationRule);
+  if (
+    !id || !version || !capability || !assertionDslVersion ||
+    !evidenceSchemaVersion || !contradictionRule ||
+    verificationRule !== "all-applicable-required-pass-v1"
+  ) return null;
+  if (
+    typeof raw.evidenceLayer !== "string" ||
+    !(EVIDENCE_LAYERS as readonly string[]).includes(raw.evidenceLayer)
+  ) return null;
+  const freshness = parseFreshness(raw.freshness);
+  if (!freshness || !Array.isArray(raw.scenarios)) return null;
+
+  const roles = new Set<VerificationRole>(["required", "supplemental", "negative_control"]);
+  const seenScenarioIds = new Set<string>();
+  const scenarios: SuiteManifestV1["scenarios"] = [];
+  for (const s of raw.scenarios) {
+    if (!s || typeof s !== "object" || Array.isArray(s)) return null;
     const row = s as Record<string, unknown>;
-    if (typeof row.id !== "string" || typeof row.version !== "string") return null;
-    if (typeof row.role !== "string" || typeof row.manifestDigest !== "string") return null;
-    return {
-      id: row.id,
-      version: row.version,
-      role: row.role as SuiteManifestV1["scenarios"][number]["role"],
-      manifestDigest: row.manifestDigest,
-    };
-  });
-  if (scenarios.some((s) => s === null)) return null;
+    const scenarioId = requireNonEmptyString(row.id);
+    const scenarioVersion = requireNonEmptyString(row.version);
+    const manifestDigest = requireNonEmptyString(row.manifestDigest);
+    if (
+      !scenarioId || !scenarioVersion || !manifestDigest || !isSha256Hex(manifestDigest) ||
+      typeof row.role !== "string" || !roles.has(row.role as VerificationRole) ||
+      seenScenarioIds.has(scenarioId)
+    ) return null;
+    seenScenarioIds.add(scenarioId);
+    scenarios.push({
+      id: scenarioId,
+      version: scenarioVersion,
+      role: row.role as VerificationRole,
+      manifestDigest,
+    });
+  }
+
   return {
     schemaVersion: 1,
-    id: raw.id,
-    version: raw.version,
-    evidenceLayer: String(raw.evidenceLayer ?? ""),
-    capability: String(raw.capability ?? ""),
-    assertionDslVersion: String(raw.assertionDslVersion ?? ""),
-    evidenceSchemaVersion: String(raw.evidenceSchemaVersion ?? ""),
-    freshness:
-      raw.freshness && typeof raw.freshness === "object"
-        ? { maxAgeMs: (raw.freshness as { maxAgeMs?: number | null }).maxAgeMs ?? null }
-        : { maxAgeMs: null },
-    contradictionRule: String(raw.contradictionRule ?? ""),
-    scenarios: scenarios as SuiteManifestV1["scenarios"],
-    verificationRule: raw.verificationRule,
+    id,
+    version,
+    evidenceLayer: raw.evidenceLayer,
+    capability,
+    assertionDslVersion,
+    evidenceSchemaVersion,
+    freshness,
+    contradictionRule,
+    scenarios,
+    verificationRule,
   };
 }
