@@ -69,6 +69,16 @@ type CachedOverview = {
 
 type MaMode = "v1" | "default" | "v2";
 
+export function groupDashboardModels(models: ModelInfo[]): Array<[string, ModelInfo[]]> {
+  const groups = new Map<string, ModelInfo[]>();
+  for (const model of models) {
+    const rows = groups.get(model.provider);
+    if (rows) rows.push(model);
+    else groups.set(model.provider, [model]);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
 function controlsCacheKey(apiBase: string): string {
   return `${CONTROLS_CACHE_PREFIX}${apiBase}`;
 }
@@ -437,11 +447,7 @@ export function useDashboardData(apiBase: string) {
   }, [updatePoll.data]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const grouped = useMemo(() => {
-    const g: Record<string, ModelInfo[]> = {};
-    for (const m of models) (g[m.provider] ??= []).push(m);
-    return Object.entries(g).sort(([a], [b]) => a.localeCompare(b));
-  }, [models]);
+  const grouped = useMemo(() => groupDashboardModels(models), [models]);
   const filteredGroups = useMemo(() => {
     const q = modelQuery.trim().toLowerCase();
     if (!q) return grouped;
