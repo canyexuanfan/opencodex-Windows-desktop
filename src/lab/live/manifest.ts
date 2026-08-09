@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fixtureDigest, jcsStringify } from "../digest";
+import { fixtureDigest } from "../digest";
 import type { CaseAuthority, CaseRecord, FailureClassification, FailureRule } from "../conformance/types";
 import { CL03_LIVE_SUITES, SYNTHETIC_MARKER } from "../conformance/types";
 
@@ -12,17 +12,18 @@ const REPO_AUTHORITY = join(MODULE_DIR, "..", "..", "..", "devlog", "_plan", "26
 
 function readAuthority(path: string): CaseAuthority { return JSON.parse(readFileSync(path, "utf8")) as CaseAuthority; }
 
-/** During source-tree execution, fail closed if the packaged authority copy drifts from normative 024. */
-export function assertLiveAuthorityMirror(runtime: CaseAuthority): void {
+/** During source-tree execution, fail closed unless the runtime copy is byte-identical to normative 024. */
+export function assertLiveAuthorityMirror(): void {
   if (!existsSync(REPO_AUTHORITY)) return;
-  const normative = readAuthority(REPO_AUTHORITY);
-  if (jcsStringify(runtime) !== jcsStringify(normative)) throw new Error("harness_failure: live authority runtime copy drift");
+  const runtimeBytes = readFileSync(RUNTIME_AUTHORITY);
+  const normativeBytes = readFileSync(REPO_AUTHORITY);
+  if (!runtimeBytes.equals(normativeBytes)) throw new Error("harness_failure: live authority runtime copy drift");
 }
 
 export function loadLiveCaseAuthority(): CaseAuthority {
+  assertLiveAuthorityMirror();
   const raw = readAuthority(RUNTIME_AUTHORITY);
   validateLiveAuthority(raw);
-  assertLiveAuthorityMirror(raw);
   return raw;
 }
 
