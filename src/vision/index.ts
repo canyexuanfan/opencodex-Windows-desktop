@@ -14,6 +14,15 @@ import type { TranslatorBudget } from "../lib/translator-budget";
 
 export { describeImage } from "./describe";
 export { describeImageAnthropic, parseAnthropicVisionSSE } from "./anthropic-describe";
+export {
+  BASELINE_VISION_MODELS,
+  isVisionEligibleModel,
+  isVisionSidecarConsumer,
+  modelAcceptsImageInput,
+  visionBackendForCandidate,
+  visionEligibleModelOptions,
+} from "./eligibility";
+export type { VisionCandidateModel, VisionModelOption, VisionSidecarBackend } from "./eligibility";
 
 const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
