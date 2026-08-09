@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { visionModelOptions, type ModelInfo, type VisionModelOption } from "../src/pages/dashboard-shared";
+import {
+  sidecarBackendForModel,
+  visionModelOptions,
+  visionSidecarBackendForModel,
+  type ModelInfo,
+  type VisionModelOption,
+} from "../src/pages/dashboard-shared";
 
 const models: ModelInfo[] = [
   { id: "gpt-5.6-luna", provider: "openai", namespaced: "gpt-5.6-luna" },
@@ -47,4 +53,18 @@ test("the returned array is fresh, so unshift cannot mutate shared state", () =>
   expect(first.some(option => option.value === "another-custom")).toBe(false);
   expect(second.some(option => option.value === "custom-vision")).toBe(false);
   expect(serverOptions).toHaveLength(2);
+});
+
+test("a server-supplied vision backend wins when the catalog cannot identify its provider", () => {
+  const model = "claude-haiku-4-5";
+  const options = visionModelOptions([
+    // A configured Anthropic adapter need not be named "anthropic", and this
+    // model can be absent from the independently refreshed /api/models catalog.
+    { value: model, label: model, backend: "anthropic" },
+  ], [], undefined);
+
+  // This documents the old save-path result: catalog inference alone defaults
+  // to OpenAI when there is no matching model row.
+  expect(sidecarBackendForModel([], model)).toBe("openai");
+  expect(visionSidecarBackendForModel([], options, model)).toBe("anthropic");
 });

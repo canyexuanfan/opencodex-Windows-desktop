@@ -4,7 +4,7 @@ import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
 import { formatNamespacedModelId } from "../provider-icons";
 import { navigateHash } from "../hash-routing";
-import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch } from "./dashboard-shared";
+import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch, visionSidecarBackendForModel } from "./dashboard-shared";
 import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
@@ -299,7 +299,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               onChange={model => {
                 const ladder = visionReasoningLadder(models, model);
                 const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
-                void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model), reasoning } });
+                void saveSidecar({ vision: { model, backend: visionSidecarBackendForModel(models, visionModels, model), reasoning } });
               }}
               disabled={!sidecar || sidecarSaving}
               label={t("dash.sidecarModel")}

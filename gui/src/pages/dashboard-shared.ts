@@ -217,9 +217,9 @@ export function visionModelOptions(
   serverOptions: VisionModelOption[] | undefined,
   models: ModelInfo[],
   current: string | undefined,
-): Array<{ value: string; label: string }> {
+): Array<{ value: string; label: string; backend?: SidecarBackend }> {
   const options = serverOptions && serverOptions.length > 0
-    ? serverOptions.map(option => ({ value: option.value, label: option.label }))
+    ? serverOptions.map(option => ({ value: option.value, label: option.label, backend: option.backend }))
     : sidecarModelOptions(models);
   if (current && !options.some(option => option.value === current)) {
     options.unshift({ value: current, label: current });
@@ -236,6 +236,15 @@ export function shadowCallModelOptions(models: ModelInfo[], current: string | un
 
 export function sidecarBackendForModel(models: ModelInfo[], modelId: string): SidecarBackend {
   return models.find(model => model.id === modelId)?.provider === "anthropic" ? "anthropic" : "openai";
+}
+
+/** Server eligibility is authoritative; catalog inference only supports legacy picker entries. */
+export function visionSidecarBackendForModel(
+  models: ModelInfo[],
+  options: Array<{ value: string; backend?: SidecarBackend }>,
+  modelId: string,
+): SidecarBackend {
+  return options.find(option => option.value === modelId)?.backend ?? sidecarBackendForModel(models, modelId);
 }
 
 let lastInputWasKeyboard = false;
