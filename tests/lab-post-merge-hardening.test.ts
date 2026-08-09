@@ -288,15 +288,21 @@ test("default sensitive purge removes export evidence", () => {
 });
 
 test("purge tombstone without targets still requires a directory-scoped action", () => {
-  expect(() => validateLabEvent(assignEventId({
-    schemaVersion: LAB_EVENT_SCHEMA_VERSION,
-    eventKind: "purge_tombstone",
-    recordedAt: 1_700_000_000_500,
-    producer: LAB_PRODUCER,
-    producerVersion: "test",
-    targetEventIds: [],
-    targetArtifactDigests: [],
-    reason: "sensitive_evidence",
-    purgeActions: ["artifact", "ledger", "sqlite"],
-  }))).toThrow(LabValidationError);
+  try {
+    validateLabEvent(assignEventId({
+      schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+      eventKind: "purge_tombstone",
+      recordedAt: 1_700_000_000_500,
+      producer: LAB_PRODUCER,
+      producerVersion: "test",
+      targetEventIds: [],
+      targetArtifactDigests: [],
+      reason: "sensitive_evidence",
+      purgeActions: ["artifact", "ledger", "sqlite"],
+    }));
+    throw new Error("expected empty_purge_targets validation failure");
+  } catch (err) {
+    expect(err).toBeInstanceOf(LabValidationError);
+    expect((err as LabValidationError).code).toBe("empty_purge_targets");
+  }
 });
