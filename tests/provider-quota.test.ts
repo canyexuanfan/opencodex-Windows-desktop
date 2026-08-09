@@ -1442,6 +1442,50 @@ describe("fetchProviderQuotaReports", () => {
     expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
   });
 
+  test("pool reports tolerate a malformed persisted plan through cache and aggregation", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access",
+      refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000,
+      chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{
+      id: "added",
+      email: "a@example.test",
+      plan: { tier: "pro" } as never,
+      isMain: false,
+    }];
+    config.activeCodexAccountId = "added";
+    let calls = 0;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? { tier: "pro" } : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const refreshed = await fetchProviderQuotaReports(config, true);
+    const openai = refreshed.reports.find(row => row.provider === "openai");
+    expect(openai?.quota.weeklyPercent).toBe(11);
+    expect(openai?.aggregation).toMatchObject({
+      includedAccounts: 1,
+      excludedAccounts: 1,
+      unknownPlanAccounts: 1,
+      incomplete: true,
+      currentAccount: { quota: { weeklyPercent: 77 } },
+    });
+    expect(openai?.aggregation?.currentAccount).not.toHaveProperty("plan");
+    expect(calls).toBe(2);
+
+    const cached = await fetchProviderQuotaReports(config);
+    expect(cached.reports[0]?.aggregation?.unknownPlanAccounts).toBe(1);
+    expect(calls).toBe(2);
+  });
+
   test("one forced Pool refresh probes each account once", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access", refreshToken: "added-refresh",

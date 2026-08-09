@@ -58,6 +58,7 @@ import {
   parseAccountPriority,
 } from "./pool-rotation";
 import { checkAccountIdCollision, getMainChatgptAccountId, readCodexTokens, readCodexTokensResult } from "./auth-collision";
+import { codexPlanValue, isThirtyDayOnlyCodexPlan } from "./plan";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./auth-collision";
 export { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
 import { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
@@ -208,16 +209,11 @@ function codexAccountPersistenceConflict(
     : undefined;
 }
 
-function isThirtyDayOnlyPlan(plan: string | null | undefined): boolean {
-  const normalized = plan?.trim().toLowerCase();
-  return normalized === "go" || normalized === "free";
-}
-
 function quotaForPlan<T extends Omit<StoredAccountQuota, "updatedAt"> | StoredAccountQuota | null>(
   quota: T,
-  plan: string | null | undefined,
+  plan: unknown,
 ): T {
-  if (!quota || !isThirtyDayOnlyPlan(plan)) return quota;
+  if (!quota || !isThirtyDayOnlyCodexPlan(plan)) return quota;
   return {
     ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
     ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
@@ -233,14 +229,15 @@ function poolAccountDto(
   paused: boolean,
   priority: number,
 ): CodexAuthAccountDto {
-  const quota = quotaForPlan(quotaResult.quota, account.plan);
+  const plan = codexPlanValue(account.plan);
+  const quota = quotaForPlan(quotaResult.quota, plan);
   const needsReauth = !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id);
   const health = projectCodexAccountHealth({ accountId: account.id, needsReauth });
   return {
     id: account.id,
     email: maskEmail(account.email) ?? account.email,
     ...(account.alias !== undefined ? { alias: account.alias } : {}),
-    ...(account.plan !== undefined ? { plan: account.plan } : {}),
+    ...(plan !== undefined ? { plan } : {}),
     ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
     isMain: false,
     paused,
@@ -398,7 +395,7 @@ const POOL_CACHE_TTL = 5 * 60_000;
 const POOL_QUOTA_REFRESH_CONCURRENCY = 4;
 
 function nonEmptyPlan(value: unknown): string | null {
-  return typeof value === "string" && value.trim() !== "" ? value : null;
+  return codexPlanValue(value) ?? null;
 }
 
 function isRuntimeConfig(config: OcxConfig): boolean {
@@ -1334,7 +1331,7 @@ export async function handleCodexAuthAPI(
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "POST") {
     if (!isUnverifiedCodexImportEnabled()) return manualImportDisabledResponse();
 
-    let body: { id: string; email: string; plan?: string; accessToken: string; refreshToken: string; chatgptAccountId: string };
+    let body: { id: string; email: string; plan?: unknown; accessToken: string; refreshToken: string; chatgptAccountId: string };
     try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
     if (!body.id || !body.email || !body.accessToken || !body.refreshToken || !body.chatgptAccountId) {
       return jsonResponse({ error: "Missing required fields" }, 400);
@@ -1349,8 +1346,9 @@ export async function handleCodexAuthAPI(
     const preflightConflict = codexAccountPersistenceConflict(runtimeConfig, body.id, "create");
     if (preflightConflict) return jsonResponse({ error: preflightConflict }, 400);
     // 1.1: Duplicate check is scoped by personal vs workspace plan bucket.
+    const plan = codexPlanValue(body.plan);
     const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
-    const collision = checkAccountIdCollision(derivedAccountId, body.email, body.plan);
+    const collision = checkAccountIdCollision(derivedAccountId, body.email, plan);
     if (collision.collision) {
       return jsonResponse({ error: collision.reason }, 400);
     }
@@ -1363,7 +1361,12 @@ export async function handleCodexAuthAPI(
     const commitConflict = codexAccountPersistenceConflict(latestConfig, body.id, "create");
     if (commitConflict) return jsonResponse({ error: commitConflict }, 400);
     const addedAccount = withCodexAccountLogLabel(
-      { id: body.id, email: body.email, plan: body.plan, isMain: false },
+      {
+        id: body.id,
+        email: body.email,
+        ...(plan !== undefined ? { plan } : {}),
+        isMain: false,
+      },
       latestConfig.codexAccounts ?? [],
     );
     const persistence = persistNewCodexAccount(

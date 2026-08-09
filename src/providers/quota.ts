@@ -6,6 +6,7 @@ import {
 } from "../codex/auth-api";
 import { isMainAccountIdentityGenerationLive } from "../codex/main-account-cache";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
+import { codexPlanKey } from "../codex/plan";
 import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
 import { getAccountCredential, getAccountSet, getCredential } from "../oauth/store";
@@ -168,7 +169,7 @@ function cacheKeyWithAggregationState(
       const rows = snapshot.accounts.map(account => ({
         isMain: account.isMain,
         active: account.id === activeId,
-        plan: account.plan?.trim().toLowerCase() ?? null,
+        plan: codexPlanKey(account.plan) ?? null,
         paused: account.paused,
         needsReauth: account.needsReauth === true,
         quota: quotaSignatureValue(account.quota as CodexCapacityQuota | null),

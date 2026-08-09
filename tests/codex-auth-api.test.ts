@@ -858,6 +858,32 @@ describe("codex-auth API", () => {
     expect(data.accounts.find(a => a.id === "pool-mask")?.email).toBe("p***n@example.test");
   });
 
+  test("GET /api/codex-auth/accounts omits a malformed persisted plan", async () => {
+    const config = makeConfig({
+      codexAccounts: [
+        { id: "pool-invalid-plan", email: "invalid@example.test", plan: { tier: "go" }, isMain: false },
+      ] as unknown as OcxConfig["codexAccounts"],
+    });
+    saveCodexAccountCredential("pool-invalid-plan", {
+      accessToken: "access-invalid-plan",
+      refreshToken: "refresh-invalid-plan",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-invalid-plan",
+    });
+    updateAccountQuota("pool-invalid-plan", 91, 111, 33, 333);
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as {
+      accounts: Array<{ id: string; plan?: unknown; quota?: Record<string, unknown> }>;
+    };
+    const account = data.accounts.find(row => row.id === "pool-invalid-plan");
+
+    expect(resp?.status).toBe(200);
+    expect(account).not.toHaveProperty("plan");
+    expect(account?.quota).toMatchObject({ weeklyPercent: 91, monthlyPercent: 33 });
+  });
+
   test("GET /api/codex-auth/accounts exposes only 30d quota for go and free plans", async () => {
     const config = makeConfig({
       codexAccounts: [
@@ -2259,12 +2285,13 @@ describe("codex-auth API", () => {
     const req = new Request("http://localhost/api/codex-auth/accounts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(manualImportBody({ id: "manual-enabled" })),
+      body: JSON.stringify(manualImportBody({ id: "manual-enabled", plan: { tier: "go" } })),
     });
     const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
 
     expect(resp!.status).toBe(200);
     expect(config.codexAccounts?.map(a => a.id)).toEqual(["manual-enabled"]);
+    expect(config.codexAccounts?.[0]).not.toHaveProperty("plan");
     expect(config.codexAccounts?.[0]?.logLabel).toMatch(CODEX_ACCOUNT_LOG_LABEL_RE);
     expect(getCodexAccountCredential("manual-enabled")).toMatchObject({
       accessToken: "access-manual-test",
