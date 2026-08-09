@@ -429,6 +429,18 @@ describe("CLI /api sync wiring for stale app-servers (#476)", () => {
   });
 });
 
+describe("process utility invocation source guards", () => {
+  const processSource = readFileSync(
+    join(import.meta.dir, "..", "src", "codex", "app-server-processes.ts"),
+    "utf8",
+  );
+
+  test("pins every Darwin ps invocation to the system binary", () => {
+    expect(processSource.match(/execFileSync\(\s*["']\/bin\/ps["']/g) ?? []).toHaveLength(4);
+    expect(processSource).not.toMatch(/execFileSync\(\s*["']ps["']/);
+  });
+});
+
 describe("Windows Win32_Process owner enumeration (#476)", () => {
   const processSource = readFileSync(
     join(import.meta.dir, "..", "src", "codex", "app-server-processes.ts"),
