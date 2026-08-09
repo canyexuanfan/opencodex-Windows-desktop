@@ -55,8 +55,8 @@ describe("CL-03 live sandbox security seams", () => {
   });
 
   test("address-set equality uses the same canonical representation on both sides", async () => {
-    const home = tempHome(); const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, resolve: async () => [{ address: "2001:db8::1", family: 6 }, { address: "93.184.216.34", family: 4 }, { address: "93.184.216.34", family: 4 }], configDir: home });
-    expect(() => assertDestinationAddressSet(destination, [{ address: "93.184.216.34", family: 4 }, { address: "2001:db8::1", family: 6 }])).not.toThrow();
+    const home = tempHome(); const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, resolve: async () => [{ address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }, { address: "93.184.216.34", family: 4 }, { address: "93.184.216.34", family: 4 }], configDir: home });
+    expect(() => assertDestinationAddressSet(destination, [{ address: "93.184.216.34", family: 4 }, { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }])).not.toThrow();
   });
 
   test("destination resolution obeys the connect timeout", async () => {
@@ -71,7 +71,7 @@ describe("CL-03 live sandbox security seams", () => {
   test("redirects fail closed in mock transport", async () => { const transport = createMockTransport({ entries: [{ status: 302, body: "", headers: { location: "https://evil.example.com" } }] }); await expect(transport.request({ method: "GET", path: "/" })).rejects.toThrow(TransportError); });
 
   test("credential lease is destination-bound, bounded, and non-serializable", async () => { const home = tempHome(); process.env.OPENCODEX_HOME = home; const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, resolve: async () => [{ address: "93.184.216.34", family: 4 }], configDir: home }); const lease = createCredentialLease({ destination, budget: 1 }); assertLeaseScope(lease, destination); expect(() => JSON.stringify(lease)).toThrow(LabCredentialError); lease.consume(); expect(() => lease.consume()).toThrow(LabCredentialError); });
-  test("auth/quota/network/transient classify as blockers", () => { expect(classifyTransportError(new TransportError("auth_blocked", "auth")).classification).toBe("authentication_blocked"); expect(classifyTransportError(new TransportError("quota_blocked", "quota")).classification).toBe("quota_blocked"); expect(classifyTransportError(new TransportError("network_blocked", "net")).classification).toBe("network_failure"); expect(classifyTransportError(new TransportError("provider_transient", "transient")).classification).toBe("provider_transient"); expect(classifyTransportError(new TransportError("total_timeout", "timeout")).classification).toBe("timeout"); });
+  test("auth/quota/network/transient classify as blockers", () => { expect(classifyTransportError(new TransportError("auth_blocked", "auth")).classification).toBe("authentication_blocked"); expect(classifyTransportError(new TransportError("quota_blocked", "quota")).classification).toBe("quota_blocked"); expect(classifyTransportError(new TransportError("network_blocked", "net")).classification).toBe("network_failure"); expect(classifyTransportError(new TransportError("provider_transient", "transient")).classification).toBe("provider_transient"); expect(classifyTransportError(new TransportError("connect_timeout", "connect")).classification).toBe("timeout"); expect(classifyTransportError(new TransportError("total_timeout", "timeout")).classification).toBe("timeout"); });
 
   test("observable resource counters enforce child-process limit", () => { const state = createSandboxResourceState(); expect(() => enforceSandboxLimits(state, limits, { childProcesses: 1 })).toThrow(LabSandboxError); });
   test("untrusted runtime code cannot self-attest a trusted executor", async () => {
