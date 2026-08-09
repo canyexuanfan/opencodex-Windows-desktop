@@ -170,6 +170,41 @@ test("a real Worker performs the transition and the parent joins it", async () =
   expect(row?.model_provider).toBe("openai");
 }, 30_000);
 
+test("the history job does not resolve before its Worker closes", async () => {
+  const fixture = makeFixture("ocx-history-job-close-");
+  const NativeWorker = globalThis.Worker;
+  let workerClosed = false;
+
+  class ObservedWorker extends NativeWorker {
+    constructor(specifier: string | URL, options?: WorkerOptions) {
+      super(specifier, options);
+      this.addEventListener("close", () => {
+        workerClosed = true;
+      }, { once: true });
+    }
+  }
+
+  Object.defineProperty(globalThis, "Worker", {
+    configurable: true,
+    value: ObservedWorker,
+    writable: true,
+  });
+  try {
+    const outcome = await runCodexHistoryJob({
+      ...fixture,
+      operation: "recover-legacy-openai",
+    });
+    expect(outcome.kind).toBe("converged");
+    expect(workerClosed).toBe(true);
+  } finally {
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      value: NativeWorker,
+      writable: true,
+    });
+  }
+}, 30_000);
+
 /**
  * A Worker that overruns must not become the caller's stall. The caller here is
  * a route that has already persisted its own mutation; an exception crossing
