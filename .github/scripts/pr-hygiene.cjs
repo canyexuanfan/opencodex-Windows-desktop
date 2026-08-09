@@ -264,11 +264,21 @@ function collectDeterministicHygieneFailures({
   labels = [],
   authorHasPushPermission = false,
 }) {
+  // Renames must keep the source path: moving a restricted file to a
+  // non-restricted destination must not drop the sponsorship requirement.
+  const changedFiles = [
+    ...new Set(
+      files.flatMap((file) => [
+        file.filename,
+        ...(file.previous_filename ? [file.previous_filename] : []),
+      ]),
+    ),
+  ];
   return [
     ...assessHygiene({ files, labels }),
     ...assessSponsoredSurface({
       authorHasPushPermission,
-      changedFiles: files.map((file) => file.filename),
+      changedFiles,
       labels,
     }),
   ];

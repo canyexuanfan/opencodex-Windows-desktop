@@ -232,9 +232,52 @@ describe("collectDeterministicHygieneFailures", () => {
     assert.deepEqual(failures, []);
   });
 
+  it("requires sponsorship when renaming away from a restricted path", () => {
+    const failures = collectDeterministicHygieneFailures({
+      files: [
+        {
+          filename: "docs/moved-release.yml",
+          previous_filename: ".github/workflows/release.yml",
+          status: "renamed",
+          patch: "+moved",
+        },
+      ],
+      authorHasPushPermission: false,
+    });
+    const unsponsored = failures.find((failure) => failure.code === "unsponsored_surface");
+    assert.ok(unsponsored, "expected unsponsored_surface for a restricted rename source");
+    assert.deepEqual(unsponsored.paths, [".github/workflows/release.yml"]);
+  });
+
   it("exposes hints and gate labels for the Ready coupling", () => {
     assert.equal(typeof HYGIENE_FAILURE_HINTS.unsponsored_surface, "string");
     assert.ok(HYGIENE_GATE_LABELS.includes("maintainer-sponsored"));
     assert.ok(HYGIENE_GATE_LABELS.includes("intake: hygiene-blocked"));
+  });
+});
+
+describe("pr-hygiene workflow trust boundary", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const workflow = fs.readFileSync(
+    path.join(__dirname, "../workflows/pr-hygiene.yml"),
+    "utf8",
+  );
+
+  it("checks out the PR base SHA, not the repository default branch", () => {
+    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
+    assert.doesNotMatch(
+      workflow,
+      /Checkout trusted hygiene script[\s\S]*?ref:\s*\$\{\{\s*github\.event\.repository\.default_branch/,
+    );
+  });
+
+  it("uses repository permission level for the sponsorship exemption", () => {
+    assert.match(workflow, /getCollaboratorPermissionLevel/);
+    assert.match(workflow, /authorHasPushPermission\(authorPermission\)/);
+    assert.doesNotMatch(
+      workflow,
+      /authorHasPushPermission:\s*\["OWNER",\s*"MEMBER",\s*"COLLABORATOR"\]\.includes\(\s*pr\.author_association/,
+    );
   });
 });
