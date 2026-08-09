@@ -20,6 +20,16 @@ function removeStagingFile(path: string): void {
   }
 }
 
+function fsyncDirectory(path: string): void {
+  // Node does not provide a portable directory-fsync primitive on Windows.
+  // POSIX publication is crash-durable; Windows still uses a fsync'd staging inode
+  // plus atomic hard-link publication so partially written salts are never visible.
+  if (process.platform === "win32") return;
+  const dirFd = openSync(path, "r");
+  try { fsyncSync(dirFd); }
+  finally { closeSync(dirFd); }
+}
+
 /** Read or atomically publish the per-installation salt used for local fingerprinting. */
 export function readInstallationSalt(configDir?: string): Uint8Array {
   const path = labInstallationSaltPath(configDir);
@@ -46,6 +56,8 @@ export function readInstallationSalt(configDir?: string): Uint8Array {
 
     try {
       linkSync(stagingPath, path);
+      try { fsyncDirectory(dirname(path)); }
+      catch { throw new Error("harness_failure: installation salt directory fsync failed"); }
       return new Uint8Array(salt);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
