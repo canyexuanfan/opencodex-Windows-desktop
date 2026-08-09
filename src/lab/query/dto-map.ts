@@ -209,7 +209,7 @@ export function mapValidatedEventToDto(event: LabEvent, excluded: boolean, exclu
     producer: event.producer,
     producerVersion: event.producerVersion,
     excluded,
-    exclusionReason,
+    exclusionReason: sanitizePublicText(exclusionReason),
   };
   if (event.eventKind === "observation") {
     const obs = event as ObservationEvent;

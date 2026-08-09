@@ -274,7 +274,7 @@ const helpEntries: Record<string, HelpEntry> = {
       "observations          Paginated observation rows from the projection.",
       "events                Event history; event <id> returns one safe typed event.",
       "artifacts             Artifact metadata only (no content download).",
-      "catalog               Packaged protocol/live scenario catalogue metadata.",
+      "catalog               Packaged protocol/live scenario catalog metadata.",
       "Reads never rebuild the projection, trigger probes, or require the proxy.",
     ],
   },

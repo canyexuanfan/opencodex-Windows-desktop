@@ -92,6 +92,9 @@ function syntheticPassResult(caseRecord: CaseRecord) {
 function seedProjection(home: string, suiteId = "responses-core") {
   const authority = loadCaseAuthority();
   const scenarios = discoverScenarios(authority, [suiteId]);
+  if (scenarios.length === 0) {
+    throw new Error(`No Compatibility Lab scenarios discovered for suite ${suiteId}`);
+  }
   let recordedAt = 1_700_000_000_000;
   for (const caseRecord of scenarios.slice(0, 2)) {
     const store = createArtifactStore(join(home, "lab", "artifacts"));
@@ -162,8 +165,9 @@ describe("CL-04 query layer", () => {
       seedProjection(home);
       const first = queryLabVerdicts({}, undefined, 1, home);
       expect(first.items.length).toBe(1);
-      if (!first.nextCursor) return;
-      const second = queryLabVerdicts({}, first.nextCursor, 1, home);
+      expect(first.hasMore).toBe(true);
+      expect(first.nextCursor).toBeTruthy();
+      const second = queryLabVerdicts({}, first.nextCursor!, 1, home);
       expect(second.items[0]?.projectionKey).not.toBe(first.items[0]?.projectionKey);
       expect(() => queryLabVerdicts({}, "not-a-cursor", undefined, home)).toThrow(InvalidCursorError);
       const tampered = encodeLabCursor({
@@ -224,10 +228,17 @@ describe("CL-04 query layer", () => {
 
       queryLabStatus(home);
       queryLabVerdicts({}, undefined, undefined, home);
-      queryLabSubjects(undefined, undefined, undefined, home);
+      const subjectsForRead = queryLabSubjects(undefined, undefined, undefined, home);
       queryLabObservations({}, undefined, undefined, home);
-      queryLabEvents({}, undefined, undefined, home);
-      queryLabArtifacts({}, undefined, undefined, home);
+      const eventsForRead = queryLabEvents({}, undefined, undefined, home);
+      const artifactsForRead = queryLabArtifacts({}, undefined, undefined, home);
+      expect(subjectsForRead.items.length).toBeGreaterThan(0);
+      expect(eventsForRead.items.length).toBeGreaterThan(0);
+      expect(artifactsForRead.items.length).toBeGreaterThan(0);
+      queryLabSubjectById(subjectsForRead.items[0]!.subjectId, home);
+      queryLabEventById(eventsForRead.items[0]!.eventId, home);
+      queryLabArtifactByDigest(artifactsForRead.items[0]!.digest, home);
+      queryLabCatalogEntries({ layer: "protocol_conformance" });
 
       expect(readFileSync(ledger).equals(ledgerBefore)).toBe(true);
       expect(readFileSync(sqlite).equals(sqliteBefore)).toBe(true);
@@ -250,7 +261,9 @@ describe("CL-04 management API", () => {
       expect(verdictsRes.status).toBe(200);
       const verdictsBody = await verdictsRes.json() as { verdicts: unknown[]; hasMore: boolean };
       expect(verdictsBody.verdicts.length).toBeGreaterThan(0);
-      expect(verdictsBody).not.toHaveProperty("payload_json");
+      for (const verdict of verdictsBody.verdicts) {
+        expect(verdict).not.toHaveProperty("payload_json");
+      }
     });
   });
 
@@ -267,6 +280,11 @@ describe("CL-04 management API", () => {
 
       const slash = await apiGet(home, "/api/lab/events/ev%2Fent");
       expect(slash.status).toBe(404);
+
+      for (const path of ["/api/lab/subjects/%", "/api/lab/events/%", "/api/lab/artifacts/%"]) {
+        const malformed = await apiGet(home, path);
+        expect(malformed.status).toBe(404);
+      }
     });
   });
 
@@ -298,25 +316,103 @@ describe("CL-04 CLI", () => {
   test("lab status human and json without daemon", async () => {
     await withHome(async (home) => {
       seedProjection(home);
-      const code = await handleLabCommand(["status"], { configDir: home });
-      expect(code).toBe(0);
-      const jsonCode = await handleLabCommand(["status", "--json"], { configDir: home });
-      expect(jsonCode).toBe(0);
+      const lines: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+      try {
+        const code = await handleLabCommand(["status"], { configDir: home });
+        expect(code).toBe(0);
+        expect(lines.join("\n")).toContain("Lab projection: available");
+
+        lines.length = 0;
+        const jsonCode = await handleLabCommand(["status", "--json"], { configDir: home });
+        expect(jsonCode).toBe(0);
+        expect(JSON.parse(lines.join("\n")).projectionAvailable).toBe(true);
+
+        lines.length = 0;
+        expect(await handleLabCommand([], { configDir: home })).toBe(0);
+        expect(lines.join("\n")).toContain("Lab projection: available");
+
+        lines.length = 0;
+        expect(await handleLabCommand(["--json"], { configDir: home })).toBe(0);
+        expect(JSON.parse(lines.join("\n")).projectionAvailable).toBe(true);
+      } finally {
+        console.log = originalLog;
+      }
     });
   });
 
   test("lab verdicts and invalid args", async () => {
     await withHome(async (home) => {
       seedProjection(home);
-      expect(await handleLabCommand(["verdicts", "--json", "--limit", "1"], { configDir: home })).toBe(0);
-      expect(await handleLabCommand(["unknown-sub"], { configDir: home })).toBe(2);
+      const lines: string[] = [];
+      const errors: string[] = [];
+      const originalLog = console.log;
+      const originalError = console.error;
+      console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+      console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+      try {
+        expect(await handleLabCommand(["verdicts", "--limit", "1"], { configDir: home })).toBe(0);
+        expect(lines.join("\n")).toContain("(more available; pass --cursor ");
+
+        lines.length = 0;
+        expect(await handleLabCommand(["verdicts", "--json", "--limit", "1"], { configDir: home })).toBe(0);
+        expect(JSON.parse(lines.join("\n")).items.length).toBe(1);
+
+        for (const command of ["subjects", "observations", "events", "artifacts", "catalog"]) {
+          lines.length = 0;
+          expect(await handleLabCommand([command], { configDir: home })).toBe(0);
+          expect(lines.length).toBeGreaterThan(0);
+        }
+
+        const subjectId = queryLabSubjects(undefined, undefined, 1, home).items[0]!.subjectId;
+        lines.length = 0;
+        expect(await handleLabCommand(["subject", subjectId, "--json"], { configDir: home })).toBe(0);
+        const subjectEnvelope = JSON.parse(lines.join("\n"));
+        expect(subjectEnvelope.subject).toBeDefined();
+        expect(subjectEnvelope).not.toHaveProperty("subjectId");
+
+        errors.length = 0;
+        expect(await handleLabCommand(["unknown-sub"], { configDir: home })).toBe(2);
+        expect(errors.join("\n")).toContain("unknown lab subcommand");
+
+        errors.length = 0;
+        expect(await handleLabCommand(["verdicts", "--layer", "bogus"], { configDir: home })).toBe(2);
+        expect(errors.join("\n")).toContain("supported evidence layer");
+
+        errors.length = 0;
+        expect(await handleLabCommand(["verdicts", "--from", "2000", "--to", "1000"], { configDir: home })).toBe(2);
+        expect(errors.join("\n")).toContain("--from must not be greater than --to");
+
+        errors.length = 0;
+        expect(await handleLabCommand(["events", "--excluded", "yes"], { configDir: home })).toBe(2);
+        expect(errors.join("\n")).toContain("--excluded must be true or false");
+      } finally {
+        console.log = originalLog;
+        console.error = originalError;
+      }
     });
   });
 
   test("lab unavailable projection", async () => {
     await withHome(async (home) => {
-      expect(await handleLabCommand(["status", "--json"], { configDir: home })).toBe(0);
-      expect(await handleLabCommand(["verdicts"], { configDir: home })).toBe(2);
+      const lines: string[] = [];
+      const errors: string[] = [];
+      const originalLog = console.log;
+      const originalError = console.error;
+      console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+      console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+      try {
+        expect(await handleLabCommand(["status", "--json"], { configDir: home })).toBe(0);
+        expect(JSON.parse(lines.join("\n")).projectionAvailable).toBe(false);
+        errors.length = 0;
+        expect(await handleLabCommand(["verdicts"], { configDir: home })).toBe(1);
+        expect(errors.join("\n")).toContain("lab projection is not available");
+        expect(errors.join("\n")).not.toContain("Usage:");
+      } finally {
+        console.log = originalLog;
+        console.error = originalError;
+      }
     });
   });
 });
@@ -335,9 +431,10 @@ describe("CL-04 privacy boundary", () => {
   test("corruption and artifact errors do not leak raw detail", () => {
     withHome((home) => {
       seedProjection(home);
+      const eventId = queryLabEvents({}, undefined, 1, home).items[0]!.eventId;
       const sqlitePath = join(home, "lab", "compatibility.sqlite");
       const db = new Database(sqlitePath);
-      db.prepare(
+      const corruptionInsert = db.prepare(
         "INSERT INTO corruption(kind, line_number, event_id, detail) VALUES (?, ?, ?, ?)",
       ).run(
         "malformed_line",
@@ -345,17 +442,34 @@ describe("CL-04 privacy boundary", () => {
         null,
         "Bearer access-token-value-REDTEST https://user:pw@chatgpt.com C:\\Users\\example\\secret\\path",
       );
-      db.prepare("UPDATE artifacts SET last_error = ? WHERE rowid = 1").run(
+      expect(corruptionInsert.changes).toBe(1);
+      const artifactUpdate = db.prepare("UPDATE artifacts SET last_error = ? WHERE rowid = 1").run(
         "sk-test-1234567890abcdef",
       );
+      expect(artifactUpdate.changes).toBe(1);
+      const eventUpdate = db.prepare("UPDATE events SET exclusion_reason = ? WHERE event_id = ?").run(
+        "Bearer detail-event-token C:\\Users\\detail\\secret",
+        eventId,
+      );
+      expect(eventUpdate.changes).toBe(1);
       db.close();
 
+      const status = queryLabStatus(home);
+      expect(status.corruptionCount).toBeGreaterThan(0);
+      expect(JSON.stringify(status)).not.toContain("access-token-value-REDTEST");
+
       const artifacts = queryLabArtifacts({}, undefined, undefined, home);
+      expect(artifacts.items.length).toBeGreaterThan(0);
       for (const a of artifacts.items) {
         const serialized = JSON.stringify(a);
         expect(serialized).not.toContain("sk-test");
-        expect(serialized).not.toContain("Bearer");
       }
+
+      const event = queryLabEventById(eventId, home);
+      expect(event).not.toBeNull();
+      const serializedEvent = JSON.stringify(event);
+      expect(serializedEvent).not.toContain("detail-event-token");
+      expect(serializedEvent).not.toContain("C:\\Users");
     });
   });
 });

@@ -25,7 +25,6 @@ import {
   mapObservationRow,
   mapSubjectJson,
   mapSubjectListRow,
-  mapValidatedEventToDto,
   mapVerdictRow,
   parseEventPayloadToDto,
 } from "./dto-map";
@@ -46,7 +45,6 @@ import type {
   VerdictDto,
   VerdictFilters,
 } from "./types";
-import { validateLabEvent } from "../events/validate";
 
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined) return LAB_QUERY_DEFAULT_PAGE_SIZE;
@@ -336,12 +334,11 @@ export function queryLabEvents(
       where.push("(e.recorded_at < ? OR (e.recorded_at = ? AND e.event_id < ?))");
       params.push(decoded.r, decoded.r, decoded.e);
     }
-    const joinSql = "";
     const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = conn.db
       .query(
-        `SELECT DISTINCT e.event_id, e.event_kind, e.recorded_at, e.excluded, e.exclusion_reason
-         FROM events e ${joinSql}
+        `SELECT e.event_id, e.event_kind, e.recorded_at, e.excluded, e.exclusion_reason
+         FROM events e
          ${whereSql}
          ORDER BY e.recorded_at DESC, e.event_id DESC
          LIMIT ?`,
@@ -372,14 +369,7 @@ export function queryLabEventById(eventId: string, configDir?: string): LabEvent
     if (!row) return null;
     const excluded = Number(row.excluded) === 1;
     const exclusionReason = row.exclusion_reason ? String(row.exclusion_reason) : null;
-    const dto = parseEventPayloadToDto(row.payload_json, excluded, exclusionReason);
-    if (dto) return dto;
-    try {
-      const event = validateLabEvent(JSON.parse(row.payload_json));
-      return mapValidatedEventToDto(event, excluded, exclusionReason);
-    } catch {
-      return null;
-    }
+    return parseEventPayloadToDto(row.payload_json, excluded, exclusionReason);
   });
 }
 

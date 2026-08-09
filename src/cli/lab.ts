@@ -4,13 +4,19 @@
  * Local SQLite projection reads; no daemon, network, probes, or rebuilds.
  */
 import { getConfigDir } from "../config";
-import type {
-  ArtifactClass,
-  CompatibilityVerdict,
-  EvidenceLayer,
-  ExecutionMode,
-  LabEventKind,
-  ObservationOutcome,
+import {
+  ARTIFACT_CLASSES,
+  EVIDENCE_LAYERS,
+  EVENT_KINDS,
+  EXECUTION_MODES,
+  OUTCOMES,
+  VERDICTS,
+  type ArtifactClass,
+  type CompatibilityVerdict,
+  type EvidenceLayer,
+  type ExecutionMode,
+  type LabEventKind,
+  type ObservationOutcome,
 } from "../lab/constants";
 import {
   InvalidCursorError,
@@ -29,6 +35,7 @@ import {
 } from "../lab/query";
 import {
   CliUsageError,
+  RuntimeApiError,
   printData,
   rejectArgs,
   runCliAction,
@@ -49,8 +56,18 @@ const USAGE = `Usage:
   ocx lab artifact <digest> [--json]
   ocx lab catalog [--layer <layer>] [--suite <id>] [--json]`;
 
+const ARTIFACT_STATUSES = ["present", "corrupt", "purged_unavailable"] as const;
+type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
+
 export interface LabCliDeps {
   configDir?: string;
+}
+
+class LabStateError extends RuntimeApiError {
+  constructor(message: string) {
+    super(message, 503, null);
+    this.name = "LabStateError";
+  }
 }
 
 function labErrorMessage(err: unknown): string {
@@ -58,6 +75,33 @@ function labErrorMessage(err: unknown): string {
   if (err instanceof LabProjectionIncompatibleError) return "lab projection schema or spec version is incompatible";
   if (err instanceof InvalidCursorError) return "invalid cursor";
   return "lab read failed";
+}
+
+function takeEnumOption<T extends string>(
+  args: string[],
+  flag: string,
+  values: readonly T[],
+  message: string,
+): T | undefined {
+  const raw = takeOption(args, flag);
+  if (raw === undefined) return undefined;
+  if (!(values as readonly string[]).includes(raw)) {
+    throw new CliUsageError(message, USAGE);
+  }
+  return raw as T;
+}
+
+function assertRange(from: number | undefined, to: number | undefined): void {
+  if (from !== undefined && to !== undefined && from > to) {
+    throw new CliUsageError("--from must not be greater than --to", USAGE);
+  }
+}
+
+function appendPaginationHint(
+  lines: string[],
+  page: { hasMore: boolean; nextCursor?: string | null },
+): void {
+  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
 }
 
 function statusSummary(status: ReturnType<typeof queryLabStatus>): string[] {
@@ -76,39 +120,39 @@ function statusSummary(status: ReturnType<typeof queryLabStatus>): string[] {
   ];
 }
 
-function verdictLines(page: Awaited<ReturnType<typeof queryLabVerdicts>>): string[] {
+function verdictLines(page: ReturnType<typeof queryLabVerdicts>): string[] {
   const lines = page.items.map((v) =>
     `${v.verdict} ${v.evidenceLayer} ${v.suiteId} subject=${v.subjectId} asOf=${v.asOf}`,
   );
-  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
+  appendPaginationHint(lines, page);
   return lines.length > 0 ? lines : ["No verdicts"];
 }
 
-function subjectListLines(page: Awaited<ReturnType<typeof queryLabSubjects>>): string[] {
+function subjectListLines(page: ReturnType<typeof queryLabSubjects>): string[] {
   const lines = page.items.map((s) => `${s.subjectId} (${s.subjectKind})`);
-  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
+  appendPaginationHint(lines, page);
   return lines.length > 0 ? lines : ["No subjects"];
 }
 
-function observationLines(page: Awaited<ReturnType<typeof queryLabObservations>>): string[] {
+function observationLines(page: ReturnType<typeof queryLabObservations>): string[] {
   const lines = page.items.map((o) =>
     `${o.outcome} ${o.evidenceLayer} ${o.scenarioId} event=${o.eventId} completed=${o.completedAt}`,
   );
-  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
+  appendPaginationHint(lines, page);
   return lines.length > 0 ? lines : ["No observations"];
 }
 
-function eventListLines(page: Awaited<ReturnType<typeof queryLabEvents>>): string[] {
+function eventListLines(page: ReturnType<typeof queryLabEvents>): string[] {
   const lines = page.items.map((e) =>
     `${e.eventKind} ${e.eventId} recorded=${e.recordedAt}${e.excluded ? " excluded" : ""}`,
   );
-  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
+  appendPaginationHint(lines, page);
   return lines.length > 0 ? lines : ["No events"];
 }
 
-function artifactLines(page: Awaited<ReturnType<typeof queryLabArtifacts>>): string[] {
+function artifactLines(page: ReturnType<typeof queryLabArtifacts>): string[] {
   const lines = page.items.map((a) => `${a.status} ${a.digest} class=${a.artifactClass ?? "unknown"}`);
-  if (page.hasMore) lines.push(`(more available; pass --cursor ${page.nextCursor ?? ""})`);
+  appendPaginationHint(lines, page);
   return lines.length > 0 ? lines : ["No artifacts"];
 }
 
@@ -116,14 +160,15 @@ function catalogLines(scenarios: ReturnType<typeof queryLabCatalogEntries>): str
   const lines = scenarios.map((s) =>
     `${s.evidenceLayer} ${s.suiteId} ${s.scenarioId} digest=${s.scenarioManifestDigest.slice(0, 12)}…`,
   );
-  return lines.length > 0 ? lines : ["No catalogue scenarios"];
+  return lines.length > 0 ? lines : ["No catalog scenarios"];
 }
 
 export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): Promise<number> {
   return runCliAction(async () => {
     const configDir = deps.configDir ?? getConfigDir();
-    const [sub = "status", ...rest] = argv;
-    const wantsJson = takeFlag(rest, "--json");
+    const argvCopy = [...argv];
+    const wantsJson = takeFlag(argvCopy, "--json");
+    const [sub = "status", ...rest] = argvCopy;
 
     try {
       switch (sub) {
@@ -135,11 +180,22 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
         }
         case "verdicts": {
           const subjectId = takeOption(rest, "--subject");
-          const layer = takeOption(rest, "--layer") as EvidenceLayer | undefined;
+          const layer = takeEnumOption<EvidenceLayer>(
+            rest,
+            "--layer",
+            EVIDENCE_LAYERS,
+            "--layer must be a supported evidence layer",
+          );
           const suiteId = takeOption(rest, "--suite");
-          const verdict = takeOption(rest, "--verdict") as CompatibilityVerdict | undefined;
+          const verdict = takeEnumOption<CompatibilityVerdict>(
+            rest,
+            "--verdict",
+            VERDICTS,
+            "--verdict must be a supported compatibility verdict",
+          );
           const from = takeIntegerOption(rest, "--from", { min: 0 });
           const to = takeIntegerOption(rest, "--to", { min: 0 });
+          assertRange(from, to);
           const limit = takeIntegerOption(rest, "--limit", { min: 1 });
           const cursor = takeOption(rest, "--cursor");
           rejectArgs(rest, USAGE);
@@ -170,18 +226,34 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
           rejectArgs(rest, USAGE);
           const subject = queryLabSubjectById(subjectId, configDir);
           if (!subject) throw new CliUsageError("unknown subject", USAGE);
-          printData({ subjectId, subject }, wantsJson, [`Subject ${subjectId}`]);
+          printData({ subject }, wantsJson, [`Subject ${subjectId}`]);
           return;
         }
         case "observations": {
           const subjectId = takeOption(rest, "--subject");
-          const layer = takeOption(rest, "--layer") as EvidenceLayer | undefined;
+          const layer = takeEnumOption<EvidenceLayer>(
+            rest,
+            "--layer",
+            EVIDENCE_LAYERS,
+            "--layer must be a supported evidence layer",
+          );
           const suiteId = takeOption(rest, "--suite");
           const scenarioId = takeOption(rest, "--scenario");
-          const outcome = takeOption(rest, "--outcome") as ObservationOutcome | undefined;
-          const executionMode = takeOption(rest, "--execution-mode") as ExecutionMode | undefined;
+          const outcome = takeEnumOption<ObservationOutcome>(
+            rest,
+            "--outcome",
+            OUTCOMES,
+            "--outcome must be a supported observation outcome",
+          );
+          const executionMode = takeEnumOption<ExecutionMode>(
+            rest,
+            "--execution-mode",
+            EXECUTION_MODES,
+            "--execution-mode must be a supported execution mode",
+          );
           const from = takeIntegerOption(rest, "--from", { min: 0 });
           const to = takeIntegerOption(rest, "--to", { min: 0 });
+          assertRange(from, to);
           const limit = takeIntegerOption(rest, "--limit", { min: 1 });
           const cursor = takeOption(rest, "--cursor");
           rejectArgs(rest, USAGE);
@@ -199,11 +271,20 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
           return;
         }
         case "events": {
-          const eventKind = takeOption(rest, "--event-kind") as LabEventKind | undefined;
+          const eventKind = takeEnumOption<LabEventKind>(
+            rest,
+            "--event-kind",
+            EVENT_KINDS,
+            "--event-kind must be a supported lab event kind",
+          );
           const subjectId = takeOption(rest, "--subject");
           const from = takeIntegerOption(rest, "--from", { min: 0 });
           const to = takeIntegerOption(rest, "--to", { min: 0 });
+          assertRange(from, to);
           const excludedRaw = takeOption(rest, "--excluded");
+          if (excludedRaw !== undefined && excludedRaw !== "true" && excludedRaw !== "false") {
+            throw new CliUsageError("--excluded must be true or false", USAGE);
+          }
           const limit = takeIntegerOption(rest, "--limit", { min: 1 });
           const cursor = takeOption(rest, "--cursor");
           rejectArgs(rest, USAGE);
@@ -228,8 +309,18 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
           return;
         }
         case "artifacts": {
-          const status = takeOption(rest, "--status") as "present" | "corrupt" | "purged_unavailable" | undefined;
-          const artifactClass = takeOption(rest, "--artifact-class") as ArtifactClass | undefined;
+          const status = takeEnumOption<ArtifactStatus>(
+            rest,
+            "--status",
+            ARTIFACT_STATUSES,
+            "--status must be present, corrupt, or purged_unavailable",
+          );
+          const artifactClass = takeEnumOption<ArtifactClass>(
+            rest,
+            "--artifact-class",
+            ARTIFACT_CLASSES,
+            "--artifact-class must be a supported artifact class",
+          );
           const limit = takeIntegerOption(rest, "--limit", { min: 1 });
           const cursor = takeOption(rest, "--cursor");
           rejectArgs(rest, USAGE);
@@ -248,7 +339,12 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
           return;
         }
         case "catalog": {
-          const layer = takeOption(rest, "--layer") as EvidenceLayer | undefined;
+          const layer = takeEnumOption<EvidenceLayer>(
+            rest,
+            "--layer",
+            EVIDENCE_LAYERS,
+            "--layer must be a supported evidence layer",
+          );
           const suiteId = takeOption(rest, "--suite");
           rejectArgs(rest, USAGE);
           const scenarios = queryLabCatalogEntries({ layer, suiteId });
@@ -260,6 +356,9 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
       }
     } catch (err) {
       if (err instanceof CliUsageError) throw err;
+      if (err instanceof LabProjectionUnavailableError || err instanceof LabProjectionIncompatibleError) {
+        throw new LabStateError(labErrorMessage(err));
+      }
       throw new CliUsageError(labErrorMessage(err), USAGE);
     }
   });

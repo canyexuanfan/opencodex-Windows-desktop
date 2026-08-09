@@ -157,10 +157,8 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
 - CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening #1343 is also **MERGED** at `eee2dab4d1bbacefce56057adad51d734f346702`; final closure is tracked in #1348.
-- CL-03: **DRAFT PR OPEN** ([#1352](https://github.com/lidge-jun/opencodex/pull/1352)) on
-  `feat/cl-03-live-route-probes` from `4f746d13799888ea0a8c7a111aa2ad61c2126ea0`;
-  implementation head `003f7402f49bfe8dd710a7beba52f717051bfadf`. Not accepted.
-- CL-04: **NOT STARTED** (blocked until CL-03 independent acceptance and review reconciliation).
+- CL-03: **ACCEPTED/CLOSED** via [#1352](https://github.com/lidge-jun/opencodex/pull/1352), merged to `dev` at `68c71a4e9cdf882d812f09fd94783a28749db629`.
+- CL-04: **IMPLEMENTATION IN PROGRESS**, authorized from accepted CL-03 merge `68c71a4e9cdf882d812f09fd94783a28749db629`.
 
 ## CL-03 implementation log (2026-08-09)
 

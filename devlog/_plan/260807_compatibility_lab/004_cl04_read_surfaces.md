@@ -5,7 +5,7 @@
 - **Phase:** CL-04 (read-surface only)
 - **Starting `upstream/dev` SHA:** `68c71a4e9cdf882d812f09fd94783a28749db629` (merge #1352)
 - **Branch:** `feat/cl-04-lab-read-surfaces`
-- **PR target:** `lidge-jun/opencodex:dev` (draft from `Wibias/opencodex`)
+- **PR:** [#1378](https://github.com/lidge-jun/opencodex/pull/1378) → `lidge-jun/opencodex:dev`
 - **CL-05:** not started
 
 ## Scope delivered
@@ -36,19 +36,19 @@
 
 ## Validation (local)
 
-- `bun x tsc --noEmit`
-- `bun test tests/lab-read-surfaces.test.ts`
-- `bun test tests/lab-conformance-harness.test.ts`
-- `bun test tests/lab-evidence-ledger.test.ts`
-- `bun test tests/lab-live-probe.test.ts`
-- `bun test tests/lab-live-sandbox.test.ts`
-- `bun run privacy:scan`
+- `bun x tsc --noEmit` — passed
+- `bun test tests/lab-read-surfaces.test.ts` — 17/17 passed
+- `bun test tests/lab-conformance-harness.test.ts` — 17/17 passed
+- `bun test tests/lab-evidence-ledger.test.ts` — 37/41 passed; 4 pre-existing Windows SQLite `EPERM`/file-lock flakes in `wipeSqlite` during repeated `rebuildLabProjection` (same failures on base `68c71a4` without CL-04)
+- `bun test tests/lab-live-probe.test.ts` — 19/19 passed
+- `bun test tests/lab-live-sandbox.test.ts` — 17/17 passed
+- `bun run privacy:scan` — passed
 
 ## Acceptance blockers
 
-- Draft PR not yet opened / CI not yet green on branch
+- PR #1378 requires final CI after review remediation
 - Independent acceptance review not performed
-- CodeRabbit/reviewer findings on CL-04 PR not yet reconciled
+- Reviewer findings must be reconciled before CL-04 acceptance
 
 ## Out of scope (confirmed)
 

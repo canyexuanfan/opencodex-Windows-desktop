@@ -13,6 +13,28 @@ export interface LabReadConnection {
   builtAtMs: number;
 }
 
+const COUNTABLE_TABLES = [
+  "events",
+  "subjects",
+  "observations",
+  "claims",
+  "verdicts",
+  "artifacts",
+  "corruption",
+] as const;
+
+export type CountableTable = (typeof COUNTABLE_TABLES)[number];
+
+const COUNT_TABLE_SQL: Record<CountableTable, string> = {
+  events: "SELECT COUNT(*) AS c FROM events",
+  subjects: "SELECT COUNT(*) AS c FROM subjects",
+  observations: "SELECT COUNT(*) AS c FROM observations",
+  claims: "SELECT COUNT(*) AS c FROM claims",
+  verdicts: "SELECT COUNT(*) AS c FROM verdicts",
+  artifacts: "SELECT COUNT(*) AS c FROM artifacts",
+  corruption: "SELECT COUNT(*) AS c FROM corruption",
+};
+
 export function resolveLabSqlitePath(configDir?: string): string {
   return labSqlitePath(configDir);
 }
@@ -22,7 +44,12 @@ export function openLabReadConnection(configDir?: string): LabReadConnection {
   if (!existsSync(sqlitePath)) {
     throw new LabProjectionUnavailableError();
   }
-  const db = new Database(sqlitePath, { readonly: true });
+  let db: Database;
+  try {
+    db = new Database(sqlitePath, { readonly: true });
+  } catch {
+    throw new LabProjectionUnavailableError();
+  }
   try {
     const metaRows = db
       .query("SELECT key, value FROM schema_meta")
@@ -71,7 +98,10 @@ export function closeLabReadConnection(conn: LabReadConnection): void {
   conn.db.close();
 }
 
-export function countTable(conn: LabReadConnection, table: string): number {
-  const row = conn.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number };
+export function countTable(conn: LabReadConnection, table: CountableTable): number {
+  if (!(COUNTABLE_TABLES as readonly string[]).includes(table)) {
+    throw new LabProjectionUnavailableError();
+  }
+  const row = conn.db.query(COUNT_TABLE_SQL[table]).get() as { c: number };
   return Number(row.c);
 }

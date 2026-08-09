@@ -169,6 +169,14 @@ function rejectUnsafeId(id: string, ctx: ManagementContext): Response | null {
   return null;
 }
 
+function decodePathSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
 function paginatedEnvelope<T>(page: { items: T[]; nextCursor?: string; hasMore: boolean }, key: string) {
   return {
     [key]: page.items,
@@ -249,7 +257,8 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
 
   const subjectMatch = url.pathname.match(/^\/api\/lab\/subjects\/([^/]+)$/);
   if (subjectMatch) {
-    const subjectId = decodeURIComponent(subjectMatch[1]!);
+    const subjectId = decodePathSegment(subjectMatch[1]!);
+    if (subjectId === null) return errorResponse("not_found", "unknown resource", 404, ctx);
     const unsafe = rejectUnsafeId(subjectId, ctx);
     if (unsafe) return unsafe;
     try {
@@ -322,7 +331,8 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
 
   const eventMatch = url.pathname.match(/^\/api\/lab\/events\/([^/]+)$/);
   if (eventMatch) {
-    const eventId = decodeURIComponent(eventMatch[1]!);
+    const eventId = decodePathSegment(eventMatch[1]!);
+    if (eventId === null) return errorResponse("not_found", "unknown resource", 404, ctx);
     const unsafe = rejectUnsafeId(eventId, ctx);
     if (unsafe) return unsafe;
     try {
@@ -359,7 +369,8 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
 
   const artifactMatch = url.pathname.match(/^\/api\/lab\/artifacts\/([^/]+)$/);
   if (artifactMatch) {
-    const digest = decodeURIComponent(artifactMatch[1]!);
+    const digest = decodePathSegment(artifactMatch[1]!);
+    if (digest === null) return errorResponse("not_found", "unknown resource", 404, ctx);
     const unsafe = rejectUnsafeId(digest, ctx);
     if (unsafe) return unsafe;
     try {
