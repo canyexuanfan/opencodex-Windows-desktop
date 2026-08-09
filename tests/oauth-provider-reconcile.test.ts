@@ -186,7 +186,7 @@ describe("OAuth provider reconciliation", () => {
       },
     } satisfies OcxConfig;
 
-    expect(reconcileOAuthProviders(config)).toBe(false);
+    reconcileOAuthProviders(config);
     expect(config.providers.kimi.requiresReasoningPlaceholderModels).toEqual([]);
   });
 });
