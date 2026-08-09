@@ -365,15 +365,17 @@ describe("unauthenticated loopback listener", () => {
     let newerTimersClearedOnOwnStop = false;
     try {
       const older = startServer(0);
-      const newerStart = started.length;
+      const sharedTimers = [...started];
+      expect(sharedTimers.length).toBeGreaterThanOrEqual(3);
       const newer = startServer(0);
-      const newerTimers = started.slice(newerStart);
-      expect(newerTimers.length).toBeGreaterThanOrEqual(2);
+      // Singleton loops are process-scoped: the second live server acquires the
+      // same lease instead of replacing the watchdog and sweeper intervals.
+      expect(started).toEqual(sharedTimers);
 
       await older.stop(true);
-      newerTimersSurvivedOlderStop = newerTimers.every(timer => !cleared.has(timer));
+      newerTimersSurvivedOlderStop = sharedTimers.every(timer => !cleared.has(timer));
       await newer.stop(true);
-      newerTimersClearedOnOwnStop = newerTimers.every(timer => cleared.has(timer));
+      newerTimersClearedOnOwnStop = sharedTimers.every(timer => cleared.has(timer));
     } finally {
       for (const timer of started) nativeClearInterval(timer);
       Object.defineProperty(globalThis, "setInterval", {

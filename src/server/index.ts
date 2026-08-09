@@ -25,12 +25,10 @@ import { getCodexHome } from "../codex/paths";
 import { shouldSyncCodexOnStart } from "../codex/desired-state";
 import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
-import { startMemoryWatchdog } from "./memory-watchdog";
 import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
-import { startStateStoreSweeper } from "../lib/state-store-sweeper";
 import {
   configureAppOwnedMemoryBudget,
   enforceAppOwnedMemoryBudget,
@@ -41,13 +39,7 @@ import {
   registerDefaultAppOwnedMemoryStores,
   registerDefaultAppOwnedObservedBuffers,
 } from "../lib/app-owned-memory-stores";
-import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
-import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
-import {
-  scheduleStorageCleanupStartupRun,
-  startStorageCleanupScheduler,
-  stopStorageCleanupScheduler,
-} from "../storage/policy-scheduler";
+import { acquireServerBackgroundLifecycle } from "./background-lifecycle";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
@@ -192,8 +184,6 @@ import {
 } from "../lib/local-management-attestation";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
-
-let activeServerBackgroundLoopsOwner: symbol | null = null;
 
 const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -492,39 +482,18 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
   // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
   hydrateRequestLogsFromDisk();
-  // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
-  // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
-  const memoryWatchdog = startMemoryWatchdog();
   registerDefaultAppOwnedMemoryStores();
   registerDefaultAppOwnedObservedBuffers();
   registerAppOwnedMemorySweepFallback();
   configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
   enforceAppOwnedMemoryBudget();
   registerCodexCooldownRecoveryProbeWorker(config);
-  const stateStoreSweeper = startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
   // Heavy work runs in a Worker via the single-flight job controller.
   // Keep live config.policy in sync when background runs advance nextRun/lastRun.
   const applyPolicy = (policy: StorageCleanupPolicy) => {
     config.storageCleanupPolicy = policy;
-  };
-  setStorageCleanupPolicyLiveSink(applyPolicy);
-  setStorageCleanupPolicyJobLiveApply(applyPolicy);
-  startStorageCleanupScheduler();
-  const backgroundLoopsOwner = Symbol("server-background-loops");
-  activeServerBackgroundLoopsOwner = backgroundLoopsOwner;
-  let backgroundLoopsStopped = false;
-  const stopBackgroundLoops = () => {
-    if (backgroundLoopsStopped) return;
-    backgroundLoopsStopped = true;
-    if (activeServerBackgroundLoopsOwner !== backgroundLoopsOwner) return;
-    activeServerBackgroundLoopsOwner = null;
-    memoryWatchdog.stop();
-    stateStoreSweeper.stop();
-    stopStorageCleanupScheduler();
-    setStorageCleanupPolicyLiveSink(null);
-    setStorageCleanupPolicyJobLiveApply(null);
   };
 
   const listenPort = port ?? config.port ?? 10100;
@@ -652,7 +621,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     };
   let server: Server<WsData>;
   let loopbackServer: Server<WsData> | null = null;
+  let backgroundLifecycle: ReturnType<typeof acquireServerBackgroundLifecycle> | null = null;
   try {
+    backgroundLifecycle = acquireServerBackgroundLifecycle(applyPolicy);
     const serveOptions = {
       idleTimeout: 255,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
@@ -1547,7 +1518,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
     }
   } catch (error) {
-    stopBackgroundLoops();
+    backgroundLifecycle?.releaseAfterFailedStart();
     void nativeMainLifecycle.release();
     throw error;
   }
@@ -1568,7 +1539,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             : []),
         ],
         async () => {
-          stopBackgroundLoops();
+          await backgroundLifecycle.release();
           await releaseNativeMainStartupLifecycle(server);
         },
       );
@@ -1614,7 +1585,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   }
 
   // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
-  scheduleStorageCleanupStartupRun();
+  backgroundLifecycle.scheduleStartupRun();
 
   return server;
 }
