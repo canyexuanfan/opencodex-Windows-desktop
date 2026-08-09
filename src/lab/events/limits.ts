@@ -31,6 +31,9 @@ const FORBIDDEN_EXACT_KEYS = new Set([
   "rawBytes",
 ]);
 
+const RAW_POSIX_PATH_RE =
+  /(?:^|[^A-Za-z0-9._~/])\/(?:(?=$|[^A-Za-z0-9._~/])|(?!\/)(?![ \t\r\n])(?:\/|[^/\0\r\n]+)+\/?(?=$|[^A-Za-z0-9._~/]))/u;
+
 function fieldPath(base: string, key: string | number): string {
   return base ? `${base}.${String(key)}` : String(key);
 }
@@ -77,7 +80,7 @@ export function enforceEventStructureLimits(
     }
     if (
       /^[A-Za-z]:\\/.test(value) ||
-      /(?:^|[\s"'([])\/(?:home|Users|tmp|var|etc|root|mnt)\//.test(value) ||
+      RAW_POSIX_PATH_RE.test(value) ||
       value.includes("\\Users\\")
     ) {
       throw new LabValidationError("raw_path", `${path} contains raw filesystem path`);

@@ -69,6 +69,7 @@ function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
   const bytes = new TextEncoder().encode(body);
   const parent = dirname(ledgerPath);
   const tmpPath = join(parent, `.purge-${process.pid}-${Date.now()}.jsonl.tmp`);
+  let renamed = false;
   try {
     const fd = openSync(tmpPath, "wx", 0o600);
     try {
@@ -78,21 +79,35 @@ function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
       closeSync(fd);
     }
     renameSync(tmpPath, ledgerPath);
-    if (process.platform !== "win32") {
+    renamed = true;
+  } catch (err) {
+    if (!renamed) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // Preserve the original failure.
+      }
+    }
+    throw err;
+  }
+
+  if (process.platform !== "win32") {
+    try {
       const dirFd = openSync(parent, "r");
       try {
         fsyncSync(dirFd);
       } finally {
         closeSync(dirFd);
       }
+    } catch (err) {
+      // The rename is already committed and visible. Report durability failure
+      // without pretending the ledger action can be rolled back.
+      throw new PurgeError(
+        "ledger_durability_failed",
+        `ledger rewrite committed but directory fsync failed: ${err instanceof Error ? err.message : String(err)}`,
+        ["ledger"],
+      );
     }
-  } catch (err) {
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // Preserve the original failure. The temp file may already have been renamed.
-    }
-    throw err;
   }
 }
 
@@ -136,7 +151,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   const paths = ensureLabDirs(req.configDir);
   const targetEventIds = [...(req.targetEventIds ?? [])].sort();
   const targetArtifactDigests = [...(req.targetArtifactDigests ?? [])].sort();
-  const purgeActions = [...(req.purgeActions ?? ["ledger", "sqlite", "artifact", "scratch"])].sort();
+  const purgeActions = [...(req.purgeActions ?? PURGE_ACTIONS)].sort();
   const explicitSensitive = new Set(targetArtifactDigests);
 
   const replay = replayLabLedger(paths.ledgerPath);

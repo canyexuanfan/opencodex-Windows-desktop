@@ -21,7 +21,7 @@ independent review, blockers, and whether a later phase is authorized.
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
-| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (phase-2 review fixes in progress) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) IN PROGRESS |
 | CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
@@ -99,6 +99,9 @@ Independent CL-00 acceptance review is frozen at
 
 - **Branch:** `feat/cl-02-evidence-ledger`
 - **Starting/base SHA:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` (CL-01 merge via #1320)
+- **Merged source head:** `1eed4ffbc9772c64f4f22e37869ccb0b9efa90e1`
+- **Merged to `dev`:** `025c37916225dd685d9217e5b40190600f06d278` via upstream [#1333](https://github.com/lidge-jun/opencodex/pull/1333).
+- **Accepted head:** not recorded. #1333 was merged before an independent-acceptance state was observed in this programme log.
 - **Scope:** append-only JSONL evidence ledger with an explicit sensitive-purge
   exception: when the `ledger` purge action is requested, targeted evidence is
   physically removed by atomic ledger rewrite and a `purge_tombstone` remains as
@@ -120,27 +123,25 @@ sensitive purge with shared-artifact retention, recursive event admission
 ceilings, and unusable-evidence exclusion from projection are implemented.
 Claims cannot produce `PROBED`/`VERIFIED`.
 
-### CL-02 validation status (2026-08-09 phase-2 review fixes)
+### CL-02 validation and post-merge hardening status (2026-08-09)
 
 - **Prior accepted review-fix head:** `cf626d14c823413fbcd6ac2625d1da16bbac714e`
-- **Phase-2 scope:** eleven independent-review blockers (artifact dirfd I/O,
-  purge scratch/export + explicit sensitive artifacts, streaming JSONL replay,
-  zero-applicable UNKNOWN, `newest-required-observation-v1`, multi-surface
-  applicability, historical manifest no-substitution, closed event admission,
-  corrupt superseding claims, ArtifactStore lifecycle, frozen behaviour
-  fingerprint).
-- **Previous local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`,
-  `tests/lab-evidence-ledger.test.ts` (41/41), `tests/lab-conformance-harness.test.ts`
-  (17/17), `tests/repo-hygiene.test.ts` (11/11), `git diff --check` green on
-  Windows host before the current CodeRabbit remediation pass.
-- **Current CodeRabbit remediation:** committed on draft PR #1333; current CI and
-  review reconciliation are required before this head may be recorded as accepted.
-- **Independent acceptance:** not yet — draft PR #1333 remains open for review.
+- **Final #1333 source head:** `1eed4ffbc9772c64f4f22e37869ccb0b9efa90e1`
+- **Merge commit:** `025c37916225dd685d9217e5b40190600f06d278`
+- A final CodeRabbit review batch arrived immediately before the #1333 merge and
+  identified additional hardening work in ledger replay, artifact publication,
+  sensitive purge, event privacy admission, contract-artifact error
+  classification, conformance execution timestamps, and regression coverage.
+- **Post-merge hardening branch:** `fix/cl-02-post-merge-hardening`
+- **Post-merge hardening PR:** [#1343](https://github.com/lidge-jun/opencodex/pull/1343), based exactly on merge commit `025c37916225dd685d9217e5b40190600f06d278`.
+- The follow-up preserves frozen CL-00 semantics and does not add CL-03 work.
+- Current CI/review reconciliation for #1343 must complete before the hardening
+  follow-up is considered closed.
 - **CL-03:** not started.
 
 ## Authorization
 
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
-- CL-02: **IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED** on `feat/cl-02-evidence-ledger` (draft #1333).
-- CL-03: **NOT STARTED**.
+- CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening is tracked in #1343.
+- CL-03: **NOT STARTED** pending completion/reconciliation of the CL-02 post-merge hardening follow-up.

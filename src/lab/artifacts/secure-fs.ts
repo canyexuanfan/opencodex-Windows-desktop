@@ -271,7 +271,12 @@ function isMissingArtifactError(err: unknown): boolean {
   return isRawMissingError(err) || (err instanceof ArtifactFsError && err.code === "artifact_missing");
 }
 
-function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): void {
+/**
+ * Returns true when a clean regular digest target appeared after the caller's
+ * missing read. The final readback still verifies byte count and digest, so a
+ * concurrent or hostile wrong-content regular file fails closed.
+ */
+function artifactTargetAlreadyPublished(dir: TrustedArtifactDir, name: string): boolean {
   revalidateDir(dir);
   assertRelativeName(name);
   try {
@@ -280,9 +285,9 @@ function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): v
       harnessFailure("artifact target is a symbolic link", "artifact_unsafe_target");
     }
     assertRegularFileStats(stats, "artifact create target");
-    harnessFailure("artifact target exists but is not reusable", "artifact_unsafe_target");
+    return true;
   } catch (err) {
-    if (isRawMissingError(err)) return;
+    if (isRawMissingError(err)) return false;
     if (err instanceof ArtifactFsError) throw err;
     harnessFailure(
       `artifact create target check failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -402,9 +407,10 @@ export function putArtifactBytes(
     if (!isMissingArtifactError(err)) throw err;
   }
 
-  assertArtifactTargetCreatable(dir, digestFileName(digest));
-  const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
-  writeTempArtifact(dir, tmpName, bytes, digest, artifactBytesDigest);
+  if (!artifactTargetAlreadyPublished(dir, digestFileName(digest))) {
+    const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
+    writeTempArtifact(dir, tmpName, bytes, digest, artifactBytesDigest);
+  }
   return readArtifactBytes(dir, digest, bytes.byteLength);
 }
 
@@ -429,9 +435,10 @@ export function putNamedDigestBytes(
     if (!isMissingArtifactError(err)) throw err;
   }
 
-  assertArtifactTargetCreatable(dir, digestFileName(digest));
-  const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
-  writeTempArtifact(dir, tmpName, bytes, digest, contentDigest);
+  if (!artifactTargetAlreadyPublished(dir, digestFileName(digest))) {
+    const tmpName = `.tmp-${digest}-${process.pid}-${Date.now()}.partial`;
+    writeTempArtifact(dir, tmpName, bytes, digest, contentDigest);
+  }
   return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
 }
 

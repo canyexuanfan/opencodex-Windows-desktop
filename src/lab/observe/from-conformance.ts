@@ -33,15 +33,10 @@ import { resolveProtocolExecutionContext } from "../conformance/executor";
 
 const COMPAT_VERSION = "protocol-v1";
 
-type TimedScenarioRunResult = ScenarioRunResult & {
-  startedAt?: number;
-  completedAt?: number;
-};
-
 export interface PersistConformanceOptions {
   configDir?: string;
   recordedAt?: number;
-  /** Actual execution timestamps from the CL-01 runner; never fabricated. */
+  /** Optional explicit override for the runner-provided execution timestamps. */
   startedAt?: number;
   completedAt?: number;
   producerVersion?: string;
@@ -154,7 +149,7 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
       return "fail";
     default: {
       const _never: never = result.classification;
-      return _never;
+      throw new Error(`unmapped failure classification: ${String(_never)}`);
     }
   }
 }
@@ -163,16 +158,15 @@ function requireExecutionTimes(
   result: ScenarioRunResult,
   opts: PersistConformanceOptions,
 ): { startedAt: number; completedAt: number } {
-  const timed = result as TimedScenarioRunResult;
-  const startedAt = opts.startedAt ?? timed.startedAt;
-  const completedAt = opts.completedAt ?? timed.completedAt;
+  const startedAt = opts.startedAt ?? result.startedAt;
+  const completedAt = opts.completedAt ?? result.completedAt;
   if (!Number.isInteger(startedAt) || !Number.isInteger(completedAt)) {
     throw new Error("real startedAt/completedAt are required for persisted conformance evidence");
   }
-  if (startedAt! < 0 || completedAt! < startedAt!) {
+  if (startedAt < 0 || completedAt < startedAt) {
     throw new Error("invalid persisted conformance execution timestamps");
   }
-  return { startedAt: startedAt!, completedAt: completedAt! };
+  return { startedAt, completedAt };
 }
 
 /**

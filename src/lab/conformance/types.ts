@@ -150,6 +150,8 @@ export interface ProtocolExecutionContextV1 {
 export interface ScenarioRunResult {
   scenarioId: string;
   suite: string;
+  startedAt: number;
+  completedAt: number;
   passed: boolean;
   classification: FailureClassification;
   secondaryCode?: string;

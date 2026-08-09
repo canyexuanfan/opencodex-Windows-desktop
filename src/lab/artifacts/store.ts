@@ -62,10 +62,21 @@ function normalizeReadOptions(value?: number | ArtifactReadOptions): ArtifactRea
   return typeof value === "number" ? { expectedByteCount: value } : value ?? {};
 }
 
+function parseContractJson(bytes: Uint8Array): unknown {
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+}
+
 function jsonDigest(
   digest: (value: Record<string, unknown>) => string,
 ): (bytes: Uint8Array) => string {
-  return (bytes) => digest(JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+  return (bytes) => {
+    try {
+      return digest(parseContractJson(bytes) as Record<string, unknown>);
+    } catch (err) {
+      if (err instanceof ArtifactFsError) throw err;
+      throw new ArtifactFsError("artifact_mismatch", "artifact content is not valid contract JSON");
+    }
+  };
 }
 
 function digestForArtifactClass(artifactClass: ArtifactClass): (bytes: Uint8Array) => string {
@@ -78,8 +89,13 @@ function digestForArtifactClass(artifactClass: ArtifactClass): (bytes: Uint8Arra
       return jsonDigest(suiteManifestDigest);
     case "claim_source_manifest":
       return (bytes) => {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes));
-        return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
+        try {
+          const parsed = parseContractJson(bytes);
+          return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
+        } catch (err) {
+          if (err instanceof ArtifactFsError) throw err;
+          throw new ArtifactFsError("artifact_mismatch", "claim-source artifact failed validation");
+        }
       };
     default:
       return artifactBytesDigest;
@@ -154,7 +170,16 @@ export function createArtifactStore(artifactsDir: string): ArtifactStore {
       let stored;
       if (isContractClass(input.artifactClass)) {
         const contractClass = input.artifactClass;
-        const computedDigest = computeContractDigest(contractClass, bytes, redacted);
+        let computedDigest: string;
+        try {
+          computedDigest = computeContractDigest(contractClass, bytes, redacted);
+        } catch (err) {
+          if (err instanceof ArtifactFsError) throw err;
+          throw new ArtifactFsError(
+            "artifact_mismatch",
+            err instanceof Error ? err.message : "contract artifact failed validation",
+          );
+        }
         if (input.expectedDigest !== undefined && computedDigest !== input.expectedDigest) {
           throw new ArtifactFsError("artifact_mismatch", "contract artifact digest mismatch");
         }
@@ -211,16 +236,16 @@ function computeContractDigest(
       return fixtureDigest(bytes);
     case "scenario_manifest":
       return scenarioManifestDigest(
-        typeof redacted === "object" && redacted ? (redacted as Record<string, unknown>) : JSON.parse(new TextDecoder().decode(bytes)),
+        typeof redacted === "object" && redacted ? (redacted as Record<string, unknown>) : parseContractJson(bytes) as Record<string, unknown>,
       );
     case "suite_manifest":
       return suiteManifestDigest(
-        typeof redacted === "object" && redacted ? (redacted as Record<string, unknown>) : JSON.parse(new TextDecoder().decode(bytes)),
+        typeof redacted === "object" && redacted ? (redacted as Record<string, unknown>) : parseContractJson(bytes) as Record<string, unknown>,
       );
     case "claim_source_manifest": {
       const parsed = typeof redacted === "object" && redacted
         ? redacted
-        : JSON.parse(new TextDecoder().decode(bytes));
+        : parseContractJson(bytes);
       return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
     }
     default: {
@@ -266,7 +291,7 @@ export function loadClaimSourceManifest(
   if (!isSha256Hex(digest)) return { ok: false, manifest: null, corruption: "invalid digest" };
   try {
     const bytes = store.get(digest, { artifactClass: "claim_source_manifest" });
-    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    const parsed = parseContractJson(bytes);
     const { manifest, digest: recomputed } = validateClaimSourceManifest(parsed);
     if (recomputed !== digest) return { ok: false, manifest, corruption: "claim-source digest mismatch" };
     if (manifest.subjectId !== expected.subjectId) return { ok: false, manifest, corruption: "claim-source subjectId mismatch" };

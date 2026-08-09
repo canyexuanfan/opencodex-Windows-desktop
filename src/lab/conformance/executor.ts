@@ -676,6 +676,15 @@ export async function executeScenario(caseRecord: CaseRecord): Promise<Normalize
 export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunResult> {
   const diagnostics: string[] = [];
   const executionContext = resolveProtocolExecutionContext(caseRecord);
+  const startedAt = Date.now();
+  const complete = (
+    result: Omit<ScenarioRunResult, "startedAt" | "completedAt">,
+  ): ScenarioRunResult => ({
+    ...result,
+    startedAt,
+    completedAt: Math.max(startedAt, Date.now()),
+  });
+
   try {
     const observation = await executeScenario(caseRecord);
     const assertionResults = evaluateAssertions(caseRecord.assertions, observation);
@@ -688,7 +697,7 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
       }
       const controlPassed = listed.every((id) => assertionResults.find((r) => r.id === id)?.passed === true);
       const expectedFailureMatched = controlPassed && requiredFailures.length === 0;
-      return {
+      return complete({
         scenarioId: caseRecord.id,
         suite: caseRecord.suite,
         passed: expectedFailureMatched,
@@ -702,11 +711,11 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
         expectedFailureMatched,
         diagnostics,
         executionContext,
-      };
+      });
     }
 
     const passed = requiredFailures.length === 0;
-    return {
+    return complete({
       scenarioId: caseRecord.id,
       suite: caseRecord.suite,
       passed,
@@ -715,10 +724,10 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
       assertionResults,
       diagnostics,
       executionContext,
-    };
+    });
   } catch (error) {
     diagnostics.push(String(error));
-    return {
+    return complete({
       scenarioId: caseRecord.id,
       suite: caseRecord.suite,
       passed: false,
@@ -727,6 +736,6 @@ export async function runScenario(caseRecord: CaseRecord): Promise<ScenarioRunRe
       assertionResults: [],
       diagnostics,
       executionContext,
-    };
+    });
   }
 }
