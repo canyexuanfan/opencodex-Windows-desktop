@@ -49,6 +49,10 @@ import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { isLocalAttestationSecret } from "./lib/local-management-attestation";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { redactSecretString } from "./lib/redact";
+import {
+  resolveTrustedWindowsPowerShellExe,
+  resolveTrustedWindowsSystemDirectory,
+} from "./lib/windows-elevation";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import {
   isWirePinnedModel,
@@ -3070,14 +3074,51 @@ export function verifyPidIdentity(candidatePid: number): number | null {
   return isLikelyOcxStartProcess(candidatePid) ? candidatePid : null;
 }
 
+type ProcessCommandLineExec = (
+  executable: string,
+  args: string[],
+  options: {
+    encoding: BufferEncoding;
+    stdio: ["ignore", "pipe", "ignore"];
+    timeout: number;
+    windowsHide: boolean;
+  },
+) => string;
+
+const defaultProcessCommandLineExec: ProcessCommandLineExec = (executable, args, options) =>
+  execFileSync(executable, args, options);
+let processCommandLineExec = defaultProcessCommandLineExec;
+let processCommandLinePlatformForTests: NodeJS.Platform | null = null;
+
+/** Test-only seam for verifying the exact system executable selected by pid identity probes. */
+export function setProcessCommandLineExecForTests(next: ProcessCommandLineExec | null): void {
+  processCommandLineExec = next ?? defaultProcessCommandLineExec;
+}
+
+/** Test-only seam so cross-platform tests do not mutate process.platform. */
+export function setProcessCommandLinePlatformForTests(next: NodeJS.Platform | null): void {
+  processCommandLinePlatformForTests = next;
+}
+
 function readProcessCommandLine(pid: number): string | undefined {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  const platform = processCommandLinePlatformForTests ?? process.platform;
   try {
-    if (process.platform === "win32") {
+    if (platform === "linux") {
+      try {
+        const output = readFileSync(`/proc/${pid}/cmdline`, "utf-8");
+        const value = output.replace(/\0/g, " ").trim();
+        if (value) return value;
+      } catch {
+        /* procfs unavailable — use the fixed ps fallback below */
+      }
+    }
+    if (platform === "win32") {
       // Prefer WMIC over PowerShell: much faster cold start, and windowsHide avoids console flash.
       // Fall back to PowerShell when WMIC is absent (newer Windows images).
-      const wmic = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\wbem\\WMIC.exe`;
+      const wmic = join(resolveTrustedWindowsSystemDirectory(), "wbem", "WMIC.exe");
       try {
-        const output = execFileSync(wmic, [
+        const output = processCommandLineExec(wmic, [
           "process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/VALUE",
         ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000, windowsHide: true });
         const match = /^CommandLine=(.*)$/m.exec(output.replace(/\r/g, ""));
@@ -3086,7 +3127,7 @@ function readProcessCommandLine(pid: number): string | undefined {
       } catch {
         /* WMIC missing or failed — fall through */
       }
-      const output = execFileSync("powershell.exe", [
+      const output = processCommandLineExec(resolveTrustedWindowsPowerShellExe(), [
         "-NoProfile",
         "-NoLogo",
         "-NonInteractive",
@@ -3097,13 +3138,21 @@ function readProcessCommandLine(pid: number): string | undefined {
       ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000, windowsHide: true });
       return output.trim() || undefined;
     }
-    const output = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1000,
-      windowsHide: true,
-    });
-    return output.trim() || undefined;
+    for (const ps of ["/bin/ps", "/usr/bin/ps"]) {
+      try {
+        const output = processCommandLineExec(ps, ["-p", String(pid), "-o", "command="], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 1000,
+          windowsHide: true,
+        });
+        const value = output.trim();
+        if (value) return value;
+      } catch {
+        /* try the other fixed system path */
+      }
+    }
+    return undefined;
   } catch {
     return undefined;
   }

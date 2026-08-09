@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import {
   CODEX_SHIM_AUTO_RESTORE_ENV,
   codexAutoStartEnabled,
@@ -18,15 +18,21 @@ import {
   positiveIntegerConfigError,
   positiveIntegerRecordConfigError,
   readConfigDiagnostics,
+  readPid,
   readRuntimePort,
   removePid,
   removeRuntimePort,
+  ocxStartProcessCacheSizeForTests,
+  setOcxStartProcessCacheForTests,
+  setProcessCommandLineExecForTests,
+  setProcessCommandLinePlatformForTests,
   validateConfigCandidate,
   writeRuntimePort,
   writePid,
 } from "../src/config";
 
 import * as windowsAcl from "../src/lib/windows-secret-acl";
+import { setTrustedWindowsSystemDirectoryResolverForTests } from "../src/lib/windows-elevation";
 import { AtomicWriteResidualTempError, atomicWriteFile, atomicWriteFileAsync, hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
 let testDir = "";
 
@@ -1828,6 +1834,88 @@ describe("opencodex config defaults", () => {
     writePid(process.pid);
 
     expect(readFileSync(getPidPath(), "utf-8")).toBe(String(process.pid));
+  });
+
+  test.if(process.platform !== "win32")("pid validation does not execute ps from PATH", () => {
+    const attackerDir = join(testDir, "attacker-bin");
+    const markerPath = join(testDir, "executed");
+    const fakePs = join(attackerDir, "ps");
+    const previousPath = process.env.PATH;
+    mkdirSync(attackerDir);
+    writeFileSync(fakePs, `#!/bin/sh\ntouch '${markerPath}'\necho 'ocx start'\n`, { mode: 0o755 });
+
+    setOcxStartProcessCacheForTests([]);
+    try {
+      process.env.PATH = `${attackerDir}${delimiter}${previousPath ?? ""}`;
+      writePid(process.pid);
+
+      expect(readPid()).toBeNull();
+      expect(existsSync(markerPath)).toBe(false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      setOcxStartProcessCacheForTests([]);
+    }
+
+    expect(process.env.PATH).toBe(previousPath);
+    expect(ocxStartProcessCacheSizeForTests()).toBe(0);
+  });
+
+  test("pid validation selects only trusted Windows process probes", () => {
+    const previousSystemRoot = process.env.SystemRoot;
+    const previousWindir = process.env.WINDIR;
+    const trustedSystem32 = join(testDir, "trusted", "System32");
+    const trustedWmic = join(trustedSystem32, "wbem", "WMIC.exe");
+    const trustedPowerShell = join(
+      trustedSystem32,
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const attackerRoot = join(testDir, "attacker-windows");
+    const calls: string[] = [];
+
+    try {
+      mkdirSync(dirname(trustedPowerShell), { recursive: true });
+      writeFileSync(trustedPowerShell, "", { mode: 0o755 });
+      setProcessCommandLinePlatformForTests("win32");
+      setTrustedWindowsSystemDirectoryResolverForTests(() => trustedSystem32);
+      process.env.SystemRoot = attackerRoot;
+      process.env.WINDIR = attackerRoot;
+      writeFileSync(getPidPath(), String(process.pid), "utf-8");
+      setOcxStartProcessCacheForTests([]);
+
+      setProcessCommandLineExecForTests((executable) => {
+        calls.push(executable);
+        if (executable === trustedWmic) return "CommandLine=ocx start\r\n";
+        throw new Error(`unexpected process probe: ${executable}`);
+      });
+      expect(readPid()).toBe(process.pid);
+      expect(calls).toEqual([trustedWmic]);
+
+      calls.length = 0;
+      setOcxStartProcessCacheForTests([]);
+      setProcessCommandLineExecForTests((executable) => {
+        calls.push(executable);
+        if (executable === trustedWmic) throw new Error("WMIC unavailable");
+        if (executable === trustedPowerShell) return "ocx start\n";
+        throw new Error(`unexpected process probe: ${executable}`);
+      });
+      expect(readPid()).toBe(process.pid);
+      expect(calls).toEqual([trustedWmic, trustedPowerShell]);
+      expect(calls.every(executable => !executable.startsWith(attackerRoot))).toBe(true);
+    } finally {
+      setProcessCommandLineExecForTests(null);
+      setProcessCommandLinePlatformForTests(null);
+      setTrustedWindowsSystemDirectoryResolverForTests(null);
+      setOcxStartProcessCacheForTests([]);
+      if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = previousSystemRoot;
+      if (previousWindir === undefined) delete process.env.WINDIR;
+      else process.env.WINDIR = previousWindir;
+    }
+
+    expect(ocxStartProcessCacheSizeForTests()).toBe(0);
   });
 
   test("removes pid file only when the expected pid still matches", () => {
