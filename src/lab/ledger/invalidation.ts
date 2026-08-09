@@ -16,6 +16,8 @@ export interface InvalidationIndex {
   corruptions: LedgerCorruption[];
 }
 
+type EventPosition = { kind: LabEvent["eventKind"]; index: number };
+
 /**
  * Apply purge tombstones before ordinary invalidations.
  * Invalidation target lists are atomic: any bad target rejects the whole event.
@@ -27,10 +29,12 @@ export function buildInvalidationIndex(events: LabEvent[]): InvalidationIndex {
   const corruptions: LedgerCorruption[] = [];
 
   const validEvidenceIds = new Map<string, { kind: "observation" | "claim_snapshot"; index: number }>();
+  const allEventIds = new Map<string, EventPosition>();
 
-  // First pass: record evidence positions; apply purges as encountered.
+  // First pass: record event positions and evidence positions; apply purges as encountered.
   for (let i = 0; i < events.length; i++) {
     const event = events[i]!;
+    allEventIds.set(event.eventId, { kind: event.eventKind, index: i });
     if (event.eventKind === "observation" || event.eventKind === "claim_snapshot") {
       validEvidenceIds.set(event.eventId, { kind: event.eventKind, index: i });
       continue;
@@ -45,7 +49,7 @@ export function buildInvalidationIndex(events: LabEvent[]): InvalidationIndex {
     const event = events[i]!;
     if (event.eventKind !== "invalidation") continue;
     try {
-      validateInvalidationTargets(event, events, i, validEvidenceIds, purgedEventIds);
+      validateInvalidationTargets(event, i, validEvidenceIds, allEventIds);
       for (const target of event.targetEventIds) {
         const list = invalidatedBy.get(target) ?? [];
         list.push(event.eventId);
@@ -74,10 +78,9 @@ function applyPurge(
 
 function validateInvalidationTargets(
   event: InvalidationEvent,
-  all: LabEvent[],
   index: number,
   validEvidenceIds: Map<string, { kind: "observation" | "claim_snapshot"; index: number }>,
-  purgedEventIds: Set<string>,
+  allEventIds: Map<string, EventPosition>,
 ): void {
   for (const target of event.targetEventIds) {
     if (target === event.eventId) {
@@ -85,24 +88,21 @@ function validateInvalidationTargets(
     }
     const meta = validEvidenceIds.get(target);
     if (!meta) {
-      // Could be unknown, or an invalidation/purge id
-      const earlier = all.slice(0, index).find((e) => e.eventId === target);
-      if (!earlier) {
-        throw new LabValidationError("unknown_target", `unknown target ${target}`);
-      }
-      if (earlier.eventKind === "invalidation" || earlier.eventKind === "purge_tombstone") {
-        throw new LabValidationError("bad_target_kind", `cannot invalidate ${earlier.eventKind}`);
+      const other = allEventIds.get(target);
+      if (
+        other &&
+        other.index < index &&
+        (other.kind === "invalidation" || other.kind === "purge_tombstone")
+      ) {
+        throw new LabValidationError("bad_target_kind", `cannot invalidate ${other.kind}`);
       }
       throw new LabValidationError("unknown_target", `unknown target ${target}`);
     }
     if (meta.index >= index) {
       throw new LabValidationError("future_target", `target ${target} is not earlier`);
     }
-    // Purged targets: sensitive line may no longer exist — invalidation still must not
-    // name purge/invalidation kinds; naming a purged observation/claim id is allowed
-    // only if it appeared earlier as valid evidence before purge. We keep meta from
-    // first pass so previously-seen evidence ids remain addressable.
-    void purgedEventIds;
+    // Purged targets may no longer have a ledger line. A previously valid evidence
+    // ID remains addressable because validEvidenceIds records its original position.
   }
 }
 
