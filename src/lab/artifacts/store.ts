@@ -170,7 +170,16 @@ export function createArtifactStore(artifactsDir: string): ArtifactStore {
       let stored;
       if (isContractClass(input.artifactClass)) {
         const contractClass = input.artifactClass;
-        const computedDigest = computeContractDigest(contractClass, bytes, redacted);
+        let computedDigest: string;
+        try {
+          computedDigest = computeContractDigest(contractClass, bytes, redacted);
+        } catch (err) {
+          if (err instanceof ArtifactFsError) throw err;
+          throw new ArtifactFsError(
+            "artifact_mismatch",
+            err instanceof Error ? err.message : "contract artifact failed validation",
+          );
+        }
         if (input.expectedDigest !== undefined && computedDigest !== input.expectedDigest) {
           throw new ArtifactFsError("artifact_mismatch", "contract artifact digest mismatch");
         }

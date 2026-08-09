@@ -28,12 +28,18 @@ function protocolSubject(seed = "projection"): ProtocolSubjectV1 {
 }
 
 function observation(overrides: Partial<ObservationEvent> = {}): ObservationEvent {
-  const subject = overrides.subject?.subjectKind === "protocol"
-    ? overrides.subject
+  const {
+    subject: subjectOverride,
+    subjectId: _ignoredSubjectId,
+    ...eventOverrides
+  } = overrides;
+  void _ignoredSubjectId;
+  const subject = subjectOverride?.subjectKind === "protocol"
+    ? subjectOverride
     : protocolSubject(overrides.scenarioId ?? "projection");
   const subjectId = subjectIdForSubject(subject);
-  const scenarioManifestDigest = overrides.scenarioManifestDigest ?? hash(`scenario:${overrides.scenarioId ?? "required"}`);
-  const suiteManifestDigest = overrides.suiteManifestDigest ?? hash("suite:projection");
+  const scenarioManifestDigest = eventOverrides.scenarioManifestDigest ?? hash(`scenario:${eventOverrides.scenarioId ?? "required"}`);
+  const suiteManifestDigest = eventOverrides.suiteManifestDigest ?? hash("suite:projection");
   const fixtureDigest = hash("fixture:projection");
 
   return assignEventId({
@@ -50,8 +56,6 @@ function observation(overrides: Partial<ObservationEvent> = {}): ObservationEven
     suiteVersion: "1",
     suiteManifestDigest,
     fixtureDigests: [fixtureDigest],
-    subject,
-    subjectId,
     startedAt: 9_900,
     completedAt: 10_000,
     executionMode: "fixture" as const,
@@ -95,7 +99,7 @@ function observation(overrides: Partial<ObservationEvent> = {}): ObservationEven
         artifactClass: "fixture" as const,
       },
     ],
-    ...overrides,
+    ...eventOverrides,
     subject,
     subjectId,
   }) as ObservationEvent;

@@ -184,6 +184,9 @@ test("event privacy admission rejects raw POSIX path bypass forms", () => {
     "config=/home/alice/work/repo",
     "cwd=/usr/local/bin",
     "cwd=/tmp",
+    "cwd=/tmp/",
+    "cwd=/home/@alice",
+    "cwd=/home/josé/work",
     "x-/home/alice",
   ]) {
     try {
@@ -212,6 +215,25 @@ test("invalid JSON contract artifacts classify as artifact_mismatch", () => {
     try {
       store.get(digest, { artifactClass: "suite_manifest" });
       throw new Error("expected artifact mismatch");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ArtifactFsError);
+      expect((err as ArtifactFsError).code).toBe("artifact_mismatch");
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("store.put converts malformed contract JSON to artifact_mismatch", () => {
+  const home = tempHome();
+  const store = createArtifactStore(join(home, "artifacts"));
+  try {
+    try {
+      store.put({
+        artifactClass: "suite_manifest",
+        payload: new TextEncoder().encode("{"),
+      });
+      throw new Error("expected store.put to reject malformed contract JSON");
     } catch (err) {
       expect(err).toBeInstanceOf(ArtifactFsError);
       expect((err as ArtifactFsError).code).toBe("artifact_mismatch");
