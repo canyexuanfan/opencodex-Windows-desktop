@@ -77,7 +77,7 @@ export function enforceEventStructureLimits(
     }
     if (
       /^[A-Za-z]:\\/.test(value) ||
-      /(?:^|[\s"'([])\/(?:home|Users|tmp|var|etc|root|mnt)\//.test(value) ||
+      /(?:^|[^A-Za-z0-9._~-])\/(?:home|Users|tmp|var|etc|root|mnt)\//.test(value) ||
       value.includes("\\Users\\")
     ) {
       throw new LabValidationError("raw_path", `${path} contains raw filesystem path`);
