@@ -20,10 +20,16 @@ independent review, blockers, and whether a later phase is authorized.
 | Phase | Branch | Starting/base SHA | Accepted head | PR | State |
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
-| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [draft Wibias #10](https://github.com/Wibias/opencodex/pull/10) | ACCEPTED (contract-corrected revalidation) |
+| CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (phase-2 review fixes in progress) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED |
+| CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
+
+CL-02 starts from the exact CL-01 merge commit on `dev`
+(`4bb249b756abd468c675d2d92fffe4da95ad3e2a` / upstream #1320). It does **not**
+base on the pre-merge CL-01 feature branch tip.
 
 ## CL-00 acceptance log
 
@@ -62,6 +68,7 @@ Independent CL-00 acceptance review is frozen at
 - **CL-00 merge base on `dev`:** `243c3f4905797aa11c62ba933bb03d6d721266fd`
 - **Post-rebase harness commit:** `cfe27b0dcb26a1bf0bb56f68f952e6e4f4d80fe9` (rebase-only)
 - **Correction head:** `574f1d5eb93c091494549ffc0e26ea7a4879c12c` (implementation); **tip:** `22d608c82d82e2746c0cef9cd761db19a8e465ee`
+- **Merged to `dev`:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` via upstream [#1320](https://github.com/lidge-jun/opencodex/pull/1320).
 
 ### Corrections applied
 
@@ -88,8 +95,52 @@ Independent CL-00 acceptance review is frozen at
 - None for CL-01 correction.
 - Full-suite green remains unavailable on this host for documented Windows/Bun reasons.
 
+## CL-02 implementation log
+
+- **Branch:** `feat/cl-02-evidence-ledger`
+- **Starting/base SHA:** `4bb249b756abd468c675d2d92fffe4da95ad3e2a` (CL-01 merge via #1320)
+- **Scope:** append-only JSONL evidence ledger with an explicit sensitive-purge
+  exception: when the `ledger` purge action is requested, targeted evidence is
+  physically removed by atomic ledger rewrite and a `purge_tombstone` remains as
+  the auditable record; SQLite is rebuilt from the rewritten ledger and retained
+  content-addressed artifacts. The phase also includes the content-addressed
+  artifact store, disposable/rebuildable SQLite projection, ClaimSourceManifestV1,
+  invalidation semantics, and the CL-01 → observation persistence seam.
+- **Explicitly out of scope:** CL-03 live probes, CL-04 CLI/API, CL-05 UI,
+  CL-06 profile fields, Fabric, shadow workflows.
+
+### Boundary note (verdict algorithm)
+
+CL-02 implements frozen `all-applicable-required-pass-v1` evaluation with
+subject-aware applicability (required scenarios whose manifest requirements
+match the exact protocol subject, excluding live-reserved cases in fixture
+mode). Positive `VERIFIED` requires a non-empty applicable required set and a
+current pass for every member. Descriptor/handle-bound artifact I/O, fail-closed
+sensitive purge with shared-artifact retention, recursive event admission
+ceilings, and unusable-evidence exclusion from projection are implemented.
+Claims cannot produce `PROBED`/`VERIFIED`.
+
+### CL-02 validation status (2026-08-09 phase-2 review fixes)
+
+- **Prior accepted review-fix head:** `cf626d14c823413fbcd6ac2625d1da16bbac714e`
+- **Phase-2 scope:** eleven independent-review blockers (artifact dirfd I/O,
+  purge scratch/export + explicit sensitive artifacts, streaming JSONL replay,
+  zero-applicable UNKNOWN, `newest-required-observation-v1`, multi-surface
+  applicability, historical manifest no-substitution, closed event admission,
+  corrupt superseding claims, ArtifactStore lifecycle, frozen behaviour
+  fingerprint).
+- **Previous local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`,
+  `tests/lab-evidence-ledger.test.ts` (41/41), `tests/lab-conformance-harness.test.ts`
+  (17/17), `tests/repo-hygiene.test.ts` (11/11), `git diff --check` green on
+  Windows host before the current CodeRabbit remediation pass.
+- **Current CodeRabbit remediation:** committed on draft PR #1333; current CI and
+  review reconciliation are required before this head may be recorded as accepted.
+- **Independent acceptance:** not yet — draft PR #1333 remains open for review.
+- **CL-03:** not started.
+
 ## Authorization
 
 - CL-00: **ACCEPTED** (merged #1286).
-- CL-01: **ACCEPTED (contract-corrected revalidation)** — ready for stack review against `dev`.
-- CL-02: **NOT STARTED / NOT AUTHORIZED**.
+- CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
+- CL-02: **IMPLEMENTATION COMPLETE — PHASE-2 REVIEW FIXES — NOT INDEPENDENTLY ACCEPTED** on `feat/cl-02-evidence-ledger` (draft #1333).
+- CL-03: **NOT STARTED**.
