@@ -1033,7 +1033,17 @@ async function fetchProviderModelsWithAuth(
     && prov.googleMode === "vertex"
     && (prov.models?.length ?? 0) === 0
     && Boolean(prov.defaultModel);
-  const configuredIds = seedVertexDefault && prov.defaultModel ? [prov.defaultModel] : (prov.models ?? []);
+  const listedConfiguredIds = seedVertexDefault && prov.defaultModel
+    ? [prov.defaultModel]
+    : [...(prov.models ?? [])];
+  // Combo targets may exist only under `combos.*.targets` (not in providers.*.models).
+  // Seed those ids here so the live-discovery retain loop can keep them (OCX-111).
+  const configuredIdSet = new Set(listedConfiguredIds);
+  for (const id of captured.retainConfiguredModelIds ?? []) configuredIdSet.add(id);
+  const configuredIds = [
+    ...listedConfiguredIds,
+    ...[...configuredIdSet].filter(id => !listedConfiguredIds.includes(id)),
+  ];
   const configured: CatalogModel[] = configuredIds.map(id => ({
     id,
     provider: name,

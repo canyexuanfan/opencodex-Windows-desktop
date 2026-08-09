@@ -1520,8 +1520,8 @@ describe("combo catalog capability intersection", () => {
 
   test("retains configured combo targets when authoritative live discovery omits them (OCX-111)", async () => {
     // Repro from #1308 / OCX-111: live /models returns a different roster than the
-    // configured combo targets. Before the retain path, those ids were dropped from
-    // the authoritative catalog and the combo was omitted as incomplete.
+    // configured combo targets. Combo-only targets (not listed in providers.*.models)
+    // must still be retained via provider hints so the failover combo catalogs.
     clearModelCache("openrouter");
     clearModelCache("opencode-go");
     clearModelCache("command-code");
@@ -1560,7 +1560,8 @@ describe("combo catalog capability intersection", () => {
             authMode: "key",
             apiKey: "sk-test",
             liveModels: true,
-            models: ["deepseek-v4-flash"],
+            // Combo-only target: listed in combos but not providers.*.models.
+            models: [],
             modelContextWindows: { "deepseek-v4-flash": 128_000 },
           },
           "command-code": {
