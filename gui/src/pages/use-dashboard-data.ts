@@ -46,6 +46,7 @@ import {
   readDashboardSectionFromHash,
   requireJson,
   sidecarModelOptions,
+  visionModelOptions,
   useModalDialog,
 } from "./dashboard-shared";
 
@@ -460,6 +461,10 @@ export function useDashboardData(apiBase: string) {
     }
     return opts;
   }, [models, sidecar]);
+  const visionModels = useMemo(
+    () => visionModelOptions(sidecar?.visionModels, models, sidecar?.vision?.model, sidecar?.vision?.backend),
+    [sidecar?.visionModels, models, sidecar?.vision],
+  );
 
   const saveSidecar = async (patch: SidecarPatch) => {
     if (!sidecar || sidecarSaving) return;
@@ -467,6 +472,7 @@ export function useDashboardData(apiBase: string) {
     const next = {
       webSearch: mergeSidecarSetting(sidecar.webSearch, patch.webSearch),
       vision: mergeSidecarSetting(sidecar.vision, patch.vision),
+      ...(sidecar.visionModels ? { visionModels: sidecar.visionModels } : {}),
     };
     setSidecarSaving(true);
     setSidecar(next);
@@ -477,11 +483,19 @@ export function useDashboardData(apiBase: string) {
         body: JSON.stringify(patch),
       });
       const data = await requireJson<SidecarData>(res, "save failed");
-      setSidecar({ webSearch: data.webSearch, vision: data.vision });
+      setSidecar({
+        webSearch: data.webSearch,
+        vision: data.vision,
+        ...(data.visionModels ? { visionModels: data.visionModels } : {}),
+      });
       const prev = readSessionListCache<CachedControls>(controlsCacheKey(apiBase)) ?? {};
       writeSessionListCache(controlsCacheKey(apiBase), {
         ...prev,
-        sidecar: { webSearch: data.webSearch, vision: data.vision },
+        sidecar: {
+          webSearch: data.webSearch,
+          vision: data.vision,
+          ...(data.visionModels ? { visionModels: data.visionModels } : {}),
+        },
       });
     } catch {
       setSidecar(previous);
@@ -745,7 +759,7 @@ export function useDashboardData(apiBase: string) {
     updateCheck, updateError, updateJob, reconnecting, error,
     effortCapHelpTriggerRef, updateTriggerRef, maHelpTriggerRef, shadowCallHelpTriggerRef,
     effortCapHelpDialogRef, updateDialogRef, maHelpDialogRef, shadowCallHelpDialogRef,
-    filteredGroups, sidecarModels,
+    filteredGroups, sidecarModels, visionModels,
     saveSidecar, saveShadowCall, switchMaMode, toggleCodexAutoStart, runSync, clearSyncFeedback,
     fetchUpdateCheck, closeUpdateDialog, openUpdateDialog, changeUpdateChannel, runUpdate,
   };
