@@ -187,7 +187,10 @@ function isNativeOpenAIChatTarget(provider: OcxProviderConfig): boolean {
 function toolResultTextForWire(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content;
   const text = content.filter((p) => p.type === "text").map((p) => (p as OcxTextContent).text).join("");
-  if (text) return text;
+  if (text) {
+    const untransportableImages = content.filter((p) => p.type === "image" && !p.imageUrl).length;
+    return `${text}${"[image]".repeat(untransportableImages)}`;
+  }
   return contentPartsToText(content);
 }
 
