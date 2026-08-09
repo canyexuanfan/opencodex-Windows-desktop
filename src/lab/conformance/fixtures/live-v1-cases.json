@@ -45,8 +45,7 @@
       "maxChildProcesses": 0,
       "maxArtifacts": 16,
       "perArtifactBytes": 262144,
-      "aggregateArtifactBytes": 1048576,
-      "maxArtifactBytes": 262144
+      "aggregateArtifactBytes": 1048576
     },
     "artifactPolicy": {
       "allowed": ["assertion_report", "sanitized_request_shape", "sanitized_response_shape", "normalized_event_trace", "sanitized_error"],
@@ -144,7 +143,7 @@
       "id": "vision-core.live.synthetic-ocr",
       "suite": "vision-core",
       "capability": "modalities.image.input",
-      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-chat"], "surfaces": ["responses-http"], "requiredClaims": ["image"], "requiredHarnessFeatures": ["synthetic_image", "live_transport"], "platforms": [], "routePreconditions": ["lab_run_approval"] },
+      "requirements": { "inboundProtocols": ["openai-responses"], "upstreamProtocols": ["openai-responses"], "surfaces": ["responses-http"], "requiredClaims": ["image"], "requiredHarnessFeatures": ["synthetic_image", "live_transport"], "platforms": [], "routePreconditions": ["lab_run_approval"] },
       "initiatingRequest": { "id": "vision-live-ocr-request", "role": "client_request", "mediaType": "application/json", "bytesUtf8": "{\"model\":\"fixture-model\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"OCR-NONCE-42\"},{\"type\":\"input_image\",\"image_url\":\"data:image/png;base64,iVBORw0KGgo=\",\"detail\":\"high\"}]}],\"stream\":false}", "digest": "8e498fc17b41928a751f65157a556da17e4cc4f2e728d15db498eac81b59fdc3" },
       "fixture": { "id": "vision-live-ocr-upstream", "role": "upstream_response", "mediaType": "application/json", "bytesUtf8": "{\"id\":\"resp_fixture\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_fixture\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"nonce\\\":\\\"OCR-NONCE-42\\\"}\"}]}]}", "digest": "297d031303467c16f23635fc7c3fc5ebd7075e157a51e0623b975e11ce6ffd05" },
       "assertions": [
