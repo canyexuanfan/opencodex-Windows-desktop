@@ -82,7 +82,8 @@ function isSourcesHeader(line: string): boolean {
   cursor += word[0].length;
 
   // Preserve `\s*\**\s*:?\s*\**\s*$`: at most two star runs, with the optional
-  // colon between them. This intentionally rejects three separated runs and a trailing colon.
+  // colon between them. Either run may be empty, so `Sources:*` is one trailing run; three
+  // separated runs and a colon after the second run remain invalid.
   skipWhitespace();
   skipStars();
   skipWhitespace();
