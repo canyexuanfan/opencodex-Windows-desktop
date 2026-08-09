@@ -34,6 +34,9 @@ export function expandSuiteManifest(
   }
   const defaults = authority.manifestDefaults;
   const capability = cases[0]!.capability;
+  if (cases.some((caseRecord) => caseRecord.capability !== capability)) {
+    throw new Error(`suite ${suiteId} declares mixed capabilities`);
+  }
   const scenarios: SuiteScenarioRefV1[] = cases
     .map((caseRecord) => suiteScenarioRef(caseRecord, authority))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -44,8 +47,8 @@ export function expandSuiteManifest(
     version: String(defaults.suiteVersion),
     evidenceLayer: defaults.evidenceLayer,
     capability,
-    assertionDslVersion: String(defaults.version),
-    evidenceSchemaVersion: String(defaults.version),
+    assertionDslVersion: authority.assertionDslVersion,
+    evidenceSchemaVersion: authority.evidenceSchemaVersion,
     freshness: defaults.freshness ?? { maxAgeMs: null },
     contradictionRule: "newest-required-observation-v1",
     scenarios,
