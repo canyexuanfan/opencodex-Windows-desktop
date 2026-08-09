@@ -32,7 +32,7 @@ function validateResolvedAddress(
   const assessment = assessUrlDestination(addressUrl(scheme, address.address));
   if (!assessment) throw new LabDestinationError("resolver address could not be classified", "harness_failure");
   if (["metadata", "link-local", "unspecified"].includes(assessment.kind)) {
-    throw new LabDestinationError(`blocked resolved destination: ${assessment.detail}`, "harness_failure");
+    throw new LabDestinationError("blocked resolved destination", "harness_failure");
   }
   const privateAnswer = ["private", "loopback", "localhost"].includes(assessment.kind);
   if (privateAnswer && (!allowPrivateNetwork || !labRunApproval)) {
@@ -41,10 +41,14 @@ function validateResolvedAddress(
   return privateAnswer;
 }
 
-function canonicalAddresses(addresses: Array<{ address: string; family: 4 | 6 }>): Array<{ address: string; family: 4 | 6 }> {
+function canonicalAddresses(addresses: ReadonlyArray<{ address: string; family: 4 | 6 }>): Array<{ address: string; family: 4 | 6 }> {
   const unique = new Map<string, { address: string; family: 4 | 6 }>();
   for (const row of addresses) unique.set(`${row.family}:${row.address}`, { ...row });
   return [...unique.values()].sort((a, b) => a.family - b.family || (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
+}
+
+function addressSetKey(addresses: ReadonlyArray<{ address: string; family: 4 | 6 }>): string {
+  return canonicalAddresses(addresses).map((row) => `${row.family}:${row.address}`).join(",");
 }
 
 export interface CreateDestinationOptions {
@@ -66,7 +70,7 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
   const scheme = parsed.protocol === "https:" ? "https" as const : "http" as const;
   const literal = assessUrlDestination(parsed.toString());
   if (literal && ["metadata", "link-local", "unspecified"].includes(literal.kind)) {
-    throw new LabDestinationError(`blocked destination: ${literal.detail}`, "harness_failure");
+    throw new LabDestinationError("blocked destination", "harness_failure");
   }
   const allowPrivate = opts.allowPrivateNetwork === true;
   const approved = opts.labRunApproval === true;
@@ -90,8 +94,8 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
       });
       addresses = resolved.addresses.map((row) => ({ address: row.address, family: row.family === 6 ? 6 as const : 4 as const }));
       privateNetwork = resolved.privateNetwork || privateNetwork;
-    } catch (error) {
-      throw new LabDestinationError(error instanceof Error ? error.message : "DNS destination policy failed", "network_blocked");
+    } catch {
+      throw new LabDestinationError("DNS destination policy failed", "network_blocked");
     }
   }
   const frozenAddresses = Object.freeze(canonicalAddresses(addresses).map((row) => Object.freeze(row)));
@@ -115,9 +119,9 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
 
 /** Detect any attempted replacement/re-resolution of the approved immutable address set. */
 export function assertDestinationAddressSet(destination: LabDestinationV1, addresses: Array<{ address: string; family: 4 | 6 }>): void {
-  const a = destination.addresses.map((x) => `${x.family}:${x.address}`).sort().join(",");
-  const b = canonicalAddresses(addresses).map((x) => `${x.family}:${x.address}`).join(",");
-  if (a !== b) throw new LabDestinationError("destination address set mismatch", "destination_mismatch");
+  if (addressSetKey(destination.addresses) !== addressSetKey(addresses)) {
+    throw new LabDestinationError("destination address set mismatch", "destination_mismatch");
+  }
 }
 
 export function assertHostSniMatch(destination: LabDestinationV1, host: string, sni?: string): void {
