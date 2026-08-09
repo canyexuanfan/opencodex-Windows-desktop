@@ -9,12 +9,12 @@ import {
   registerMcpStubTool, routeSubjectApplicableToRequirements, runLiveScenario, runLiveSuite,
   scenarioManifestDigest, subjectIdForSubject,
 } from "../src/lab";
-import { createTrustedLabRouteExecutor } from "../src/lib/lab-live-execution-authority";
+import { createHostIssuedLabRouteExecutor } from "../src/lib/lab-live-host";
 import { replayLabLedger } from "../src/lab/ledger/store";
 import { clearMcpStub } from "../src/lab/live/mcp-loopback";
 import { expandLiveSuiteManifest } from "../src/lab/live/suite-manifest";
-import { REQUIRED_LAB_SANDBOX_BOUNDARIES, type LabBehaviorValues, type LabRouteContext } from "../src/lab/live/types";
-import type { RouteSubjectV1 } from "../src/lab/events/types";
+import type { LabBehaviorValues, LabRouteContext, LiveScenarioRunResult } from "../src/lab/live/types";
+import type { ProtocolSubjectV1, RouteSubjectV1 } from "../src/lab/events/types";
 import type { NormalizedObservation } from "../src/lab/conformance/types";
 
 const HOMES: string[] = [];
@@ -64,7 +64,11 @@ function reasoningObservation(): NormalizedObservation {
   return observation;
 }
 function trustedObservation(observation: NormalizedObservation) {
-  return createTrustedLabRouteExecutor(async () => observation, REQUIRED_LAB_SANDBOX_BOUNDARIES);
+  return createHostIssuedLabRouteExecutor(async () => observation);
+}
+
+function routeSubject(): RouteSubjectV1 {
+  return { subjectSchemaVersion: 1, subjectKind: "route", providerId: "p", providerInstanceFingerprint: "a".repeat(64), clientModelId: "m", upstreamModelId: "m", effectiveAdapter: "openai-responses", inboundProtocol: "openai-responses", upstreamProtocol: "openai-responses", surface: "responses-http", opencodexCompatibilityVersion: "a".repeat(64), behaviorFingerprint: "b".repeat(64), endpointFingerprint: "c".repeat(64), dependencies: [] };
 }
 
 describe("CL-03 live probe harness", () => {
@@ -90,7 +94,32 @@ describe("CL-03 live probe harness", () => {
     const home = tempHome(); process.env.OPENCODEX_HOME = home; const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases.find((c) => c.id === "responses-core.live.basic-turn")!;
     const result = await runLiveScenario(caseRecord, mockRoute(), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], transport: transportForCase(caseRecord) });
     expect(result.executionAuthority).toBe("test_transport");
-    expect(() => observationFromLiveResult(result, caseRecord, authority, { configDir: home })).toThrow("trusted-route");
+    expect(() => observationFromLiveResult(result, caseRecord, authority, { configDir: home })).toThrow("trusted execution receipt");
+  });
+
+  test("fabricated trusted-route result cannot create live evidence", () => {
+    const home = tempHome(); const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases[0]!;
+    const fake: LiveScenarioRunResult = { scenarioId: caseRecord.id, suite: caseRecord.suite, startedAt: 1, completedAt: 2, passed: true, classification: "inconclusive", assertionResults: [], diagnostics: [], routeSubject: routeSubject(), executionAuthority: "trusted_route" };
+    expect(() => observationFromLiveResult(fake, caseRecord, authority, { configDir: home })).toThrow("trusted execution receipt");
+  });
+
+  test("trusted receipt is bound to the executed scenario and authority", async () => {
+    const home = tempHome(); const authority = loadLiveCaseAuthority(); const caseRecord = authority.cases.find((c) => c.id === "responses-core.live.basic-turn")!;
+    const result = await runLiveScenario(caseRecord, mockRoute(), { configDir: home, resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: trustedObservation(passObservation()) });
+    const differentCase = authority.cases.find((c) => c.id === "tools-core.live.function-round-trip")!;
+    expect(() => observationFromLiveResult(result, differentCase, authority, { configDir: home })).toThrow("receipt mismatch");
+  });
+
+  test("unapproved routes do not resolve destinations", async () => {
+    const scenario = loadLiveCaseAuthority().cases[0]!; let resolves = 0;
+    const result = await runLiveScenario(scenario, mockRoute({ labRunApproval: false }), { resolve: async () => { resolves += 1; return [{ address: "93.184.216.34", family: 4 }]; }, transport: transportForCase(scenario) });
+    expect(resolves).toBe(0); expect(result.secondaryCode).toBe("route_precondition_unmet:lab_run_approval"); expect(result.routeSubject).toBeUndefined();
+  });
+
+  test("executor diagnostics expose only bounded codes", async () => {
+    const scenario = loadLiveCaseAuthority().cases[0]!; const secret = "Bearer super-secret-value";
+    const result = await runLiveScenario(scenario, mockRoute(), { resolve: async () => [{ address: "93.184.216.34", family: 4 }], routeExecutor: createHostIssuedLabRouteExecutor(async () => { throw new Error(secret); }) });
+    expect(result.diagnostics).toEqual(["execution_error"]); expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   test("raw URLs and secrets never appear in persisted trusted live evidence", async () => {
@@ -116,9 +145,24 @@ describe("CL-03 live probe harness", () => {
 
   test("freshness semantics for live suites", () => {
     const authority = loadLiveCaseAuthority(); const suite = expandLiveSuiteManifest("responses-core", authority); expect(suite.freshness.maxAgeMs).toBe(604800000);
-    const subject: RouteSubjectV1 = { subjectSchemaVersion: 1, subjectKind: "route", providerId: "p", providerInstanceFingerprint: "a".repeat(64), clientModelId: "m", upstreamModelId: "m", effectiveAdapter: "openai-responses", inboundProtocol: "openai-responses", upstreamProtocol: "openai-responses", surface: "responses-http", opencodexCompatibilityVersion: "a".repeat(64), behaviorFingerprint: "b".repeat(64), endpointFingerprint: "c".repeat(64), dependencies: [] };
-    const result = evaluateAllApplicableRequiredPassV1(suite, [], "live", { subject, loadScenarioRequirements: () => ({ inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: [], freshness: { maxAgeMs: 604800000 } }) });
+    const subject = routeSubject();
+    const result = evaluateAllApplicableRequiredPassV1(suite, [], "live", { subject, routeSupportedClaims: [], loadScenarioRequirements: () => ({ inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: [], freshness: { maxAgeMs: 604800000 } }) });
     expect(result.canVerify).toBe(false); expect(result.missingRequiredScenarioIds.length).toBeGreaterThan(0);
+  });
+
+  test("live verification fails closed without route identity or validated claims", () => {
+    const authority = loadLiveCaseAuthority(); const suite = expandLiveSuiteManifest("responses-core", authority);
+    const protocolSubject: ProtocolSubjectV1 = { subjectSchemaVersion: 1, subjectKind: "protocol", opencodexCompatibilityVersion: "a".repeat(64), effectiveAdapter: "openai-responses", inboundProtocol: "openai-responses", upstreamProtocol: "openai-responses", surface: "responses-http", behaviorFingerprint: "b".repeat(64) };
+    const noSubject = evaluateAllApplicableRequiredPassV1(suite, [], "live", { routeSupportedClaims: [], loadScenarioRequirements: () => ({ inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: [], freshness: { maxAgeMs: 604800000 } }) });
+    const wrongSubject = evaluateAllApplicableRequiredPassV1(suite, [], "live", { subject: protocolSubject, routeSupportedClaims: [], loadScenarioRequirements: () => ({ inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: [], freshness: { maxAgeMs: 604800000 } }) });
+    const noClaims = evaluateAllApplicableRequiredPassV1(suite, [], "live", { subject: routeSubject(), loadScenarioRequirements: () => ({ inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: [], freshness: { maxAgeMs: 604800000 } }) });
+    expect(noSubject.notes).toContain("route_subject_required"); expect(wrongSubject.notes).toContain("route_subject_required"); expect(noClaims.notes).toContain("route_claim_state_required");
+  });
+
+  test("malformed requiredClaims in a live manifest is rejected", () => {
+    const authority = loadLiveCaseAuthority(); const suite = expandLiveSuiteManifest("responses-core", authority);
+    const result = evaluateAllApplicableRequiredPassV1(suite, [], "live", { subject: routeSubject(), routeSupportedClaims: [], loadScenarioManifest: () => ({ requirements: { inboundProtocols: ["openai-responses"], upstreamProtocols: ["openai-responses"], surfaces: ["responses-http"], requiredClaims: "tools" }, freshness: { maxAgeMs: 604800000 } }) });
+    expect(result.canVerify).toBe(false); expect(result.notes.some((note) => note.startsWith("scenario_manifest_unavailable:"))).toBe(true);
   });
 
   test("timeouts classify as blockers", async () => {
