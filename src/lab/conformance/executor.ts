@@ -31,6 +31,16 @@ async function collectAdapterEvents(gen: AsyncGenerator<AdapterEvent>): Promise<
   return events;
 }
 
+export function nonstreamObservationJson(
+  parsedEvents: AdapterEvent[],
+  responseJson: Record<string, unknown>,
+  model = "fixture-model",
+): Record<string, unknown> {
+  return parsedEvents.length > 0
+    ? buildResponseJSON(parsedEvents, model) as Record<string, unknown>
+    : responseJson;
+}
+
 async function collectBridgeSse(events: AdapterEvent[], model = "fixture-model"): Promise<{
   events: ReturnType<typeof normalizeSseBytes>;
 }> {
@@ -542,7 +552,7 @@ async function executeStreamScenario(caseRecord: CaseRecord): Promise<Normalized
       const responseJson = JSON.parse(caseRecord.fixture.bytesUtf8);
       const parsedEvents = adapter.parseResponse ? await adapter.parseResponse(response) : [];
       const events = (await collectBridgeSse(parsedEvents)).events;
-      const json = buildResponseJSON(parsedEvents, "fixture-model") as Record<string, unknown> ?? responseJson;
+      const json = nonstreamObservationJson(parsedEvents, responseJson);
       finalizeObservation(observation, events, json, responseStatus);
       attachVerifiers(observation, caseRecord);
       return observation;
