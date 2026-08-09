@@ -32,7 +32,7 @@ const FORBIDDEN_EXACT_KEYS = new Set([
 ]);
 
 const RAW_POSIX_PATH_RE =
-  /(?:^|[^A-Za-z0-9._~/])\/(?!\/)(?![ \t\r\n])[^/\0\r\n]+(?:\/[^/\0\r\n]+)*\/?(?=$|[^A-Za-z0-9._~/])/u;
+  /(?:^|[^A-Za-z0-9._~/])\/(?:(?=$|[^A-Za-z0-9._~/])|(?!\/)(?![ \t\r\n])(?:\/|[^/\0\r\n]+)+\/?(?=$|[^A-Za-z0-9._~/]))/u;
 
 function fieldPath(base: string, key: string | number): string {
   return base ? `${base}.${String(key)}` : String(key);
