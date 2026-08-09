@@ -113,7 +113,12 @@ function fallbackChainKey(model: string, namespaces: unknown): string {
   return JSON.stringify(["account", selector, model.slice(slash + 1).toLowerCase()]);
 }
 
-function normalizedChain(primary: string, config: OcxConfig, extra: readonly string[] = []): string[] {
+function normalizedChain(
+  primary: string,
+  config: OcxConfig,
+  extra: readonly string[] = [],
+  trailing: readonly string[] = [],
+): string[] {
   const chain: string[] = [];
   const seen = new Set<string>();
   const push = (model: string | undefined) => {
@@ -127,6 +132,7 @@ function normalizedChain(primary: string, config: OcxConfig, extra: readonly str
   push(primary);
   for (const model of extra) push(model);
   for (const model of config.subagentModelFallback ?? []) push(model);
+  for (const model of trailing) push(model);
   return chain;
 }
 
@@ -268,8 +274,9 @@ export function selectAvailableSubagentModel(
   now = Date.now(),
   nativeFallbackOnly = false,
   accountUsabilityOptions?: CodexAccountUsabilityOptions,
+  trailingFallback: readonly string[] = [],
 ): { model: string; rewritten: boolean; skipped: string[] } {
-  const chain = normalizedChain(primary, config, extraFallback);
+  const chain = normalizedChain(primary, config, extraFallback, trailingFallback);
   const skipped: string[] = [];
   for (const candidate of chain) {
     if (nativeFallbackOnly) {
@@ -517,20 +524,18 @@ export function applySubagentModelFallback(
   );
   // Config-keyed chains are the supported per-role home (#1190); TOML `model_fallback`
   // stays readable for backwards compatibility with homes written before Codex 0.146.
-  const roleFallback = [
-    ...resolveConfiguredModelFallbackForPrimary(parsed.modelId, config),
-    ...tomlRoleFallback,
-  ];
+  const configuredFallback = resolveConfiguredModelFallbackForPrimary(parsed.modelId, config);
   const globalFallback = config.subagentModelFallback ?? [];
-  if (globalFallback.length === 0 && roleFallback.length === 0) return null;
+  if (globalFallback.length === 0 && configuredFallback.length === 0 && tomlRoleFallback.length === 0) return null;
   const selection = selectAvailableSubagentModel(
     parsed.modelId,
     config,
-    roleFallback,
+    configuredFallback,
     accountId,
     now,
     nativeFallbackOnly,
     accountUsabilityOptions,
+    tomlRoleFallback,
   );
   if (!selection.rewritten) return selection.skipped.length > 0
     ? { from: parsed.modelId, to: parsed.modelId, skipped: selection.skipped }

@@ -987,6 +987,47 @@ describe("subagent model fallback chain", () => {
     expect(result?.to).toBe("alibaba-token-plan/qwen3.8-max");
   });
 
+  test("applySubagentModelFallback orders and dedupes all four fallback stages", () => {
+    const dir = codexHomeFixture();
+    writeFileSync(join(dir, "agents", "executor.toml"), [
+      "name = \"executor\"",
+      "model = \"gpt-5.6-sol\"",
+      "model_fallback = [\"xai/grok-4.5\", \"KIMI/K3\"]",
+      "",
+    ].join("\n"), "utf8");
+    const config = cfg({
+      subagentModelFallbackByModel: {
+        "gpt-5.6-sol": ["alibaba-token-plan/qwen3.8-max", "GPT-5.6-SOL"],
+      },
+      subagentModelFallback: ["kimi/k3", "ALIBABA-TOKEN-PLAN/QWEN3.8-MAX"],
+    });
+    updateAccountQuota("pool-a", 95);
+    for (const model of ["alibaba-token-plan/qwen3.8-max", "kimi/k3", "xai/grok-4.5"]) {
+      noteSubagentModelFailure(model, "quota exhausted", config);
+    }
+    const parsed = {
+      modelId: "gpt-5.6-sol",
+      options: {},
+      context: { messages: [] },
+      _rawBody: { model: "gpt-5.6-sol" },
+    };
+    const result = applySubagentModelFallback(
+      parsed as never,
+      new Headers({ "x-openai-subagent": "collab_spawn" }),
+      config,
+    );
+    expect(result).toEqual({
+      from: "gpt-5.6-sol",
+      to: "gpt-5.6-sol",
+      skipped: [
+        "gpt-5.6-sol",
+        "alibaba-token-plan/qwen3.8-max",
+        "kimi/k3",
+        "xai/grok-4.5",
+      ],
+    });
+  });
+
   test("scanCodexAgentRolesWithTomlModelFallback reports roles carrying the field, including empty arrays", () => {
     const dir = codexHomeFixture();
     writeFileSync(join(dir, "agents", "with_fallback.toml"), [
