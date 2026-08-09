@@ -33,10 +33,10 @@
 
 ## Validation (local)
 
-- `bun x tsc --noEmit` - pending
-- `bun test tests/lab-read-surfaces.test.ts tests/models-workspace-tabs.test.ts` - pending
-- `cd gui && bun test tests/compatibility-lab.test.tsx tests/models-workspace-panels.test.tsx` - pending
-- `bun run lint:gui && bun run doctor:gui && bun run build:gui && bun run privacy:scan` - pending
+- `bun x tsc --noEmit` - passed
+- `bun test tests/lab-read-surfaces.test.ts tests/models-workspace-tabs.test.ts` - 33/33 passed
+- `cd gui && bun test tests/compatibility-lab.test.tsx tests/models-workspace-panels.test.tsx` - 29/29 passed
+- `bun run lint:gui && bun run doctor:gui && bun run build:gui && bun run privacy:scan` - passed
 
 ## Acceptance blockers
 
