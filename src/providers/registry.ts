@@ -2037,6 +2037,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // continuations, or the gateway answers HTTP 400 (issues #950/#994). Mirror the DeepSeek
     // reasoning + thinking metadata so `opencode-zen/deepseek-v4-flash-free` — and the other
     // Zen DeepSeek thinking models — never serialize a bare tool-call turn.
+    note: "Keyed OpenCode Zen gateway. Free models on this tier are often short-window rate-limited at roughly 15-20 requests/minute (community-measured; OpenCode does not publish RPM). Zen may return generic 429s without Retry-After / X-RateLimit headers; when Retry-After is omitted, opencodex adds a synthetic backoff hint (upstream Retry-After still wins). Distinct from the keyless opencode-free desktop quota (~200 Big Pickle/free-model requests per 5 hours). Docs: https://opencode.ai/docs/zen/. Free-model prompts may be retained for training — do not send confidential material.",
     modelReasoningEfforts: Object.fromEntries(
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekThinkingEffortsFor(id)]),
     ),
@@ -2056,7 +2057,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     keyOptional: true,
     featured: true,
     liveModels: true,
-    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
+    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. The same Zen gateway can also short-window rate-limit free models at roughly 15-20 requests/minute, and may return generic 429s without Retry-After (opencodex synthesizes backoff only when that header is omitted). Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
     dashboardUrl: "https://opencode.ai",
     staticHeaders: {
       "x-opencode-client": "desktop",

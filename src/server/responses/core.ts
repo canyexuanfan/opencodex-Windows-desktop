@@ -35,6 +35,7 @@ import {
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
+import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
 import { modelInList, namespacedToolName } from "../../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
 import {
@@ -3154,11 +3155,26 @@ async function handleResponsesInner(
       }
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
-      const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
+      const upstreamRetryAfter = upstreamResponse.headers.get("retry-after");
+      const message = enrichOpenCodeZenRateLimitMessage(
+        `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+        {
+          status: upstreamResponse.status,
+          providerName: route.providerName,
+          baseUrl: route.provider.baseUrl,
+          adapter: route.provider.adapter,
+          authMode: route.provider.authMode,
+          hasApiKey: Boolean(route.provider.apiKey?.trim()),
+          upstreamRetryAfter,
+          // This recovery path is the HTTP Responses wire; custom runTurn transports
+          // never reach enrichOpenCodeZenRateLimitMessage here.
+          supportsHttpSameKeyRetry: true,
+        },
+      );
       const retryAfter = resolveClientRetryAfter({
         status: upstreamResponse.status,
         message,
-        upstreamRetryAfter: upstreamResponse.headers.get("retry-after"),
+        upstreamRetryAfter,
       });
       return formatErrorResponse(upstreamResponse.status, "upstream_error", message, {
         ...(retryAfter !== undefined ? { retryAfter } : {}),
