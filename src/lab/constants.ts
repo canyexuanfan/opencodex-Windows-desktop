@@ -3,6 +3,7 @@
 export const LAB_EVENT_SCHEMA_VERSION = 1;
 export const LAB_PROJECTION_SPEC_VERSION = "cl-02.v1";
 export const LAB_PRODUCER = "opencodex-lab";
+export const LAB_PRODUCER_VERSION = "2.10.2";
 
 export const MAX_INVALIDATION_TARGETS = 1024;
 export const MAX_BYTES_PER_ARTIFACT = 256 * 1024;
