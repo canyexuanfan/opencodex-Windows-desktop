@@ -6,7 +6,7 @@ Shipped. Three layers on `dev`, bottom-up, one PABCD cycle each.
 |---|---|---|---|
 | 1 — eligibility predicate | #1326 | `eebd9d48f` | `src/vision/eligibility.ts`, the devlog unit |
 | 2 — management API + write gate | #1327 | `d4758bc94` | options module, both routes, shared model resolver |
-| 3 — dashboard card | #1328 | (this unit's close) | filtered picker, backend provenance, card shell |
+| 3 — dashboard card | #1328 | `e96a81bed` | filtered picker, backend provenance, card shell |
 
 ## What the user asked for, and what answers it
 
