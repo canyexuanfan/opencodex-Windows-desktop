@@ -17,6 +17,7 @@ import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "../src/providers/re
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
 import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { handleResponses } from "../src/server/responses/core";
+import { MAX_SYNTHESIZED_OUTPUT_ITEMS } from "../src/server/responses-json-events";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -353,6 +354,23 @@ describe("the bounded-JSON mechanism stays alive behind a synthetic registry ent
     expect(text).not.toContain("rs_placeholder");
     expect(text).toMatch(/"id":"msg_ocx_[0-9a-f]{8}/);
     expect(text).toMatch(/"id":"rs_ocx_[0-9a-f]{8}/);
+  });
+
+  test("an over-cap HTTP synthesis fails closed with 502", async () => {
+    globalThis.fetch = (async () => Response.json({
+      id: "resp_fixture",
+      object: "response",
+      status: "completed",
+      output: Array.from({ length: MAX_SYNTHESIZED_OUTPUT_ITEMS + 1 }, () => null),
+    })) as typeof fetch;
+    const response = await driveFixture(fixtureProvider());
+    expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const text = await response.text();
+    const body = JSON.parse(text) as { error?: { type?: string; message?: string } };
+    expect(body.error?.type).toBe("server_error");
+    expect(body.error?.message).toContain("synthesized SSE item limit");
+    expect(text).not.toContain("data: [DONE]");
   });
 
   test("the WebSocket bounded-JSON reframe carries the same repaired ids", async () => {

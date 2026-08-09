@@ -225,6 +225,8 @@ terminal-output boundary (`src/server/relay.ts`) cuts the stream at that event a
 `[DONE]` itself, so DeepSeek streams live again; the registry knob remains as a one-line
 rollback for upstreams that regress, kept suite-reachable by a synthetic-registry fixture in
 `tests/deepseek-inbound-wire.test.ts`.
+Synthesized output is capped at 10,000 items across HTTP and WebSocket reframing. HTTP frames are
+encoded incrementally, so bounded upstream JSON cannot expand into an unbounded event array or SSE string.
 
 `ws-bridge.ts` preserves upstream `failed` and `incomplete` status values in the final WebSocket
 frame rather than always emitting `response.completed`. If the response status is `failed`, a
