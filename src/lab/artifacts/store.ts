@@ -20,7 +20,7 @@ import {
   readArtifactBytes,
   type TrustedArtifactDir,
 } from "./secure-fs";
-import { redactForArtifact } from "./sanitize";
+import { redactForArtifact, sanitizeDiagnostic } from "./sanitize";
 
 export { ArtifactFsError, openTrustedArtifactDir };
 export type { TrustedArtifactDir };
@@ -35,11 +35,19 @@ export interface PutArtifactInput {
   expectedDigest?: string;
 }
 
+export interface ArtifactReadOptions {
+  expectedByteCount?: number;
+  artifactClass?: ArtifactClass;
+}
+
 export interface ArtifactStore {
   dir: TrustedArtifactDir;
   put(input: PutArtifactInput): ArtifactRefV1;
-  get(digest: string, expectedByteCount?: number): Uint8Array;
-  getVerified(digest: string, expectedByteCount?: number): { bytes: Uint8Array; digest: string };
+  get(digest: string, expectedByteCountOrOpts?: number | ArtifactReadOptions): Uint8Array;
+  getVerified(
+    digest: string,
+    expectedByteCountOrOpts?: number | ArtifactReadOptions,
+  ): { bytes: Uint8Array; digest: string };
   remove(digest: string): void;
   close(): void;
 }
@@ -50,10 +58,77 @@ function toBytes(payload: Uint8Array | string | unknown): Uint8Array {
   return new TextEncoder().encode(jcsStringify(payload));
 }
 
+function normalizeReadOptions(value?: number | ArtifactReadOptions): ArtifactReadOptions {
+  return typeof value === "number" ? { expectedByteCount: value } : value ?? {};
+}
+
+function jsonDigest(
+  digest: (value: Record<string, unknown>) => string,
+): (bytes: Uint8Array) => string {
+  return (bytes) => digest(JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>);
+}
+
+function digestForArtifactClass(artifactClass: ArtifactClass): (bytes: Uint8Array) => string {
+  switch (artifactClass) {
+    case "fixture":
+      return fixtureDigest;
+    case "scenario_manifest":
+      return jsonDigest(scenarioManifestDigest);
+    case "suite_manifest":
+      return jsonDigest(suiteManifestDigest);
+    case "claim_source_manifest":
+      return (bytes) => {
+        const parsed = JSON.parse(new TextDecoder().decode(bytes));
+        return claimSourceManifestDigest(validateClaimSourceManifest(parsed).manifest);
+      };
+    default:
+      return artifactBytesDigest;
+  }
+}
+
 export function createArtifactStore(artifactsDir: string): ArtifactStore {
   const dir = openTrustedArtifactDir(artifactsDir);
   let aggregateBytes = 0;
   let putCount = 0;
+
+  const getVerified = (
+    digest: string,
+    expectedByteCountOrOpts?: number | ArtifactReadOptions,
+  ): { bytes: Uint8Array; digest: string } => {
+    const opts = normalizeReadOptions(expectedByteCountOrOpts);
+    const candidates = opts.artifactClass
+      ? [digestForArtifactClass(opts.artifactClass)]
+      : [
+          artifactBytesDigest,
+          fixtureDigest,
+          jsonDigest(scenarioManifestDigest),
+          jsonDigest(suiteManifestDigest),
+          digestForArtifactClass("claim_source_manifest"),
+        ];
+
+    let lastErr: unknown;
+    for (const contentDigest of candidates) {
+      try {
+        const got = readArtifactBytes(dir, digest, {
+          expectedByteCount: opts.expectedByteCount,
+          contentDigest,
+        });
+        return { bytes: got.bytes, digest: got.digest };
+      } catch (err) {
+        lastErr = err;
+        if (
+          err instanceof ArtifactFsError &&
+          err.code !== "artifact_mismatch" &&
+          !err.message.includes("mismatch")
+        ) {
+          throw err;
+        }
+      }
+    }
+    throw lastErr instanceof Error
+      ? lastErr
+      : new ArtifactFsError("artifact_mismatch", "artifact digest verification failed");
+  };
 
   return {
     dir,
@@ -79,21 +154,16 @@ export function createArtifactStore(artifactsDir: string): ArtifactStore {
       let stored;
       if (isContractClass(input.artifactClass)) {
         const contractClass = input.artifactClass;
-        const digest = input.expectedDigest ?? computeContractDigest(contractClass, bytes, redacted);
-        if (input.expectedDigest && digest !== input.expectedDigest) {
-          throw new ArtifactFsError("harness_failure", "contract artifact digest mismatch");
+        const computedDigest = computeContractDigest(contractClass, bytes, redacted);
+        if (input.expectedDigest !== undefined && computedDigest !== input.expectedDigest) {
+          throw new ArtifactFsError("artifact_mismatch", "contract artifact digest mismatch");
         }
-        const contentDigest = (b: Uint8Array) =>
-          computeContractDigest(contractClass, b, JSON.parse(new TextDecoder().decode(b)));
-        // Fixtures hash raw bytes; JSON contract manifests hash parsed JCS object.
-        const hashFn =
-          contractClass === "fixture"
-            ? (b: Uint8Array) => fixtureDigest(b)
-            : contentDigest;
-        if (hashFn(bytes) !== digest) {
-          throw new ArtifactFsError("harness_failure", "contract artifact preimage digest mismatch");
-        }
-        stored = putNamedDigestBytes(dir, digest, bytes, hashFn);
+        stored = putNamedDigestBytes(
+          dir,
+          computedDigest,
+          bytes,
+          digestForArtifactClass(contractClass),
+        );
       } else {
         stored = putArtifactBytes(dir, bytes, input.expectedDigest);
       }
@@ -109,48 +179,10 @@ export function createArtifactStore(artifactsDir: string): ArtifactStore {
         artifactClass: input.artifactClass,
       };
     },
-    get(digest: string, expectedByteCount?: number): Uint8Array {
-      return this.getVerified(digest, expectedByteCount).bytes;
+    get(digest: string, expectedByteCountOrOpts?: number | ArtifactReadOptions): Uint8Array {
+      return getVerified(digest, expectedByteCountOrOpts).bytes;
     },
-    getVerified(digest: string, expectedByteCount?: number) {
-      const candidates: Array<(b: Uint8Array) => string> = [
-        artifactBytesDigest,
-        fixtureDigest,
-        (b) => {
-          try {
-            return scenarioManifestDigest(JSON.parse(new TextDecoder().decode(b)));
-          } catch {
-            return "";
-          }
-        },
-        (b) => {
-          try {
-            return suiteManifestDigest(JSON.parse(new TextDecoder().decode(b)));
-          } catch {
-            return "";
-          }
-        },
-        (b) => {
-          try {
-            return claimSourceManifestDigest(JSON.parse(new TextDecoder().decode(b)));
-          } catch {
-            return "";
-          }
-        },
-      ];
-      let lastErr: unknown;
-      for (const contentDigest of candidates) {
-        try {
-          const got = readArtifactBytes(dir, digest, { expectedByteCount, contentDigest });
-          if (got.digest === digest) return { bytes: got.bytes, digest: got.digest };
-        } catch (err) {
-          lastErr = err;
-        }
-      }
-      throw lastErr instanceof Error
-        ? lastErr
-        : new ArtifactFsError("harness_failure", "artifact digest verification failed");
-    },
+    getVerified,
     remove(digest: string): void {
       deleteArtifactBytes(dir, digest);
     },
@@ -222,24 +254,29 @@ export function putClaimSourceManifest(
   });
 }
 
+export type LoadClaimSourceManifestResult =
+  | { ok: true; manifest: ClaimSourceManifestV1; corruption?: undefined }
+  | { ok: false; manifest: ClaimSourceManifestV1 | null; corruption: string };
+
 export function loadClaimSourceManifest(
   store: ArtifactStore,
   digest: string,
   expected: { subjectId: string; capability: string },
-): { manifest: ClaimSourceManifestV1; corruption?: string } {
-  if (!isSha256Hex(digest)) return { manifest: null as unknown as ClaimSourceManifestV1, corruption: "invalid digest" };
+): LoadClaimSourceManifestResult {
+  if (!isSha256Hex(digest)) return { ok: false, manifest: null, corruption: "invalid digest" };
   try {
-    const bytes = store.get(digest);
+    const bytes = store.get(digest, { artifactClass: "claim_source_manifest" });
     const parsed = JSON.parse(new TextDecoder().decode(bytes));
     const { manifest, digest: recomputed } = validateClaimSourceManifest(parsed);
-    if (recomputed !== digest) return { manifest, corruption: "claim-source digest mismatch" };
-    if (manifest.subjectId !== expected.subjectId) return { manifest, corruption: "claim-source subjectId mismatch" };
-    if (manifest.capability !== expected.capability) return { manifest, corruption: "claim-source capability mismatch" };
-    return { manifest };
+    if (recomputed !== digest) return { ok: false, manifest, corruption: "claim-source digest mismatch" };
+    if (manifest.subjectId !== expected.subjectId) return { ok: false, manifest, corruption: "claim-source subjectId mismatch" };
+    if (manifest.capability !== expected.capability) return { ok: false, manifest, corruption: "claim-source capability mismatch" };
+    return { ok: true, manifest };
   } catch (err) {
     return {
-      manifest: null as unknown as ClaimSourceManifestV1,
-      corruption: err instanceof Error ? err.message : String(err),
+      ok: false,
+      manifest: null,
+      corruption: sanitizeDiagnostic(err),
     };
   }
 }
