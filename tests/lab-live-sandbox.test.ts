@@ -38,6 +38,17 @@ describe("CL-03 live sandbox security seams", () => {
     const lease = createCredentialLease({ destination, budget: 1 }); expect(() => assertLeaseScope(lease, other)).toThrow(LabCredentialError);
   });
 
+  test("address-set equality uses the same canonical representation on both sides", async () => {
+    const home = tempHome(); const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, resolve: async () => [{ address: "2001:db8::1", family: 6 }, { address: "93.184.216.34", family: 4 }, { address: "93.184.216.34", family: 4 }], configDir: home });
+    expect(() => assertDestinationAddressSet(destination, [{ address: "93.184.216.34", family: 4 }, { address: "2001:db8::1", family: 6 }])).not.toThrow();
+  });
+
+  test("destination resolution obeys the connect timeout", async () => {
+    const home = tempHome();
+    const pending = createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, connectTimeoutMs: 5, resolve: async () => await new Promise<Array<{ address: string; family: 4 | 6 }>>(() => {}), configDir: home });
+    await expect(pending).rejects.toMatchObject({ code: "connect_timeout" });
+  });
+
   test("host/SNI mismatch fails closed", async () => { const home = tempHome(); process.env.OPENCODEX_HOME = home; const destination = await createLabDestination({ baseUrl: "https://api.example.com/v1", labRunApproval: true, resolve: async () => [{ address: "93.184.216.34", family: 4 }], configDir: home }); expect(() => assertHostSniMatch(destination, "evil.example.com")).toThrow(LabDestinationError); });
   test("metadata and link-local destinations are blocked", async () => { const home = tempHome(); process.env.OPENCODEX_HOME = home; await expect(createLabDestination({ baseUrl: "http://169.254.169.254/latest/meta-data", labRunApproval: true, configDir: home })).rejects.toThrow(LabDestinationError); });
   test("private network requires permission and lab approval", async () => { const home = tempHome(); process.env.OPENCODEX_HOME = home; await expect(createLabDestination({ baseUrl: "http://127.0.0.1:11434/v1", configDir: home })).rejects.toThrow(LabDestinationError); const ok = await createLabDestination({ baseUrl: "http://127.0.0.1:11434/v1", allowPrivateNetwork: true, labRunApproval: true, resolve: async () => [{ address: "127.0.0.1", family: 4 }], configDir: home }); expect(ok.privateNetwork).toBe(true); });
