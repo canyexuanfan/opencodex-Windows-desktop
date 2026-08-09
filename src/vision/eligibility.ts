@@ -2,22 +2,29 @@
  * Which models may serve AS the vision sidecar (the describer), as opposed to the
  * models the sidecar describes FOR.
  *
- * Two rules make this non-obvious, and both are load-bearing:
+ * Three rules make this non-obvious, and all are load-bearing:
  *
  * 1. `provider.noVisionModels` marks models the proxy describes images for, and
  *    `applyProviderConfigHints` deliberately ADDS "image" to their advertised
  *    input modalities so the Codex app does not block the attachment client-side.
  *    A blind model therefore advertises image input. Membership in that list is a
  *    hard disqualifier here, checked BEFORE the modality list it rewrote.
- * 2. Catalog rows frequently omit `inputModalities` entirely (the live
+ * 2. The catalog enriches configured providers from the registry before it
+ *    applies that rule. Eligibility must use the same effective provider policy,
+ *    including a `noVisionModels` list learned after the config was persisted.
+ * 3. Catalog rows frequently omit `inputModalities` entirely (the live
  *    `/api/models` response carries none for either openai or anthropic rows).
  *    Unknown is not zero: when no source can speak, the model stays eligible
  *    rather than silently vanishing from the picker.
+ *    Native OpenAI metadata is likewise authoritative only for a native row or
+ *    the canonical OpenAI provider; a routed row with the same id owns its own
+ *    explicit modalities.
  */
-import { modelInList, type OcxConfig } from "../types";
+import { modelInList, type OcxConfig, type OcxProviderConfig } from "../types";
 import { getModelMetadataCaseInsensitive, resolveMetadataProvider } from "../generated/model-metadata";
 import { nativeInputModalities } from "../codex/catalog/metadata";
 import { SUPPORTED_NATIVE_OPENAI_SLUGS } from "../codex/catalog/native-models";
+import { enrichProviderFromRegistry } from "../providers/derive";
 
 /** The two wire protocols `planVisionSidecar` can actually dispatch to. */
 export type VisionSidecarBackend = "openai" | "anthropic";
@@ -43,6 +50,8 @@ export interface VisionModelOption {
   baseline?: boolean;
 }
 
+type EnrichedProviderCache = Map<string, OcxProviderConfig>;
+
 function advertisesImageInput(modalities: readonly string[] | undefined): boolean | undefined {
   if (!modalities || modalities.length === 0) return undefined;
   return modalities.includes("image");
@@ -56,12 +65,39 @@ function metadataImageInput(provider: string, modelId: string): boolean | undefi
 }
 
 /**
+ * Mirrors the catalog's registry enrichment without mutating saved configuration. The picker
+ * checks many rows from one provider, so its caller shares this small call-local cache.
+ */
+function enrichedProviderForVision(
+  config: Pick<OcxConfig, "providers">,
+  providerName: string,
+  cache: EnrichedProviderCache,
+): OcxProviderConfig | undefined {
+  const cached = cache.get(providerName);
+  if (cached) return cached;
+  const configured = config.providers?.[providerName];
+  if (!configured) return undefined;
+  const enriched = structuredClone(configured);
+  enrichProviderFromRegistry(providerName, enriched);
+  cache.set(providerName, enriched);
+  return enriched;
+}
+
+function isVisionSidecarConsumerWithCache(
+  config: Pick<OcxConfig, "providers">,
+  providerName: string,
+  modelId: string,
+  cache: EnrichedProviderCache,
+): boolean {
+  return modelInList(enrichedProviderForVision(config, providerName, cache)?.noVisionModels, modelId);
+}
+
+/**
  * Is this model listed as one the sidecar describes FOR? Such a model cannot be
  * the describer, and its advertised modalities are untrustworthy.
  */
 export function isVisionSidecarConsumer(config: Pick<OcxConfig, "providers">, providerName: string, modelId: string): boolean {
-  const provider = config.providers?.[providerName];
-  return provider ? modelInList(provider.noVisionModels, modelId) : false;
+  return isVisionSidecarConsumerWithCache(config, providerName, modelId, new Map());
 }
 
 /**
@@ -73,8 +109,16 @@ export function modelAcceptsImageInput(
   config: Pick<OcxConfig, "providers">,
   candidate: VisionCandidateModel,
 ): boolean | undefined {
-  if (isVisionSidecarConsumer(config, candidate.provider, candidate.id)) return false;
-  if (candidate.native || SUPPORTED_NATIVE_OPENAI_SLUGS.has(candidate.id)) {
+  return modelAcceptsImageInputWithCache(config, candidate, new Map());
+}
+
+function modelAcceptsImageInputWithCache(
+  config: Pick<OcxConfig, "providers">,
+  candidate: VisionCandidateModel,
+  cache: EnrichedProviderCache,
+): boolean | undefined {
+  if (isVisionSidecarConsumerWithCache(config, candidate.provider, candidate.id, cache)) return false;
+  if (candidate.native === true || (candidate.provider === "openai" && SUPPORTED_NATIVE_OPENAI_SLUGS.has(candidate.id))) {
     return advertisesImageInput(nativeInputModalities(candidate.id)) ?? true;
   }
   const fromRow = advertisesImageInput(candidate.inputModalities);
@@ -87,24 +131,55 @@ export function isVisionEligibleModel(
   config: Pick<OcxConfig, "providers">,
   candidate: VisionCandidateModel,
 ): boolean {
-  return modelAcceptsImageInput(config, candidate) !== false;
+  return isVisionEligibleModelWithCache(config, candidate, new Map());
 }
 
-/** Which backend would describe through this row, or undefined when neither can. */
+function isVisionEligibleModelWithCache(
+  config: Pick<OcxConfig, "providers">,
+  candidate: VisionCandidateModel,
+  cache: EnrichedProviderCache,
+): boolean {
+  return modelAcceptsImageInputWithCache(config, candidate, cache) !== false;
+}
+
+/** Which executor can describe through this row, or undefined when neither can. */
 export function visionBackendForCandidate(
   config: Pick<OcxConfig, "providers">,
   candidate: VisionCandidateModel,
+  anthropicProviderName?: string,
 ): VisionSidecarBackend | undefined {
   if (candidate.native || candidate.provider === "openai") return "openai";
-  const adapter = config.providers?.[candidate.provider]?.adapter;
-  if (adapter === "anthropic") return "anthropic";
-  return undefined;
+  // The runtime dispatches through one OAuth Anthropic provider, never every provider that
+  // happens to speak the Messages wire. Without a resolved executor, retain the canonical row
+  // so a fresh install's permissive fallback still has a useful suggestion.
+  if (anthropicProviderName !== undefined) {
+    return candidate.provider === anthropicProviderName ? "anthropic" : undefined;
+  }
+  // Unresolved executor: the canonical name alone is not enough, because a row may be named
+  // "anthropic" while speaking another wire. The adapter still has to agree.
+  if (candidate.provider !== "anthropic") return undefined;
+  const adapter = config.providers?.anthropic?.adapter;
+  return adapter === undefined || adapter === "anthropic" ? "anthropic" : undefined;
+}
+
+function baselineCandidate(
+  backend: VisionSidecarBackend,
+  anthropicProviderName: string | undefined,
+): VisionCandidateModel {
+  return {
+    provider: backend === "openai" ? "openai" : anthropicProviderName ?? "anthropic",
+    id: BASELINE_VISION_MODELS[backend],
+    // Both baselines are known image-capable. This makes their only exclusion path the
+    // provider's explicit consumer list, never a silent or stale metadata table.
+    inputModalities: ["text", "image"],
+  };
 }
 
 /**
  * The picker's option list: every eligible row reachable by one of the two
  * executors, plus each enabled side's baseline, de-duplicated and stably ordered
- * (openai side first, baselines first within a side).
+ * (openai side first, baselines first within a side). Anthropic rows must belong
+ * to the selected OAuth executor when its name is known.
  *
  * This is the SUGGESTION list (narrow): it emits only rows an executor can reach
  * and some source has heard of. It is deliberately NOT the same set as the write
@@ -120,19 +195,23 @@ export function visionEligibleModelOptions(
   config: Pick<OcxConfig, "providers">,
   candidates: readonly VisionCandidateModel[],
   enabledBackends: readonly VisionSidecarBackend[],
+  anthropicProviderName?: string,
 ): VisionModelOption[] {
   const enabled = new Set(enabledBackends);
   const byValue = new Map<string, VisionModelOption>();
+  const enrichedProviders: EnrichedProviderCache = new Map();
 
   for (const backend of ["openai", "anthropic"] as const) {
     if (!enabled.has(backend)) continue;
-    const id = BASELINE_VISION_MODELS[backend];
+    const candidate = baselineCandidate(backend, anthropicProviderName);
+    if (!isVisionEligibleModelWithCache(config, candidate, enrichedProviders)) continue;
+    const id = candidate.id;
     byValue.set(id, { value: id, label: id, backend, baseline: true });
   }
   for (const candidate of candidates) {
-    const backend = visionBackendForCandidate(config, candidate);
+    const backend = visionBackendForCandidate(config, candidate, anthropicProviderName);
     if (!backend || !enabled.has(backend)) continue;
-    if (!isVisionEligibleModel(config, candidate)) continue;
+    if (!isVisionEligibleModelWithCache(config, candidate, enrichedProviders)) continue;
     if (byValue.has(candidate.id)) continue;
     byValue.set(candidate.id, { value: candidate.id, label: candidate.id, backend });
   }

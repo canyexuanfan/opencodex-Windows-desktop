@@ -123,6 +123,72 @@ describe("vision eligibility core", () => {
     })).toBe(false);
   });
 
+  test("11. registry-backed noVisionModels still disqualifies a persisted provider row", () => {
+    // Catalog enrichment adds this registry list before it adds image to the row. A config
+    // saved before Umans gained the classification must reach the same enrichment here.
+    const config = configWithProviders({
+      umans: {
+        adapter: "anthropic",
+        baseUrl: "https://api.code.umans.ai",
+      },
+    });
+    expect(modelAcceptsImageInput(config, {
+      provider: "umans",
+      id: "umans-glm-5.2",
+      inputModalities: ["text", "image"],
+    })).toBe(false);
+  });
+
+  test("12. only the selected Anthropic OAuth provider contributes Anthropic options", () => {
+    const config = configWithProviders({
+      anthropic: {
+        adapter: "anthropic",
+        authMode: "oauth",
+        baseUrl: "https://api.anthropic.com",
+      },
+      umans: {
+        adapter: "anthropic",
+        baseUrl: "https://api.code.umans.ai",
+      },
+    });
+    const options = visionEligibleModelOptions(
+      config,
+      [
+        { provider: "anthropic", id: "claude-oauth-vision", inputModalities: ["text", "image"] },
+        { provider: "umans", id: "umans-coder", inputModalities: ["text", "image"] },
+      ],
+      ["anthropic"],
+      "anthropic",
+    );
+    expect(options.map(option => option.value)).toContain("claude-oauth-vision");
+    expect(options.map(option => option.value)).not.toContain("umans-coder");
+  });
+
+  test("13. a baseline listed as blind is dropped without removing the other backend baseline", () => {
+    const config = configWithProviders({
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        noVisionModels: [BASELINE_VISION_MODELS.openai],
+      },
+      anthropic: {
+        adapter: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+      },
+    });
+    expect(visionEligibleModelOptions(config, [], ["openai", "anthropic"], "anthropic").map(option => option.value)).toEqual([
+      BASELINE_VISION_MODELS.anthropic,
+    ]);
+  });
+
+  test("14. a non-native row's explicit text-only modality wins over a colliding native slug", () => {
+    expect(modelAcceptsImageInput(emptyConfig, {
+      provider: "custom-openai-compatible",
+      id: "gpt-5.4-mini",
+      inputModalities: ["text"],
+    })).toBe(false);
+  });
+
   test("5. openai baseline is present when that side is enabled", () => {
     const options = visionEligibleModelOptions(emptyConfig, [], ["openai"]);
     expect(options.map((o) => o.value)).toEqual([BASELINE_VISION_MODELS.openai]);
