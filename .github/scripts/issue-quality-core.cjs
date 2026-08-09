@@ -86,6 +86,7 @@ function protectIndentedCodeLines(text) {
   let markerPrefix = "\u0000OCX_ISSUE_CODE_";
   while (text.includes(markerPrefix)) markerPrefix += "_";
   let mediaDepth = 0;
+  let pendingMediaTag = null;
   let fence = null;
 
   const mask = (line) => {
@@ -109,28 +110,53 @@ function protectIndentedCodeLines(text) {
     // Four-space/tab lines inside an active unindented HTML media block are
     // child markup or fallback text. Treating them as code would keep an
     // otherwise media-only <picture>/<video> block alive.
-    if (mediaDepth === 0 && /^(?: {4,}|\t)/.test(line)) {
+    if (mediaDepth === 0 && pendingMediaTag === null && /^(?: {4,}|\t)/.test(line)) {
       return mask(line);
     }
 
-    mediaDepth = Math.max(0, mediaDepth + htmlMediaDepthDelta(line));
+    const mediaScan = htmlMediaDepthDelta(line, pendingMediaTag);
+    mediaDepth = Math.max(0, mediaDepth + mediaScan.delta);
+    pendingMediaTag = mediaScan.pendingTag;
     return line;
   });
   return { text: masked.join("\n"), lines, markerPrefix };
 }
 
 /**
- * Count opening/closing block-media tags on one line. Self-closing tags do not
- * create a block. This small scanner is only for deciding whether indentation
- * belongs to HTML; stripHtmlMedia remains the authority for removing media.
+ * Count opening/closing block-media tags while carrying an unfinished opening
+ * tag across lines until `>`. Self-closing tags do not create a block. This
+ * scanner only decides whether indentation belongs to HTML; stripHtmlMedia
+ * remains the authority for removing media.
  */
-function htmlMediaDepthDelta(line) {
+function htmlMediaDepthDelta(line, pendingTag = null) {
   let delta = 0;
-  for (const match of line.matchAll(/<(\/)?(picture|video|audio)\b[^>]*>/gi)) {
-    if (match[1]) delta -= 1;
-    else if (!/\/\s*>$/.test(match[0])) delta += 1;
+  let cursor = 0;
+
+  const completeTag = (tag) => {
+    if (/^<\s*\//.test(tag)) delta -= 1;
+    else if (!/\/\s*>$/.test(tag)) delta += 1;
+  };
+
+  if (pendingTag !== null) {
+    const end = line.indexOf(">");
+    if (end === -1) return { delta, pendingTag: `${pendingTag}\n${line}` };
+    completeTag(`${pendingTag}\n${line.slice(0, end + 1)}`);
+    pendingTag = null;
+    cursor = end + 1;
   }
-  return delta;
+
+  const opening = /<(\/)?(picture|video|audio)\b/gi;
+  opening.lastIndex = cursor;
+  for (let match = opening.exec(line); match !== null; match = opening.exec(line)) {
+    const end = line.indexOf(">", opening.lastIndex);
+    if (end === -1) {
+      pendingTag = line.slice(match.index);
+      break;
+    }
+    completeTag(line.slice(match.index, end + 1));
+    opening.lastIndex = end + 1;
+  }
+  return { delta, pendingTag };
 }
 
 /** Restore protected code from ordered tokens, independent of line count. */
@@ -164,12 +190,17 @@ function stripHtmlMedia(text) {
         .replace(/<[^>]+>/g, " ")
         .replace(/[\s_*~`]+/g, " ")
         .trim();
-      // GitHub's generated placeholders remain empty even when wrapped as
-      // fallback text inside a media element. Real captions remain intact.
-      return innerStripped.length === 0 || isPlaceholderOnlyValue(innerStripped) ? " " : match;
+      // Only GitHub's exact generated "No response" value is empty here.
+      // Whole-field stand-ins such as TBD/N/A/None are valid media captions.
+      return innerStripped.length === 0 || isGitHubNoResponseMediaPlaceholder(inner) ? " " : match;
     },
   );
   return s;
+}
+
+function isGitHubNoResponseMediaPlaceholder(inner) {
+  const text = inner.replace(/<[^>]+>/g, " ");
+  return /^[\s_*~`]*No response[\s_*~`]*$/.test(text);
 }
 
 /**
