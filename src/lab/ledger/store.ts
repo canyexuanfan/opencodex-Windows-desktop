@@ -97,22 +97,6 @@ function processLine(
   events.push(event);
 }
 
-function splitIncompleteUtf8Tail(buf: Buffer): { processable: Buffer; remainder: Buffer } {
-  if (buf.length === 0) return { processable: buf, remainder: Buffer.alloc(0) };
-  for (let back = 1; back <= 4 && back <= buf.length; back++) {
-    const byte = buf[buf.length - back]!;
-    if ((byte & 0xc0) === 0x80) continue;
-    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
-    const seqStart = buf.length - back;
-    const available = buf.length - seqStart;
-    if (available < needed) {
-      return { processable: buf.subarray(0, seqStart), remainder: buf.subarray(seqStart) };
-    }
-    break;
-  }
-  return { processable: buf, remainder: Buffer.alloc(0) };
-}
-
 function processBufferedLines(
   buf: Buffer,
   state: {
@@ -142,7 +126,9 @@ function processBufferedLines(
           lineNumber: state.lineNumber,
           detail: `line exceeds ${MAX_SERIALIZED_EVENT_BYTES} bytes without newline`,
         });
-        return { carry: tail, skippingOversizedLine: true };
+        // Drop the oversized prefix immediately. Keeping it would defeat the
+        // replay memory bound and count the same line again at EOF.
+        return { carry: Buffer.alloc(0), skippingOversizedLine: true };
       }
       return { carry: tail, skippingOversizedLine: false };
     }
@@ -157,6 +143,8 @@ function processBufferedLines(
 
     state.lineNumber += 1;
     state.totalLineCount += 1;
+    // Decode only complete JSONL lines. Keeping incomplete line bytes as Buffer
+    // carry naturally preserves UTF-8 code points split across read chunks.
     processLine(lineBytes.toString("utf8"), state.lineNumber, true, state.events, state.seenIds, state.corruptions);
   }
 
@@ -209,16 +197,13 @@ export function replayLabLedger(ledgerPath: string): ReplayResult {
       if (n <= 0) break;
       offset += n;
 
+      // `chunk` is reused by readSync, so any bytes retained beyond this
+      // iteration must be detached from it before the next read.
       const combined = carry.length > 0
         ? Buffer.concat([carry, chunk.subarray(0, n)])
-        : chunk.subarray(0, n);
-      const { processable, remainder } = splitIncompleteUtf8Tail(combined);
-      carry = remainder;
-
-      const result = processBufferedLines(processable, state);
-      carry = result.carry.length > 0
-        ? Buffer.from(Buffer.concat([carry, result.carry]))
-        : carry;
+        : Buffer.from(chunk.subarray(0, n));
+      const result = processBufferedLines(combined, state);
+      carry = result.carry.length > 0 ? Buffer.from(result.carry) : Buffer.alloc(0);
       skippingOversizedLine = result.skippingOversizedLine;
       state.skippingOversizedLine = skippingOversizedLine;
       lineNumber = state.lineNumber;
