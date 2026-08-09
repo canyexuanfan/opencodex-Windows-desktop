@@ -96,7 +96,7 @@ describe("OAuth status privacy", () => {
     expect(JSON.stringify(status)).not.toContain("oauth<script>");
   });
 
-  test("getLoginStatus reports not logged in for an expired credential", async () => {
+  test("getLoginStatus stays logged in for an expired-but-refreshable credential", async () => {
     await saveCredential("xai", {
       access: "access-token",
       refresh: "refresh-token",
@@ -106,10 +106,14 @@ describe("OAuth status privacy", () => {
       source: "local-cli",
     });
 
-    expect(getLoginStatus("xai").loggedIn).toBe(false);
+    // Expired access token with a valid refresh token is still a logged-in account:
+    // request resolution refreshes it lazily. Only needsReauth is authoritative.
+    const status = getLoginStatus("xai");
+    expect(status.loggedIn).toBe(true);
+    expect(status.accounts?.[0]?.needsReauth).toBeUndefined();
   });
 
-  test("getLoginStatus reports not logged in for an unknown (0) credential expiry", async () => {
+  test("getLoginStatus stays logged in for an unknown (0) credential expiry", async () => {
     writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
       xai: {
         access: "access-token",
@@ -118,19 +122,15 @@ describe("OAuth status privacy", () => {
       },
     }), "utf8");
 
-    expect(getLoginStatus("xai").loggedIn).toBe(false);
+    expect(getLoginStatus("xai").loggedIn).toBe(true);
   });
 
-  test("getLoginStatus reports not logged in for a non-finite credential expiry", async () => {
-    writeFileSync(join(TEST_DIR, "auth.json"), JSON.stringify({
-      xai: {
-        access: "access-token",
-        refresh: "refresh-token",
-        expires: NaN,
-      },
-    }), "utf8");
+  test("getLoginStatus stays logged in for a non-finite credential expiry", async () => {
+    // JSON.stringify cannot carry NaN/Infinity, but a hand-written auth.json with an
+    // out-of-range numeric expiry parses to Infinity — the realistic corrupt shape.
+    writeFileSync(join(TEST_DIR, "auth.json"), '{"xai":{"access":"access-token","refresh":"refresh-token","expires":1e999}}', "utf8");
 
-    expect(getLoginStatus("xai").loggedIn).toBe(false);
+    expect(getLoginStatus("xai").loggedIn).toBe(true);
   });
 
   test("getLoginStatus reports not logged in for a needsReauth account", async () => {
