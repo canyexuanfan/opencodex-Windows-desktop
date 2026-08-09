@@ -534,7 +534,7 @@ async function withCursorDiscoveryServer<T>(
 test("empty live-discovery provider renders endpoint guidance and a settings link", () => {
   const html = renderHint(true, { status: "ok" });
   expect(html).toContain("No models were discovered");
-  expect(html).toContain('href="#providers"');
+  expect(html).toContain('class="link-btn"');
   expect(html).toContain("Open provider settings");
   expect(html).not.toContain("Discovery failed");
 });
@@ -545,7 +545,7 @@ test("failed HTTP discovery renders an amber status badge and reason", () => {
   expect(html).toContain("HTTP 401");
   expect(html).toContain('class="badge badge-amber"');
   expect(html).toContain('role="status"');
-  expect(html).toContain('href="#providers"');
+  expect(html).toContain('class="link-btn"');
 });
 
 test("failed discovery renders each server-owned reason without provider detail", () => {
@@ -584,7 +584,7 @@ test("HTTP 401 discovery exposes HTTP status and badge", async () => {
   const html = renderHint(true, discovery);
   expect(html).toContain("Discovery failed");
   expect(html).toContain("HTTP 401");
-  expect(html).toContain('href="#providers"');
+  expect(html).toContain('class="link-btn"');
 });
 
 test("destination-blocked discovery exposes blocked status and badge", async () => {
@@ -614,7 +614,7 @@ test("destination-blocked discovery exposes blocked status and badge", async () 
   const html = renderHint(true, discovery);
   expect(html).toContain("Discovery failed");
   expect(html).toContain("blocked by the destination policy");
-  expect(html).toContain('href="#providers"');
+  expect(html).toContain('class="link-btn"');
 });
 
 test("invalid JSON or malformed model data exposes invalid-response status and badge", async () => {

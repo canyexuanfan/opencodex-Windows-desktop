@@ -479,21 +479,47 @@ test("two processes at the post-approval management seam serialize instead of in
     console.log(JSON.stringify({ status: response.status, catalogRefresh: body.catalogRefresh }));
   `;
 
-  const children = (["a", "b"] as const).map(marker => Bun.spawn(
-    [process.execPath, "--eval", routeScript(marker)],
-    { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" },
-  ));
+  const isPreApprovalLoss = (stderr: string): boolean =>
+    stderr.includes("CONFIG_MUTATION_LOCK_UNAVAILABLE")
+    || (stderr.includes("EEXIST") && stderr.includes("createOwnership"))
+    || /database (?:is|table is) locked/i.test(stderr)
+    || stderr.includes("SQLITE_BUSY");
 
-  const results = await Promise.all(children.map(async child => {
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    return { exitCode, stdout, stderr };
-  }));
+  // On macOS CI both children can still lose the config lock before approval even
+  // after the warm-up — that proves nothing about catalog serialization. Retry
+  // vacuous runs until at least one process reaches the post-approval seam.
+  const attemptDeadline = Date.now() + 20_000;
+  let results: Array<{ exitCode: number; stdout: string; stderr: string }> | undefined;
+  while (Date.now() < attemptDeadline) {
+    for (const marker of ["a", "b"] as const) {
+      rmSync(`${barrier}-${marker}`, { force: true });
+    }
+    writeFileSync(catalogPath, seeded);
 
-  for (const result of results) {
+    const children = (["a", "b"] as const).map(marker => Bun.spawn(
+      [process.execPath, "--eval", routeScript(marker)],
+      { cwd: repoRoot, env: sandbox.env, stdout: "pipe", stderr: "pipe" },
+    ));
+
+    results = await Promise.all(children.map(async child => {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { exitCode, stdout, stderr };
+    }));
+
+    if (results.some(result => result.exitCode === 0)) break;
+
+    for (const result of results) {
+      expect({ preApproval: isPreApprovalLoss(result.stderr), stderr: result.stderr })
+        .toMatchObject({ preApproval: true });
+    }
+  }
+
+  expect(results).toBeDefined();
+  for (const result of results!) {
     // A process can lose a race BEFORE approval and never reach the seam at all.
     // The known cases come from `saveConfigPreservingClaudeCode`: the config mutation
     // lock is already held, two cold processes create the ownership file at once, or
@@ -508,11 +534,8 @@ test("two processes at the post-approval management seam serialize instead of in
     // message as "busy" rather than a database fault, so treating it as a seam failure
     // here contradicted the product code and turned ordinary contention into a red build.
     if (result.exitCode !== 0) {
-      const preApproval = result.stderr.includes("CONFIG_MUTATION_LOCK_UNAVAILABLE")
-        || (result.stderr.includes("EEXIST") && result.stderr.includes("createOwnership"))
-        || /database (?:is|table is) locked/i.test(result.stderr)
-        || result.stderr.includes("SQLITE_BUSY");
-      expect({ preApproval, stderr: result.stderr }).toMatchObject({ preApproval: true });
+      expect({ preApproval: isPreApprovalLoss(result.stderr), stderr: result.stderr })
+        .toMatchObject({ preApproval: true });
       continue;
     }
     const parsed = JSON.parse(result.stdout.trim()) as {
@@ -530,12 +553,12 @@ test("two processes at the post-approval management seam serialize instead of in
 
   // At least one process must have gotten through to the seam, or this test would
   // be vacuous — two config-lock losers prove nothing about catalog serialization.
-  expect(results.some(r => r.exitCode === 0)).toBe(true);
+  expect(results!.some(r => r.exitCode === 0)).toBe(true);
 
   // At least one process must reach a real commit, or the race proves nothing:
   // the adapter is total, so a seam that only ever failed would still answer 2xx
   // with a typed disposition and satisfy every assertion above.
-  const dispositions = results
+  const dispositions = results!
     .filter(r => r.exitCode === 0)
     .map(r => (JSON.parse(r.stdout.trim()) as { catalogRefresh: { status: string } }).catalogRefresh.status);
   expect(dispositions).toContain("committed");
