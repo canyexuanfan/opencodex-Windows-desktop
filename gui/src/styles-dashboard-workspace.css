@@ -76,45 +76,18 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr));
   gap: var(--space-4);
-  align-items: start;
-}
-
-/* Title + select on one row; hint gets the full card width underneath so
-   it stays a stable 2-line block (no clamp / no cutoff when the select grows). */
-.dash-sidecar-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.dash-sidecar-card__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  min-width: 0;
-}
-
-.dash-sidecar-card__row .font-semibold {
-  min-width: 0;
-}
-
-.dash-sidecar-card__row .custom-select {
-  /* Reserve baseline space to prevent row reflow, but keep the trigger
-     compact instead of forcing a permanently wide fixed width. */
-  flex: 0 1 auto;
-  width: auto;
-  min-width: clamp(10rem, 24vw, 11.5rem);
-  max-width: min(100%, 14rem);
+  /* Stretch, not start: the two sidecar cards are a matched pair, and a hint that
+     wraps to a different line count in one of them should not leave the other
+     visibly short. */
+  align-items: stretch;
 }
 
 /* The effort control holds one short wire value (low…max); it must not inherit
-   the model select's reserved width. Scoped to the vision card: the delegation
-   panel's controls end in a button today, but that is its markup's accident,
-   not a contract this rule should depend on. */
-.dash-vision-card .dash-delegation-controls .custom-select:last-child {
+   the model select's reserved width. Matched by POSITION, not `:last-child`:
+   the web-search card has a single select that is simultaneously first and last,
+   and `:last-child` would shrink its model picker too. `:nth-child(2)` only ever
+   matches a real second control. */
+.dash-sidecar-row-card .dash-delegation-controls .custom-select:nth-child(2) {
   min-width: 6.5rem;
   max-width: 9rem;
 }
@@ -128,7 +101,7 @@
    copy block is the flex item that yields, so it needs a real basis: without
    one, `flex-basis: auto` lets its max-content width win the negotiation and the
    text overlaps the control group in longer locales (ko/ru/ja). */
-.dash-vision-card .dash-sidecar-copy {
+.dash-sidecar-row-card .dash-sidecar-copy {
   flex: 1 1 0;
   overflow-wrap: anywhere;
 }
@@ -139,34 +112,34 @@
    left under the hint text. Hold the group at content width and make the copy the
    only thing that gives way; the narrow-viewport case is handled by stacking the
    whole card below. */
-.dash-vision-card .dash-delegation-controls {
+.dash-sidecar-row-card .dash-delegation-controls {
   flex: 0 0 auto;
   flex-wrap: nowrap;
 }
 
 /* The model select carries the long value: give it a floor wide enough to read a
    real model id, and ellipsize inside rather than growing without bound. */
-.dash-vision-card .dash-delegation-controls .custom-select:first-child {
+.dash-sidecar-row-card .dash-delegation-controls .custom-select:first-child {
   min-width: 10.5rem;
   max-width: 14rem;
 }
 
-.dash-vision-card .dash-delegation-controls .select-trigger {
+.dash-sidecar-row-card .dash-delegation-controls .select-trigger {
   width: 100%;
   max-width: 100%;
   justify-content: space-between;
 }
 
-.dash-vision-card .dash-delegation-controls .select-trigger > span {
+.dash-sidecar-row-card .dash-delegation-controls .select-trigger > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
 
-/* The vision panel is a delegation-style ROW, so it must not inherit
-   .dash-sidecar-card's flex-direction: column. It only ever needed min-width. */
-.dash-vision-card {
+/* Both sidecar panels are delegation-style ROWS. This class carries only the
+   grid-cell min-width; the row layout itself comes from .dash-delegation-summary. */
+.dash-sidecar-row-card {
   min-width: 0;
 }
 
@@ -174,31 +147,14 @@
    overflowing. Measured: the row is clean down to ~320px viewport; under that the
    controls would push past the panel edge. */
 @media (max-width: 22rem) {
-  .dash-vision-card {
+  .dash-sidecar-row-card {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .dash-vision-card .dash-delegation-controls {
+  .dash-sidecar-row-card .dash-delegation-controls {
     justify-content: flex-start;
   }
-}
-
-.dash-sidecar-card__row .select-trigger {
-  width: 100%;
-  max-width: 100%;
-  justify-content: space-between;
-}
-
-.dash-sidecar-card__row .select-trigger > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.dash-sidecar-card .setting-hint {
-  margin-top: 0;
 }
 
 /* Available models: search + per-provider accordion with model chips */

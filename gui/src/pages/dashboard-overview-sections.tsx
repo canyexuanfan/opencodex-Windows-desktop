@@ -269,9 +269,14 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
       </div>
 
       <div className="dash-sidecar-grid">
-        <div className="panel dash-sidecar-card" aria-busy={!sidecar || undefined}>
-          <div className="dash-sidecar-card__row">
+        {/* Both sidecar cards wear the DashboardInjectionPanel shell: the PANEL is
+            the flex row, copy left, controls right. */}
+        <div className="panel dash-delegation-summary dash-sidecar-row-card" aria-busy={!sidecar || undefined}>
+          <div className="dash-sidecar-copy">
             <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
+            <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
+          </div>
+          <div className="dash-delegation-controls">
             <Select
               value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
               options={sidecarModels}
@@ -280,11 +285,9 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               label={t("dash.sidecarModel")}
             />
           </div>
-          <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
         </div>
 
-        {/* Same shell as DashboardInjectionPanel: the PANEL is the flex row. */}
-        <div className="panel dash-delegation-summary dash-vision-card" aria-busy={!sidecar || undefined}>
+        <div className="panel dash-delegation-summary dash-sidecar-row-card" aria-busy={!sidecar || undefined}>
           <div className="dash-sidecar-copy">
             <div className="font-semibold">{t("dash.visionSidecar")}</div>
             <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
