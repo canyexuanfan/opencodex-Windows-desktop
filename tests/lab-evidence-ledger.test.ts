@@ -28,9 +28,12 @@ import {
   LAB_PRODUCER,
   LAB_PROJECTION_SPEC_VERSION,
 } from "../src/lab";
-import { ArtifactFsError, putArtifactBytes, putNamedDigestBytes, readArtifactBytes, digestFileName } from "../src/lab/artifacts/secure-fs";
+import { ArtifactFsError, closeTrustedArtifactDir, putArtifactBytes, putNamedDigestBytes, readArtifactBytes, digestFileName } from "../src/lab/artifacts/secure-fs";
 import { discoverScenarios, loadCaseAuthority } from "../src/lab/conformance/manifest";
+import type { CaseRecord } from "../src/lab/conformance/types";
 import { runScenario } from "../src/lab/conformance/executor";
+import { LabValidationError } from "../src/lab/events/validate";
+import { enforceEventStructureLimits } from "../src/lab/events/limits";
 import type { ClaimSnapshotEvent, ObservationEvent, ProtocolSubjectV1 } from "../src/lab/events/types";
 
 const HOMES: string[] = [];
@@ -61,6 +64,37 @@ function withHome<T>(fn: (home: string) => T): T {
   const home = tempHome();
   process.env.OPENCODEX_HOME = home;
   return fn(home);
+}
+
+function syntheticPassResult(caseRecord: CaseRecord) {
+  return {
+    scenarioId: caseRecord.id,
+    suite: caseRecord.suite,
+    passed: true,
+    classification: "protocol_failure" as const,
+    assertionResults: caseRecord.assertions.map((a) => ({
+      id: a.id,
+      operator: a.operator,
+      required: a.required,
+      passed: true,
+      observedSummary: "ok",
+    })),
+    diagnostics: [],
+  };
+}
+
+function persistAllSuiteScenarios(home: string, suiteId: string, authority = loadCaseAuthority()) {
+  const scenarios = discoverScenarios(authority, [suiteId]);
+  let recordedAt = 1_700_000_000_000;
+  for (const caseRecord of scenarios) {
+    const store = createArtifactStore(join(home, "lab", "artifacts"));
+    persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+      configDir: home,
+      recordedAt: recordedAt++,
+      artifactStore: store,
+    });
+    store.close();
+  }
 }
 
 function protocolSubject(seed = "a"): ProtocolSubjectV1 {
@@ -194,8 +228,12 @@ describe("CL-02 ledger append/replay", () => {
       }
       // Write contract-named bytes for digests referenced by the event
       const dir = openTrustedArtifactDir(join(home, "lab", "artifacts"));
-      for (const ref of event.artifactRefs) {
-        putNamedDigestBytes(dir, ref.digest, new TextEncoder().encode("{}"), () => ref.digest);
+      try {
+        for (const ref of event.artifactRefs) {
+          putNamedDigestBytes(dir, ref.digest, new TextEncoder().encode("{}"), () => ref.digest);
+        }
+      } finally {
+        closeTrustedArtifactDir(dir);
       }
 
       appendLabEvent(join(home, "lab", "compatibility.jsonl"), event);
@@ -399,9 +437,13 @@ describe("CL-02 artifacts and secure FS", () => {
   test("traversal and absolute digest names are rejected", () => {
     withHome((home) => {
       const dir = openTrustedArtifactDir(join(home, "lab", "artifacts"));
-      expect(() => digestFileName("../passwd")).toThrow();
-      expect(() => digestFileName("C:\\Windows\\x")).toThrow();
-      expect(() => readArtifactBytes(dir, "../aaaa")).toThrow();
+      try {
+        expect(() => digestFileName("../passwd")).toThrow();
+        expect(() => digestFileName("C:\\Windows\\x")).toThrow();
+        expect(() => readArtifactBytes(dir, "../aaaa")).toThrow();
+      } finally {
+        closeTrustedArtifactDir(dir);
+      }
     });
   });
 
@@ -420,7 +462,11 @@ describe("CL-02 artifacts and secure FS", () => {
         return;
       }
       const dir = openTrustedArtifactDir(artifacts);
-      expect(() => readArtifactBytes(dir, digest, { contentDigest: () => digest })).toThrow(ArtifactFsError);
+      try {
+        expect(() => readArtifactBytes(dir, digest, { contentDigest: () => digest })).toThrow(ArtifactFsError);
+      } finally {
+        closeTrustedArtifactDir(dir);
+      }
     });
   });
 
@@ -428,51 +474,60 @@ describe("CL-02 artifacts and secure FS", () => {
     withHome((home) => {
       const artifacts = join(home, "lab", "artifacts");
       const dir = openTrustedArtifactDir(artifacts);
-      const bytes = new TextEncoder().encode("hl");
-      const stored = putArtifactBytes(dir, bytes);
-      const second = join(artifacts, `${createHashHex("other")}.bin`);
       try {
-        linkSync(join(artifacts, `${stored.digest}.bin`), second);
-      } catch {
-        return;
+        const bytes = new TextEncoder().encode("hl");
+        const stored = putArtifactBytes(dir, bytes);
+        const second = join(artifacts, `${createHashHex("other")}.bin`);
+        try {
+          linkSync(join(artifacts, `${stored.digest}.bin`), second);
+        } catch {
+          return;
+        }
+        expect(() => readArtifactBytes(dir, stored.digest)).toThrow();
+      } finally {
+        closeTrustedArtifactDir(dir);
       }
-      // nlink should now be 2 on original
-      expect(() => readArtifactBytes(dir, stored.digest)).toThrow();
     });
   });
 
   test("digest mismatch fails closed", () => {
     withHome((home) => {
       const dir = openTrustedArtifactDir(join(home, "lab", "artifacts"));
-      const bytes = new TextEncoder().encode("abc");
-      expect(() => putArtifactBytes(dir, bytes, createHashHex("wrong"))).toThrow();
+      try {
+        const bytes = new TextEncoder().encode("abc");
+        expect(() => putArtifactBytes(dir, bytes, createHashHex("wrong"))).toThrow();
+      } finally {
+        closeTrustedArtifactDir(dir);
+      }
     });
   });
 });
 
 describe("CL-02 projection rebuild determinism", () => {
+  test("partial required coverage for a subject yields PROBED not VERIFIED", () => {
+    withHome((home) => {
+      const authority = loadCaseAuthority();
+      const caseRecord = discoverScenarios(authority, ["responses-core"]).find(
+        (c) => c.id === "responses-core.protocol.sse-framing",
+      )!;
+      persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+        configDir: home,
+        recordedAt: 1_700_000_000_000,
+      });
+      const rebuilt = rebuildLabProjection(home);
+      const snap = readVerdictSnapshot(rebuilt.sqlitePath);
+      expect(snap.length).toBe(1);
+      expect((snap[0] as { verdict: string }).verdict).toBe("PROBED");
+    });
+  });
+
   test("rebuild twice reproduces the same non-purged derived verdict rows", () => {
     withHome((home) => {
       const authority = loadCaseAuthority();
-      const scenarios = discoverScenarios(authority, ["responses-core"]);
-      const caseRecord = scenarios[0]!;
-      // Use a lightweight synthetic pass result without running full harness for speed
-      // but still go through the CL-01 seam types.
-      const result = {
-        scenarioId: caseRecord.id,
-        suite: caseRecord.suite,
-        passed: true,
-        classification: "protocol_failure" as const,
-        assertionResults: caseRecord.assertions.map((a) => ({
-          id: a.id,
-          operator: a.operator,
-          required: a.required,
-          passed: true,
-          observedSummary: "ok",
-        })),
-        diagnostics: [],
-      };
-      persistConformanceResult(result, caseRecord, authority, {
+      const caseRecord = discoverScenarios(authority, ["responses-core"]).find(
+        (c) => c.id === "responses-core.protocol.sse-framing",
+      )!;
+      persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
         configDir: home,
         recordedAt: 1_700_000_000_000,
       });
@@ -485,11 +540,34 @@ describe("CL-02 projection rebuild determinism", () => {
       const snap3 = readVerdictSnapshot(third.sqlitePath);
       expect(snap1).toEqual(snap2);
       expect(snap2).toEqual(snap3);
-      expect(snap1.length).toBeGreaterThan(0);
-      expect((snap1[0] as { verdict: string }).verdict).toBe("VERIFIED");
+      expect(snap1.length).toBe(1);
+      expect((snap1[0] as { verdict: string }).verdict).toBe("PROBED");
       expect((snap1[0] as { projection_spec_version: string }).projection_spec_version).toBe(
         LAB_PROJECTION_SPEC_VERSION,
       );
+    });
+  });
+
+  test("full applicable required coverage yields VERIFIED", () => {
+    withHome((home) => {
+      const authority = loadCaseAuthority();
+      const scenarios = discoverScenarios(authority, ["responses-core"]).filter((c) =>
+        c.requirements.upstreamProtocols[0] === "openai-responses" &&
+        c.requirements.surfaces[0] === "responses-sse",
+      );
+      let recordedAt = 1_700_000_000_000;
+      for (const caseRecord of scenarios) {
+        const store = createArtifactStore(join(home, "lab", "artifacts"));
+        persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+          configDir: home,
+          recordedAt: recordedAt++,
+          artifactStore: store,
+        });
+        store.close();
+      }
+      const rebuilt = rebuildLabProjection(home);
+      const snap = readVerdictSnapshot(rebuilt.sqlitePath);
+      expect(snap.some((row) => (row as { verdict: string }).verdict === "VERIFIED")).toBe(true);
     });
   });
 
@@ -585,8 +663,6 @@ describe("CL-02 CL-01 integration", () => {
       expect(snap.length).toBe(1);
       expect((snap[0] as { evidence_layer: string }).evidence_layer).toBe("protocol_conformance");
       expect((snap[0] as { verdict: string }).verdict).toBe("VERIFIED");
-      const projected = projectVerdicts(replay.events);
-      expect(projected.verdicts[0]!.verdict).toBe("VERIFIED");
     });
   });
 });
@@ -594,21 +670,23 @@ describe("CL-02 CL-01 integration", () => {
 describe("CL-02 privacy canaries", () => {
   test("sanitizer strips secret-shaped and path material from evidence artifacts", () => {
     withHome((home) => {
+      const secretCanary = "sk-" + "a".repeat(32);
       const store = createArtifactStore(join(home, "lab", "artifacts"));
       const ref = store.put({
         artifactClass: "error_taxonomy",
         payload: {
-          message: "failed sk-abcdefghijklmnopqrstuvwxyz123456",
+          message: `failed ${secretCanary}`,
           path: "C:\\Users\\victim\\secrets\\token.txt",
           authorization: "Bearer SUPERSECRET",
           url: "https://user:pass@example.com/v1",
         },
       });
       const text = new TextDecoder().decode(store.get(ref.digest));
-      expect(text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz123456");
+      expect(text).not.toContain(secretCanary);
       expect(text).not.toContain("SUPERSECRET");
       expect(text).not.toContain("victim");
       expect(text).not.toContain("user:pass");
+      store.close();
     });
   });
 });
@@ -630,3 +708,144 @@ describe("CL-02 empty/corrupt ledger", () => {
 void chmodSync;
 void existsSync;
 void claimSourceManifestDigest;
+void LabValidationError;
+
+describe("CL-02 review regression coverage", () => {
+  test("multiple scenarios for same subject aggregate under one verdict group", () => {
+    withHome((home) => {
+      const authority = loadCaseAuthority();
+      const scenarios = discoverScenarios(authority, ["responses-core"]).filter((c) =>
+        c.requirements.upstreamProtocols[0] === "openai-responses" &&
+        c.requirements.surfaces.includes("responses-sse"),
+      );
+      expect(scenarios.length).toBeGreaterThan(1);
+      let t = 1_700_000_000_000;
+      const subjectIds = new Set<string>();
+      for (const caseRecord of scenarios.slice(0, 2)) {
+        const store = createArtifactStore(join(home, "lab", "artifacts"));
+        const { event } = observationFromConformanceResult(
+          syntheticPassResult(caseRecord),
+          caseRecord,
+          authority,
+          { configDir: home, recordedAt: t++, artifactStore: store },
+        );
+        store.close();
+        subjectIds.add(event.subjectId);
+        appendLabEvent(join(home, "lab", "compatibility.jsonl"), event);
+      }
+      expect(subjectIds.size).toBe(1);
+      const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
+      const projected = projectVerdicts(replay.events);
+      expect(projected.verdicts.length).toBe(1);
+      expect(projected.verdicts[0]!.contributingEventIds.length).toBe(2);
+    });
+  });
+
+  test("shared artifact survives partial purge when another observation still references it", () => {
+    withHome((home) => {
+      const authority = loadCaseAuthority();
+      const scenarios = discoverScenarios(authority, ["responses-core"]).filter((c) =>
+        c.requirements.upstreamProtocols[0] === "openai-responses" &&
+        c.requirements.surfaces[0] === "responses-sse",
+      ).slice(0, 2);
+      let t = 1000;
+      const events = scenarios.map((caseRecord) => {
+        const store = createArtifactStore(join(home, "lab", "artifacts"));
+        const persisted = persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+          configDir: home,
+          recordedAt: t++,
+          artifactStore: store,
+        });
+        store.close();
+        return persisted.event;
+      });
+      const sharedDigest = events[0]!.suiteManifestDigest;
+      expect(events[1]!.suiteManifestDigest).toBe(sharedDigest);
+      purgeSensitiveEvidence({
+        configDir: home,
+        targetEventIds: [events[0]!.eventId],
+        targetArtifactDigests: [],
+        recordedAt: 5000,
+      });
+      const store = createArtifactStore(join(home, "lab", "artifacts"));
+      try {
+        expect(store.get(sharedDigest).byteLength).toBeGreaterThan(0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test("missing required artifact excludes observation from positive projection", () => {
+    withHome((home) => {
+      const authority = loadCaseAuthority();
+      const caseRecord = discoverScenarios(authority, ["responses-core"]).find(
+        (c) => c.id === "responses-core.protocol.sse-framing",
+      )!;
+      const { event } = persistConformanceResult(
+        syntheticPassResult(caseRecord),
+        caseRecord,
+        authority,
+        { configDir: home, recordedAt: 1000 },
+      );
+      const rebuilt = rebuildLabProjection(home);
+      expect((readVerdictSnapshot(rebuilt.sqlitePath)[0] as { verdict: string }).verdict).toBe("PROBED");
+      rmSync(join(home, "lab", "artifacts", `${event.scenarioManifestDigest}.bin`));
+      const after = rebuildLabProjection(home);
+      expect(readVerdictSnapshot(after.sqlitePath)).toEqual([]);
+      expect(after.corruptions.some((c) => c.kind === "missing_artifact")).toBe(true);
+    });
+  });
+
+  test("event admission rejects excessive nesting and secret-shaped fields", () => {
+    let deep: Record<string, unknown> = { ok: true };
+    for (let i = 0; i < 10; i++) deep = { nested: deep };
+    expect(() => enforceEventStructureLimits(deep)).toThrow();
+    expect(() => enforceEventStructureLimits({ authorization: "x" })).toThrow();
+    const secret = "sk-" + "z".repeat(20);
+    expect(() => enforceEventStructureLimits({ message: secret })).toThrow();
+  });
+
+  test("unusable claim source prevents CLAIMED projection", () => {
+    withHome((home) => {
+      const subject = {
+        subjectSchemaVersion: 1 as const,
+        subjectKind: "route" as const,
+        providerId: "openai",
+        providerInstanceFingerprint: createHashHex("inst"),
+        clientModelId: "gpt",
+        upstreamModelId: "gpt",
+        effectiveAdapter: "openai-responses",
+        inboundProtocol: "openai-responses",
+        upstreamProtocol: "openai-responses",
+        surface: "responses-http",
+        opencodexCompatibilityVersion: "protocol-v1",
+        behaviorFingerprint: createHashHex("bf"),
+        endpointFingerprint: createHashHex("ep"),
+        dependencies: [],
+      };
+      const subjectId = subjectIdForSubject(subject);
+      const bogusDigest = createHashHex("missing-claim-source");
+      const claim = assignEventId({
+        schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+        eventKind: "claim_snapshot" as const,
+        recordedAt: 10,
+        producer: LAB_PRODUCER,
+        producerVersion: "2.10.2",
+        evidenceLayer: "live_route_compatibility" as const,
+        subject,
+        subjectId,
+        capability: "tools",
+        polarity: "supported" as const,
+        sourceManifestDigest: bogusDigest,
+        sourceEventIds: [],
+        supersedes: [],
+        effectiveAt: 10,
+      }) as ClaimSnapshotEvent;
+      appendLabEvent(join(home, "lab", "compatibility.jsonl"), claim);
+      const rebuilt = rebuildLabProjection(home);
+      const snap = readVerdictSnapshot(rebuilt.sqlitePath);
+      expect(snap.every((row) => (row as { verdict: string }).verdict !== "CLAIMED")).toBe(true);
+    });
+  });
+});

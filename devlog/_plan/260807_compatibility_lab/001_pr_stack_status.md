@@ -21,7 +21,7 @@ independent review, blockers, and whether a later phase is authorized.
 |---|---|---|---|---|---|
 | CL-00 | `feat/cl-00-compatibility-contracts` | `3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296` | `c014464237fd3c95bda08bc18bfab8ba8f532308` | [#1286](https://github.com/lidge-jun/opencodex/pull/1286) | ACCEPTED AFTER CODERABBIT REMEDIATION (merged to `dev` at `243c3f4905797aa11c62ba933bb03d6d721266fd`) |
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
-| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | `cb94cf0a3e2f319264f2b56fbd7e3ddce8243573` | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION IN REVIEW |
+| CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | (review fixes pending push) | [draft #1333](https://github.com/lidge-jun/opencodex/pull/1333) | IMPLEMENTATION COMPLETE — VALIDATION IN PROGRESS — NOT INDEPENDENTLY ACCEPTED |
 | CL-03 | — | — | — | — | NOT STARTED |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
@@ -107,16 +107,26 @@ Independent CL-00 acceptance review is frozen at
 
 ### Boundary note (verdict algorithm)
 
-CL-02 implements reusable projection primitives and a conservative
-protocol-conformance projection sufficient to persist and rebuild derived
-verdict rows with required provenance (`asOf`, projection spec version,
-manifest digests, contributing event IDs). Full suite-manifest-driven coverage
-rules for live-route and task layers remain later-phase work; claims cannot
-produce `PROBED`/`VERIFIED`.
+CL-02 implements frozen `all-applicable-required-pass-v1` evaluation with
+subject-aware applicability (required scenarios whose manifest requirements
+match the exact protocol subject, excluding live-reserved cases in fixture
+mode). Positive `VERIFIED` requires a non-empty applicable required set and a
+current pass for every member. Descriptor/handle-bound artifact I/O, fail-closed
+sensitive purge with shared-artifact retention, recursive event admission
+ceilings, and unusable-evidence exclusion from projection are implemented.
+Claims cannot produce `PROBED`/`VERIFIED`.
+
+### CL-02 validation status (2026-08-09 review fixes)
+
+- **Implementation:** complete on `feat/cl-02-evidence-ledger` (pending push).
+- **Local validation:** `bun x tsc --noEmit`, `bun run privacy:scan`, CL-01/CL-02
+  tests, and repo hygiene checks green on Windows host.
+- **Independent acceptance:** not yet — draft PR #1333 remains open for review.
+- **CL-03:** not started.
 
 ## Authorization
 
 - CL-00: **ACCEPTED** (merged #1286).
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
-- CL-02: **IMPLEMENTATION IN REVIEW** on `feat/cl-02-evidence-ledger`.
+- CL-02: **IMPLEMENTATION COMPLETE — VALIDATION IN PROGRESS — NOT INDEPENDENTLY ACCEPTED** on `feat/cl-02-evidence-ledger` (draft #1333).
 - CL-03: **NOT STARTED**.
