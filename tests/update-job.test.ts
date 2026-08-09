@@ -446,6 +446,40 @@ describe("GUI update execution decisions", () => {
     });
   });
 
+  test("service restart is not skipped when the listener scan fails", async () => {
+    let serviceRuns = 0;
+    const job: UpdateJobState = {
+      id: "svc-scan-failure",
+      status: "restarting",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentVersion: "2.10.2",
+      latestVersion: "2.10.3",
+      channel: "latest",
+      installer: "npm",
+      restart: true,
+      command: "",
+      log: [],
+    };
+    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    await restartAfterUpdateForTests(job, { port: 19997, hostname: "127.0.0.1" }, {
+      serviceInstalledFn: () => true,
+      serviceViableFn: () => true,
+      waitForPort: async () => false,
+      listListenPidsFn: () => [],
+      scanListenPidsFn: () => ({ ok: false, error: "listener tools unavailable" }),
+      runService: () => {
+        serviceRuns += 1;
+        return { status: 0 };
+      },
+      probeProxy: async () => true,
+    });
+    expect(serviceRuns).toBe(1);
+    expect(readUpdateJob(job.id)?.log.some(line =>
+      line.includes("Skipping service reinstall after reclaim timeout"),
+    )).toBe(false);
+  });
+
   test("proxy restart pins --port so post-update start does not hop to an ephemeral port", () => {
     const proxy = restartCommand(false, "npm", "/pkg/bin/ocx.mjs", 10100);
     expect(proxy.mode).toBe("proxy");
