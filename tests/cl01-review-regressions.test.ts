@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { runScenario } from "../src/lab/conformance/executor";
+import { nonstreamObservationJson, runScenario } from "../src/lab/conformance/executor";
 import { loadCaseAuthority } from "../src/lab/conformance/manifest";
 import { emptyObservation, finalizeObservation } from "../src/lab/conformance/observation";
 import type { CaseRecord, NormalizedEvent } from "../src/lab/conformance/types";
@@ -71,4 +71,12 @@ test("expected-failure controls with no assertion ids fail as malformed manifest
   expect(result.passed).toBe(false);
   expect(result.classification).toBe("harness_failure");
   expect(result.diagnostics.join(" ")).toContain("lists no assertionIds");
+});
+
+test("nonstream observation falls back to fixture JSON when parser emits no events", () => {
+  const fixture = {
+    id: "chatcmpl_fixture",
+    choices: [{ message: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+  };
+  expect(nonstreamObservationJson([], fixture)).toBe(fixture);
 });
