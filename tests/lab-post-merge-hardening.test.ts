@@ -18,6 +18,7 @@ import {
   openTrustedArtifactDir,
   putNamedDigestBytes,
 } from "../src/lab/artifacts/secure-fs";
+import { suiteManifestDigest } from "../src/lab/digest";
 import { enforceEventStructureLimits } from "../src/lab/events/limits";
 import type { ObservationEvent, ProtocolSubjectV1 } from "../src/lab/events/types";
 
@@ -176,12 +177,19 @@ test("replay discards an oversized unterminated line after reporting it once", (
   expect(replay.corruptions[0]?.kind).toBe("malformed_line");
 });
 
-test("event privacy admission rejects embedded POSIX paths after delimiters", () => {
-  try {
-    enforceEventStructureLimits({ detail: "config=/home/alice/work/repo" });
-    throw new Error("expected raw_path rejection");
-  } catch (err) {
-    expect((err as { code?: string }).code).toBe("raw_path");
+test("event privacy admission rejects raw POSIX path bypass forms", () => {
+  for (const detail of [
+    "config=/home/alice/work/repo",
+    "cwd=/usr/local/bin",
+    "cwd=/tmp",
+    "x-/home/alice",
+  ]) {
+    try {
+      enforceEventStructureLimits({ detail });
+      throw new Error(`expected raw_path rejection for ${detail}`);
+    } catch (err) {
+      expect((err as { code?: string }).code).toBe("raw_path");
+    }
   }
 });
 
@@ -202,6 +210,36 @@ test("invalid JSON contract artifacts classify as artifact_mismatch", () => {
     try {
       store.get(digest, { artifactClass: "suite_manifest" });
       throw new Error("expected artifact mismatch");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ArtifactFsError);
+      expect((err as ArtifactFsError).code).toBe("artifact_mismatch");
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test("contract artifacts reject malformed UTF-8 instead of replacement-decoding it", () => {
+  const home = tempHome();
+  const artifactsDir = join(home, "artifacts");
+  const invalidUtf8 = Buffer.concat([
+    Buffer.from('{"x":"', "utf8"),
+    Buffer.from([0x80]),
+    Buffer.from('"}', "utf8"),
+  ]);
+  const digest = suiteManifestDigest({ x: "\uFFFD" });
+  const dir = openTrustedArtifactDir(artifactsDir);
+  try {
+    putNamedDigestBytes(dir, digest, invalidUtf8, () => digest);
+  } finally {
+    closeTrustedArtifactDir(dir);
+  }
+
+  const store = createArtifactStore(artifactsDir);
+  try {
+    try {
+      store.get(digest, { artifactClass: "suite_manifest" });
+      throw new Error("expected malformed UTF-8 artifact mismatch");
     } catch (err) {
       expect(err).toBeInstanceOf(ArtifactFsError);
       expect((err as ArtifactFsError).code).toBe("artifact_mismatch");
