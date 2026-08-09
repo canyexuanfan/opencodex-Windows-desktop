@@ -51,6 +51,11 @@ import {
   type DebugFlag,
 } from "../../lib/debug-settings";
 import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
+import {
+  visionCandidateRows,
+  visionDescriberIsProvablyBlind,
+  visionDescriberRejection,
+} from "./vision-sidecar-options";
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
@@ -1006,6 +1011,19 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
       if (section.model !== undefined && typeof section.model !== "string") {
         return jsonResponse({ error: `${field}.model must be a string` }, 400);
+      }
+      // Vision override only: reject a model we can prove is blind. Unknown ids stay
+      // allowed; webSearchSidecar has no vision requirement and is left alone. Shares
+      // one policy module with /api/sidecar-settings so the two gates cannot drift.
+      if (field === "visionSidecar" && typeof section.model === "string" && section.model !== "") {
+        const requested = section.model;
+        const candidates = await visionCandidateRows(config);
+        const hint = section.backend === "anthropic" || section.backend === "openai"
+          ? section.backend
+          : config.claudeCode?.visionSidecar?.backend;
+        if (visionDescriberIsProvablyBlind(config, requested, candidates, hint)) {
+          return jsonResponse(visionDescriberRejection("visionSidecar.model", requested, config, candidates), 400);
+        }
       }
     }
     const next = { ...(config.claudeCode ?? {}) };
