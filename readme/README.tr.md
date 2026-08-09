@@ -30,7 +30,7 @@ ocx start        # localhost:10100 üzerinde proxy + panel
   <tr>
     <td width="50%" align="center">
       <img src="../assets/claude-desktop-subagent.gif" alt="Claude Desktop demosu" width="410"><br>
-      <sub><b>Claude Desktop, herhangi bir modeli çalıştırıyor.</b><br>Opus yanıtlar, ardından görevi GPT-5.6 Sol alt ajanına devreder.</sub>
+      <sub><b>Claude Desktop, herhangi bir modeli çalıştırıyor.</b><br>Opus yanıt verir, ardından görevi GPT-5.6 Sol alt ajanına devreder.</sub>
     </td>
     <td width="50%" align="center">
       <img src="../assets/grok-build-subagent.gif" alt="Grok Build demosu" width="410"><br>
