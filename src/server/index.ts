@@ -25,12 +25,10 @@ import { getCodexHome } from "../codex/paths";
 import { shouldSyncCodexOnStart } from "../codex/desired-state";
 import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
-import { startMemoryWatchdog } from "./memory-watchdog";
 import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
-import { startStateStoreSweeper } from "../lib/state-store-sweeper";
 import {
   configureAppOwnedMemoryBudget,
   enforceAppOwnedMemoryBudget,
@@ -41,9 +39,7 @@ import {
   registerDefaultAppOwnedMemoryStores,
   registerDefaultAppOwnedObservedBuffers,
 } from "../lib/app-owned-memory-stores";
-import { setStorageCleanupPolicyLiveSink } from "../storage/policy";
-import { setStorageCleanupPolicyJobLiveApply } from "../storage/policy-job";
-import { scheduleStorageCleanupStartupRun, startStorageCleanupScheduler } from "../storage/policy-scheduler";
+import { acquireServerBackgroundLifecycle } from "./background-lifecycle";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
@@ -486,16 +482,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // usage.jsonl already persists every request; rehydrate the in-memory Logs ring so
   // /api/logs (and the GUI) survive `ocx stop` / `ocx start` process restarts.
   hydrateRequestLogsFromDisk();
-  // #314: warn-only RSS observability (unref'd, idempotent — safe under repeated
-  // startServer(0) in tests). Snapshot surfaces via GET /api/system/memory.
-  startMemoryWatchdog();
   registerDefaultAppOwnedMemoryStores();
   registerDefaultAppOwnedObservedBuffers();
   registerAppOwnedMemorySweepFallback();
   configureAppOwnedMemoryBudget(resolveAppOwnedMemoryBudgetBytes(config.appOwnedMemoryBudgetMb));
   enforceAppOwnedMemoryBudget();
   registerCodexCooldownRecoveryProbeWorker(config);
-  startStateStoreSweeper();
   // Issue #42 Phase 3: opt-in archived auto-cleanup (default OFF). Unref'd hourly
   // tick for daily/weekly; startup evaluation is fire-and-forget after listen.
   // Heavy work runs in a Worker via the single-flight job controller.
@@ -503,9 +495,6 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   const applyPolicy = (policy: StorageCleanupPolicy) => {
     config.storageCleanupPolicy = policy;
   };
-  setStorageCleanupPolicyLiveSink(applyPolicy);
-  setStorageCleanupPolicyJobLiveApply(applyPolicy);
-  startStorageCleanupScheduler();
 
   const listenPort = port ?? config.port ?? 10100;
   setCorsOrigin(listenPort);
@@ -632,7 +621,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     };
   let server: Server<WsData>;
   let loopbackServer: Server<WsData> | null = null;
+  let backgroundLifecycle: ReturnType<typeof acquireServerBackgroundLifecycle> | null = null;
   try {
+    backgroundLifecycle = acquireServerBackgroundLifecycle(applyPolicy);
     const serveOptions = {
       idleTimeout: 255,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
@@ -815,12 +806,14 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
         const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
         const disabledNatives = disabledNativeSlugs(config);
         const disabledModels = new Set(config.disabledModels ?? []);
+        const shadowedNativeSlugs = configuredNativeAliasSlugs(config);
+        const suppressedBareNativeSlugs = desktopAllowlistSuppressedNativeSlugs(config);
         const accountSelectors = includeAccountBoundNativeOpenAi
           ? visibleCodexAccountSelectors(config)
           : [];
@@ -873,7 +866,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           const catalogNativeSlugs = accountSelectors.length > 0
             ? NATIVE_OPENAI_MODELS
             : nativeSlugs;
-          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors);
+          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors, suppressedBareNativeSlugs);
           return jsonResponse({
             models: applyNativeVisibility(
               entries,
@@ -925,7 +918,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ? NATIVE_OPENAI_MODELS.filter(slug => !disabledNatives.has(slug))
           : [];
         const visibleNatives = includeNativeOpenAi
-          ? accountSelectors.length > 0 ? selectorNativeSlugs : visibleNativeSlugs(config)
+          ? accountSelectors.length > 0
+            ? selectorNativeSlugs.filter(slug => !shadowedNativeSlugs.has(slug))
+            : visibleNativeSlugs(config)
           : [];
         const visibleAccountNatives = accountSelectors.flatMap(selector =>
           selectorNativeSlugs.flatMap(metadataId => {
@@ -1523,6 +1518,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
     }
   } catch (error) {
+    backgroundLifecycle?.releaseAfterFailedStart();
     void nativeMainLifecycle.release();
     throw error;
   }
@@ -1542,7 +1538,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             ? [() => loopbackListenerRef.stop(closeActiveConnections)]
             : []),
         ],
-        () => releaseNativeMainStartupLifecycle(server),
+        async () => {
+          await backgroundLifecycle.release();
+          await releaseNativeMainStartupLifecycle(server);
+        },
       );
     },
   });
@@ -1586,7 +1585,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   }
 
   // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
-  scheduleStorageCleanupStartupRun();
+  backgroundLifecycle.scheduleStartupRun();
 
   return server;
 }

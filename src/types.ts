@@ -606,6 +606,17 @@ export interface OcxConfig {
    */
   subagentModelFallback?: string[];
   /**
+   * Per-primary-model fallback chains for spawned sub-agents, keyed by the
+   * requested primary model id (bare native or "provider/model"). Entries for
+   * the matching key are consulted after the requested model and before the
+   * global `subagentModelFallback` list.
+   *
+   * This is the supported home for per-role fallback metadata: storing it as
+   * `model_fallback` inside `$CODEX_HOME/agents/*.toml` makes Codex >= 0.146
+   * reject the whole role file as an unknown field (#1190).
+   */
+  subagentModelFallbackByModel?: Record<string, string[]>;
+  /**
    * TTL (ms) for cached sub-agent model availability probes. Default 60_000.
    */
   subagentModelFallbackPollMs?: number;
@@ -905,6 +916,13 @@ export interface OcxComboConfig {
    * mandated model id; exact-match requests route here before any provider resolution.
    */
   alias?: string;
+  /**
+   * Explicitly allow a bare OpenAI-native alias (for example `gpt-5.6-sol`) to
+   * be represented by this routed combo. Never inferred from `alias`.
+   */
+  nativeAlias?: boolean;
+  /** Display-only label for the public catalog row. Required for native aliases. */
+  displayName?: string;
 }
 
 export type OcxRoutingUnknownEvidenceMode = "allow" | "penalize" | "exclude";
@@ -1152,6 +1170,12 @@ export interface OcxProviderConfig {
    */
   statelessResponses?: boolean;
   /**
+   * Responses upstream whose parser requires each tool result to immediately follow
+   * its matching call. When enabled, only unambiguous matched pairs are reordered;
+   * intervening messages are preserved after the result instead of being dropped.
+   */
+  requiresAdjacentResponsesToolResults?: boolean;
+  /**
    * Whether this provider's Responses route honours the OpenAI `service_tier`
    * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
    * fast mode preserves a caller-supplied value); `false` strips the field and
@@ -1329,6 +1353,14 @@ export interface OcxProviderConfig {
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
+  /**
+   * Model ids whose upstream hard-rejects a tool_call continuation missing
+   * `reasoning_content` (DeepSeek thinking mode: HTTP 400). When the replay
+   * cache misses, the adapter injects a minimal placeholder for these models.
+   * Defaults to `preserveReasoningContentModels` when unset; set `[]` to opt
+   * out explicitly (e.g. MiniMax, where low effort disables thinking).
+   */
+  requiresReasoningPlaceholderModels?: string[];
   /**
    * Opt-in same-target 429 retry policy. Codex itself never retries 429 (it retries 5xx only,
    * openai/codex#30471), and single-key pools have no failover, so the proxy waits and replays

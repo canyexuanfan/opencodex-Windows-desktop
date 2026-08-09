@@ -54,8 +54,8 @@ function resolveVertexApiKey(optKey?: string): string | undefined {
 /** Prefer Codex's stable opaque thread key; retain the existing deterministic fallback for clients
  * that omit it. The replay store hashes this value and never retains the raw session identifier. */
 function vertexReplaySessionId(parsed: OcxParsedRequest): string {
-  const promptCacheKey = parsed.options.promptCacheKey?.trim();
-  return promptCacheKey || antigravitySessionId(parsed);
+  const threadId = parsed._clientThreadId?.trim();
+  return threadId || antigravitySessionId(parsed);
 }
 
 /**
@@ -577,15 +577,32 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           pendingUsage = usageFromGemini(usageMeta);
           sawTerminalSignal = true;
         }
-        const candidates = root.candidates as { content?: { parts?: unknown[] }; finishReason?: string }[] | undefined;
-        if (!candidates?.length) return "continue";
+        const rawCandidates = root.candidates;
+        if (rawCandidates === undefined) return "continue";
+        if (!Array.isArray(rawCandidates)) {
+          yield { type: "error", message: "google response contained invalid candidates" };
+          return "terminate";
+        }
+        if (rawCandidates.length === 0) return "continue";
+        const rawCandidate = rawCandidates[0];
+        if (rawCandidate === null || typeof rawCandidate !== "object" || Array.isArray(rawCandidate)) {
+          // Unlike a root `data: null` keepalive, this is a claimed response candidate. Treat it
+          // as terminal protocol corruption so the turn cannot complete after silently losing
+          // a candidate or tool call (#1325).
+          yield { type: "error", message: "google response contained invalid candidates" };
+          return "terminate";
+        }
+        const candidate = rawCandidate as {
+          content?: { parts?: unknown[] };
+          finishReason?: string;
+        };
 
-        if (typeof candidates[0].finishReason === "string" && candidates[0].finishReason) {
-          lastFinishReason = candidates[0].finishReason;
+        if (typeof candidate.finishReason === "string" && candidate.finishReason) {
+          lastFinishReason = candidate.finishReason;
           sawTerminalSignal = true;
         }
 
-        const parts = candidates[0].content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
+        const parts = candidate.content?.parts as { text?: string; functionCall?: { name: string; args: unknown } }[] | undefined;
         // Record Gemini thought signatures for the next stateless tool-result turn. Vertex and
         // Antigravity use separate model namespaces so opaque provider state cannot cross routes.
         const replayModel = provider.googleMode === "cloud-code-assist" ? antigravityModel : vertexReplayModel;

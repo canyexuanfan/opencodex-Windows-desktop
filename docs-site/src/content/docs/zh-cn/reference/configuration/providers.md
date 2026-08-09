@@ -38,6 +38,12 @@ pool account id（不能是内部 `__main__`），或用 `"@main"` 表示 Codex 
 与 email 应保持私密，selector 才是公开名称。明确选择的行为和优先级见
 [路由配置](/zh-cn/reference/configuration/routing/)。
 
+Codex Auth 仪表盘控件只管理显式包含 `codexAccountPickerEnabled` 字段的映射。启用空的受管
+映射时会创建保护隐私的 selector；之后添加账号时，即使 picker 行处于隐藏状态，也会扩展该
+映射且不会重命名已有 selector。省略此字段的手写映射保持手动管理，绝不会自动扩展。删除账号
+会保留其映射，使精确路由在账号缺失时 fail closed；以后添加相同账号 id 时会恢复已有公开
+selector，而不是分配一个新名称。
+
 ## 保留的 OpenAI 提供者
 
 `openai` 和 `openai-apikey` 是固定的保留 id。`openai.codexAccountMode` 默认是 `"pool"`，会在主账户和新增账户之间选择；`"direct"` 只使用当前调用者/主登录态。API 只使用其配置的 API key 或 key 池。请使用裸模型名或 `openai-apikey/<model>`；不存在跨路由凭据回退。API 的 GPT-5.6 行携带 1,050,000 上下文 / 922,000 最大输入元数据，而 Pro 虚拟 id 会重写为基础线协议模型并带上 `reasoning.mode: "pro"`。
@@ -92,6 +98,7 @@ pool account id（不能是内部 `__main__`），或用 `"@main"` 表示 Codex 
 | `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | 仅限 API-key 提供商（`authMode: "key"`）。可选的同目标 429 重试：未配置 `retryOn429` 时功能关闭；对象存在即启用，除非 `enabled: false`。收到 429 时等待（上游 `Retry-After` 或固定间隔）后在相同 key 上重放完全相同请求，再进入任何 key 故障转移——覆盖主文本恢复循环、Responses passthrough、图像/视频桥、web-search 侧车与终结续接。重放仅适用于流开始前的 HTTP 429 响应；自定义 `runTurn` 传输不在 HTTP 重试循环范围内。`attempts` 是首个 429 之后的同 key 重放次数（总发送次数 = `attempts` + 1），是主恢复循环、终结守卫续接与桥接重试共享的按请求统一预算；`attempts` 耗尽只会停止进一步的同 key 重放：随后按可用目标进行正常的 key 故障转移或最终错误处理——key 认证的 passthrough 线路上没有故障转移，因此耗尽的 429 会原样透出。Codex 自身从不重试 429，因此这是单 key 提供商唯一的防线。默认值：`enabled: true`、`attempts: 3`、`intervalMs: 5000`、`maxIntervalMs: 60000`（单次等待以 `maxIntervalMs` 为上限，其本身上限 600000）、`respectRetryAfter: true`。 |
 | `autoToolChoiceOnlyModels?` | `string[]` | `tool_choice` 只接受 `auto` 或 `none` 的模型；强制选择会被降级。 |
 | `preserveReasoningContentModels?` | `string[]` | 需要在聊天历史中保留先前 assistant `reasoning_content` 的模型。 |
+| `requiresReasoningPlaceholderModels?` | `string[]` | 上游会拒绝缺少 `reasoning_content` 的 tool_call 续接消息的模型（DeepSeek thinking 模式）；重放缓存 miss 时注入最小占位符。缺省沿用 `preserveReasoningContentModels`；设为 `[]` 可显式关闭。 |
 | `thinkingToggleModels?` | `string[]` | 使用 `thinking.enabled` 而不是 effort 阶梯的 chat 模型。 |
 | `thinkingBudgetModels?` | `string[]` | 使用整数 `thinking_budget` 的 chat 模型；effort 会映射为预算比例。 |
 | `noVisionModels?` | `string[]` | 经由视觉 sidecar 发送的纯文本模型；匹配时会容忍 Ollama 的 `:size` 标记。 |

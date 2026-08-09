@@ -17,8 +17,8 @@ Routing turns the model id sent by a client into one concrete provider and upstr
 
 opencodex resolves the requested model in this order:
 
-1. An explicit `policy/<id>` or configured routing-profile alias, executing the policy evaluator
-   and routing the selected candidate. An unknown profile id fails closed.
+1. A configured `policy/<id>` or routing-profile alias, executing the policy evaluator and routing
+   the selected candidate. An unresolved `policy/<id>` falls through to the later rules.
 2. A configured `<account-selector>/<native-openai-model>` namespace, routed through exactly the
    mapped stored Codex account. An invalid or unavailable exact target fails closed.
 3. A canonical `combo/<id>` or configured combo alias. Canonical ids win before alias matching.
@@ -50,12 +50,19 @@ routing and remain in raw `/v1/models` discovery unless explicitly disabled. Sel
 stored account is missing are not advertised. Selector validation, collision rules, and privacy guidance are documented in
 [Provider Configuration](/reference/configuration/providers/).
 
+The Codex Auth page exposes this picker behavior as an opt-in. Disabling it hides generated
+selector-qualified picker rows and restores the ordinary GPT rows, but it does not remove the
+mappings or change exact `<selector>/<model>` routing. Re-enabling therefore restores the same public
+labels. Account and setting mutations are persisted before a bounded catalog refresh; an `ocx sync`
+warning means only that the picker catalog still needs convergence, not that the routing change was
+lost.
+
 ## Combos (`config.combos`)
 
 Each combo key is an id matching `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. It is always directly addressable
 as `combo/<id>` and may also expose one `alias`. Aliases must be unique, cannot occupy the `combo/`
 namespace, and cannot use reserved bare native families such as `gpt-*`, `o1-*`, `o3-*`, `o4-*`, or
-`codex-*`.
+`codex-*` unless `nativeAlias: true` explicitly enables the Desktop compatibility contract.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -64,6 +71,8 @@ namespace, and cannot use reserved bare native families such as `gpt-*`, `o1-*`,
 | `stickyLimit?` | `number` | `1` | Successful requests retained in one round-robin batch. Range 1–100. |
 | `defaultEffort?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max" \| "ultra" \| null` | unset | Applied only when the caller omits effort and the selected target advertises the requested rung. |
 | `alias?` | `string` | — | Optional public model id in place of the canonical picker slug. |
+| `nativeAlias?` | `boolean` | `false` | Let a currently supported bare native id take precedence only for that unqualified id. Bare `gpt-5.6-*` ids use Codex Pool/Direct credentials. Account-qualified routes remain distinct. Provider-qualified routes such as `openai-apikey/gpt-5.6-*` use their configured API-key route and never fall through to the native alias. |
+| `displayName?` | `string` | — | Display-only catalog label, required and non-empty for a native alias. |
 
 ```json
 {

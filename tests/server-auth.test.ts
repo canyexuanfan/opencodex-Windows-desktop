@@ -431,6 +431,46 @@ describe("server local API auth", () => {
     expect(dto.providers.openai.disabled).toBeUndefined();
   });
 
+  test("safeConfigDTO preserves reasoning placeholder policies without adjacent secrets", () => {
+    const dto = safeConfigDTO({
+      ...config("127.0.0.1"),
+      providers: {
+        required: {
+          adapter: "openai-chat",
+          baseUrl: "https://user:password@example.test/v1?token=url-secret",
+          apiKey: "required-api-secret",
+          headers: { Authorization: "Bearer required-header-secret" },
+          requiresReasoningPlaceholderModels: ["deepseek-reasoner"],
+        },
+        optedOut: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          apiKey: "opt-out-api-secret",
+          headers: { "X-Private-Key": "opt-out-header-secret" },
+          requiresReasoningPlaceholderModels: [],
+        },
+      },
+    } as OcxConfig) as {
+      providers: Record<string, Record<string, unknown>>;
+    };
+
+    expect(dto.providers.required.requiresReasoningPlaceholderModels).toEqual(["deepseek-reasoner"]);
+    expect(dto.providers.optedOut.requiresReasoningPlaceholderModels).toEqual([]);
+    expect(dto.providers.required).not.toHaveProperty("apiKey");
+    expect(dto.providers.required).not.toHaveProperty("headers");
+    expect(dto.providers.optedOut).not.toHaveProperty("apiKey");
+    expect(dto.providers.optedOut).not.toHaveProperty("headers");
+    const serialized = JSON.stringify(dto);
+    for (const secret of [
+      "password",
+      "url-secret",
+      "required-api-secret",
+      "required-header-secret",
+      "opt-out-api-secret",
+      "opt-out-header-secret",
+    ]) expect(serialized).not.toContain(secret);
+  });
+
   test("safeConfigDTO exposes keyOptional for saved free-tier providers", () => {
     const dto = safeConfigDTO({
       ...config("127.0.0.1"),

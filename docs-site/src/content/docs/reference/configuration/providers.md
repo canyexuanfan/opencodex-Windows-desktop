@@ -41,6 +41,13 @@ its namespace prefix, and configured pool ids or selector targets also cannot re
 raw account ids and emails private; the selector is the public name. See [Routing Configuration](/reference/configuration/routing/)
 for exact-selection behavior and precedence.
 
+The Codex Auth dashboard control owns maps that have an explicit `codexAccountPickerEnabled` field.
+Enabling an empty managed map creates privacy-safe selectors; later account additions extend that map
+even while picker rows are hidden, without renaming existing selectors. A hand-written map that omits
+the flag remains manual and is never auto-expanded. Deleting an account keeps its mapping so exact
+routes fail closed while it is missing; adding the same account id again restores the existing public
+selector instead of allocating a new one.
+
 ## Reserved OpenAI providers
 
 `openai` and `openai-apikey` are fixed reserved ids. `openai.codexAccountMode` is `"pool"` by default
@@ -101,6 +108,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `retryOn429?` | `{ enabled?: boolean; attempts?: number; intervalMs?: number; maxIntervalMs?: number; respectRetryAfter?: boolean }` | API-key providers only (`authMode: "key"`). Opt-in same-target 429 retry: when `retryOn429` is absent the feature is off; object presence enables it unless `enabled: false`. On 429 the proxy waits (upstream `Retry-After` or the fixed interval) and replays the identical request on the same key before any key failover — across the main text-turn recovery loop, the Responses passthrough wire, the image/video bridge, the web-search sidecar, and terminal continuations. Only pre-stream HTTP 429 responses are eligible for replay; custom `runTurn` transports are outside the HTTP retry loop. `attempts` counts same-key replays after the first 429 (total sends = `attempts` + 1) and is one request-wide budget shared by the main recovery loop, the terminal-guard continuation, and bridge retries. Exhausting `attempts` only stops further same-key replays: normal key failover or final-error handling then applies per the available targets — on the key-auth passthrough wire there is no failover, so the exhausted 429 surfaces as-is. Codex itself never retries 429, so this is the only defense for single-key providers. Defaults: `enabled: true`, `attempts: 3`, `intervalMs: 5000`, `maxIntervalMs: 60000` (any single wait is capped at `maxIntervalMs`, itself capped at 600000), `respectRetryAfter: true`. |
 | `autoToolChoiceOnlyModels?` | `string[]` | Models whose `tool_choice` accepts only `auto` or `none`; forced choices are downgraded. |
 | `preserveReasoningContentModels?` | `string[]` | Models requiring prior assistant `reasoning_content` in chat history. |
+| `requiresReasoningPlaceholderModels?` | `string[]` | Models whose upstream rejects a tool_call continuation missing `reasoning_content` (DeepSeek thinking mode); a minimal placeholder is injected when the replay cache misses. Defaults to `preserveReasoningContentModels`; set `[]` to opt out. |
 | `thinkingToggleModels?` | `string[]` | Chat models using `thinking.enabled` rather than an effort ladder. |
 | `thinkingBudgetModels?` | `string[]` | Chat models using integer `thinking_budget`; effort maps to a budget fraction. |
 | `noVisionModels?` | `string[]` | Text-only models sent through the vision sidecar; matching tolerates an Ollama `:size` tag. |

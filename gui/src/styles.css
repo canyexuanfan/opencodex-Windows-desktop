@@ -804,6 +804,8 @@ a.btn, a.btn:hover { text-decoration: none; }
 .stat .value.mono { font-family: var(--font-code); font-size: var(--text-subtitle); }
 
 .startup-health-bar {
+  box-sizing: border-box;
+  width: 100%;
   min-height: var(--control-lg);
   margin: calc(-1 * var(--space-3)) 0 var(--space-6);
   padding: 0 var(--space-3);
@@ -813,10 +815,14 @@ a.btn, a.btn:hover { text-decoration: none; }
   min-width: 0;
   color: var(--muted);
   background: var(--hover);
+  border: none;
   border-block: 1px solid var(--border-soft);
   text-decoration: none;
+  font: inherit;
   font-size: var(--text-control);
   line-height: var(--leading-ui);
+  text-align: start;
+  cursor: pointer;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 .startup-health-bar:hover { background: var(--raised); color: var(--text); }
@@ -1474,6 +1480,20 @@ dialog.modal-overlay::backdrop {
 .codex-request-user-input-controls > .toggle { margin-left: auto; }
 .codex-request-user-input-feedback { flex: 1 0 100%; margin-top: -8px; color: var(--muted); font-size: var(--text-label); line-height: var(--leading-body); text-align: right; }
 .codex-request-user-input-feedback.is-error { color: var(--red); }
+.codex-account-picker-card { gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.codex-account-picker-copy { flex: 1 1 34rem; min-width: 0; }
+.codex-account-picker-copy .card-sub { padding: 4px 0 0; }
+.codex-account-picker-controls { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; margin-left: auto; }
+.codex-account-picker-feedback {
+  flex: 1 0 100%;
+  margin-top: -8px;
+  font-size: var(--text-label);
+  line-height: var(--leading-body);
+  text-align: right;
+}
+.codex-account-picker-feedback.is-ok { color: var(--green); }
+.codex-account-picker-feedback.is-warn { color: var(--amber); }
+.codex-account-picker-feedback.is-err { color: var(--red); }
 /* The toggle now lives in the slot below, which carries the auto margin itself. */
 /*
   Toggle slot: matches the height of the threshold compound so the 20px toggle centres against
@@ -1637,6 +1657,12 @@ dialog.modal-overlay::backdrop {
   white-space: nowrap;
 }
 .codex-auth-page-head__feedback.is-ok { color: var(--green); }
+.codex-auth-page-head__feedback.is-warn {
+  color: var(--amber);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
 .codex-auth-page-head__feedback.is-err { color: var(--red); }
 .codex-auth-pause-label {
   display: inline-block;

@@ -396,12 +396,71 @@ describe("validateIssue - feature", () => {
       false,
     );
     assert.equal(isMediaOnly('<picture><source srcset="x.webp"><img src="x.png"></picture>'), true);
+    assert.equal(isMediaOnly('<video>No response</video>'), true);
+    assert.equal(isMediaOnly('<audio> _No response_ </audio>'), true);
+    assert.equal(isMediaOnly('<video><p><em>No response</em></p></video>'), true);
+    assert.equal(clean('<video>No response</video>'), "");
+    for (const caption of [
+      "TBD",
+      "N/A",
+      "None",
+      "설명 없음",
+      "🎬",
+      "demo.mp4",
+      "https://example.com/demo.mp4",
+    ]) {
+      const media = `<video>${caption}</video>`;
+      assert.equal(stripMediaTokens(media), media, `caption must survive: ${caption}`);
+      assert.equal(isMediaOnly(media), false, `caption must be substantive: ${caption}`);
+      assert.equal(clean(media), media, `caption must survive cleaning: ${caption}`);
+    }
+    assert.equal(
+      isMediaOnly('<picture>\n    <source srcset="x.webp">\n    <img src="x.png">\n</picture>'),
+      true,
+    );
+    assert.equal(
+      isMediaOnly('<video>\n    <source src="clip.mp4">\n    Real fallback caption\n</video>'),
+      false,
+    );
+    assert.equal(
+      isMediaOnly([
+        "<picture",
+        '    data-kind="responsive"',
+        ">",
+        '    <source srcset="x.webp">',
+        '    <img src="x.png">',
+        "</picture>",
+      ].join("\n")),
+      true,
+    );
     assert.equal(isMediaOnly('<video src="clip.mp4"></video>'), true);
     assert.equal(isMediaOnly('<img src="x.png" />\nCaption text'), false);
     assert.equal(isMediaOnly("Some real description."), false);
     assert.equal(stripMediaTokens('<img src="x.png" />').trim(), "");
     assert.equal(stripMediaTokens('![alt](url "title")').trim(), "");
     assert.equal(stripMediaTokens('before ![alt](url) after').replace(/\s+/g, " ").trim(), "before after");
+
+    const fencedMediaExample = [
+      "```html",
+      "<video>No response</video>",
+      "```",
+    ].join("\n");
+    assert.equal(stripMediaTokens(fencedMediaExample), fencedMediaExample);
+    assert.equal(isMediaOnly(fencedMediaExample), false);
+
+    const protectedAroundMedia = [
+      "    ![before](url)",
+      "<video>",
+      '    <source src="clip.mp4">',
+      "</video>",
+      "    ![after](url)",
+    ].join("\n");
+    const strippedAroundMedia = stripMediaTokens(protectedAroundMedia);
+    assert.ok(strippedAroundMedia.includes("    ![before](url)"));
+    assert.ok(strippedAroundMedia.includes("    ![after](url)"));
+    assert.equal(strippedAroundMedia.includes("<video>"), false);
+    assert.equal(strippedAroundMedia.includes("<source"), false);
+    assert.equal(strippedAroundMedia.includes("\u0000"), false);
   });
 
   it("accepts a concise but actionable feature", () => {
