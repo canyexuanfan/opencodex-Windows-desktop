@@ -1,4 +1,6 @@
 import { enforceEventStructureLimits } from "./limits";
+import { LabValidationError } from "./errors";
+export { LabValidationError } from "./errors";
 import {
   ARTIFACT_CLASSES,
   ARTIFACT_FILENAME_EXT,
@@ -43,15 +45,6 @@ import type {
   RouteSubjectV1,
   TaskSubjectV1,
 } from "./types";
-
-export class LabValidationError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "LabValidationError";
-    this.code = code;
-  }
-}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -451,9 +444,6 @@ function validateClaimSnapshot(raw: Record<string, unknown>): ClaimSnapshotEvent
   if (!isSha256Hex(sourceManifestDigest)) {
     throw new LabValidationError("invalid_digest", "sourceManifestDigest");
   }
-  if (!Array.isArray(raw.sourceEventIds) || !Array.isArray(raw.supersedes)) {
-    throw new LabValidationError("invalid_claim_lists", "sourceEventIds/supersedes");
-  }
   return {
     schemaVersion: LAB_EVENT_SCHEMA_VERSION,
     eventId: assertString(raw.eventId, "eventId"),
@@ -467,12 +457,14 @@ function validateClaimSnapshot(raw: Record<string, unknown>): ClaimSnapshotEvent
     capability: assertString(raw.capability, "capability"),
     polarity: assertClosed(raw.polarity, "polarity", CLAIM_POLARITIES),
     sourceManifestDigest,
-    sourceEventIds: raw.sourceEventIds.map((id, i) => {
-      const s = assertString(id, `sourceEventIds[${i}]`);
-      if (s.length > 0 && !isSha256Hex(s)) throw new LabValidationError("invalid_id", `sourceEventIds[${i}]`);
-      return s;
+    sourceEventIds: validateSortedUniqueHexIds(raw.sourceEventIds, "sourceEventIds", {
+      nonEmpty: false,
+      max: MAX_INVALIDATION_TARGETS,
     }),
-    supersedes: validateSortedUniqueHexIds(raw.supersedes, "supersedes", { nonEmpty: false }),
+    supersedes: validateSortedUniqueHexIds(raw.supersedes, "supersedes", {
+      nonEmpty: false,
+      max: MAX_INVALIDATION_TARGETS,
+    }),
     effectiveAt: assertIntMs(raw.effectiveAt, "effectiveAt"),
   };
 }
