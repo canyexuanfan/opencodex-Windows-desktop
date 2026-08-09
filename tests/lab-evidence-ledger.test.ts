@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import {
   appendLabEvent,
   assignEventId,
   buildInvalidationIndex,
+  claimKeyString,
   claimSourceManifestDigest,
   createArtifactStore,
   eventIdForPayload,
@@ -33,7 +34,7 @@ import { ArtifactFsError, closeTrustedArtifactDir, putArtifactBytes, putNamedDig
 import { expandSuiteManifest } from "../src/lab/conformance/suite-manifest";
 import { evaluateAllApplicableRequiredPassV1 } from "../src/lab/projection/verification";
 import { discoverScenarios, expandScenario, loadCaseAuthority } from "../src/lab/conformance/manifest";
-import { scenarioManifestDigest } from "../src/lab/digest";
+import { artifactBytesDigest, scenarioManifestDigest } from "../src/lab/digest";
 import type { CaseRecord } from "../src/lab/conformance/types";
 import { runScenario, resolveProtocolExecutionContext } from "../src/lab/conformance/executor";
 import { LabValidationError } from "../src/lab/events/validate";
@@ -48,10 +49,6 @@ function tempHome(): string {
   HOMES.push(dir);
   return dir;
 }
-
-beforeEach(() => {
-  // OPENCODEX_HOME isolation
-});
 
 afterEach(() => {
   for (const dir of HOMES.splice(0)) {
@@ -75,7 +72,7 @@ function syntheticPassResult(caseRecord: CaseRecord) {
     scenarioId: caseRecord.id,
     suite: caseRecord.suite,
     passed: true,
-    classification: "protocol_failure" as const,
+    classification: "inconclusive" as const,
     assertionResults: caseRecord.assertions.map((a) => ({
       id: a.id,
       operator: a.operator,
@@ -85,6 +82,8 @@ function syntheticPassResult(caseRecord: CaseRecord) {
     })),
     diagnostics: [],
     executionContext: resolveProtocolExecutionContext(caseRecord),
+    startedAt: 999,
+    completedAt: 1000,
   };
 }
 
@@ -209,7 +208,6 @@ describe("CL-02 JCS and IDs", () => {
     const id2 = eventIdForPayload(payload);
     expect(id1).toBe(id2);
     expect(isSha256Hex(id1)).toBe(true);
-    // Domain separation: different domain changes digest
     expect(id1).not.toBe(subjectId);
   });
 
@@ -222,7 +220,6 @@ describe("CL-02 ledger append/replay", () => {
   test("append and replay round-trip", () => {
     withHome((home) => {
       const event = baseObservation();
-      // Store required artifacts as opaque named digests for projection
       const store = createArtifactStore(join(home, "lab", "artifacts"));
       for (const ref of event.artifactRefs) {
         store.put({
@@ -231,7 +228,6 @@ describe("CL-02 ledger append/replay", () => {
           expectedDigest: undefined,
         });
       }
-      // Write contract-named bytes for digests referenced by the event
       const dir = openTrustedArtifactDir(join(home, "lab", "artifacts"));
       try {
         for (const ref of event.artifactRefs) {
@@ -322,6 +318,18 @@ describe("CL-02 invalidation validation", () => {
     });
     const index2 = buildInvalidationIndex([obs, bad as never]);
     expect(index2.corruptions.some((c) => c.kind === "invalid_reference")).toBe(true);
+
+    const invalidatesInvalidation = assignEventId({
+      schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+      eventKind: "invalidation" as const,
+      recordedAt: obs.recordedAt + 3,
+      producer: LAB_PRODUCER,
+      producerVersion: "2.10.2",
+      targetEventIds: [inv.eventId],
+      reason: "manual_correction" as const,
+    });
+    const index3 = buildInvalidationIndex([obs, inv as never, invalidatesInvalidation as never]);
+    expect(index3.corruptions.some((c) => c.kind === "invalid_reference")).toBe(true);
   });
 });
 
@@ -395,7 +403,7 @@ describe("CL-02 claim supersession and conflicts", () => {
     }) as ClaimSnapshotEvent;
 
     const ok = resolveClaimStates([c1, c2]);
-    expect(ok.states.get(`${subjectId}|tools`)?.current?.eventId).toBe(c2.eventId);
+    expect(ok.states.get(claimKeyString(subjectId, "tools"))?.current?.eventId).toBe(c2.eventId);
 
     const c3 = assignEventId({
       ...c2,
@@ -405,7 +413,7 @@ describe("CL-02 claim supersession and conflicts", () => {
       supersedes: [],
     }) as ClaimSnapshotEvent;
     const conflict = resolveClaimStates([c1, c2, c3]);
-    expect(conflict.states.get(`${subjectId}|tools`)?.corruption).toBeTruthy();
+    expect(conflict.states.get(claimKeyString(subjectId, "tools"))?.corruption).toBeTruthy();
   });
 
   test("ClaimSourceManifest rejects secrets and unknown facts", () => {
@@ -427,15 +435,19 @@ describe("CL-02 artifacts and secure FS", () => {
   test("content-addressed put/get and size ceiling", () => {
     withHome((home) => {
       const store = createArtifactStore(join(home, "lab", "artifacts"));
-      const ref = store.put({ artifactClass: "assertion_report", payload: { a: 1 } });
-      expect(isSha256Hex(ref.digest)).toBe(true);
-      const bytes = store.get(ref.digest);
-      expect(bytes.byteLength).toBe(ref.byteCount);
+      try {
+        const ref = store.put({ artifactClass: "assertion_report", payload: { a: 1 } });
+        expect(isSha256Hex(ref.digest)).toBe(true);
+        const bytes = store.get(ref.digest);
+        expect(bytes.byteLength).toBe(ref.byteCount);
 
-      const huge = new Uint8Array(256 * 1024 + 1);
-      expect(() =>
-        store.put({ artifactClass: "assertion_report", payload: huge }),
-      ).toThrow();
+        const huge = new Uint8Array(256 * 1024 + 1);
+        expect(() =>
+          store.put({ artifactClass: "assertion_report", payload: huge }),
+        ).toThrow();
+      } finally {
+        store.close();
+      }
     });
   });
 
@@ -463,7 +475,6 @@ describe("CL-02 artifacts and secure FS", () => {
       try {
         symlinkSync(target, linkPath);
       } catch {
-        // Windows may require elevation for symlinks
         return;
       }
       const dir = openTrustedArtifactDir(artifacts);
@@ -563,12 +574,15 @@ describe("CL-02 projection rebuild determinism", () => {
       let recordedAt = 1_700_000_000_000;
       for (const caseRecord of scenarios) {
         const store = createArtifactStore(join(home, "lab", "artifacts"));
-        persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
-          configDir: home,
-          recordedAt: recordedAt++,
-          artifactStore: store,
-        });
-        store.close();
+        try {
+          persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+            configDir: home,
+            recordedAt: recordedAt++,
+            artifactStore: store,
+          });
+        } finally {
+          store.close();
+        }
       }
       const rebuilt = rebuildLabProjection(home);
       const snap = readVerdictSnapshot(rebuilt.sqlitePath);
@@ -585,13 +599,14 @@ describe("CL-02 projection rebuild determinism", () => {
           scenarioId: caseRecord.id,
           suite: caseRecord.suite,
           passed: true,
-          classification: "protocol_failure",
+          classification: "inconclusive",
           assertionResults: [],
           diagnostics: [],
+          executionContext: resolveProtocolExecutionContext(caseRecord),
         },
         caseRecord,
         authority,
-        { configDir: home, recordedAt: 1000 },
+        { configDir: home, recordedAt: 1000, startedAt: 999, completedAt: 1000 },
       );
       const inv = assignEventId({
         schemaVersion: LAB_EVENT_SCHEMA_VERSION,
@@ -618,13 +633,14 @@ describe("CL-02 projection rebuild determinism", () => {
           scenarioId: caseRecord.id,
           suite: caseRecord.suite,
           passed: true,
-          classification: "protocol_failure",
+          classification: "inconclusive",
           assertionResults: [],
           diagnostics: [],
+          executionContext: resolveProtocolExecutionContext(caseRecord),
         },
         caseRecord,
         authority,
-        { configDir: home, recordedAt: 1000 },
+        { configDir: home, recordedAt: 1000, startedAt: 999, completedAt: 1000 },
       );
       purgeSensitiveEvidence({
         configDir: home,
@@ -649,16 +665,22 @@ describe("CL-02 CL-01 integration", () => {
       const caseRecord = discoverScenarios(authority, ["responses-core"]).find(
         (c) => c.id === "responses-core.protocol.request-shape",
       )!;
+      const startedAt = Date.now();
       const result = await runScenario(caseRecord);
+      const completedAt = Date.now();
       expect(result.passed).toBe(true);
       const { event } = observationFromConformanceResult(result, caseRecord, authority, {
         configDir: home,
-        recordedAt: 1_800_000_000_000,
+        recordedAt: completedAt,
+        startedAt,
+        completedAt,
       });
       expect(validateLabEvent(event).eventKind).toBe("observation");
       persistConformanceResult(result, caseRecord, authority, {
         configDir: home,
-        recordedAt: 1_800_000_000_000,
+        recordedAt: completedAt,
+        startedAt,
+        completedAt,
       });
       const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
       expect(replay.validLineCount).toBe(1);
@@ -677,21 +699,24 @@ describe("CL-02 privacy canaries", () => {
     withHome((home) => {
       const secretCanary = "sk-" + "a".repeat(32);
       const store = createArtifactStore(join(home, "lab", "artifacts"));
-      const ref = store.put({
-        artifactClass: "error_taxonomy",
-        payload: {
-          message: `failed ${secretCanary}`,
-          path: "C:\\Users\\victim\\secrets\\token.txt",
-          authorization: "Bearer SUPERSECRET",
-          url: "https://user:pass@example.com/v1",
-        },
-      });
-      const text = new TextDecoder().decode(store.get(ref.digest));
-      expect(text).not.toContain(secretCanary);
-      expect(text).not.toContain("SUPERSECRET");
-      expect(text).not.toContain("victim");
-      expect(text).not.toContain("user:pass");
-      store.close();
+      try {
+        const ref = store.put({
+          artifactClass: "error_taxonomy",
+          payload: {
+            message: `failed ${secretCanary}`,
+            path: "C:\\Users\\victim\\secrets\\token.txt",
+            authorization: "Bearer SUPERSECRET",
+            url: "https://user:pass@example.com/v1",
+          },
+        });
+        const text = new TextDecoder().decode(store.get(ref.digest));
+        expect(text).not.toContain(secretCanary);
+        expect(text).not.toContain("SUPERSECRET");
+        expect(text).not.toContain("victim");
+        expect(text).not.toContain("user:pass");
+      } finally {
+        store.close();
+      }
     });
   });
 });
@@ -709,7 +734,6 @@ describe("CL-02 empty/corrupt ledger", () => {
   });
 });
 
-// Keep chmod import used on POSIX permission smoke (best-effort).
 void chmodSync;
 void existsSync;
 void claimSourceManifestDigest;
@@ -728,15 +752,18 @@ describe("CL-02 review regression coverage", () => {
       const subjectIds = new Set<string>();
       for (const caseRecord of scenarios.slice(0, 2)) {
         const store = createArtifactStore(join(home, "lab", "artifacts"));
-        const { event } = observationFromConformanceResult(
-          syntheticPassResult(caseRecord),
-          caseRecord,
-          authority,
-          { configDir: home, recordedAt: t++, artifactStore: store },
-        );
-        store.close();
-        subjectIds.add(event.subjectId);
-        appendLabEvent(join(home, "lab", "compatibility.jsonl"), event);
+        try {
+          const { event } = observationFromConformanceResult(
+            syntheticPassResult(caseRecord),
+            caseRecord,
+            authority,
+            { configDir: home, recordedAt: t++, artifactStore: store },
+          );
+          subjectIds.add(event.subjectId);
+          appendLabEvent(join(home, "lab", "compatibility.jsonl"), event);
+        } finally {
+          store.close();
+        }
       }
       expect(subjectIds.size).toBe(1);
       const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
@@ -756,13 +783,15 @@ describe("CL-02 review regression coverage", () => {
       let t = 1000;
       const events = scenarios.map((caseRecord) => {
         const store = createArtifactStore(join(home, "lab", "artifacts"));
-        const persisted = persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
-          configDir: home,
-          recordedAt: t++,
-          artifactStore: store,
-        });
-        store.close();
-        return persisted.event;
+        try {
+          return persistConformanceResult(syntheticPassResult(caseRecord), caseRecord, authority, {
+            configDir: home,
+            recordedAt: t++,
+            artifactStore: store,
+          }).event;
+        } finally {
+          store.close();
+        }
       });
       const sharedDigest = events[0]!.suiteManifestDigest;
       expect(events[1]!.suiteManifestDigest).toBe(sharedDigest);
@@ -854,7 +883,7 @@ describe("CL-02 phase-2 review regressions", () => {
       const artifacts = join(home, "lab", "artifacts");
       mkdirSync(artifacts, { recursive: true });
       const bytes = new TextEncoder().encode("reuse-me");
-      const digest = Bun.CryptoHasher.hash("sha256", bytes, "hex");
+      const digest = artifactBytesDigest(bytes);
       const linkPath = join(artifacts, `${digest}.bin`);
       const outside = join(home, "outside.bin");
       writeFileSync(outside, "evil");
