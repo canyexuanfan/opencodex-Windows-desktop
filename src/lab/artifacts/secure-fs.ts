@@ -36,8 +36,8 @@ export class ArtifactFsError extends Error {
   }
 }
 
-export function harnessFailure(message: string): never {
-  throw new ArtifactFsError("harness_failure", message);
+export function harnessFailure(message: string, code = "harness_failure"): never {
+  throw new ArtifactFsError(code, message);
 }
 
 const O_RDONLY = fsConstants.O_RDONLY;
@@ -82,16 +82,16 @@ function assertRegularFileStats(stats: Stats, label: string): void {
     stats.isCharacterDevice() ||
     stats.isBlockDevice()
   ) {
-    harnessFailure(`${label}: not a regular file`);
+    harnessFailure(`${label}: not a regular file`, "artifact_unsafe_target");
   }
   if (stats.nlink !== 1) {
-    harnessFailure(`${label}: hard links prohibited (nlink=${stats.nlink})`);
+    harnessFailure(`${label}: hard links prohibited (nlink=${stats.nlink})`, "artifact_unsafe_target");
   }
 }
 
 function assertDirectoryStats(stats: Stats, label: string): void {
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    harnessFailure(`${label}: must be a real directory (no symlink/reparse redirection)`);
+    harnessFailure(`${label}: must be a real directory (no symlink/reparse redirection)`, "artifact_unsafe_target");
   }
 }
 
@@ -101,7 +101,7 @@ function identityOf(stats: Stats): string {
 
 function assertRelativeName(name: string): void {
   if (name.includes("..") || name.includes("/") || name.includes("\\") || name.includes("\0")) {
-    harnessFailure("invalid relative artifact name");
+    harnessFailure("invalid relative artifact name", "artifact_unsafe_target");
   }
 }
 
@@ -164,7 +164,7 @@ function assertOpenedPathMatchesDescriptor(dir: TrustedArtifactDir, name: string
     pathEntry.ino !== opened.ino
   ) {
     closeSync(fd);
-    harnessFailure("artifact path identity mismatch after open");
+    harnessFailure("artifact path identity mismatch after open", "artifact_unsafe_target");
   }
 }
 
@@ -205,13 +205,13 @@ function revalidateDir(dir: TrustedArtifactDir): void {
   const stats = fstatSync(dir.fd);
   assertDirectoryStats(stats, "artifacts dir");
   if (identityOf(stats) !== dir.identity) {
-    harnessFailure("artifacts directory identity changed");
+    harnessFailure("artifacts directory identity changed", "artifact_unsafe_target");
   }
 }
 
 export function openTrustedArtifactDir(artifactsDir: string): TrustedArtifactDir {
   const abs = artifactsDir.replace(/[\\/]+$/, "");
-  if (abs.includes("\0")) harnessFailure("NUL in artifacts path");
+  if (abs.includes("\0")) harnessFailure("NUL in artifacts path", "artifact_unsafe_target");
   mkdirSync(abs, { recursive: true, mode: 0o700 });
 
   let fd: number;
@@ -219,7 +219,7 @@ export function openTrustedArtifactDir(artifactsDir: string): TrustedArtifactDir
     try {
       fd = openSync(abs, openFlags(O_RDONLY | O_DIRECTORY, true));
     } catch {
-      harnessFailure("failed to open artifacts directory with O_DIRECTORY");
+      harnessFailure("failed to open artifacts directory with O_DIRECTORY", "artifact_unsafe_target");
     }
   } else {
     fd = openSync(abs, O_RDONLY);
@@ -259,15 +259,16 @@ function readAllFromFd(fd: number, size: number): Buffer {
     if (n <= 0) break;
     offset += n;
   }
-  if (offset !== size) harnessFailure("short read from artifact descriptor");
+  if (offset !== size) harnessFailure("short read from artifact descriptor", "artifact_mismatch");
   return buf;
 }
 
+function isRawMissingError(err: unknown): boolean {
+  return !!err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT";
+}
+
 function isMissingArtifactError(err: unknown): boolean {
-  if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
-    return true;
-  }
-  return err instanceof ArtifactFsError && err.message.includes("missing");
+  return isRawMissingError(err) || (err instanceof ArtifactFsError && err.code === "artifact_missing");
 }
 
 function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): void {
@@ -276,16 +277,26 @@ function assertArtifactTargetCreatable(dir: TrustedArtifactDir, name: string): v
   try {
     const stats = lstatSync(childPath(dir, name));
     if (stats.isSymbolicLink()) {
-      harnessFailure("artifact target is a symbolic link");
+      harnessFailure("artifact target is a symbolic link", "artifact_unsafe_target");
     }
     assertRegularFileStats(stats, "artifact create target");
-    harnessFailure("artifact target exists but is not reusable");
+    harnessFailure("artifact target exists but is not reusable", "artifact_unsafe_target");
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
-      return;
-    }
+    if (isRawMissingError(err)) return;
     if (err instanceof ArtifactFsError) throw err;
-    harnessFailure(`artifact create target check failed: ${err instanceof Error ? err.message : String(err)}`);
+    harnessFailure(
+      `artifact create target check failed: ${err instanceof Error ? err.message : String(err)}`,
+      "artifact_unsafe_target",
+    );
+  }
+}
+
+function writeAll(fd: number, bytes: Uint8Array): void {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const n = writeSync(fd, bytes, offset, bytes.byteLength - offset);
+    if (n <= 0) harnessFailure("artifact write made no progress", "artifact_mismatch");
+    offset += n;
   }
 }
 
@@ -299,14 +310,17 @@ function writeTempArtifact(
   let fd: number | null = null;
   try {
     fd = openAtDir(dir, tmpName, openFlags(O_RDWR | O_CREAT | O_EXCL, true), 0o600);
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.byteLength) harnessFailure("short write");
+    writeAll(fd, bytes);
     fsyncSync(fd);
     const stats = fstatSync(fd);
     assertRegularFileStats(stats, "artifact temp");
-    if (stats.size !== bytes.byteLength) harnessFailure("size mismatch after write");
+    if (stats.size !== bytes.byteLength) {
+      harnessFailure("size mismatch after write", "artifact_mismatch");
+    }
     const buf = readAllFromFd(fd, bytes.byteLength);
-    if (contentDigest(buf) !== digest) harnessFailure("digest mismatch on same descriptor");
+    if (contentDigest(buf) !== digest) {
+      harnessFailure("digest mismatch on same descriptor", "artifact_mismatch");
+    }
     closeSync(fd);
     fd = null;
     renameAtDir(dir, tmpName, digestFileName(digest));
@@ -344,16 +358,18 @@ export function readArtifactBytes(
     const stats = fstatSync(fd);
     assertRegularFileStats(stats, "artifact fd");
     if (opts.expectedByteCount !== undefined && stats.size !== opts.expectedByteCount) {
-      harnessFailure("artifact size mismatch on descriptor");
+      harnessFailure("artifact size mismatch on descriptor", "artifact_mismatch");
     }
-    if (stats.size > MAX_BYTES_PER_ARTIFACT) harnessFailure("artifact exceeds ceiling");
+    if (stats.size > MAX_BYTES_PER_ARTIFACT) {
+      harnessFailure("artifact exceeds ceiling", "artifact_mismatch");
+    }
     const buf = readAllFromFd(fd, stats.size);
     const got = contentDigest(buf);
-    if (got !== digest) harnessFailure("artifact digest mismatch on descriptor");
+    if (got !== digest) harnessFailure("artifact digest mismatch on descriptor", "artifact_mismatch");
     return { digest, bytes: new Uint8Array(buf), byteCount: stats.size };
   } catch (err) {
-    if (isMissingArtifactError(err)) {
-      harnessFailure(`artifact missing: ${digest}`);
+    if (isRawMissingError(err)) {
+      harnessFailure(`artifact missing: ${digest}`, "artifact_missing");
     }
     if (err instanceof ArtifactFsError) throw err;
     harnessFailure(`artifact read failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -375,15 +391,15 @@ export function putArtifactBytes(
   const digest = artifactBytesDigest(bytes);
   if (expectedDigest !== undefined) {
     assertDigestName(expectedDigest);
-    if (digest !== expectedDigest) harnessFailure("artifact digest mismatch before write");
+    if (digest !== expectedDigest) {
+      harnessFailure("artifact digest mismatch before write", "artifact_mismatch");
+    }
   }
 
   try {
     return readArtifactBytes(dir, digest, bytes.byteLength);
   } catch (err) {
-    if (!isMissingArtifactError(err)) {
-      throw err;
-    }
+    if (!isMissingArtifactError(err)) throw err;
   }
 
   assertArtifactTargetCreatable(dir, digestFileName(digest));
@@ -404,15 +420,13 @@ export function putNamedDigestBytes(
     harnessFailure(`artifact exceeds ${MAX_BYTES_PER_ARTIFACT} bytes`);
   }
   if (contentDigest(bytes) !== digest) {
-    harnessFailure("named artifact content digest mismatch before write");
+    harnessFailure("named artifact content digest mismatch before write", "artifact_mismatch");
   }
 
   try {
     return readArtifactBytes(dir, digest, { expectedByteCount: bytes.byteLength, contentDigest });
   } catch (err) {
-    if (!isMissingArtifactError(err)) {
-      throw err;
-    }
+    if (!isMissingArtifactError(err)) throw err;
   }
 
   assertArtifactTargetCreatable(dir, digestFileName(digest));
@@ -428,9 +442,7 @@ export function deleteArtifactBytes(dir: TrustedArtifactDir, digest: string): vo
   try {
     unlinkAtDir(dir, name);
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
-      return;
-    }
+    if (isRawMissingError(err)) return;
     if (err instanceof ArtifactFsError) throw err;
     harnessFailure(`artifact delete failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -449,9 +461,7 @@ export function artifactExists(dir: TrustedArtifactDir, digest: string): boolean
       closeSync(fd);
     }
   } catch (err) {
-    if (isMissingArtifactError(err)) {
-      return false;
-    }
+    if (isMissingArtifactError(err)) return false;
     if (err instanceof ArtifactFsError) throw err;
     harnessFailure(`artifact exists check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
