@@ -13,6 +13,11 @@ export type FailureClassification =
   | "protocol_failure"
   | "capability_failure"
   | "behavioral_failure"
+  | "authentication_blocked"
+  | "quota_blocked"
+  | "region_blocked"
+  | "network_failure"
+  | "provider_transient"
   | "inconclusive";
 
 export interface FixtureRecord {
@@ -33,7 +38,7 @@ export interface AssertionSpec {
 
 export interface ExpectedFailureSpec {
   controlKind: "conformance_negative_control" | "capability_absence_control";
-  expectedClass: string;
+  expectedClass: FailureClassification;
   expectedCode: string;
   assertionIds: string[];
   onMatch: "pass" | "unsupported";
@@ -160,6 +165,18 @@ export interface ScenarioRunResult {
   diagnostics: string[];
   executionContext: ProtocolExecutionContextV1;
 }
+
+/** All eight live-route compatibility suites frozen by CL-03 Live V1. */
+export const CL03_LIVE_SUITES = [
+  "responses-core",
+  "chat-core",
+  "anthropic-core",
+  "tools-core",
+  "codex-core",
+  "vision-core",
+  "reasoning-core",
+  "mcp-core",
+] as const;
 
 /** All eight protocol-conformance suites frozen by CL-00 Protocol V1. */
 export const CL01_SUITES = [

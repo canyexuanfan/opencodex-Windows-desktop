@@ -166,6 +166,16 @@ export function resolveClaimStates(
   return { states, corruptions };
 }
 
+function supportedClaimsForSubject(claimStates: Map<string, ClaimState>, subjectId: string): string[] {
+  const supported = new Set<string>();
+  for (const state of claimStates.values()) {
+    const claim = state.current;
+    if (!claim || state.corruption || state.unusable) continue;
+    if (claim.subjectId === subjectId && claim.polarity === "supported") supported.add(claim.capability);
+  }
+  return [...supported].sort();
+}
+
 /**
  * CL-02 verdict projection primitives with frozen CL-00 verification semantics.
  */
@@ -232,6 +242,9 @@ export function projectVerdicts(
       projectObservationGroup(key, ordered, asOf, suiteManifest, {
         loadScenarioManifest: opts.loadScenarioManifest,
         loadScenarioRequirements: opts.loadScenarioRequirements,
+        routeSupportedClaims: key.evidenceLayer === "live_route_compatibility"
+          ? supportedClaimsForSubject(claimStates, key.subjectId)
+          : undefined,
       }),
     );
   }
@@ -296,6 +309,7 @@ function projectObservationGroup(
   opts: {
     loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
     loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"];
+    routeSupportedClaims?: readonly string[];
   } = {},
 ): DerivedVerdict {
   const contributing: string[] = [];
@@ -349,6 +363,34 @@ function projectObservationGroup(
           newestCurrent.executionMode,
           {
             subject: newestCurrent.subject.subjectKind === "protocol" ? newestCurrent.subject : undefined,
+            loadScenarioManifest: opts.loadScenarioManifest,
+            loadScenarioRequirements: opts.loadScenarioRequirements,
+            asOf,
+          },
+        );
+        notes.push(...evaluation.notes);
+        if (evaluation.applicableRequiredScenarioIds.length === 0) {
+          verdict = "UNKNOWN";
+        } else if (evaluation.canVerify) {
+          verdict = "VERIFIED";
+          notes.push("all-applicable-required-pass-v1");
+        } else {
+          verdict = "PROBED";
+          notes.push("incomplete_required_coverage");
+        }
+      }
+    } else if (key.evidenceLayer === "live_route_compatibility" && newestCurrent?.executionMode === "live") {
+      if (!suiteManifest) {
+        verdict = "PROBED";
+        notes.push("suite_manifest_unavailable");
+      } else {
+        const evaluation = evaluateAllApplicableRequiredPassV1(
+          suiteManifest,
+          ordered,
+          newestCurrent.executionMode,
+          {
+            subject: newestCurrent.subject.subjectKind === "route" ? newestCurrent.subject : undefined,
+            routeSupportedClaims: opts.routeSupportedClaims,
             loadScenarioManifest: opts.loadScenarioManifest,
             loadScenarioRequirements: opts.loadScenarioRequirements,
             asOf,

@@ -139,6 +139,11 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
   switch (result.classification) {
     case "timeout":
     case "budget_exhausted":
+    case "authentication_blocked":
+    case "quota_blocked":
+    case "region_blocked":
+    case "network_failure":
+    case "provider_transient":
       return "blocked";
     case "inconclusive":
     case "harness_failure":

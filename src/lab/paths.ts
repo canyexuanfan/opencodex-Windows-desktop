@@ -34,6 +34,11 @@ export function labExportDir(configDir = getConfigDir()): string {
   return join(labRoot(configDir), "export");
 }
 
+/** Opaque per-installation salt for local fingerprinting (never exported as evidence). */
+export function labInstallationSaltPath(configDir = getConfigDir()): string {
+  return join(labRoot(configDir), "installation-salt.bin");
+}
+
 /** Ensure lab directories exist with restrictive permissions where the platform allows. */
 export function ensureLabDirs(configDir = getConfigDir()): {
   root: string;
