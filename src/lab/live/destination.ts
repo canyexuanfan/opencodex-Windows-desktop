@@ -1,35 +1,50 @@
-import { assessUrlDestination } from "../../lib/destination-policy";
+import { isIP } from "node:net";
+import { assessUrlDestination, resolvePublicAddresses } from "../../lib/destination-policy";
 import { localFingerprint } from "../digest";
 import { readInstallationSalt } from "../subject/installation-salt";
 import type { DnsResolver, LabDestinationV1 } from "./types";
 
 export class LabDestinationError extends Error {
   override readonly name = "LabDestinationError";
-  constructor(
-    message: string,
-    readonly code: string,
-  ) {
-    super(message);
-  }
+  constructor(message: string, readonly code: string) { super(message); }
 }
 
 function normalizeBasePath(pathname: string): string {
   if (!pathname || pathname === "/") return "";
-  return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const trimmed = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
-function destinationFingerprintValue(snapshot: {
-  scheme: string;
-  host: string;
-  port: number;
-  basePath: string;
-}): Record<string, unknown> {
-  return {
-    scheme: snapshot.scheme,
-    host: snapshot.host,
-    port: snapshot.port,
-    basePath: snapshot.basePath,
-  };
+function addressUrl(scheme: "http" | "https", address: string): string {
+  return `${scheme}://${isIP(address) === 6 ? `[${address}]` : address}/`;
+}
+
+function validateResolvedAddress(
+  scheme: "http" | "https",
+  address: { address: string; family: 4 | 6 },
+  allowPrivateNetwork: boolean,
+  labRunApproval: boolean,
+): boolean {
+  const actualFamily = isIP(address.address);
+  if ((actualFamily !== 4 && actualFamily !== 6) || actualFamily !== address.family) {
+    throw new LabDestinationError("resolver returned an invalid address/family", "harness_failure");
+  }
+  const assessment = assessUrlDestination(addressUrl(scheme, address.address));
+  if (!assessment) throw new LabDestinationError("resolver address could not be classified", "harness_failure");
+  if (["metadata", "link-local", "unspecified"].includes(assessment.kind)) {
+    throw new LabDestinationError(`blocked resolved destination: ${assessment.detail}`, "harness_failure");
+  }
+  const privateAnswer = ["private", "loopback", "localhost"].includes(assessment.kind);
+  if (privateAnswer && (!allowPrivateNetwork || !labRunApproval)) {
+    throw new LabDestinationError("resolved private network requires allowPrivateNetwork and labRunApproval", "harness_failure");
+  }
+  return privateAnswer;
+}
+
+function canonicalAddresses(addresses: Array<{ address: string; family: 4 | 6 }>): Array<{ address: string; family: 4 | 6 }> {
+  const unique = new Map<string, { address: string; family: 4 | 6 }>();
+  for (const row of addresses) unique.set(`${row.family}:${row.address}`, { ...row });
+  return [...unique.values()].sort((a, b) => a.family - b.family || (a.address < b.address ? -1 : a.address > b.address ? 1 : 0));
 }
 
 export interface CreateDestinationOptions {
@@ -40,78 +55,72 @@ export interface CreateDestinationOptions {
   configDir?: string;
 }
 
-/** Create an immutable destination snapshot from provider baseUrl with DNS policy checks. */
-export async function createLabDestination(
-  opts: CreateDestinationOptions,
-): Promise<LabDestinationV1> {
+/** Resolve once, policy-check every answer, then freeze the exact snapshot used by all later stages. */
+export async function createLabDestination(opts: CreateDestinationOptions): Promise<LabDestinationV1> {
   let parsed: URL;
-  try {
-    parsed = new URL(opts.baseUrl);
-  } catch {
-    throw new LabDestinationError("invalid provider baseUrl", "harness_failure");
+  try { parsed = new URL(opts.baseUrl); } catch { throw new LabDestinationError("invalid provider baseUrl", "harness_failure"); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new LabDestinationError("unsupported URL scheme", "harness_failure");
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new LabDestinationError("provider destination may not contain userinfo, query, or fragment", "harness_failure");
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new LabDestinationError("unsupported URL scheme", "harness_failure");
+  const scheme = parsed.protocol === "https:" ? "https" as const : "http" as const;
+  const literal = assessUrlDestination(parsed.toString());
+  if (literal && ["metadata", "link-local", "unspecified"].includes(literal.kind)) {
+    throw new LabDestinationError(`blocked destination: ${literal.detail}`, "harness_failure");
   }
-  const assessment = assessUrlDestination(parsed.toString());
-  if (assessment?.kind === "metadata" || assessment?.kind === "link-local" || assessment?.kind === "unspecified") {
-    throw new LabDestinationError(`blocked destination: ${assessment.detail}`, "harness_failure");
-  }
-  const privateNetwork = assessment?.kind === "private" || assessment?.kind === "loopback" || assessment?.kind === "localhost";
-  if (privateNetwork && (!opts.allowPrivateNetwork || !opts.labRunApproval)) {
+  const allowPrivate = opts.allowPrivateNetwork === true;
+  const approved = opts.labRunApproval === true;
+  const literalPrivate = Boolean(literal && ["private", "loopback", "localhost"].includes(literal.kind));
+  if (literalPrivate && (!allowPrivate || !approved)) {
     throw new LabDestinationError("private network requires allowPrivateNetwork and labRunApproval", "harness_failure");
   }
 
-  const resolve = opts.resolve ?? defaultResolver;
-  const addresses = await resolve(parsed.hostname);
-  if (addresses.length === 0) {
-    throw new LabDestinationError("DNS resolution returned no addresses", "network_blocked");
+  let addresses: Array<{ address: string; family: 4 | 6 }>;
+  let privateNetwork = literalPrivate;
+  if (opts.resolve) {
+    try { addresses = await opts.resolve(parsed.hostname); }
+    catch { throw new LabDestinationError("DNS resolution failed", "network_blocked"); }
+    if (addresses.length === 0) throw new LabDestinationError("DNS resolution returned no addresses", "network_blocked");
+    for (const row of addresses) privateNetwork = validateResolvedAddress(scheme, row, allowPrivate, approved) || privateNetwork;
+  } else {
+    try {
+      const resolved = await resolvePublicAddresses(parsed.toString(), {
+        context: "Lab provider destination",
+        allowPrivateNetwork: allowPrivate && approved,
+      });
+      addresses = resolved.addresses.map((row) => ({ address: row.address, family: row.family === 6 ? 6 as const : 4 as const }));
+      privateNetwork = resolved.privateNetwork || privateNetwork;
+    } catch (error) {
+      throw new LabDestinationError(error instanceof Error ? error.message : "DNS destination policy failed", "network_blocked");
+    }
   }
-
-  const port = parsed.port
-    ? Number(parsed.port)
-    : parsed.protocol === "https:" ? 443 : 80;
+  const frozenAddresses = Object.freeze(canonicalAddresses(addresses).map((row) => Object.freeze(row)));
+  const port = parsed.port ? Number(parsed.port) : scheme === "https" ? 443 : 80;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new LabDestinationError("invalid destination port", "harness_failure");
   const snapshot = {
-    scheme: parsed.protocol === "https:" ? "https" as const : "http" as const,
+    scheme,
     host: parsed.hostname.toLowerCase(),
     port,
     basePath: normalizeBasePath(parsed.pathname),
     sniHost: parsed.hostname.toLowerCase(),
-    addresses: Object.freeze(addresses.map((a) => Object.freeze({ ...a }))),
+    addresses: frozenAddresses,
     privateNetwork,
   };
   const salt = readInstallationSalt(opts.configDir);
-  const fingerprint = localFingerprint("endpoint", destinationFingerprintValue(snapshot), salt);
+  const fingerprint = localFingerprint("endpoint", {
+    scheme: snapshot.scheme, host: snapshot.host, port: snapshot.port, basePath: snapshot.basePath,
+  }, salt);
   return Object.freeze({ ...snapshot, fingerprint });
 }
 
-/** Fail closed when a re-resolution does not match the immutable snapshot. */
-export function assertDestinationAddressSet(
-  destination: LabDestinationV1,
-  addresses: Array<{ address: string; family: 4 | 6 }>,
-): void {
-  const a = [...destination.addresses].map((x) => `${x.family}:${x.address}`).sort().join(",");
-  const b = [...addresses].map((x) => `${x.family}:${x.address}`).sort().join(",");
-  if (a !== b) {
-    throw new LabDestinationError("destination address set mismatch", "destination_mismatch");
-  }
+/** Detect any attempted replacement/re-resolution of the approved immutable address set. */
+export function assertDestinationAddressSet(destination: LabDestinationV1, addresses: Array<{ address: string; family: 4 | 6 }>): void {
+  const a = destination.addresses.map((x) => `${x.family}:${x.address}`).sort().join(",");
+  const b = canonicalAddresses(addresses).map((x) => `${x.family}:${x.address}`).join(",");
+  if (a !== b) throw new LabDestinationError("destination address set mismatch", "destination_mismatch");
 }
 
 export function assertHostSniMatch(destination: LabDestinationV1, host: string, sni?: string): void {
-  const normalized = host.toLowerCase();
-  if (normalized !== destination.host) {
-    throw new LabDestinationError("host mismatch", "host_sni_mismatch");
-  }
-  if (sni !== undefined && sni.toLowerCase() !== destination.sniHost) {
-    throw new LabDestinationError("SNI mismatch", "host_sni_mismatch");
-  }
-}
-
-async function defaultResolver(hostname: string): Promise<Array<{ address: string; family: 4 | 6 }>> {
-  const { lookup } = await import("node:dns/promises");
-  const results = await lookup(hostname, { all: true, verbatim: true });
-  return results.map((r) => ({
-    address: r.address,
-    family: r.family === 6 ? 6 as const : 4 as const,
-  }));
+  if (host.toLowerCase() !== destination.host) throw new LabDestinationError("host mismatch", "host_sni_mismatch");
+  if (sni !== undefined && sni.toLowerCase() !== destination.sniHost) throw new LabDestinationError("SNI mismatch", "host_sni_mismatch");
 }

@@ -2,58 +2,51 @@ import { LAB_CREDENTIAL_LEASE, type LabCredentialLeaseV1, type LabDestinationV1 
 
 export class LabCredentialError extends Error {
   override readonly name = "LabCredentialError";
-  constructor(
-    message: string,
-    readonly code: "auth_blocked" | "harness_failure",
-  ) {
-    super(message);
-  }
+  constructor(message: string, readonly code: "harness_failure" | "budget_exhausted") { super(message); }
 }
+
+interface LeaseState { destinationFingerprint: string; transportId: string; remaining: number }
+const LEASE_STATE = new WeakMap<object, LeaseState>();
 
 export interface CreateLeaseOptions {
   destination: LabDestinationV1;
   transportId?: string;
   budget?: number;
-  authOutcome?: "ok" | "blocked";
 }
 
-/** Create an opaque credential lease bound to destination + transport + budget. */
+/** Trusted credential owner may attach its own secret state to this opaque capability. */
 export function createCredentialLease(opts: CreateLeaseOptions): LabCredentialLeaseV1 {
-  if (opts.authOutcome === "blocked") {
-    throw new LabCredentialError("credential rejected for destination", "auth_blocked");
-  }
   const budget = opts.budget ?? 1;
-  let remaining = budget;
-  const lease: LabCredentialLeaseV1 = {
-    [LAB_CREDENTIAL_LEASE]: true,
+  if (!Number.isInteger(budget) || budget <= 0) throw new LabCredentialError("invalid credential lease budget", "harness_failure");
+  const lease = {
+    [LAB_CREDENTIAL_LEASE]: true as const,
+    get remainingRequests() { return LEASE_STATE.get(lease)?.remaining ?? 0; },
+    consume() {
+      const state = LEASE_STATE.get(lease);
+      if (!state) throw new LabCredentialError("unknown credential lease", "harness_failure");
+      if (state.remaining <= 0) throw new LabCredentialError("credential lease exhausted", "budget_exhausted");
+      state.remaining -= 1;
+    },
+    toString() { return "[LabCredentialLeaseV1]"; },
+    toJSON() { throw new LabCredentialError("credential lease is non-serializable", "harness_failure"); },
+  } satisfies LabCredentialLeaseV1 & { toString(): string; toJSON(): never };
+  LEASE_STATE.set(lease, {
     destinationFingerprint: opts.destination.fingerprint,
     transportId: opts.transportId ?? "default",
-    get remainingRequests() {
-      return remaining;
-    },
-    consume() {
-      if (remaining <= 0) {
-        throw new LabCredentialError("credential lease exhausted", "auth_blocked");
-      }
-      remaining -= 1;
-    },
-  };
+    remaining: budget,
+  });
   return Object.freeze(lease);
 }
 
 export function isCredentialLease(value: unknown): value is LabCredentialLeaseV1 {
-  return typeof value === "object" && value !== null && (value as LabCredentialLeaseV1)[LAB_CREDENTIAL_LEASE] === true;
+  return typeof value === "object" && value !== null && LEASE_STATE.has(value as object)
+    && (value as LabCredentialLeaseV1)[LAB_CREDENTIAL_LEASE] === true;
 }
 
-export function assertLeaseScope(
-  lease: LabCredentialLeaseV1,
-  destination: LabDestinationV1,
-  transportId = "default",
-): void {
-  if (lease.destinationFingerprint !== destination.fingerprint) {
-    throw new LabCredentialError("lease destination mismatch", "auth_blocked");
-  }
-  if (lease.transportId !== transportId) {
-    throw new LabCredentialError("lease transport mismatch", "auth_blocked");
+export function assertLeaseScope(lease: LabCredentialLeaseV1, destination: LabDestinationV1, transportId = "default"): void {
+  const state = LEASE_STATE.get(lease as object);
+  if (!state) throw new LabCredentialError("unknown credential lease", "harness_failure");
+  if (state.destinationFingerprint !== destination.fingerprint || state.transportId !== transportId) {
+    throw new LabCredentialError("credential lease scope mismatch", "harness_failure");
   }
 }

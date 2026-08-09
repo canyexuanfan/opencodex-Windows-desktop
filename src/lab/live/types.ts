@@ -1,4 +1,5 @@
-import type { RouteDependencyV1 } from "../events/types";
+import type { NormalizedObservation } from "../conformance/types";
+import type { RouteDependencyV1, RouteSubjectV1 } from "../events/types";
 
 export interface LabDestinationV1 {
   readonly scheme: "http" | "https";
@@ -11,8 +12,28 @@ export interface LabDestinationV1 {
   readonly fingerprint: string;
 }
 
+export type LabBehaviorSource =
+  | "request"
+  | "model_override"
+  | "provider_config"
+  | "registry_runtime_default"
+  | "generated_model_metadata"
+  | "global_config"
+  | "adapter_default"
+  | "lab_forced";
+
+export interface LabBehaviorValue {
+  source: LabBehaviorSource;
+  value: unknown;
+}
+
+/** Authoritative effective values emitted by the production route/model/adapter resolver. */
+export type LabBehaviorValues = Record<string, LabBehaviorValue>;
+
 export interface LabRouteContext {
   providerId: string;
+  /** Config-owner identity only; HMACed before it enters evidence. */
+  providerInstanceKey: string;
   clientModelId: string;
   upstreamModelId: string;
   effectiveAdapter: string;
@@ -20,9 +41,14 @@ export interface LabRouteContext {
   upstreamProtocol: string;
   surface: string;
   baseUrl: string;
+  /** Generated compatibility hash, not package marketing version. */
+  opencodexCompatibilityVersion: string;
+  /** Closed, effective behavior inputs from the production resolver. */
+  behaviorValues: LabBehaviorValues;
   allowPrivateNetwork?: boolean;
   labRunApproval?: boolean;
   requiredClaims?: string[];
+  availableHarnessFeatures?: string[];
   dependencies?: RouteDependencyV1[];
 }
 
@@ -59,34 +85,73 @@ export type TransportErrorCode =
   | "inactivity_timeout"
   | "total_timeout"
   | "request_limit"
+  | "input_byte_limit"
+  | "output_byte_limit"
+  | "output_token_limit"
+  | "tool_call_limit"
+  | "artifact_byte_limit"
+  | "memory_limit"
+  | "child_process_limit"
   | "harness_failure";
 
-export interface TransportRequest {
+export interface LabTransportRequest {
   method: "GET" | "POST";
   path: string;
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 }
 
-export interface TransportResponse {
+export interface LabTransportResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
 }
 
+export type TransportRequest = LabTransportRequest;
+export type TransportResponse = LabTransportResponse;
+
 export interface LabTransport {
-  request(req: TransportRequest): Promise<TransportResponse>;
+  request(req: LabTransportRequest): Promise<LabTransportResponse>;
 }
 
 export const LAB_CREDENTIAL_LEASE = Symbol("LabCredentialLeaseV1");
 
+/** Opaque capability. Scope metadata and secret material are deliberately not public fields. */
 export interface LabCredentialLeaseV1 {
   readonly [LAB_CREDENTIAL_LEASE]: true;
-  readonly destinationFingerprint: string;
-  readonly transportId: string;
   readonly remainingRequests: number;
   consume(): void;
 }
+
+export interface LabPinnedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+/** Trusted provider/credential transport seam. Implementations own secret injection outside Lab. */
+export type LabPinnedSender = (
+  lease: LabCredentialLeaseV1,
+  destination: LabDestinationV1,
+  pinned: LabPinnedAddress,
+  request: LabTransportRequest,
+  signal: AbortSignal,
+  limits: LiveRunConfig,
+) => Promise<LabTransportResponse>;
+
+export interface LabRouteExecutorInput {
+  routeContext: LabRouteContext;
+  destination: LabDestinationV1;
+  routeSubject: RouteSubjectV1;
+  scenarioId: string;
+  initiatingRequest?: string;
+  limits: LiveRunConfig;
+  signal: AbortSignal;
+  environment: Readonly<Record<string, string>>;
+}
+
+/** Trusted exact-route execution seam. It must use existing route/adapters and return client-observed normalization. */
+export type LabRouteExecutor = (input: LabRouteExecutorInput) => Promise<NormalizedObservation>;
 
 export interface LiveScenarioRunResult {
   scenarioId: string;
@@ -98,6 +163,6 @@ export interface LiveScenarioRunResult {
   secondaryCode?: string;
   assertionResults: import("../conformance/types").AssertionResult[];
   diagnostics: string[];
-  routeSubject: import("../events/types").RouteSubjectV1;
+  routeSubject?: RouteSubjectV1;
   transportError?: TransportErrorCode;
 }

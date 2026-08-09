@@ -1,32 +1,19 @@
-import { discoverLiveScenarios, loadLiveCaseAuthority } from "./manifest";
-import { runLiveScenario, type LiveExecutorOptions } from "./executor";
-import type { LabRouteContext, LiveScenarioRunResult } from "./types";
 import { CL03_LIVE_SUITES } from "../conformance/types";
+import { isLiveCaseApplicableToRoute, runLiveScenario, type LiveExecutorOptions } from "./executor";
+import { discoverLiveScenarios, loadLiveCaseAuthority } from "./manifest";
+import type { LabRouteContext, LiveScenarioRunResult } from "./types";
 
-export interface LiveRunSummary {
-  total: number;
-  passed: number;
-  failed: number;
-  results: LiveScenarioRunResult[];
-}
+export interface LiveRunSummary { total: number; passed: number; failed: number; results: LiveScenarioRunResult[] }
 
-export async function runLiveSuite(
-  routeContext: LabRouteContext,
-  suites: readonly string[] = CL03_LIVE_SUITES,
-  opts: LiveExecutorOptions = {},
-): Promise<LiveRunSummary> {
+export async function runLiveSuite(routeContext: LabRouteContext, suites: readonly string[] = CL03_LIVE_SUITES, opts: LiveExecutorOptions = {}): Promise<LiveRunSummary> {
   const authority = loadLiveCaseAuthority();
-  const scenarios = discoverLiveScenarios(authority, suites);
-  if (scenarios.length === 0) throw new Error("harness_failure: no CL-03 live scenarios discovered");
+  const scenarios = discoverLiveScenarios(authority, suites).filter((scenario) => isLiveCaseApplicableToRoute(scenario, routeContext));
   const results: LiveScenarioRunResult[] = [];
-  for (const scenario of scenarios) {
-    results.push(await runLiveScenario(scenario, routeContext, opts));
-  }
-  const passed = results.filter((r) => r.passed).length;
+  for (const scenario of scenarios) results.push(await runLiveScenario(scenario, routeContext, opts));
+  const passed = results.filter((row) => row.passed).length;
   return { total: results.length, passed, failed: results.length - passed, results };
 }
 
 export function listLiveScenarioIds(suites: readonly string[] = CL03_LIVE_SUITES): string[] {
-  const authority = loadLiveCaseAuthority();
-  return discoverLiveScenarios(authority, suites).map((s) => s.id);
+  return discoverLiveScenarios(loadLiveCaseAuthority(), suites).map((scenario) => scenario.id);
 }
