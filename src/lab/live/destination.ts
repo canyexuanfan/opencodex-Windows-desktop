@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { assessUrlDestination, resolvePublicAddresses } from "../../lib/destination-policy";
 import { localFingerprint } from "../digest";
 import { readInstallationSalt } from "../subject/installation-salt";
+import { TransportError } from "./transport";
 import type { DnsResolver, LabDestinationV1 } from "./types";
 
 export class LabDestinationError extends Error {
@@ -57,7 +58,7 @@ async function withResolutionTimeout<T>(timeoutMs: number, operation: () => Prom
     return await Promise.race([
       operation(),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new LabDestinationError("destination resolution timed out", "connect_timeout")), timeoutMs);
+        timer = setTimeout(() => reject(new TransportError("connect_timeout", "destination resolution timed out")), timeoutMs);
       }),
     ]);
   } finally {
@@ -104,7 +105,7 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
   if (opts.resolve) {
     try { addresses = await withResolutionTimeout(connectTimeoutMs, () => opts.resolve!(parsed.hostname)); }
     catch (error) {
-      if (error instanceof LabDestinationError) throw error;
+      if (error instanceof TransportError || error instanceof LabDestinationError) throw error;
       throw new LabDestinationError("DNS resolution failed", "network_blocked");
     }
     if (addresses.length === 0) throw new LabDestinationError("DNS resolution returned no addresses", "network_blocked");
@@ -118,7 +119,7 @@ export async function createLabDestination(opts: CreateDestinationOptions): Prom
       addresses = resolved.addresses.map((row) => ({ address: row.address, family: row.family === 6 ? 6 as const : 4 as const }));
       privateNetwork = resolved.privateNetwork || privateNetwork;
     } catch (error) {
-      if (error instanceof LabDestinationError) throw error;
+      if (error instanceof TransportError || error instanceof LabDestinationError) throw error;
       throw new LabDestinationError("DNS destination policy failed", "network_blocked");
     }
   }
