@@ -109,15 +109,33 @@ function cloneNestedRecord(input: Record<string, Record<string, string>>): Recor
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, { ...value }]));
 }
 
-function omitFoldedModelKeys<T>(
-  record: Record<string, T> | undefined,
-  foldedModels: ReadonlySet<string>,
+function sameStringArray(left: readonly string[] | undefined, right: readonly string[]): boolean {
+  return left?.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+type DirectReasoningEffortOverrides = Pick<
+  OcxProviderConfig,
+  "thinkingBudgetModels" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "modelReasoningEffortMap"
+>;
+
+function fillFoldedModelDefault<T>(
+  merged: Record<string, T> | undefined,
+  explicit: Record<string, T> | undefined,
+  model: string,
+  registryDefault: T | undefined,
+  clone: (value: T) => T,
 ): Record<string, T> | undefined {
-  if (!record) return undefined;
+  const folded = model.toLowerCase();
+  const explicitEntries = Object.entries(explicit ?? {}).filter(([key]) => key.toLowerCase() === folded);
+  if (explicitEntries.length === 0) {
+    return registryDefault === undefined ? merged : { ...(merged ?? {}), [model]: clone(registryDefault) };
+  }
+
   const next = Object.fromEntries(
-    Object.entries(record).filter(([model]) => !foldedModels.has(model.toLowerCase())),
+    Object.entries(merged ?? {}).filter(([key]) => key.toLowerCase() !== folded),
   ) as Record<string, T>;
-  return Object.keys(next).length > 0 ? next : undefined;
+  for (const [key, value] of explicitEntries) next[key] = clone(value);
+  return next;
 }
 
 /**
@@ -131,42 +149,51 @@ function omitFoldedModelKeys<T>(
 export function applyDirectReasoningEffortContracts(
   entry: ProviderRegistryEntry,
   prov: OcxProviderConfig,
+  explicit: DirectReasoningEffortOverrides = prov,
 ): void {
   const models = entry.directReasoningEffortModels;
   if (!models || models.length === 0) return;
 
-  const direct = new Set(models.map(model => model.toLowerCase()));
-  const keepNonDirect = (model: string): boolean => !direct.has(model.toLowerCase());
-
-  prov.thinkingBudgetModels = prov.thinkingBudgetModels?.filter(keepNonDirect);
-  prov.thinkingToggleModels = prov.thinkingToggleModels?.filter(keepNonDirect);
-  prov.modelReasoningEfforts = omitFoldedModelKeys(prov.modelReasoningEfforts, direct);
-  prov.modelDefaultReasoningEfforts = omitFoldedModelKeys(prov.modelDefaultReasoningEfforts, direct);
-  prov.modelReasoningEffortMap = omitFoldedModelKeys(prov.modelReasoningEffortMap, direct);
-
   for (const model of models) {
-    const efforts = entry.modelReasoningEfforts?.[model];
-    if (efforts) {
-      prov.modelReasoningEfforts = {
-        ...(prov.modelReasoningEfforts ?? {}),
-        [model]: [...efforts],
-      };
+    // Old generated presets persisted the direct model at the front of the registry's budget
+    // list. Routing merges registry-first, which moves that one stale entry to the end. Repair
+    // only those two exact generated shapes; any partial, reordered, or case-varied list is a
+    // deliberate user value and remains untouched.
+    const currentBudgetModels = entry.thinkingBudgetModels ?? [];
+    const staleSeedShape = [model, ...currentBudgetModels];
+    const staleRoutedShape = [...currentBudgetModels, model];
+    if (sameStringArray(explicit.thinkingBudgetModels, staleSeedShape)
+      || sameStringArray(explicit.thinkingBudgetModels, staleRoutedShape)) {
+      prov.thinkingBudgetModels = [...currentBudgetModels];
     }
+
+    const efforts = entry.modelReasoningEfforts?.[model];
+    prov.modelReasoningEfforts = fillFoldedModelDefault(
+      prov.modelReasoningEfforts,
+      explicit.modelReasoningEfforts,
+      model,
+      efforts,
+      value => [...value],
+    );
 
     const defaultEffort = entry.modelDefaultReasoningEfforts?.[model];
-    if (defaultEffort) {
-      prov.modelDefaultReasoningEfforts = {
-        ...(prov.modelDefaultReasoningEfforts ?? {}),
-        [model]: defaultEffort,
-      };
-    }
+    prov.modelDefaultReasoningEfforts = fillFoldedModelDefault(
+      prov.modelDefaultReasoningEfforts,
+      explicit.modelDefaultReasoningEfforts,
+      model,
+      defaultEffort,
+      value => value,
+    );
 
     // An explicit empty model map masks any provider-wide aliases. Without it, a stale global
     // mapping such as xhigh -> max would win before the verified direct ladder can clamp it.
-    prov.modelReasoningEffortMap = {
-      ...(prov.modelReasoningEffortMap ?? {}),
-      [model]: {},
-    };
+    prov.modelReasoningEffortMap = fillFoldedModelDefault(
+      prov.modelReasoningEffortMap,
+      explicit.modelReasoningEffortMap,
+      model,
+      {},
+      value => ({ ...value }),
+    );
   }
 }
 
@@ -357,6 +384,12 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
     enrichReasoningSummariesByDestination(prov);
     return;
   }
+  const explicitDirectReasoning: DirectReasoningEffortOverrides = {
+    thinkingBudgetModels: prov.thinkingBudgetModels,
+    modelReasoningEfforts: prov.modelReasoningEfforts,
+    modelDefaultReasoningEfforts: prov.modelDefaultReasoningEfforts,
+    modelReasoningEffortMap: prov.modelReasoningEffortMap,
+  };
   const seed = providerConfigSeed(entry);
   if (prov.apiKeyTransport === undefined && seed.apiKeyTransport !== undefined) prov.apiKeyTransport = seed.apiKeyTransport;
   if (!prov.defaultModel && seed.defaultModel) prov.defaultModel = seed.defaultModel;
@@ -420,7 +453,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (prov.freeTier === undefined && seed.freeTier !== undefined) prov.freeTier = seed.freeTier;
   if (prov.modelSuffixBracketStrip === undefined && seed.modelSuffixBracketStrip !== undefined) prov.modelSuffixBracketStrip = seed.modelSuffixBracketStrip;
   if (!prov.headers && seed.headers) prov.headers = { ...seed.headers };
-  applyDirectReasoningEffortContracts(entry, prov);
+  applyDirectReasoningEffortContracts(entry, prov, explicitDirectReasoning);
 }
 
 export function deriveFeaturedProviderIds(): string[] {

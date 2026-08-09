@@ -377,7 +377,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(thinkingToggleModels ? { thinkingToggleModels } : {}),
     ...(thinkingBudgetModels ? { thinkingBudgetModels } : {}),
   };
-  applyDirectReasoningEffortContracts(registryEntry, resolved);
+  applyDirectReasoningEffortContracts(registryEntry, resolved, provider);
   return resolved;
 }
 

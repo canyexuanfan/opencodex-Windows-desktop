@@ -97,7 +97,7 @@ describe("alibaba-token-plan-intl registry entry", () => {
     expect(PROVIDER_REGISTRY.find(e => e.id === "alibaba-token-plan")!.defaultModel).toBe("qwen3.8-max");
   });
 
-  test("registry enrichment repairs a persisted pre-release Qwen3.8 contract", () => {
+  test("registry enrichment preserves deliberate case-varied Qwen3.8 overrides", () => {
     const provider = {
       adapter: "openai-chat",
       baseUrl: ALIBABA_INTL_TOKEN_PLAN_BASE_URL,
@@ -110,13 +110,13 @@ describe("alibaba-token-plan-intl registry entry", () => {
 
     enrichProviderFromRegistry("alibaba-token-plan-intl", provider);
 
-    expect(provider.modelReasoningEfforts["qwen3.8-max"]).toEqual(["low", "medium", "xhigh"]);
-    expect(provider.modelReasoningEfforts["QWEN3.8-MAX"]).toBeUndefined();
-    expect(provider.modelDefaultReasoningEfforts["qwen3.8-max"]).toBe("xhigh");
-    expect(provider.modelDefaultReasoningEfforts["QWEN3.8-MAX"]).toBeUndefined();
-    expect(provider.modelReasoningEffortMap?.["qwen3.8-max"]).toEqual({});
-    expect(provider.modelReasoningEffortMap?.["QWEN3.8-MAX"]).toBeUndefined();
-    expect(provider.thinkingBudgetModels).toEqual(["qwen3.7-max"]);
+    expect(provider.modelReasoningEfforts["qwen3.8-max"]).toBeUndefined();
+    expect(provider.modelReasoningEfforts["QWEN3.8-MAX"]).toEqual(["low", "high", "xhigh"]);
+    expect(provider.modelDefaultReasoningEfforts["qwen3.8-max"]).toBeUndefined();
+    expect(provider.modelDefaultReasoningEfforts["QWEN3.8-MAX"]).toBe("high");
+    expect(provider.modelReasoningEffortMap?.["qwen3.8-max"]).toBeUndefined();
+    expect(provider.modelReasoningEffortMap?.["QWEN3.8-MAX"]).toEqual({ medium: "high" });
+    expect(provider.thinkingBudgetModels).toEqual(["QWEN3.8-MAX", "qwen3.7-max"]);
   });
 
   test("non-reasoning models are marked", () => {
