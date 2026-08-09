@@ -33,6 +33,11 @@ import { resolveProtocolExecutionContext } from "../conformance/executor";
 
 const COMPAT_VERSION = "protocol-v1";
 
+type TimedScenarioRunResult = ScenarioRunResult & {
+  startedAt?: number;
+  completedAt?: number;
+};
+
 export interface PersistConformanceOptions {
   configDir?: string;
   recordedAt?: number;
@@ -154,16 +159,20 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
   }
 }
 
-function requireExecutionTimes(opts: PersistConformanceOptions): { startedAt: number; completedAt: number } {
-  if (!Number.isInteger(opts.startedAt) || !Number.isInteger(opts.completedAt)) {
+function requireExecutionTimes(
+  result: ScenarioRunResult,
+  opts: PersistConformanceOptions,
+): { startedAt: number; completedAt: number } {
+  const timed = result as TimedScenarioRunResult;
+  const startedAt = opts.startedAt ?? timed.startedAt;
+  const completedAt = opts.completedAt ?? timed.completedAt;
+  if (!Number.isInteger(startedAt) || !Number.isInteger(completedAt)) {
     throw new Error("real startedAt/completedAt are required for persisted conformance evidence");
   }
-  const startedAt = opts.startedAt!;
-  const completedAt = opts.completedAt!;
-  if (startedAt < 0 || completedAt < startedAt) {
+  if (startedAt! < 0 || completedAt! < startedAt!) {
     throw new Error("invalid persisted conformance execution timestamps");
   }
-  return { startedAt, completedAt };
+  return { startedAt: startedAt!, completedAt: completedAt! };
 }
 
 /**
@@ -180,7 +189,7 @@ export function observationFromConformanceResult(
   const ownsStore = !opts.artifactStore;
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
-    const { startedAt, completedAt } = requireExecutionTimes(opts);
+    const { startedAt, completedAt } = requireExecutionTimes(result, opts);
     const recordedAt = opts.recordedAt ?? completedAt;
 
     const expandedScenario = expandScenario(caseRecord, authority);
