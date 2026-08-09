@@ -5,11 +5,16 @@ import {
   type TrustedArtifactDir,
 } from "../artifacts/secure-fs";
 import { ArtifactFsError } from "../artifacts/secure-fs";
-import { LAB_EVENT_SCHEMA_VERSION, LAB_PRODUCER, PURGE_ACTIONS } from "../constants";
+import {
+  LAB_EVENT_SCHEMA_VERSION,
+  LAB_PRODUCER,
+  LAB_PRODUCER_VERSION,
+  PURGE_ACTIONS,
+} from "../constants";
 import type { LabEvent, PurgeTombstoneEvent } from "../events/types";
 import { assignEventId, validateLabEvent } from "../events/validate";
 import {
-  deletableArtifactDigests,
+  artifactDeletionPlan,
   expandSensitiveArtifactEventTargets,
 } from "./artifact-refs";
 import { buildInvalidationIndex } from "./invalidation";
@@ -29,14 +34,16 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export class PurgeError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly completedActions: string[];
+  constructor(code: string, message: string, completedActions: string[] = []) {
     super(message);
     this.name = "PurgeError";
     this.code = code;
+    this.completedActions = [...completedActions];
   }
 }
 
@@ -49,27 +56,52 @@ export interface SensitivePurgeRequest {
   producerVersion?: string;
 }
 
+function writeAll(fd: number, bytes: Uint8Array): void {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const n = writeSync(fd, bytes, offset, bytes.byteLength - offset);
+    if (n <= 0) throw new PurgeError("short_write", "ledger rewrite short write");
+    offset += n;
+  }
+}
+
 function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
   const body = events.map((e) => jcsStringify(e)).join("\n") + (events.length ? "\n" : "");
   const bytes = new TextEncoder().encode(body);
-  const tmpPath = join(join(ledgerPath, ".."), `.purge-${process.pid}-${Date.now()}.jsonl.tmp`);
-  const fd = openSync(tmpPath, "w", 0o600);
+  const parent = dirname(ledgerPath);
+  const tmpPath = join(parent, `.purge-${process.pid}-${Date.now()}.jsonl.tmp`);
   try {
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.byteLength) {
-      throw new PurgeError("short_write", "ledger rewrite short write");
+    const fd = openSync(tmpPath, "wx", 0o600);
+    try {
+      writeAll(fd, bytes);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    renameSync(tmpPath, ledgerPath);
+    if (process.platform !== "win32") {
+      const dirFd = openSync(parent, "r");
+      try {
+        fsyncSync(dirFd);
+      } finally {
+        closeSync(dirFd);
+      }
+    }
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // Preserve the original failure. The temp file may already have been renamed.
+    }
+    throw err;
   }
-  renameSync(tmpPath, ledgerPath);
-  const ledgerFd = openSync(ledgerPath, "r+");
-  try {
-    fsyncSync(ledgerFd);
-  } finally {
-    closeSync(ledgerFd);
-  }
+}
+
+function isArtifactMissing(err: unknown): boolean {
+  return err instanceof ArtifactFsError && (
+    err.code === "artifact_missing" ||
+    (err.code === "harness_failure" && err.message.includes("missing"))
+  );
 }
 
 function deleteArtifactsFailClosed(dir: TrustedArtifactDir, digests: string[]): void {
@@ -78,9 +110,7 @@ function deleteArtifactsFailClosed(dir: TrustedArtifactDir, digests: string[]): 
     try {
       deleteArtifactBytes(dir, digest);
     } catch (err) {
-      if (err instanceof ArtifactFsError && err.message.includes("missing")) {
-        continue;
-      }
+      if (isArtifactMissing(err)) continue;
       errors.push(err instanceof Error ? err.message : String(err));
     }
   }
@@ -118,7 +148,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   const explicitSensitive = new Set(targetArtifactDigests);
 
   const replay = replayLabLedger(paths.ledgerPath);
-  const index = buildIndexFromReplay(replay.events);
+  const index = buildInvalidationIndex(replay.events);
   const removeIds = expandSensitiveArtifactEventTargets(
     replay.events,
     index,
@@ -131,7 +161,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
     eventKind: "purge_tombstone" as const,
     recordedAt: req.recordedAt ?? Date.now(),
     producer: LAB_PRODUCER,
-    producerVersion: req.producerVersion ?? "2.10.2",
+    producerVersion: req.producerVersion ?? LAB_PRODUCER_VERSION,
     targetEventIds: [...removeIds].sort(),
     targetArtifactDigests,
     reason: "sensitive_evidence" as const,
@@ -139,33 +169,35 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   };
   const tombstone = validateLabEvent(assignEventId(tombstonePayload)) as PurgeTombstoneEvent;
 
-  const deletable = purgeActions.includes("artifact")
-    ? deletableArtifactDigests(replay.events, index, removeIds, targetArtifactDigests)
-    : [];
+  const deletionPlan = purgeActions.includes("artifact")
+    ? artifactDeletionPlan(replay.events, index, removeIds, targetArtifactDigests)
+    : { deletable: [], retainedExplicit: [] };
 
-  if (purgeActions.includes("artifact") && explicitSensitive.size > 0) {
-    for (const digest of explicitSensitive) {
-      if (!deletable.includes(digest)) {
-        throw new PurgeError(
-          "sensitive_artifact_not_deletable",
-          `explicit sensitive artifact ${digest} could not be removed`,
-        );
-      }
-    }
+  if (deletionPlan.retainedExplicit.length > 0) {
+    throw new PurgeError(
+      "sensitive_bytes_retained",
+      `explicit sensitive artifacts remain required: ${deletionPlan.retainedExplicit.join(",")}`,
+    );
   }
 
   let dir: TrustedArtifactDir | null = null;
+  const completed: string[] = [];
   try {
     if (purgeActions.includes("scratch")) {
       purgeBoundedDirectory(paths.scratchDir);
+      completed.push("scratch");
     }
     if (purgeActions.includes("export")) {
       purgeBoundedDirectory(paths.exportDir);
+      completed.push("export");
     }
 
-    if (purgeActions.includes("artifact") && deletable.length > 0) {
-      dir = openTrustedArtifactDir(paths.artifactsDir);
-      deleteArtifactsFailClosed(dir, deletable);
+    if (purgeActions.includes("artifact")) {
+      if (deletionPlan.deletable.length > 0) {
+        dir = openTrustedArtifactDir(paths.artifactsDir);
+        deleteArtifactsFailClosed(dir, deletionPlan.deletable);
+      }
+      completed.push("artifact");
     }
 
     if (purgeActions.includes("ledger")) {
@@ -179,24 +211,29 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
     } else {
       appendLabEvent(paths.ledgerPath, tombstone);
     }
+    completed.push("ledger");
 
     if (purgeActions.includes("sqlite")) {
       rebuildLabProjection(req.configDir);
+      completed.push("sqlite");
     }
 
     return tombstone;
   } catch (err) {
-    throw err instanceof PurgeError ? err : new PurgeError("purge_failed", err instanceof Error ? err.message : String(err));
+    if (err instanceof PurgeError) {
+      throw new PurgeError(err.code, err.message, [...completed, ...err.completedActions]);
+    }
+    throw new PurgeError(
+      "purge_failed",
+      err instanceof Error ? err.message : String(err),
+      completed,
+    );
   } finally {
     if (dir) closeTrustedArtifactDir(dir);
   }
 }
 
-function buildIndexFromReplay(events: LabEvent[]) {
-  return buildInvalidationIndex(events);
-}
-
-/** Test helper: read raw ledger text. */
+/** Test helper retained temporarily for compatibility; production callers should replay validated events. */
 export function readLedgerText(configDir?: string): string {
   const paths = ensureLabDirs(configDir);
   return readFileSync(paths.ledgerPath, "utf8");
