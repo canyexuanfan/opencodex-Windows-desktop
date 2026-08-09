@@ -462,7 +462,7 @@ export function useDashboardData(apiBase: string) {
     return opts;
   }, [models, sidecar]);
   const visionModels = useMemo(
-    () => visionModelOptions(sidecar?.visionModels, models, sidecar?.vision?.model),
+    () => visionModelOptions(sidecar?.visionModels, models, sidecar?.vision?.model, sidecar?.vision?.backend),
     [sidecar?.visionModels, models, sidecar?.vision],
   );
 

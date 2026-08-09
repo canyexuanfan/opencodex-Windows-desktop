@@ -212,17 +212,26 @@ export function sidecarModelOptions(models: ModelInfo[]) {
   return out;
 }
 
-/** Server list when present, else the legacy openai+anthropic list. */
+/**
+ * Server list when present, else the legacy openai+anthropic list.
+ *
+ * `currentBackend` is the backend already persisted for `current`. It travels with the
+ * grandfathered entry because the legacy fallback path has no server backend to read and
+ * would otherwise infer one from `/api/models`, where anything not literally provided by
+ * "anthropic" reads as OpenAI — silently rewriting a working Anthropic describer on the
+ * next save. What is already stored is better evidence than a guess.
+ */
 export function visionModelOptions(
   serverOptions: VisionModelOption[] | undefined,
   models: ModelInfo[],
   current: string | undefined,
+  currentBackend?: SidecarBackend,
 ): Array<{ value: string; label: string; backend?: SidecarBackend }> {
   const options = serverOptions && serverOptions.length > 0
     ? serverOptions.map(option => ({ value: option.value, label: option.label, backend: option.backend }))
     : sidecarModelOptions(models);
   if (current && !options.some(option => option.value === current)) {
-    options.unshift({ value: current, label: current });
+    options.unshift({ value: current, label: current, ...(currentBackend ? { backend: currentBackend } : {}) });
   }
   return options;
 }

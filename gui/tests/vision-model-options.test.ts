@@ -68,3 +68,22 @@ test("a server-supplied vision backend wins when the catalog cannot identify its
   expect(sidecarBackendForModel([], model)).toBe("openai");
   expect(visionSidecarBackendForModel([], options, model)).toBe("anthropic");
 });
+
+test("an older server with no option list cannot rewrite the persisted anthropic backend", () => {
+  const model = "claude-grandfathered";
+  // The compatibility path: a server that predates visionModels sends nothing, and the
+  // configured model is absent from the catalog. Without the persisted backend travelling
+  // with the grandfathered entry, the next save would silently downgrade it to openai.
+  const options = visionModelOptions(undefined, [], model, "anthropic");
+
+  expect(options[0]).toMatchObject({ value: model, backend: "anthropic" });
+  expect(visionSidecarBackendForModel([], options, model)).toBe("anthropic");
+  expect(sidecarBackendForModel([], model)).toBe("openai");
+});
+
+test("an empty server list is still treated as legacy, and preserves the persisted backend", () => {
+  const model = "claude-grandfathered";
+  const options = visionModelOptions([], [], model, "anthropic");
+
+  expect(visionSidecarBackendForModel([], options, model)).toBe("anthropic");
+});
