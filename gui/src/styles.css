@@ -804,6 +804,8 @@ a.btn, a.btn:hover { text-decoration: none; }
 .stat .value.mono { font-family: var(--font-code); font-size: var(--text-subtitle); }
 
 .startup-health-bar {
+  box-sizing: border-box;
+  width: 100%;
   min-height: var(--control-lg);
   margin: calc(-1 * var(--space-3)) 0 var(--space-6);
   padding: 0 var(--space-3);
@@ -813,10 +815,14 @@ a.btn, a.btn:hover { text-decoration: none; }
   min-width: 0;
   color: var(--muted);
   background: var(--hover);
+  border: none;
   border-block: 1px solid var(--border-soft);
   text-decoration: none;
+  font: inherit;
   font-size: var(--text-control);
   line-height: var(--leading-ui);
+  text-align: start;
+  cursor: pointer;
   transition: background var(--motion-fast), color var(--motion-fast);
 }
 .startup-health-bar:hover { background: var(--raised); color: var(--text); }
