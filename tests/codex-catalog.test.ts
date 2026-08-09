@@ -1608,6 +1608,83 @@ describe("combo catalog capability intersection", () => {
       clearModelCache("cc-test");
     }
   }, 15_000);
+
+  test("warm cache still retains configured combo targets added inside the TTL (OCX-111)", async () => {
+    // Owner / CodeRabbit blocker: retention must apply on fresh-cache reads, not only
+    // after a live /models response. Warm the provider cache without a combo, then
+    // gather again with a combo before TTL expiry — the configured target must return.
+    clearModelCache("or-warm");
+    clearModelCache("go-warm");
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    let fetchCount = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCount += 1;
+      const url = String(input);
+      const id = url.includes("or-warm") ? "or-warm/other-model" : "go-warm/other";
+      return new Response(JSON.stringify({ data: [{ id, owned_by: "provider" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const baseProviders = {
+      "or-warm": {
+        adapter: "openai-chat" as const,
+        baseUrl: "https://or-warm.example.test/v1",
+        authMode: "key" as const,
+        apiKey: "sk-test",
+        liveModels: true as const,
+        models: ["openai/gpt-5.6-luna"],
+        modelContextWindows: { "openai/gpt-5.6-luna": 200_000 },
+      },
+      "go-warm": {
+        adapter: "openai-chat" as const,
+        baseUrl: "https://go-warm.example.test/v1",
+        authMode: "key" as const,
+        apiKey: "sk-test",
+        liveModels: false as const,
+        models: ["deepseek-v4-flash"],
+        modelContextWindows: { "deepseek-v4-flash": 128_000 },
+      },
+    };
+    try {
+      resetCatalogRuntimeStateForTests();
+      const withoutCombo = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "or-warm",
+        modelCacheTtlMs: 60_000,
+        providers: baseProviders,
+      });
+      expect(fetchCount).toBe(1);
+      expect(withoutCombo.some(r => r.provider === "or-warm" && r.id === "openai/gpt-5.6-luna")).toBe(false);
+      expect(withoutCombo.some(r => r.provider === "or-warm" && r.id === "or-warm/other-model")).toBe(true);
+
+      const withCombo = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "or-warm",
+        modelCacheTtlMs: 60_000,
+        providers: baseProviders,
+        combos: {
+          failover: {
+            strategy: "failover",
+            targets: [
+              { provider: "or-warm", model: "openai/gpt-5.6-luna", weight: 1 },
+              { provider: "go-warm", model: "deepseek-v4-flash", weight: 1 },
+            ],
+          },
+        },
+      });
+      expect(fetchCount).toBe(1);
+      expect(withCombo.some(r => r.provider === "or-warm" && r.id === "openai/gpt-5.6-luna")).toBe(true);
+      expect(withCombo.some(r => r.provider === "combo" && r.id === "failover")).toBe(true);
+      const warningText = warning.mock.calls.flat().join(" ");
+      expect(warningText).not.toContain("member capabilities are incomplete");
+    } finally {
+      warning.mockRestore();
+      globalThis.fetch = originalFetch;
+      clearModelCache("or-warm");
+      clearModelCache("go-warm");
+    }
+  }, 15_000);
 });
 
 describe("Google Gemini catalog metadata", () => {
