@@ -1,24 +1,69 @@
 import { evaluateAssertions } from "../conformance/assertion";
 import { emptyObservation, finalizeObservation, setClientResponse } from "../conformance/observation";
 import { normalizeSseBytes } from "../conformance/sse-normalize";
-import type { CaseRecord, FailureClassification, FailureRule, NormalizedEvent, NormalizedObservation } from "../conformance/types";
+import type { CaseAuthority, CaseRecord, FailureClassification, FailureRule, NormalizedEvent, NormalizedObservation } from "../conformance/types";
+import { domainHash, jcsStringify, scenarioManifestDigest, subjectIdForSubject, suiteManifestDigest } from "../digest";
 import type { RouteSubjectV1 } from "../events/types";
 import { isTrustedLabRouteExecutor } from "../../lib/lab-live-execution-authority";
 import { buildRouteSubjectV1 } from "../subject/route-subject";
 import { createLabDestination, LabDestinationError } from "./destination";
-import { expandLiveScenario } from "./manifest";
+import { expandLiveScenario, loadLiveCaseAuthority } from "./manifest";
 import { createSandboxResourceState, enforceSandboxLimits, LabSandboxError, prepareLiveSandbox } from "./sandbox";
+import { liveSuiteManifestObjectForCase } from "./suite-manifest";
 import { classifyTransportError, TransportError } from "./transport";
 import type { DnsResolver, LabRouteContext, LabTransport, LiveExecutionAuthority, LiveRunConfig, LiveScenarioRunResult, TrustedLabRouteExecutor } from "./types";
 
 export interface LiveExecutorOptions {
-  /** Branded exact-route capability for evidence-eligible production execution. */
+  /** Host-issued exact-route capability for evidence-eligible production execution. */
   routeExecutor?: TrustedLabRouteExecutor;
   /** Test-only byte transport. Results are deliberately not evidence-eligible. */
   transport?: LabTransport;
   resolve?: DnsResolver;
   configDir?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+interface TrustedLiveResultReceipt {
+  authorityDigest: string;
+  scenarioId: string;
+  suiteId: string;
+  scenarioManifestDigest: string;
+  suiteManifestDigest: string;
+  routeSubjectId: string;
+}
+
+const TRUSTED_RESULT_RECEIPTS = new WeakMap<object, TrustedLiveResultReceipt>();
+const LIVE_AUTHORITY_DOMAIN = "ocx-lab:live-authority:v1";
+
+function receiptFor(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): TrustedLiveResultReceipt {
+  if (!result.routeSubject) throw new Error("trusted live result has no route subject");
+  return {
+    authorityDigest: domainHash(LIVE_AUTHORITY_DOMAIN, jcsStringify(authority)),
+    scenarioId: caseRecord.id,
+    suiteId: caseRecord.suite,
+    scenarioManifestDigest: scenarioManifestDigest(expandLiveScenario(caseRecord, authority)),
+    suiteManifestDigest: suiteManifestDigest(liveSuiteManifestObjectForCase(caseRecord, authority)),
+    routeSubjectId: subjectIdForSubject(result.routeSubject),
+  };
+}
+
+function sealTrustedLiveResult(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): void {
+  TRUSTED_RESULT_RECEIPTS.set(result, receiptFor(result, caseRecord, authority));
+}
+
+/** Verify the module-private execution receipt before any live result enters persistence. */
+export function assertTrustedLiveResultReceipt(result: LiveScenarioRunResult, caseRecord: CaseRecord, authority: CaseAuthority): void {
+  const actual = TRUSTED_RESULT_RECEIPTS.get(result);
+  if (!actual || result.executionAuthority !== "trusted_route") {
+    throw new Error("live result lacks trusted execution receipt");
+  }
+  const expected = receiptFor(result, caseRecord, authority);
+  for (const key of Object.keys(expected) as Array<keyof TrustedLiveResultReceipt>) {
+    if (actual[key] !== expected[key]) throw new Error("live result trusted execution receipt mismatch");
+  }
+  if (result.scenarioId !== caseRecord.id || result.suite !== caseRecord.suite) {
+    throw new Error("live result scenario identity mismatch");
+  }
 }
 
 function liveLimitsFromAuthority(authorityLimits: Record<string, number>): LiveRunConfig {
@@ -150,30 +195,43 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
   const startedAt = Date.now();
   let routeSubject: RouteSubjectV1 | undefined;
   let executionAuthority: LiveExecutionAuthority = "none";
-  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt" | "executionAuthority">): LiveScenarioRunResult => ({ ...partial, executionAuthority, startedAt, completedAt: Math.max(startedAt, Date.now()) });
+  let authority: CaseAuthority | undefined;
+  let activeCase = caseRecord;
+  let trustedExecutionStarted = false;
+  const complete = (partial: Omit<LiveScenarioRunResult, "startedAt" | "completedAt" | "executionAuthority">): LiveScenarioRunResult => {
+    const result: LiveScenarioRunResult = { ...partial, executionAuthority, startedAt, completedAt: Math.max(startedAt, Date.now()) };
+    if (trustedExecutionStarted && authority && result.routeSubject) sealTrustedLiveResult(result, activeCase, authority);
+    return result;
+  };
   try {
     const environment = prepareLiveSandbox(opts.env);
-    if (!isLiveCaseApplicableToRoute(caseRecord, routeContext)) {
-      return complete({ scenarioId: caseRecord.id, suite: caseRecord.suite, passed: false, classification: "inconclusive", secondaryCode: "scenario_inapplicable", assertionResults: [], diagnostics, routeSubject });
+    authority = loadLiveCaseAuthority();
+    const canonicalCase = authority.cases.find((row) => row.id === caseRecord.id);
+    if (!canonicalCase || jcsStringify(canonicalCase) !== jcsStringify(caseRecord)) {
+      throw new TransportError("harness_failure", "live scenario does not match canonical authority");
+    }
+    activeCase = canonicalCase;
+    if (!isLiveCaseApplicableToRoute(activeCase, routeContext)) {
+      return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: "inconclusive", secondaryCode: "scenario_inapplicable", assertionResults: [], diagnostics, routeSubject });
+    }
+    const preconditionFailure = routePreconditionFailure(routeContext, activeCase);
+    if (preconditionFailure) {
+      return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: "inconclusive", secondaryCode: preconditionFailure, assertionResults: [], diagnostics: [preconditionFailure], routeSubject });
     }
     const destination = await createLabDestination({ baseUrl: routeContext.baseUrl, allowPrivateNetwork: routeContext.allowPrivateNetwork, labRunApproval: routeContext.labRunApproval, resolve: opts.resolve, configDir: opts.configDir });
     routeSubject = buildRouteSubjectV1(routeContext, destination, opts.configDir);
-    const preconditionFailure = routePreconditionFailure(routeContext, caseRecord);
-    if (preconditionFailure) {
-      return complete({ scenarioId: caseRecord.id, suite: caseRecord.suite, passed: false, classification: "inconclusive", secondaryCode: preconditionFailure, assertionResults: [], diagnostics: [preconditionFailure], routeSubject });
-    }
-    const authority = await import("./manifest").then((m) => m.loadLiveCaseAuthority());
-    const expanded = expandLiveScenario(caseRecord, authority);
+    const expanded = expandLiveScenario(activeCase, authority);
     const limits = liveLimitsFromAuthority(expanded.executionLimits as Record<string, number>);
     const state = createSandboxResourceState();
     let observation: NormalizedObservation;
     if (opts.routeExecutor) {
       if (!isTrustedLabRouteExecutor(opts.routeExecutor)) throw new TransportError("untrusted_route_executor", "untrusted route executor capability");
       executionAuthority = "trusted_route";
-      observation = await withTotalTimeout(limits.totalTimeoutMs, (signal) => opts.routeExecutor!.execute({ routeContext, destination, routeSubject: routeSubject!, scenarioId: caseRecord.id, initiatingRequest: caseRecord.initiatingRequest?.bytesUtf8, limits, signal, environment }));
-    } else if (opts.transport && caseRecord.initiatingRequest) {
+      trustedExecutionStarted = true;
+      observation = await withTotalTimeout(limits.totalTimeoutMs, (signal) => opts.routeExecutor!.execute({ routeContext, destination, routeSubject: routeSubject!, scenarioId: activeCase.id, initiatingRequest: activeCase.initiatingRequest?.bytesUtf8, limits, signal, environment }));
+    } else if (opts.transport && activeCase.initiatingRequest) {
       executionAuthority = "test_transport";
-      const body = caseRecord.initiatingRequest.bytesUtf8;
+      const body = activeCase.initiatingRequest.bytesUtf8;
       const inputBytes = new TextEncoder().encode(body).byteLength;
       enforceSandboxLimits(state, limits, { requests: 1, inputBytes });
       const response = await withTotalTimeout(limits.totalTimeoutMs, (signal) => opts.transport!.request({ method: "POST", path: pathForProtocol(routeContext.upstreamProtocol), body, signal }));
@@ -185,23 +243,26 @@ export async function runLiveScenario(caseRecord: CaseRecord, routeContext: LabR
       enforceSandboxLimits(state, limits, { outputBytes, outputTokens: Math.ceil(outputBytes / 4) });
       observation = normalizeTransportObservation(routeContext, response);
     } else {
-      throw new TransportError("live_transport_required", caseRecord.initiatingRequest ? "live transport or trusted route executor required" : "trusted route executor required");
+      throw new TransportError("live_transport_required", activeCase.initiatingRequest ? "live transport or trusted route executor required" : "trusted route executor required");
     }
-    const assertionResults = evaluateAssertions(caseRecord.assertions, observation);
+    const assertionResults = evaluateAssertions(activeCase.assertions, observation);
     const requiredFailures = assertionResults.filter((row) => row.required && !row.passed);
     const failureRules = expanded.failureRules as FailureRule[];
-    if (caseRecord.expectedFailure) {
-      const matched = caseRecord.expectedFailure.assertionIds.every((id) => assertionResults.find((row) => row.id === id)?.passed === true) && requiredFailures.length === 0;
-      return complete({ scenarioId: caseRecord.id, suite: caseRecord.suite, passed: matched, classification: matched ? caseRecord.expectedFailure.expectedClass : "protocol_failure", secondaryCode: matched ? caseRecord.expectedFailure.expectedCode : "deterministic_assertion", assertionResults, diagnostics, routeSubject });
+    if (activeCase.expectedFailure) {
+      const matched = activeCase.expectedFailure.assertionIds.every((id) => assertionResults.find((row) => row.id === id)?.passed === true) && requiredFailures.length === 0;
+      return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: matched, classification: matched ? activeCase.expectedFailure.expectedClass : "protocol_failure", secondaryCode: matched ? activeCase.expectedFailure.expectedCode : "deterministic_assertion", assertionResults, diagnostics, routeSubject });
     }
     const passed = requiredFailures.length === 0;
     const classified = passed ? { classification: "inconclusive" as FailureClassification, secondaryCode: "pass" } : classifyWithFailureRules(failureRules, "required_assertion_failed");
-    return complete({ scenarioId: caseRecord.id, suite: caseRecord.suite, passed, classification: passed ? "inconclusive" : classified.classification, secondaryCode: passed ? undefined : classified.secondaryCode, assertionResults, diagnostics, routeSubject });
+    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed, classification: passed ? "inconclusive" : classified.classification, secondaryCode: passed ? undefined : classified.secondaryCode, assertionResults, diagnostics, routeSubject });
   } catch (error) {
-    diagnostics.push(error instanceof Error ? `${error.name}:${error.message}` : String(error));
+    const diagnosticCode = error instanceof TransportError || error instanceof LabSandboxError || error instanceof LabDestinationError
+      ? error.code
+      : "execution_error";
+    diagnostics.push(diagnosticCode);
     let classified = classifyTransportError(error);
     if (error instanceof LabSandboxError) classified = { classification: error.code === "harness_failure" ? "harness_failure" : "budget_exhausted", secondaryCode: error.code };
     if (error instanceof LabDestinationError) classified = { classification: error.code === "network_blocked" ? "network_failure" : "harness_failure", secondaryCode: error.code };
-    return complete({ scenarioId: caseRecord.id, suite: caseRecord.suite, passed: false, classification: classified.classification, secondaryCode: classified.secondaryCode, assertionResults: [], diagnostics, routeSubject, transportError: error instanceof TransportError ? error.code : undefined });
+    return complete({ scenarioId: activeCase.id, suite: activeCase.suite, passed: false, classification: classified.classification, secondaryCode: classified.secondaryCode, assertionResults: [], diagnostics, routeSubject, transportError: error instanceof TransportError ? error.code : undefined });
   }
 }
