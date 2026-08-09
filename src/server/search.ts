@@ -21,6 +21,7 @@ import {
 import { codexAccountNamespaceForModel } from "../codex/account-namespace-match";
 import { formatCodexProviderForLog } from "../codex/routing";
 import { signalWithTimeout } from "../lib/abort";
+import { readBoundedResponseBytes } from "../lib/bounded-body";
 import { sidecarEnter } from "../lib/sidecar-tracker";
 import type { OcxConfig } from "../types";
 import {
@@ -151,20 +152,27 @@ export async function handleSearch(
       body: JSON.stringify(relayBody),
       signal: linkedSignal.signal,
     });
-    const payload = await upstreamResponse.arrayBuffer();
-    if (payload.byteLength > SEARCH_RESPONSE_MAX_BYTES) {
-      return formatErrorResponse(502, "upstream_error", `search response too large (${payload.byteLength} bytes)`);
+    const observed = await readBoundedResponseBytes(upstreamResponse, {
+      maxBytes: SEARCH_RESPONSE_MAX_BYTES,
+      signal: linkedSignal.signal,
+    });
+    if (observed.oversized) {
+      return formatErrorResponse(
+        502,
+        "upstream_error",
+        `search response too large (exceeded ${SEARCH_RESPONSE_MAX_BYTES} bytes)`,
+      );
     }
     upstream.recordOutcome?.(upstreamResponse.status);
     const relayHeaders: Record<string, string> = {};
     const contentType = upstreamResponse.headers.get("content-type");
     if (contentType) relayHeaders["content-type"] = contentType;
-    return new Response(payload, { status: upstreamResponse.status, headers: relayHeaders });
+    return new Response(observed.bytes, { status: upstreamResponse.status, headers: relayHeaders });
   } catch (err) {
     if (req.signal.aborted) {
       return formatErrorResponse(499, "client_closed_request", "search request canceled by client");
     }
-    if (err instanceof Error && err.name === "TimeoutError") {
+    if (linkedSignal.signal.aborted || (err instanceof Error && err.name === "TimeoutError")) {
       upstream.recordOutcome?.("timeout");
       return formatErrorResponse(504, "upstream_error", "search upstream timed out");
     }

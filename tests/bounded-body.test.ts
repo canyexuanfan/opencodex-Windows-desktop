@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	BOUNDED_BODY_MAX_BYTES,
 	boundedBodyBufferGrowthsForTests,
+	readBoundedResponseBytes,
 	readBoundedResponseBody,
 } from "../src/lib/bounded-body";
 import { UPSTREAM_JSON_BODY_READ_OPTIONS } from "../src/server/responses/core";
@@ -363,5 +364,72 @@ describe("readBoundedResponseBody", () => {
 		expect(result.text).toBe("original");
 		expect(response.bodyUsed).toBe(true);
 		expect(cloneCalls).toBe(0);
+	});
+
+	test("reads arbitrary response bytes exactly through the raw primitive", async () => {
+		const expected = new Uint8Array([0x00, 0xff, 0x80, 0xc3, 0x28]);
+		const response = responseFromChunks(expected.subarray(0, 2), expected.subarray(2));
+
+		const result = await readBoundedResponseBytes(response, { maxBytes: expected.byteLength });
+
+		expect(result.oversized).toBe(false);
+		expect(Array.from(result.bytes)).toEqual(Array.from(expected));
+	});
+
+	test("raw byte reads discard the prefix and cancel without draining the stream", async () => {
+		let cancelled = false;
+		let tailPulled = false;
+		const chunks = [new Uint8Array(3), new Uint8Array(3), new Uint8Array([0x7f]), new Uint8Array([0x7e])];
+		const response = new Response(new ReadableStream<Uint8Array>({
+			pull(controller) {
+				const chunk = chunks.shift();
+				if (!chunk) return controller.close();
+				if (chunk.byteLength === 1 && chunk[0] === 0x7e) tailPulled = true;
+				controller.enqueue(chunk);
+			},
+			cancel() { cancelled = true; },
+		}));
+
+		const result = await readBoundedResponseBytes(response, { maxBytes: 5 });
+
+		expect(result.oversized).toBe(true);
+		expect(result.bytes.byteLength).toBe(0);
+		expect(cancelled).toBe(true);
+		// WHATWG streams may prefetch one queued chunk, but cancellation must stop further draining.
+		expect(tailPulled).toBe(false);
+	});
+
+	test("raw byte reads preserve the parent abort reason and cancel the stream", async () => {
+		const parent = new AbortController();
+		const reason = { code: "client-stopped" };
+		let cancelled = false;
+		const response = new Response(new ReadableStream<Uint8Array>({
+			cancel() { cancelled = true; },
+		}));
+		const reading = readBoundedResponseBytes(response, { maxBytes: 5, signal: parent.signal });
+		parent.abort(reason);
+
+		let caught: unknown;
+		try { await reading; } catch (error) { caught = error; }
+		expect(caught).toBe(reason);
+		expect(cancelled).toBe(true);
+	});
+
+	test("raw byte cancellation rejection is observed", async () => {
+		const unhandled: unknown[] = [];
+		const listener = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", listener);
+		try {
+			const response = new Response(new ReadableStream<Uint8Array>({
+				start(controller) { controller.enqueue(new Uint8Array(6)); },
+				cancel() { return Promise.reject(new Error("cancel failed")); },
+			}));
+			const result = await readBoundedResponseBytes(response, { maxBytes: 5 });
+			expect(result.oversized).toBe(true);
+			await new Promise(resolve => setTimeout(resolve, 0));
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", listener);
+		}
 	});
 });
