@@ -713,6 +713,13 @@ describe("validateIssue - feature", () => {
     assert.equal(hasActionableReproductionDetail("```\nSIGSEGV at 0x0000\n```"), true);
   });
 
+  it("bounds long non-matching reproduction path tokens", () => {
+    const startedAt = performance.now();
+    assert.equal(hasActionableReproductionDetail(`${"a".repeat(60_000)}.unknown`), false);
+    assert.ok(performance.now() - startedAt < 500, "actionable reproduction check took too long");
+    assert.equal(hasActionableReproductionDetail("CONFIG.JSON"), true);
+  });
+
   it("rejects fenced placeholder-only examples", () => {
     const fencedPlaceholders = [
       "```\nN/A\n```",
