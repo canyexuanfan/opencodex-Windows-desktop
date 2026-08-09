@@ -1,5 +1,5 @@
 /**
- * Regression coverage for the Windows console-popup fix (#1236).
+ * Regression coverage for the Windows console-popup fix (#1278).
  *
  * The desktop proxy parent runs without a console. Every console-subsystem
  * child it spawns without CREATE_NO_WINDOW (`windowsHide`) gets a fresh
@@ -24,7 +24,7 @@ afterEach(() => {
   setTrustedWindowsElevationExecutablesForTests(null);
 });
 
-describe("Windows identity lookup popup fix (#1236)", () => {
+describe("Windows identity lookup popup fix (#1278)", () => {
   test("builds a hidden non-interactive command from the trusted PowerShell path", () => {
     setTrustedWindowsElevationExecutablesForTests({ powershell: TRUSTED_POWERSHELL });
     const command = windowsIdentityPowerShellCommandForTests(
@@ -60,7 +60,7 @@ describe("Windows identity lookup popup fix (#1236)", () => {
   });
 });
 
-describe("Windows process-lookup popup fix (#1236)", () => {
+describe("Windows process-lookup popup fix (#1278)", () => {
   test("batch start-time lookup is trusted, bounded, and never throws cross-platform", () => {
     // On POSIX hosts the trusted System32 resolver throws inside the win32
     // branch's catch — the batch must degrade to nulls, exactly like a

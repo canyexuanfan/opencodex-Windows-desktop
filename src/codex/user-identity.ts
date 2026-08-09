@@ -81,12 +81,12 @@ function windowsIdentityPowerShellSpawnOptions(): {
   };
 }
 
-/** Test-only readback of the trusted executable and static arguments (#1236). */
+/** Test-only readback of the trusted executable and static arguments (#1278). */
 export function windowsIdentityPowerShellCommandForTests(expression: string): string[] {
   return windowsIdentityPowerShellCommand(expression);
 }
 
-/** Test-only readback of the spawn options shared by the identity lookups (#1236). */
+/** Test-only readback of the spawn options shared by the identity lookups (#1278). */
 export function windowsIdentityPowerShellSpawnOptionsForTests(): ReturnType<
   typeof windowsIdentityPowerShellSpawnOptions
 > {
@@ -102,7 +102,7 @@ function powershellValue(expression: string): string {
   }
   let result: ReturnType<typeof Bun.spawnSync>;
   try {
-    // `windowsHide` is the popup fix (#1236): the desktop proxy parent runs
+    // `windowsHide` is the popup fix (#1278): the desktop proxy parent runs
     // without a console, so a console-subsystem child spawned without
     // CREATE_NO_WINDOW gets a fresh visible console window at startup and on
     // every config write. `-WindowStyle Hidden` alone does not stop the

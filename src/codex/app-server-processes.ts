@@ -348,7 +348,7 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
   ].join("\n");
   // Top-level exec failure propagates (see listDarwinSnapshots note). The
   // executable resolves from the trusted System32 directory (never PATH), and
-  // windowsHide keeps the enumeration console-less on desktop sessions (#1236).
+  // windowsHide keeps the enumeration console-less on desktop sessions (#1278).
   const output = execFileSync(resolveTrustedWindowsPowerShellExe(), [
     "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
     "-Command",
