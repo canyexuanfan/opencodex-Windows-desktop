@@ -75,7 +75,11 @@ export function enforceEventStructureLimits(
     if (/sk-[a-z0-9]{10,}/i.test(value) || /Bearer\s+\S+/i.test(value)) {
       throw new LabValidationError("secret_pattern", `${path} contains secret-shaped data`);
     }
-    if (/^[A-Za-z]:\\/.test(value) || value.includes("/Users/") || value.includes("\\Users\\")) {
+    if (
+      /^[A-Za-z]:\\/.test(value) ||
+      /(?:^|[\s"'([])\/(?:home|Users|tmp|var|etc|root|mnt)\//.test(value) ||
+      value.includes("\\Users\\")
+    ) {
       throw new LabValidationError("raw_path", `${path} contains raw filesystem path`);
     }
     return;
