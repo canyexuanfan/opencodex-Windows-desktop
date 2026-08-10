@@ -77,12 +77,29 @@ export interface RouteQuotaEvidence {
   source?: string;
 }
 
+/**
+ * Stable wire outcome for `limits.maxEstimatedCostUsd` against this candidate's
+ * cost evidence. Present only when a cap is configured. Non-excluding outcomes
+ * (`satisfied`, `unknown-allowed`) must not be mirrored into `exclusions`.
+ */
+export type RouteCostCapOutcome =
+  | "satisfied"
+  | "exceeded"
+  | "unknown-allowed"
+  | "unknown-excluded";
+
 export interface RouteCostEvidence {
   estimatedUsd?: number;
   /** Stable wire code for the price source (e.g. "registry" | "expected"). */
   priceSource?: string;
   incomplete?: boolean;
   limitUsd?: number;
+  /**
+   * Cap evaluation outcome when `limitUsd` / profile `maxEstimatedCostUsd` is set.
+   * Distinguishes "known under the cap" from "unknown cost allowed by policy"
+   * without treating the latter as an exclusion.
+   */
+  capOutcome?: RouteCostCapOutcome;
 }
 
 export interface RouteCompatibilitySuiteTrace {
@@ -540,6 +557,13 @@ function parseQuota(raw: unknown, caps: ParseCaps): RouteQuotaEvidence | undefin
   return out;
 }
 
+const COST_CAP_OUTCOMES = new Set<RouteCostCapOutcome>([
+  "satisfied",
+  "exceeded",
+  "unknown-allowed",
+  "unknown-excluded",
+]);
+
 /** Whitelisted cost-evidence parse. */
 function parseCost(raw: unknown, caps: ParseCaps): RouteCostEvidence | undefined {
   if (!isPlainRecord(raw)) return undefined;
@@ -551,6 +575,11 @@ function parseCost(raw: unknown, caps: ParseCaps): RouteCostEvidence | undefined
   }
   if (typeof raw.incomplete === "boolean") out.incomplete = raw.incomplete;
   if (finiteNumber(raw.limitUsd)) out.limitUsd = raw.limitUsd;
+  if (out.limitUsd !== undefined
+    && typeof raw.capOutcome === "string"
+    && COST_CAP_OUTCOMES.has(raw.capOutcome as RouteCostCapOutcome)) {
+    out.capOutcome = raw.capOutcome as RouteCostCapOutcome;
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

@@ -4,6 +4,8 @@ export type CompatibilitySuiteDraft = {
   suiteId: string;
   evidenceLayer: "protocol_conformance" | "live_route_compatibility";
 };
+export type UnknownCostCapMode = "allow" | "exclude";
+export type OptionalBoolean = "" | "true" | "false";
 
 export type RoutingProfileCandidate = {
   provider: string;
@@ -56,6 +58,7 @@ export type RoutingProfileDto = {
   };
   limits: {
     maxEstimatedCostUsd?: number;
+    onUnknownCost?: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
   compatibility?: {
@@ -67,7 +70,6 @@ export type RoutingProfileDto = {
   };
 };
 
-export type OptionalBoolean = "" | "true" | "false";
 
 export type RoutingProfileDraft = {
   id: string;
@@ -93,6 +95,7 @@ export type RoutingProfileDraft = {
   };
   limits: {
     maxEstimatedCostUsd: string;
+    onUnknownCost: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
   compatibility: {
@@ -155,7 +158,7 @@ export function newRoutingProfileDraft(
       encryptedCodexTasks: "",
     },
     optimize: { ...DEFAULT_OPTIMIZE },
-    limits: { maxEstimatedCostUsd: "" },
+    limits: { maxEstimatedCostUsd: "", onUnknownCost: "allow" },
     unknownEvidence: { ...DEFAULT_UNKNOWN_EVIDENCE },
     compatibility: {
       enabled: false,
@@ -193,6 +196,7 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
     },
     limits: {
       maxEstimatedCostUsd: numberInput(profile.limits.maxEstimatedCostUsd),
+      onUnknownCost: profile.limits.onUnknownCost === "exclude" ? "exclude" : "allow",
     },
     unknownEvidence: { ...profile.unknownEvidence },
     compatibility: {
@@ -255,6 +259,11 @@ export function routingProfilePutBody(
       degradedEvidence: draft.compatibility.degradedEvidence,
     })
     : undefined;
+  const onUnknownCost = draft.limits.onUnknownCost === "exclude" ? "exclude" as const : undefined;
+  const limits = compactRecord({
+    maxEstimatedCostUsd,
+    onUnknownCost,
+  });
 
   return {
     mode,
@@ -273,9 +282,7 @@ export function routingProfilePutBody(
         cost: Number(draft.optimize.cost),
         quota: Number(draft.optimize.quota),
       },
-      ...(maxEstimatedCostUsd !== undefined
-        ? { limits: { maxEstimatedCostUsd } }
-        : {}),
+      ...(Object.keys(limits).length > 0 ? { limits } : {}),
       unknownEvidence: { ...draft.unknownEvidence },
       ...(compatibility && Object.keys(compatibility).length > 0 ? { compatibility } : {}),
     },

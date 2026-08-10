@@ -350,6 +350,7 @@ describe("CL-06 routing compatibility", () => {
       routingProfiles: {
         compat: {
           candidates: [{ provider: "a", model: "m1" }],
+          optimize: { latency: 1, health: 0, cost: 0, quota: 0 },
           compatibility: {
             requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
             unknownEvidence: "penalize",
