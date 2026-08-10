@@ -329,7 +329,28 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body).not.toHaveProperty("tool_choice");
   });
 
-  test("OpenAI-compatible chat keeps tool_choice when tools are present", () => {
+  test("OpenAI-compatible chat omits tools and tool_choice when tool_choice is none", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.neuralwatt.com/v1",
+    };
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "glm-5.2",
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        tools: [{ name: "read_secret", description: "Read", parameters: { type: "object" } }],
+      },
+      stream: false,
+      options: { toolChoice: "none" },
+    });
+    const body = JSON.parse(req.body as string) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  test("OpenAI-compatible chat advertises only the named tool when the provider downgrades the selector", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.moonshot.ai/v1",
@@ -340,14 +361,20 @@ describe("provider-specific reasoning effort mapping", () => {
       modelId: "kimi-k2.7-code",
       context: {
         messages: [{ role: "user", content: "hello", timestamp: 0 }],
-        tools: [{ name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } }],
+        tools: [
+          { name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } },
+          { name: "read_secret", description: "Read", parameters: { type: "object", properties: {} } },
+        ],
       },
       stream: false,
       options: { toolChoice: { name: "run_tests" } },
     });
-    const body = JSON.parse(req.body as string) as Record<string, unknown>;
+    const body = JSON.parse(req.body as string) as {
+      tools: Array<{ function: { name: string } }>;
+      tool_choice: string;
+    };
 
-    expect(body).toHaveProperty("tools");
+    expect(body.tools.map(tool => tool.function.name)).toEqual(["run_tests"]);
     expect(body.tool_choice).toBe("auto");
   });
 
@@ -411,18 +438,30 @@ describe("provider-specific reasoning effort mapping", () => {
       modelId: "umans-kimi-k2.7",
       context: {
         messages: [{ role: "user", content: "run it", timestamp: 0 }],
-        tools: [{
-          namespace: "functions",
-          name: "exec_command",
-          description: "Run a command",
-          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
-        }],
+        tools: [
+          {
+            namespace: "functions",
+            name: "exec_command",
+            description: "Run a command",
+            parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+          },
+          {
+            namespace: "mcp__secrets",
+            name: "read_secret",
+            description: "Read",
+            parameters: { type: "object" },
+          },
+        ],
       },
       stream: false,
       options: { toolChoice: { name: "functions.exec_command" } },
     });
-    const body = JSON.parse(req.body as string) as { tool_choice: { function: { name: string } } };
+    const body = JSON.parse(req.body as string) as {
+      tools: Array<{ function: { name: string } }>;
+      tool_choice: { function: { name: string } };
+    };
 
+    expect(body.tools.map(tool => tool.function.name)).toEqual(["functions__exec_command"]);
     expect(body.tool_choice.function.name).toBe("functions__exec_command");
   });
 

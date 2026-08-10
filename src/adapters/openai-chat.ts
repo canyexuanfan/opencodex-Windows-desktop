@@ -1,6 +1,6 @@
 import type { AdapterRequest, ProviderAdapter } from "./base";
 import type { AdapterEvent, OcxAssistantMessage, OcxContentPart, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxTextContent, OcxThinkingContent, OcxToolCall, OcxUsage } from "../types";
-import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, modelInList, namespacedToolName, resolveToolChoiceWireName, toolChoiceToolPredicate } from "../types";
 import { mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import { debugProviderDiagnostic } from "../lib/debug";
 import { sseFieldValue } from "../lib/sse-decoder";
@@ -612,12 +612,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
 
 function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  const allowed = isAllowedToolChoice(parsed.options.toolChoice)
-    ? new Set(parsed.options.toolChoice.allowedTools)
-    : undefined;
-  const tools = allowed
-    ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed))
-    : parsed.context.tools;
+  const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice));
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
@@ -834,9 +829,16 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
 
       if (tools) {
-        body.parallel_tool_calls = provider.parallelToolCalls === false
-          ? false
-          : parsed.options.parallelToolCalls !== false;
+        if (provider.parallelToolCalls === false) {
+          // NIM documents the Boolean defaulting to false and kimi rejects true; pin the
+          // wire bit so Codex cannot opt in via request.options. Other opted-out providers
+          // omit the field so strict OpenAI-compatible hosts never see an unsupported knob.
+          if (provider.baseUrl === "https://integrate.api.nvidia.com/v1") {
+            body.parallel_tool_calls = false;
+          }
+        } else if (provider.parallelToolCalls === true) {
+          body.parallel_tool_calls = parsed.options.parallelToolCalls !== false;
+        }
       }
       if (parsed.stream) body.stream_options = { include_usage: true };
 
