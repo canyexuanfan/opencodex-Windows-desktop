@@ -1133,11 +1133,12 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         else delete next.tierModels;
       }
     }
+    let nextFastMode = config.fastMode;
     if (body.fastMode !== undefined) {
       if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {
         return jsonResponse({ error: "fastMode must be true, false, or null" }, 400);
       }
-      config.fastMode = body.fastMode === null ? undefined : body.fastMode;
+      nextFastMode = body.fastMode === null ? undefined : body.fastMode;
     }
     for (const field of ["model", "smallFastModel"] as const) {
       const value = body[field];
@@ -1164,6 +1165,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         else delete next.modelMap;
       }
     }
+    if (body.fastMode !== undefined) config.fastMode = nextFastMode;
     config.claudeCode = next;
     // Stamp the migration sentinel on EVERY persist of this block. The migration reads
     // "a claudeCode block with no authMode" as a pre-upgrade subscriber and pins it to
