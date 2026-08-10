@@ -84,6 +84,9 @@ export async function readImageResponseBytes(
     cancelUnlockedResponseBody(response, signal.reason);
     throw signal.reason;
   }
+  if (response.body === null) {
+    return { bytes: new Uint8Array(0), oversized: false };
+  }
 
   const maxBytes = options.maxBytes ?? IMAGES_RESPONSE_MAX_BYTES;
   const contentLength = response.headers.get("content-length");

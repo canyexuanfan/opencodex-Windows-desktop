@@ -783,7 +783,10 @@ test("relays a bodyless upstream image status without synthesizing a body", asyn
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (new URL(requestUrl).hostname === "chatgpt.com") {
-      return new Response(null, { status: 204 });
+      return new Response(null, {
+        status: 204,
+        headers: { "content-length": String(IMAGES_RESPONSE_MAX_BYTES + 1) },
+      });
     }
     return originalFetch(input, init);
   }) as typeof fetch;
