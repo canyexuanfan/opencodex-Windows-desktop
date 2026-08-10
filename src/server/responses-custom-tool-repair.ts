@@ -10,15 +10,24 @@ import {
   type SseBlockRewrite,
 } from "./sse-payload-rewrite";
 
+/** Exact compact prefix used by our upstream rewriter; progressive matching also
+ *  tolerates insignificant JSON whitespace via FREEFORM_WRAP_PREFIX_RE. */
 const FREEFORM_WRAP_PREFIX = '{"input":"';
+const FREEFORM_WRAP_PREFIX_RE = /^\s*\{\s*"input"\s*:\s*"/;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function partialCustomToolInput(argumentsText: string): string {
-  if (!argumentsText.startsWith(FREEFORM_WRAP_PREFIX)) return argumentsText;
-  const body = argumentsText.slice(FREEFORM_WRAP_PREFIX.length);
+/**
+ * Progressive decode of the freeform `{ "input": "…" }` wrapper.
+ * Returns null when the accumulated text does not (yet) match that wrapper so
+ * callers suppress deltas and rely on `response.custom_tool_call_input.done`.
+ */
+function partialCustomToolInput(argumentsText: string): string | null {
+  const match = FREEFORM_WRAP_PREFIX_RE.exec(argumentsText);
+  if (!match) return null;
+  const body = argumentsText.slice(match[0]!.length);
   let output = "";
   for (let index = 0; index < body.length; index++) {
     const char = body[index];
@@ -131,7 +140,20 @@ export function createRoutedCustomToolRestoreBlockRewrite(
     if (retainedBytes > 0) {
       budget?.releaseRetained(retainedBytes, { kind: "retained_collectors" });
     }
-    return matched.map(pending => pending.block);
+    // Index-matched entries carry no item id. Stamp the resolved id so replay
+    // classifies the event instead of buffering it a second time.
+    return matched.map(pending => {
+      if (pending.itemId !== undefined || itemId === undefined) return pending.block;
+      const payload = sseDataPayload(pending.block);
+      if (payload === null) return pending.block;
+      try {
+        const parsed: unknown = JSON.parse(payload);
+        if (!isPlainObject(parsed)) return pending.block;
+        return replaceSseDataPayload(pending.block, JSON.stringify({ ...parsed, item_id: itemId }));
+      } catch {
+        return pending.block;
+      }
+    });
   };
 
   const rewrite: SseBlockRewrite = (block: string): readonly string[] => {
@@ -209,8 +231,11 @@ export function createRoutedCustomToolRestoreBlockRewrite(
       open.argumentsText += delta;
       open.retainedBytes += deltaBytes;
       openCalls.set(upstreamItemId, open);
+      // Still accumulating toward the compact wrapper, or an unrecognized shape:
+      // suppress progressive emission and let the done event carry input.
       if (FREEFORM_WRAP_PREFIX.startsWith(open.argumentsText)) return [];
       const fullInput = partialCustomToolInput(open.argumentsText);
+      if (fullInput === null) return [];
       if (!fullInput.startsWith(open.emittedInput) || fullInput.length === open.emittedInput.length) return [];
       const inputDelta = fullInput.slice(open.emittedInput.length);
       open.emittedInput = fullInput;

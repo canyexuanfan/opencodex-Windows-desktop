@@ -314,6 +314,49 @@ describe("routed Responses custom-tool compatibility", () => {
     rewrite.dispose?.();
   });
 
+  test("replays id-less argument deltas once output_item.added resolves the routed item", () => {
+    const budget = createTestTranslatorBudget();
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
+
+    expect(rewrite(frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      delta: "{\"input\":\"echo",
+    }))).toEqual([]);
+    expect(budget.snapshot().currentBytes).toBeGreaterThan(0);
+
+    const replayed = rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_exec",
+        call_id: "call_exec",
+        name: "exec",
+        arguments: "",
+        status: "in_progress",
+      },
+    }));
+    expect(replayed.map(block => dataPayload(block).type)).toEqual([
+      "response.output_item.added",
+      "response.custom_tool_call_input.delta",
+    ]);
+    expect(dataPayload(replayed[0]!).item).toMatchObject({ type: "custom_tool_call", id: "ctc_exec", name: "exec" });
+    expect(dataPayload(replayed[1]!)).toMatchObject({ item_id: "ctc_exec", delta: "echo" });
+    expect(budget.snapshot().currentBytes).toBeGreaterThan(0);
+
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: "{\"input\":\"echo ok\"}",
+    }));
+    expect(dataPayload(done[0]!)).toMatchObject({
+      type: "response.custom_tool_call_input.done",
+      item_id: "ctc_exec",
+      input: "echo ok",
+    });
+    rewrite.dispose?.();
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
   test("keeps progressive exec input consistent for escaped control characters", () => {
     const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
     rewrite(frame("response.output_item.added", {
@@ -340,6 +383,87 @@ describe("routed Responses custom-tool compatibility", () => {
     const doneInput = dataPayload(done[0]!).input;
     expect(streamedInput).toBe(doneInput);
     expect(streamedInput).toBe("before\b\fafter");
+    rewrite.dispose?.();
+  });
+
+  test("keeps progressive exec input consistent for spaced freeform wrappers", () => {
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
+    rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: { type: "function_call", id: "fc_exec", call_id: "call_exec", name: "exec", arguments: "", status: "in_progress" },
+    }));
+
+    const fragments = ['{ "input": "', 'spaced"}'];
+    let streamedInput = "";
+    for (const delta of fragments) {
+      const blocks = rewrite(frame("response.function_call_arguments.delta", {
+        output_index: 0,
+        item_id: "fc_exec",
+        delta,
+      }));
+      for (const block of blocks) streamedInput += String(dataPayload(block).delta ?? "");
+    }
+
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: fragments.join(""),
+    }));
+    expect(streamedInput).toBe(dataPayload(done[0]!).input);
+    expect(streamedInput).toBe("spaced");
+    rewrite.dispose?.();
+  });
+
+  test("suppresses progressive deltas for unrecognized argument shapes until done", () => {
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
+    rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: { type: "function_call", id: "fc_exec", call_id: "call_exec", name: "exec", arguments: "", status: "in_progress" },
+    }));
+
+    expect(rewrite(frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      item_id: "fc_exec",
+      delta: '{"other":"x"',
+    }))).toEqual([]);
+
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: '{"input":"authoritative"}',
+    }));
+    expect(dataPayload(done[0]!)).toMatchObject({
+      type: "response.custom_tool_call_input.done",
+      input: "authoritative",
+    });
+    rewrite.dispose?.();
+  });
+
+  test("keeps progressive exec input consistent for split unicode escapes", () => {
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
+    rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: { type: "function_call", id: "fc_exec", call_id: "call_exec", name: "exec", arguments: "", status: "in_progress" },
+    }));
+
+    const fragments = ['{"input":"caf\\u00', 'e9 \\u0041"}'];
+    let streamedInput = "";
+    for (const delta of fragments) {
+      const blocks = rewrite(frame("response.function_call_arguments.delta", {
+        output_index: 0,
+        item_id: "fc_exec",
+        delta,
+      }));
+      for (const block of blocks) streamedInput += String(dataPayload(block).delta ?? "");
+    }
+
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: fragments.join(""),
+    }));
+    expect(streamedInput).toBe(dataPayload(done[0]!).input);
+    expect(streamedInput).toBe("café A");
     rewrite.dispose?.();
   });
 
@@ -399,6 +523,127 @@ describe("routed Responses custom-tool compatibility", () => {
       expect(clientSse).not.toContain("response.function_call_arguments.done");
       expect(clientSse).not.toContain('"type":"function_call"');
       expect(clientSse).toContain("data: [DONE]");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("handleResponses continuation rewrites custom_tool_call_output and keeps call_id ordered", async () => {
+    const savedFetch = globalThis.fetch;
+    const outboundBodies: Array<Record<string, unknown>> = [];
+    const firstUpstreamItem = {
+      type: "function_call",
+      id: "fc_exec",
+      call_id: "call_exec",
+      name: "exec",
+      arguments: "{\"input\":\"const apps = await sky.list_apps();\"}",
+      status: "completed",
+    };
+    const secondUpstreamMessage = {
+      type: "message",
+      id: "msg_2",
+      role: "assistant",
+      content: [{ type: "output_text", text: "27 apps" }],
+      status: "completed",
+    };
+    let turn = 0;
+    globalThis.fetch = (async (_input, init) => {
+      outboundBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      turn += 1;
+      if (turn === 1) {
+        const upstream = [
+          frame("response.output_item.added", { output_index: 0, item: { ...firstUpstreamItem, arguments: "", status: "in_progress" } }),
+          frame("response.function_call_arguments.done", { output_index: 0, item_id: "fc_exec", arguments: firstUpstreamItem.arguments }),
+          frame("response.output_item.done", { output_index: 0, item: firstUpstreamItem }),
+          frame("response.completed", { response: { id: "resp_1", status: "completed", output: [firstUpstreamItem] } }),
+          "data: [DONE]",
+        ].join("\n\n") + "\n\n";
+        return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+      }
+      const upstream = [
+        frame("response.output_item.added", { output_index: 0, item: { ...secondUpstreamMessage, content: [], status: "in_progress" } }),
+        frame("response.output_item.done", { output_index: 0, item: secondUpstreamMessage }),
+        frame("response.completed", { response: { id: "resp_2", status: "completed", output: [secondUpstreamMessage] } }),
+        "data: [DONE]",
+      ].join("\n\n") + "\n\n";
+      return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.test/v1",
+          authMode: "key",
+          apiKey: "fixture-key",
+        },
+      },
+    } as OcxConfig;
+    const tools = [{ type: "custom", name: "exec", description: "Run JavaScript", format: { type: "grammar", syntax: "lark" } }];
+
+    try {
+      const first = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/deepseek-v4-flash",
+          stream: true,
+          input: [{ role: "user", content: [{ type: "input_text", text: "list apps" }] }],
+          tools,
+        }),
+      }), config, { model: "", provider: "" });
+      const firstSse = await first.text();
+      expect(firstSse).toContain('"type":"custom_tool_call"');
+      expect(firstSse).toContain('"call_id":"call_exec"');
+      expect(firstSse).not.toContain('"type":"function_call"');
+
+      const second = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/deepseek-v4-flash",
+          stream: true,
+          input: [
+            { role: "user", content: [{ type: "input_text", text: "list apps" }] },
+            {
+              type: "custom_tool_call",
+              id: "ctc_exec",
+              call_id: "call_exec",
+              name: "exec",
+              input: "const apps = await sky.list_apps();",
+            },
+            { type: "custom_tool_call_output", call_id: "call_exec", output: "27 apps" },
+            { type: "custom_tool_call_output", call_id: "call_other", output: "wrong pairing must stay distinct" },
+          ],
+          tools,
+        }),
+      }), config, { model: "", provider: "" });
+      const secondSse = await second.text();
+      const continuationInput = outboundBodies[1]?.input as Array<Record<string, unknown>>;
+      expect(outboundBodies).toHaveLength(2);
+      expect(continuationInput).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "function_call",
+          call_id: "call_exec",
+          name: "exec",
+          arguments: JSON.stringify({ input: "const apps = await sky.list_apps();" }),
+        }),
+        expect.objectContaining({
+          type: "function_call_output",
+          call_id: "call_exec",
+          output: "27 apps",
+        }),
+      ]));
+      const execOutput = continuationInput.find(item => item.type === "function_call_output" && item.call_id === "call_exec");
+      const otherOutput = continuationInput.find(item => item.call_id === "call_other");
+      expect(execOutput).toMatchObject({ type: "function_call_output", output: "27 apps" });
+      expect(otherOutput).toMatchObject({ type: "custom_tool_call_output", call_id: "call_other" });
+      expect(continuationInput.filter(item => item.type === "function_call_output")).toHaveLength(1);
+      expect(secondSse).toContain('"text":"27 apps"');
+      expect(secondSse).toContain('"id":"resp_2"');
+      expect(secondSse).not.toContain('"type":"function_call"');
+      expect(secondSse.indexOf("resp_2")).toBeLessThan(secondSse.indexOf("data: [DONE]"));
     } finally {
       globalThis.fetch = savedFetch;
     }
