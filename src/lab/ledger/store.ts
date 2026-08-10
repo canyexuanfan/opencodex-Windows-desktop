@@ -110,7 +110,11 @@ function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number;
       continue;
     }
     try {
-      writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8"));
+      const metadataBytes = Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8");
+      const written = writeSync(fd, metadataBytes);
+      if (written !== metadataBytes.byteLength) {
+        throw new LabValidationError("short_write", "ledger lock metadata write incomplete");
+      }
     } catch (error) {
       closeSync(fd);
       try {

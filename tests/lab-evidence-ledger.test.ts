@@ -310,6 +310,34 @@ describe("CL-02 ledger append/replay", () => {
       }
     });
   });
+
+  test("incomplete ledger lock metadata write removes lock file", () => {
+    withHome((home) => {
+      const event = baseObservation();
+      const ledger = join(home, "lab", "compatibility.jsonl");
+      const lockPath = join(home, "lab", "compatibility.jsonl.lock");
+      mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
+      const originalWriteSync = nodeFs.writeSync;
+      const writeSpy = spyOn(nodeFs, "writeSync").mockImplementation((...args: Parameters<typeof nodeFs.writeSync>) => {
+        const buffer = args[1];
+        if (
+          Buffer.isBuffer(buffer)
+          && buffer.includes('"pid"')
+          && buffer.includes('"createdAt"')
+          && buffer.includes('"token"')
+        ) {
+          return 0;
+        }
+        return originalWriteSync(...args);
+      });
+      try {
+        expect(() => appendLabEventIfAbsent(ledger, event)).toThrow(LabValidationError);
+        expect(existsSync(lockPath)).toBe(false);
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+  });
 });
 
 describe("CL-02 invalidation validation", () => {
