@@ -12,6 +12,38 @@ Successful or blocked trusted executions receive a module-private receipt bound 
 
 The trusted credential sender keeps secret injection outside Lab code and uses the existing pinned HTTP primitive. CL-03 explicitly supplies its connect timeout; other pinned-HTTP callers retain their prior timeout behavior. Only response metadata required by live assertions currently crosses back into Lab (`content-type`); cookies, account/organization metadata, credential-adjacent headers, and rate-limit headers are not exposed.
 
+## Evidence text sanitization
+
+Response *headers* are allowlisted, but assertion summaries carry
+provider-controlled *body* text, and that text is persisted in the
+`assertion_report` artifact and the observation event. Both sinks are sanitized
+at construction by the shared scrubber in `src/lab/artifacts/sanitize.ts`, so
+the write path and the read path (`sanitizePublicText`) no longer disagree
+about what may be stored.
+
+Redacted: filesystem paths including UNC shares, HTTP(S) URLs, credential-bearing
+and other-scheme URIs, JWT-shaped tokens, email addresses, prefixed account
+identifiers (`acct_`, `cus_`, `sub_`, `org-`), account values under an
+ID-bearing label, MAC addresses, IPv4, IPv6 including mapped and scoped forms,
+multi-label hostnames, and single-label hostnames in a host-bearing context.
+
+Deliberately **not** redacted, because no pattern separates them from the
+diagnostics the Lab exists to capture: standalone `user_…` identifiers,
+standalone UUIDs (request, trace, and correlation ids look identical to account
+ids), values under a bare label such as `org: engineering`, phone numbers, and
+generic high-entropy blobs. A four-component version string like `1.2.3.4` is
+redacted as an IPv4 literal; that false positive is known and asserted.
+
+Rules run in a fixed total order — email before hostname, MAC before IPv6, IPv6
+before IPv4, HTTP before other schemes — and every rule replaces a value whole
+or not at all, because a prefix replacement looks redacted while the tail
+leaks. `enforceEventStructureLimits` remains a backstop that rejects
+secret-shaped strings and raw paths; it is not the enforcement point.
+
+Non-contract artifacts declare `redactionPolicy: sanitized_evidence_v2`.
+Contract classes (fixtures and manifests) bypass mutation, so their pinned
+digests are unaffected.
+
 Live projection preserves the frozen `RouteSubjectV1` schema. Claim-gated scenario applicability is derived from current validated, usable `claim_snapshot` state for the exact subject rather than from caller-provided claim arrays or by extending the V1 subject preimage. A missing/wrong-kind route subject or unavailable claim state fails verification closed.
 
 The two machine-readable Live V1 authority copies are required to be byte-identical. Runtime loading fails closed on byte drift before parsing. Scenario limits use `perArtifactBytes` as the single per-artifact execution-limit key; the artifact policy retains its independent per-artifact policy ceiling.

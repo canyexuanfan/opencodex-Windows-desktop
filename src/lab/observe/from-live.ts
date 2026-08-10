@@ -1,5 +1,6 @@
 // CL-03 live result -> CL-02 immutable observation persistence.
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
+import { sanitizeDiagnostic, truncateUtf8 } from "../artifacts/sanitize";
 import { LAB_EVENT_SCHEMA_VERSION, LAB_PRODUCER, LAB_PRODUCER_VERSION, OBSERVATION_LIMIT_NAMES, type ObservationOutcome } from "../constants";
 import { fixtureDigest, scenarioManifestDigest, subjectIdForSubject, suiteManifestDigest } from "../digest";
 import type { FailureRecordV1, ObservationEvent } from "../events/types";
@@ -84,7 +85,9 @@ export function observationFromLiveResult(result: LiveScenarioRunResult, caseRec
       evidenceLayer: "live_route_compatibility" as const, scenarioId: caseRecord.id, scenarioVersion: String(authority.manifestDefaults.version), scenarioManifestDigest: scenarioDigest,
       suiteId: caseRecord.suite, suiteVersion: String(authority.manifestDefaults.suiteVersion), suiteManifestDigest: suiteDigest, fixtureDigests, subject, subjectId,
       startedAt, completedAt, executionMode: "live" as const, attempt: 1, limits, outcome: outcomeFromLiveResult(result),
-      assertions: result.assertionResults.map((row) => ({ id: row.id, operator: row.operator, required: row.required, passed: row.passed, expectedSummary: "see_assertion_report", observedSummary: row.observedSummary.slice(0, 512), ...(row.reason ? { reason: row.reason } : {}) })),
+      // Sanitize before truncating: the reverse order can split a redaction
+      // target and persist a fragment of the raw value.
+      assertions: result.assertionResults.map((row) => ({ id: row.id, operator: row.operator, required: row.required, passed: row.passed, expectedSummary: "see_assertion_report", observedSummary: truncateUtf8(sanitizeDiagnostic(row.observedSummary), 512), ...(row.reason ? { reason: row.reason } : {}) })),
       ...(caseRecord.expectedFailure ? { expectedFailure: { ...caseRecord.expectedFailure } } : {}),
       environment: { runtime: { platform: process.platform, arch: process.arch, bunVersion: process.versions.bun ?? Bun.version } }, artifactRefs: artifacts,
       ...(failure ? { failure } : {}),

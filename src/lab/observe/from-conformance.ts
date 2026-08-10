@@ -4,6 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
+import { sanitizeDiagnostic, truncateUtf8 } from "../artifacts/sanitize";
 import {
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
@@ -281,7 +282,8 @@ export function observationFromConformanceResult(
         required: a.required,
         passed: a.passed,
         expectedSummary: "see_assertion_report",
-        observedSummary: a.observedSummary.slice(0, 512),
+        // Sanitize before truncating; see from-live.ts for the same boundary.
+        observedSummary: truncateUtf8(sanitizeDiagnostic(a.observedSummary), 512),
         ...(a.reason ? { reason: a.reason } : {}),
       })),
       ...(caseRecord.expectedFailure
