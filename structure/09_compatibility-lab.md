@@ -35,16 +35,36 @@ separate them. Those forms are therefore redacted only when an unambiguous
 network marker introduces them, and survive otherwise.
 
 Markers carry two confidence levels, because treating them alike lost accuracy
-in both directions. **Strong** markers (`ENOTFOUND`, `EAI_AGAIN`,
-`ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, `dial tcp`, `connect to`,
-`host=`/`host:`) introduce a destination, so a resolver marker licenses even a
-bare name — that is what covers `getaddrinfo ENOTFOUND redis` and
-`dial tcp localhost:11434`. The destination is not assumed adjacent: Go writes
-`dial tcp: lookup <host>: no such host`, so the following few tokens are scanned
-and the first host-shaped one is replaced. A token that is a plain English word
-is not a host, so `ETIMEDOUT request after 30 seconds` is left alone. **Weak** markers (`upstream`) appear in ordinary
-prose, so they redact only a candidate that is already host-shaped and is not a
-plain dotted namespace; `upstream provider.metric.p95 exceeded` survives intact.
+in both directions.
+
+A name paired with a numeric port is a destination on its own evidence, checked
+before anything else: `dial tcp redis:6379` needs no further signal.
+
+Otherwise, **strong** markers (`ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`,
+`ETIMEDOUT`, `EHOSTUNREACH`, `dial tcp`, `host=`/`host:`) introduce a
+destination, and a resolver marker licenses even a bare name
+(`getaddrinfo ENOTFOUND redis`). The destination is not assumed adjacent — Go
+writes `dial tcp: lookup <host>: no such host` — so the following few tokens are
+scanned and the first host-shaped one is replaced. A plain English word is not
+host-shaped, so `ETIMEDOUT request after 30 seconds` is untouched.
+
+**Weak** markers (`upstream`, `connect to`) read as English at least as often as
+they name a host, so they redact only a candidate that is already host-shaped
+and is not a plain dotted namespace. `upstream provider.metric.p95 exceeded` and
+`Unable to connect to your account` both survive.
+
+### Known limits
+
+Recorded rather than implied, so a reader knows what is not covered:
+
+| Form | Behavior |
+|------|----------|
+| Bare service name after natural-language `connect to` (`connect to gateway`) | not redacted — the phrase is prose too often to trust without a port |
+| Bare `db.prod-1` outside any network context | not redacted — indistinguishable from a metric namespace |
+| Standalone UUID, standalone `user_…`, bare-label value (`org: engineering`) | not redacted — indistinguishable from request, trace, and correlation ids |
+| Phone numbers, generic high-entropy blobs | not redacted — no non-destructive pattern |
+| Cisco dotted MAC (`0123.4567.89ab`), ideographic-dot IDN, escaped-quote mail local part | not redacted — unusual notations |
+| Percent-encoding nested more than six deep | not decoded further |
 
 Every case above is asserted in both directions, so the boundary cannot drift
 silently either way.

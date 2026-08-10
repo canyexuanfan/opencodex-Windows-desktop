@@ -501,7 +501,16 @@ function scrubString(value: string): string {
     // Go writes `dial tcp: lookup <host>: no such host`, so the destination
     // is not always adjacent to the marker. A resolver marker also licenses a
     // bare name (`ENOTFOUND redis`), which a socket-state marker does not.
-    const resolver = /ENOTFOUND|EAI_AGAIN|lookup|host|connect(?:ing)?\s+to/i.test(m);
+    // A name immediately followed by a numeric port is a destination whatever
+    // else is true: `dial tcp redis:6379` needs no other evidence. Splitting on
+    // `:` discarded exactly that signal, so the pair is checked first.
+    const ported = tail.match(/(?<![\w.-])([A-Za-z0-9_.-]{1,255}):\d{1,5}(?![\w.])/);
+    if (ported?.[1] && !PROSE_AFTER_MARKER.has(ported[1].toLowerCase())) {
+      return m.replace(ported[1], "[host]");
+    }
+    // Otherwise only a resolver marker licenses a bare name. Natural-language
+    // `connect to` does not: `Unable to connect to your account` is prose.
+    const resolver = /ENOTFOUND|EAI_AGAIN|lookup|host/i.test(m);
     for (const token of tail.split(/[\s:]+/)) {
       if (token && isHostCandidate(token, resolver)) return m.replace(token, "[host]");
     }
