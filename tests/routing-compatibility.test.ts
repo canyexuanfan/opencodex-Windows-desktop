@@ -1,18 +1,32 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { evaluatePolicyProfile } from "../src/routing/evaluator";
+import { assemblePolicyCandidateEvidence } from "../src/routing/compatibility/assemble";
 import { evaluateCompatibilityForCandidate } from "../src/routing/compatibility/policy";
-import { loadCompatibilityEvidenceSnapshot } from "../src/routing/compatibility/reader";
-import { resolvePolicyRouteSubject } from "../src/routing/compatibility/subject";
+import { findVerdictForSuite, loadCompatibilityEvidenceSnapshot } from "../src/routing/compatibility/reader";
+import {
+  resolvePolicyCompatibilitySubjects,
+  resolvePolicyRouteSubject,
+} from "../src/routing/compatibility/subject";
 import { subjectIdForSubject } from "../src/lab/digest";
-import { getRoutingProfile, normalizeRoutingProfile } from "../src/routing/profile";
-import { resetCompatibilityVersionCacheForTests } from "../src/routing/compatibility/version";
+import { buildProtocolSubjectV1 } from "../src/lab/subject/protocol-subject";
+import { readInstallationSalt } from "../src/lab/subject/installation-salt";
+import { labRoot } from "../src/lab/paths";
+import { getRoutingProfile, normalizeRoutingProfile, routingProfileIssues } from "../src/routing/profile";
+import {
+  resetCompatibilityVersionCacheForTests,
+  setCompatibilityVersionOverrideForTests,
+} from "../src/routing/compatibility/version";
+import { normalizeRouteDecisionTrace } from "../src/routing/trace";
 import type { OcxConfig } from "../src/types";
 import type { CandidateCompatibilityEvidence } from "../src/routing/compatibility/types";
 
 const COMPAT_VERSION = "f".repeat(64);
+const SUBJECT_ID = "s".repeat(64);
+const SUITE_DIGEST = "a".repeat(64);
+let home = "";
 
 function baseConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -45,17 +59,23 @@ function routed(provider: OcxConfig["providers"][string]) {
   return { ...provider };
 }
 
-function evidence(verdict: CandidateCompatibilityEvidence["suites"][number]["verdict"], asOf = Date.now()): CandidateCompatibilityEvidence {
+function evidence(
+  verdict: CandidateCompatibilityEvidence["suites"][number]["verdict"],
+  asOf = Date.now(),
+  maxAgeMs: number | null = null,
+): CandidateCompatibilityEvidence {
   return {
-    subjectResolved: true,
+    subjectIds: { live_route_compatibility: SUBJECT_ID },
     projectionAvailable: true,
-    subjectId: "s".repeat(64),
     suites: [{
+      subjectId: SUBJECT_ID,
       suiteId: "responses-core",
       evidenceLayer: "live_route_compatibility",
+      suiteVersion: "1",
+      suiteManifestDigest: SUITE_DIGEST,
       verdict,
       asOf,
-      fresh: true,
+      maxAgeMs,
       notes: [],
     }],
   };
@@ -64,13 +84,15 @@ function evidence(verdict: CandidateCompatibilityEvidence["suites"][number]["ver
 const policy = getRoutingProfile(baseConfig(), "compat")!.compatibility!;
 
 beforeEach(() => {
-  process.env.OCX_COMPATIBILITY_VERSION = COMPAT_VERSION;
-  resetCompatibilityVersionCacheForTests();
+  home = mkdtempSync(join(tmpdir(), "ocx-cl06-"));
+  readInstallationSalt(home);
+  setCompatibilityVersionOverrideForTests(COMPAT_VERSION);
 });
 
 afterEach(() => {
-  delete process.env.OCX_COMPATIBILITY_VERSION;
   resetCompatibilityVersionCacheForTests();
+  if (home) rmSync(home, { recursive: true, force: true });
+  home = "";
 });
 
 describe("CL-06 routing compatibility", () => {
@@ -95,13 +117,73 @@ describe("CL-06 routing compatibility", () => {
     expect(again.compatibility).toBeUndefined();
   });
 
-  test("exact route identity changes when adapter changes", () => {
+  test("exact route identity changes when only adapter changes", () => {
     const config = baseConfig();
-    const a = resolvePolicyRouteSubject(config, "a", "m1", routed(config.providers.a!));
-    const b = resolvePolicyRouteSubject(config, "b", "m2", routed(config.providers.b!));
-    expect(a?.subjectId).toBeDefined();
-    expect(b?.subjectId).toBeDefined();
-    expect(a!.subjectId).not.toBe(b!.subjectId);
+    const provider = config.providers.a!;
+    const responses = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, adapter: "openai-responses" }, home);
+    const chat = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, adapter: "openai-chat" }, home);
+    expect(responses?.subjectId).toBeDefined();
+    expect(chat?.subjectId).toBeDefined();
+    expect(responses!.subjectId).not.toBe(chat!.subjectId);
+  });
+
+  test("protocol and live-route requirements use different canonical subjects", () => {
+    const config = baseConfig();
+    const resolved = resolvePolicyCompatibilitySubjects(config, "a", "m1", routed(config.providers.a!), home);
+    const expectedProtocol = subjectIdForSubject(buildProtocolSubjectV1({
+      inboundProtocol: "openai-responses",
+      upstreamProtocol: "openai-responses",
+      surface: "responses-http",
+    }, "openai-responses"));
+    expect(resolved.subjectIds.protocol_conformance).toBe(expectedProtocol);
+    expect(resolved.subjectIds.live_route_compatibility).toBeDefined();
+    expect(resolved.subjectIds.live_route_compatibility).not.toBe(expectedProtocol);
+  });
+
+  test("provider-specific adapter cannot borrow generic protocol evidence", () => {
+    const config = baseConfig({
+      providers: {
+        a: { adapter: "command-code", baseUrl: "https://a.example/v1", apiKey: "ka", models: ["m1"] },
+      },
+      defaultProvider: "a",
+    });
+    const resolved = resolvePolicyCompatibilitySubjects(config, "a", "m1", routed(config.providers.a!), home);
+    const genericChat = subjectIdForSubject(buildProtocolSubjectV1({
+      inboundProtocol: "openai-responses",
+      upstreamProtocol: "openai-chat",
+      surface: "responses-sse",
+    }));
+    expect(resolved.subjectIds.protocol_conformance).toBeDefined();
+    expect(resolved.subjectIds.protocol_conformance).not.toBe(genericChat);
+  });
+
+  test("route subject changes for behavior-affecting config but not credential rotation", () => {
+    const config = baseConfig();
+    const provider = config.providers.a!;
+    const base = resolvePolicyRouteSubject(config, "a", "m1", routed(provider), home)!;
+    const stateless = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, statelessResponses: true }, home)!;
+    const header = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, headers: { "x-route-mode": "strict" } }, home)!;
+    const rotated = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, apiKey: "rotated-secret" }, home)!;
+    const credentialHeader = resolvePolicyRouteSubject(config, "a", "m1", { ...provider, headers: { Authorization: "Bearer secret" } }, home)!;
+    expect(stateless.subjectId).not.toBe(base.subjectId);
+    expect(header.subjectId).not.toBe(base.subjectId);
+    expect(rotated.subjectId).toBe(base.subjectId);
+    expect(credentialHeader.subjectId).toBe(base.subjectId);
+  });
+
+  test("routing subject resolution never creates a missing Lab salt", () => {
+    const freshHome = mkdtempSync(join(tmpdir(), "ocx-cl06-nosalt-"));
+    try {
+      const root = labRoot(freshHome);
+      expect(existsSync(root)).toBe(false);
+      const config = baseConfig();
+      const resolved = resolvePolicyCompatibilitySubjects(config, "a", "m1", routed(config.providers.a!), freshHome);
+      expect(resolved.route).toBeUndefined();
+      expect(resolved.subjectIds.protocol_conformance).toBeDefined();
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      rmSync(freshHome, { recursive: true, force: true });
+    }
   });
 
   test("VERIFIED satisfies minimum PROBED", () => {
@@ -172,17 +254,26 @@ describe("CL-06 routing compatibility", () => {
   });
 
   test("stale positive evidence does not satisfy policy", () => {
-    const stale = evidence("VERIFIED", Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const stale = evidence("VERIFIED", Date.now() - 30 * 24 * 60 * 60 * 1000, 60_000);
     const out = evaluateCompatibilityForCandidate(
-      { ...policy, minStatus: "VERIFIED", maxEvidenceAgeMs: 60_000 },
+      { ...policy, minStatus: "VERIFIED", maxEvidenceAgeMs: 120_000 },
       stale,
     );
     expect(out.exclusions.length).toBeGreaterThan(0);
   });
 
+  test("future-dated evidence is not treated as fresh", () => {
+    const future = evidence("VERIFIED", Date.now() + 60_000, null);
+    const out = evaluateCompatibilityForCandidate(
+      { ...policy, minStatus: "VERIFIED", unknownEvidence: "exclude" },
+      future,
+    );
+    expect(out.exclusions.some(row => row.code === "compatibility-stale")).toBe(true);
+  });
+
   test("missing Lab projection does not crash evaluation", () => {
     const out = evaluateCompatibilityForCandidate(policy, {
-      subjectResolved: true,
+      subjectIds: { live_route_compatibility: SUBJECT_ID },
       projectionAvailable: false,
       suites: [],
     });
@@ -190,13 +281,26 @@ describe("CL-06 routing compatibility", () => {
   });
 
   test("incompatible projection is treated as unavailable without rebuild", () => {
-    const home = mkdtempSync(join(tmpdir(), "ocx-cl06-"));
+    const missingHome = mkdtempSync(join(tmpdir(), "ocx-cl06-missing-"));
     try {
-      const snap = loadCompatibilityEvidenceSnapshot(["missing-subject"], home);
+      const snap = loadCompatibilityEvidenceSnapshot(["missing-subject"], missingHome);
       expect(snap.projectionAvailable).toBe(false);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      rmSync(missingHome, { recursive: true, force: true });
     }
+  });
+
+  test("reader matches exact suite version and manifest digest", () => {
+    const snapshot = {
+      projectionAvailable: true,
+      projectionIncompatible: false,
+      bySubject: new Map([[SUBJECT_ID, [
+        { subjectId: SUBJECT_ID, evidenceLayer: "live_route_compatibility" as const, suiteId: "responses-core", suiteVersion: "1", suiteManifestDigest: "1".repeat(64), verdict: "VERIFIED" as const, asOf: 1, notes: [] },
+        { subjectId: SUBJECT_ID, evidenceLayer: "live_route_compatibility" as const, suiteId: "responses-core", suiteVersion: "2", suiteManifestDigest: "2".repeat(64), verdict: "DEGRADED" as const, asOf: 2, notes: [] },
+      ]]]),
+    };
+    expect(findVerdictForSuite(snapshot, SUBJECT_ID, "live_route_compatibility", "responses-core", "2", "2".repeat(64))?.verdict).toBe("DEGRADED");
+    expect(findVerdictForSuite(snapshot, SUBJECT_ID, "live_route_compatibility", "responses-core", "3", "3".repeat(64))).toBeUndefined();
   });
 
   test("policy evaluation does not import live probe executors", async () => {
@@ -204,75 +308,148 @@ describe("CL-06 routing compatibility", () => {
     expect(Object.keys(mod)).not.toContain("runLiveScenario");
   });
 
-  test("bounded evidence lookup uses one snapshot for many subjects", () => {
-    const home = mkdtempSync(join(tmpdir(), "ocx-cl06-"));
-    try {
-      const ids = Array.from({ length: 5 }, (_, i) => `${i}`.repeat(64));
-      const snap = loadCompatibilityEvidenceSnapshot(ids, home);
-      expect(snap.bySubject.size).toBe(0);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("assemblePolicyCandidateEvidence uses a single snapshot read site", async () => {
-    const source = await Bun.file(join(import.meta.dir, "../src/routing/compatibility/assemble.ts")).text();
-    const matches = source.match(/loadCompatibilityEvidenceSnapshot\(/g) ?? [];
-    expect(matches.length).toBe(1);
-  });
-
-  test("dry-run and production evaluator parity with same evidence", () => {
+  test("legacy assembly skips all compatibility catalog/subject/projection work", () => {
     const config = baseConfig();
-    const input = [{
-      provider: "a",
-      model: "m1",
-      capability: { tools: true, contextWindow: 200000 },
-      compatibility: evidence("VERIFIED"),
-    }];
-    const a = evaluatePolicyProfile(config, "compat", {}, input);
-    const b = evaluatePolicyProfile(config, "compat", {}, input);
-    expect(a.selectedIndex).toBe(b.selectedIndex);
-    expect(a.candidates[0]?.exclusions).toEqual(b.candidates[0]?.exclusions);
+    const legacy = getRoutingProfile(config, "legacy")!;
+    let calls = 0;
+    const rows = assemblePolicyCandidateEvidence(config, legacy, 123, {
+      routedProviderConfig: (_name, provider) => provider,
+      resolveSubjects: () => { calls++; throw new Error("should not resolve"); },
+      loadCatalogSnapshot: () => { calls++; throw new Error("should not catalog"); },
+      loadEvidenceSnapshot: () => { calls++; throw new Error("should not read"); },
+    });
+    expect(rows).toHaveLength(1);
+    expect(calls).toBe(0);
   });
 
-  test("compatibility exclusions appear in route traces", () => {
+  test("compatibility assembly resolves each candidate exactly once", () => {
     const config = baseConfig();
-    const result = evaluatePolicyProfile(config, "compat", {}, [{
-      provider: "a",
-      model: "m1",
-      capability: { tools: true, contextWindow: 200000 },
-      compatibility: evidence("UNSUPPORTED"),
-    }]);
-    expect(result.trace.candidates[0]?.exclusions.some(row => row.code === "compatibility-unsupported")).toBe(true);
-    expect(result.trace.candidates[0]?.compatibility?.suites.length).toBeGreaterThan(0);
+    const compat = getRoutingProfile(config, "compat")!;
+    let resolves = 0;
+    const rows = assemblePolicyCandidateEvidence(config, compat, 123, {
+      routedProviderConfig: (_name, provider) => provider,
+      resolveSubjects: () => {
+        resolves++;
+        return { subjectIds: { live_route_compatibility: SUBJECT_ID } };
+      },
+      loadCatalogSnapshot: () => new Map([["live_route_compatibility:responses-core", {
+        suiteId: "responses-core",
+        evidenceLayer: "live_route_compatibility",
+        suiteVersion: "1",
+        suiteManifestDigest: SUITE_DIGEST,
+        maxAgeMs: null,
+      }]]),
+      loadEvidenceSnapshot: () => ({ projectionAvailable: true, projectionIncompatible: false, bySubject: new Map() }),
+    });
+    expect(rows).toHaveLength(1);
+    expect(resolves).toBe(1);
   });
 
-  test("trace bounds remain enforced for compatibility suites", () => {
-    const suites = Array.from({ length: 12 }, (_, i) => ({
+  test("compatibility penalty lowers score instead of rewarding unknown evidence", () => {
+    const config = baseConfig({
+      routingProfiles: {
+        compat: {
+          candidates: [{ provider: "a", model: "m1" }],
+          compatibility: {
+            requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+            unknownEvidence: "penalize",
+            degradedEvidence: "penalize",
+          },
+        },
+      },
+    });
+    const common = { provider: "a", model: "m1", capability: { tools: true, contextWindow: 200000 } };
+    const satisfied = evaluatePolicyProfile(config, "compat", {}, [{ ...common, compatibility: evidence("VERIFIED") }], 1000);
+    const penalized = evaluatePolicyProfile(config, "compat", {}, [{ ...common, compatibility: evidence("UNKNOWN", 1000) }], 1000);
+    expect(penalized.candidates[0]!.score!.total).toBeLessThan(satisfied.candidates[0]!.score!.total);
+    expect(penalized.candidates[0]!.score!.components.compatibility).toBe(0.3);
+    expect(satisfied.candidates[0]!.score!.components.compatibility).toBeUndefined();
+  });
+
+  test("requirements beyond trace cap are still enforced", () => {
+    const subjectId = "9".repeat(64);
+    const requirements = Array.from({ length: 9 }, (_, i) => ({
       suiteId: `suite-${i}`,
       evidenceLayer: "live_route_compatibility" as const,
-      verdict: "VERIFIED" as const,
-      asOf: Date.now(),
-      fresh: true,
+    }));
+    const suites = requirements.map((row, i) => ({
+      subjectId,
+      ...row,
+      suiteVersion: "1",
+      suiteManifestDigest: `${i}`.repeat(64).slice(0, 64),
+      verdict: (i === 8 ? "UNSUPPORTED" : "VERIFIED") as "UNSUPPORTED" | "VERIFIED",
+      asOf: 1000,
+      maxAgeMs: null,
       notes: [],
     }));
     const out = evaluateCompatibilityForCandidate({
       ...policy,
-      requiredSuites: suites.map(row => ({ suiteId: row.suiteId, evidenceLayer: row.evidenceLayer })),
+      requiredSuites: requirements,
+      minStatus: "VERIFIED",
     }, {
-      subjectResolved: true,
+      subjectIds: { live_route_compatibility: subjectId },
       projectionAvailable: true,
       suites,
-    });
-    expect(out.suiteTraces.length).toBeLessThanOrEqual(8);
+    }, 1000);
+    expect(out.exclusions.some(row => row.code === "compatibility-unsupported" && row.detail === "suite-8")).toBe(true);
+    expect(out.suiteTraces).toHaveLength(8);
+    expect(out.traceTruncated).toBe(true);
+    expect(out.trace?.truncated).toBe(true);
   });
 
-  test("compatibility profile revision changes only when compatibility changes", () => {
-    const base = getRoutingProfile(baseConfig(), "compat")!.revision;
-    const noCompat = normalizeRoutingProfile("legacy", baseConfig().routingProfiles!.legacy!);
-    expect(noCompat.revision).not.toBe(base);
-    const same = normalizeRoutingProfile("compat", baseConfig().routingProfiles!.compat!);
-    expect(same.revision).toBe(base);
+  test("profile validation bounds compatibility requirements", () => {
+    const config = baseConfig();
+    const issues = routingProfileIssues("too-many", {
+      candidates: [{ provider: "a", model: "m1" }],
+      compatibility: {
+        requiredSuites: Array.from({ length: 9 }, (_, i) => ({
+          suiteId: `suite-${i}`,
+          evidenceLayer: "live_route_compatibility",
+        })),
+      },
+    }, config);
+    expect(issues.some(issue => issue.path.join(".") === "compatibility.requiredSuites" && issue.message.includes("at most 8"))).toBe(true);
+  });
+
+  test("compatibility profile revision changes when only compatibility changes", () => {
+    const config = baseConfig();
+    const raw = config.routingProfiles!.compat!;
+    const base = normalizeRoutingProfile("compat", raw);
+    const same = normalizeRoutingProfile("compat", structuredClone(raw));
+    const changedRaw = structuredClone(raw);
+    changedRaw.compatibility = { ...changedRaw.compatibility, minStatus: "VERIFIED" };
+    const changed = normalizeRoutingProfile("compat", changedRaw);
+    expect(same.revision).toBe(base.revision);
+    expect(changed.revision).not.toBe(base.revision);
+  });
+
+  test("compatibility truncation survives persisted trace normalization", () => {
+    const normalized = normalizeRouteDecisionTrace({
+      version: 1,
+      decisionId: "a".repeat(12),
+      createdAt: 1,
+      requestedModel: "policy/compat",
+      routeKind: "policy",
+      requirements: [],
+      candidates: [{
+        provider: "a",
+        model: "m1",
+        eligible: true,
+        exclusions: [],
+        compatibility: {
+          truncated: true,
+          suites: [{
+            suiteId: "responses-core",
+            evidenceLayer: "live_route_compatibility",
+            subjectIdPrefix: "1".repeat(16),
+            outcome: "satisfied",
+          }],
+        },
+      }],
+      selected: { candidateIndex: 0, provider: "a", model: "m1", reason: "policy-selected" },
+    });
+    expect(normalized?.truncated?.compatibility).toBe(true);
+    expect(normalized?.candidates[0]?.compatibility?.suites[0]?.subjectIdPrefix).toBe("1".repeat(16));
   });
 
   test("subject id is stable for frozen route subject", () => {

@@ -71,25 +71,32 @@ const OPTIMIZE_KEYS = ["latency", "health", "cost", "quota"] as const;
 const UNKNOWN_EVIDENCE_KEYS = ["capability", "health", "quota", "cost"] as const;
 const UNKNOWN_EVIDENCE_OPTIONS: UnknownEvidenceMode[] = ["allow", "penalize", "exclude"];
 
-type LabCatalogScenario = {
-  suiteId: string;
-  evidenceLayer: "protocol_conformance" | "live_route_compatibility";
-};
-
+type LabCatalogScenario = CompatibilitySuiteDraft;
 type LabCatalogSuiteOption = CompatibilitySuiteDraft & { key: string };
 
 function catalogSuiteKey(suite: CompatibilitySuiteDraft): string {
   return `${suite.evidenceLayer}:${suite.suiteId}`;
 }
 
-function uniqueCatalogSuites(scenarios: LabCatalogScenario[]): LabCatalogSuiteOption[] {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function uniqueCatalogSuites(scenarios: unknown[]): LabCatalogSuiteOption[] {
   const seen = new Set<string>();
   const suites: LabCatalogSuiteOption[] = [];
   for (const scenario of scenarios) {
-    const key = catalogSuiteKey(scenario);
+    if (!isPlainObject(scenario)) continue;
+    const suiteId = typeof scenario.suiteId === "string" ? scenario.suiteId.trim() : "";
+    const evidenceLayer = scenario.evidenceLayer;
+    if (!suiteId || (evidenceLayer !== "protocol_conformance" && evidenceLayer !== "live_route_compatibility")) {
+      continue;
+    }
+    const suite: LabCatalogScenario = { suiteId, evidenceLayer };
+    const key = catalogSuiteKey(suite);
     if (seen.has(key)) continue;
     seen.add(key);
-    suites.push({ suiteId: scenario.suiteId, evidenceLayer: scenario.evidenceLayer, key });
+    suites.push({ ...suite, key });
   }
   return suites.sort((a, b) => {
     const layerCmp = a.evidenceLayer.localeCompare(b.evidenceLayer);
@@ -112,10 +119,6 @@ function fmtMs(value: number | undefined, unavailable: string): string {
 
 function fmtRate(value: number | null | undefined, unavailable: string): string {
   return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function parseProfiles(raw: unknown): RoutingProfileDto[] {
@@ -297,7 +300,7 @@ export default function RoutingProfiles({
         configRes.ok ? configRes.json() as Promise<ConfigDto> : Promise.resolve({} as ConfigDto),
         modelsRes.ok ? modelsRes.json() as Promise<unknown> : Promise.resolve([]),
         catalogRes.ok
-          ? catalogRes.json() as Promise<{ scenarios?: LabCatalogScenario[] }>
+          ? catalogRes.json() as Promise<{ scenarios?: unknown[] }>
           : Promise.resolve(null),
       ]);
       if (generation !== loadGenerationRef.current) return;

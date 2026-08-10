@@ -1,49 +1,31 @@
-import { chmod, lstat, readdir } from "node:fs/promises";
-import path from "node:path";
+import { chmodSync, existsSync, readdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateCompatibilityVersionManifest } from "./generate-compatibility-version";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
-function repoPath(...parts: string[]): string {
-  return path.join(repoRoot, ...parts);
+function chmodIfExists(path: string, mode: number): void {
+  if (!existsSync(path)) return;
+  try { chmodSync(path, mode); } catch { /* best-effort for read-only filesystems */ }
 }
 
-async function chmodRequired(filePath: string, mode: number): Promise<void> {
-  await chmod(filePath, mode);
-}
-
-async function chmodTreeExecutable(root: string): Promise<void> {
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      await chmodTreeExecutable(fullPath);
-      continue;
-    }
-    if (entry.isFile()) await chmod(fullPath, 0o755);
+function chmodTree(path: string): void {
+  if (!existsSync(path)) return;
+  const st = statSync(path);
+  if (st.isDirectory()) {
+    chmodIfExists(path, 0o755);
+    for (const entry of readdirSync(path)) chmodTree(join(path, entry));
+    return;
   }
+  chmodIfExists(path, 0o644);
 }
 
-async function assertRegularFile(filePath: string): Promise<void> {
-  const stat = await lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`expected regular package file: ${filePath}`);
-  }
-}
+// Generate the exact CL-00 implementation manifest immediately before package
+// assembly. The output stays untracked to avoid a self-referential digest, but
+// package.json already ships src/** so the generated artifact is embedded.
+generateCompatibilityVersionManifest(root);
 
-// The compatibility identity must be generated from the final tracked working
-// tree before packaging. The output itself stays untracked to avoid self-reference.
-generateCompatibilityVersionManifest(repoRoot);
-
-for (const file of [
-  repoPath("bin", "opencodex.mjs"),
-  repoPath("bin", "opencodex.cmd"),
-  repoPath("bin", "package-main.mjs"),
-  repoPath("scripts", "install-bun-runtime.cjs"),
-]) {
-  await assertRegularFile(file);
-  await chmodRequired(file, 0o755);
-}
-
-await chmodTreeExecutable(repoPath("scripts", "bun-runtime"));
+chmodIfExists(join(root, "bin", "ocx.mjs"), 0o755);
+chmodIfExists(join(root, "bin", "package-main.mjs"), 0o644);
+chmodTree(join(root, "gui", "dist"));
