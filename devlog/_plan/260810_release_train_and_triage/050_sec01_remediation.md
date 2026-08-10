@@ -12,7 +12,7 @@ scope reasoning are in scratch. This file records the outcome.
 
 ## What shipped
 
-Commit `e4947062c`.
+Commits `13f3a73fe` and `febd8c8e3`. Local to `dev`; not yet pushed.
 
 - `.github/workflows/pr-hygiene.yml` and
   `.github/workflows/enforce-pr-target.yml` — the trusted-script checkout ref is
@@ -50,7 +50,7 @@ no longer select which scripts execute with a write-capable token.
 ## Verification
 
 - `node --test .github/scripts/enforce-pr-target.test.cjs .github/scripts/pr-hygiene.test.cjs`
-  — 45 pass / 0 fail
+  — 46 pass / 0 fail
 - `actionlint` on both workflows — clean
 - Activation proven by ablation: reverting to the old ref, and separately using
   a bare branch literal without the `main` case, each turned the tests red.

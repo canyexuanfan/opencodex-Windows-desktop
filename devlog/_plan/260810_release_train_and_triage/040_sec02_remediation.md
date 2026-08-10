@@ -20,7 +20,9 @@ the plan in the public tree was a violation rather than a judgment call.
 
 ## What shipped
 
-Commit `cb7d6c9c9`, plus the follow-up hardening from re-review.
+Commits `7fda2c524` and the follow-up hardening from seven re-review rounds
+(`4bcaef080`, `0449d72d4`, `3a958242e`, `31151acfa`, `4d010a4e5`, plus the
+final casing/whole-match corrections). Local to `dev`; not yet pushed.
 
 - `src/lab/artifacts/sanitize.ts` — the shared scrubber gains ordered rules for
   UNC paths, non-HTTP URIs, JWTs, emails, prefixed and contextual account
@@ -34,7 +36,7 @@ Commit `cb7d6c9c9`, plus the follow-up hardening from re-review.
 - `src/lab/artifacts/store.ts` — non-contract artifacts declare
   `sanitized_evidence_v2`. Contract classes bypass mutation, so their pinned
   digests are unchanged.
-- `tests/lab-evidence-sanitization.test.ts` — 9 tests covering redaction,
+- `tests/lab-evidence-sanitization.test.ts` — 18 tests covering redaction,
   recorded residuals, adversarial timing, truncation boundaries, and activation
   on both constructors and both sinks.
 - `structure/09_compatibility-lab.md` — documents the enforced boundary and the
@@ -42,19 +44,29 @@ Commit `cb7d6c9c9`, plus the follow-up hardening from re-review.
 
 ## Process record
 
-The plan passed **7 adversarial audit rounds**; 19 blockers folded, none
-rebutted. Each was independently reproduced before being accepted. A later
-independent security re-review found four further bypasses in the shipped
-implementation, all reproduced and fixed, with regressions added.
+The plan passed **7 adversarial audit rounds** (19 blockers folded, none
+rebutted), and the shipped implementation then went through **7 rounds of
+independent security re-review**, which found **17 further defects**. Every one
+was reproduced locally before being fixed, and each fix carries a regression
+test plus an ablation showing the test fails without it.
 
-That is the substance worth keeping: a plan that reads correctly can still be
-wrong in ways only execution reveals, and every round here was earned by a
-reproducible defect rather than a style preference.
+Two lessons are worth keeping, because both cost several rounds:
+
+1. **Enumerating a list loses to a rule.** Path identifiers were found by
+   splitting on a delimiter set that grew `/` → `?#&=` → and would have grown
+   again for `:` action suffixes and `;` matrix parameters. The workflow guard
+   was a denylist of command shapes that lost four separate times. Both were
+   fixed by stating the invariant instead: match identifier shapes wherever
+   they appear, and forbid executable content from naming the PR head at all.
+2. **A sanitizer can fail by removing too much.** Widening a rule for punycode
+   swallowed `provider.metric.p95` and `lib.v2-rc1`. Destroying a diagnostic
+   breaks the same contract as leaking an address, so the suite now asserts
+   both directions.
 
 ## Verification
 
-- `bun test tests/lab-evidence-sanitization.test.ts` — 9 pass / 0 fail
-- `bun test tests/lab-*.test.ts` — 138 pass / 0 fail
+- `bun test tests/lab-evidence-sanitization.test.ts` — 18 pass / 0 fail
+- `bun test tests/lab-*.test.ts` — 149 pass / 0 fail
 - full suite — 10,533 pass / 7 skip / 0 fail
 - `bun run typecheck` exit 0; `bun run privacy:scan` passed
 - Activation proven by ablation rather than a green suite: reverting the event

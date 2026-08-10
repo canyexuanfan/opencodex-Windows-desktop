@@ -97,8 +97,16 @@ function scrubValue(value: unknown, depth: number): unknown {
 
 /** Bounded, non-nested. */
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\b/g;
-const EMAIL_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b/g;
-const PREFIXED_ACCOUNT_RE = /\b(?:acct|cus|sub|org)[_-][A-Za-z0-9]{6,64}\b/g;
+// Both patterns end with a lookahead rather than `\b`, because `\b` fires
+// between a letter and `-`: `ops@…xn--p1ai` matched only up to the first
+// hyphen and left `[email]--p1ai`, and `acct_abcdef-prod` left `[account]-prod`.
+// A prefix replacement looks redacted while the tail leaks, which is the one
+// thing this module must never do.
+const EMAIL_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z][A-Za-z0-9-]{1,31}(?![\w.-])/g;
+// The value run includes hyphens so `acct_abcdef-prod` is consumed whole. A
+// `\b`-terminated form matched only `acct_abcdef` and left `-prod` dangling
+// after the token, which reads as redacted while leaking the remainder.
+const PREFIXED_ACCOUNT_RE = /\b(?:acct|cus|sub|org)[_-][A-Za-z0-9][A-Za-z0-9-]{5,63}(?![\w-])/g;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAC_RE = /\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/g;
 const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
@@ -128,8 +136,17 @@ const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(
 // The value is scanned to its delimiter, not to a word boundary: `\b` stops at
 // the first `.` in `db_prod.internal`, which left `[host].internal` — a partial
 // redaction that still names the host.
-const HOST_CONTEXT_RE = /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|host)[\s=]+([A-Za-z0-9_.-]{1,255})/g;
-const ACCOUNT_LABEL_RE = /\b(?:user|account|org|tenant)(_?[iI]d)?\b/g;
+// `db.prod-1` and `api.us-east-1` are indistinguishable from ordinary dotted
+// diagnostics by shape alone — a numeric or hyphenated final label is both a
+// legitimate internal hostname and a legitimate metric or version namespace.
+// Shape cannot decide it, so context does: these forms are redacted only when
+// an unambiguous network marker introduces them. Outside such a marker they
+// survive, and that is a recorded limit rather than an oversight.
+const HOST_CONTEXT_RE =
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|dial\s+(?:tcp|udp)|upstream|connecting\s+to|host)[\s=]+([A-Za-z0-9_.-]{1,255})/gi;
+// `userID` is at least as common as `userId` in provider payloads, so the id
+// suffix is matched case-insensitively.
+const ACCOUNT_LABEL_RE = /\b(?:user|account|org|tenant)(_?[iI][dD])?\b/g;
 const IDENTIFIER_ONLY_RE = /^[A-Za-z0-9_-]+$/;
 const UNQUOTED_TERMINATOR = /[\s,;)\]}]/;
 

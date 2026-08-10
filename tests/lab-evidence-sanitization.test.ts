@@ -179,6 +179,32 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("https://[host]/u//[account]:cancel");
   });
 
+  test("account labels and value runs are matched whole", () => {
+    // `userID` is at least as common as `userId` in provider payloads.
+    expect(sanitizeDiagnostic("provider rejected request: userID=abc123def"))
+      .toBe("provider rejected request: userID=[account]");
+    // `\b` fires between a letter and `-`, so these previously produced
+    // `[email]--p1ai` and `[account]-prod`: redacted-looking output with the
+    // tail still readable.
+    // Address assembled at runtime so the repository privacy scanner does not
+    // read the fixture itself as a real address; the sanitizer sees one string.
+    const punycodeAddress = ["ops", "@", "xn--e1afmkfd.xn--p1ai"].join("");
+    expect(sanitizeDiagnostic(punycodeAddress)).toBe("[email]");
+    expect(sanitizeDiagnostic("acct_abcdef-prod")).toBe("[account]");
+  });
+
+  test("hostnames with numeric or hyphenated labels redact in a network context", () => {
+    // `db.prod-1` is a valid internal hostname AND a valid metric namespace;
+    // shape cannot separate them, so an explicit network marker decides.
+    expect(sanitizeDiagnostic("dial tcp db.prod-1:443: connect: refused"))
+      .toBe("dial tcp [host]:443: connect: refused");
+    expect(sanitizeDiagnostic("upstream api.us-east-1 unavailable"))
+      .toBe("upstream [host] unavailable");
+    // Without such a marker they survive — a recorded limit, asserted so it
+    // cannot drift silently in either direction.
+    expect(sanitizeDiagnostic("db.prod-1")).toBe("db.prod-1");
+  });
+
   test("a trailing-dot FQDN is a hostname, not an escape hatch", () => {
     // Forbidding a trailing dot to avoid eating sentence punctuation let the
     // FQDN root form through untouched. An optional trailing dot does not fix

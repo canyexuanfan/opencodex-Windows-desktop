@@ -24,8 +24,21 @@ about what may be stored.
 Redacted: filesystem paths including UNC shares, HTTP(S) URLs, credential-bearing
 and other-scheme URIs, JWT-shaped tokens, email addresses, prefixed account
 identifiers (`acct_`, `cus_`, `sub_`, `org-`), account values under an
-ID-bearing label, MAC addresses, IPv4, IPv6 including mapped and scoped forms,
-multi-label hostnames, and single-label hostnames in a host-bearing context.
+ID-bearing label (`user_id`, `userID`, `accountId`, …), MAC addresses, IPv4,
+IPv6 including mapped and scoped forms, and multi-label hostnames whose final
+label is alphabetic or punycode.
+
+**Hostname limit.** A final label containing digits or hyphens — `db.prod-1`,
+`api.us-east-1` — is simultaneously a valid internal hostname and a valid
+metric or version namespace (`provider.metric.p95`, `lib.v2-rc1`). Shape cannot
+separate them. Those forms are therefore redacted only when an unambiguous
+network marker introduces them (`ENOTFOUND`, `ECONNREFUSED`, `dial tcp`,
+`upstream`, `host=`, …), and survive otherwise. Both behaviors are asserted, so
+the boundary cannot drift silently in either direction.
+A retained URL path also has identifier-shaped content redacted wherever it
+appears, independent of the punctuation around it — colon action suffixes and
+matrix parameters are ordinary API syntax, so enumerating delimiters does not
+hold.
 
 Deliberately **not** redacted, because no pattern separates them from the
 diagnostics the Lab exists to capture: standalone `user_…` identifiers,
@@ -33,12 +46,19 @@ standalone UUIDs (request, trace, and correlation ids look identical to account
 ids), values under a bare label such as `org: engineering`, phone numbers, and
 generic high-entropy blobs. A four-component version string like `1.2.3.4` is
 redacted as an IPv4 literal; that false positive is known and asserted.
+Percent-decoding is bounded at six passes, so a deeper nesting than that is a
+recorded limit rather than a covered case.
 
 Rules run in a fixed total order — email before hostname, MAC before IPv6, IPv6
 before IPv4, HTTP before other schemes — and every rule replaces a value whole
 or not at all, because a prefix replacement looks redacted while the tail
 leaks. `enforceEventStructureLimits` remains a backstop that rejects
 secret-shaped strings and raw paths; it is not the enforcement point.
+
+Both directions are enforced by tests: every redacted category has a positive
+case, and ordinary dotted diagnostics (`provider.metric.p95`, `lib.v2-rc1`,
+`foo.bar-baz`) have negative cases, because a sanitizer that destroys evidence
+fails this contract as surely as one that leaks it.
 
 Non-contract artifacts declare `redactionPolicy: sanitized_evidence_v2`.
 Contract classes (fixtures and manifests) bypass mutation, so their pinned
