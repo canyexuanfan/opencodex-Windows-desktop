@@ -31,7 +31,8 @@ A successful save persists the profile through the normal config writer, reconci
 When `limits.maxEstimatedCostUsd` is configured, `limits.onUnknownCost` defaults to `"allow"`: an unknown cost estimate does not get a
 cap-specific exclusion, and dry-run / live route-decision traces stamp
 `cost.capOutcome: "unknown-allowed"` so operators can tell the cap was not proven. Set `"exclude"`
-when the ceiling must fail closed (`cost-limit-unknown`). Configuring `onUnknownCost` alone is inert and does not emit a cap outcome. This is separate from
+when the ceiling must fail closed (`cost-limit-unknown`, with
+`cost.capOutcome: "unknown-excluded"`). Configuring `onUnknownCost` alone is inert and does not emit a cap outcome. This is separate from
 `unknownEvidence.cost`, which can still exclude or penalize unknown prices independently of the
 cap outcome.
 
