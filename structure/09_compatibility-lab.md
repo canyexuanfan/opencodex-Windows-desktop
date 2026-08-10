@@ -66,6 +66,7 @@ Recorded rather than implied, so a reader knows what is not covered:
 | Cisco dotted MAC (`0123.4567.89ab`), ideographic-dot IDN | not redacted — unusual notations |
 | Escaped-quote mail local part | partially redacted; the address is broken but a fragment of the local part can remain |
 | Percent-encoding nested more than six deep | not decoded further |
+| Fully alphabetic dotted namespace (`provider.timeout`, `provider.request.duration`) | **over-redacted to `[host]`** — indistinguishable from a real hostname. A namespace whose last label carries a digit (`provider.metric.p95`) survives |
 
 The marker behaviors and the redacted categories are asserted in both
 directions — positive cases for what must be removed, negative cases for the
@@ -82,7 +83,7 @@ diagnostics the Lab exists to capture: standalone `user_…` identifiers,
 standalone UUIDs (request, trace, and correlation ids look identical to account
 ids), values under a bare label such as `org: engineering`, phone numbers, and
 generic high-entropy blobs. A four-component version string like `1.2.3.4` is
-redacted as an IPv4 literal; that false positive is known and asserted.
+redacted as an IPv4 literal; that false positive is known and pinned by a test.
 Percent-decoding is bounded at six passes, so a deeper nesting than that is a
 recorded limit rather than a covered case.
 

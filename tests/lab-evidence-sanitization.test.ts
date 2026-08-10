@@ -111,6 +111,19 @@ describe("SEC-02 sanitizer boundary", () => {
     }
   });
 
+  test("known false positives are pinned, not merely described", () => {
+    // A four-component version string is indistinguishable from an IPv4
+    // literal. The limits table says so; this is what makes that claim true.
+    expect(sanitizeDiagnostic("1.2.3.4")).toBe("[ip]");
+    // A fully alphabetic dotted namespace is indistinguishable from a
+    // hostname, so it is over-redacted. Documented, and pinned here so the
+    // documentation cannot quietly stop matching the code.
+    expect(sanitizeDiagnostic("provider.timeout")).toBe("[host]");
+    expect(sanitizeDiagnostic("provider.request.duration")).toBe("[host]");
+    // The moment any label carries a digit it reads as a namespace and lives.
+    expect(sanitizeDiagnostic("provider.metric.p95")).toBe("provider.metric.p95");
+  });
+
   test("identifiers survive neither punctuation, word boundaries, nor a URL path", () => {
     // Each row was a real bypass found by security re-review of the first fix.
     // The candidate alphabet includes `.` for mapped IPv6, so a trailing
