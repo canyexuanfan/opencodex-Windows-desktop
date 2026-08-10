@@ -1,0 +1,153 @@
+name: CL-06 conflict resolver v2
+
+on:
+  push:
+    branches: [feat/cl-06-routing-profile-compatibility]
+    paths:
+      - ".github/workflows/cl06-conflict-resolver-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout CL-06 branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          ref: feat/cl-06-routing-profile-compatibility
+          persist-credentials: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Merge current dev
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin dev
+          set +e
+          git merge --no-ff --no-commit origin/dev
+          merge_status=$?
+          set -e
+          if [ "$merge_status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            printf 'Conflicts:\n%s\n' "$conflicts"
+            expected="gui/src/pages/RoutingProfiles.tsx
+gui/src/routing-profile-editor-data.ts
+src/routing/evaluator.ts"
+            if [ "$(printf '%s\n' "$conflicts" | sort)" != "$(printf '%s\n' "$expected" | sort)" ]; then
+              echo "::error::Conflict set changed; refusing broad resolution"
+              exit 1
+            fi
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              safe="$(printf '%s' "$path" | tr '/.' '__')"
+              git show ":1:$path" > "/tmp/${safe}.base"
+              git show ":2:$path" > "/tmp/${safe}.ours"
+              git show ":3:$path" > "/tmp/${safe}.theirs"
+              git merge-file --union "/tmp/${safe}.ours" "/tmp/${safe}.base" "/tmp/${safe}.theirs"
+              cp "/tmp/${safe}.ours" "$path"
+              git add "$path"
+            done <<< "$conflicts"
+          fi
+
+      - name: Repair known additive GUI collisions
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          page = Path("gui/src/pages/RoutingProfiles.tsx")
+          s = page.read_text()
+          old_import = 'import { useI18n } from "../i18n/shared";'
+          if old_import in s:
+              s = s.replace(old_import, 'import { useI18n, useT } from "../i18n/shared";', 1)
+          helper = '''function isPlainObject(value: unknown): value is Record<string, unknown> {
+            return !!value && typeof value === "object" && !Array.isArray(value);
+          }
+          '''
+          if s.count(helper) != 2:
+              raise SystemExit(f"isPlainObject count was {s.count(helper)}, expected 2 after union")
+          first = s.find(helper)
+          second = s.find(helper, first + len(helper))
+          s = s[:second] + s[second + len(helper):]
+          page.write_text(s)
+
+          data = Path("gui/src/routing-profile-editor-data.ts")
+          s = data.read_text()
+          optional = 'export type OptionalBoolean = "" | "true" | "false";\n'
+          if s.count(optional) != 2:
+              raise SystemExit(f"OptionalBoolean count was {s.count(optional)}, expected 2 after union")
+          first = s.find(optional)
+          second = s.find(optional, first + len(optional))
+          s = s[:second] + s[second + len(optional):]
+          data.write_text(s)
+          PY
+          git add gui/src/pages/RoutingProfiles.tsx gui/src/routing-profile-editor-data.ts
+
+      - name: Isolate compatibility penalty regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("tests/routing-compatibility.test.ts")
+          s = p.read_text()
+          marker = 'test("compatibility penalty lowers score instead of rewarding unknown evidence", () => {'
+          start = s.index(marker)
+          end = s.find("\n  test(", start + len(marker))
+          if end < 0:
+              end = len(s)
+          block = s[start:end]
+          anchor = '        compat: {\n          candidates: [{ provider: "a", model: "m1" }],\n          compatibility: {'
+          replacement = '        compat: {\n          candidates: [{ provider: "a", model: "m1" }],\n          optimize: { latency: 1, health: 0, cost: 0, quota: 0 },\n          compatibility: {'
+          if block.count(anchor) == 1:
+              block = block.replace(anchor, replacement, 1)
+              s = s[:start] + block + s[end:]
+          elif 'optimize: { latency: 1, health: 0, cost: 0, quota: 0 },' not in block:
+              raise SystemExit("compatibility penalty test could not be isolated")
+          p.write_text(s)
+          PY
+          git add tests/routing-compatibility.test.ts
+
+      - name: Remove temporary resolvers from final tree
+        run: |
+          git rm .github/workflows/cl06-conflict-resolver.yml
+          git rm .github/workflows/cl06-conflict-resolver-v2.yml
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          cd gui
+          bun install --frozen-lockfile
+
+      - name: Validate merged contracts
+        run: |
+          bun run typecheck
+          bun test --isolate \
+            tests/routing-compatibility.test.ts \
+            tests/routing-compatibility-auth-identity.test.ts \
+            tests/routing-compatibility-boundaries.test.ts \
+            tests/routing-profile-editor-data.test.ts \
+            tests/routing-profile-management-editor.test.ts \
+            tests/cost-cap-unknown-evidence.test.ts
+          cd gui
+          bun run build
+          bun test --isolate tests/routing-profiles.test.tsx
+
+      - name: Commit and push resolved merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git status --short
+          git commit -m "merge(dev): resolve CL-06 routing conflicts"
+          git push origin HEAD:feat/cl-06-routing-profile-compatibility
