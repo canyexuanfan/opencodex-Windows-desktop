@@ -16,6 +16,8 @@ export const SYNTHETIC_AFTER_UTF8 = "after\n";
 
 export const FABRIC_LIMITS = Object.freeze({
   maxFiles: 1,
+  /** Upper bound for scratch-tree walks (verifier may see unexpected extras). */
+  maxScratchFiles: 8,
   maxAggregateIoBytes: 64 * 1024,
   maxPatchOperations: 1,
   totalTimeoutMs: 30_000,

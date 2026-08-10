@@ -17,7 +17,8 @@ import {
   buildTaskSubjectV1,
   correctSyntheticPatch,
   createSyntheticScratch,
-  fabricScratchCapabilityProbe,
+  fabricDeclaredSandboxPolicy,
+  FABRIC_VERIFIER_ID,
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
   observationFromFabricOutcome,
@@ -29,17 +30,24 @@ import {
   runFabricSyntheticPatchTask,
   sandboxProfileDigest,
   subjectIdForSubject,
+  SYNTHETIC_AFTER_UTF8,
+  SYNTHETIC_BEFORE_UTF8,
+  SYNTHETIC_VALUE_PATH,
   taskFixtureDigest,
+  taskFixtureObject,
   taskSubjectId,
   verifierManifestDigest,
-  writeScratchFileUtf8,
+  verifierManifestObject,
   type RouteSubjectV1,
 } from "../src/lab";
+import { FabricTaskError } from "../src/lab/fabric/types";
+import { writeScratchFileUtf8, readScratchFileUtf8 } from "../src/lab/fabric/scratch";
 import { routingProfileIssues } from "../src/routing/profile";
 import { buildInvalidationIndex } from "../src/lab/ledger/invalidation";
 import { verifyExactTreeDiffV1 } from "../src/lab/fabric/verifier";
 import { parseSyntheticPatchV1 } from "../src/lab/fabric/patch";
-import { FABRIC_LIMITS, SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "../src/lab/fabric/constants";
+import { FABRIC_LIMITS } from "../src/lab/fabric/constants";
+import { taskSubjectApplicableToRequirements } from "../src/lab/projection/verification";
 
 const HOMES: string[] = [];
 
@@ -201,12 +209,30 @@ describe("CL-07 task effectiveness producer", () => {
     const scratch = createSyntheticScratch(home);
     try {
       const fifo = join(scratch.root, "src", "fifo");
+      const created = Bun.spawnSync(["mkfifo", fifo], { stdout: "pipe", stderr: "pipe" });
+      if (created.exitCode !== 0) return;
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  test("intermediate symlink cannot redirect scratch IO", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    const scratch = createSyntheticScratch(home);
+    const outside = join(home, "outside.txt");
+    writeFileSync(outside, "secret\n");
+    try {
+      const srcDir = join(scratch.root, "src");
+      rmSync(srcDir, { recursive: true, force: true });
       try {
-        symlinkSync("/dev/null", fifo);
+        symlinkSync(home, srcDir);
       } catch {
         return;
       }
-      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(() => readScratchFileUtf8(scratch.root, SYNTHETIC_VALUE_PATH, FABRIC_LIMITS.maxAggregateIoBytes)).toThrow();
+      expect(() => writeScratchFileUtf8(scratch.root, SYNTHETIC_VALUE_PATH, "x\n", FABRIC_LIMITS.maxAggregateIoBytes)).toThrow();
     } finally {
       scratch.cleanup();
     }
@@ -243,8 +269,25 @@ describe("CL-07 task effectiveness producer", () => {
     expect(["timeout", "inactivity_timeout"]).toContain(outcome.failure?.code ?? "");
   }, 20_000);
 
-  test("network / user MCP / arbitrary shell remain unavailable", () => {
-    expect(fabricScratchCapabilityProbe()).toEqual({
+  test("activity resets inactivity deadline within total budget", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: async ({ reportActivity }) => {
+        for (let i = 0; i < 3; i++) {
+          reportActivity();
+          await Bun.sleep(Math.floor(FABRIC_LIMITS.inactivityTimeoutMs * 0.6));
+        }
+        return correctSyntheticPatch();
+      },
+    });
+    expect(outcome.outcome).toBe("pass");
+  }, 30_000);
+
+  test("declared sandbox policy denies network MCP shell and user repo", () => {
+    expect(fabricDeclaredSandboxPolicy()).toEqual({
       network: false,
       userMcp: false,
       arbitraryShell: false,
@@ -277,6 +320,62 @@ describe("CL-07 task effectiveness producer", () => {
       schemaVersion: 1,
       taskSubject: { subjectKind: "route" },
     })).toThrow();
+    let incompleteError: unknown;
+    try {
+      observationFromFabricOutcome({ schemaVersion: 1 });
+    } catch (error) {
+      incompleteError = error;
+    }
+    expect((incompleteError as FabricTaskError | undefined)?.name).toBe("FabricTaskError");
+  });
+
+  test("fixture and verifier manifests derive from frozen constants", () => {
+    const verifier = verifierManifestObject() as {
+      verifierId: string;
+      requiredChange: { path: string; beforeUtf8: string; afterUtf8: string };
+    };
+    expect(verifier.verifierId).toBe(FABRIC_VERIFIER_ID);
+    expect(verifier.requiredChange).toEqual({
+      path: SYNTHETIC_VALUE_PATH,
+      beforeUtf8: SYNTHETIC_BEFORE_UTF8,
+      afterUtf8: SYNTHETIC_AFTER_UTF8,
+    });
+    const fixture = taskFixtureObject() as {
+      files: Array<{ path: string; contentUtf8: string }>;
+      requestedFinal: Array<{ path: string; contentUtf8: string }>;
+    };
+    expect(fixture.files[0]).toEqual({ path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_BEFORE_UTF8 });
+    expect(fixture.requestedFinal[0]).toEqual({ path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_AFTER_UTF8 });
+  });
+
+  test("task applicability excludes mismatched platform and harness features", () => {
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["linux"],
+      routePreconditions: ["exact-route-subject"],
+    }, {
+      harnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["win32"],
+      routePreconditions: ["exact-route-subject"],
+    })).toBe(false);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: ["fabric-scratch-v1", "missing-feature"],
+      platforms: ["*"],
+      routePreconditions: ["exact-route-subject"],
+    }, {
+      harnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["win32"],
+      routePreconditions: ["exact-route-subject"],
+    })).toBe(false);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["*"],
+      routePreconditions: ["exact-route-subject"],
+    }, {
+      harnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["win32"],
+      routePreconditions: ["exact-route-subject"],
+    })).toBe(true);
   });
 
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {

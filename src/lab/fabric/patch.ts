@@ -22,7 +22,7 @@ export function parseSyntheticPatchV1(raw: unknown): SyntheticPatchV1 {
     throw new FabricTaskError("malformed producer outcome: operations", "malformed_producer_outcome", "harness");
   }
   if (obj.operations.length !== 1) {
-    throw new FabricTaskError("exactly one patch operation is required", "budget_exhausted", "route");
+    throw new FabricTaskError("exactly one patch operation is required", "malformed_producer_outcome", "harness");
   }
   const opRaw = obj.operations[0];
   if (!opRaw || typeof opRaw !== "object" || Array.isArray(opRaw)) {

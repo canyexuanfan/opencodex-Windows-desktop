@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
 import { sanitizeDiagnostic, truncateUtf8 } from "../artifacts/sanitize";
 import {
@@ -8,9 +7,9 @@ import {
   OBSERVATION_LIMIT_NAMES,
 } from "../constants";
 import { fixtureDigest } from "../digest";
-import type { ObservationEvent } from "../events/types";
+import type { ObservationEvent, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 import { assignEventId } from "../events/validate";
-import { appendLabEvent, replayLabLedger } from "../ledger/store";
+import { appendLabEventIfAbsent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import {
   FABRIC_EVIDENCE_LAYER,
@@ -64,6 +63,29 @@ const OUTCOME_KEYS = new Set([
   "sourceRefs",
 ]);
 
+function assertPlainObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new FabricTaskError(`malformed producer outcome: ${label}`, "malformed_producer_outcome", "harness");
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertStringField(obj: Record<string, unknown>, key: string): string {
+  const value = obj[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new FabricTaskError(`malformed producer outcome: ${key}`, "malformed_producer_outcome", "harness");
+  }
+  return value;
+}
+
+function assertIntegerField(obj: Record<string, unknown>, key: string): number {
+  const value = obj[key];
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new FabricTaskError(`malformed producer outcome: ${key}`, "malformed_producer_outcome", "harness");
+  }
+  return value;
+}
+
 export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new FabricTaskError("malformed producer outcome", "malformed_producer_outcome", "harness");
@@ -77,12 +99,40 @@ export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   if (obj.schemaVersion !== 1) {
     throw new FabricTaskError("schemaVersion must be 1", "malformed_producer_outcome", "harness");
   }
-  if (obj.taskSubject && typeof obj.taskSubject === "object" && !Array.isArray(obj.taskSubject)) {
-    const kind = (obj.taskSubject as { subjectKind?: unknown }).subjectKind;
-    if (kind !== "task") {
-      throw new FabricTaskError("task layer rejects non-task subjects", "layer_subject_mismatch", "harness");
-    }
+
+  const taskSubjectObj = assertPlainObject(obj.taskSubject, "taskSubject");
+  if (taskSubjectObj.subjectKind !== "task") {
+    throw new FabricTaskError("task layer rejects non-task subjects", "layer_subject_mismatch", "harness");
   }
+  const routeFromTask = assertPlainObject(taskSubjectObj.routeSubject, "taskSubject.routeSubject");
+  if (routeFromTask.subjectKind !== "route") {
+    throw new FabricTaskError("nested route subject required", "layer_subject_mismatch", "harness");
+  }
+
+  const routeSubjectObj = assertPlainObject(obj.routeSubject, "routeSubject");
+  if (routeSubjectObj.subjectKind !== "route") {
+    throw new FabricTaskError("nested route subject required", "layer_subject_mismatch", "harness");
+  }
+
+  assertStringField(obj, "taskClassId");
+  assertStringField(obj, "taskClassVersion");
+  assertStringField(obj, "subjectId");
+  assertStringField(obj, "taskFixtureDigest");
+  assertStringField(obj, "verifierManifestDigest");
+  assertStringField(obj, "fabricCompatibilityVersion");
+  assertStringField(obj, "sandboxProfileDigest");
+  assertIntegerField(obj, "startedAt");
+  assertIntegerField(obj, "completedAt");
+  assertPlainObject(obj.limits, "limits");
+  assertPlainObject(obj.usage, "usage");
+  assertPlainObject(obj.verifier, "verifier");
+  if (typeof obj.outcome !== "string") {
+    throw new FabricTaskError("malformed producer outcome: outcome", "malformed_producer_outcome", "harness");
+  }
+  if (!Array.isArray(obj.artifactDigests)) {
+    throw new FabricTaskError("malformed producer outcome: artifactDigests", "malformed_producer_outcome", "harness");
+  }
+
   return raw as FabricTaskOutcomeV1;
 }
 
@@ -91,10 +141,12 @@ export function observationFromFabricOutcome(
   opts: PersistFabricOptions = {},
 ): { event: ObservationEvent; artifacts: ReturnType<ArtifactStore["put"]>[] } {
   const outcome = assertFabricOutcomeV1(outcomeRaw);
-  if (outcome.taskSubject.subjectKind !== "task") {
+  const taskSubject = outcome.taskSubject as TaskSubjectV1;
+  const routeSubject = outcome.routeSubject as RouteSubjectV1;
+  if (taskSubject.subjectKind !== "task") {
     throw new FabricTaskError("task layer requires TaskSubjectV1", "layer_subject_mismatch", "harness");
   }
-  if (outcome.routeSubject.subjectKind !== "route") {
+  if (routeSubject.subjectKind !== "route") {
     throw new FabricTaskError("nested route subject required", "layer_subject_mismatch", "harness");
   }
   if (!Number.isInteger(outcome.startedAt) || !Number.isInteger(outcome.completedAt) || outcome.completedAt < outcome.startedAt) {
@@ -106,7 +158,10 @@ export function observationFromFabricOutcome(
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
     const authority = loadFabricCaseAuthority();
-    const caseRecord = authority.cases[0]!;
+    const caseRecord = authority.cases.find((row) => row.id === FABRIC_SCENARIO_ID);
+    if (!caseRecord) {
+      throw new FabricTaskError(`missing fabric scenario ${FABRIC_SCENARIO_ID}`, "harness_failure", "harness");
+    }
     const scenarioDigest = fabricScenarioManifestDigest(caseRecord, authority);
     const suiteDigest = fabricSuiteManifestDigest(FABRIC_SUITE_ID, authority);
     const expandedScenario = expandFabricScenario(caseRecord, authority);
@@ -206,11 +261,7 @@ export function persistFabricOutcome(
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
     const { event } = observationFromFabricOutcome(outcome, { ...opts, artifactStore: store });
-    const replay = existsSync(paths.ledgerPath) ? replayLabLedger(paths.ledgerPath) : null;
-    const alreadyPresent = replay?.events.some((row) => row.eventId === event.eventId) ?? false;
-    if (!alreadyPresent) {
-      appendLabEvent(paths.ledgerPath, event);
-    }
+    appendLabEventIfAbsent(paths.ledgerPath, event);
     return { event, ledgerPath: paths.ledgerPath };
   } finally {
     if (ownsStore) store.close();

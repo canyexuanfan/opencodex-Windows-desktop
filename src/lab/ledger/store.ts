@@ -1,11 +1,13 @@
 import {
   closeSync,
+  constants as fsConstants,
   existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readSync,
   statSync,
+  unlinkSync,
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -19,6 +21,54 @@ export interface LedgerStore {
   path: string;
   append(event: LabEvent): void;
   replay(): ReplayResult;
+}
+
+const eventIdIndexByLedger = new Map<string, Set<string>>();
+
+function sleepSyncMs(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    /* spin */
+  }
+}
+
+function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
+  const lockPath = `${ledgerPath}.lock`;
+  mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 5_000;
+  let lockFd: number | undefined;
+  while (lockFd === undefined) {
+    try {
+      lockFd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      sleepSyncMs(10);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    closeSync(lockFd);
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+function loadEventIdIndex(ledgerPath: string): Set<string> {
+  let index = eventIdIndexByLedger.get(ledgerPath);
+  if (!index) {
+    index = new Set();
+    if (existsSync(ledgerPath)) {
+      for (const event of replayLabLedger(ledgerPath).events) {
+        index.add(event.eventId);
+      }
+    }
+    eventIdIndexByLedger.set(ledgerPath, index);
+  }
+  return index;
 }
 
 /** Durable append of one validated event as a single JSONL line + fsync. */
@@ -41,6 +91,28 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
   } finally {
     closeSync(fd);
   }
+  loadEventIdIndex(ledgerPath).add(validated.eventId);
+}
+
+/**
+ * Append only when eventId is absent. Uses an exclusive lock file plus a
+ * process-local event-id index refreshed under the lock.
+ */
+export function appendLabEventIfAbsent(ledgerPath: string, event: LabEvent): boolean {
+  const validated = validateLabEvent(event);
+  return withLedgerLock(ledgerPath, () => {
+    // Refresh from disk under the lock so concurrent writers are visible.
+    const fresh = new Set<string>();
+    if (existsSync(ledgerPath)) {
+      for (const row of replayLabLedger(ledgerPath).events) {
+        fresh.add(row.eventId);
+      }
+    }
+    eventIdIndexByLedger.set(ledgerPath, fresh);
+    if (fresh.has(validated.eventId)) return false;
+    appendLabEvent(ledgerPath, validated);
+    return true;
+  });
 }
 
 function processLine(

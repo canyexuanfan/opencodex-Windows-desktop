@@ -1,11 +1,12 @@
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
 
-function ensureRestrictedDir(dir: string): void {
+/** Create (or harden) a directory to mode 0o700 without following symlinks. */
+export function ensureRestrictedDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") return;
-  const mode = statSync(dir).mode & 0o777;
+  const mode = lstatSync(dir).mode & 0o777;
   if (mode !== 0o700) chmodSync(dir, 0o700);
 }
 

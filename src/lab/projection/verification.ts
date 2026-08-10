@@ -19,6 +19,9 @@ export interface ScenarioRequirements {
   upstreamProtocols?: string[];
   surfaces?: string[];
   requiredClaims?: string[];
+  requiredHarnessFeatures?: string[];
+  platforms?: string[];
+  routePreconditions?: string[];
   freshness?: { maxAgeMs: number | null };
 }
 
@@ -71,6 +74,24 @@ export function routeSubjectApplicableToRequirements(
   );
 }
 
+/** Task-layer applicability against harness/platform/precondition state. */
+export function taskSubjectApplicableToRequirements(
+  requirements: ScenarioRequirements,
+  capability: {
+    harnessFeatures: readonly string[];
+    platforms: readonly string[];
+    routePreconditions: readonly string[];
+  },
+): boolean {
+  const platforms = requirements.platforms ?? [];
+  const features = requirements.requiredHarnessFeatures ?? [];
+  const preconditions = requirements.routePreconditions ?? [];
+  const platformOk = platforms.includes("*") || platforms.some((platform) => capability.platforms.includes(platform));
+  const featuresOk = features.every((feature) => capability.harnessFeatures.includes(feature));
+  const preconditionsOk = preconditions.every((item) => capability.routePreconditions.includes(item));
+  return platformOk && featuresOk && preconditionsOk;
+}
+
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
@@ -101,9 +122,28 @@ function scenarioContractFromManifest(
   if (!inboundProtocols || !upstreamProtocols || !surfaces) return null;
   const requiredClaims = row.requiredClaims === undefined ? [] : parseStringArray(row.requiredClaims);
   if (!requiredClaims) return null;
+  const requiredHarnessFeatures = row.requiredHarnessFeatures === undefined
+    ? []
+    : parseStringArray(row.requiredHarnessFeatures);
+  if (!requiredHarnessFeatures) return null;
+  const platforms = row.platforms === undefined ? ["*"] : parseStringArray(row.platforms);
+  if (!platforms) return null;
+  const routePreconditions = row.routePreconditions === undefined
+    ? []
+    : parseStringArray(row.routePreconditions);
+  if (!routePreconditions) return null;
   const freshness = parseFreshness(scenarioManifest.freshness);
   if (!freshness) return null;
-  return { inboundProtocols, upstreamProtocols, surfaces, requiredClaims, freshness };
+  return {
+    inboundProtocols,
+    upstreamProtocols,
+    surfaces,
+    requiredClaims,
+    requiredHarnessFeatures,
+    platforms,
+    routePreconditions,
+    freshness,
+  };
 }
 
 function effectiveMaxAgeMs(
@@ -142,6 +182,12 @@ export function evaluateAllApplicableRequiredPassV1(
     subject?: ProtocolSubjectV1 | RouteSubjectV1 | TaskSubjectV1;
     /** For live projection this must come from validated current claim snapshots for subjectId. */
     routeSupportedClaims?: readonly string[];
+    /** Fabric harness/platform/precondition state for task_effectiveness applicability. */
+    fabricCapability?: {
+      harnessFeatures: readonly string[];
+      platforms: readonly string[];
+      routePreconditions: readonly string[];
+    };
     loadScenarioManifest?: LoadScenarioManifest;
     loadScenarioRequirements?: LoadScenarioRequirements;
     asOf?: number;
@@ -217,6 +263,14 @@ export function evaluateAllApplicableRequiredPassV1(
     }
     if (suiteManifest.evidenceLayer === "live_route_compatibility" && opts.subject?.subjectKind === "route") {
       if (!routeSubjectApplicableToRequirements(requirements, opts.subject, opts.routeSupportedClaims!)) continue;
+    }
+    if (suiteManifest.evidenceLayer === "task_effectiveness" && opts.subject?.subjectKind === "task") {
+      const capability = opts.fabricCapability ?? {
+        harnessFeatures: ["fabric-scratch-v1"],
+        platforms: [process.platform, "*"],
+        routePreconditions: ["exact-route-subject"],
+      };
+      if (!taskSubjectApplicableToRequirements(requirements, capability)) continue;
     }
     applicableRequired.push(s.id);
     scenarioMaxAgeById.set(s.id, requirements.freshness?.maxAgeMs ?? null);

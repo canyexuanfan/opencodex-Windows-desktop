@@ -5,11 +5,14 @@ import {
   FABRIC_LIMITS,
   FABRIC_TASK_CLASS_ID,
   FABRIC_TASK_CLASS_VERSION,
+  FABRIC_VERIFIER_ID,
+  SANDBOX_PROFILE_V1,
   SYNTHETIC_AFTER_UTF8,
+  SYNTHETIC_BEFORE_UTF8,
   SYNTHETIC_VALUE_PATH,
 } from "./constants";
 import { applySyntheticPatch, parseSyntheticPatchV1 } from "./patch";
-import { assertNotUnderUserRepo, createSyntheticScratch } from "./scratch";
+import { assertNotUnderUserRepo, createSyntheticScratch, type ScratchTree } from "./scratch";
 import {
   buildTaskSubjectV1,
   sandboxProfileDigest,
@@ -83,7 +86,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
   const subjectId = taskSubjectId(taskSubject);
 
   const usage: FabricUsageV1 = {
-    inputBytes: Buffer.byteLength("before\n", "utf8"),
+    inputBytes: Buffer.byteLength(SYNTHETIC_BEFORE_UTF8, "utf8"),
     outputBytes: 0,
     patchOperations: 0,
     filesTouched: 0,
@@ -92,8 +95,9 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
     inactiveMs: 0,
   };
 
-  const scratch = createSyntheticScratch(options.configDir);
+  let scratch: ScratchTree | undefined;
   try {
+    scratch = createSyntheticScratch(options.configDir);
     if (options.userRepoRoot) {
       assertNotUnderUserRepo(scratch.root, options.userRepoRoot);
     }
@@ -102,12 +106,14 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
     const produceStarted = options.now?.() ?? Date.now();
     let patchRaw: unknown;
     try {
+      const controller = createTimeoutController(FABRIC_LIMITS.totalTimeoutMs, FABRIC_LIMITS.inactivityTimeoutMs, options);
       const producePromise = Promise.resolve(options.producePatch({
         taskClassId: FABRIC_TASK_CLASS_ID,
         taskClassVersion: FABRIC_TASK_CLASS_VERSION,
         scratchRoot: scratch.root,
+        reportActivity: controller.reportActivity,
       }));
-      patchRaw = await withTimeout(producePromise, FABRIC_LIMITS.totalTimeoutMs, FABRIC_LIMITS.inactivityTimeoutMs, options);
+      patchRaw = await controller.race(producePromise);
     } catch (error) {
       const completedAt = options.now?.() ?? Date.now();
       usage.elapsedMs = completedAt - startedAt;
@@ -125,7 +131,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
           usage,
           outcome: outcomeFromFailure(failure),
           verifier: {
-            verifierId: "exact-tree-diff-v1",
+            verifierId: FABRIC_VERIFIER_ID,
             manifestDigest: verifierDigest,
             passed: false,
             pathSummaries: [],
@@ -204,7 +210,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
         usage,
         outcome: outcomeFromFailure(failure),
         verifier: {
-          verifierId: "exact-tree-diff-v1",
+          verifierId: FABRIC_VERIFIER_ID,
           manifestDigest: verifierDigest,
           passed: false,
           pathSummaries: [],
@@ -231,7 +237,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
       usage,
       outcome: "inconclusive",
       verifier: {
-        verifierId: "exact-tree-diff-v1",
+        verifierId: FABRIC_VERIFIER_ID,
         manifestDigest: verifierDigest,
         passed: false,
         pathSummaries: [],
@@ -241,7 +247,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
       sourceRefs: options.sourceRefs,
     });
   } finally {
-    scratch.cleanup();
+    scratch?.cleanup();
   }
 }
 
@@ -286,58 +292,88 @@ function sealOutcome(input: {
   return sealed;
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
+function createTimeoutController(
   totalMs: number,
   inactivityMs: number,
   options: RunFabricTaskOptions,
-): Promise<T> {
-  let settled = false;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  return await new Promise<T>((resolve, reject) => {
-    const totalTimer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new FabricTaskError("total timeout exceeded", "timeout", "environment"));
-      }
-    }, totalMs);
-    const inactivityTimer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new FabricTaskError("inactivity timeout exceeded", "inactivity_timeout", "environment"));
-      }
-    }, inactivityMs);
-    void sleep(0);
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(totalTimer);
-        clearTimeout(inactivityTimer);
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(totalTimer);
-        clearTimeout(inactivityTimer);
-        reject(error);
-      },
-    );
-  });
-}
-
-/** Explicit denials for capabilities that must remain unavailable in the scratch producer. */
-export function fabricScratchCapabilityProbe(): {
-  network: false;
-  userMcp: false;
-  arbitraryShell: false;
-  userRepository: false;
+): {
+  reportActivity: () => void;
+  race: <T>(promise: Promise<T>) => Promise<T>;
 } {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let settled = false;
+  let totalTimer: ReturnType<typeof setTimeout> | undefined;
+  let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
+  let rejectRef: ((error: FabricTaskError) => void) | undefined;
+
+  const clearTimers = () => {
+    if (totalTimer !== undefined) clearTimeout(totalTimer);
+    if (inactivityTimer !== undefined) clearTimeout(inactivityTimer);
+    totalTimer = undefined;
+    inactivityTimer = undefined;
+  };
+
+  const settleReject = (error: FabricTaskError) => {
+    if (settled) return;
+    settled = true;
+    clearTimers();
+    rejectRef?.(error);
+  };
+
+  const armInactivity = () => {
+    if (inactivityTimer !== undefined) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      settleReject(new FabricTaskError("inactivity timeout exceeded", "inactivity_timeout", "environment"));
+    }, inactivityMs);
+  };
+
   return {
-    network: false,
-    userMcp: false,
-    arbitraryShell: false,
-    userRepository: false,
+    reportActivity: () => {
+      if (settled) return;
+      armInactivity();
+    },
+    race: async <T>(promise: Promise<T>): Promise<T> => {
+      return await new Promise<T>((resolve, reject) => {
+        rejectRef = reject;
+        totalTimer = setTimeout(() => {
+          settleReject(new FabricTaskError("total timeout exceeded", "timeout", "environment"));
+        }, totalMs);
+        armInactivity();
+        // Keep the injected sleep seam observable for tests without discarding work.
+        void sleep(0).catch(() => undefined);
+        promise.then(
+          (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimers();
+            resolve(value);
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimers();
+            reject(error);
+          },
+        );
+      });
+    },
   };
 }
+
+/** Declared sandbox policy for the frozen scratch producer (not runtime enforcement). */
+export function fabricDeclaredSandboxPolicy(): {
+  network: boolean;
+  userMcp: boolean;
+  arbitraryShell: boolean;
+  userRepository: boolean;
+} {
+  return {
+    network: SANDBOX_PROFILE_V1.allowNetwork,
+    userMcp: SANDBOX_PROFILE_V1.allowUserMcp,
+    arbitraryShell: SANDBOX_PROFILE_V1.allowShell,
+    userRepository: SANDBOX_PROFILE_V1.allowUserRepository,
+  };
+}
+
+/** @deprecated Use fabricDeclaredSandboxPolicy. */
+export const fabricScratchCapabilityProbe = fabricDeclaredSandboxPolicy;

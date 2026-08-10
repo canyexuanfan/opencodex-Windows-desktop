@@ -5,7 +5,11 @@ import {
   FABRIC_COMPATIBILITY_VERSION,
   FABRIC_TASK_CLASS_ID,
   FABRIC_TASK_CLASS_VERSION,
+  FABRIC_VERIFIER_ID,
   SANDBOX_PROFILE_V1,
+  SYNTHETIC_AFTER_UTF8,
+  SYNTHETIC_BEFORE_UTF8,
+  SYNTHETIC_VALUE_PATH,
 } from "./constants";
 
 const SANDBOX_DOMAIN = "ocx-lab:fabric-sandbox-profile:v1";
@@ -19,7 +23,7 @@ export function sandboxProfileDigest(profile: unknown = SANDBOX_PROFILE_V1): str
 export function verifierManifestObject(): Record<string, unknown> {
   return {
     schemaVersion: 1,
-    verifierId: "exact-tree-diff-v1",
+    verifierId: FABRIC_VERIFIER_ID,
     sort: "utf8-bytes-posix-path",
     rejectSymlinks: true,
     rejectSpecialFiles: true,
@@ -28,9 +32,9 @@ export function verifierManifestObject(): Record<string, unknown> {
     allowDeletes: false,
     allowRenames: false,
     requiredChange: {
-      path: "src/value.txt",
-      beforeUtf8: "before\n",
-      afterUtf8: "after\n",
+      path: SYNTHETIC_VALUE_PATH,
+      beforeUtf8: SYNTHETIC_BEFORE_UTF8,
+      afterUtf8: SYNTHETIC_AFTER_UTF8,
     },
   };
 }
@@ -46,14 +50,14 @@ export function taskFixtureObject(): Record<string, unknown> {
     taskClassVersion: FABRIC_TASK_CLASS_VERSION,
     files: [
       {
-        path: "src/value.txt",
-        contentUtf8: "before\n",
+        path: SYNTHETIC_VALUE_PATH,
+        contentUtf8: SYNTHETIC_BEFORE_UTF8,
       },
     ],
     requestedFinal: [
       {
-        path: "src/value.txt",
-        contentUtf8: "after\n",
+        path: SYNTHETIC_VALUE_PATH,
+        contentUtf8: SYNTHETIC_AFTER_UTF8,
       },
     ],
   };

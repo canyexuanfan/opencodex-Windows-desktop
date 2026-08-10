@@ -8,6 +8,9 @@ import {
   FABRIC_SUITE_ID,
   FABRIC_SUITE_VERSION,
   FABRIC_TASK_CLASS_ID,
+  SYNTHETIC_AFTER_UTF8,
+  SYNTHETIC_BEFORE_UTF8,
+  SYNTHETIC_VALUE_PATH,
 } from "./constants";
 import { verifierManifestDigest } from "./subject";
 
@@ -29,7 +32,11 @@ export interface FabricCaseAuthority {
 }
 
 const FABRIC_SOURCE_COMMIT = "b66e33ce7207d91014644d99317e456c992a3418";
-const FIXTURE_BYTES_UTF8 = JSON.stringify({ path: "src/value.txt", before: "before\n", after: "after\n" });
+const FIXTURE_BYTES_UTF8 = JSON.stringify({
+  path: SYNTHETIC_VALUE_PATH,
+  before: SYNTHETIC_BEFORE_UTF8,
+  after: SYNTHETIC_AFTER_UTF8,
+});
 
 export function loadFabricCaseAuthority(): FabricCaseAuthority {
   const fixtureBytes = new TextEncoder().encode(FIXTURE_BYTES_UTF8);
@@ -145,7 +152,15 @@ export function expandFabricScenario(
       },
       {
         id: "sandbox-block",
-        match: ["sandbox_violation", "timeout", "inactivity_timeout", "budget_exhausted"],
+        match: ["sandbox_violation"],
+        classification: "sandbox_violation",
+        verdictEffect: "none",
+        retry: "bounded",
+        expected: false,
+      },
+      {
+        id: "timeout-block",
+        match: ["timeout", "inactivity_timeout", "budget_exhausted"],
         classification: "timeout",
         verdictEffect: "none",
         retry: "bounded",

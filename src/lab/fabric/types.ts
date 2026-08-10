@@ -1,10 +1,14 @@
+import type { FailureClassification } from "../conformance/types";
 import type { ObservationOutcome } from "../constants";
 import type { FailureRecordV1, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 
 export type FabricOutcomeKind = ObservationOutcome;
 
+export type FabricFailureClass = FailureClassification;
+
 export interface FabricLimitsV1 {
   maxFiles: number;
+  maxScratchFiles: number;
   maxAggregateIoBytes: number;
   maxPatchOperations: number;
   totalTimeoutMs: number;
@@ -76,13 +80,15 @@ export type SyntheticPatchProducer = (ctx: {
   taskClassId: string;
   taskClassVersion: string;
   scratchRoot: string;
+  /** Reset the inactivity deadline while the producer is making progress. */
+  reportActivity: () => void;
 }) => SyntheticPatchV1 | Promise<SyntheticPatchV1>;
 
 export class FabricTaskError extends Error {
   override readonly name = "FabricTaskError";
   constructor(
     message: string,
-    readonly code: string,
+    readonly code: FabricFailureClass,
     readonly attribution: FailureRecordV1["attribution"] = "harness",
   ) {
     super(message);
