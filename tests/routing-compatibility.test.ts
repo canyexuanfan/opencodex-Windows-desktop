@@ -359,7 +359,7 @@ describe("CL-06 routing compatibility", () => {
       },
     });
     const common = { provider: "a", model: "m1", capability: { tools: true, contextWindow: 200000 } };
-    const satisfied = evaluatePolicyProfile(config, "compat", {}, [{ ...common, compatibility: evidence("VERIFIED") }], 1000);
+    const satisfied = evaluatePolicyProfile(config, "compat", {}, [{ ...common, compatibility: evidence("VERIFIED", 1000) }], 1000);
     const penalized = evaluatePolicyProfile(config, "compat", {}, [{ ...common, compatibility: evidence("UNKNOWN", 1000) }], 1000);
     expect(penalized.candidates[0]!.score!.total).toBeLessThan(satisfied.candidates[0]!.score!.total);
     expect(penalized.candidates[0]!.score!.components.compatibility).toBe(0.3);
