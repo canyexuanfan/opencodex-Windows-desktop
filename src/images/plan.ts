@@ -47,10 +47,12 @@ export async function planImageBridge(
 ): Promise<ImageBridgePlan | undefined> {
   if (config.images?.bridgeEnabled !== true) return undefined;
   if (!parsed._imageGeneration) return undefined;
-  const toolNames = new Set(parsed._imageGeneration.toolNames);
-  toolNames.add(IMAGE_GEN_TOOL_NAME);
   const toolAllowed = toolChoiceToolPredicate(parsed.options.toolChoice);
-  if (![...toolNames].some(name => toolAllowed({ name }))) return undefined;
+  const toolNames = new Set(
+    [...parsed._imageGeneration.toolNames, IMAGE_GEN_TOOL_NAME]
+      .filter(name => toolAllowed({ name })),
+  );
+  if (toolNames.size === 0) return undefined;
   // Don't intercept for OpenAI native passthrough
   const host = (() => { try { return new URL(routedProvider.baseUrl).hostname; } catch { return ""; } })();
   if (host === "api.openai.com") return undefined;
@@ -112,7 +114,10 @@ export async function planVideoBridge(
     }
   }
   const toolAllowed = toolChoiceToolPredicate(parsed.options?.toolChoice);
-  if (![...toolNames].some(name => toolAllowed({ name }))) return undefined;
+  for (const name of toolNames) {
+    if (!toolAllowed({ name })) toolNames.delete(name);
+  }
+  if (toolNames.size === 0) return undefined;
   // Don't intercept for OpenAI native passthrough
   const host = (() => { try { return new URL(routedProvider.baseUrl).hostname; } catch { return ""; } })();
   if (host === "api.openai.com") return undefined;
