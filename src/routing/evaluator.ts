@@ -25,7 +25,7 @@ import { healthScore } from "./health";
 import { quotaScore } from "./quota";
 import { costScore } from "./cost";
 import { evaluateCompatibilityForCandidate } from "./compatibility/policy";
-import type { CandidateCompatibilityEvidence } from "./compatibility/types";
+import { COMPATIBILITY_WEIGHT, type CandidateCompatibilityEvidence } from "./compatibility/types";
 import type { RouteCompatibilityEvidence } from "./trace";
 
 /** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
@@ -90,8 +90,6 @@ function booleanRequirement(
   actual: Unknownable | undefined,
 ): RouteRequirementEvidence | null {
   if (required === undefined) return null;
-  // Note: `required === false` is a negative assertion ("must NOT have X"),
-  // not "don't care"; an absent field is the only "no requirement" form.
   if (actual === undefined || actual === "unknown") {
     return { id, expected: required, outcome: "unknown" };
   }
@@ -122,11 +120,6 @@ function requirementFor(
       requirements.push({ id: "min-context-window", expected: require.minContextWindow, outcome: "unknown" });
     }
   }
-  // minQuotaHeadroom gates only KNOWN quota via the normalized score, which
-  // maps exhaustion to zero and unknown/incomplete evidence to null. Unknown
-  // quota is governed by the profile's `unknownEvidence.quota` policy
-  // (exclude / penalize / allow) via the quota score path - never by the
-  // capability unknown policy.
   if (require.minQuotaHeadroom !== undefined) {
     const quotaHeadroom = quotaScore(quota);
     if (quotaHeadroom !== null) {
@@ -191,12 +184,6 @@ function configuredPriorityScore(index: number, total: number): number {
   return total > 1 ? (total - index) / total : 1;
 }
 
-/**
- * Requirements derived from the request evidence supplied to a dry-run. A
- * candidate must satisfy both the profile `require` block and the request
- * needs (context window, tools, image input, structured output, reasoning
- * effort, service tier, encrypted Codex tasks) to be eligible.
- */
 function requestRequirementFor(
   request: PolicyRequestEvidence,
   capability: RouteCapabilityEvidence | undefined,
@@ -215,7 +202,6 @@ function requestRequirementFor(
       requirements.push({ id: "request-context-window", expected: request.contextWindow, outcome: "unknown" });
     }
   }
-  // Absent flags mean "no requirement": only a positive request need adds a row.
   if (request.toolsRequired === true) {
     const tools = booleanRequirement("request-tools", true, capability?.tools);
     if (tools) requirements.push(tools);
@@ -302,10 +288,6 @@ export function evaluatePolicyProfile(
     }
     const unsatisfied = bad.some(requirement => requirement.outcome === "unsatisfied");
     const unknown = bad.some(requirement => requirement.outcome === "unknown");
-    // Unknown capability handling per profile: exclude (default), penalize,
-    // or allow. "penalize" cannot move the score while configuredPriorityScore
-    // is the only component; the capability score dimension is still future
-    // (RI-06+), so "penalize" behaves identically to "allow" in this release.
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
     const costLimit = profile.limits.maxEstimatedCostUsd;
     const estimatedCost = evidence.cost?.estimatedUsd;
@@ -327,12 +309,9 @@ export function evaluatePolicyProfile(
       exclusions.push(...compatibilityEval.exclusions);
       eligible = false;
     }
-    let compatibilityValue = compatibilityEval.penaltyScore;
+    const compatibilityValue = compatibilityEval.penaltyScore;
     const compatibilityTrace = compatibilityEval.trace;
 
-    // Health scoring (RI-06): live hard cooldown is authoritative and
-    // excludes; unknown health follows the profile's unknownEvidence policy;
-    // historical health never overrides explicit ineligibility.
     const health = evidence.health;
     let healthValue = health ? healthScore(health, now) : null;
     if (health?.cooldownUntilMs !== undefined && health.cooldownUntilMs > now) {
@@ -344,13 +323,9 @@ export function evaluatePolicyProfile(
     } else if (healthValue === null && profile.unknownEvidence.health === "penalize") {
       healthValue = HEALTH_UNKNOWN_PENALTY_SCORE;
     } else if (healthValue === null && profile.unknownEvidence.health === "allow") {
-      // Neutral midpoint: blending keeps an unknown candidate from outranking
-      // a measured one with the same configured priority.
       healthValue = HEALTH_UNKNOWN_NEUTRAL_SCORE;
     }
 
-    // Quota scoring (RI-07): unknown quota follows the profile policy;
-    // exhausted or low-headroom evidence lowers the score.
     const quota = evidence.quota;
     let quotaValue = quota ? quotaScore(quota) : null;
     if (quotaValue === null) {
@@ -362,8 +337,6 @@ export function evaluatePolicyProfile(
       }
     }
 
-    // Cost scoring (RI-08): the hard per-request ceiling was already checked
-    // above; unknown cost follows the profile's unknownEvidence policy.
     const cost = evidence.cost;
     let costValue = cost ? costScore(cost) : null;
     if (costValue === null && profile.unknownEvidence.cost === "exclude") {
@@ -377,11 +350,6 @@ export function evaluatePolicyProfile(
     const healthWeight = profile.optimize.health;
     const quotaWeight = profile.optimize.quota;
     const costWeight = profile.optimize.cost;
-    // Only spend a dimension's weight when a value is actually present:
-    // "allow" leaves missing health/quota/cost components null, so subtracting
-    // their weights would shrink the priority share for evidence the profile
-    // explicitly permits to be absent. Renormalize those weights back into
-    // priority instead of silently changing the ranking semantics.
     const spentHealth = healthValue !== null ? healthWeight : 0;
     const spentQuota = quotaValue !== null ? quotaWeight : 0;
     const spentCost = costValue !== null ? costWeight : 0;
@@ -401,7 +369,10 @@ export function evaluatePolicyProfile(
       components.cost = costValue;
     }
     if (compatibilityValue !== null) {
-      total += 0.05 * compatibilityValue;
+      // Compatibility is a penalty-only dimension. A penalized candidate loses
+      // a bounded fraction of its existing score; satisfied/allowed evidence
+      // does not receive a synthetic bonus or alter configured priority.
+      total = Math.max(0, total - COMPATIBILITY_WEIGHT * (1 - compatibilityValue));
       components.compatibility = compatibilityValue;
     }
     const score: RouteScoreEvidence = { total, components };
@@ -431,8 +402,6 @@ export function evaluatePolicyProfile(
     requestedModel: policyModelId(profileId),
     routeKind: "policy",
     profile: { id: profile.id, revision: profile.revision },
-    // Flat, capped summary (truncation is flagged by the builder); per-candidate
-    // attribution lives in each candidate's `requirements`/`exclusions`.
     requirements: candidates.flatMap(candidate => candidate.requirements).slice(0, MAX_REQUIREMENTS),
     candidates: candidates.map(candidate => ({
       provider: candidate.provider,

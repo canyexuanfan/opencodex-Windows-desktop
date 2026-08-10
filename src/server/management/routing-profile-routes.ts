@@ -98,8 +98,9 @@ function parseCandidateEvidence(raw: unknown): PolicyCandidateEvidence[] | null 
 function assembleCandidateEvidence(
   config: OcxConfig,
   profile: NonNullable<ReturnType<typeof getRoutingProfile>>,
+  now: number,
 ): PolicyCandidateEvidence[] {
-  return assemblePolicyCandidateEvidence(config, profile, Date.now(), {
+  return assemblePolicyCandidateEvidence(config, profile, now, {
     routedProviderConfig,
   });
 }
@@ -354,13 +355,16 @@ export async function handleRoutingProfileRoutes(ctx: ManagementContext): Promis
     if (!ok) {
       return jsonResponse({ error: { code: "invalid_evidence", message: "evidence must be an object" } }, 400, req, config);
     }
+    // One clock read for both assembly and evaluation keeps freshness, health,
+    // and trace timestamps mutually consistent with the production router.
+    const now = Date.now();
     const candidateEvidence = body.candidates === undefined
-      ? assembleCandidateEvidence(config, resolvedProfile)
+      ? assembleCandidateEvidence(config, resolvedProfile, now)
       : parseCandidateEvidence(body.candidates);
     if (candidateEvidence === null) {
       return jsonResponse({ error: { code: "invalid_candidates", message: "candidates must be an array of evidence objects" } }, 400, req, config);
     }
-    const result = evaluatePolicyProfile(config, profile, evidence, candidateEvidence);
+    const result = evaluatePolicyProfile(config, profile, evidence, candidateEvidence, now);
     return jsonResponse(result, 200, req, config);
   }
 

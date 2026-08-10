@@ -3,7 +3,6 @@
  * Mirrors the snapshot fields hashed in `createLabDestination` without resolution.
  */
 import { localFingerprint } from "../../lab/digest";
-import { readInstallationSalt } from "../../lab/subject/installation-salt";
 
 function normalizeBasePath(pathname: string): string {
   if (!pathname || pathname === "/") return "";
@@ -38,14 +37,16 @@ export function parseEndpointFingerprintParts(baseUrl: string): EndpointFingerpr
   }
 }
 
-export function endpointFingerprintFromBaseUrl(baseUrl: string, configDir?: string): string | null {
+export function endpointFingerprintFromBaseUrl(
+  baseUrl: string,
+  installationSalt: Uint8Array | string,
+): string | null {
   const parts = parseEndpointFingerprintParts(baseUrl);
   if (!parts) return null;
-  const salt = readInstallationSalt(configDir);
   return localFingerprint("endpoint", {
     scheme: parts.scheme,
     host: parts.host,
     port: parts.port,
     basePath: parts.basePath,
-  }, salt);
+  }, installationSalt);
 }

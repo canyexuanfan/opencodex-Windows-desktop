@@ -5,8 +5,16 @@ import type { PolicyCandidateEvidence } from "../evaluator";
 import { policyCandidateHealthEvidence } from "../health";
 import type { NormalizedRoutingProfile } from "../profile";
 import { quotaEvidenceForCandidate } from "../quota";
-import { loadCompatibilityEvidenceSnapshot } from "./reader";
-import { resolvePolicyRouteSubject } from "./subject";
+import {
+  compatibilitySuiteKey,
+  loadCompatibilityCatalogSnapshot,
+  type CompatibilityCatalogSnapshot,
+} from "./catalog";
+import { findVerdictForSuite, loadCompatibilityEvidenceSnapshot } from "./reader";
+import {
+  resolvePolicyCompatibilitySubjects,
+  type ResolvedPolicyCompatibilitySubjects,
+} from "./subject";
 import type { CandidateCompatibilityEvidence } from "./types";
 
 export type RoutedProviderResolver = (
@@ -17,47 +25,59 @@ export type RoutedProviderResolver = (
 export interface AssemblePolicyEvidenceOptions {
   configDir?: string;
   routedProviderConfig: RoutedProviderResolver;
+  resolveSubjects?: typeof resolvePolicyCompatibilitySubjects;
+  loadEvidenceSnapshot?: typeof loadCompatibilityEvidenceSnapshot;
+  loadCatalogSnapshot?: typeof loadCompatibilityCatalogSnapshot;
 }
 
 function attachCompatibilityEvidence(
-  config: OcxConfig,
-  candidate: { provider: string; model: string },
+  resolved: ResolvedPolicyCompatibilitySubjects | undefined,
   snapshot: ReturnType<typeof loadCompatibilityEvidenceSnapshot>,
-  routedProviderConfig: RoutedProviderResolver,
-  configDir?: string,
+  catalog: CompatibilityCatalogSnapshot,
+  profile: NonNullable<NormalizedRoutingProfile["compatibility"]>,
 ): CandidateCompatibilityEvidence {
-  const provider = config.providers[candidate.provider];
-  if (!provider) {
-    return { subjectResolved: false, projectionAvailable: snapshot.projectionAvailable, suites: [] };
-  }
-  let routed: OcxProviderConfig;
-  try {
-    routed = routedProviderConfig(candidate.provider, provider);
-  } catch {
-    return { subjectResolved: false, projectionAvailable: snapshot.projectionAvailable, suites: [] };
-  }
-  const resolved = resolvePolicyRouteSubject(config, candidate.provider, candidate.model, routed, configDir);
-  if (!resolved) {
-    return { subjectResolved: false, projectionAvailable: snapshot.projectionAvailable, suites: [] };
-  }
-  return {
-    subjectId: resolved.subjectId,
-    subjectResolved: true,
-    projectionAvailable: snapshot.projectionAvailable,
-    suites: (snapshot.bySubject.get(resolved.subjectId) ?? []).map(row => ({
+  const subjectIds = resolved?.subjectIds ?? {};
+  const suites: CandidateCompatibilityEvidence["suites"] = [];
+
+  for (const requirement of profile.requiredSuites) {
+    const subjectId = subjectIds[requirement.evidenceLayer];
+    if (!subjectId) continue;
+    const metadata = catalog.get(compatibilitySuiteKey(requirement.evidenceLayer, requirement.suiteId));
+    if (!metadata) continue;
+    const row = findVerdictForSuite(
+      snapshot,
+      subjectId,
+      requirement.evidenceLayer,
+      requirement.suiteId,
+      metadata.suiteVersion,
+      metadata.suiteManifestDigest,
+    );
+    if (!row) continue;
+    suites.push({
+      subjectId,
       suiteId: row.suiteId,
-      evidenceLayer: row.evidenceLayer,
+      evidenceLayer: requirement.evidenceLayer,
+      suiteVersion: row.suiteVersion,
+      suiteManifestDigest: row.suiteManifestDigest,
       verdict: row.verdict,
       asOf: row.asOf,
-      fresh: true,
+      maxAgeMs: metadata.maxAgeMs,
       notes: row.notes,
-    })),
+    });
+  }
+
+  return {
+    subjectIds: { ...subjectIds },
+    projectionAvailable: snapshot.projectionAvailable,
+    suites,
   };
 }
 
 /**
  * Assemble production policy candidate evidence including compatibility snapshots.
- * Uses one bounded SQLite read for all candidate subject IDs.
+ * Compatibility work is completely skipped for legacy/no-requirement profiles.
+ * Active compatibility profiles use one catalog snapshot and one bounded SQLite
+ * read for all candidate subject IDs.
  */
 export function assemblePolicyCandidateEvidence(
   config: OcxConfig,
@@ -65,45 +85,59 @@ export function assemblePolicyCandidateEvidence(
   now: number,
   options: AssemblePolicyEvidenceOptions,
 ): PolicyCandidateEvidence[] {
-  const subjectIds: string[] = [];
-  const resolvedByCandidate = new Map<string, string>();
+  const compatibilityPolicy = profile.compatibility;
+  const hasCompatibilityRequirements = Boolean(
+    compatibilityPolicy && compatibilityPolicy.requiredSuites.length > 0,
+  );
+  const resolvedByCandidate = new Map<string, ResolvedPolicyCompatibilitySubjects>();
+  let catalog: CompatibilityCatalogSnapshot = new Map();
+  let snapshot: ReturnType<typeof loadCompatibilityEvidenceSnapshot> = {
+    projectionAvailable: true,
+    projectionIncompatible: false,
+    bySubject: new Map(),
+  };
 
-  for (const candidate of profile.candidates) {
-    const provider = config.providers[candidate.provider];
-    if (!provider) continue;
-    try {
-      const routed = options.routedProviderConfig(candidate.provider, provider);
-      const resolved = resolvePolicyRouteSubject(
-        config,
-        candidate.provider,
-        candidate.model,
-        routed,
-        options.configDir,
-      );
-      if (resolved) {
-        subjectIds.push(resolved.subjectId);
-        resolvedByCandidate.set(`${candidate.provider}/${candidate.model}`, resolved.subjectId);
+  if (hasCompatibilityRequirements && compatibilityPolicy) {
+    const resolveSubjects = options.resolveSubjects ?? resolvePolicyCompatibilitySubjects;
+    const loadCatalog = options.loadCatalogSnapshot ?? loadCompatibilityCatalogSnapshot;
+    const loadEvidence = options.loadEvidenceSnapshot ?? loadCompatibilityEvidenceSnapshot;
+    catalog = loadCatalog(compatibilityPolicy.requiredSuites);
+    const subjectIds = new Set<string>();
+
+    for (const candidate of profile.candidates) {
+      const provider = config.providers[candidate.provider];
+      if (!provider) continue;
+      try {
+        const routed = options.routedProviderConfig(candidate.provider, provider);
+        const resolved = resolveSubjects(
+          config,
+          candidate.provider,
+          candidate.model,
+          routed,
+          options.configDir,
+        );
+        resolvedByCandidate.set(`${candidate.provider}/${candidate.model}`, resolved);
+        for (const subjectId of Object.values(resolved.subjectIds)) {
+          if (subjectId) subjectIds.add(subjectId);
+        }
+      } catch {
+        // Subject construction failure is handled per required layer as unknown.
       }
-    } catch {
-      // subject construction failure → unknown evidence path
     }
-  }
 
-  const snapshot = profile.compatibility
-    ? loadCompatibilityEvidenceSnapshot(subjectIds, options.configDir)
-    : {
-      projectionAvailable: true,
-      projectionIncompatible: false,
-      bySubject: new Map(),
-    };
+    snapshot = loadEvidence([...subjectIds], options.configDir);
+  }
 
   return profile.candidates.map(candidate => {
     const key = `${candidate.provider}/${candidate.model}`;
-    const subjectId = resolvedByCandidate.get(key);
-    const compatibility = profile.compatibility
-      ? attachCompatibilityEvidence(config, candidate, snapshot, options.routedProviderConfig, options.configDir)
+    const compatibility = hasCompatibilityRequirements && compatibilityPolicy
+      ? attachCompatibilityEvidence(
+        resolvedByCandidate.get(key),
+        snapshot,
+        catalog,
+        compatibilityPolicy,
+      )
       : undefined;
-    if (compatibility && subjectId) compatibility.subjectId = subjectId;
 
     return {
       provider: candidate.provider,

@@ -5,6 +5,8 @@ export interface VerdictRow {
   subjectId: string;
   evidenceLayer: EvidenceLayer;
   suiteId: string;
+  suiteVersion: string;
+  suiteManifestDigest: string;
   verdict: CompatibilityVerdict;
   asOf: number;
   notes: string[];
@@ -43,15 +45,18 @@ export function loadCompatibilityEvidenceSnapshot(
   try {
     const conn = openLabReadConnection(configDir);
     try {
-      const placeholders = subjectIds.map(() => "?").join(", ");
+      const uniqueSubjectIds = [...new Set(subjectIds)];
+      const placeholders = uniqueSubjectIds.map(() => "?").join(", ");
       const rows = conn.db.prepare(
-        `SELECT subject_id, evidence_layer, suite_id, verdict, as_of, notes_json
+        `SELECT subject_id, evidence_layer, suite_id, suite_version, suite_manifest_digest, verdict, as_of, notes_json
          FROM verdicts
          WHERE subject_id IN (${placeholders})`,
-      ).all(...subjectIds) as Array<{
+      ).all(...uniqueSubjectIds) as Array<{
         subject_id: string;
         evidence_layer: string;
         suite_id: string;
+        suite_version: string;
+        suite_manifest_digest: string;
         verdict: string;
         as_of: number;
         notes_json: string;
@@ -64,6 +69,8 @@ export function loadCompatibilityEvidenceSnapshot(
           subjectId: row.subject_id,
           evidenceLayer: row.evidence_layer as EvidenceLayer,
           suiteId: row.suite_id,
+          suiteVersion: row.suite_version,
+          suiteManifestDigest: row.suite_manifest_digest,
           verdict: row.verdict as CompatibilityVerdict,
           asOf: row.as_of,
           notes: parseNotes(row.notes_json),
@@ -85,12 +92,19 @@ export function loadCompatibilityEvidenceSnapshot(
   }
 }
 
+/** Match the current canonical projection identity, never a stale suite revision. */
 export function findVerdictForSuite(
   snapshot: CompatibilityEvidenceSnapshot,
   subjectId: string,
   evidenceLayer: EvidenceLayer,
   suiteId: string,
+  suiteVersion: string,
+  suiteManifestDigest: string,
 ): VerdictRow | undefined {
   const rows = snapshot.bySubject.get(subjectId) ?? [];
-  return rows.find(row => row.evidenceLayer === evidenceLayer && row.suiteId === suiteId);
+  return rows.find(row =>
+    row.evidenceLayer === evidenceLayer
+    && row.suiteId === suiteId
+    && row.suiteVersion === suiteVersion
+    && row.suiteManifestDigest === suiteManifestDigest);
 }

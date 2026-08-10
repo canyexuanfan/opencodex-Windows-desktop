@@ -1,6 +1,6 @@
 import type { OcxConfig, OcxProviderConfig } from "../../types";
 import { PROVIDER_REGISTRY } from "../../providers/registry";
-import { resolveWireProtocolOverride } from "../../server/adapter-resolve";
+import { localFingerprint } from "../../lab/digest";
 import type { LabBehaviorSource, LabBehaviorValues } from "../../lab/live/types";
 
 export function upstreamProtocolForAdapter(adapter: string): string {
@@ -39,38 +39,163 @@ function includesModel(list: string[] | undefined, modelId: string): boolean {
   return Array.isArray(list) && list.includes(modelId);
 }
 
+function modelValue<T>(map: Record<string, T> | undefined, modelId: string): T | undefined {
+  return map?.[modelId];
+}
+
+const CREDENTIAL_HEADER = /(authorization|api[-_]?key|token|secret|credential|cookie)/i;
+
+function nonCredentialHeaderDigest(
+  headers: Record<string, string> | undefined,
+  installationSalt: Uint8Array | string,
+): string {
+  const rows = Object.entries(headers ?? {})
+    .filter(([name]) => !CREDENTIAL_HEADER.test(name))
+    .map(([name, value]) => [name.toLowerCase().trim(), value] as const)
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return localFingerprint("nonCredentialHeaders", rows, installationSalt);
+}
+
+function authTransportFor(effective: OcxProviderConfig, adapter: string): string {
+  const mode = effective.authMode ?? "key";
+  if (mode === "oauth") return "oauth_bearer";
+  if (mode === "forward") return "forwarded_authorization";
+  if (mode === "local") return "none";
+  if (adapter === "anthropic" && effective.apiKeyTransport !== "bearer") return "x_api_key";
+  return "authorization_bearer";
+}
+
+function effectiveOpenRouterRouting(effective: OcxProviderConfig, modelId: string) {
+  return effective.modelOpenRouterRouting?.[modelId] ?? effective.openRouterRouting;
+}
+
 /**
  * Production behavior resolver for route-subject fingerprinting.
- * Emits the closed keys required by `buildBehaviorFingerprintV1`.
+ *
+ * The caller supplies the already-resolved effective provider config. This is
+ * deliberately the same effective config used for routeContext identity so a
+ * model wire override cannot disagree with the behavior fingerprint.
  */
 export function resolveProductionBehaviorValues(
   config: OcxConfig,
   providerName: string,
   modelId: string,
-  routed: OcxProviderConfig,
-  inboundProtocol = "openai-responses",
+  effective: OcxProviderConfig,
+  installationSalt: Uint8Array | string,
 ): LabBehaviorValues | null {
   const provider = config.providers[providerName];
   if (!provider || provider.disabled === true) return null;
-  const effective = resolveWireProtocolOverride(
-    providerName,
-    modelId,
-    routed,
-    "responses",
-  );
   const adapter = effective.adapter ?? "openai-responses";
   const upstreamProtocol = upstreamProtocolForAdapter(adapter);
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
-
   const authMode = effective.authMode ?? registryEntry?.authKind ?? "key";
-  const authTransport = authMode === "oauth" ? "oauth_bearer" : "authorization_bearer";
+  const reasoningEfforts = modelValue(effective.modelReasoningEfforts, modelId)
+    ?? effective.reasoningEfforts
+    ?? [];
+  const defaultReasoningEffort = modelValue(effective.modelDefaultReasoningEfforts, modelId) ?? null;
+  const reasoningEffortMap = modelValue(effective.modelReasoningEffortMap, modelId)
+    ?? effective.reasoningEffortMap
+    ?? {};
+  const openRouterRouting = effectiveOpenRouterRouting(effective, modelId);
+  const project = typeof effective.project === "string" && effective.project ? effective.project : null;
+  const location = typeof effective.location === "string" && effective.location ? effective.location : null;
+  const nativeLocalExec = effective.nativeLocalExec === "on" || effective.unsafeAllowNativeLocalExec === true;
 
   const values: LabBehaviorValues = {
     "wire.adapter": behaviorRow("provider_config", adapter),
     "wire.upstreamProtocol": behaviorRow("provider_config", upstreamProtocol),
+    "wire.responsesPath": behaviorRow("provider_config", effective.responsesPath ?? null),
+    "wire.commandCodeVersion": behaviorRow("provider_config", effective.commandCodeVersion ?? null),
+    "wire.modelSuffixMode": behaviorRow(
+      "provider_config",
+      effective.modelSuffixBracketStrip === true ? "bracket_strip" : "none",
+    ),
     "auth.mode": behaviorRow("provider_config", authMode),
-    "auth.transport": behaviorRow("provider_config", authTransport),
-    "mcp.nativeLocalExec": behaviorRow("global_config", false),
+    "auth.transport": behaviorRow("provider_config", authTransportFor(effective, adapter)),
+    "responses.stateful": behaviorRow("provider_config", effective.statelessResponses !== true),
+    "responses.serviceTier": behaviorRow("provider_config", effective.supportsServiceTier ?? null),
+    "responses.snapshotRepair": behaviorRow("provider_config", effective.responsesSnapshotRepair === true),
+    "responses.itemIdRepair": behaviorRow("provider_config", effective.responsesItemIdRepair ?? null),
+    "limits.contextWindow": behaviorRow(
+      "provider_config",
+      modelValue(effective.modelContextWindows, modelId) ?? effective.contextWindow ?? null,
+    ),
+    "limits.maxInputTokens": behaviorRow(
+      "provider_config",
+      modelValue(effective.modelMaxInputTokens, modelId) ?? null,
+    ),
+    "limits.maxOutputTokens": behaviorRow(
+      "provider_config",
+      modelValue(effective.modelMaxOutputTokens, modelId) ?? effective.defaultMaxOutputTokens ?? null,
+    ),
+    "modalities.input": behaviorRow(
+      "provider_config",
+      modelValue(effective.modelInputModalities, modelId) ?? ["text"],
+    ),
+    "sampling.omitTemperature": behaviorRow("provider_config", includesModel(effective.noTemperatureModels, modelId)),
+    "sampling.omitTopP": behaviorRow("provider_config", includesModel(effective.noTopPModels, modelId)),
+    "sampling.omitPenalties": behaviorRow("provider_config", includesModel(effective.noPenaltyModels, modelId)),
+    "reasoning.supported": behaviorRow(
+      "provider_config",
+      includesModel(effective.noReasoningModels, modelId)
+        ? false
+        : reasoningEfforts.length > 0 || Boolean(registryEntry?.reasoningEfforts),
+    ),
+    "reasoning.efforts": behaviorRow("provider_config", reasoningEfforts),
+    "reasoning.defaultEffort": behaviorRow("provider_config", defaultReasoningEffort),
+    "reasoning.effortMap": behaviorRow("provider_config", reasoningEffortMap),
+    "reasoning.wireFormat": behaviorRow("provider_config", effective.reasoningWireFormat ?? null),
+    "reasoning.summaryMode": behaviorRow("provider_config", {
+      supported: modelValue(effective.modelSupportsReasoningSummaries, modelId) ?? null,
+      delivery: modelValue(effective.modelReasoningSummaryDelivery, modelId) ?? null,
+    }),
+    "reasoning.replayMode": behaviorRow("provider_config", {
+      preserveResponses: effective.preserveResponsesReasoningContent === true,
+      preserveContent: includesModel(effective.preserveReasoningContentModels, modelId),
+      placeholder: includesModel(effective.requiresReasoningPlaceholderModels, modelId),
+    }),
+    "reasoning.splitMode": behaviorRow("provider_config", includesModel(effective.reasoningSplitModels, modelId)),
+    "reasoning.toggleMode": behaviorRow("provider_config", includesModel(effective.thinkingToggleModels, modelId)),
+    "reasoning.budgetMode": behaviorRow("provider_config", includesModel(effective.thinkingBudgetModels, modelId)),
+    "tools.choiceRestrictions": behaviorRow(
+      "provider_config",
+      includesModel(effective.autoToolChoiceOnlyModels, modelId) ? ["auto"] : [],
+    ),
+    "tools.parallel": behaviorRow(
+      "provider_config",
+      effective.parallelToolCalls ?? (upstreamProtocol === "openai-chat"),
+    ),
+    "tools.hostedPreference": behaviorRow("provider_config", {
+      tools: modelValue(effective.modelPreferHostedTools, modelId) ?? [],
+    }),
+    "tools.builtinNameEscaping": behaviorRow("provider_config", effective.escapeBuiltinToolNames === true),
+    "cache.forwarding": behaviorRow("provider_config", effective.promptCacheKey === true),
+    "cache.retention": behaviorRow("global_config", config.cacheRetention ?? "short"),
+    "anthropic.eofPolicy": behaviorRow("provider_config", effective.anthropicEofTolerance === true ? "tolerant" : "strict"),
+    "google.mode": behaviorRow("provider_config", effective.googleMode ?? null),
+    "google.projectFingerprint": behaviorRow(
+      "provider_config",
+      project ? localFingerprint("googleProject", project, installationSalt) : null,
+    ),
+    "google.locationFingerprint": behaviorRow(
+      "provider_config",
+      location ? localFingerprint("googleLocation", location, installationSalt) : null,
+    ),
+    "openrouter.order": behaviorRow("provider_config", openRouterRouting?.order ?? []),
+    "openrouter.only": behaviorRow("provider_config", openRouterRouting?.only ?? []),
+    "openrouter.allowFallbacks": behaviorRow("provider_config", openRouterRouting?.allowFallbacks ?? null),
+    "sidecars.vision": behaviorRow(
+      "global_config",
+      localFingerprint("visionSidecar", config.visionSidecar ?? null, installationSalt),
+    ),
+    "sidecars.webSearch": behaviorRow(
+      "global_config",
+      localFingerprint("webSearchSidecar", config.webSearchSidecar ?? null, installationSalt),
+    ),
+    "mcp.maxTools": behaviorRow("provider_config", effective.mcpMaxTools ?? null),
+    "mcp.maxSchemaBytes": behaviorRow("provider_config", effective.mcpMaxSchemaBytes ?? null),
+    "mcp.maxResultBytes": behaviorRow("provider_config", effective.mcpMaxResultBytes ?? null),
+    "mcp.nativeLocalExec": behaviorRow("provider_config", nativeLocalExec),
     "runtime.bunVersion": behaviorRow("registry_runtime_default", Bun.version),
     "runtime.platform": behaviorRow("registry_runtime_default", process.platform),
     "runtime.arch": behaviorRow("registry_runtime_default", process.arch),
@@ -79,49 +204,18 @@ export function resolveProductionBehaviorValues(
     "runtime.effortCap": behaviorRow("global_config", config.effortCap ?? null),
     "headers.nonCredentialBehaviorDigest": behaviorRow(
       "provider_config",
-      "0".repeat(64),
+      nonCredentialHeaderDigest(effective.headers, installationSalt),
     ),
   };
 
-  if (effective.responsesPath) {
-    values["wire.responsesPath"] = behaviorRow("provider_config", effective.responsesPath);
-  }
-  if (effective.modelSuffixBracketStrip !== undefined) {
-    values["wire.modelSuffixMode"] = behaviorRow("provider_config", effective.modelSuffixBracketStrip ? "bracket_strip" : "none");
-  }
-  if (effective.supportsServiceTier !== undefined) {
-    values["responses.serviceTier"] = behaviorRow("provider_config", effective.supportsServiceTier);
-  }
-  if (effective.parallelToolCalls !== undefined) {
-    values["tools.parallel"] = behaviorRow("provider_config", effective.parallelToolCalls);
-  }
-  if (effective.escapeBuiltinToolNames !== undefined) {
-    values["tools.builtinNameEscaping"] = behaviorRow("provider_config", effective.escapeBuiltinToolNames);
-  }
-  if (includesModel(effective.noTemperatureModels, modelId)) {
-    values["sampling.omitTemperature"] = behaviorRow("provider_config", true);
-  }
-  if (includesModel(effective.noTopPModels, modelId)) {
-    values["sampling.omitTopP"] = behaviorRow("provider_config", true);
-  }
-  if (includesModel(effective.noPenaltyModels, modelId)) {
-    values["sampling.omitPenalties"] = behaviorRow("provider_config", true);
-  }
-  if (includesModel(effective.noReasoningModels, modelId)) {
-    values["reasoning.supported"] = behaviorRow("provider_config", false);
-  } else if (registryEntry?.reasoningEfforts || effective.reasoningEfforts) {
-    values["reasoning.supported"] = behaviorRow("provider_config", true);
-  }
-
-  void inboundProtocol;
   return values;
 }
 
 export function providerInstanceKey(
   providerName: string,
-  routed: OcxProviderConfig,
+  effective: OcxProviderConfig,
 ): string {
-  const baseUrl = typeof routed.baseUrl === "string" ? routed.baseUrl.trim() : "";
-  const adapter = typeof routed.adapter === "string" ? routed.adapter : "";
+  const baseUrl = typeof effective.baseUrl === "string" ? effective.baseUrl.trim() : "";
+  const adapter = typeof effective.adapter === "string" ? effective.adapter : "";
   return `${providerName}\0${baseUrl}\0${adapter}`;
 }

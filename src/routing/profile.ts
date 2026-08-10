@@ -7,13 +7,13 @@
 import { createHash } from "node:crypto";
 import type {
   OcxConfig,
-  OcxRoutingProfileCompatibility,
   OcxRoutingProfileConfig,
   OcxRoutingUnknownEvidenceMode,
 } from "../types";
 import { codexAccountNamespaceEntries } from "../codex/account-namespaces";
 import { listComboIds, resolveComboId } from "../combos";
 import { hasOwnProvider } from "../config";
+import { MAX_COMPATIBILITY_REQUIRED_SUITES } from "./compatibility/types";
 import { POLICY_NAMESPACE } from "./profile-namespace";
 
 export { POLICY_NAMESPACE };
@@ -166,8 +166,6 @@ function aliasIssues(
       message: "bare aliases in the OpenAI native family (gpt-*, o1-*, o3-*, o4-*, codex-*) are not allowed",
     });
   }
-  // Cross-namespace collisions: providers, combos, account namespaces, and
-  // sibling profile aliases all own public model ids that must stay unique.
   if (hasOwnProvider(config.providers, alias)) {
     issues.push({ path: ["alias"], message: `alias "${alias}" collides with configured provider name "${alias}"` });
   }
@@ -359,6 +357,12 @@ export function routingProfileIssues(
         if (!Array.isArray(compatibility.requiredSuites)) {
           issues.push({ path: ["compatibility", "requiredSuites"], message: "requiredSuites must be an array" });
         } else {
+          if (compatibility.requiredSuites.length > MAX_COMPATIBILITY_REQUIRED_SUITES) {
+            issues.push({
+              path: ["compatibility", "requiredSuites"],
+              message: `requiredSuites must contain at most ${MAX_COMPATIBILITY_REQUIRED_SUITES} entries`,
+            });
+          }
           const seen = new Set<string>();
           compatibility.requiredSuites.forEach((rawSuite, index) => {
             if (!rawSuite || typeof rawSuite !== "object" || Array.isArray(rawSuite)) {
@@ -494,6 +498,7 @@ export function normalizeRoutingProfile(id: string, raw: OcxRoutingProfileConfig
   const weights = { ...DEFAULT_PROFILE_WEIGHTS, ...(raw.optimize ?? {}) };
   const weightSum = weights.latency + weights.health + weights.cost + weights.quota;
   const safeSum = weightSum > 0 ? weightSum : 1;
+  const compatibility = normalizedCompatibility(raw);
   const profile: Omit<NormalizedRoutingProfile, "revision"> = {
     id,
     alias: alias || null,
@@ -514,7 +519,7 @@ export function normalizeRoutingProfile(id: string, raw: OcxRoutingProfileConfig
         : {}),
     },
     unknownEvidence: normalizedUnknownEvidence(raw),
-    ...(normalizedCompatibility(raw) ? { compatibility: normalizedCompatibility(raw) } : {}),
+    ...(compatibility ? { compatibility } : {}),
   };
   return { ...profile, revision: profileRevision(profile) };
 }
@@ -529,7 +534,5 @@ export function getRoutingProfile(
 }
 
 export function listRoutingProfileIds(config: { routingProfiles?: Record<string, OcxRoutingProfileConfig> }): string[] {
-  // Code-unit comparison: deterministic across ICU versions/platforms, which
-  // matters for the API/CLI list contract (ids may contain ".", "_", "-").
   return Object.keys(config.routingProfiles ?? {}).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }

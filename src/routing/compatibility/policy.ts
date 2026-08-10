@@ -1,5 +1,4 @@
 import type { CompatibilityVerdict } from "../../lab/constants";
-import { queryLabCatalog } from "../../lab/query/catalog";
 import type { NormalizedRoutingProfileCompatibility } from "../profile";
 import type {
   CandidateCompatibilityEvidence,
@@ -18,22 +17,12 @@ function positiveThresholdMet(
 }
 
 function effectiveMaxAgeMs(
-  suiteId: string,
-  evidenceLayer: string,
+  catalogMaxAgeMs: number | null,
   profileMaxAgeMs: number | undefined,
 ): number | null {
-  const catalog = queryLabCatalog({
-    suiteId,
-    layer: evidenceLayer as "protocol_conformance" | "live_route_compatibility",
-  });
-  const entry = catalog.find(row => row.suiteId === suiteId && row.evidenceLayer === evidenceLayer);
-  const ages: number[] = [];
-  if (entry?.freshness?.maxAgeMs != null && typeof entry.freshness.maxAgeMs === "number") {
-    ages.push(entry.freshness.maxAgeMs);
-  }
-  if (profileMaxAgeMs != null) ages.push(profileMaxAgeMs);
-  if (ages.length === 0) return null;
-  return Math.min(...ages);
+  if (catalogMaxAgeMs === null) return profileMaxAgeMs ?? null;
+  if (profileMaxAgeMs === undefined) return catalogMaxAgeMs;
+  return Math.min(catalogMaxAgeMs, profileMaxAgeMs);
 }
 
 function mergePenalty(current: number | null, next: number | null): number | null {
@@ -65,27 +54,36 @@ export function evaluateCompatibilityForCandidate(
     exclusions: [],
     penaltyScore: null,
     suiteTraces: [],
+    traceTruncated: false,
   };
   if (!policy || policy.requiredSuites.length === 0) return outcome;
 
+  const pushTrace = (entry: CompatibilityEvaluationOutcome["suiteTraces"][number]): void => {
+    if (outcome.suiteTraces.length < MAX_TRACE_COMPATIBILITY_SUITES) {
+      outcome.suiteTraces.push(entry);
+    } else {
+      outcome.traceTruncated = true;
+    }
+  };
+
   let penaltyScore: number | null = null;
   for (const requirement of policy.requiredSuites) {
-    if (outcome.suiteTraces.length >= MAX_TRACE_COMPATIBILITY_SUITES) break;
-
-    const maxAgeMs = effectiveMaxAgeMs(
-      requirement.suiteId,
-      requirement.evidenceLayer,
-      policy.maxEvidenceAgeMs,
-    );
-    const row = evidence?.suites.find(
-      suite => suite.suiteId === requirement.suiteId && suite.evidenceLayer === requirement.evidenceLayer,
-    );
-    const fresh = row ? (maxAgeMs === null || now - row.asOf <= maxAgeMs) : false;
+    const subjectId = evidence?.subjectIds[requirement.evidenceLayer];
+    const row = evidence?.suites.find(suite =>
+      suite.subjectId === subjectId
+      && suite.suiteId === requirement.suiteId
+      && suite.evidenceLayer === requirement.evidenceLayer);
+    const maxAgeMs = row
+      ? effectiveMaxAgeMs(row.maxAgeMs, policy.maxEvidenceAgeMs)
+      : policy.maxEvidenceAgeMs ?? null;
+    const ageMs = row ? now - row.asOf : Number.POSITIVE_INFINITY;
+    const fresh = row ? ageMs >= 0 && (maxAgeMs === null || ageMs <= maxAgeMs) : false;
     const verdict = row?.verdict;
 
     const trace = {
       suiteId: requirement.suiteId,
       evidenceLayer: requirement.evidenceLayer,
+      ...(subjectId ? { subjectIdPrefix: subjectId.slice(0, 16) } : {}),
       ...(verdict ? { verdict } : {}),
       ...(policy.minStatus ? { minStatus: policy.minStatus } : {}),
       fresh,
@@ -94,25 +92,25 @@ export function evaluateCompatibilityForCandidate(
       outcome: "unknown" as const,
     };
 
-    if (!evidence?.subjectResolved) {
+    if (!subjectId) {
       const applied = applyUnknownPolicy(policy.unknownEvidence, "compatibility-unknown", requirement.suiteId);
       outcome.exclusions.push(...applied.exclusions);
       penaltyScore = mergePenalty(penaltyScore, applied.penaltyScore);
-      outcome.suiteTraces.push({
+      pushTrace({
         ...trace,
-        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore ? "penalized" : "unknown",
+        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore !== null ? "penalized" : "unknown",
         reason: "subject-unresolved",
       });
       continue;
     }
 
-    if (!evidence.projectionAvailable) {
+    if (!evidence?.projectionAvailable) {
       const applied = applyUnknownPolicy(policy.unknownEvidence, "compatibility-unknown", requirement.suiteId);
       outcome.exclusions.push(...applied.exclusions);
       penaltyScore = mergePenalty(penaltyScore, applied.penaltyScore);
-      outcome.suiteTraces.push({
+      pushTrace({
         ...trace,
-        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore ? "penalized" : "unknown",
+        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore !== null ? "penalized" : "unknown",
         reason: "projection-unavailable",
       });
       continue;
@@ -121,14 +119,14 @@ export function evaluateCompatibilityForCandidate(
     if (!row || !fresh) {
       const applied = applyUnknownPolicy(
         policy.unknownEvidence,
-        fresh === false && row ? "compatibility-stale" : "compatibility-unknown",
+        row && !fresh ? "compatibility-stale" : "compatibility-unknown",
         requirement.suiteId,
       );
       outcome.exclusions.push(...applied.exclusions);
       penaltyScore = mergePenalty(penaltyScore, applied.penaltyScore);
-      outcome.suiteTraces.push({
+      pushTrace({
         ...trace,
-        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore ? "penalized" : "unknown",
+        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore !== null ? "penalized" : "unknown",
         reason: !row ? "missing-evidence" : "stale-evidence",
       });
       continue;
@@ -136,19 +134,19 @@ export function evaluateCompatibilityForCandidate(
 
     if (verdict === "UNSUPPORTED") {
       outcome.exclusions.push({ code: "compatibility-unsupported", detail: requirement.suiteId });
-      outcome.suiteTraces.push({ ...trace, outcome: "excluded", reason: "unsupported" });
+      pushTrace({ ...trace, outcome: "excluded", reason: "unsupported" });
       continue;
     }
 
     if (verdict === "DEGRADED") {
       if (policy.degradedEvidence === "exclude") {
         outcome.exclusions.push({ code: "compatibility-degraded", detail: requirement.suiteId });
-        outcome.suiteTraces.push({ ...trace, outcome: "excluded", reason: "degraded" });
+        pushTrace({ ...trace, outcome: "excluded", reason: "degraded" });
       } else if (policy.degradedEvidence === "penalize") {
         penaltyScore = mergePenalty(penaltyScore, COMPATIBILITY_UNKNOWN_PENALTY_SCORE);
-        outcome.suiteTraces.push({ ...trace, outcome: "penalized", reason: "degraded" });
+        pushTrace({ ...trace, outcome: "penalized", reason: "degraded" });
       } else {
-        outcome.suiteTraces.push({ ...trace, outcome: "satisfied", reason: "degraded-allowed" });
+        pushTrace({ ...trace, outcome: "satisfied", reason: "degraded-allowed" });
       }
       continue;
     }
@@ -157,9 +155,9 @@ export function evaluateCompatibilityForCandidate(
       const applied = applyUnknownPolicy(policy.unknownEvidence, "compatibility-unknown", requirement.suiteId);
       outcome.exclusions.push(...applied.exclusions);
       penaltyScore = mergePenalty(penaltyScore, applied.penaltyScore);
-      outcome.suiteTraces.push({
+      pushTrace({
         ...trace,
-        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore ? "penalized" : "unknown",
+        outcome: applied.exclusions.length ? "excluded" : applied.penaltyScore !== null ? "penalized" : "unknown",
         reason: verdict.toLowerCase(),
       });
       continue;
@@ -167,17 +165,17 @@ export function evaluateCompatibilityForCandidate(
 
     if (!positiveThresholdMet(verdict!, policy.minStatus)) {
       outcome.exclusions.push({ code: "compatibility-insufficient", detail: requirement.suiteId });
-      outcome.suiteTraces.push({ ...trace, outcome: "excluded", reason: "below-min-status" });
+      pushTrace({ ...trace, outcome: "excluded", reason: "below-min-status" });
       continue;
     }
 
-    outcome.suiteTraces.push({ ...trace, outcome: "satisfied", reason: "threshold-met" });
+    pushTrace({ ...trace, outcome: "satisfied", reason: "threshold-met" });
   }
 
   outcome.penaltyScore = penaltyScore;
   const trace: RouteCompatibilityEvidence = {
-    ...(evidence?.subjectId ? { subjectIdPrefix: evidence.subjectId.slice(0, 16) } : {}),
     suites: outcome.suiteTraces,
+    ...(outcome.traceTruncated ? { truncated: true } : {}),
   };
   return { ...outcome, trace };
 }

@@ -14,6 +14,17 @@ function readSaltFile(path: string): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+/** Read the existing local fingerprint salt without creating Lab state. */
+export function readExistingInstallationSalt(configDir?: string): Uint8Array | null {
+  const path = labInstallationSaltPath(configDir);
+  try {
+    return readSaltFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 function removeStagingFile(path: string): void {
   try { unlinkSync(path); }
   catch (error) {
