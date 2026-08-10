@@ -1,5 +1,5 @@
 import type { OcxConfig, OcxProviderConfig } from "../../types";
-import { PROVIDER_REGISTRY } from "../../providers/registry";
+import { PROVIDER_REGISTRY, type ProviderAuthKind } from "../../providers/registry";
 import { localFingerprint } from "../../lab/digest";
 import type { LabBehaviorSource, LabBehaviorValues } from "../../lab/live/types";
 
@@ -56,8 +56,11 @@ function nonCredentialHeaderDigest(
   return localFingerprint("nonCredentialHeaders", rows, installationSalt);
 }
 
-function authTransportFor(effective: OcxProviderConfig, adapter: string): string {
-  const mode = effective.authMode ?? "key";
+function authTransportFor(
+  effective: OcxProviderConfig,
+  adapter: string,
+  mode: ProviderAuthKind,
+): string {
   if (mode === "oauth") return "oauth_bearer";
   if (mode === "forward") return "forwarded_authorization";
   if (mode === "local") return "none";
@@ -111,7 +114,7 @@ export function resolveProductionBehaviorValues(
       effective.modelSuffixBracketStrip === true ? "bracket_strip" : "none",
     ),
     "auth.mode": behaviorRow("provider_config", authMode),
-    "auth.transport": behaviorRow("provider_config", authTransportFor(effective, adapter)),
+    "auth.transport": behaviorRow("provider_config", authTransportFor(effective, adapter, authMode)),
     "responses.stateful": behaviorRow("provider_config", effective.statelessResponses !== true),
     "responses.serviceTier": behaviorRow("provider_config", effective.supportsServiceTier ?? null),
     "responses.snapshotRepair": behaviorRow("provider_config", effective.responsesSnapshotRepair === true),
