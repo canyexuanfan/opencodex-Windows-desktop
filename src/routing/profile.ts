@@ -406,8 +406,8 @@ export function routingProfileIssues(
       if (compatibility.maxEvidenceAgeMs !== undefined
         && (typeof compatibility.maxEvidenceAgeMs !== "number"
           || !Number.isInteger(compatibility.maxEvidenceAgeMs)
-          || compatibility.maxEvidenceAgeMs < 1)) {
-        issues.push({ path: ["compatibility", "maxEvidenceAgeMs"], message: "maxEvidenceAgeMs must be a positive integer" });
+          || compatibility.maxEvidenceAgeMs < 0)) {
+        issues.push({ path: ["compatibility", "maxEvidenceAgeMs"], message: "maxEvidenceAgeMs must be a non-negative integer" });
       }
       for (const key of ["unknownEvidence", "degradedEvidence"] as const) {
         if (compatibility[key] !== undefined

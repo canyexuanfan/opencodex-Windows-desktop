@@ -410,6 +410,21 @@ describe("CL-06 routing compatibility", () => {
       },
     }, config);
     expect(issues.some(issue => issue.path.join(".") === "compatibility.requiredSuites" && issue.message.includes("at most 8"))).toBe(true);
+
+    expect(routingProfileIssues("zero-age", {
+      candidates: [{ provider: "a", model: "m1" }],
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        maxEvidenceAgeMs: 0,
+      },
+    }, config)).toEqual([]);
+    expect(routingProfileIssues("negative-age", {
+      candidates: [{ provider: "a", model: "m1" }],
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        maxEvidenceAgeMs: -1,
+      },
+    }, config).some(issue => issue.path.join(".") === "compatibility.maxEvidenceAgeMs")).toBe(true);
   });
 
   test("compatibility profile revision changes when only compatibility changes", () => {

@@ -161,6 +161,30 @@ describe("routing profile editor data", () => {
     expect(body.profile).not.toHaveProperty("compatibility");
   });
 
+  test("hydrates maxEvidenceAgeMs zero without dropping or blanking the field", () => {
+    expect(normalizeCompatibilityDto({
+      requiredSuites: [],
+      maxEvidenceAgeMs: 0,
+    })).toEqual({ requiredSuites: [], maxEvidenceAgeMs: 0 });
+
+    const draft = routingProfileDraftFromDto({
+      ...profile,
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        maxEvidenceAgeMs: 0,
+      },
+    });
+    expect(draft.compatibility.maxEvidenceAgeMs).toBe("0");
+    expect(routingProfilePutBody(draft, "update", profile.revision)).toMatchObject({
+      profile: {
+        compatibility: {
+          requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+          maxEvidenceAgeMs: 0,
+        },
+      },
+    });
+  });
+
   test("normalizes malformed compatibility suites instead of crashing the editor draft", () => {
     expect(normalizeCompatibilitySuites("not-an-array")).toEqual([]);
     expect(normalizeCompatibilitySuites([

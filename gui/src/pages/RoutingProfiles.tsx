@@ -947,7 +947,7 @@ export default function RoutingProfiles({
                   <input
                     className="input"
                     type="number"
-                    min={1}
+                    min={0}
                     value={draft.compatibility.maxEvidenceAgeMs}
                     onChange={event => setDraft(current => current ? {
                       ...current,
