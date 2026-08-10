@@ -539,7 +539,14 @@ export async function upsertCredentialByIdentity(
   return await mutateStore(store => {
     const set = store[provider];
     const matches = (account: ProviderAccount): boolean => {
-      if (safe.accountId) return account.credential.accountId === safe.accountId;
+      if (safe.accountId) {
+        if (account.credential.accountId) return account.credential.accountId === safe.accountId;
+        return Boolean(
+          safe.email
+          && account.credential.email
+          && account.credential.email.toLowerCase() === safe.email.toLowerCase(),
+        );
+      }
       if (account.credential.accountId) return false;
       return Boolean(
         safe.email

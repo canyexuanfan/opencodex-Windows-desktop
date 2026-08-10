@@ -366,6 +366,65 @@ describe("Cockpit account-import atomic identity upsert", () => {
     expect(set?.accounts.every(account => account.credential.email === "shared@example.com")).toBe(true);
   });
 
+  test("upgrades an email-only legacy row when the same verified Google identity is imported", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    const first = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-legacy",
+      refresh: "refresh-legacy",
+      expires: 1,
+      email: "shared@example.com",
+      projectId: "project-legacy",
+    });
+    const second = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-upgraded",
+      refresh: "refresh-upgraded",
+      expires: 2,
+      email: "SHARED@example.com",
+      accountId: "google-subject-1",
+      projectId: "project-upgraded",
+    });
+    expect(first).toBe("inserted");
+    expect(second).toBe("updated");
+    const set = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(set?.accounts).toHaveLength(1);
+    expect(set?.accounts[0]?.credential).toMatchObject({
+      access: "access-upgraded",
+      refresh: "refresh-upgraded",
+      email: "SHARED@example.com",
+      accountId: "google-subject-1",
+      projectId: "project-upgraded",
+    });
+    expect(JSON.parse(readFileSync(join(testHome, "auth.json"), "utf8"))[ACCOUNT_IMPORT_PROVIDER].accounts).toHaveLength(1);
+  });
+
+  test("does not overwrite a stable accountId row from an incoming email-only credential", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    const first = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-stable",
+      refresh: "refresh-stable",
+      expires: 1,
+      email: "shared@example.com",
+      accountId: "google-subject-1",
+      projectId: "project-stable",
+    });
+    const second = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-legacy",
+      refresh: "refresh-legacy",
+      expires: 2,
+      email: "shared@example.com",
+      projectId: "project-legacy",
+    });
+    expect(first).toBe("inserted");
+    expect(second).toBe("inserted");
+    const set = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(set?.accounts).toHaveLength(2);
+    expect(set?.accounts.find(account => account.credential.accountId === "google-subject-1")?.credential.access)
+      .toBe("access-stable");
+    expect(set?.accounts.find(account => !account.credential.accountId)?.credential.access).toBe("access-legacy");
+  });
+
   test("rejects credentials without verified identity", async () => {
     testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
     process.env.OPENCODEX_HOME = testHome;
