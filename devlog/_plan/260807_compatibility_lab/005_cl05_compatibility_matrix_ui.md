@@ -37,7 +37,7 @@
 The follow-up review pass addresses all validated CodeRabbit findings plus the independent lifecycle findings found while reviewing #1384:
 
 - legacy `#lab` cold-load page alignment and delimiter-aware regression coverage
-- repeated-cursor/page-count guards for subject and observation pagination
+- repeated-cursor contract guards plus explicit truncation when advancing pagination reaches the browser-side safety cap
 - strict verdict/detail DTO validation and malformed-200 handling
 - bounded, partial-failure-tolerant event/artifact enrichment
 - detail-selection and load-more stale-response protection
@@ -46,6 +46,7 @@ The follow-up review pass addresses all validated CodeRabbit findings plus the i
 - localized closed-value labels and neutral evidence-event wording
 - real button semantics for verdict-detail selection
 - inactive-panel, selection/filter, pagination, localization, and routing regression coverage
+- focused `compatibility-pagination-cap.test.ts` coverage proving a large advancing dataset is truncated rather than mislabeled as a broken contract
 - Models-tab layout test updated from the removed standalone App/sidebar architecture
 
 ## Validation recorded before review remediation
@@ -53,9 +54,10 @@ The follow-up review pass addresses all validated CodeRabbit findings plus the i
 - `bun x tsc --noEmit` - passed
 - `bun test tests/lab-read-surfaces.test.ts tests/models-workspace-tabs.test.ts` - 33/33 passed
 - `cd gui && bun test tests/compatibility-lab.test.tsx tests/models-workspace-panels.test.tsx` - 29/29 passed
+- `cd gui && bun test tests/compatibility-matrix-layout.test.ts` - 2/2 passed in the full GUI gate
 - `bun run lint:gui && bun run doctor:gui && bun run build:gui && bun run privacy:scan` - passed
 
-The remediation commit requires a fresh CI pass before acceptance; these earlier results are retained only as the pre-review baseline.
+The latest pagination-cap remediation adds `gui/tests/compatibility-pagination-cap.test.ts` and requires a fresh CI pass before acceptance; the earlier results above are retained only as baseline evidence.
 
 ## Acceptance blockers
 
