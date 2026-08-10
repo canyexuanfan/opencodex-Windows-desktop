@@ -12,7 +12,7 @@ type Job = {
   steps?: Step[];
 };
 
-test("Linux shards isolate the storage-policy API family into its own gated job", async () => {
+test("Linux shards isolate the storage API runtime family into its own gated job", async () => {
   const text = await Bun.file(
     new URL("../.github/workflows/ci.yml", import.meta.url),
   ).text();
@@ -23,6 +23,9 @@ test("Linux shards isolate the storage-policy API family into its own gated job"
   const shardRun = workflow.jobs?.test?.steps?.find(step => step.name === "Test")?.run ?? "";
   expect(shardRun).toContain(
     "--path-ignore-patterns 'tests/api-storage-policy*.test.ts'",
+  );
+  expect(shardRun).toContain(
+    "--path-ignore-patterns 'tests/api-storage.test.ts'",
   );
 
   const storageJob = workflow.jobs?.["storage-policy"];
@@ -38,6 +41,7 @@ test("Linux shards isolate the storage-policy API family into its own gated job"
     "tests/api-storage-policy-put-race.test.ts",
     "tests/api-storage-policy-run.test.ts",
     "tests/api-storage-policy.test.ts",
+    "tests/api-storage.test.ts",
   ];
 
   // Extract all test file paths from the run command
