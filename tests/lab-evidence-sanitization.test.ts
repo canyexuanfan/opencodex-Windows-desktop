@@ -270,6 +270,12 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("dial tcp [host]:6379: connect: connection refused");
     expect(sanitizeDiagnostic("connect ECONNREFUSED redis:6379"))
       .toBe("connect ECONNREFUSED [host]:6379");
+    // The port is the evidence, not the punctuation, so the spelled-out form
+    // counts too.
+    expect(sanitizeDiagnostic("Unable to connect to gateway on port 443: timed out"))
+      .toBe("Unable to connect to [host] on port 443: timed out");
+    expect(sanitizeDiagnostic("connect to gateway port 8080 failed"))
+      .toBe("connect to [host] port 8080 failed");
   });
 
   test("natural-language connect-to prose is left alone", () => {

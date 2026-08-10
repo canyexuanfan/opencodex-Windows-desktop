@@ -501,10 +501,13 @@ function scrubString(value: string): string {
     // Go writes `dial tcp: lookup <host>: no such host`, so the destination
     // is not always adjacent to the marker. A resolver marker also licenses a
     // bare name (`ENOTFOUND redis`), which a socket-state marker does not.
-    // A name immediately followed by a numeric port is a destination whatever
-    // else is true: `dial tcp redis:6379` needs no other evidence. Splitting on
-    // `:` discarded exactly that signal, so the pair is checked first.
-    const ported = tail.match(/(?<![\w.-])([A-Za-z0-9_.-]{1,255}):\d{1,5}(?![\w.])/);
+    // A name paired with a port is a destination whatever else is true:
+    // `dial tcp redis:6379` needs no other evidence. Both notations count —
+    // adjacent `host:443` and spelled-out `gateway on port 443` — because the
+    // port is the evidence, not the punctuation.
+    const ported =
+      tail.match(/(?<![\w.-])([A-Za-z0-9_.-]{1,255}):\d{1,5}(?![\w.])/) ??
+      tail.match(/(?<![\w.-])([A-Za-z0-9_.-]{1,255})\s+(?:on\s+)?port\s+\d{1,5}\b/i);
     if (ported?.[1] && !PROSE_AFTER_MARKER.has(ported[1].toLowerCase())) {
       return m.replace(ported[1], "[host]");
     }

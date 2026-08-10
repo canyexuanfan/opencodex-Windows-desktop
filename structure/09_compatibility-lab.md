@@ -59,15 +59,19 @@ Recorded rather than implied, so a reader knows what is not covered:
 
 | Form | Behavior |
 |------|----------|
-| Bare service name after natural-language `connect to` (`connect to gateway`) | not redacted — the phrase is prose too often to trust without a port |
+| Bare service name after natural-language `connect to` with no port at all (`connect to gateway failed`) | not redacted — the phrase is prose too often to trust. A port in either notation (`gateway:443`, `gateway on port 443`) does make it a host |
 | Bare `db.prod-1` outside any network context | not redacted — indistinguishable from a metric namespace |
 | Standalone UUID, standalone `user_…`, bare-label value (`org: engineering`) | not redacted — indistinguishable from request, trace, and correlation ids |
 | Phone numbers, generic high-entropy blobs | not redacted — no non-destructive pattern |
-| Cisco dotted MAC (`0123.4567.89ab`), ideographic-dot IDN, escaped-quote mail local part | not redacted — unusual notations |
+| Cisco dotted MAC (`0123.4567.89ab`), ideographic-dot IDN | not redacted — unusual notations |
+| Escaped-quote mail local part | partially redacted; the address is broken but a fragment of the local part can remain |
 | Percent-encoding nested more than six deep | not decoded further |
 
-Every case above is asserted in both directions, so the boundary cannot drift
-silently either way.
+The marker behaviors and the redacted categories are asserted in both
+directions — positive cases for what must be removed, negative cases for the
+ordinary diagnostics that must survive — so those cannot drift silently. The
+limits table is a description of current behavior; only the entries with a
+matching test are pinned, and the unusual-notation rows are not.
 A retained URL path also has identifier-shaped content redacted wherever it
 appears, independent of the punctuation around it — colon action suffixes and
 matrix parameters are ordinary API syntax, so enumerating delimiters does not
