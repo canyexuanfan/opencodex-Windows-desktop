@@ -297,6 +297,13 @@ describe("pr-hygiene workflow trust boundary", () => {
       /pull_request\.head\.(?:sha|ref|repo)/,
       "no step in a pull_request_target workflow may consume a PR head ref",
     );
+    // `refs/pull/<n>/head` reaches the same PR-controlled tree without ever
+    // naming `head`, so ban the merge-ref form too.
+    assert.doesNotMatch(
+      workflow,
+      /refs\/pull\//,
+      "no step may check out a refs/pull/* ref",
+    );
   });
 
   it("uses repository permission level for the sponsorship exemption", () => {

@@ -105,7 +105,10 @@ const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // `\b` does not fire between `_` and a digit, so `x_203.0.113.7` slipped past
 // the word-boundary form above.
 const UNDERSCORE_ADJACENT_IPV4_RE = /_((?:\d{1,3}\.){3}\d{1,3})\b/g;
-const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}[a-z]{2,24}\b/gi;
+// The final label allows digits and hyphens so a punycode TLD such as
+// `xn--p1ai` is consumed whole; matching only `[a-z]{2,24}` stopped at the
+// first hyphen and produced the partial `[host]--p1ai`.
+const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}[a-z][a-z0-9-]{1,31}\b/gi;
 // The value is scanned to its delimiter, not to a word boundary: `\b` stops at
 // the first `.` in `db_prod.internal`, which left `[host].internal` — a partial
 // redaction that still names the host.
@@ -132,7 +135,15 @@ function scrubUrlPath(pathname: string): string {
     .split("/")
     .map((segment) => {
       if (!segment) return segment;
-      if (UUID_RE.test(segment) || isPrefixedAccount(segment)) return "[account]";
+      // Compare the decoded segment: `%2D` for `-` is still a UUID, and a
+      // literal-only check let a percent-encoded identifier through.
+      let decoded = segment;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        // Malformed escapes: fall back to the raw segment.
+      }
+      if (UUID_RE.test(decoded) || isPrefixedAccount(decoded)) return "[account]";
       return segment;
     })
     .join("/");
@@ -200,8 +211,12 @@ function redactIpv6(value: string): string {
     // after an address cannot defeat the rule.
     let matched = 0;
     for (let stop = end; stop > i; stop -= 1) {
-      const tail = value[stop - 1]!;
-      if (tail === "." || tail === ":") continue; // never end a candidate on a separator
+      // A candidate may not end on `.` — that is sentence punctuation after an
+      // address. It MAY end on `:`, because `2001:db8::` and `fe80::` are valid
+      // compressed forms; rejecting every trailing colon skipped them entirely.
+      // `isIpv6` is the arbiter, so a stray single trailing colon simply fails
+      // validation and the loop backs off one more character.
+      if (value[stop - 1] === ".") continue;
       if (isIpv6(value.slice(i, stop))) {
         matched = stop;
         break;

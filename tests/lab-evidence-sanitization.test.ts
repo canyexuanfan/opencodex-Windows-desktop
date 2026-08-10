@@ -129,6 +129,20 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("https://[host]/orgs/[account]");
   });
 
+  test("compressed, punycode, and encoded forms are redacted whole", () => {
+    // Second round of re-review bypasses. Rejecting every candidate ending in
+    // `:` to strip sentence punctuation also skipped valid compressed forms.
+    expect(sanitizeDiagnostic("2001:db8::")).toBe("[ip]");
+    expect(sanitizeDiagnostic("fe80::")).toBe("[ip]");
+    expect(sanitizeDiagnostic("::")).toBe("[ip]");
+    // A punycode TLD contains hyphens; a letters-only final label stopped at
+    // the first one and left the rest of the host visible.
+    expect(sanitizeDiagnostic("xn--e1afmkfd.xn--p1ai")).toBe("[host]");
+    // A percent-encoded identifier is still an identifier.
+    expect(sanitizeDiagnostic("https://h.example/u/550E8400%2De29b%2D41d4%2Da716%2D446655440000"))
+      .toBe("https://[host]/u/[account]");
+  });
+
   test("contextual account values are replaced whole, never as a prefix", () => {
     expect(sanitizeDiagnostic("user_id=abc123def")).toBe("user_id=[account]");
     expect(sanitizeDiagnostic('"userId": "abc123def"')).toBe('"userId": "[account]"');

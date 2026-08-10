@@ -173,6 +173,13 @@ describe("enforce-pr-target workflow", () => {
       /github\.event\.pull_request\.head\.(?:sha|ref|repo)/,
       "no step in a pull_request_target workflow may interpolate a PR head ref",
     );
+    // `refs/pull/<n>/head` reaches the same PR-controlled tree without ever
+    // naming `head`, so ban the merge-ref form too.
+    assert.doesNotMatch(
+      workflow,
+      /refs\/pull\//,
+      "no step may check out a refs/pull/* ref",
+    );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
