@@ -986,6 +986,9 @@ export function setSubagentDeveloperInstructions(value: string | null, configPat
   return setV2StringField("subagent_developer_instructions", value, configPath);
 }
 
+export const MODE_HINT_UNSUPPORTED_ERROR =
+  "installed Codex does not support multi_agent_mode_hint_text; update Codex first";
+
 /**
  * Persist `features.multi_agent_v2.multi_agent_mode_hint_text`, or remove the key
  * when `value` is null. Same encoding coverage and upstream-name discipline as
@@ -1005,7 +1008,7 @@ export function setMultiAgentModeHintText(value: string | null, configPath?: str
     if (probe === false) {
       return {
         ok: false,
-        error: "installed Codex does not support multi_agent_mode_hint_text; update Codex first",
+        error: MODE_HINT_UNSUPPORTED_ERROR,
       };
     }
   }

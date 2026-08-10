@@ -590,7 +590,7 @@ export const de: Record<TKey, string> = {
   "sub.workspace.selectModelDesc": "Wählen Sie ein Modell aus der Liste, um Details anzuzeigen und es für spawn_agent hervorzuheben.",
   "sub.workspace.selector": "Öffentlicher Selektor",
   "sub.ultraMode": "Ultra-Modus",
-  "sub.ultraModeHint": "Aktiviert die proaktive Multi-Agent-Delegierungsrichtlinie für alle Modelle und Reasoning-Efforts (ändert den Reasoning-Effort selbst nicht). Schreibt multi_agent_mode_hint_text in config.toml.",
+  "sub.ultraModeHint": "Aktiviert die proaktive Multi-Agent-Delegierungsrichtlinie für alle Modelle und Reasoning-Efforts (ändert den Reasoning-Effort selbst nicht). Schreibt features.multi_agent_v2.multi_agent_mode_hint_text in config.toml.",
   "sub.ultraModeV2Required": "Erfordert die v2-Multi-Agent-Oberfläche — aktivieren Sie zuerst multi_agent_v2 und wählen Sie v2 in der Subagentenmodus-Steuerung.",
   "sub.ultraModeText": "Delegierungstext des Ultra-Modus",
   "sub.ultraModePreset": "Voreinstellung wiederherstellen",

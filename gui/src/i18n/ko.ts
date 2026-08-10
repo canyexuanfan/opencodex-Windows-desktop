@@ -607,7 +607,7 @@ export const ko: Record<TKey, string> = {
   "sub.workspace.selectModelDesc": "목록에서 모델을 선택하여 세부 정보를 확인하고 spawn_agent에 추천하세요.",
   "sub.workspace.selector": "공개 셀렉터",
   "sub.ultraMode": "울트라 모드",
-  "sub.ultraModeHint": "모든 모델과 reasoning effort에서 Proactive 멀티에이전트 위임 정책을 켭니다 (reasoning effort 자체는 변경하지 않음). config.toml에 multi_agent_mode_hint_text를 기록합니다.",
+  "sub.ultraModeHint": "모든 모델과 reasoning effort에서 Proactive 멀티에이전트 위임 정책을 켭니다 (reasoning effort 자체는 변경하지 않음). config.toml에 features.multi_agent_v2.multi_agent_mode_hint_text를 기록합니다.",
   "sub.ultraModeV2Required": "v2 멀티에이전트 서피스가 필요합니다 — 먼저 multi_agent_v2를 켜고 서브에이전트 모드에서 v2를 선택하세요.",
   "sub.ultraModeText": "울트라 모드 위임 텍스트",
   "sub.ultraModePreset": "프리셋 복원",

@@ -600,7 +600,7 @@ export const zh: Record<TKey, string> = {
   "sub.workspace.selectModelDesc": "从列表中选择一个模型以查看详情，并将其设为 spawn_agent 的精选模型。",
   "sub.workspace.selector": "公开选择器",
   "sub.ultraMode": "超级模式",
-  "sub.ultraModeHint": "为所有模型和推理力度启用主动多代理委派策略（不改变推理力度本身）。将 multi_agent_mode_hint_text 写入 config.toml。",
+  "sub.ultraModeHint": "为所有模型和推理力度启用主动多代理委派策略（不改变推理力度本身）。将 features.multi_agent_v2.multi_agent_mode_hint_text 写入 config.toml。",
   "sub.ultraModeV2Required": "需要 v2 多代理表面 — 请先启用 multi_agent_v2，并在子代理模式控件中选择 v2。",
   "sub.ultraModeText": "超级模式委派文本",
   "sub.ultraModePreset": "恢复预设",

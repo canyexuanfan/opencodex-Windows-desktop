@@ -605,7 +605,7 @@ export const ru: Record<TKey, string> = {
   "sub.workspace.selectModelDesc": "Выберите модель из списка, чтобы увидеть детали и добавить её в избранные для spawn_agent.",
   "sub.workspace.selector": "Публичный селектор",
   "sub.ultraMode": "Ультра-режим",
-  "sub.ultraModeHint": "Включает политику упреждающего делегирования мультиагентов для всех моделей и уровней reasoning effort (сам reasoning effort не меняется). Записывает multi_agent_mode_hint_text в config.toml.",
+  "sub.ultraModeHint": "Включает политику упреждающего делегирования мультиагентов для всех моделей и уровней reasoning effort (сам reasoning effort не меняется). Записывает features.multi_agent_v2.multi_agent_mode_hint_text в config.toml.",
   "sub.ultraModeV2Required": "Требуется мультиагентная поверхность v2 — сначала включите multi_agent_v2 и выберите v2 в переключателе режима субагентов.",
   "sub.ultraModeText": "Текст делегирования ультра-режима",
   "sub.ultraModePreset": "Восстановить пресет",
