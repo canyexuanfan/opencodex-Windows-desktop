@@ -117,6 +117,19 @@ OAuth 凭据中带有稳定账号 id 或邮箱的提供商可以保存多个登�
 当前 active slot；Kiro 账户以配置文件 ARN 为键。`chatgpt` 始终只有一个 slot，因为 Codex 账号池使用独立存储。令牌仍保存在
 `~/.opencodex/auth.json` 中；`/api/oauth/accounts` 只返回脱敏后的 metadata。
 
+### Cockpit Tools Antigravity 导入
+
+v1 中 OpenCodex 仅支持为 `google-antigravity` 提供商导入 **Cockpit Tools Antigravity** JSON 导出文件。在 Providers 仪表板中打开该提供商的 Accounts 标签并选择本地 JSON 文件。仪表板不会显示文件内容或凭据值，只报告已导入、已更新、失败和不支持的数量。v1 会拒绝其他 Cockpit 提供商的导入。
+
+CLI 仅从文件或标准输入读取导出文件，不能将其粘贴到命令参数中：
+
+```bash
+ocx account import google-antigravity --format cockpit-tools --file <path> [--json]
+cat accounts.json | ocx account import google-antigravity --format cockpit-tools --stdin [--json]
+```
+
+内联 JSON 和额外的位置参数会被拒绝。请将导出的文件保密，并在导入后删除或安全存储。
+
 ### Kiro 凭据导入
 
 Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/install | bash` 安装；Windows PowerShell 使用 `irm 'https://cli.kiro.dev/install.ps1' | iex`；然后先运行 `kiro-cli login`。如果没有 `kiro-cli` 会话，`ocx login kiro` 会回退到粘贴的访问令牌或 `KIRO_ACCESS_TOKEN` 环境变量。

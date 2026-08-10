@@ -25,9 +25,8 @@ independent review, blockers, and whether a later phase is authorized.
 | CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | `003f7402f49bfe8dd710a7beba52f717051bfadf` | [#1352](https://github.com/lidge-jun/opencodex/pull/1352) | MERGED TO `dev` at `68c71a4e9cdf882d812f09fd94783a28749db629`; ACCEPTED/CLOSED |
 | CL-04 | `feat/cl-04-lab-read-surfaces` | `68c71a4e9cdf882d812f09fd94783a28749db629` | NOT RECORDED | [#1378](https://github.com/lidge-jun/opencodex/pull/1378) | MERGED TO `dev` at `d517161aeaa3a974ad3c0360ff0c97b03b4c4520` |
 | CL-05 | `feat/cl-05-compatibility-matrix-ui` | `d517161aeaa3a974ad3c0360ff0c97b03b4c4520` | `2a159b8b7` (Models tab placement) | [#1384](https://github.com/lidge-jun/opencodex/pull/1384) | MERGED TO `dev` at `1072b9c39c48a4982229131613ac300560740742` |
-| CL-06 | `feat/cl-06-routing-profile-compatibility` | `1072b9c39c48a4982229131613ac300560740742` | `b66e33ce7207d91014644d99317e456c992a3418` (merge) | [#1394](https://github.com/lidge-jun/opencodex/pull/1394) | MERGED TO `dev` at `b66e33ce7207d91014644d99317e456c992a3418`; ACCEPTED/CLOSED |
+| CL-06 | `feat/cl-06-routing-profile-compatibility` | `1072b9c39c48a4982229131613ac300560740742` | `b96eae83f2a6d1654472aeeef84799070743aeb8` | [#1394](https://github.com/lidge-jun/opencodex/pull/1394) | MERGED TO `dev` at `b66e33ce7207d91014644d99317e456c992a3418`; ACCEPTED/CLOSED |
 | CL-07 | `feat/cl-07-task-effectiveness-producer` | `b66e33ce7207d91014644d99317e456c992a3418` | NOT RECORDED | [#1438](https://github.com/lidge-jun/opencodex/pull/1438) | DRAFT / PENDING CI; implementation head `ed8e0794189b214398d835e1af828905f29fbc53`; plan `007_cl07_task_effectiveness.md` |
-
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
 

@@ -319,7 +319,7 @@ Pressure-tested against CL-00/CL-05 codebase at `1072b9c`:
 | Management API + dry-run | ✅ |
 | GUI editor | ✅ |
 | Tests (25+ cases) | ✅ |
-| Draft PR | 🔄 Pending push |
+| PR #1394 | ✅ Merged to `dev` at `b66e33ce7207d91014644d99317e456c992a3418` |
 
 ## Validation checklist (pre-acceptance)
 
@@ -329,4 +329,11 @@ Pressure-tested against CL-00/CL-05 codebase at `1072b9c`:
 - [x] `bun test tests/lab-read-surfaces.test.ts`
 - [x] GUI lint/build
 - [x] `bun run privacy:scan`
-- [ ] Cross-platform CI on draft PR
+- [x] Cross-platform CI on PR #1394
+
+## Acceptance
+
+- **State:** ACCEPTED / CLOSED
+- **Merge commit:** `b66e33ce7207d91014644d99317e456c992a3418`
+- **Source head:** `b96eae83f2a6d1654472aeeef84799070743aeb8`
+- **CL-07:** Not started (explicit non-goal)
