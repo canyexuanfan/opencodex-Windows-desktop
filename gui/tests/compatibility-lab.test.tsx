@@ -23,6 +23,7 @@ import {
   fetchAllSubjects,
   fetchLabStatus,
   fetchVerdictDetail,
+  LabDataContractError,
 } from "../src/pages/compatibility-matrix-api";
 import { modelsTabHash, readModelsTab } from "../src/pages/models-tab";
 import { resolveAppHashChange } from "../src/app-routing";
@@ -465,7 +466,7 @@ test("19. selecting a verdict does not silently narrow the matrix to one suite",
 test("20. malformed successful API payloads reject instead of impersonating unavailable data", async () => {
   globalThis.fetch = (async () => Response.json({ nope: true })) as typeof fetch;
   const controller = new AbortController();
-  await expect(fetchLabStatus(API_BASE, controller.signal)).rejects.toThrow("Invalid Compatibility Lab status response");
+  await expect(fetchLabStatus(API_BASE, controller.signal)).rejects.toBeInstanceOf(LabDataContractError);
 });
 
 test("21. subject pagination fails closed when the cursor does not advance", async () => {
@@ -475,7 +476,7 @@ test("21. subject pagination fails closed when the cursor does not advance", asy
     nextCursor: "same",
   })) as typeof fetch;
   const controller = new AbortController();
-  await expect(fetchAllSubjects(API_BASE, controller.signal)).rejects.toThrow("pagination did not advance");
+  await expect(fetchAllSubjects(API_BASE, controller.signal)).rejects.toBeInstanceOf(LabDataContractError);
 });
 
 test("22. verdict detail follows observation pagination and tolerates missing optional evidence", async () => {
