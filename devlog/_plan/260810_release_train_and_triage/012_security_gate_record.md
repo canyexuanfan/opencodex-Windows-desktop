@@ -34,6 +34,52 @@ violation, not a judgment call.
 | Findings | SEC-01 (Critical), SEC-02 (High), SEC-03 (High), SEC-04 (Low) |
 | Detail location | scratch only — not in any tracked directory |
 
+## Re-review after remediation — gate CLEARED
+
+The owner chose "fix first, then release". SEC-01 and SEC-02 were remediated and
+the tree went back through review.
+
+| Field | Value |
+|-------|-------|
+| Reviewed commit | `76c544c65` (merged with `origin/dev` at `0de4fd2d7`) |
+| Reviewers | three independent non-author agents across 8 re-review rounds |
+| Defects found | **35**, every one reproduced locally before being fixed |
+| Final verdict | **`READY TO SHIP`** |
+| Residual findings | 2 Low, both non-blocking and both now disclosed in `structure/09_compatibility-lab.md` |
+
+The final reviewer verified the shipped limits table against the code and found
+it accurate: every disclosed residual behaves as documented, and nothing the
+table claims to cover failed. Performance is linear to 400 KB. Three regression
+assertions were mutation-checked and each fails when its production rule is
+removed.
+
+### Disposition by finding
+
+| ID | Status |
+|----|--------|
+| SEC-01 | **CLOSED** — privileged workflows source trusted scripts from an integration-branch allowlist; guards ablation-verified against five distinct evasion shapes |
+| SEC-02 | **CLOSED** — both evidence sinks sanitized on both constructors, 29 regression tests, limits documented |
+| SEC-03 | unchanged — pre-existing at v2.11.1, byte-identical, out of scope for this train |
+| SEC-04 | unchanged — accepted Low |
+
+### What the loop cost, and what it bought
+
+Eight rounds is a lot, and the record should say plainly why. Two mistakes
+repeated across them:
+
+- **Enumerating instead of ruling.** Delimiters grew `/` → `?#&=` → `:` → `;`;
+  the workflow denylist lost five times to `refs/pull`, `format()`,
+  `repository:`, `gh pr checkout`, and `git clone`. Both were only settled by
+  stating the invariant instead of listing the exceptions.
+- **Fixing half a symmetry.** Case-insensitivity applied to an id suffix but not
+  its label; underscore boundaries fixed for IPv4 but not MAC.
+
+The most valuable findings were not leaks. `ETIMEDOUT after 30 seconds` became
+`ETIMEDOUT [host] 30 seconds` — destroying the diagnostic while concealing
+nothing — and a widened hostname rule was eating `provider.metric.p95`. A
+sanitizer that removes too much fails this contract exactly as a leak does, and
+the suite now asserts both directions.
+
 Reviewer verification on the RC: `bun run privacy:scan` passed,
 `bun run typecheck` passed, focused security tests 449 pass / 0 fail, full
 suite 10,526 pass / 7 skip / 0 fail.
