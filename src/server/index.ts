@@ -29,6 +29,7 @@ import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
+import { startUserCostOverlayReconciler } from "../usage/user-cost-overlay-reconciler";
 import {
   configureAppOwnedMemoryBudget,
   enforceAppOwnedMemoryBudget,
@@ -460,6 +461,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
+  let userCostOverlayReconciler: { stop(): void } | null = null;
   // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
   // before any request can resolve its physical credential, while health/management/Pool stay live.
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
@@ -662,6 +664,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   let backgroundLifecycle: ReturnType<typeof acquireServerBackgroundLifecycle> | null = null;
   try {
     backgroundLifecycle = acquireServerBackgroundLifecycle(applyPolicy);
+    // External `ocx config set` / direct config.json edits run in other
+    // processes; poll the file so Logs/Usage display prices follow them live.
+    // Started inside the guarded startup transaction so the catch below can
+    // release the owner-scoped lease on any listener failure.
+    userCostOverlayReconciler = startUserCostOverlayReconciler({ liveConfig: config });
     const serveOptions = {
       idleTimeout: 255,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
@@ -1566,6 +1573,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
     }
   } catch (error) {
+    userCostOverlayReconciler?.stop();
     backgroundLifecycle?.releaseAfterFailedStart();
     void nativeMainLifecycle.release();
     throw error;
@@ -1585,6 +1593,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...(loopbackListenerRef
             ? [() => loopbackListenerRef.stop(closeActiveConnections)]
             : []),
+          async () => {
+            userCostOverlayReconciler?.stop();
+          },
         ],
         async () => {
           await backgroundLifecycle.release();
