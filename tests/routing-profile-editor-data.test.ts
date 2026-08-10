@@ -115,4 +115,47 @@ describe("routing profile editor data", () => {
       { provider: "anthropic", id: "claude-sonnet-5" },
     ], "anthropic")).toEqual([{ provider: "anthropic", id: "claude-sonnet-5" }]);
   });
+
+  test("round-trips compatibility controls into a PUT payload", () => {
+    const withCompatibility: RoutingProfileDto = {
+      ...profile,
+      compatibility: {
+        requiredSuites: [
+          { suiteId: "responses-core", evidenceLayer: "live_route_compatibility" },
+        ],
+        minStatus: "VERIFIED",
+        maxEvidenceAgeMs: 86_400_000,
+        unknownEvidence: "penalize",
+        degradedEvidence: "exclude",
+      },
+    };
+    const draft = routingProfileDraftFromDto(withCompatibility);
+    expect(draft.compatibility.enabled).toBe(true);
+    expect(draft.compatibility.requiredSuites).toEqual(withCompatibility.compatibility!.requiredSuites);
+    expect(routingProfilePutBody(draft, "update", profile.revision)).toMatchObject({
+      profile: {
+        compatibility: {
+          requiredSuites: withCompatibility.compatibility!.requiredSuites,
+          minStatus: "VERIFIED",
+          maxEvidenceAgeMs: 86_400_000,
+          unknownEvidence: "penalize",
+          degradedEvidence: "exclude",
+        },
+      },
+    });
+  });
+
+  test("omits compatibility from PUT payload when editor compatibility is disabled", () => {
+    const withCompatibility: RoutingProfileDto = {
+      ...profile,
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        minStatus: "PROBED",
+      },
+    };
+    const draft = routingProfileDraftFromDto(withCompatibility);
+    draft.compatibility.enabled = false;
+    const body = routingProfilePutBody(draft, "create");
+    expect(body.profile).not.toHaveProperty("compatibility");
+  });
 });

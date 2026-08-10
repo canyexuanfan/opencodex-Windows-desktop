@@ -16,10 +16,9 @@ import {
   routingProfileIssues,
 } from "../../routing/profile";
 import { evaluatePolicyProfile, type PolicyCandidateEvidence, type PolicyRequestEvidence } from "../../routing/evaluator";
-import { candidateCapabilityEvidence } from "../../routing/capability";
-import { policyCandidateHealthEvidence } from "../../routing/health";
+import { assemblePolicyCandidateEvidence } from "../../routing/compatibility/assemble";
 import { quotaEvidenceForCandidate } from "../../routing/quota";
-import { costEvidenceForCandidate } from "../../routing/cost";
+import { routedProviderConfig } from "../../router";
 import { saveConfigPreservingClaudeCode } from "../../config";
 import { reconcileLiveStateStores } from "../../lib/state-store-registrations";
 import { isPlainRecord } from "./shared";
@@ -41,6 +40,7 @@ function profileDto(config: Parameters<typeof getRoutingProfile>[0], id: string)
     optimize: profile.optimize,
     limits: profile.limits,
     unknownEvidence: profile.unknownEvidence,
+    ...(profile.compatibility ? { compatibility: profile.compatibility } : {}),
   };
 }
 
@@ -99,25 +99,9 @@ function assembleCandidateEvidence(
   config: OcxConfig,
   profile: NonNullable<ReturnType<typeof getRoutingProfile>>,
 ): PolicyCandidateEvidence[] {
-  // Match execution: fill the same candidate evidence the router would
-  // assemble, so dry-run/evaluate reports the same eligibility as real routing
-  // instead of treating every capability as unknown. Cost is always present so
-  // evaluate mode can surface the profile limit even without a usage estimate.
-  return profile.candidates.map(candidate => ({
-    provider: candidate.provider,
-    model: candidate.model,
-    capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
-    health: policyCandidateHealthEvidence(config, candidate),
-    quota: quotaEvidenceForCandidate({
-      provider: candidate.provider,
-      model: candidate.model,
-    }),
-    cost: costEvidenceForCandidate({
-      provider: candidate.provider,
-      model: candidate.model,
-      limitUsd: profile.limits.maxEstimatedCostUsd,
-    }),
-  }));
+  return assemblePolicyCandidateEvidence(config, profile, Date.now(), {
+    routedProviderConfig,
+  });
 }
 
 function storedProfile(

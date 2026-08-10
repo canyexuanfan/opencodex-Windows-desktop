@@ -1,5 +1,9 @@
 export type UnknownEvidenceMode = "allow" | "penalize" | "exclude";
-export type OptionalBoolean = "" | "true" | "false";
+
+export type CompatibilitySuiteDraft = {
+  suiteId: string;
+  evidenceLayer: "protocol_conformance" | "live_route_compatibility";
+};
 
 export type RoutingProfileCandidate = {
   provider: string;
@@ -54,7 +58,16 @@ export type RoutingProfileDto = {
     maxEstimatedCostUsd?: number;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
+  compatibility?: {
+    requiredSuites: CompatibilitySuiteDraft[];
+    minStatus?: "PROBED" | "VERIFIED";
+    maxEvidenceAgeMs?: number;
+    unknownEvidence?: UnknownEvidenceMode;
+    degradedEvidence?: UnknownEvidenceMode;
+  };
 };
+
+export type OptionalBoolean = "" | "true" | "false";
 
 export type RoutingProfileDraft = {
   id: string;
@@ -82,6 +95,14 @@ export type RoutingProfileDraft = {
     maxEstimatedCostUsd: string;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
+  compatibility: {
+    enabled: boolean;
+    requiredSuites: CompatibilitySuiteDraft[];
+    minStatus: "" | "PROBED" | "VERIFIED";
+    maxEvidenceAgeMs: string;
+    unknownEvidence: UnknownEvidenceMode;
+    degradedEvidence: UnknownEvidenceMode;
+  };
 };
 
 export type ModelOption = {
@@ -136,6 +157,14 @@ export function newRoutingProfileDraft(
     optimize: { ...DEFAULT_OPTIMIZE },
     limits: { maxEstimatedCostUsd: "" },
     unknownEvidence: { ...DEFAULT_UNKNOWN_EVIDENCE },
+    compatibility: {
+      enabled: false,
+      requiredSuites: [],
+      minStatus: "",
+      maxEvidenceAgeMs: "",
+      unknownEvidence: "exclude",
+      degradedEvidence: "penalize",
+    },
   };
 }
 
@@ -166,6 +195,14 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
       maxEstimatedCostUsd: numberInput(profile.limits.maxEstimatedCostUsd),
     },
     unknownEvidence: { ...profile.unknownEvidence },
+    compatibility: {
+      enabled: Boolean(profile.compatibility),
+      requiredSuites: profile.compatibility?.requiredSuites ?? [],
+      minStatus: profile.compatibility?.minStatus ?? "",
+      maxEvidenceAgeMs: numberInput(profile.compatibility?.maxEvidenceAgeMs),
+      unknownEvidence: profile.compatibility?.unknownEvidence ?? "exclude",
+      degradedEvidence: profile.compatibility?.degradedEvidence ?? "penalize",
+    },
   };
 }
 
@@ -209,6 +246,15 @@ export function routingProfilePutBody(
     encryptedCodexTasks: draftBoolean(draft.require.encryptedCodexTasks),
   });
   const maxEstimatedCostUsd = optionalNumber(draft.limits.maxEstimatedCostUsd);
+  const compatibility = draft.compatibility.enabled
+    ? compactRecord({
+      requiredSuites: draft.compatibility.requiredSuites,
+      minStatus: draft.compatibility.minStatus || undefined,
+      maxEvidenceAgeMs: optionalNumber(draft.compatibility.maxEvidenceAgeMs),
+      unknownEvidence: draft.compatibility.unknownEvidence,
+      degradedEvidence: draft.compatibility.degradedEvidence,
+    })
+    : undefined;
 
   return {
     mode,
@@ -231,6 +277,7 @@ export function routingProfilePutBody(
         ? { limits: { maxEstimatedCostUsd } }
         : {}),
       unknownEvidence: { ...draft.unknownEvidence },
+      ...(compatibility && Object.keys(compatibility).length > 0 ? { compatibility } : {}),
     },
   };
 }

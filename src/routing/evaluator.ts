@@ -24,6 +24,9 @@ import { getRoutingProfile, policyModelId, type NormalizedRoutingProfile } from 
 import { healthScore } from "./health";
 import { quotaScore } from "./quota";
 import { costScore } from "./cost";
+import { evaluateCompatibilityForCandidate } from "./compatibility/policy";
+import type { CandidateCompatibilityEvidence } from "./compatibility/types";
+import type { RouteCompatibilityEvidence } from "./trace";
 
 /** Unknown health under "penalize": a low-but-not-zero deterministic floor. */
 export const HEALTH_UNKNOWN_PENALTY_SCORE = 0.3;
@@ -55,6 +58,7 @@ export interface PolicyCandidateEvidence {
   health?: RouteHealthEvidence;
   quota?: RouteQuotaEvidence;
   cost?: RouteCostEvidence;
+  compatibility?: CandidateCompatibilityEvidence;
 }
 
 export interface PolicyEvaluationCandidate {
@@ -68,6 +72,7 @@ export interface PolicyEvaluationCandidate {
   health?: RouteHealthEvidence;
   quota?: RouteQuotaEvidence;
   cost?: RouteCostEvidence;
+  compatibility?: RouteCompatibilityEvidence;
   score?: RouteScoreEvidence;
 }
 
@@ -313,6 +318,18 @@ export function evaluatePolicyProfile(
     }
     let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit;
 
+    const compatibilityEval = evaluateCompatibilityForCandidate(
+      profile.compatibility,
+      evidence.compatibility,
+      now,
+    );
+    if (compatibilityEval.exclusions.length > 0) {
+      exclusions.push(...compatibilityEval.exclusions);
+      eligible = false;
+    }
+    let compatibilityValue = compatibilityEval.penaltyScore;
+    const compatibilityTrace = compatibilityEval.trace;
+
     // Health scoring (RI-06): live hard cooldown is authoritative and
     // excludes; unknown health follows the profile's unknownEvidence policy;
     // historical health never overrides explicit ineligibility.
@@ -383,6 +400,10 @@ export function evaluatePolicyProfile(
       total += costWeight * costValue;
       components.cost = costValue;
     }
+    if (compatibilityValue !== null) {
+      total += 0.05 * compatibilityValue;
+      components.compatibility = compatibilityValue;
+    }
     const score: RouteScoreEvidence = { total, components };
     const evaluated: PolicyEvaluationCandidate = {
       provider: evidence.provider,
@@ -395,6 +416,7 @@ export function evaluatePolicyProfile(
       ...(evidence.health ? { health: evidence.health } : {}),
       ...(evidence.quota ? { quota: evidence.quota } : {}),
       ...(evidence.cost ? { cost: evidence.cost } : {}),
+      ...(compatibilityTrace ? { compatibility: compatibilityTrace } : {}),
       score,
     };
     candidates.push(evaluated);
@@ -423,6 +445,7 @@ export function evaluatePolicyProfile(
       ...(candidate.health ? { health: candidate.health } : {}),
       ...(candidate.quota ? { quota: candidate.quota } : {}),
       ...(candidate.cost ? { cost: candidate.cost } : {}),
+      ...(candidate.compatibility ? { compatibility: candidate.compatibility } : {}),
     })),
     selected: selectedIndex === null
       ? { provider: candidates[0]?.provider ?? "", model: candidates[0]?.model ?? "", reason: "no-eligible-candidate" }
