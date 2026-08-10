@@ -132,7 +132,7 @@ Kiro 登录需要 Kiro CLI：Unix 使用 `curl -fsSL https://cli.kiro.dev/instal
 
 ## 3. API 密钥目录
 
-opencodex 内置 76 个预设：64 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
+opencodex 内置 78 个预设：66 个密钥预设、8 个 OAuth 预设、3 个本地预设，以及 1 个默认的
 ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提供商的控制台，验证并保存密钥。
 验证因提供商而异。主要条目包括：
 
@@ -164,6 +164,7 @@ Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是�
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Chutes | `https://llm.chutes.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
@@ -174,6 +175,7 @@ Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是�
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
 | Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
+| Featherless AI | `https://api.featherless.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -191,6 +193,9 @@ Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是�
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | ……以及更多 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
+**OpenCode Zen**（`opencode-zen`）与免密钥的 **OpenCode Free** 预设共用
+`https://opencode.ai/zen/v1`。该网关上的免费模型常会触发约每分钟 15–20 次请求的短窗口限流（社区观测；OpenCode 未公布 RPM）。Zen 可能返回不带 `Retry-After` / `X-RateLimit-*` 的通用 429。这与免密钥桌面配额（`opencode-free` 上约每 5 小时 200 次 Big Pickle/免费模型请求）是分开的。当这类 429 省略 `Retry-After` 时，opencodex 会在客户端错误中补充说明并附带合成的 `Retry-After`；若上游已提供 `Retry-After`，则仍以它为准。同密钥等待重试仍可通过 [`retryOn429`](/zh-cn/reference/configuration/) 选择开启。
+
 大多数使用带 bearer 密钥的 `openai-chat` adapter；少数仅暴露 Anthropic 兼容端点的提供商（例如 **Xiaomi MiMo**）使用 `anthropic` adapter（`x-api-key`）。
 火山方舟 Agent Plan 通过 `openai-responses` adapter 使用原生 Responses 端点。
 
@@ -202,6 +207,12 @@ Cline IDE/CLI 中提供，不能通过 API 使用；`minimax/minimax-m2.5` 是�
 > 按量付费默认使用 `doubao-seed-2-1-pro-260628`，静态目录还包含当前 DeepSeek 和 GLM
 > 文本模型。Coding Plan 默认使用 `ark-code-latest`，Agent Plan 默认使用
 > `deepseek-v4-pro`。
+
+**Chutes 发现：**`chutes` 预设使用 Chutes 固定的共享 OpenAI 兼容 LLM gateway。它读取公开的
+`/v1/models` 目录，仅保留 `supported_features` 包含 `tools` 的记录，保留含 `/` 的原生 model id 与
+安全的实时 metadata，并把发现限制为 256 KiB 和 128 条原始记录。由于该目录公开，它无法证明输入的
+密钥有效；chat 请求仍会使用已配置的 Bearer 密钥认证。用户自行部署的 custom Chute host 与非 LLM API
+需要使用 custom provider。密钥可在 [Chutes dashboard](https://chutes.ai/auth/start) 创建。
 
 **DeepInfra 发现：**`deepinfra` 是使用 `openai-chat` adapter 和 Bearer API 密钥的密钥型
 OpenAI Chat Completions 提供商。registry 固定的 DeepInfra 模型列表 URL 仅保留带 `chat` 标签的记录，
@@ -246,6 +257,12 @@ Responses-only、embedding 和 media-generation 模型 id 会按 fail closed 原
 发现上限为 128 KiB 和 128 条原始记录。它使用默认 Project 的共享 endpoint；带 Project ID 的 URL 和
 dedicated deployment 需要配置为 custom provider。API 密钥可在
 [Scaleway 控制台](https://console.scaleway.com/generative-api) 创建。
+
+**Featherless 发现：**该预设在固定的 OpenAI 兼容主机上鉴权，只请求按 chat 和当前 plan 过滤后的热门
+模型第一页，最多 100 条。registry 随后按 fail closed 原则要求每条记录分别报告当前 plan 可用、无需
+Hugging Face gate，且 `features.tool_use: true`。发现上限为 128 KiB 和 100 条原始记录，因此不会下载或
+缓存包含数万模型的完整目录。由于 `/v1/models` 在文档中可带或不带鉴权调用，它无法证明输入的密钥有效；chat 请求仍会使用已配置的 Bearer 密钥认证。个人 plan 仅适用于 interactive/prototype 用途；任意 application 需要使用
+Scale plan。密钥可在 [Featherless dashboard](https://featherless.ai/account/api-keys) 创建。
 
 > **Baseten 范围：**该预设仅覆盖 Baseten 的共享 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)。
 > 本地使用可选择个人 [API 密钥](https://docs.baseten.co/organization/api-keys)；共享或生产用途请使用具备

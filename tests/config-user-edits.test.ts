@@ -16,6 +16,7 @@ import {
 } from "../src/config";
 import { legacyCustomModelCatalogSlugs } from "../src/codex/custom-model-catalog-migration";
 import { rateLimitRetryPolicyFor } from "../src/providers/key-failover";
+import { activeUserCostOverlays, refreshUserCostOverlays } from "../src/usage/user-cost-overlays";
 import type { OcxConfig } from "../src/types";
 
 /**
@@ -62,6 +63,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The overlay registry is module-level; reset it so rows adopted by
+  // reconcileLiveConfigFromDisk cannot leak into later tests in a
+  // shared-process run.
+  refreshUserCostOverlays({ providers: {} } as unknown as OcxConfig);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   rmSync(home, { recursive: true, force: true });
@@ -547,6 +552,36 @@ test("OAuth reconciliation adopts a guarded Claude edit that predates its disk s
   expect(live.claudeCode).toEqual({ authMode: "proxy" });
   saveConfigPreservingClaudeCode(live);
   expect(diskConfig().claudeCode).toEqual({ authMode: "proxy" });
+});
+
+test("OAuth reconciliation adopts a modelCosts edit and refreshes the overlay registry", () => {
+  const live = loadConfig();
+  const persistedBaseline = loadConfig();
+  const costs = { "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } };
+  // A cooperating process hand-edits config.json while the login is pending.
+  writeDiskConfig({
+    providers: {
+      test: {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:1/v1",
+        apiKey: "k",
+        allowPrivateNetwork: true,
+        modelCosts: costs,
+      },
+    },
+  });
+
+  reconcileLiveConfigFromDisk(live, persistedBaseline);
+
+  expect(live.providers.test.modelCosts).toEqual(costs);
+  // The overlay registry must follow the reconciled live config immediately,
+  // not after the next changed save or restart.
+  expect(activeUserCostOverlays()).toHaveLength(1);
+  expect(activeUserCostOverlays()[0]).toMatchObject({
+    provider: "test",
+    modelId: "deepseek-v4-flash",
+    cost4: costs["deepseek-v4-flash"],
+  });
 });
 
 // Structural compare, not JSON.stringify: key order must not fake an external edit.

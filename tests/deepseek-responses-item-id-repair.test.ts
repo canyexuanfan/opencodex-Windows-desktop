@@ -220,4 +220,5 @@ describe("streamed HTTP path carries canonical ids (#938)", () => {
     expect(text).toContain("call_keep");
     expect(text).toContain("data: [DONE]");
   });
+
 });

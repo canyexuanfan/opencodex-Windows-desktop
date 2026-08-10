@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
-import { visionReasoningLabel } from "../i18n/vision-reasoning-labels";
 import { Select } from "../ui";
 import { formatNamespacedModelId } from "../provider-icons";
 import { navigateHash } from "../hash-routing";
-import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch } from "./dashboard-shared";
+import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch, visionSidecarBackendForModel } from "./dashboard-shared";
 import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
@@ -239,8 +238,8 @@ export function DashboardMaintenancePanel({ d }: { d: Dash }) {
 
 export function DashboardSidecarPanels({ d }: { d: Dash }) {
   const {
-    locale, t, settings, settingsSaving, toggleCodexAutoStart,
-    sidecar, sidecarSaving, sidecarModels, models, saveSidecar,
+    t, settings, settingsSaving, toggleCodexAutoStart,
+    sidecar, sidecarSaving, sidecarModels, visionModels, models, saveSidecar,
     shadowCall, shadowCallSaving, shadowCallHelpTriggerRef, shadowCallHelpOpen, setShadowCallHelpOpen, saveShadowCall,
   } = d;
   const visionModel = sidecar?.vision.model ?? "gpt-5.4-mini";
@@ -270,9 +269,14 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
       </div>
 
       <div className="dash-sidecar-grid">
-        <div className="panel dash-sidecar-card" aria-busy={!sidecar || undefined}>
-          <div className="dash-sidecar-card__row">
+        {/* Both sidecar cards wear the DashboardInjectionPanel shell: the PANEL is
+            the flex row, copy left, controls right. */}
+        <div className="panel dash-delegation-summary dash-sidecar-row-card" aria-busy={!sidecar || undefined}>
+          <div className="dash-sidecar-copy">
             <div className="font-semibold">{t("dash.webSearchSidecar")}</div>
+            <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
+          </div>
+          <div className="dash-delegation-controls">
             <Select
               value={sidecar?.webSearch.model ?? "gpt-5.6-luna"}
               options={sidecarModels}
@@ -281,36 +285,38 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               label={t("dash.sidecarModel")}
             />
           </div>
-          <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
         </div>
 
-        <div className="panel dash-sidecar-card" aria-busy={!sidecar || undefined}>
-          <div className="dash-sidecar-card__row">
+        <div className="panel dash-delegation-summary dash-sidecar-row-card" aria-busy={!sidecar || undefined}>
+          <div className="dash-sidecar-copy">
             <div className="font-semibold">{t("dash.visionSidecar")}</div>
-            <div className="dash-delegation-controls">
-              <Select
-                value={visionModel}
-                options={sidecarModels}
-                onChange={model => {
-                  const ladder = visionReasoningLadder(models, model);
-                  const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
-                  void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model), reasoning } });
-                }}
-                disabled={!sidecar || sidecarSaving}
-                label={t("dash.sidecarModel")}
-              />
-              <Select
-                value={visionReasoning}
-                options={visionReasoningOptionsFor(visionLadder, visionReasoning).map(value => ({ value, label: visionReasoningLabel(locale, value) }))}
-                onChange={reasoning => {
-                  void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
-                }}
-                disabled={!sidecar || sidecarSaving}
-                label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
-              />
-            </div>
+            <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
           </div>
-          <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
+          <div className="dash-delegation-controls">
+            <Select
+              value={visionModel}
+              options={visionModels}
+              onChange={model => {
+                const ladder = visionReasoningLadder(models, model);
+                const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
+                void saveSidecar({ vision: { model, backend: visionSidecarBackendForModel(models, visionModels, model), reasoning } });
+              }}
+              disabled={!sidecar || sidecarSaving}
+              label={t("dash.sidecarModel")}
+            />
+            <Select
+              value={visionReasoning}
+              // Raw wire value (low…max), matching the delegation panel's bare `high`.
+              options={visionReasoningOptionsFor(visionLadder, visionReasoning)
+                .map(value => ({ value, label: value }))}
+              onChange={reasoning => {
+                void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
+              }}
+              disabled={!sidecar || sidecarSaving}
+              align="right"
+              label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
+            />
+          </div>
         </div>
       </div>
 

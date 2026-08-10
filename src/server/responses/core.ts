@@ -16,7 +16,13 @@ import {
   previousResponseReplayFailure,
   rememberResponseState,
 } from "../../responses/state";
-import { comboRouteDecisionTrace, NoEligiblePolicyCandidateError, routeModel, type RouteResult } from "../../router";
+import {
+  comboRouteDecisionTrace,
+  NoEligiblePolicyCandidateError,
+  routeConcreteModel,
+  routeModel,
+  type RouteResult,
+} from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
 import {
   advanceComboAfterFailure,
@@ -35,6 +41,7 @@ import {
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
+import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
 import { modelInList, namespacedToolName } from "../../types";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
 import {
@@ -199,7 +206,7 @@ import {
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
-import { responsesJsonToSseBody } from "../responses-json-events";
+import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
 
 /**
@@ -434,7 +441,11 @@ async function retryCodexPoolOnAlternateAccount(
       firstAuthCtx.writerGeneration,
     );
   }
-  if (!shouldDeferCodexResetDerivedCooldown(firstResponse, options.deferCodexResetDerivedCooldown)) {
+  const deferFirstOutcome = shouldDeferCodexResetDerivedCooldown(
+    firstResponse,
+    options.deferCodexResetDerivedCooldown,
+  );
+  const recordFirstOutcome = (): void => {
     recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
       ...quotaMeta,
       threadId: req.headers.get("x-codex-parent-thread-id"),
@@ -445,8 +456,10 @@ async function retryCodexPoolOnAlternateAccount(
       // Retry already advanced the RR ring via excludeAccountId — reuse for promotion.
       ...(retryAuthCtx.accountId ? { promoteAccountId: retryAuthCtx.accountId } : {}),
     });
-  }
-
+  };
+  // Only a combo reset-derived outcome is deferred. Retry-After, defaults, and
+  // ordinary requests must block the first account before the alternate send.
+  if (!deferFirstOutcome) recordFirstOutcome();
   const retryHeaders = headersForCodexAuthContext(req.headers, retryAuthCtx);
   const retryProvider = applyCodexAuthContextToProvider(
     stripCodexRuntimeProviderFields(route.provider),
@@ -473,8 +486,9 @@ async function retryCodexPoolOnAlternateAccount(
   );
 
   noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+  let upstreamResponse: Response;
   try {
-    const upstreamResponse = await fetchWithHeaderTimeout(
+    upstreamResponse = await fetchWithHeaderTimeout(
       request.url,
       {
         method: request.method,
@@ -489,26 +503,33 @@ async function retryCodexPoolOnAlternateAccount(
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
     );
-    // A real HTTP response proves the host was reached (#914).
-    const retryHostKey = upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url));
-    if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0) {
-      resetUpstreamHostHealth(retryHostKey, null);
-    } else {
-      resetUpstreamHostHealth(retryHostKey);
-    }
-    return {
-      kind: "retried",
-      authCtx: retryAuthCtx,
-      request,
-      upstreamResponse,
-      selectedForwardHeaders: retryHeaders,
-    };
   } catch (error) {
     // Attribute the transport failure to the alternate account (already selected).
     return { kind: "transport", error, authCtx: retryAuthCtx };
   } finally {
     request.releaseBodyObservation?.();
   }
+  // A real HTTP response proves the host was reached (#914).
+  const retryHostKey = upstreamHostHealthKey(route.providerName, safeOriginLabel(request.url));
+  if (normalizeUpstreamHostCircuitThreshold(config.upstreamHostCircuitThreshold) > 0) {
+    resetUpstreamHostHealth(retryHostKey, null);
+  } else {
+    resetUpstreamHostHealth(retryHostKey);
+  }
+  if (deferFirstOutcome && upstreamResponse.ok) {
+    // Deferral keeps the first account eligible for a later combo model while an
+    // alternate attempt is still fallible. Commit its quota outcome only once the
+    // alternate account returns a successful HTTP response; otherwise the combo may
+    // still need the first account for its next target.
+    recordFirstOutcome();
+  }
+  return {
+    kind: "retried",
+    authCtx: retryAuthCtx,
+    request,
+    upstreamResponse,
+    selectedForwardHeaders: retryHeaders,
+  };
 }
 
 
@@ -630,6 +651,12 @@ export interface HandleResponsesOptions {
   inboundWire?: InboundWire;
   /** Internal transport identity for route-scoped upstream compatibility policy. */
   inboundTransport?: "websocket";
+  /**
+   * Claude replay may add native-main auth so OpenAI sidecars remain available.
+   * Strip only that internal credential when the final route is a noncanonical
+   * forward destination; final routing can differ from Claude's preflight route.
+   */
+  stripClaudeMainAuthForNoncanonicalForward?: boolean;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
@@ -961,6 +988,10 @@ async function applyFinalRouteRequestNormalization(args: {
     parsed.options.serviceTier = tier;
   }
   applyServiceTierGate(route.provider, parsed._rawBody, parsed.options);
+  if (route.provider.adapter === "openai-responses" && route.provider.supportsServiceTier === false) {
+    logCtx.requestedServiceTier = undefined;
+    logCtx.requestedSpeedLabel = undefined;
+  }
 
   {
     const guidance = await multiAgentGuidanceText(parsed, {
@@ -1062,7 +1093,7 @@ export async function handleComboResponses(
     const provider = config.providers[target.provider];
     if (!provider || provider.disabled === true) return false;
     try {
-      const route = routeModel(config, `${target.provider}/${target.model}`);
+      const route = routeConcreteModel(config, `${target.provider}/${target.model}`);
       return isCanonicalOpenAiForwardProvider(route.provider);
     } catch {
       return false;
@@ -1096,7 +1127,7 @@ export async function handleComboResponses(
       ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
       ...(logCtx.surface ? { surface: logCtx.surface } : {}),
     };
-    const targetRoute = routeModel(config, `${pick.target.provider}/${pick.target.model}`);
+    const targetRoute = routeConcreteModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
       rawBody,
       pick.target,
@@ -1462,7 +1493,9 @@ async function handleResponsesInner(
 
   let route: RouteResult;
   try {
-    route = routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
+    route = options.comboAttempt
+      ? routeConcreteModel(config, parsed.modelId)
+      : routeModel(config, parsed.modelId, evidenceFromBody(parsed._rawBody));
     logCtx.routeDecision = route.routeDecision;
   } catch (err) {
     if (err instanceof NoAvailableComboTargetsError) {
@@ -1700,7 +1733,24 @@ async function handleResponsesInner(
     parsed.options.promptCacheKey,
     route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
   );
-  const adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+  let adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
+  const stripClaudeMainAuth = options.stripClaudeMainAuthForNoncanonicalForward === true
+    && adapterProvider.adapter === "openai-responses"
+    && adapterProvider.authMode === "forward"
+    && !isCanonicalOpenAiForwardProvider(adapterProvider);
+  if (stripClaudeMainAuth) {
+    releaseCodexAuthContextProbeLease(authCtx);
+    authCtx = { kind: "main", accountId: null };
+    route.provider = stripCodexRuntimeProviderFields(route.provider);
+    adapterProvider = stripCodexRuntimeProviderFields(adapterProvider);
+    selectedForwardHeaders = new Headers(selectedForwardHeaders);
+    selectedForwardHeaders.delete("authorization");
+    selectedForwardHeaders.delete("chatgpt-account-id");
+    delete route.codexAccountMode;
+    delete route.codexAccountId;
+    delete route.codexAccountNamespace;
+    logCtx.provider = route.providerName;
+  }
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   logCtx.providerAdapter = adapter.name;
   // Ordinary requests receive one durable attempt only after their final initial
@@ -2437,25 +2487,46 @@ async function handleResponsesInner(
         && options.inboundTransport !== "websocket"
         && providerModelResponsesUpstreamStreaming(route.providerName, route.provider, route.modelId) === false
         && route.provider.adapter === "openai-responses") {
+        let completed: Record<string, unknown> | undefined;
         try {
-          let completed = JSON.parse(clientJson) as Record<string, unknown>;
+          const parsedCompleted = JSON.parse(clientJson) as unknown;
+          if (!parsedCompleted || typeof parsedCompleted !== "object" || Array.isArray(parsedCompleted)) {
+            throw new TypeError("bounded Responses JSON is not an object");
+          }
+          let candidate = parsedCompleted as Record<string, unknown>;
           // The bounded-JSON answer bypasses the SSE relay, so it also bypasses
           // the SSE item-id rewrite. Apply the same client-facing normalization
           // here or this policy would silently disable id repair for the very
           // providers that need it (raw record already happened above).
           if (hasResponsesItemIdRepair(route.provider.responsesItemIdRepair)) {
-            completed = repairResponsesJsonItemIds(completed, route.provider.responsesItemIdRepair!, translatorBudget);
+            candidate = repairResponsesJsonItemIds(candidate, route.provider.responsesItemIdRepair!, translatorBudget);
+          }
+          completed = candidate;
+        } catch {
+          // Non-JSON despite content-type: fall through to the plain relay.
+        }
+        if (completed) {
+          let stream: ReadableStream<Uint8Array>;
+          try {
+            stream = responsesJsonToSseStream(completed);
+          } catch (error) {
+            if (error instanceof RangeError) {
+              return formatErrorResponse(
+                502,
+                "upstream_error",
+                "upstream JSON response exceeded the synthesized SSE item limit",
+              );
+            }
+            throw error;
           }
           const sseHeaders = sanitizePassthroughHeaders(headers);
           sseHeaders.set("content-type", "text/event-stream");
           sseHeaders.set("cache-control", "no-store");
-          return new Response(responsesJsonToSseBody(completed), {
+          return new Response(stream, {
             status: upstreamResponse.status,
             statusText: upstreamResponse.statusText,
             headers: sseHeaders,
           });
-        } catch {
-          // Non-JSON despite content-type: fall through to the plain relay.
         }
       }
       // WS turns reframe this JSON into events in the bridge, which is the
@@ -3154,11 +3225,26 @@ async function handleResponsesInner(
       }
       // Upstreams occasionally echo request details in error bodies — scrub token-shaped
       // material before it reaches the client-facing error surface.
-      const message = `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`;
+      const upstreamRetryAfter = upstreamResponse.headers.get("retry-after");
+      const message = enrichOpenCodeZenRateLimitMessage(
+        `Provider error ${upstreamResponse.status}: ${redactSecretString(errorText.slice(0, 500))}`,
+        {
+          status: upstreamResponse.status,
+          providerName: route.providerName,
+          baseUrl: route.provider.baseUrl,
+          adapter: route.provider.adapter,
+          authMode: route.provider.authMode,
+          hasApiKey: Boolean(route.provider.apiKey?.trim()),
+          upstreamRetryAfter,
+          // This recovery path is the HTTP Responses wire; custom runTurn transports
+          // never reach enrichOpenCodeZenRateLimitMessage here.
+          supportsHttpSameKeyRetry: true,
+        },
+      );
       const retryAfter = resolveClientRetryAfter({
         status: upstreamResponse.status,
         message,
-        upstreamRetryAfter: upstreamResponse.headers.get("retry-after"),
+        upstreamRetryAfter,
       });
       return formatErrorResponse(upstreamResponse.status, "upstream_error", message, {
         ...(retryAfter !== undefined ? { retryAfter } : {}),

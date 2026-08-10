@@ -283,8 +283,114 @@ describe("unauthenticated loopback listener", () => {
     // unauthenticated traffic after shutdown reported success.
     for (const port of [publicPort, loopbackPort]) {
       const probe = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
-      probe.stop(true);
+      await probe.stop(true);
     }
+  });
+
+  test("stopping the server clears the background intervals it started", async () => {
+    saveConfig(baseConfig(null));
+    const nativeSetInterval = globalThis.setInterval;
+    const nativeClearInterval = globalThis.clearInterval;
+    const started = new Set<ReturnType<typeof setInterval>>();
+    const cleared = new Set<ReturnType<typeof setInterval>>();
+
+    Object.defineProperty(globalThis, "setInterval", {
+      configurable: true,
+      value: ((...args: Parameters<typeof setInterval>) => {
+        const timer = nativeSetInterval(...args);
+        started.add(timer);
+        return timer;
+      }) as typeof setInterval,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "clearInterval", {
+      configurable: true,
+      value: ((timer: ReturnType<typeof setInterval>) => {
+        cleared.add(timer);
+        nativeClearInterval(timer);
+      }) as typeof clearInterval,
+      writable: true,
+    });
+
+    let allCleared = false;
+    try {
+      const server = startServer(0);
+      // Memory watchdog and state-store sweeper always replace their singleton;
+      // the storage scheduler may already be the leaked instance from a prior test.
+      expect(started.size).toBeGreaterThanOrEqual(2);
+      await server.stop(true);
+      allCleared = [...started].every(timer => cleared.has(timer));
+    } finally {
+      for (const timer of started) nativeClearInterval(timer);
+      Object.defineProperty(globalThis, "setInterval", {
+        configurable: true,
+        value: nativeSetInterval,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "clearInterval", {
+        configurable: true,
+        value: nativeClearInterval,
+        writable: true,
+      });
+    }
+    expect(allCleared).toBe(true);
+  });
+
+  test("stopping an older server does not clear a newer server's background intervals", async () => {
+    saveConfig(baseConfig(null));
+    const nativeSetInterval = globalThis.setInterval;
+    const nativeClearInterval = globalThis.clearInterval;
+    const started: Array<ReturnType<typeof setInterval>> = [];
+    const cleared = new Set<ReturnType<typeof setInterval>>();
+
+    Object.defineProperty(globalThis, "setInterval", {
+      configurable: true,
+      value: ((...args: Parameters<typeof setInterval>) => {
+        const timer = nativeSetInterval(...args);
+        started.push(timer);
+        return timer;
+      }) as typeof setInterval,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, "clearInterval", {
+      configurable: true,
+      value: ((timer: ReturnType<typeof setInterval>) => {
+        cleared.add(timer);
+        nativeClearInterval(timer);
+      }) as typeof clearInterval,
+      writable: true,
+    });
+
+    let newerTimersSurvivedOlderStop = false;
+    let newerTimersClearedOnOwnStop = false;
+    try {
+      const older = startServer(0);
+      const sharedTimers = [...started];
+      expect(sharedTimers.length).toBeGreaterThanOrEqual(3);
+      const newer = startServer(0);
+      // Singleton loops are process-scoped: the second live server acquires the
+      // same lease instead of replacing the watchdog and sweeper intervals.
+      expect(started).toEqual(sharedTimers);
+
+      await older.stop(true);
+      newerTimersSurvivedOlderStop = sharedTimers.every(timer => !cleared.has(timer));
+      await newer.stop(true);
+      newerTimersClearedOnOwnStop = sharedTimers.every(timer => cleared.has(timer));
+    } finally {
+      for (const timer of started) nativeClearInterval(timer);
+      Object.defineProperty(globalThis, "setInterval", {
+        configurable: true,
+        value: nativeSetInterval,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, "clearInterval", {
+        configurable: true,
+        value: nativeClearInterval,
+        writable: true,
+      });
+    }
+    expect(newerTimersSurvivedOlderStop).toBe(true);
+    expect(newerTimersClearedOnOwnStop).toBe(true);
   });
 
   test("a loopback bind failure rolls back the public listener rather than stranding it", async () => {
@@ -310,9 +416,9 @@ describe("unauthenticated loopback listener", () => {
         fetch: () => new Response("ok"),
       });
       expect(rebound.port).toBe(publicPort);
-      rebound.stop(true);
+      await rebound.stop(true);
     } finally {
-      squatter.stop(true);
+      await squatter.stop(true);
     }
   });
 

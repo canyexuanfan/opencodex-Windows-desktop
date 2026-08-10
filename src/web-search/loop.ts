@@ -1,6 +1,6 @@
 import type { AdapterRequest, IncomingMeta, ProviderAdapter } from "../adapters/base";
 import type { AdapterEvent, OcxMessage, OcxParsedRequest, OcxProviderConfig, OcxThinkingContent, OcxUsage, RateLimitRetryPolicy } from "../types";
-import { namespacedToolName } from "../types";
+import { namespacedToolName, toolChoiceToolPredicate } from "../types";
 import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
@@ -693,7 +693,9 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
   const toolNsMap = new Map<string, { namespace: string; name: string }>();
   const freeform = new Set<string>();
   const toolSearch = new Set<string>();
+  const toolAllowed = toolChoiceToolPredicate(parsed.options.toolChoice);
   for (const t of parsed.context.tools ?? []) {
+    if (!toolAllowed(t)) continue;
     if (t.namespace) toolNsMap.set(namespacedToolName(t.namespace, t.name), { namespace: t.namespace, name: t.name });
     if (t.freeform) freeform.add(t.name);
     if (t.toolSearch) toolSearch.add(t.name);

@@ -12,11 +12,12 @@
  * assert the captured upstream URL, which is externally observable.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { providerConfigSeed } from "../src/providers/derive";
+import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry, PROVIDER_REGISTRY } from "../src/providers/registry";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
 import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { handleResponses } from "../src/server/responses/core";
+import { MAX_SYNTHESIZED_OUTPUT_ITEMS } from "../src/server/responses-json-events";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -355,6 +356,23 @@ describe("the bounded-JSON mechanism stays alive behind a synthetic registry ent
     expect(text).toMatch(/"id":"rs_ocx_[0-9a-f]{8}/);
   });
 
+  test("an over-cap HTTP synthesis fails closed with 502", async () => {
+    globalThis.fetch = (async () => Response.json({
+      id: "resp_fixture",
+      object: "response",
+      status: "completed",
+      output: Array.from({ length: MAX_SYNTHESIZED_OUTPUT_ITEMS + 1 }, () => null),
+    })) as typeof fetch;
+    const response = await driveFixture(fixtureProvider());
+    expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const text = await response.text();
+    const body = JSON.parse(text) as { error?: { type?: string; message?: string } };
+    expect(body.error?.type).toBe("server_error");
+    expect(body.error?.message).toContain("synthesized SSE item limit");
+    expect(text).not.toContain("data: [DONE]");
+  });
+
   test("the WebSocket bounded-JSON reframe carries the same repaired ids", async () => {
     globalThis.fetch = (async () => completedWithPlaceholderIds()) as typeof fetch;
     const response = await driveFixture(repairingFixtureProvider(), { websocket: true });
@@ -439,7 +457,45 @@ describe("stateless Responses upstreams get no stateful parameters", () => {
 
   test("the seed and backfill carry the capability, and only for declaring entries", () => {
     expect(providerConfigSeed(getProviderRegistryEntry("deepseek")!).statelessResponses).toBe(true);
+    expect(providerConfigSeed(getProviderRegistryEntry("deepseek")!).requiresAdjacentResponsesToolResults).toBe(true);
     expect(providerConfigSeed(getProviderRegistryEntry("cerebras")!).statelessResponses).toBeUndefined();
+    expect(providerConfigSeed(getProviderRegistryEntry("cerebras")!).requiresAdjacentResponsesToolResults).toBeUndefined();
+
+    const stale = deepseekProvider();
+    delete stale.requiresAdjacentResponsesToolResults;
+    enrichProviderFromRegistry("deepseek", stale);
+    expect(stale.requiresAdjacentResponsesToolResults).toBe(true);
+  });
+
+  test("DeepSeek makes a matched tool result adjacent without dropping injected developer context", () => {
+    const call = { type: "function_call", call_id: "call_plan", name: "shell_command", arguments: "{}" };
+    const injected = {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "[planning-with-files] ACTIVE PLAN" }],
+    };
+    const output = { type: "function_call_output", call_id: "call_plan", output: "Exit code: 0" };
+    const tail = { type: "message", role: "user", content: [{ type: "input_text", text: "continue" }] };
+
+    const body = buildBody(deepseekProvider(), { input: [call, injected, output, tail] }) as { input: unknown[] };
+    expect(body.input).toEqual([call, output, injected, tail]);
+  });
+
+  test("tolerant Responses providers keep interleaved tool history unchanged", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.example/v1",
+      authMode: "key",
+      apiKey: "sk-test",
+    };
+    const input = [
+      { type: "function_call", call_id: "call_plan", name: "shell_command", arguments: "{}" },
+      { type: "message", role: "developer", content: [{ type: "input_text", text: "plan" }] },
+      { type: "function_call_output", call_id: "call_plan", output: "done" },
+    ];
+
+    const body = buildBody(provider, { input }) as { input: unknown[] };
+    expect(body.input).toEqual(input);
   });
 
   test("a replay miss does not forward an orphaned tool result", () => {

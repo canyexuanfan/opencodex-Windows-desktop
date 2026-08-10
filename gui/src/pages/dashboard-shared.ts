@@ -57,7 +57,15 @@ export interface SettingsData {
 export type SidecarBackend = "openai" | "anthropic";
 export type VisionReasoning = "low" | "medium" | "high" | "xhigh" | "max";
 export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning }
-export interface SidecarData { webSearch: SidecarSetting; vision: SidecarSetting }
+export interface VisionModelOption { value: string; label: string; backend: SidecarBackend; baseline?: boolean }
+export interface SidecarData {
+  webSearch: SidecarSetting;
+  vision: SidecarSetting;
+  /** Server-computed eligible describers. Optional: an older server omits it and
+   *  the client falls back to the legacy provider-name list rather than showing
+   *  an empty picker. */
+  visionModels?: VisionModelOption[];
+}
 export interface SidecarPatch {
   webSearch?: { backend?: SidecarBackend | null; model?: string };
   vision?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning };
@@ -204,6 +212,36 @@ export function sidecarModelOptions(models: ModelInfo[]) {
   return out;
 }
 
+/**
+ * Server list when present, else the legacy openai+anthropic list.
+ *
+ * `undefined` and `[]` mean different things and must not be collapsed. A server that
+ * predates this field sends no key at all, and falling back to the provider-name list is
+ * the documented degrade path for it. A current server that sends `[]` has computed that
+ * nothing is eligible, and repopulating the picker from `/api/models` would put back
+ * exactly the text-only rows this feature exists to remove.
+ *
+ * `currentBackend` is the backend already persisted for `current`. It travels with the
+ * grandfathered entry because the legacy fallback path has no server backend to read and
+ * would otherwise infer one from `/api/models`, where anything not literally provided by
+ * "anthropic" reads as OpenAI — silently rewriting a working Anthropic describer on the
+ * next save. What is already stored is better evidence than a guess.
+ */
+export function visionModelOptions(
+  serverOptions: VisionModelOption[] | undefined,
+  models: ModelInfo[],
+  current: string | undefined,
+  currentBackend?: SidecarBackend,
+): Array<{ value: string; label: string; backend?: SidecarBackend }> {
+  const options = serverOptions
+    ? serverOptions.map(option => ({ value: option.value, label: option.label, backend: option.backend }))
+    : sidecarModelOptions(models);
+  if (current && !options.some(option => option.value === current)) {
+    options.unshift({ value: current, label: current, ...(currentBackend ? { backend: currentBackend } : {}) });
+  }
+  return options;
+}
+
 /** Options for shadow-call replacement models use the proxy's canonical routing id. */
 export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined) {
   const out = [{ value: "", label: "—" }, ...models.map(model => ({ value: model.namespaced, label: model.namespaced }))];
@@ -213,6 +251,15 @@ export function shadowCallModelOptions(models: ModelInfo[], current: string | un
 
 export function sidecarBackendForModel(models: ModelInfo[], modelId: string): SidecarBackend {
   return models.find(model => model.id === modelId)?.provider === "anthropic" ? "anthropic" : "openai";
+}
+
+/** Server eligibility is authoritative; catalog inference only supports legacy picker entries. */
+export function visionSidecarBackendForModel(
+  models: ModelInfo[],
+  options: Array<{ value: string; backend?: SidecarBackend }>,
+  modelId: string,
+): SidecarBackend {
+  return options.find(option => option.value === modelId)?.backend ?? sidecarBackendForModel(models, modelId);
 }
 
 let lastInputWasKeyboard = false;

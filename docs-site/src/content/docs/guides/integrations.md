@@ -24,6 +24,10 @@ is deliberately loopback-only; remote `x-opencodex-api-key` wiring is deferred. 
 `HERMES_HOME`, `KIMI_CODE_HOME`, and `XDG_CONFIG_HOME` paths are likewise followed rather than
 guessed at. The table lists each client's default.
 
+For native OpenAI models, the generated OMP block selects its model-level Responses API, preserving
+image input and reasoning-effort controls. Routed models retain the provider's Chat Completions
+dialect so their existing adapters remain compatible.
+
 OpenClaw has several, and they do different jobs. `OPENCLAW_CONFIG_PATH` selects the
 file; `OPENCLAW_STATE_DIR`, `OPENCLAW_PROFILE` and `OPENCLAW_HOME` select the state
 directory, which is also what detection looks at — so a profile or relocated home
@@ -66,11 +70,12 @@ edits were yours.
 
 ## What to expect, honestly
 
-**Formatting is not preserved.** Applying parses your config and writes it back out, so
-every format may be reformatted, and YAML, JSON5 and TOML additionally lose their
-comments. Your settings survive the round trip and the bytes change. If you need the
-file exactly as it was, use Restore rather than Disable: the snapshot is a verbatim
-copy.
+**Formatting is generally not preserved.** Applying parses a config and writes it back
+out, so JSON, JSON5 and TOML may be reformatted and comments in JSON5 or TOML are lost.
+OMP is the exception: its YAML writer patches only `providers.opencodex`, preserving
+unrelated provider comments and formatting byte-for-byte. If that exact source range
+cannot be identified safely, the operation refuses instead. For other clients, use
+Restore when you need the previous file bytes: the snapshot is a verbatim copy.
 
 **If a value cannot be rewritten faithfully, the switch refuses instead.** The round
 trip covers the value kinds these formats use in practice, and where it does not —

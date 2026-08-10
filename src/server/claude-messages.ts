@@ -732,6 +732,7 @@ async function handleClaudeMessagesWithBudget(
     // Without this the replay would look native and a Responses-scoped wire default
     // would fire, disagreeing with the pre-flight decision above.
     inboundWire: "anthropic",
+    stripClaudeMainAuthForNoncanonicalForward: true,
     translatorBudget,
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
     onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),

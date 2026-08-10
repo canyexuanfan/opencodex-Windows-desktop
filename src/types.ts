@@ -223,6 +223,19 @@ export function isAllowedToolChoice(value: OcxToolChoice | undefined): value is 
   return typeof value === "object" && value !== null && "allowedTools" in value;
 }
 
+/** Compile the request's tool-choice policy into a reusable advertisement/restoration predicate. */
+export function toolChoiceToolPredicate(
+  choice: OcxToolChoice | undefined,
+): (tool: Pick<OcxTool, "namespace" | "name">) => boolean {
+  if (!choice || choice === "auto" || choice === "required") return () => true;
+  if (choice === "none") return () => false;
+  if (isAllowedToolChoice(choice)) {
+    const allowed = new Set(choice.allowedTools);
+    return tool => toolAllowedByChoice(tool, allowed);
+  }
+  return tool => toolChoiceAliases(tool).includes(choice.name);
+}
+
 export interface OcxRequestOptions {
   maxOutputTokens?: number;
   temperature?: number;
@@ -606,6 +619,17 @@ export interface OcxConfig {
    */
   subagentModelFallback?: string[];
   /**
+   * Per-primary-model fallback chains for spawned sub-agents, keyed by the
+   * requested primary model id (bare native or "provider/model"). Entries for
+   * the matching key are consulted after the requested model and before the
+   * global `subagentModelFallback` list.
+   *
+   * This is the supported home for per-role fallback metadata: storing it as
+   * `model_fallback` inside `$CODEX_HOME/agents/*.toml` makes Codex >= 0.146
+   * reject the whole role file as an unknown field (#1190).
+   */
+  subagentModelFallbackByModel?: Record<string, string[]>;
+  /**
    * TTL (ms) for cached sub-agent model availability probes. Default 60_000.
    */
   subagentModelFallbackPollMs?: number;
@@ -944,9 +968,24 @@ export interface OcxRoutingProfileOptimize {
   quota?: number;
 }
 
+/**
+ * Policy for the hard cost ceiling when a candidate has no finite cost
+ * estimate. `"allow"` (default) preserves the documented dry-run contract:
+ * the cap only excludes evidence known to exceed it, and the candidate's
+ * `cost.capOutcome` is `"unknown-allowed"`. `"exclude"` makes the ceiling
+ * fail-closed (`cost-limit-unknown` + `capOutcome: "unknown-excluded"`).
+ */
+export type OcxRoutingUnknownCostCapMode = "allow" | "exclude";
+
 export interface OcxRoutingProfileLimits {
   /** Hard per-request estimated-cost ceiling in USD. */
   maxEstimatedCostUsd?: number;
+  /**
+   * How `maxEstimatedCostUsd` behaves when the estimate is unknown.
+   * Defaults to `"allow"` (eligible + `cost.capOutcome: "unknown-allowed"`);
+   * opt in to `"exclude"` for a true hard ceiling.
+   */
+  onUnknownCost?: OcxRoutingUnknownCostCapMode;
 }
 
 export interface OcxRoutingProfileUnknownEvidence {
@@ -1118,6 +1157,18 @@ export interface RateLimitRetryPolicy {
 }
 
 /**
+ * User-configured display price for one model (USD per 1M tokens).
+ * Mirrors the `Cost4` shape used by the usage cost estimator; structurally
+ * compatible so config rows can be lifted directly into price overlays.
+ */
+export interface ProviderCostOverlay {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/**
  * One configured provider entry. `authMode` (default `"key"`) decides whether same-target 429
  * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
  */
@@ -1158,6 +1209,12 @@ export interface OcxProviderConfig {
    * forwarded to an upstream that cannot resolve their pair.
    */
   statelessResponses?: boolean;
+  /**
+   * Responses upstream whose parser requires each tool result to immediately follow
+   * its matching call. When enabled, only unambiguous matched pairs are reordered;
+   * intervening messages are preserved after the result instead of being dropped.
+   */
+  requiresAdjacentResponsesToolResults?: boolean;
   /**
    * Whether this provider's Responses route honours the OpenAI `service_tier`
    * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
@@ -1233,6 +1290,15 @@ export interface OcxProviderConfig {
   defaultMaxOutputTokens?: number;
   /** Model-specific fallback output token budgets. Exact/model-pattern entries beat the provider default. */
   modelMaxOutputTokens?: Record<string, number>;
+  /**
+   * Per-model display prices (USD per 1M tokens) keyed by exact model id —
+   * opencode-style per-model pricing in ocx's flat `modelXxx` convention:
+   * `{ "deepseek-v4-flash": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 } }`.
+   * User-configured prices win over the built-in jawcode/expected catalogs in
+   * the Logs `~$` estimate. Display-time estimation only; never billing. An
+   * all-zero entry means "not billable here" and falls through to the catalogs.
+   */
+  modelCosts?: Record<string, ProviderCostOverlay>;
   headers?: Record<string, string>;
   /** Default provider-routing preferences for models sent through the canonical OpenRouter API. */
   openRouterRouting?: OpenRouterProviderRouting;
@@ -1336,6 +1402,14 @@ export interface OcxProviderConfig {
   autoToolChoiceOnlyModels?: string[];
   /** Model ids that expect prior assistant `reasoning_content` to be preserved in chat history. */
   preserveReasoningContentModels?: string[];
+  /**
+   * Model ids whose upstream hard-rejects a tool_call continuation missing
+   * `reasoning_content` (DeepSeek thinking mode: HTTP 400). When the replay
+   * cache misses, the adapter injects a minimal placeholder for these models.
+   * Defaults to `preserveReasoningContentModels` when unset; set `[]` to opt
+   * out explicitly (e.g. MiniMax, where low effort disables thinking).
+   */
+  requiresReasoningPlaceholderModels?: string[];
   /**
    * Opt-in same-target 429 retry policy. Codex itself never retries 429 (it retries 5xx only,
    * openai/codex#30471), and single-key pools have no failover, so the proxy waits and replays

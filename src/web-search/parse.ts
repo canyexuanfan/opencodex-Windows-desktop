@@ -29,6 +29,10 @@ interface OutputItem {
   content?: OutputTextBlock[];
 }
 
+// ChatGPT's Codex backend does not accept `max_output_tokens` on sidecar requests. Bound the raw
+// streamed response here, before decoded text and authoritative/delta copies can accumulate.
+export const MAX_SIDECAR_RESPONSE_BYTES = 64 * 1024;
+
 /** Push a `url_citation` annotation as a source, de-duplicated by URL. */
 function collectAnnotation(ann: AnnotationLike | undefined, sources: WebSearchSource[], seen: Set<string>): void {
   if (!ann || ann.type !== "url_citation" || typeof ann.url !== "string" || seen.has(ann.url)) return;
@@ -49,7 +53,52 @@ function collectAnnotation(ann: AnnotationLike | undefined, sources: WebSearchSo
  */
 const URL_RE = /https?:\/\/[^\s<>()\[\]]+/;
 // A "Sources:" / "Source:" header, allowing markdown prefixes (#, *, -, >) and bold/italic wrappers.
-const SOURCES_HEADER_RE = /^\s*(?:#{1,6}\s*)?[-*>\s]*\**\s*sources?\s*\**\s*:?\s*\**\s*$/i;
+const SOURCES_WORD_RE = /^sources?/i;
+
+/** Match the legacy Sources-header grammar without overlapping regex quantifiers. */
+function isSourcesHeader(line: string): boolean {
+  let cursor = 0;
+  /** Match one code unit using JavaScript's existing `\s` semantics. */
+  const isWhitespace = (char: string | undefined): boolean => char !== undefined && /\s/u.test(char);
+  /** Advance over the current contiguous whitespace run. */
+  const skipWhitespace = (): void => {
+    while (isWhitespace(line[cursor])) cursor += 1;
+  };
+  /** Advance over the current contiguous Markdown-star run. */
+  const skipStars = (): void => {
+    while (line[cursor] === "*") cursor += 1;
+  };
+
+  skipWhitespace();
+  if (line[cursor] === "#") {
+    const start = cursor;
+    while (line[cursor] === "#") cursor += 1;
+    if (cursor - start > 6) return false;
+    skipWhitespace();
+  }
+
+  while (isWhitespace(line[cursor]) || line[cursor] === "-" || line[cursor] === "*" || line[cursor] === ">") {
+    cursor += 1;
+  }
+
+  const word = SOURCES_WORD_RE.exec(line.slice(cursor, cursor + 7));
+  if (!word) return false;
+  cursor += word[0].length;
+
+  // Preserve `\s*\**\s*:?\s*\**\s*$`: at most two star runs, with the optional
+  // colon between them. Either run may be empty, so `Sources:*` is one trailing run; three
+  // separated runs and a colon after the second run remain invalid.
+  skipWhitespace();
+  skipStars();
+  skipWhitespace();
+  if (line[cursor] === ":") {
+    cursor += 1;
+    skipWhitespace();
+  }
+  skipStars();
+  skipWhitespace();
+  return cursor === line.length;
+}
 
 /** Trim wrapping/trailing noise from a captured URL: angle brackets, then trailing punctuation. */
 function cleanUrl(url: string): string {
@@ -69,7 +118,7 @@ function extractTrailingSources(text: string): { text: string; sources: WebSearc
   // Find the LAST line that is a "Sources:" header (markdown prefixes allowed).
   let headerIdx = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (SOURCES_HEADER_RE.test(lines[i])) { headerIdx = i; break; }
+    if (isSourcesHeader(lines[i])) { headerIdx = i; break; }
   }
   if (headerIdx === -1) return { text, sources: [] };
   const sources: WebSearchSource[] = [];
@@ -130,6 +179,15 @@ function fromOutputArray(output: OutputItem[], seen: Set<string>): WebSearchResu
   return { text, sources };
 }
 
+function cancelReaderWithoutWaiting(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reason: string,
+): void {
+  try {
+    void reader.cancel(reason).catch(() => undefined);
+  } catch { /* best-effort body teardown */ }
+}
+
 /**
  * Parse the sidecar's streamed Responses SSE into a final answer + sources. Tolerant of the full set of
  * Responses streaming events: prefers the authoritative `response.completed` output[], then the
@@ -143,6 +201,7 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let responseBytes = 0;
   const seen = new Set<string>();
   // Holder object — fields are mutated inside the closure, so they can't live as narrowed locals.
   const acc: {
@@ -197,12 +256,22 @@ export async function parseSidecarSSE(response: Response): Promise<WebSearchResu
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      const remaining = MAX_SIDECAR_RESPONSE_BYTES - responseBytes;
+      const accepted = value.byteLength <= remaining ? value : value.subarray(0, remaining);
+      responseBytes += accepted.byteLength;
+      buffer += decoder.decode(accepted, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         const data = sseFieldValue(line, "data");
         if (data !== null) handle(data.trim());
+      }
+      if (responseBytes >= MAX_SIDECAR_RESPONSE_BYTES) {
+        // Preserve complete events accepted up to the cap, but discard any unterminated line and
+        // TextDecoder carry. Do not let a rejecting/hung cancel turn bounded partial output into
+        // an error or keep this parser waiting on upstream teardown.
+        cancelReaderWithoutWaiting(reader, "sidecar response byte limit reached");
+        break;
       }
     }
   } finally {

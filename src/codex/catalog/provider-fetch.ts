@@ -151,6 +151,13 @@ interface CapturedProviderGather {
   readonly policy: CatalogProviderDiscoveryPolicySnapshot;
   readonly request: CapturedModelsRequest;
   readonly observedAuth?: ModelsAuthResolution;
+  /**
+   * Configured model ids this provider must keep even when live discovery omits
+   * them — combo targets that are also listed in providers.*.models (OCX-111).
+   * Combo-only ids (not in models[]) stay out of the public catalog and are
+   * synthesized for combo derivation instead (#1305).
+   */
+  readonly retainConfiguredModelIds?: ReadonlySet<string>;
 }
 
 interface GatherFlightCapture {
@@ -381,6 +388,7 @@ function captureProviderGather(
   name: string,
   configured: OcxProviderConfig,
   authResolver: ModelsAuthResolver,
+  retainConfiguredModelIds?: ReadonlySet<string>,
 ): CapturedProviderGather {
   const enriched = detachedClone(configured);
   enrichProviderFromRegistry(name, enriched);
@@ -422,7 +430,30 @@ function captureProviderGather(
     policy,
     request,
     ...(observedAuth ? { observedAuth: Object.freeze({ ...observedAuth }) } : {}),
+    ...(retainConfiguredModelIds && retainConfiguredModelIds.size > 0
+      ? { retainConfiguredModelIds }
+      : {}),
   });
+}
+
+/** Model ids each provider must retain for combo catalog derivation (OCX-111). */
+export function configuredComboTargetModelsByProvider(
+  config: Pick<OcxConfig, "combos">,
+): Map<string, ReadonlySet<string>> {
+  const byProvider = new Map<string, Set<string>>();
+  for (const id of listComboIds(config)) {
+    const combo = getCombo(config, id);
+    if (!combo) continue;
+    for (const target of combo.targets) {
+      let models = byProvider.get(target.provider);
+      if (!models) {
+        models = new Set();
+        byProvider.set(target.provider, models);
+      }
+      models.add(target.model);
+    }
+  }
+  return byProvider;
 }
 
 function captureGatherFlight(
@@ -431,9 +462,15 @@ function captureGatherFlight(
 ): GatherFlightCapture {
   const providerAuthOutcomes: CatalogGatherProviderAuthOutcome[] = [];
   const authResolver = createAuthResolver(providerAuthOutcomes);
+  const comboTargetsByProvider = configuredComboTargetModelsByProvider(config);
   const providers = Object.entries(config.providers)
     .filter(([, provider]) => provider.disabled !== true)
-    .map(([name, provider]) => captureProviderGather(name, provider, authResolver));
+    .map(([name, provider]) => captureProviderGather(
+      name,
+      provider,
+      authResolver,
+      comboTargetsByProvider.get(name),
+    ));
   const discoveryPolicySnapshots = Object.freeze(providers.map(provider => provider.policy));
   return Object.freeze({
     discoveryPolicyIdentity: keyedGatherIdentity("catalog-discovery-policy-v1", discoveryPolicySnapshots),
@@ -460,6 +497,9 @@ function captureGatherFlight(
         // It is the one member of a provider row that is legitimately a function,
         // so it is dropped here rather than allowed to break every encode.
         provider: omitProviderTransportExecutor(provider.provider),
+        // Combo retention is capture-time state, not a provider-row field. Two
+        // gathers that share providers but differ in combo targets must not join.
+        retainConfiguredModelIds: [...(provider.retainConfiguredModelIds ?? [])].sort(),
       }))),
     discoveryPolicySnapshots,
     providers: Object.freeze(providers),
@@ -846,7 +886,9 @@ function normalizedStringList(value: unknown, maxItems = 32, maxLength = 64): st
 function modelCapabilities(item: ProviderModelsApiItem): string[] | undefined {
   const metadata = plainRecord(item.metadata);
   const metadataCapabilities = metadata?.capabilities;
-  const capabilityRecord = plainRecord(metadataCapabilities) ?? plainRecord(item.capabilities);
+  const capabilityRecord = plainRecord(metadataCapabilities)
+    ?? plainRecord(item.capabilities)
+    ?? plainRecord(item.features);
   const out = new Set<string>();
   for (const list of [item.capabilities, item.features, item.supported_features, metadataCapabilities]) {
     for (const capability of normalizedStringList(list) ?? []) out.add(capability);
@@ -876,7 +918,9 @@ function modelInputModalities(
   capabilities: readonly string[] | undefined,
 ): string[] | undefined {
   const metadata = plainRecord(item.metadata);
-  const capabilityRecord = plainRecord(metadata?.capabilities) ?? plainRecord(item.capabilities);
+  const capabilityRecord = plainRecord(metadata?.capabilities)
+    ?? plainRecord(item.capabilities)
+    ?? plainRecord(item.features);
   const explicit = normalizedStringList(
     item.input_modalities
       ?? item.modalities
@@ -903,7 +947,9 @@ function modelInputModalities(
     if (inferred.length > 0) return [...new Set(inferred)];
   }
   if (capabilityRecord?.vision === false) return ["text"];
-  if (capabilityRecord?.vision === true || capabilities?.some(value => value === "vision" || value === "image-input")) {
+  if (capabilityRecord?.vision === true || capabilities?.some(value => (
+    value === "vision" || value === "image-input" || value === "image_input"
+  ))) {
     return ["text", "image"];
   }
   return undefined;
@@ -923,7 +969,16 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
       item.max_context_length,
     );
   const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens);
-  const rawReasoningEfforts = capabilityRecord?.reasoning_effort ?? item.reasoning_efforts;
+  // Some OpenAI-compatible catalogs expose the selectable ladder under
+  // `reasoning_parameters.efforts` instead of the older `reasoning_efforts` key.
+  // Treat both as model metadata: otherwise a valid upstream capability disappears
+  // before client exporters (including omp) can advertise it.
+  const reasoningParameters = plainRecord(item.reasoning_parameters)
+    ?? plainRecord(metadata?.reasoning_parameters)
+    ?? plainRecord(capabilityRecord?.reasoning_parameters);
+  const rawReasoningEfforts = capabilityRecord?.reasoning_effort
+    ?? item.reasoning_efforts
+    ?? reasoningParameters?.efforts;
   const listedReasoningEfforts = normalizedStringList(rawReasoningEfforts, 8, 24);
   const reasoningEfforts = listedReasoningEfforts
     ? sanitizeCodexReasoningEfforts(listedReasoningEfforts)
@@ -1004,6 +1059,30 @@ async function fetchProviderModelsWithAuth(
     provider: name,
     ...catalogHintsFromProviderConfig(name, prov, id, contextCap),
   }));
+  const withConfiguredRetention = (
+    models: CatalogModel[],
+    options?: { retainComboTargets?: boolean; warnDrops?: boolean },
+  ): CatalogModel[] => {
+    const { models: merged, droppedConfiguredIds } = mergeConfiguredModelsIntoLiveCatalog({
+      name,
+      provider: prov,
+      models,
+      configured,
+      retainConfiguredModelIds: captured.retainConfiguredModelIds,
+      contextCap,
+      seedVertexDefault,
+      retainComboTargets: options?.retainComboTargets,
+    });
+    if (
+      options?.warnDrops === true
+      && droppedConfiguredIds.length > 0
+      && name !== OPENAI_API_PROVIDER_ID
+      && !QUIET_AUTHORITATIVE_CATALOG_PROVIDERS.has(name)
+    ) {
+      warnDroppedConfiguredIdsOnce(name, droppedConfiguredIds);
+    }
+    return merged;
+  };
   // Static catalogs never need an OAuth refresh or an upstream model request. Clear any
   // discovery failure left by an older live configuration even when the account is logged out.
   if (prov.liveModels === false) {
@@ -1047,12 +1126,17 @@ async function fetchProviderModelsWithAuth(
     // plan (e.g. claude-fable-5) drop out instead of failing ERROR_BAD_MODEL_NAME. Fall back to the seed.
     const cachedCursor = getFreshCached(name, ttlMs);
     if (cachedCursor) {
-      return observed(applyConfigHintsToCachedModels(name, prov, cachedCursor), "authoritative");
+      return observed(
+        withConfiguredRetention(applyConfigHintsToCachedModels(name, prov, cachedCursor)),
+        "authoritative",
+      );
     }
     if (isModelsFetchCoolingDown(name)) {
       const cooling = getStaleCached(name);
       return observed(
-        cooling ? applyConfigHintsToCachedModels(name, prov, cooling) : configured,
+        withConfiguredRetention(
+          cooling ? applyConfigHintsToCachedModels(name, prov, cooling) : configured,
+        ),
         "degraded",
       );
     }
@@ -1060,10 +1144,14 @@ async function fetchProviderModelsWithAuth(
     if (liveResult.ok) {
       const available = filterCursorConfiguredModelsByLiveDiscovery(configured, liveResult.models);
       const result = available.length > 0 ? available : configured;
-      // Count what discovery actually returned, not the configured rows we fall back to.
-      if (!setCached(name, result, Date.now(), cacheGeneration)) return observed(configured, "degraded");
+      // Cache the discovery-filtered roster without combo retention so a later
+      // gather can re-apply the current capture's retain set on read.
+      const forCache = withConfiguredRetention(result, { retainComboTargets: false });
+      if (!setCached(name, forCache, Date.now(), cacheGeneration)) {
+        return observed(withConfiguredRetention(configured), "degraded");
+      }
       markProviderDiscoveryOk(name, liveResult.models.length);
-      return observed(result, "authoritative");
+      return observed(withConfiguredRetention(forCache, { warnDrops: true }), "authoritative");
     }
     if (isCurrentCacheGeneration()) {
       markModelsFetchFailure(name);
@@ -1074,7 +1162,9 @@ async function fetchProviderModelsWithAuth(
     }
     const staleCursor = getStaleCached(name);
     return observed(
-      staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured,
+      withConfiguredRetention(
+        staleCursor ? applyConfigHintsToCachedModels(name, prov, staleCursor) : configured,
+      ),
       "degraded",
     );
   }
@@ -1090,7 +1180,9 @@ async function fetchProviderModelsWithAuth(
   const fresh = getFreshCached(name, ttlMs);
   if (fresh) {
     return observed(
-      withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, fresh, contextCap)),
+      withConfiguredRetention(
+        withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, fresh, contextCap)),
+      ),
       "authoritative",
     ); // dedups Codex's frequent /v1/models polling within the TTL
   }
@@ -1099,9 +1191,11 @@ async function fetchProviderModelsWithAuth(
     // fetch timeout on every catalog poll — the dashboard polls this path per page load.
     const stale = getStaleCached(name);
     return observed(
-      stale
-        ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
-        : failedDiscoveryConfigured,
+      withConfiguredRetention(
+        stale
+          ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
+          : failedDiscoveryConfigured,
+      ),
       "degraded",
     );
   }
@@ -1114,7 +1208,11 @@ async function fetchProviderModelsWithAuth(
     failure: ProviderModelDiscoveryFailure,
   ): { models: CatalogModel[]; fallback: "stale" | "configured"; shouldLog: boolean } => {
     if (!isCurrentCacheGeneration()) {
-      return { models: failedDiscoveryConfigured, fallback: "configured", shouldLog: false };
+      return {
+        models: withConfiguredRetention(failedDiscoveryConfigured),
+        fallback: "configured",
+        shouldLog: false,
+      };
     }
     // Decide logging BEFORE recording the new status, so we can compare against the prior one and
     // suppress an identical repeated failure (#395 log flood). The failure stays observable via the
@@ -1124,9 +1222,11 @@ async function fetchProviderModelsWithAuth(
     markProviderDiscoveryFailed(name, failure);
     const stale = getStaleCached(name);
     return {
-      models: stale
-        ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
-        : failedDiscoveryConfigured,
+      models: withConfiguredRetention(
+        stale
+          ? withVertexDefaultSeed(applyConfigHintsToCachedModels(name, prov, stale, contextCap))
+          : failedDiscoveryConfigured,
+      ),
       fallback: stale ? "stale" : "configured",
       shouldLog,
     };
@@ -1202,9 +1302,12 @@ async function fetchProviderModelsWithAuth(
         ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
         ...(model.inputModalities ? { inputModalities: model.inputModalities } : {}),
       }, contextCap));
-      if (!setCached(name, live, Date.now(), cacheGeneration)) return observed(configured, "degraded");
+      const forCache = withConfiguredRetention(live, { retainComboTargets: false });
+      if (!setCached(name, forCache, Date.now(), cacheGeneration)) {
+        return observed(withConfiguredRetention(configured), "degraded");
+      }
       markProviderDiscoveryOk(name, live.length);
-      return observed(live, "authoritative");
+      return observed(withConfiguredRetention(forCache, { warnDrops: true }), "authoritative");
     }
     const extracted = extractProviderModelItems(bounded.value, discovery);
     if (!extracted.ok) {
@@ -1236,37 +1339,24 @@ async function fetchProviderModelsWithAuth(
     // Capture the count BEFORE the alias/configured augmentation below pushes extra rows into
     // `live`; otherwise configured entries would be reported as discovered ones.
     const liveModelCount = live.length;
-    const liveIds = new Set(live.map(m => m.id));
-    // Dated-release aliases (Anthropic pattern): older models may appear in the live catalog
-    // ONLY under their dated id (claude-haiku-4-5-20251001) while the config names the
-    // API-valid alias (claude-haiku-4-5). Such aliases are real, callable models — keep them
-    // in the authoritative catalog (alias id, hints from the dated live entry) instead of
-    // dropping them and warning on every poll.
-    const droppedConfiguredIds: string[] = [];
-    for (const m of configured) {
-      if (liveIds.has(m.id)) continue;
-      const dated = live.find(l => isDatedVariantId(l.id, m.id));
-      if (dated) {
-        // Reapply config hints so alias-keyed overrides (modelContextWindows etc.) win.
-        live.push(applyProviderConfigHints(name, prov, { ...dated, id: m.id }, contextCap));
-      } else if (seedVertexDefault || shouldRetainConfiguredProviderModel(name, m.id)) {
-        live.push(m);
-      } else {
-        droppedConfiguredIds.push(m.id);
-      }
-    }
-    if (live.length === 0 && name !== OPENAI_API_PROVIDER_ID) {
+    // Dated-release aliases + configured retention (compat allow-list, combo targets,
+    // Vertex default). Cache without combo retention so a later gather re-applies the
+    // current capture's retain set on read (warm-cache OCX-111 / #1308).
+    const forCache = withConfiguredRetention(live, { retainComboTargets: false });
+    const returned = withConfiguredRetention(forCache, { warnDrops: true });
+    const droppedConfiguredIds = configured
+      .map(model => model.id)
+      .filter(id => !returned.some(model => model.id === id));
+    if (returned.length === 0 && name !== OPENAI_API_PROVIDER_ID) {
       console.warn(
         `[opencodex] Provider model discovery for "${name}" returned an authoritative empty catalog; ${droppedConfiguredIds.length > 0 ? `dropping configured model ids: ${droppedConfiguredIds.join(", ")}` : "no models will be exposed"}.`,
       );
-    } else if (droppedConfiguredIds.length > 0
-      && name !== OPENAI_API_PROVIDER_ID
-      && !QUIET_AUTHORITATIVE_CATALOG_PROVIDERS.has(name)) {
-      warnDroppedConfiguredIdsOnce(name, droppedConfiguredIds);
     }
-    if (!setCached(name, live, Date.now(), cacheGeneration)) return observed(configured, "degraded");
+    if (!setCached(name, forCache, Date.now(), cacheGeneration)) {
+      return observed(withConfiguredRetention(configured), "degraded");
+    }
     markProviderDiscoveryOk(name, liveModelCount);
-    return observed(live, "authoritative");
+    return observed(returned, "authoritative");
   } catch (error) {
     if (error instanceof ProviderOutboundPolicyError) {
       const { models, fallback, shouldLog } = failedDiscoveryFallback({ reason: "blocked" });
@@ -1311,6 +1401,60 @@ export function shouldRetainConfiguredProviderModel(providerName: string, modelI
   if (CALLABLE_CONFIGURED_COMPATIBILITY_MODELS[providerName]?.has(modelId)) return true;
   if (providerName === "opencode-free") return modelId === "big-pickle" || modelId.endsWith("-free");
   return false;
+}
+
+/**
+ * Fold dated-release aliases and retain configured rows that must survive an
+ * authoritative live roster (compatibility allow-list, combo targets, Vertex
+ * default). Used on every discovery return — live, fresh cache, stale, and
+ * failure fallback — so a warm cache captured before a combo existed still
+ * surfaces the configured target (OCX-111 / #1308).
+ *
+ * Cache writes should pass `retainComboTargets: false` so combo retention is
+ * re-applied on read against the current capture, not frozen into the TTL entry.
+ */
+export function mergeConfiguredModelsIntoLiveCatalog(opts: {
+  name: string;
+  provider: OcxProviderConfig;
+  models: readonly CatalogModel[];
+  configured: readonly CatalogModel[];
+  retainConfiguredModelIds?: ReadonlySet<string>;
+  contextCap?: number;
+  seedVertexDefault?: boolean;
+  retainComboTargets?: boolean;
+}): { models: CatalogModel[]; droppedConfiguredIds: string[] } {
+  const {
+    name,
+    provider: prov,
+    configured,
+    retainConfiguredModelIds,
+    contextCap,
+    seedVertexDefault,
+    retainComboTargets = true,
+  } = opts;
+  const out = [...opts.models];
+  const present = new Set(out.map(model => model.id));
+  const droppedConfiguredIds: string[] = [];
+  for (const candidate of configured) {
+    if (present.has(candidate.id)) continue;
+    const dated = out.find(live => isDatedVariantId(live.id, candidate.id));
+    if (dated) {
+      out.push(applyProviderConfigHints(name, prov, { ...dated, id: candidate.id }, contextCap));
+      present.add(candidate.id);
+      continue;
+    }
+    if (
+      seedVertexDefault === true
+      || shouldRetainConfiguredProviderModel(name, candidate.id)
+      || (retainComboTargets && retainConfiguredModelIds?.has(candidate.id) === true)
+    ) {
+      out.push(candidate);
+      present.add(candidate.id);
+      continue;
+    }
+    droppedConfiguredIds.push(candidate.id);
+  }
+  return { models: out, droppedConfiguredIds };
 }
 
 export function filterCatalogVisibleModels(

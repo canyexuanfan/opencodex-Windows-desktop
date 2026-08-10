@@ -253,11 +253,11 @@ export function shouldUpgradeToUpstreamEntry(entry: RawEntry): boolean {
 }
 
 export function nativeOpenAiSlugs(): string[] {
-  const live = listCatalogNativeSlugs();
+  const live = catalogNativeSlugs();
   return live.length > 0 ? unique([...live, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]) : NATIVE_OPENAI_MODELS;
 }
 
-export function listCatalogNativeSlugs(): string[] {
+function catalogNativeSlugs(): string[] {
   const cat = readCurrentCatalogOrCache();
   const models = cat?.models ?? [];
   const live = models.flatMap(entry => {
@@ -271,7 +271,11 @@ export function listCatalogNativeSlugs(): string[] {
   // Deliberately ignore `visibility`: it is a rendered projection of disabledModels and account
   // selectors, so treating it as fresh availability would shrink the supported set between syncs.
   // visibleNativeSlugs applies the current disabledModels source of truth for public consumers.
+  return unique([...live, ...accountBound]);
+}
+
+export function listCatalogNativeSlugs(): string[] {
   // Ensure documented additions (e.g. gpt-5.3-codex-spark) appear even when the bundled catalog
   // predates the slug — mirrors nativeOpenAiSlugs() which already merges them for /v1/models.
-  return unique([...live, ...accountBound, ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
+  return unique([...catalogNativeSlugs(), ...DOCUMENTED_NATIVE_OPENAI_ADDITIONS]);
 }

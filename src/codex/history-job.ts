@@ -25,7 +25,7 @@ import type {
   HistoryWorkerResult,
 } from "./history-worker";
 import { historyBackupPathFor } from "./history-provider";
-import type { CodexHistoryFailureReason } from "./history-provider";
+import type { CodexHistoryFailureReason, CodexHistoryVerifiedNoopProof } from "./history-provider";
 import { getCodexHome } from "./paths";
 
 /** Where Codex keeps its resume history, and the manifest that shadows it. */
@@ -59,6 +59,47 @@ export function resolveCodexHistoryJobTarget(): {
 
 /** How long a history unit may run before the parent stops waiting on it. */
 const WORKER_TIMEOUT_MS = 30_000;
+/** A terminated Worker must close before its caller can cross the file boundary. */
+const WORKER_CLOSE_TIMEOUT_MS = 5_000;
+
+function historyWorkerOsJoinSettleMs(platform = process.platform): number {
+  if (platform === "win32") return 1_500;
+  if (platform === "darwin" || platform === "linux") return 250;
+  return 0;
+}
+
+async function terminateAndJoinHistoryWorker(
+  worker: Worker,
+  closed: Promise<void>,
+): Promise<boolean> {
+  let timedOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const closeTimeout = new Promise<void>(resolve => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, WORKER_CLOSE_TIMEOUT_MS);
+  });
+
+  try {
+    worker.terminate();
+  } catch {
+    // A Worker that already closed still resolves through the close listener.
+  }
+
+  try {
+    await Promise.race([closed, closeTimeout]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+
+  const settleMs = historyWorkerOsJoinSettleMs();
+  if (settleMs > 0) {
+    await Bun.sleep(0);
+    await Bun.sleep(settleMs);
+  }
+  return !timedOut;
+}
 
 export interface CodexHistoryJobRequest {
   readonly canonicalCodexHome: string;
@@ -69,7 +110,7 @@ export interface CodexHistoryJobRequest {
 }
 
 export type CodexHistoryJobOutcome =
-  | { readonly kind: "converged"; readonly rows: number; readonly files: number }
+  | { readonly kind: "converged"; readonly rows: number; readonly files: number; readonly proof?: CodexHistoryVerifiedNoopProof }
   | { readonly kind: "skipped" }
   | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" | "desired_disabled" | "desired_enabled" }
   | { readonly kind: "failed"; readonly reason: "worker-error" | "worker-died" | "timeout";
@@ -92,8 +133,9 @@ export function isPlausibleWorkerResultForTests(
   message: Record<string, unknown>,
   requestId: string,
   jobId: string,
+  target?: Pick<CodexHistoryJobRequest, "canonicalStateDbPath" | "canonicalBackupPath" | "operation">,
 ): boolean {
-  return isPlausibleWorkerResult(message, requestId, jobId);
+  return isPlausibleWorkerResult(message, requestId, jobId, target);
 }
 
 /**
@@ -108,13 +150,30 @@ function isPlausibleWorkerResult(
   message: Record<string, unknown>,
   requestId: string,
   jobId: string,
+  target?: Pick<CodexHistoryJobRequest, "canonicalStateDbPath" | "canonicalBackupPath" | "operation">,
 ): boolean {
   if (message.requestId !== requestId || message.jobId !== jobId) return false;
   switch (message.type) {
     case "done":
-      return (message.outcome === "converged" || message.outcome === "skipped")
+      if (!((message.outcome === "converged" || message.outcome === "skipped")
         && typeof message.rows === "number"
-        && typeof message.files === "number";
+        && typeof message.files === "number")) return false;
+      if (message.proof === undefined) return true;
+      if (!target || !message.proof || typeof message.proof !== "object" || Array.isArray(message.proof)) return false;
+      {
+        const proof = message.proof as Record<string, unknown>;
+        return target.operation === "migrate-openai"
+          && message.outcome === "converged"
+          && message.rows === 0
+          && message.files === 0
+          && proof.kind === "verified-noop"
+          && proof.pendingRows === 0
+          && proof.backupEntries === 0
+          && proof.canonicalStateDbPath === target.canonicalStateDbPath
+          && proof.stateDbPresent === true
+          && proof.canonicalBackupPath === target.canonicalBackupPath
+          && typeof proof.backupPresent === "boolean";
+      }
     case "blocked":
       return message.reason === "busy" || message.reason === "database" || message.reason === "unsafe-path"
         || message.reason === "desired_disabled" || message.reason === "desired_enabled";
@@ -227,7 +286,7 @@ function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutco
   }
   return result.outcome === "skipped"
     ? { kind: "skipped" }
-    : { kind: "converged", rows: result.rows, files: result.files };
+    : { kind: "converged", rows: result.rows, files: result.files, ...(result.proof ? { proof: result.proof } : {}) };
 }
 
 /**
@@ -263,20 +322,23 @@ export async function runCodexHistoryJob(
 
   return new Promise<CodexHistoryJobOutcome>(resolve => {
     let settled = false;
+    let resolveWorkerClosed!: () => void;
+    const workerClosed = new Promise<void>(closed => {
+      resolveWorkerClosed = closed;
+    });
     const finish = (outcome: CodexHistoryJobOutcome) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      // Terminate and join before settling: see the note above.
-      const done = () => resolve(outcome);
-      try {
-        const terminated = worker.terminate() as unknown;
-        if (terminated && typeof (terminated as Promise<unknown>).then === "function") {
-          void (terminated as Promise<unknown>).then(done, done);
-          return;
-        }
-      } catch { /* already gone */ }
-      done();
+      // Bun 1.3.14 returns void from terminate(); resolving on that return lets
+      // the Worker outlive this job and, under `bun test --isolate`, its file.
+      void terminateAndJoinHistoryWorker(worker, workerClosed).then(joined => {
+        resolve(joined
+          ? outcome
+          : { kind: "failed", reason: "worker-died", message: "history_worker_close_timeout" });
+      }, () => {
+        resolve({ kind: "failed", reason: "worker-died", message: "history_worker_join_failed" });
+      });
     };
 
     const timer = setTimeout(() => {
@@ -303,7 +365,7 @@ export async function runCodexHistoryJob(
         died("history_worker_unknown_message_type");
         return;
       }
-      if (!isPlausibleWorkerResult(message, requestId, jobId)) {
+      if (!isPlausibleWorkerResult(message, requestId, jobId, request)) {
         // A recognized type with a missing payload read as `converged` with
         // undefined fields once — success for work that may not have happened.
         died("history_worker_malformed_payload");
@@ -319,7 +381,10 @@ export async function runCodexHistoryJob(
      * and the Worker always closes after posting its result.
      */
     worker.addEventListener("messageerror", () => died("history_worker_unserializable_message"));
-    worker.addEventListener("close", () => died("history_worker_closed_early"));
+    worker.addEventListener("close", () => {
+      resolveWorkerClosed();
+      died("history_worker_closed_early");
+    }, { once: true });
 
     worker.onerror = (event: ErrorEvent) => {
       finish({

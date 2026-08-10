@@ -3,7 +3,7 @@ import { aggregateCodexPoolCapacity, CODEX_CAPACITY_MAX_QUOTA_AGE_MS, type Codex
 
 const NOW = 1_800_000_000_000;
 const account = (
-  plan: string | null,
+  plan: unknown,
   weeklyPercent: number | undefined,
   options: Partial<CodexCapacityAccount> & { weeklyResetAt?: number; monthlyPercent?: number; monthlyResetAt?: number } = {},
 ): CodexCapacityAccount => ({
@@ -177,6 +177,16 @@ describe("configured-weight Codex pool capacity", () => {
       unknownPlanAccounts: 4,
     });
     expect(Number.isFinite(result.quota?.weeklyPercent)).toBe(true);
+  });
+
+  test("non-string plans are excluded and never exposed in current-account metadata", () => {
+    const result = aggregateCodexPoolCapacity([
+      account({ tier: "pro" }, 20, { active: true, isMain: true }),
+    ], NOW);
+    expect(result.quota).toBeNull();
+    expect(result.aggregation).toMatchObject({ unknownPlanAccounts: 1, includedAccounts: 0 });
+    expect(result.aggregation?.currentAccount).not.toHaveProperty("plan");
+    expect(result.aggregation?.currentAccount?.quota?.weeklyPercent).toBe(20);
   });
 
   test("all-stale rows expose incomplete coverage without an aggregate window", () => {

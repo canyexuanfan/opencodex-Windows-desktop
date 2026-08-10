@@ -315,6 +315,30 @@ describe("web-search sidecar planning", () => {
     expect(plan?.settings.model).toBe("gpt-5.6-luna");
   });
 
+  test("planWebSearch never arms a sidecar excluded by tool_choice", () => {
+    const parsed = parsedWithWebSearch();
+    const sidecar = {
+      providerName: "openai" as const,
+      provider: forwardProvider,
+      accountMode: "direct" as const,
+      authContext: { kind: "main" as const, accountId: null },
+      headers: new Headers({ authorization: "Bearer chatgpt" }),
+    };
+    const plan = () => planWebSearch(config(), parsed, false, routedProvider, "model", sidecar);
+
+    parsed.options.toolChoice = "none";
+    expect(plan()).toBeUndefined();
+    parsed.options.toolChoice = { name: "read_file" };
+    expect(plan()).toBeUndefined();
+    parsed.options.toolChoice = { allowedTools: ["read_file"], mode: "required" };
+    expect(plan()).toBeUndefined();
+
+    parsed.options.toolChoice = { name: "web_search" };
+    expect(plan()).toBeDefined();
+    parsed.options.toolChoice = { allowedTools: ["web_search"], mode: "required" };
+    expect(plan()).toBeDefined();
+  });
+
   test("planWebSearch activates for pool-selected headers even when raw inbound auth would be main", () => {
     const parsed = parsedWithWebSearch();
     const selectedHeaders = headersForCodexAuthContext(

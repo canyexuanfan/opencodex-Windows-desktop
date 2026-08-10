@@ -1,11 +1,20 @@
-import http, { type IncomingMessage, type RequestOptions } from "node:http";
+import http, { type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import https from "node:https";
 
 export type PinnedAddress = { address: string; family: number };
 
+export type PinnedHttpErrorCode = "connect_timeout";
+
+export class PinnedHttpError extends Error {
+  override readonly name = "PinnedHttpError";
+  constructor(readonly code: PinnedHttpErrorCode, message: string) { super(message); }
+}
+
 export interface PinnedHttpRequestOptions {
   headers?: HeadersInit;
   maxBytes?: number;
+  /** Optional deadline for establishing the TCP connection and, for HTTPS, completing TLS. */
+  connectTimeoutMs?: number;
   idleTimeoutMs?: number;
   rejectUnauthorized?: boolean;
   context?: string;
@@ -27,6 +36,7 @@ function pinnedHttpRequest(
     throw new Error(`${options?.context ?? "request"} must use HTTP or HTTPS, got ${parsed.protocol}`);
   }
   const context = options?.context ?? "request";
+  const connectTimeoutMs = options?.connectTimeoutMs;
   const idleTimeoutMs = options?.idleTimeoutMs ?? 60_000;
   const maxBytes = options?.maxBytes;
   const headers = new Headers(options?.headers);
@@ -44,8 +54,15 @@ function pinnedHttpRequest(
     }
 
     let settled = false;
+    let req: ClientRequest | undefined;
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearConnectTimer = () => {
+      if (connectTimer !== undefined) clearTimeout(connectTimer);
+      connectTimer = undefined;
+    };
     const fail = (error: unknown) => {
-      try { req.destroy(); } catch { /* ignore */ }
+      clearConnectTimer();
+      try { req?.destroy(); } catch { /* ignore */ }
       if (settled) return;
       settled = true;
       reject(error instanceof Error ? error : new Error(String(error)));
@@ -83,6 +100,7 @@ function pinnedHttpRequest(
     };
 
     const onResponse = (response: IncomingMessage) => {
+      clearConnectTimer();
       const status = response.statusCode ?? 0;
       const responseHeaders = new Headers();
       for (const [key, value] of Object.entries(response.headers)) {
@@ -96,7 +114,7 @@ function pinnedHttpRequest(
 
       if (status < 200 || status >= 300) {
         try { response.destroy(); } catch { /* ignore */ }
-        try { req.destroy(); } catch { /* ignore */ }
+        try { req?.destroy(); } catch { /* ignore */ }
         if (settled) return;
         settled = true;
         resolve(new Response(null, { status, headers: responseHeaders }));
@@ -131,7 +149,7 @@ function pinnedHttpRequest(
           });
         },
         cancel() {
-          req.destroy();
+          req?.destroy();
         },
       });
 
@@ -141,15 +159,26 @@ function pinnedHttpRequest(
     };
 
     const requestFn = parsed.protocol === "https:" ? https.request : http.request;
-    const req = requestFn(requestOptions, onResponse);
+    req = requestFn(requestOptions, onResponse);
     const onAbort = () => fail(signal?.reason instanceof Error ? signal.reason : new Error("aborted"));
     signal?.addEventListener("abort", onAbort, { once: true });
+    req.on("socket", (socket) => {
+      if (!socket.connecting || connectTimeoutMs === undefined) return;
+      const connectedEvent = parsed.protocol === "https:" ? "secureConnect" : "connect";
+      connectTimer = setTimeout(() => fail(new PinnedHttpError("connect_timeout", `${context} connect timed out`)), connectTimeoutMs);
+      socket.once(connectedEvent, clearConnectTimer);
+      socket.once("error", clearConnectTimer);
+      socket.once("close", clearConnectTimer);
+    });
     req.setTimeout(idleTimeoutMs, () => fail(new Error(`${context} timed out`)));
     req.on("error", error => {
       signal?.removeEventListener("abort", onAbort);
       fail(error);
     });
-    req.on("close", () => signal?.removeEventListener("abort", onAbort));
+    req.on("close", () => {
+      clearConnectTimer();
+      signal?.removeEventListener("abort", onAbort);
+    });
     req.end(body);
   });
 }

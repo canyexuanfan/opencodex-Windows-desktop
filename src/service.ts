@@ -33,7 +33,7 @@ import {
   type ElevatedSchtasksCreateAndRunExecution,
   type ElevatedSchtasksCreateAndRunResult,
 } from "./lib/windows-elevation";
-import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, winswXmlPath, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION } from "./lib/winsw";
+import { defaultWinswEntry, installWinswService, startWinswService, stopWinswService, statusWinswRaw, uninstallWinswService, winswStatusSummary, winswXmlPath, WINSW_SERVICE_ID, WINSW_SHA256, WINSW_VERSION, type WinswStatus } from "./lib/winsw";
 import { hardenSecretDir, hardenSecretPath } from "./lib/windows-secret-acl";
 import { windowsEnvIndirectBatchPathList, windowsEnvIndirectBatchValue } from "./lib/win-paths";
 import { recordOwnedConfigPath } from "./lib/config-ownership";
@@ -2452,33 +2452,53 @@ function removeServiceInstallState(): void {
   }
 }
 
+type UninstallServiceHooksForTests = {
+  platform: typeof process.platform;
+  assertEnvironment: () => void;
+  probeWindowsTask: () => WindowsSchedulerTaskProbe;
+  uninstallWindowsTask: () => void;
+  nativeStatus: () => WinswStatus;
+  uninstallNative: () => void;
+  removeInstallState: () => void;
+};
+
+let uninstallServiceHooksForTests: UninstallServiceHooksForTests | null = null;
+
+/** Test-only hooks for full-uninstall service removal. */
+export function setUninstallServiceHooksForTests(hooks: UninstallServiceHooksForTests | null): void {
+  uninstallServiceHooksForTests = hooks;
+}
+
 /**
  * Best-effort service removal for full uninstall. Unlike `ocx service uninstall`, this is quiet
- * when no service exists and never exits the process just because the platform has no service
- * manager.
+ * when no service exists or the platform has no service manager. An installed native Windows
+ * service or scheduler task that cannot be removed throws so the caller cannot erase state and
+ * report success.
  */
 export function uninstallServiceIfInstalled(): boolean {
-  assertServiceEnvironmentMatchesInstall();
-  if (process.platform === "darwin") {
+  const hooks = uninstallServiceHooksForTests;
+  (hooks?.assertEnvironment ?? assertServiceEnvironmentMatchesInstall)();
+  const platform = hooks?.platform ?? process.platform;
+  if (platform === "darwin") {
     if (existsSync(plistPath())) {
       try { uninstallLaunchd(); removeServiceInstallState(); return true; } catch { return false; }
     }
-  } else if (process.platform === "win32") {
+  } else if (platform === "win32") {
     let removed = false;
-    try {
-      const q = schtasks(["/query", "/tn", TASK]);
-      if (q.includes(TASK)) { uninstallWindows(); removed = true; }
-    } catch { /* task not found */ }
-    if (statusWinswRaw() !== "nonexistent") {
-      try {
-        uninstallWinswService();
-        removed = true;
-      } catch (err) {
-        console.warn(`⚠️  Failed to remove native service: ${err instanceof Error ? err.message : String(err)}. Check 'sc.exe query ${WINSW_SERVICE_ID}'.`);
-      }
+    const scheduler = (hooks?.probeWindowsTask ?? probeWindowsSchedulerTask)();
+    if (scheduler.status === "unknown") {
+      throw new Error(`Could not determine Task Scheduler state: ${scheduler.detail}`);
     }
-    if (removed) { removeServiceInstallState(); return true; }
-  } else if (process.platform === "linux" && existsSync(unitPath())) {
+    if (scheduler.status === "present") {
+      (hooks?.uninstallWindowsTask ?? uninstallWindows)();
+      removed = true;
+    }
+    if ((hooks?.nativeStatus ?? statusWinswRaw)() !== "nonexistent") {
+      (hooks?.uninstallNative ?? uninstallWinswService)();
+      removed = true;
+    }
+    if (removed) { (hooks?.removeInstallState ?? removeServiceInstallState)(); return true; }
+  } else if (platform === "linux" && existsSync(unitPath())) {
     try { uninstallSystemd(); removeServiceInstallState(); return true; } catch {
       try { unlinkSync(unitPath()); removeServiceInstallState(); return true; } catch { return false; }
     }
