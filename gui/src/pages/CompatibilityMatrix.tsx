@@ -310,7 +310,9 @@ export default function CompatibilityMatrix({
     setFilters(updater);
   }, [clearDetail, resetPagination]);
 
-  const validExtraPage = extraPage?.baseData === surface.data && extraPage.queryKey === queryKey
+  const validExtraPage = extraPage !== null
+    && extraPage.baseData === surface.data
+    && extraPage.queryKey === queryKey
     ? extraPage
     : null;
 
