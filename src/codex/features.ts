@@ -705,22 +705,19 @@ function editScalarInTable(content: string, table: string, key: string, encoded:
   for (let i = headerIdx + 1; i < lines.length; i++) {
     if (/^\s*\[/.test(lines[i])) { end = i; break; }
   }
-  const keyRe = new RegExp(`^(\\s*)${tomlKeyPattern(key)}\\s*=\\s*`);
   for (let i = headerIdx + 1; i < end; i++) {
-    const m = lines[i].match(keyRe);
-    if (!m) continue;
+    const entry = findTomlAssignment(lines[i], key);
+    if (!entry) continue;
     // The existing value may itself contain '#', so scan the value token
     // string-aware instead of splitting on '#'.
     const line = lines[i];
-    const valueStart = m[0].length;
-    const valueEnd = scanTomlValueEnd(line, valueStart);
-    const trailing = line.slice(valueEnd);
+    const trailing = line.slice(entry.valueEnd);
     if (encoded === null) {
       lines.splice(i, 1);
       return applyEol(lines.join("\n"), eol);
     }
-    if (line.slice(valueStart, valueEnd).trim() === encoded) return content;
-    lines[i] = `${m[1]}${key} = ${encoded}${trailing}`;
+    if (line.slice(entry.valueStart, entry.valueEnd).trim() === encoded) return content;
+    lines[i] = `${line.slice(0, entry.keyStart)}${key} = ${encoded}${trailing}`;
     return applyEol(lines.join("\n"), eol);
   }
   if (encoded === null) return content;
@@ -783,11 +780,9 @@ function getV2StringField(key: string, configPath?: string): string | null {
   if (content === null) return null;
   const table = tomlTableBodyForStringFields(content, "features.multi_agent_v2");
   if (table !== null) {
-    const keyRe = new RegExp(`^\\s*${tomlKeyPattern(key)}\\s*=\\s*`, "m");
-    const m = table.match(keyRe);
-    if (m) {
-      const valueStart = m.index! + m[0].length;
-      const token = table.slice(valueStart, scanTomlValueEnd(table, valueStart)).trim();
+    const entry = findTomlAssignment(table, key);
+    if (entry) {
+      const token = table.slice(entry.valueStart, entry.valueEnd).trim();
       return decodeTomlStringToken(token);
     }
     return null;

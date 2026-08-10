@@ -514,6 +514,24 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
     }
   });
 
+  test("reader, update, and clear use semantic equality for escaped quoted hint keys", () => {
+    const path = fixtureConfig('[features.multi_agent_v2]\n"multi_agent_mode_hint_\\u0074ext" = "old"\nenabled = true\n');
+    expect(getMultiAgentModeHintText(path)).toBe("old");
+
+    expect(setMultiAgentModeHintText(PRESET, path)).toEqual({ ok: true, changed: true });
+    const updated = readFileSync(path, "utf8");
+    const parsedUpdated = Bun.TOML.parse(updated) as { features: { multi_agent_v2: Record<string, unknown> } };
+    expect(parsedUpdated.features.multi_agent_v2.multi_agent_mode_hint_text).toBe(PRESET);
+    expect(Object.keys(parsedUpdated.features.multi_agent_v2).filter(key => key === "multi_agent_mode_hint_text")).toHaveLength(1);
+    expect(getMultiAgentModeHintText(path)).toBe(PRESET);
+
+    expect(setMultiAgentModeHintText(null, path)).toEqual({ ok: true, changed: true });
+    const cleared = readFileSync(path, "utf8");
+    const parsedCleared = Bun.TOML.parse(cleared) as { features: { multi_agent_v2: Record<string, unknown> } };
+    expect(parsedCleared.features.multi_agent_v2.multi_agent_mode_hint_text).toBeUndefined();
+    expect(getMultiAgentModeHintText(path)).toBe(null);
+  });
+
   test("writer refuses dotted V2 definitions without changing config bytes", () => {
     for (const original of [
       "features.multi_agent_v2.enabled = true\n",
@@ -1043,6 +1061,22 @@ describe("config-surface parity: agents.enabled, max_depth, subagent_developer_i
     expect(setSubagentDeveloperInstructions(null, path)).toEqual({ ok: true, changed: true });
     expect(getSubagentDeveloperInstructions(path)).toBe(null);
     expect(readFileSync(path, "utf8")).toContain("enabled = true");
+  });
+
+  test("subagent instructions support escaped quoted dedicated-table keys", () => {
+    const path = fixtureConfig('[features.multi_agent_v2]\n"subagent_developer_instruc\\u0074ions" = "old"\nenabled = true\n');
+    expect(getSubagentDeveloperInstructions(path)).toBe("old");
+
+    expect(setSubagentDeveloperInstructions("new", path)).toEqual({ ok: true, changed: true });
+    const updated = readFileSync(path, "utf8");
+    const parsedUpdated = Bun.TOML.parse(updated) as { features: { multi_agent_v2: Record<string, unknown> } };
+    expect(parsedUpdated.features.multi_agent_v2.subagent_developer_instructions).toBe("new");
+    expect(Object.keys(parsedUpdated.features.multi_agent_v2).filter(key => key === "subagent_developer_instructions")).toHaveLength(1);
+
+    expect(setSubagentDeveloperInstructions(null, path)).toEqual({ ok: true, changed: true });
+    const parsedCleared = Bun.TOML.parse(readFileSync(path, "utf8")) as { features: { multi_agent_v2: Record<string, unknown> } };
+    expect(parsedCleared.features.multi_agent_v2.subagent_developer_instructions).toBeUndefined();
+    expect(getSubagentDeveloperInstructions(path)).toBe(null);
   });
 
   test("key name is emitted character-for-character (upstream deny_unknown_fields)", () => {
