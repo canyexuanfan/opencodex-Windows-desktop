@@ -154,8 +154,27 @@ describe("SEC-02 sanitizer boundary", () => {
     // `%2F` means the segment is itself a path. Matching only whole segments
     // let a nested resource id through, and nested ids are ordinary when a
     // resource path is passed as a route parameter.
+    // The empty component the encoded slash creates is preserved, so the shape
+    // of the original path stays visible while the identifier does not.
     expect(sanitizeDiagnostic("https://api.example.com/u/%2F550e8400-e29b-41d4-a716-446655440000"))
-      .toBe("https://[host]/u/[account]");
+      .toBe("https://[host]/u//[account]");
+  });
+
+  test("an encoded nested path carrying its own query still redacts", () => {
+    // Re-splitting on `/` alone left `<uuid>?detail` unmatched as a whole;
+    // encoded resource paths routinely carry a query or fragment.
+    expect(sanitizeDiagnostic("https://api.example.com/u/%2F550e8400-e29b-41d4-a716-446655440000%3Fdetail"))
+      .toBe("https://[host]/u//[account]?detail");
+  });
+
+  test("a trailing-dot FQDN is a hostname, not an escape hatch", () => {
+    // Forbidding a trailing dot to avoid eating sentence punctuation let the
+    // FQDN root form through untouched. An optional trailing dot does not fix
+    // it either: the engine skips it and takes a shorter match, which is how
+    // provider.metric.p95 regressed to [host].p95.
+    expect(sanitizeDiagnostic("api.example.com.")).toBe("[host]");
+    expect(sanitizeDiagnostic("connect to api.example.com.")).toBe("connect to [host]");
+    expect(sanitizeDiagnostic("provider.metric.p95")).toBe("provider.metric.p95");
   });
 
   test("hostname redaction does not eat ordinary dotted diagnostics", () => {

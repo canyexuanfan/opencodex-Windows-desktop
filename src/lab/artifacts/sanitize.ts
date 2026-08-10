@@ -110,11 +110,21 @@ const UNDERSCORE_ADJACENT_IPV4_RE = /_((?:\d{1,3}\.){3}\d{1,3})\b/g;
 // ordinary diagnostic tokens such as `foo.bar-baz` and `metric.p95`, which
 // costs exactly the evidence quality the Lab exists to capture.
 // A trailing `-` or word character after the TLD means this was never a
-// hostname (`foo.bar-baz`), so the lookahead refuses the match. The leading
-// `(?<![\w.-])` matters just as much: without it the engine backtracks to a
-// later starting label and redacts a prefix, turning `provider.metric.p95`
-// into `[host].p95` — evidence destruction dressed up as a redaction.
-const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(?:xn--[a-z0-9-]{1,55}|[a-z]{2,24})(?![\w.-])/gi;
+// hostname (`foo.bar-baz`), so the lookahead refuses the match. A trailing
+// `.` is allowed and consumed: it is FQDN root notation and equally ordinary
+// sentence punctuation, and forbidding it let `api.example.com.` through
+// untouched.
+//
+// The leading `(?<![\w.-])` matters just as much: without it the engine
+// backtracks to a later starting label and redacts a prefix, turning
+// `provider.metric.p95` into `[host].p95` — evidence destruction dressed up
+// as a redaction.
+// An OPTIONAL trailing dot does not work: the engine simply skips it and takes
+// a shorter match, so `provider.metric.p95` matched `provider.metric` and left
+// `[host].p95`. The terminator is therefore mandatory and expressed as a
+// single alternation — either the token ends cleanly, or it ends with an FQDN
+// root dot that is itself followed by nothing label-shaped.
+const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(?:xn--[a-z0-9-]{1,55}|[a-z]{2,24})(?:\.(?![\w-])|(?![\w.-]))/gi;
 // The value is scanned to its delimiter, not to a word boundary: `\b` stops at
 // the first `.` in `db_prod.internal`, which left `[host].internal` — a partial
 // redaction that still names the host.
@@ -146,10 +156,17 @@ function scrubUrlPath(pathname: string): string {
       // `/u/%2F<uuid>` through. Decoding repeats to a fixed point because a
       // single pass left `%252D` reversible.
       const decoded = decodeToFixedPoint(segment);
-      if (!decoded.includes("/")) return isIdentifierShape(decoded) ? "[account]" : segment;
-      const parts = decoded.split("/").filter((part) => part !== "");
+      if (isIdentifierShape(decoded)) return "[account]";
+      // Re-tokenize on every URL delimiter, not just `/`: an encoded nested
+      // path routinely carries its own query or fragment, and splitting on
+      // slashes alone left `<uuid>?detail` unmatched as a whole.
+      const parts = decoded.split(/[/?#&=]/).filter((part) => part !== "");
       if (!parts.some(isIdentifierShape)) return segment;
-      return parts.map((part) => (isIdentifierShape(part) ? "[account]" : part)).join("/");
+      let out = decoded;
+      for (const part of parts) {
+        if (isIdentifierShape(part)) out = out.split(part).join("[account]");
+      }
+      return out;
     })
     .join("/");
 }

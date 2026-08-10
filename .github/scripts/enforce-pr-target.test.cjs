@@ -196,6 +196,18 @@ describe("enforce-pr-target workflow", () => {
       assert.equal(stepRef, "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}", "every checkout must use the trusted ref");
       assert.doesNotMatch(step, /repository:/, "a checkout must not retarget its repository");
     }
+    // Checkout is not the only way to obtain PR-controlled code. A `run:` step
+    // can fetch it directly, and that is a realistic future edit rather than a
+    // synthetic one, so executable steps are gated on the acquisition verbs
+    // themselves.
+    // Scanning the whole file rather than trying to carve out `run:` blocks:
+    // a block-extraction regex silently missed a `gh pr checkout` payload, and
+    // a guard that cannot be trusted to find the text is worse than none.
+    assert.doesNotMatch(
+      workflow,
+      /gh\s+pr\s+checkout|git\s+fetch|git\s+checkout|refs\/pull/,
+      "no step may acquire pull-request code",
+    );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
