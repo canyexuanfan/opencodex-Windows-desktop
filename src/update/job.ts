@@ -1134,8 +1134,16 @@ async function restartAfterUpdate(
         `Port ${port} still busy after ${Math.trunc(RESTART_PORT_RECLAIM_MS / 1000)}s; refusing to hop — reinstall may fail until the port is free.`
           + ` ${formatPortHolders(port, listPids, verifyOcx, preServiceAllow)}`,
       );
-      const liveAfter = listPids(port).filter(pid => pid !== process.pid && aliveFn(pid));
-      if (liveAfter.length === 0) {
+      const liveScan: ListenPidScan = io.scanListenPidsFn
+        ? io.scanListenPidsFn(port)
+        : io.listListenPidsFn
+          // Test seam: an injected list represents a successful scan.
+          ? { ok: true, pids: io.listListenPidsFn(port) }
+          : scanListenPids(port);
+      const liveAfter = liveScan.ok
+        ? liveScan.pids.filter(pid => pid !== process.pid && aliveFn(pid))
+        : null;
+      if (liveAfter !== null && liveAfter.length === 0) {
         // Non-elevated `service install` will UAC-fail anyway; skip straight to
         // the direct-start fallthrough instead of burning another minute on it.
         updateJob(job, {}, "Skipping service reinstall after reclaim timeout with no live holders; falling back to a direct proxy start.");
