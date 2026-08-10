@@ -97,6 +97,15 @@ describe("Kimi token-response wiring (production parseTokenPayload path)", () =>
 
     await expect(refreshKimiToken("old-refresh")).rejects.toThrow("missing required fields");
   });
+
+  test("refreshKimiToken rejects a negative expires_in (already-past expiry)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: -1 }),
+      { status: 200 },
+    )) as typeof fetch;
+
+    await expect(refreshKimiToken("old-refresh")).rejects.toThrow("missing required fields");
+  });
 });
 
 describe("Kimi multiauth via saveCredential", () => {

@@ -153,9 +153,15 @@ async function requestDeviceAuthorization(): Promise<{
 function parseTokenPayload(payload: TokenResponse, refreshFallback?: string): OAuthCredentials {
   // Number.isFinite is required here: typeof NaN === "number", so the type check
   // alone would let a NaN expires_in through and produce a never-refreshing expiry.
+  // Negative durations would stamp an already-past expiry — also malformed.
   // The computed timestamp itself must also stay finite: Number.MAX_VALUE passes
   // Number.isFinite but overflows to Infinity once multiplied by 1000.
-  if (!payload.access_token || typeof payload.expires_in !== "number" || !Number.isFinite(payload.expires_in)) {
+  if (
+    !payload.access_token
+    || typeof payload.expires_in !== "number"
+    || !Number.isFinite(payload.expires_in)
+    || payload.expires_in < 0
+  ) {
     throw new Error("Kimi token response missing required fields");
   }
   const expires = Date.now() + payload.expires_in * 1000 - OAUTH_EXPIRY_SKEW_MS;

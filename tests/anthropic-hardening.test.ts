@@ -43,7 +43,7 @@ describe("anthropic provider hardening", () => {
     await expect(refreshAnthropicToken("secret")).rejects.toMatchObject({ httpStatus: 503, oauthError: undefined });
   });
 
-  test("refresh with a non-finite expires_in falls back to a finite default expiry", async () => {
+  test("refresh with a non-finite expires_in falls back to the 3600s default (3300s after skew)", async () => {
     globalThis.fetch = (async () => new Response(
       // JSON.stringify would turn Infinity into null; hand-write 1e999 so JSON.parse
       // yields Infinity, which would previously produce expires: NaN (never refreshing).
@@ -51,12 +51,15 @@ describe("anthropic provider hardening", () => {
       { status: 200 },
     )) as typeof fetch;
 
+    const before = Date.now();
     const cred = await refreshAnthropicToken("secret");
     expect(Number.isFinite(cred.expires)).toBe(true);
-    expect(cred.expires).toBeGreaterThan(Date.now());
+    expect(cred.expires).toBeGreaterThan(before);
+    // 3600s default minus the 5-minute refresh skew.
+    expect(Math.abs(cred.expires - (before + 3300 * 1000))).toBeLessThan(30_000);
   });
 
-  test("refresh with an overflowing expires_in falls back to a finite default expiry", async () => {
+  test("refresh with an overflowing expires_in falls back to the 3600s default (3300s after skew)", async () => {
     globalThis.fetch = (async () => new Response(
       // Number.MAX_VALUE passes Number.isFinite but overflows to Infinity when
       // multiplied by 1000 — the computed expiry must still be guarded.
@@ -64,9 +67,24 @@ describe("anthropic provider hardening", () => {
       { status: 200 },
     )) as typeof fetch;
 
+    const before = Date.now();
     const cred = await refreshAnthropicToken("secret");
     expect(Number.isFinite(cred.expires)).toBe(true);
-    expect(cred.expires).toBeGreaterThan(Date.now());
+    expect(cred.expires).toBeGreaterThan(before);
+    expect(Math.abs(cred.expires - (before + 3300 * 1000))).toBeLessThan(30_000);
+  });
+
+  test("refresh with a negative expires_in falls back to the 3600s default (3300s after skew)", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ access_token: "at", refresh_token: "rt", expires_in: -1 }),
+      { status: 200 },
+    )) as typeof fetch;
+
+    const before = Date.now();
+    const cred = await refreshAnthropicToken("secret");
+    expect(Number.isFinite(cred.expires)).toBe(true);
+    expect(cred.expires).toBeGreaterThan(before);
+    expect(Math.abs(cred.expires - (before + 3300 * 1000))).toBeLessThan(30_000);
   });
 
   test("key mode rejects a blank API key", async () => {

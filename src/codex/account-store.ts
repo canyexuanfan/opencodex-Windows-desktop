@@ -491,10 +491,13 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
       throw new TokenRefreshError(reason, `Codex token refresh failed (${reason}); reauthenticate the account.`);
     }
     const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
-    // Guard against a missing/non-finite expires_in (malformed upstream response):
-    // a NaN expiry would never compare as expired and would block refresh forever.
+    // Guard against a missing/non-finite/negative expires_in (malformed upstream
+    // response): a NaN expiry would never compare as expired, and a negative
+    // duration would stamp an already-past expiry — both block refresh semantics.
     const expiresIn =
-      typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
+      typeof data.expires_in === "number" && Number.isFinite(data.expires_in) && data.expires_in >= 0
+        ? data.expires_in
+        : 3600;
     // The computed timestamp itself must stay finite: Number.MAX_VALUE passes
     // Number.isFinite but overflows to Infinity once multiplied by 1000.
     const expiresAt = Date.now() + expiresIn * 1000;
