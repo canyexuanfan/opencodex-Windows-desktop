@@ -44,26 +44,16 @@ jobs:
             conflicts="$(git diff --name-only --diff-filter=U)"
             printf 'Conflicts to resolve:\n%s\n' "$conflicts"
 
-            allowed='gui/src/i18n/de.ts
-gui/src/i18n/en.ts
-gui/src/i18n/ja.ts
-gui/src/i18n/ko.ts
-gui/src/i18n/ru.ts
-gui/src/i18n/tr.ts
-gui/src/i18n/zh.ts
-gui/src/pages/RoutingProfiles.tsx
-gui/src/routing-profile-editor-data.ts
-src/routing/evaluator.ts
-src/routing/profile.ts
-src/routing/trace.ts
-src/types.ts'
-
             while IFS= read -r path; do
               [ -n "$path" ] || continue
-              if ! printf '%s\n' "$allowed" | grep -Fxq "$path"; then
-                echo "::error::Unexpected merge conflict: $path"
-                exit 1
-              fi
+              case "$path" in
+                gui/src/i18n/de.ts|gui/src/i18n/en.ts|gui/src/i18n/ja.ts|gui/src/i18n/ko.ts|gui/src/i18n/ru.ts|gui/src/i18n/tr.ts|gui/src/i18n/zh.ts|gui/src/pages/RoutingProfiles.tsx|gui/src/routing-profile-editor-data.ts|src/routing/evaluator.ts|src/routing/profile.ts|src/routing/trace.ts|src/types.ts)
+                  ;;
+                *)
+                  echo "::error::Unexpected merge conflict: $path"
+                  exit 1
+                  ;;
+              esac
               safe="$(printf '%s' "$path" | tr '/.' '__')"
               git show ":1:$path" > "/tmp/${safe}.base"
               git show ":2:$path" > "/tmp/${safe}.ours"
@@ -85,33 +75,25 @@ src/types.ts'
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('tests/routing-compatibility.test.ts')
+          p = Path("tests/routing-compatibility.test.ts")
           s = p.read_text()
           marker = 'test("compatibility penalty lowers score instead of rewarding unknown evidence", () => {'
           start = s.index(marker)
-          end = s.find('\ntest(', start + len(marker))
+          end = s.find("\n  test(", start + len(marker))
           if end < 0:
               end = len(s)
           block = s[start:end]
-          anchor = '''      compat: {
-                candidates: [{ provider: "a", model: "m1" }],
-                compatibility: {'''
-          if anchor not in block:
-              anchor = '''      compat: {
-            candidates: [{ provider: "a", model: "m1" }],
-            compatibility: {'''
-          if anchor not in block:
-              raise SystemExit('compatibility penalty test anchor not found')
-          replacement = anchor.replace('                compatibility: {', '                optimize: { latency: 1, health: 0, cost: 0, quota: 0 },\n                compatibility: {').replace('            compatibility: {', '            optimize: { latency: 1, health: 0, cost: 0, quota: 0 },\n            compatibility: {')
+          anchor = '        compat: {\n          candidates: [{ provider: "a", model: "m1" }],\n          compatibility: {'
+          replacement = '        compat: {\n          candidates: [{ provider: "a", model: "m1" }],\n          optimize: { latency: 1, health: 0, cost: 0, quota: 0 },\n          compatibility: {'
+          if block.count(anchor) != 1:
+              raise SystemExit(f"compatibility penalty test anchor count was {block.count(anchor)}, expected 1")
           block = block.replace(anchor, replacement, 1)
-          s = s[:start] + block + s[end:]
-          p.write_text(s)
+          p.write_text(s[:start] + block + s[end:])
           PY
           git add tests/routing-compatibility.test.ts
 
       - name: Remove resolver from final tree
-        run: |
-          git rm .github/workflows/cl06-conflict-resolver.yml
+        run: git rm .github/workflows/cl06-conflict-resolver.yml
 
       - name: Install dependencies
         run: |
