@@ -217,6 +217,35 @@ describe("Command Code provider", () => {
     expect(wire[4]).toEqual({ role: "user", content: [{ type: "text", text: "continue" }] });
   });
 
+  test("keeps tool results contiguous before buffered image carriers", async () => {
+    const image = "data:image/png;base64,AAAA";
+    const built = await builtRequest({
+      ...parsed(),
+      context: {
+        ...parsed().context,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "toolCall", id: "call_1", name: "view_image", arguments: {} },
+              { type: "toolCall", id: "call_2", name: "lookup", arguments: { q: "b" } },
+            ],
+            timestamp: 1,
+          },
+          { role: "toolResult", toolCallId: "call_1", toolName: "view_image", content: [{ type: "text", text: "shot" }, { type: "image", imageUrl: image }], isError: false, timestamp: 2 },
+          { role: "toolResult", toolCallId: "call_2", toolName: "lookup", content: "two", isError: false, timestamp: 3 },
+        ],
+      },
+    });
+    const body = JSON.parse(built.body);
+    const wire = body.params.messages;
+    // Both tool results must precede the user image carrier so the assistant turn's tool
+    // results stay contiguous on the wire (#1383 / CodeRabbit adjacency finding).
+    expect(wire[1]).toMatchObject({ role: "tool", content: [{ type: "tool-result", toolCallId: "call_1" }] });
+    expect(wire[2]).toMatchObject({ role: "tool", content: [{ type: "tool-result", toolCallId: "call_2" }] });
+    expect(wire[3]).toEqual({ role: "user", content: [{ type: "image", image, mediaType: "image/png" }] });
+  });
+
   test("degrades an orphan tool result without a declared call to a text carrier", async () => {
     const built = await builtRequest({
       ...parsed(),
@@ -366,6 +395,19 @@ describe("Command Code provider", () => {
     for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
     expect(events).toEqual([
       { type: "error", message: "Provider stream error: Tool result is missing for tool call call_01_x.", status: 502, errorType: "upstream_error", code: "missing_tool_result" },
+      { type: "done", usage: undefined, stopReason: undefined },
+    ]);
+  });
+
+  test("classifies the underscored missing-tool-result variant distinctly", async () => {
+    const response = new Response(JSON.stringify({
+      type: "error",
+      error: { message: "Provider stream error: tool_result is missing for call_02_y." },
+    }));
+    const events = [];
+    for await (const event of createCommandCodeAdapter(provider).parseStream(response, createTestTranslatorBudget())) events.push(event);
+    expect(events).toEqual([
+      { type: "error", message: "Provider stream error: tool_result is missing for call_02_y.", status: 502, errorType: "upstream_error", code: "missing_tool_result" },
       { type: "done", usage: undefined, stopReason: undefined },
     ]);
   });

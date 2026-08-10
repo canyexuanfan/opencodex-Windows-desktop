@@ -65,6 +65,11 @@ function wireImagePart(imageUrl: string): Record<string, unknown> {
 function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   const pendingCalls: Array<{ id: string; name: string }> = [];
+  // Image parts returned by a tool cannot live inside the text-only `tool-result` wire
+  // output. They ride a follow-up user message, but that user message must not break the
+  // adjacency of the assistant turn's tool results, so carriers are buffered and flushed
+  // only after every declared call has its native or synthesized result.
+  const pendingImageCarriers: Array<Record<string, unknown>> = [];
   // The /alpha/generate wire requires every assistant tool-call to be closed by a matching
   // `tool-result` immediately after the declaring assistant message. Close any declared call
   // that never received a result before a non-toolResult message moves the turn forward, so a
@@ -79,6 +84,10 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
       }] });
     }
     pendingCalls.length = 0;
+    if (pendingImageCarriers.length > 0) {
+      out.push(...pendingImageCarriers);
+      pendingImageCarriers.length = 0;
+    }
   };
   for (const message of messages) {
     if (message.role === "assistant") {
@@ -123,7 +132,7 @@ function wireMessages(messages: OcxMessage[]): Array<Record<string, unknown>> {
       // message using the same image encoding as the user branch so the bytes reach the model.
       const images = typeof message.content === "string" ? [] : message.content.filter(part => part.type === "image");
       if (images.length > 0) {
-        out.push({ role: "user", content: images.map(part => wireImagePart((part as { imageUrl: string }).imageUrl)) });
+        pendingImageCarriers.push({ role: "user", content: images.map(part => wireImagePart((part as { imageUrl: string }).imageUrl)) });
       }
       continue;
     }
