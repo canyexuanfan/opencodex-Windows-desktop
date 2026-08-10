@@ -2422,6 +2422,7 @@ describe("server local API auth", () => {
       expect(response.status).toBe(200);
       expect((await response.json() as { id: string }).id).toBe("combo-later-model-success");
       expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b", "acct-pool-a"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toBeNull();
     } finally {
       await stopPoolRetryHarness(harness);
     }
