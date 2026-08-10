@@ -214,6 +214,68 @@ describe("routed Responses custom-tool compatibility", () => {
     rewrite.dispose?.();
   });
 
+  test("does not match a known pending item id by output index alone", () => {
+    const budget = createTestTranslatorBudget();
+    const chargeRetained = budget.chargeRetained.bind(budget);
+    const releaseRetained = budget.releaseRetained.bind(budget);
+    let charges = 0;
+    let releases = 0;
+    budget.chargeRetained = (...args) => {
+      charges += 1;
+      chargeRetained(...args);
+    };
+    budget.releaseRetained = (...args) => {
+      releases += 1;
+      releaseRetained(...args);
+    };
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
+
+    expect(rewrite(frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      item_id: "fc_a",
+      delta: "{\"input\":\"a",
+    }))).toEqual([]);
+    expect(charges).toBe(1);
+
+    const added = rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_b",
+        call_id: "call_b",
+        name: "exec",
+        arguments: "",
+        status: "in_progress",
+      },
+    }));
+    expect(added.map(block => dataPayload(block).type)).toEqual(["response.output_item.added"]);
+    expect(JSON.stringify(added)).not.toContain('"item_id":"ctc_b"');
+    expect(charges).toBe(1);
+    expect(releases).toBe(0);
+
+    rewrite.dispose?.();
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
+  test("does not retain argument events that arrive after a terminal event", () => {
+    const budget = createTestTranslatorBudget();
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
+
+    rewrite(frame("response.completed", {
+      response: { id: "resp_1", status: "completed", output: [] },
+    }));
+    expect(budget.snapshot().currentBytes).toBe(0);
+
+    rewrite(frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      item_id: "fc_late",
+      delta: "{\"input\":\"late",
+    }));
+    rewrite.dispose?.();
+
+    expect(budget.snapshot().currentBytes).toBe(0);
+  });
+
   test("replays buffered events unchanged when item done identifies an ordinary function", () => {
     const budget = createTestTranslatorBudget();
     const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
@@ -398,6 +460,7 @@ describe("routed Responses custom-tool compatibility", () => {
   test("handleResponses leaves custom tools native for forward-auth passthrough", async () => {
     const savedFetch = globalThis.fetch;
     let outboundBody: Record<string, unknown> | undefined;
+    let outboundAuthorization: string | null = null;
     const upstreamItem = {
       type: "function_call",
       id: "fc_exec",
@@ -408,6 +471,7 @@ describe("routed Responses custom-tool compatibility", () => {
     };
     globalThis.fetch = (async (_input, init) => {
       outboundBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      outboundAuthorization = new Headers(init?.headers).get("authorization");
       return new Response(JSON.stringify({ id: "resp_forward", status: "completed", output: [upstreamItem] }), {
         headers: { "content-type": "application/json" },
       });
@@ -438,6 +502,7 @@ describe("routed Responses custom-tool compatibility", () => {
       const clientBody = await response.json() as { output: Array<Record<string, unknown>> };
       const outboundTools = outboundBody?.tools as Array<Record<string, unknown>> | undefined;
 
+      expect(outboundAuthorization).toBe("Bearer caller-token");
       expect(outboundTools?.[0]).toMatchObject({ type: "custom", name: "exec" });
       expect(clientBody.output[0]).toMatchObject({ type: "function_call", name: "exec" });
       expect(clientBody.output[0]).not.toHaveProperty("input");

@@ -121,9 +121,10 @@ export function createRoutedCustomToolRestoreBlockRewrite(
     const matched: PendingArgumentBlock[] = [];
     const remaining: PendingArgumentBlock[] = [];
     for (const pending of pendingArguments) {
-      const sameItem = itemId !== undefined && pending.itemId === itemId;
-      const sameIndex = outputIndex !== undefined && pending.outputIndex === outputIndex;
-      (sameItem || sameIndex ? matched : remaining).push(pending);
+      const matches = pending.itemId !== undefined
+        ? itemId !== undefined && pending.itemId === itemId
+        : outputIndex !== undefined && pending.outputIndex === outputIndex;
+      (matches ? matched : remaining).push(pending);
     }
     pendingArguments = remaining;
     const retainedBytes = matched.reduce((total, pending) => total + pending.retainedBytes, 0);
@@ -134,6 +135,7 @@ export function createRoutedCustomToolRestoreBlockRewrite(
   };
 
   const rewrite: SseBlockRewrite = (block: string): readonly string[] => {
+    if (disposed) return [block];
     const payload = sseDataPayload(block);
     if (payload === null || payload === "[DONE]") return [block];
     let parsed: unknown;
