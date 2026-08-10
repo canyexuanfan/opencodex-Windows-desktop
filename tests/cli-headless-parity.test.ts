@@ -230,9 +230,9 @@ describe("headless GUI parity CLI", () => {
     expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: true, value: 128_000 } });
 
     const offRuntime = fakeRuntime();
-    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], runtime.deps);
+    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], offRuntime.deps);
     expect(offCode).toBe(0);
-    expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
+    expect(offRuntime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
 
     // --value is only valid with `on`; the rejected form must not send any request.
     const rejectedRuntime = fakeRuntime();
