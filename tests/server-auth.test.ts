@@ -2335,10 +2335,11 @@ describe("server local API auth", () => {
       const response = await harness.request();
       expect(response.status).toBe(503);
       expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
-      expect(getCodexUpstreamHealth("pool-a")).toMatchObject({
-        cooldownUntil: expect.any(Number),
+      const health = getCodexUpstreamHealth("pool-a");
+      expect(health).toMatchObject({
         cooldownSource: "retry-after",
       });
+      expect(health?.cooldownUntil).toBeGreaterThan(Date.now());
     } finally {
       await stopPoolRetryHarness(harness);
     }
