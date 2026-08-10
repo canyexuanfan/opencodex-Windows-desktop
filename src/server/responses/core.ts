@@ -109,7 +109,11 @@ import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../provid
 import { isUsageDebugEnabled } from "../../usage/debug";
 import { readJsonRequestBody, DecompressedBodyTooLargeError, UnsupportedContentEncodingError } from "../request-decompress";
 import { resolveAdapter, resolveWireProtocolOverride } from "../adapter-resolve";
-import { providerModelResponsesUpstreamStreaming, type InboundWire } from "../../providers/registry";
+import {
+  providerModelResponsesTerminalRepair,
+  providerModelResponsesUpstreamStreaming,
+  type InboundWire,
+} from "../../providers/registry";
 import type { AdapterRequest } from "../../adapters/base";
 import {
   hasKeyPoolFailover,
@@ -165,6 +169,10 @@ import {
   sanitizePassthroughHeaders,
 } from "../relay";
 import { relaySseEagerBounded } from "../relay-eager";
+import {
+  relayResponsesSseWithTerminalRepair,
+  type ResponsesTerminalRepairScheduler,
+} from "../responses-terminal-repair";
 import { isWin32EagerRewrite, selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
 import {
@@ -205,6 +213,8 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
+import { collectRoutedCustomToolNames, restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
+import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
@@ -636,6 +646,8 @@ export interface HandleResponsesOptions {
   setTerminalOutcomeRecorder?: (recorder: ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined) => void;
   onNativePassthroughTerminal?: (status: ResponsesTerminalStatus) => void;
   onNativePassthroughCancel?: () => void;
+  /** Internal deterministic clock/timer seam for provider terminal repair. */
+  responsesTerminalRepairScheduler?: ResponsesTerminalRepairScheduler;
   /**
    * When true, body `prompt_cache_key` is a Claude Desktop shared cache cohort
    * (system/tools hash), not a per-session id — do not use it for Anthropic pool affinity.
@@ -1889,6 +1901,9 @@ async function handleResponsesInner(
     const imageGenCallAliases = route.provider.authMode === "forward"
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
+    const routedCustomToolNames = route.provider.authMode === "forward"
+      ? new Set<string>()
+      : collectRoutedCustomToolNames(parsed._rawBody);
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -2249,6 +2264,20 @@ async function handleResponsesInner(
     // devlog/_fin/260731_macos_rss_retention/100_darwin_eager_optin.md).
     // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
+      const terminalRepairPolicy = providerModelResponsesTerminalRepair(
+        route.providerName,
+        route.provider,
+        route.modelId,
+      );
+      const passthroughSseBody = terminalRepairPolicy
+        ? relayResponsesSseWithTerminalRepair(
+          upstreamResponse.body,
+          upstream,
+          terminalRepairPolicy,
+          translatorBudget,
+          options.responsesTerminalRepairScheduler,
+        )
+        : upstreamResponse.body;
       const repairConfig = route.provider.responsesItemIdRepair;
       const snapshotRepairEnabled = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair);
       const githubCopilotRepairEnabled = route.providerName === "github-copilot";
@@ -2278,6 +2307,9 @@ async function handleResponsesInner(
       const blockRewrites = [
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
+          : undefined,
+        routedCustomToolNames.size > 0
+          ? createRoutedCustomToolRestoreBlockRewrite(routedCustomToolNames, translatorBudget)
           : undefined,
         githubCopilotRepairEnabled
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
@@ -2334,7 +2366,7 @@ async function handleResponsesInner(
           onFirstOutput: options.onFirstOutput,
           pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
-        const eagerBody = relaySseEagerBounded(upstreamResponse.body, turnAc, {
+        const eagerBody = relaySseEagerBounded(passthroughSseBody, turnAc, {
           inspectChunk: chunk => inspector.feed(chunk),
           finishInspection: () => inspector.finish(),
           disposeInspection: () => inspector.dispose(),
@@ -2370,7 +2402,7 @@ async function handleResponsesInner(
           })),
         );
       }
-      const [nativeBody, inspectBody] = upstreamResponse.body.tee();
+      const [nativeBody, inspectBody] = passthroughSseBody.tee();
       const turnAc = new AbortController();
       const clientGone = new AbortController();
       linkAbortSignal(upstream, turnAc.signal);
@@ -2463,7 +2495,10 @@ async function handleResponsesInner(
         } catch { /* non-JSON despite content-type; recording is best-effort */ }
       }
       const clientJson = (() => {
-        const restored = restoreImageGenCallsInJson(text, imageGenCallAliases);
+        const restored = restoreRoutedCustomCallsInJson(
+          restoreImageGenCallsInJson(text, imageGenCallAliases),
+          routedCustomToolNames,
+        );
         const repaired = (() => {
           if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
           let outbound: unknown;

@@ -193,6 +193,25 @@ Routed catalog entries also get their GPT-5 identity rewritten to the real upstr
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
+### Routed local tools
+
+Non-native routed catalog rows use `tool_mode: "code_mode_only"`. This lets Codex expose its official
+`exec` entrypoint and nested MCP tools, including Browser and Computer Use, while opencodex routes
+only the model's ordinary function call. Tool execution, permissions, and confirmations remain
+local to Codex; opencodex does not implement a second browser or desktop-control executor.
+
+For key-auth Responses providers that do not accept Codex's `exec` custom-tool grammar, opencodex
+encodes that declaration and its history as an upstream function tool, then restores the streamed
+function-call lifecycle to `custom_tool_call` before Codex sees it. Native OpenAI forward routing
+and the supported `apply_patch` custom tool stay unchanged.
+
+The selected provider must support function/tool calling. A text-only provider without tool-call
+support cannot use `exec`, Browser, or Computer Use. Native OpenAI rows keep their upstream tool
+mode unchanged.
+
+After `ocx sync` changes this metadata, restart Codex App and open a fresh task. Existing app-server
+processes and tasks may retain the catalog and tool plan they loaded at startup.
+
 ### Custom model display names
 
 A custom model can carry a human-readable **display name** that overrides the label Codex shows in

@@ -318,6 +318,13 @@ export function ensureStrictCatalogFields(
 
 export type MultiAgentMode = "v1" | "default" | "v2";
 
+export const ROUTED_CODEX_TOOL_MODE = "code_mode_only";
+
+export function applyRoutedCodexToolMode(entry: RawEntry): RawEntry {
+  entry.tool_mode = ROUTED_CODEX_TOOL_MODE;
+  return entry;
+}
+
 /**
  * @param v2FeatureEnabled When the native multi_agent_v2 feature is on, "default"
  *   mode stamps unpinned entries as "v2" instead of deleting the key. The native
@@ -358,6 +365,7 @@ export function applyMultiAgentMode(entries: RawEntry[], mode: MultiAgentMode, v
 export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls = false): RawEntry {
   delete entry.model_messages;
   delete entry.tool_mode;
+  applyRoutedCodexToolMode(entry);
   delete entry.multi_agent_version;
   delete entry.use_responses_lite;
   delete entry.supports_websockets;

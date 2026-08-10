@@ -228,6 +228,17 @@ rollback for upstreams that regress, kept suite-reachable by a synthetic-registr
 Synthesized output is capped at 10,000 items across HTTP and WebSocket reframing. HTTP frames are
 encoded incrementally, so bounded upstream JSON cannot expand into an unbounded event array or SSE string.
 
+DeepSeek V4 Flash keeps native Responses streaming for progressive reasoning, text, and tool-call
+delivery. Its registry entry enables a model-scoped terminal repair before the existing
+inspection/client split. A real `response.completed`, `response.failed`, or `response.incomplete`
+event always passes through unchanged. If every opened output item has a structurally complete
+`output_item.done` and no real terminal arrives for five seconds, the repair emits exactly one
+`response.completed` snapshot and closes the upstream reader. EOF or `[DONE]` uses the same strict
+completion check; open, malformed, duplicate, contradictory, or unknown output graphs fail closed
+as `response.incomplete`, never synthetic success. The repair shares the per-turn translator byte
+budget, preserves backpressure, and composes ahead of item-id/snapshot rewrites so HTTP/SSE and
+WebSocket clients observe the same canonical lifecycle.
+
 `ws-bridge.ts` preserves upstream `failed` and `incomplete` status values in the final WebSocket
 frame rather than always emitting `response.completed`. If the response status is `failed`, a
 `response.failed` frame is sent; otherwise `response.completed` carries through the original status.
