@@ -167,6 +167,18 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("https://[host]/u//[account]?detail");
   });
 
+  test("path identifiers are found regardless of surrounding punctuation", () => {
+    // Enumerating delimiters was a losing game: `/`, then `?#&=`, then colon
+    // action suffixes and matrix parameters. Identifier shapes are matched
+    // wherever they appear, so whatever separates them stops mattering.
+    expect(sanitizeDiagnostic("https://api.example.com/operations/550e8400-e29b-41d4-a716-446655440000:cancel"))
+      .toBe("https://[host]/operations/[account]:cancel");
+    expect(sanitizeDiagnostic("https://api.example.com/o/550e8400-e29b-41d4-a716-446655440000;retry=1"))
+      .toBe("https://[host]/o/[account];retry=1");
+    expect(sanitizeDiagnostic("https://api.example.com/u/%2F550e8400-e29b-41d4-a716-446655440000%3Acancel"))
+      .toBe("https://[host]/u//[account]:cancel");
+  });
+
   test("a trailing-dot FQDN is a hostname, not an escape hatch", () => {
     // Forbidding a trailing dot to avoid eating sentence punctuation let the
     // FQDN root form through untouched. An optional trailing dot does not fix

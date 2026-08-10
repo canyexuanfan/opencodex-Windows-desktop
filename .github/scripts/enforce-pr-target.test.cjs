@@ -200,12 +200,28 @@ describe("enforce-pr-target workflow", () => {
     // can fetch it directly, and that is a realistic future edit rather than a
     // synthetic one, so executable steps are gated on the acquisition verbs
     // themselves.
-    // Scanning the whole file rather than trying to carve out `run:` blocks:
-    // a block-extraction regex silently missed a `gh pr checkout` payload, and
-    // a guard that cannot be trusted to find the text is worse than none.
+    // Stop enumerating command shapes. A denylist lost four times here
+    // (`refs/pull`, `format()`, `repository:`, `gh pr checkout`), and
+    // `git clone https://github.com/<fork>` would have been the fifth. The
+    // invariant is simpler than the attack surface: under
+    // `pull_request_target`, nothing executable may name the PR head or the
+    // fork repository at all.
+    // Comments may discuss the head ref; only executable content may not use
+    // it, so YAML comment lines are stripped before this check.
+    const executable = workflow
+      .split("\n")
+      .filter(line => !/^\s*#/.test(line) && !/^\s*\/\//.test(line.replace(/^\s*/, "")))
+      .join("\n");
+    assert.doesNotMatch(
+      executable.replace(/^\s*\/\/.*$/gm, ""),
+      /github\.head_ref|pull_request(?:\[['"]head['"]\]|\.head)\s*(?:\[|\.)?\s*['"]?repo/,
+      "no executable step may reference the PR head repository",
+    );
+    // Belt and braces for the acquisition verbs, which have no legitimate use
+    // in either gate: both only read PR metadata through the API.
     assert.doesNotMatch(
       workflow,
-      /gh\s+pr\s+checkout|git\s+fetch|git\s+checkout|refs\/pull/,
+      /gh\s+pr\s+checkout|git\s+(?:fetch|checkout|clone|switch)|refs\/pull/,
       "no step may acquire pull-request code",
     );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.

@@ -157,22 +157,32 @@ function scrubUrlPath(pathname: string): string {
       // single pass left `%252D` reversible.
       const decoded = decodeToFixedPoint(segment);
       if (isIdentifierShape(decoded)) return "[account]";
-      // Re-tokenize on every URL delimiter, not just `/`: an encoded nested
-      // path routinely carries its own query or fragment, and splitting on
-      // slashes alone left `<uuid>?detail` unmatched as a whole.
-      const parts = decoded.split(/[/?#&=]/).filter((part) => part !== "");
-      if (!parts.some(isIdentifierShape)) return segment;
-      let out = decoded;
-      for (const part of parts) {
-        if (isIdentifierShape(part)) out = out.split(part).join("[account]");
-      }
-      return out;
+      // Do NOT enumerate delimiters. Chasing them cost four rounds of review:
+      // first `/`, then `?#&=`, then `:` action suffixes and `;` matrix
+      // parameters would have been next. Instead, find identifier shapes
+      // wherever they appear in the decoded text; whatever separates them is
+      // irrelevant.
+      const replaced = redactIdentifiersInText(decoded);
+      return replaced === decoded ? segment : replaced;
     })
     .join("/");
 }
 
 function isIdentifierShape(value: string): boolean {
   return UUID_RE.test(value) || isPrefixedAccount(value);
+}
+
+const UUID_ANYWHERE_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi;
+
+/**
+ * Replace identifier shapes anywhere in a decoded path, independent of the
+ * punctuation around them. Delimiter enumeration is a losing game: colon
+ * action suffixes (`/ops/<uuid>:cancel`) and matrix parameters
+ * (`<uuid>;retry=1`) are both ordinary provider API syntax, and the next
+ * unlisted separator would leak again.
+ */
+function redactIdentifiersInText(value: string): string {
+  return value.replace(UUID_ANYWHERE_RE, "[account]").replace(PREFIXED_ACCOUNT_RE, "[account]");
 }
 
 /** Percent-decode until the value stops changing, bounded against a decode bomb. */
