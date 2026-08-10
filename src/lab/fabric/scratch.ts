@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
-import { ensureLabDirs, ensureRestrictedDir, labScratchDir } from "../paths";
+import { ensureLabDirs, ensureRestrictedDir, labRoot, labScratchDir } from "../paths";
 import { FABRIC_LIMITS, SYNTHETIC_BEFORE_UTF8, SYNTHETIC_VALUE_PATH } from "./constants";
 import { FabricTaskError } from "./types";
 
@@ -150,14 +150,10 @@ function openScratchRelativePath(
         current = { path: join(current.path, part), fd: subFd, identity: identityOf(subStats) };
         continue;
       }
-      const finalFd = openAtScratch(current, part, flags, mode);
-      for (const fd of intermediateFds) {
-        closeSync(fd);
-      }
-      return finalFd;
+      return openAtScratch(current, part, flags, mode);
     }
     throw new FabricTaskError("empty scratch path", "sandbox_violation", "harness");
-  } catch (error) {
+  } finally {
     for (const fd of intermediateFds) {
       try {
         closeSync(fd);
@@ -165,7 +161,6 @@ function openScratchRelativePath(
         /* ignore */
       }
     }
-    throw error;
   }
 }
 
@@ -255,7 +250,12 @@ function ensureScratchRelativeDir(scratchRoot: string, relativeDir: string): voi
     const next = join(current, part);
     assertUnderScratchRoot(root, next);
     if (!existsSync(next)) {
-      mkdirSync(next, { mode: 0o700 });
+      try {
+        mkdirSync(next, { mode: 0o700 });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") throw error;
+      }
     }
     const stats = lstatSync(next);
     if (stats.isSymbolicLink()) {
@@ -275,11 +275,12 @@ export interface ScratchTree {
 /** Create an isolated scratch tree with the frozen synthetic-patch fixture file. */
 export function createSyntheticScratch(configDir?: string): ScratchTree {
   ensureLabDirs(configDir);
+  const labBoundary = labRoot(configDir);
   const base = labScratchDir(configDir);
-  ensureRestrictedDir(base);
+  ensureRestrictedDir(base, labBoundary);
   const root = join(base, `fabric-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`);
-  ensureRestrictedDir(root);
-  ensureRestrictedDir(join(root, dirname(SYNTHETIC_VALUE_PATH)));
+  ensureRestrictedDir(root, labBoundary);
+  ensureRestrictedDir(join(root, dirname(SYNTHETIC_VALUE_PATH)), labBoundary);
   let trusted: TrustedScratchDir | undefined;
   try {
     trusted = openTrustedScratchRoot(root);

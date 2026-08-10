@@ -8,7 +8,7 @@ import {
   OUTCOMES,
 } from "../constants";
 import { FAILURE_CLASSIFICATIONS } from "../conformance/types";
-import { fixtureDigest, isSha256Hex } from "../digest";
+import { fixtureDigest, isSha256Hex, jcsStringify } from "../digest";
 import type { ObservationEvent, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 import { LabValidationError } from "../events/errors";
 import { assignEventId, validateSubject } from "../events/validate";
@@ -205,9 +205,9 @@ function validateFailureRecord(raw: Record<string, unknown>): void {
   }
 }
 
-/** Compare top-level and nested route subjects by canonical JSON equality. */
+/** Compare top-level and nested route subjects by canonical JCS representation. */
 function routeSubjectsMatch(top: RouteSubjectV1, nested: RouteSubjectV1): boolean {
-  return JSON.stringify(top) === JSON.stringify(nested);
+  return jcsStringify(top) === jcsStringify(nested);
 }
 
 /** Build an allowlisted verifier_summary artifact with sanitized diagnostics. */

@@ -46,7 +46,7 @@ import { writeScratchFileUtf8, readScratchFileUtf8 } from "../src/lab/fabric/scr
 import { routingProfileIssues } from "../src/routing/profile";
 import { buildInvalidationIndex } from "../src/lab/ledger/invalidation";
 import { createArtifactStore } from "../src/lab/artifacts/store";
-import { ensureLabDirs } from "../src/lab/paths";
+import { ensureLabDirs, ensureRestrictedDir } from "../src/lab/paths";
 import { verifyExactTreeDiffV1 } from "../src/lab/fabric/verifier";
 import { parseSyntheticPatchV1 } from "../src/lab/fabric/patch";
 import { FABRIC_LIMITS } from "../src/lab/fabric/constants";
@@ -469,7 +469,11 @@ describe("CL-07 task effectiveness producer", () => {
     process.env.OPENCODEX_HOME = home;
     mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
     const lockPath = join(home, "lab", "compatibility.jsonl.lock");
-    writeFileSync(lockPath, JSON.stringify({ pid: 99999, createdAt: Date.now() - 120_000, token: "stale-lock-token" }), { mode: 0o600 });
+    writeFileSync(lockPath, JSON.stringify({
+      pid: 4_000_000_000,
+      createdAt: Date.now() - 120_000,
+      token: "stale-lock-token",
+    }), { mode: 0o600 });
     const outcome = await runFabricSyntheticPatchTask({
       routeSubject: routeSubject(),
       configDir: home,
@@ -506,9 +510,25 @@ describe("CL-07 task effectiveness producer", () => {
     } catch {
       return;
     }
-    expect(() => ensureLabDirs(home)).toThrow();
+    expect(() => ensureLabDirs(home)).toThrow(/symbolic link/i);
     expect(existsSync(join(outside, "scratch"))).toBe(false);
     expect(existsSync(join(outside, "artifacts"))).toBe(false);
+  });
+
+  test("symlink under lab boundary is rejected by ensureRestrictedDir", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    const labDir = join(home, "lab");
+    const outside = join(home, "outside-scratch");
+    mkdirSync(labDir, { recursive: true, mode: 0o700 });
+    mkdirSync(outside, { recursive: true, mode: 0o700 });
+    const scratchLink = join(labDir, "scratch");
+    try {
+      symlinkSync(outside, scratchLink);
+    } catch {
+      return;
+    }
+    expect(() => ensureRestrictedDir(join(labDir, "scratch", "nested"), labDir)).toThrow(/symbolic link/i);
   });
 
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {
