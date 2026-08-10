@@ -18,7 +18,7 @@
  * 011 (Claude Code), 012 (Grok).
  */
 import { loadConfig, readRuntimePort, saveConfigPreservingClaudeCode } from "../../config";
-import { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } from "../../codex/catalog";
+import { desktopVisibleNativeSlugs, filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } from "../../codex/catalog";
 import { inspectDesktop3pConfigLibrary, removeDesktop3pStandardPivot, writeDesktop3pConfig } from "../../claude/desktop-3p";
 import { injectGrokConfig, stripGrokConfig, type GrokInjectModel } from "../../grok/inject";
 import { inspectGrokConfig } from "../../grok/inspect";
@@ -656,7 +656,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
       const runtime = (ctx.deps.readRuntimePort ?? readRuntimePort)(process.pid);
       const result = (ctx.deps.writeDesktop3pConfig ?? writeDesktop3pConfig)(
         runtime?.port ?? latest.port,
-        [...visibleNativeSlugs(latest)],
+        [...desktopVisibleNativeSlugs(latest)],
         routed,
         latest.apiKeys?.[0]?.key,
         "static",
