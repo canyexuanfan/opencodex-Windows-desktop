@@ -448,6 +448,7 @@ describe("GUI update execution decisions", () => {
 
   test("service restart is not skipped when the listener scan fails", async () => {
     let serviceRuns = 0;
+    const serviceArgs: string[][] = [];
     const job: UpdateJobState = {
       id: "svc-scan-failure",
       status: "restarting",
@@ -460,6 +461,7 @@ describe("GUI update execution decisions", () => {
       restart: true,
       command: "",
       log: [],
+      releaseNotesUrl: "",
     };
     writeFileSync(updateJobPath(job.id), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 19997, hostname: "127.0.0.1" }, {
@@ -468,13 +470,16 @@ describe("GUI update execution decisions", () => {
       waitForPort: async () => false,
       listListenPidsFn: () => [],
       scanListenPidsFn: () => ({ ok: false, error: "listener tools unavailable" }),
-      runService: () => {
+      runService: (_job, _bin, args) => {
         serviceRuns += 1;
+        serviceArgs.push(args);
         return { status: 0 };
       },
+      spawnStart: () => {},
       probeProxy: async () => true,
     });
     expect(serviceRuns).toBe(1);
+    expect(serviceArgs[0]).toContain("repair");
     expect(readUpdateJob(job.id)?.log.some(line =>
       line.includes("Skipping service reinstall after reclaim timeout"),
     )).toBe(false);
