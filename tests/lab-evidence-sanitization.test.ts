@@ -150,11 +150,24 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("https://[host]/u/[account]");
   });
 
+  test("an encoded slash does not hide an identifier inside a segment", () => {
+    // `%2F` means the segment is itself a path. Matching only whole segments
+    // let a nested resource id through, and nested ids are ordinary when a
+    // resource path is passed as a route parameter.
+    expect(sanitizeDiagnostic("https://api.example.com/u/%2F550e8400-e29b-41d4-a716-446655440000"))
+      .toBe("https://[host]/u/[account]");
+  });
+
   test("hostname redaction does not eat ordinary dotted diagnostics", () => {
     // Widening the final label for punycode initially swallowed these. A
     // sanitizer that destroys evidence fails the Lab's purpose as surely as
     // one that leaks it.
     for (const value of ["foo.bar-baz", "lib.v2-rc1", "release.v2", "metric.p95"]) {
+      expect(sanitizeDiagnostic(value), value).toBe(value);
+    }
+    // Three-label forms too: the rule must refuse the whole token rather than
+    // backtracking to a later label and leaving `[host].p95`.
+    for (const value of ["provider.metric.p95", "client.api.v2-rc1"]) {
       expect(sanitizeDiagnostic(value), value).toBe(value);
     }
     // Real hosts, including punycode, still go.

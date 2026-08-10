@@ -109,10 +109,12 @@ const UNDERSCORE_ADJACENT_IPV4_RE = /_((?:\d{1,3}\.){3}\d{1,3})\b/g;
 // Allowing hyphens and digits in every final label was too broad: it ate
 // ordinary diagnostic tokens such as `foo.bar-baz` and `metric.p95`, which
 // costs exactly the evidence quality the Lab exists to capture.
-// A trailing `-` or alphanumeric run after the TLD means this was never a
-// hostname (`foo.bar-baz`), so the negative lookahead refuses the whole match
-// rather than redacting a prefix of it.
-const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(?:xn--[a-z0-9-]{1,55}|[a-z]{2,24})\b(?![-\w])/gi;
+// A trailing `-` or word character after the TLD means this was never a
+// hostname (`foo.bar-baz`), so the lookahead refuses the match. The leading
+// `(?<![\w.-])` matters just as much: without it the engine backtracks to a
+// later starting label and redacts a prefix, turning `provider.metric.p95`
+// into `[host].p95` — evidence destruction dressed up as a redaction.
+const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(?:xn--[a-z0-9-]{1,55}|[a-z]{2,24})(?![\w.-])/gi;
 // The value is scanned to its delimiter, not to a word boundary: `\b` stops at
 // the first `.` in `db_prod.internal`, which left `[host].internal` — a partial
 // redaction that still names the host.
@@ -139,31 +141,37 @@ function scrubUrlPath(pathname: string): string {
     .split("/")
     .map((segment) => {
       if (!segment) return segment;
-      // Compare the decoded segment: `%2D` for `-` is still a UUID. Decoding
-      // repeats to a fixed point, because a single pass left `%252D` — an
-      // encoded percent sign — reversible in the persisted evidence.
-      if (isIdentifierSegment(segment)) return "[account]";
-      return segment;
+      // Decode first, then re-split: an encoded slash (`%2F`) means the
+      // segment is itself a path, and matching only whole segments let
+      // `/u/%2F<uuid>` through. Decoding repeats to a fixed point because a
+      // single pass left `%252D` reversible.
+      const decoded = decodeToFixedPoint(segment);
+      if (!decoded.includes("/")) return isIdentifierShape(decoded) ? "[account]" : segment;
+      const parts = decoded.split("/").filter((part) => part !== "");
+      if (!parts.some(isIdentifierShape)) return segment;
+      return parts.map((part) => (isIdentifierShape(part) ? "[account]" : part)).join("/");
     })
     .join("/");
 }
 
-/** Percent-decode to a fixed point, bounded, then test identifier shapes. */
-function isIdentifierSegment(segment: string): boolean {
-  let current = segment;
-  for (let pass = 0; pass < 4; pass += 1) {
-    if (UUID_RE.test(current) || isPrefixedAccount(current)) return true;
-    if (!current.includes("%")) return false;
+function isIdentifierShape(value: string): boolean {
+  return UUID_RE.test(value) || isPrefixedAccount(value);
+}
+
+/** Percent-decode until the value stops changing, bounded against a decode bomb. */
+function decodeToFixedPoint(value: string): string {
+  let current = value;
+  for (let pass = 0; pass < 6 && current.includes("%"); pass += 1) {
     let next: string;
     try {
       next = decodeURIComponent(current);
     } catch {
-      return false; // malformed escapes: treat as opaque
+      return current; // malformed escapes: treat what we have as opaque
     }
-    if (next === current) return false;
+    if (next === current) break;
     current = next;
   }
-  return UUID_RE.test(current) || isPrefixedAccount(current);
+  return current;
 }
 
 /** Valid IPv4 dotted quad: every octet in range and canonically written. */

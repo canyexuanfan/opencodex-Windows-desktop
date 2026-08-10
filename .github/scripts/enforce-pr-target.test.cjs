@@ -185,14 +185,16 @@ describe("enforce-pr-target workflow", () => {
     // checkout in a pull_request_target workflow must therefore declare a ref
     // drawn from the trusted allowlist, and no other step may name the PR
     // number in a ref-shaped expression.
+    // An ALLOWLIST, not a denylist: every checkout in this workflow must use
+    // exactly the trusted expression. Banning known-bad shapes lost twice —
+    // first to `refs/pull/<n>/head`, then to `format('refs/{0}/...')` — and a
+    // `repository:` override pointing at the fork head is a third shape no
+    // denylist would have caught.
     const checkouts = workflow.match(/uses:\s*actions\/checkout@[\s\S]*?(?=\n {6}- name:|$)/g) ?? [];
     for (const step of checkouts) {
-      const stepRef = step.match(/^\s*ref:\s*(.+)$/m)?.[1] ?? "";
-      assert.doesNotMatch(
-        stepRef,
-        /pull_request\.number|format\(/,
-        "a checkout ref must not be built from the pull request",
-      );
+      const stepRef = (step.match(/^\s*ref:\s*(.+)$/m)?.[1] ?? "").replace(/\s+/g, " ").trim();
+      assert.equal(stepRef, "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}", "every checkout must use the trusted ref");
+      assert.doesNotMatch(step, /repository:/, "a checkout must not retarget its repository");
     }
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
