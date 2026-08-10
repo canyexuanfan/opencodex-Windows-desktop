@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAntigravityAccountImportAdapter } from "../src/oauth/account-import/google-antigravity-adapter";
@@ -11,6 +11,7 @@ import {
   ACCOUNT_IMPORT_PROVIDER,
   AccountImportAbortError,
   type AccountImportAdapter,
+  type ValidatedAntigravityCredential,
 } from "../src/oauth/account-import/types";
 import { getAccountSet, upsertCredentialByIdentity } from "../src/oauth/store";
 
@@ -184,20 +185,8 @@ describe("Cockpit account-import service and adapter", () => {
 
   test("cancels a delayed validation before upsert and does not begin following records", async () => {
     const controller = new AbortController();
-    let resolveValidation: ((credential: {
-      access: string;
-      refresh: string;
-      expires: number;
-      email: string;
-      projectId: string;
-    }) => void) | undefined;
-    const delayedValidation = new Promise<{
-      access: string;
-      refresh: string;
-      expires: number;
-      email: string;
-      projectId: string;
-    }>(resolve => {
+    let resolveValidation: ((credential: ValidatedAntigravityCredential) => void) | undefined;
+    const delayedValidation = new Promise<ValidatedAntigravityCredential>(resolve => {
       resolveValidation = resolve;
     });
     let validationCalls = 0;
@@ -334,6 +323,34 @@ describe("Cockpit account-import atomic identity upsert", () => {
     expect(set?.accounts).toHaveLength(1);
     expect(set?.accounts[0]?.credential).toMatchObject({ access: "access-two", projectId: "project-two" });
     expect(JSON.parse(readFileSync(join(testHome, "auth.json"), "utf8"))[ACCOUNT_IMPORT_PROVIDER].accounts).toHaveLength(1);
+  });
+
+  test("clears a terminal reauth flag when the same identity is re-imported", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-one",
+      refresh: "refresh-one",
+      expires: 1,
+      email: "user@example.com",
+      projectId: "project-one",
+    });
+    const authPath = join(testHome, "auth.json");
+    const auth = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, { accounts: Array<{ needsReauth?: boolean }> }>;
+    auth[ACCOUNT_IMPORT_PROVIDER]!.accounts[0]!.needsReauth = true;
+    writeFileSync(authPath, JSON.stringify(auth), { mode: 0o600 });
+
+    expect(await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-two",
+      refresh: "refresh-two",
+      expires: 2,
+      email: "user@example.com",
+      projectId: "project-two",
+    })).toBe("updated");
+    const set = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(set?.accounts).toHaveLength(1);
+    expect(set?.accounts[0]?.needsReauth).toBeUndefined();
+    expect(set?.accounts[0]?.credential).toMatchObject({ access: "access-two", projectId: "project-two" });
   });
 
   test("keeps distinct accountId identities even when email matches", async () => {
