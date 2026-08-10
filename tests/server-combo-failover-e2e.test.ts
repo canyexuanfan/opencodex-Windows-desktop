@@ -385,6 +385,7 @@ describe("server combo failover 030 activation matrix", () => {
       a: provider("openai-chat", baseUrl(a), "key-a"),
       b: provider("openai-chat", baseUrl(b), "key-b"),
     }, [{ provider: "a", model: "m1" }]);
+    config.defaultProvider = "b";
     config.combos!.shadow = {
       alias: "a/m1",
       targets: [{ provider: "b", model: "m2" }],
