@@ -92,20 +92,9 @@ function isLedgerLockStale(lockPath: string): boolean {
 function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number; token: string } {
   while (Date.now() < deadline) {
     const token = randomBytes(16).toString("hex");
+    let fd: number;
     try {
-      const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
-      try {
-        writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8"));
-      } catch (error) {
-        closeSync(fd);
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          /* best-effort */
-        }
-        throw error;
-      }
-      return { fd, token };
+      fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
     } catch (error) {
       if (existsSync(lockPath) && isLedgerLockStale(lockPath)) {
         try {
@@ -118,7 +107,20 @@ function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number;
       }
       if (Date.now() >= deadline) throw error;
       sleepSyncMs(10);
+      continue;
     }
+    try {
+      writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8"));
+    } catch (error) {
+      closeSync(fd);
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* best-effort */
+      }
+      throw error;
+    }
+    return { fd, token };
   }
   throw new Error("ledger lock acquisition timed out");
 }
