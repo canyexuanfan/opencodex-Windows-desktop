@@ -161,7 +161,7 @@ const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(
 // WEAK markers appear in ordinary prose (`upstream provider.metric.p95
 // exceeded`), so they only redact a candidate that is already host-shaped.
 const STRONG_HOST_CONTEXT_RE =
-  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|dial\s+(?:tcp|udp)|connect(?:ing)?\s+to|host)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|dial\s+(?:tcp|udp)|connect(?:ing)?\s+to|host)["']?\s*[\s=:]\s*["']?((?:[A-Za-z0-9_.-]{1,255}[\s:]{1,3}){0,3}[A-Za-z0-9_.-]{1,255})/gi;
 const WEAK_HOST_CONTEXT_RE =
   /\b(?:upstream)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
 
@@ -172,8 +172,36 @@ const WEAK_HOST_CONTEXT_RE =
  */
 const DOTTED_NAMESPACE_RE = /^[a-z]+(?:\.[a-z]+)*\.[a-z]+[0-9]*$/i;
 
-/** Words that can follow a strong marker without being the host itself. */
-const HOST_MARKER_WORDS = new Set(["tcp", "udp", "to", "at", "for", "after", "failed", "error"]);
+/**
+ * Does this token look like a host rather than an English word?
+ *
+ * Even a strong marker does not guarantee the very next token is the
+ * destination: Go emits `dial tcp: lookup db.prod-1: no such host`, and errno
+ * codes are routinely followed by prose (`ETIMEDOUT request after 30s`).
+ * Replacing whatever follows destroyed the helper word and left the real host
+ * in place — the worst of both outcomes.
+ *
+ * A stopword list would repeat the delimiter-enumeration mistake, so the
+ * candidate is validated instead. A token qualifies when it carries host
+ * punctuation (dot, hyphen, underscore, digit) or is a reserved name; a bare
+ * English word does not — EXCEPT directly after a resolver marker, where the
+ * argument is a name by construction and `ENOTFOUND redis` must still redact.
+ */
+const RESERVED_HOST_NAMES = new Set(["localhost", "broadcasthost"]);
+const PROSE_AFTER_MARKER = new Set([
+  "lookup", "request", "connection", "attempt", "failed", "error", "timeout",
+  "after", "to", "for", "at", "no", "such", "the", "a", "an", "while", "during",
+]);
+function isHostCandidate(value: string, bareWordAllowed = false): boolean {
+  const lower = value.toLowerCase();
+  if (RESERVED_HOST_NAMES.has(lower)) return true;
+  if (/[.\-_0-9]/.test(value)) {
+    return AMBIGUOUS_HOST_RE.test(value) || CONTEXTUAL_HOST_TOKEN_RE.test(value);
+  }
+  // A bare word: only a resolver marker makes it a host, and only when it is
+  // not one of the connective words those messages actually use.
+  return bareWordAllowed && !PROSE_AFTER_MARKER.has(lower);
+}
 
 /**
  * A dotted label run whose final label may be numeric or hyphenated — the
@@ -196,7 +224,9 @@ const CONTEXTUAL_HOST_TOKEN_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$|^[a-z]+[0-9][a-
 // Case-insensitive throughout: `UserID`, `USER_ID`, and `AccountId` are all
 // realistic field spellings, and matching only the lowercase base label left
 // them intact.
-const ACCOUNT_LABEL_RE = /\b(?:user|account|organization|org|tenant|workspace|project)(_?id)?\b/gi;
+// The id suffix may be joined (`userID`), underscored (`user_id`) or spaced
+// (`User ID:`) — all three are ordinary provider phrasing.
+const ACCOUNT_LABEL_RE = /\b(?:user|account|organization|org|tenant|workspace|project|customer)([\s_-]?id)?\b/gi;
 const IDENTIFIER_ONLY_RE = /^[A-Za-z0-9_-]+$/;
 const UNQUOTED_TERMINATOR = /[\s,;)\]}]/;
 
@@ -466,9 +496,17 @@ function scrubString(value: string): string {
   s = s.replace(IPV4_RE, (m) => (isIpv4(m) ? "[ip]" : m));
   // 11. Multi-label hostnames, plus single-label names in a host-bearing context.
   s = s.replace(HOSTNAME_RE, "[host]");
-  s = s.replace(STRONG_HOST_CONTEXT_RE, (m, name: string) =>
-    HOST_MARKER_WORDS.has(name.toLowerCase()) ? m : m.replace(name, "[host]"),
-  );
+  s = s.replace(STRONG_HOST_CONTEXT_RE, (m, tail: string) => {
+    // Scan the few tokens after the marker for the first host-shaped one:
+    // Go writes `dial tcp: lookup <host>: no such host`, so the destination
+    // is not always adjacent to the marker. A resolver marker also licenses a
+    // bare name (`ENOTFOUND redis`), which a socket-state marker does not.
+    const resolver = /ENOTFOUND|EAI_AGAIN|lookup|host|connect(?:ing)?\s+to/i.test(m);
+    for (const token of tail.split(/[\s:]+/)) {
+      if (token && isHostCandidate(token, resolver)) return m.replace(token, "[host]");
+    }
+    return m;
+  });
   s = s.replace(WEAK_HOST_CONTEXT_RE, (m, name: string) =>
     CONTEXTUAL_HOST_TOKEN_RE.test(name) && !DOTTED_NAMESPACE_RE.test(name) ? m.replace(name, "[host]") : m,
   );

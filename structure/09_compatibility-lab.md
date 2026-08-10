@@ -33,16 +33,19 @@ label is alphabetic or punycode.
 metric or version namespace (`provider.metric.p95`, `lib.v2-rc1`). Shape cannot
 separate them. Those forms are therefore redacted only when an unambiguous
 network marker introduces them, and survive otherwise.
- 
+
 Markers carry two confidence levels, because treating them alike lost accuracy
 in both directions. **Strong** markers (`ENOTFOUND`, `EAI_AGAIN`,
 `ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, `dial tcp`, `connect to`,
-`host=`/`host:`) name a destination by construction, so even a bare word after
-one is a host — that is what covers `getaddrinfo ENOTFOUND redis` and
-`dial tcp localhost:11434`. **Weak** markers (`upstream`) appear in ordinary
+`host=`/`host:`) introduce a destination, so a resolver marker licenses even a
+bare name — that is what covers `getaddrinfo ENOTFOUND redis` and
+`dial tcp localhost:11434`. The destination is not assumed adjacent: Go writes
+`dial tcp: lookup <host>: no such host`, so the following few tokens are scanned
+and the first host-shaped one is replaced. A token that is a plain English word
+is not a host, so `ETIMEDOUT request after 30 seconds` is left alone. **Weak** markers (`upstream`) appear in ordinary
 prose, so they redact only a candidate that is already host-shaped and is not a
 plain dotted namespace; `upstream provider.metric.p95 exceeded` survives intact.
- 
+
 Every case above is asserted in both directions, so the boundary cannot drift
 silently either way.
 A retained URL path also has identifier-shaped content redacted wherever it

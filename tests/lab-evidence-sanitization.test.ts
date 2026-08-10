@@ -237,6 +237,29 @@ describe("SEC-02 sanitizer boundary", () => {
     expect(sanitizeDiagnostic("iface_01-23-45-67-89-ab_down")).toBe("iface_[mac]_down");
   });
 
+  test("a spaced label is still a label", () => {
+    // `Organization ID: x` is ordinary provider phrasing; matching only the
+    // joined and underscored spellings left the value intact.
+    expect(sanitizeDiagnostic("Organization ID: abc123def")).toBe("Organization ID: [account]");
+    expect(sanitizeDiagnostic("User ID: abc123def")).toBe("User ID: [account]");
+    expect(sanitizeDiagnostic("customer_id=abc123def")).toBe("customer_id=[account]");
+  });
+
+  test("the host after a marker is found, not assumed adjacent", () => {
+    // Go writes the destination one word later. Replacing whatever followed
+    // the marker destroyed `lookup` and left the real host in the evidence —
+    // the worst of both failures at once.
+    expect(sanitizeDiagnostic("dial tcp: lookup db.prod-1: no such host"))
+      .toBe("dial tcp: lookup [host]: no such host");
+    // And a marker followed by prose still redacts nothing. A stopword list
+    // would repeat the enumeration mistake, so the candidate is validated:
+    // a bare English word is not a host.
+    expect(sanitizeDiagnostic("ETIMEDOUT request after 30 seconds"))
+      .toBe("ETIMEDOUT request after 30 seconds");
+    expect(sanitizeDiagnostic("ECONNREFUSED connection attempt failed"))
+      .toBe("ECONNREFUSED connection attempt failed");
+  });
+
   test("an internationalized domain does not preserve the address", () => {
     const at = "@";
     expect(sanitizeDiagnostic(`用户${at}例子.公司`)).toBe("[email]");
