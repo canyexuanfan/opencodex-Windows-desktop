@@ -87,6 +87,7 @@ describe("headless GUI parity CLI", () => {
       ["/api/injection", "ocx agent"],
       ["/api/keys", "ocx access"],
       ["/api/logs", "ocx observe"],
+      ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
       ["/api/settings", "ocx system"],
       // Routing Intelligence (RI-04..RI-10): profiles + dry-run are mirrored by
@@ -229,9 +230,9 @@ describe("headless GUI parity CLI", () => {
     expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: true, value: 128_000 } });
 
     const offRuntime = fakeRuntime();
-    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], offRuntime.deps);
+    const offCode = await handleModelsRuntimeCommand("context", ["provider", "openai", "off", "--json"], runtime.deps);
     expect(offCode).toBe(0);
-    expect(offRuntime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
+    expect(runtime.requests[0]).toEqual({ path: "/api/provider-context-caps", method: "PUT", body: { provider: "openai", enabled: false } });
 
     // --value is only valid with `on`; the rejected form must not send any request.
     const rejectedRuntime = fakeRuntime();
