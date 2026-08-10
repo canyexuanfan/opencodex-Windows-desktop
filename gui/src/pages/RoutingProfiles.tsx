@@ -190,7 +190,8 @@ function parseProfiles(raw: unknown): RoutingProfileDto[] {
     const compatibility = normalizeCompatibilityDto(
       "compatibility" in profile ? profile.compatibility : undefined,
     );
-    const { compatibility: _ignored, ...rest } = profile;
+    const rest = { ...profile };
+    delete rest.compatibility;
     return {
       ...rest,
       alias: profile.alias ?? null,
