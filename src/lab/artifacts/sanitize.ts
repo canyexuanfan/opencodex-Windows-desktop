@@ -105,10 +105,14 @@ const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
 // `\b` does not fire between `_` and a digit, so `x_203.0.113.7` slipped past
 // the word-boundary form above.
 const UNDERSCORE_ADJACENT_IPV4_RE = /_((?:\d{1,3}\.){3}\d{1,3})\b/g;
-// The final label allows digits and hyphens so a punycode TLD such as
-// `xn--p1ai` is consumed whole; matching only `[a-z]{2,24}` stopped at the
-// first hyphen and produced the partial `[host]--p1ai`.
-const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}[a-z][a-z0-9-]{1,31}\b/gi;
+// The final label is either an ordinary alphabetic TLD or a punycode one.
+// Allowing hyphens and digits in every final label was too broad: it ate
+// ordinary diagnostic tokens such as `foo.bar-baz` and `metric.p95`, which
+// costs exactly the evidence quality the Lab exists to capture.
+// A trailing `-` or alphanumeric run after the TLD means this was never a
+// hostname (`foo.bar-baz`), so the negative lookahead refuses the whole match
+// rather than redacting a prefix of it.
+const HOSTNAME_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(?:xn--[a-z0-9-]{1,55}|[a-z]{2,24})\b(?![-\w])/gi;
 // The value is scanned to its delimiter, not to a word boundary: `\b` stops at
 // the first `.` in `db_prod.internal`, which left `[host].internal` — a partial
 // redaction that still names the host.
@@ -135,18 +139,31 @@ function scrubUrlPath(pathname: string): string {
     .split("/")
     .map((segment) => {
       if (!segment) return segment;
-      // Compare the decoded segment: `%2D` for `-` is still a UUID, and a
-      // literal-only check let a percent-encoded identifier through.
-      let decoded = segment;
-      try {
-        decoded = decodeURIComponent(segment);
-      } catch {
-        // Malformed escapes: fall back to the raw segment.
-      }
-      if (UUID_RE.test(decoded) || isPrefixedAccount(decoded)) return "[account]";
+      // Compare the decoded segment: `%2D` for `-` is still a UUID. Decoding
+      // repeats to a fixed point, because a single pass left `%252D` — an
+      // encoded percent sign — reversible in the persisted evidence.
+      if (isIdentifierSegment(segment)) return "[account]";
       return segment;
     })
     .join("/");
+}
+
+/** Percent-decode to a fixed point, bounded, then test identifier shapes. */
+function isIdentifierSegment(segment: string): boolean {
+  let current = segment;
+  for (let pass = 0; pass < 4; pass += 1) {
+    if (UUID_RE.test(current) || isPrefixedAccount(current)) return true;
+    if (!current.includes("%")) return false;
+    let next: string;
+    try {
+      next = decodeURIComponent(current);
+    } catch {
+      return false; // malformed escapes: treat as opaque
+    }
+    if (next === current) return false;
+    current = next;
+  }
+  return UUID_RE.test(current) || isPrefixedAccount(current);
 }
 
 /** Valid IPv4 dotted quad: every octet in range and canonically written. */

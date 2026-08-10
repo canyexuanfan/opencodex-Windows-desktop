@@ -304,6 +304,20 @@ describe("pr-hygiene workflow trust boundary", () => {
       /refs\/pull\//,
       "no step may check out a refs/pull/* ref",
     );
+    // Banning literal text is not enough: `format('refs/{0}/{1}/{2}', ...)`
+    // builds the same PR-controlled ref without ever spelling it. Every
+    // checkout in a pull_request_target workflow must therefore declare a ref
+    // drawn from the trusted allowlist, and no other step may name the PR
+    // number in a ref-shaped expression.
+    const checkouts = workflow.match(/uses:\s*actions\/checkout@[\s\S]*?(?=\n {6}- name:|$)/g) ?? [];
+    for (const step of checkouts) {
+      const stepRef = step.match(/^\s*ref:\s*(.+)$/m)?.[1] ?? "";
+      assert.doesNotMatch(
+        stepRef,
+        /pull_request\.number|format\(/,
+        "a checkout ref must not be built from the pull request",
+      );
+    }
   });
 
   it("uses repository permission level for the sponsorship exemption", () => {

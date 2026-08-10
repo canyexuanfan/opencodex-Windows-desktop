@@ -143,6 +143,25 @@ describe("SEC-02 sanitizer boundary", () => {
       .toBe("https://[host]/u/[account]");
   });
 
+  test("double-encoded identifiers are decoded to a fixed point", () => {
+    // `%252D` is an encoded percent sign: one decode pass leaves a still
+    // reversible identifier, so decoding repeats until it stops changing.
+    expect(sanitizeDiagnostic("https://h.example/u/550e8400%252De29b%252D41d4%252Da716%252D446655440000"))
+      .toBe("https://[host]/u/[account]");
+  });
+
+  test("hostname redaction does not eat ordinary dotted diagnostics", () => {
+    // Widening the final label for punycode initially swallowed these. A
+    // sanitizer that destroys evidence fails the Lab's purpose as surely as
+    // one that leaks it.
+    for (const value of ["foo.bar-baz", "lib.v2-rc1", "release.v2", "metric.p95"]) {
+      expect(sanitizeDiagnostic(value), value).toBe(value);
+    }
+    // Real hosts, including punycode, still go.
+    expect(sanitizeDiagnostic("internal.corp.example")).toBe("[host]");
+    expect(sanitizeDiagnostic("xn--e1afmkfd.xn--p1ai")).toBe("[host]");
+  });
+
   test("contextual account values are replaced whole, never as a prefix", () => {
     expect(sanitizeDiagnostic("user_id=abc123def")).toBe("user_id=[account]");
     expect(sanitizeDiagnostic('"userId": "abc123def"')).toBe('"userId": "[account]"');
