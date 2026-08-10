@@ -14,6 +14,7 @@ import {
 } from "./constants";
 import { verifierManifestDigest } from "./subject";
 
+/** In-memory authority for the frozen CL-07 fabric scenario catalogue. */
 export interface FabricCaseAuthority {
   schemaVersion: number;
   sourceCommit: string;
@@ -38,6 +39,7 @@ const FIXTURE_BYTES_UTF8 = JSON.stringify({
   after: SYNTHETIC_AFTER_UTF8,
 });
 
+/** Frozen CL-07 fabric scenario authority loaded from compiled constants. */
 export function loadFabricCaseAuthority(): FabricCaseAuthority {
   const fixtureBytes = new TextEncoder().encode(FIXTURE_BYTES_UTF8);
   const digest = fixtureDigest(fixtureBytes);
@@ -101,6 +103,7 @@ export function loadFabricCaseAuthority(): FabricCaseAuthority {
   };
 }
 
+/** List fabric scenarios, optionally filtered by suite id. */
 export function discoverFabricScenarios(
   authority: FabricCaseAuthority = loadFabricCaseAuthority(),
   suites?: readonly string[],
@@ -108,6 +111,7 @@ export function discoverFabricScenarios(
   return authority.cases.filter((row) => !suites || suites.includes(row.suite));
 }
 
+/** Expand a fabric case into the canonical scenario manifest object. */
 export function expandFabricScenario(
   caseRecord: CaseRecord,
   authority: FabricCaseAuthority = loadFabricCaseAuthority(),
@@ -173,6 +177,7 @@ export function expandFabricScenario(
   };
 }
 
+/** Expand a fabric suite id into the canonical suite manifest object. */
 export function expandFabricSuiteManifest(
   suiteId: string = FABRIC_SUITE_ID,
   authority: FabricCaseAuthority = loadFabricCaseAuthority(),
@@ -200,6 +205,7 @@ export function expandFabricSuiteManifest(
   };
 }
 
+/** Digest of the expanded fabric scenario manifest for a case. */
 export function fabricScenarioManifestDigest(
   caseRecord: CaseRecord = loadFabricCaseAuthority().cases[0]!,
   authority: FabricCaseAuthority = loadFabricCaseAuthority(),
@@ -207,6 +213,7 @@ export function fabricScenarioManifestDigest(
   return scenarioManifestDigest(expandFabricScenario(caseRecord, authority));
 }
 
+/** Digest of the expanded fabric suite manifest. */
 export function fabricSuiteManifestDigest(
   suiteId: string = FABRIC_SUITE_ID,
   authority: FabricCaseAuthority = loadFabricCaseAuthority(),

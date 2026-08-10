@@ -33,6 +33,9 @@ import {
 import type { FabricLimitsV1, FabricTaskOutcomeV1 } from "./types";
 import { FabricTaskError } from "./types";
 
+/** CL-07 fabric task outcome validation and observation persistence. */
+
+/** Options for building or persisting a fabric observation event. */
 export interface PersistFabricOptions {
   configDir?: string;
   recordedAt?: number;
@@ -41,6 +44,7 @@ export interface PersistFabricOptions {
   attempt?: number;
 }
 
+/** Result of appending a fabric observation to the compatibility ledger. */
 export interface PersistedFabricObservation {
   event: ObservationEvent;
   ledgerPath: string;
@@ -76,6 +80,7 @@ const LIMIT_KEYS = Object.keys(FABRIC_LIMITS) as Array<keyof FabricLimitsV1>;
 const FAILURE_KEYS = new Set(["class", "code", "retryable", "attribution"]);
 const FAILURE_ATTRIBUTIONS = new Set(["opencodex", "route", "environment", "harness"]);
 
+/** Require a non-null plain object or throw a harness-class FabricTaskError. */
 function assertPlainObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new FabricTaskError(`malformed producer outcome: ${label}`, "malformed_producer_outcome", "harness");
@@ -83,6 +88,7 @@ function assertPlainObject(value: unknown, label: string): Record<string, unknow
   return value as Record<string, unknown>;
 }
 
+/** Require a non-empty string field on a producer outcome object. */
 function assertStringField(obj: Record<string, unknown>, key: string): string {
   const value = obj[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -91,6 +97,7 @@ function assertStringField(obj: Record<string, unknown>, key: string): string {
   return value;
 }
 
+/** Require an integer field on a producer outcome object. */
 function assertIntegerField(obj: Record<string, unknown>, key: string): number {
   const value = obj[key];
   if (typeof value !== "number" || !Number.isInteger(value)) {
@@ -99,6 +106,7 @@ function assertIntegerField(obj: Record<string, unknown>, key: string): number {
   return value;
 }
 
+/** Require a non-negative integer field on a producer outcome object. */
 function assertNonNegativeIntegerField(obj: Record<string, unknown>, key: string): number {
   const value = assertIntegerField(obj, key);
   if (value < 0) {
@@ -107,6 +115,7 @@ function assertNonNegativeIntegerField(obj: Record<string, unknown>, key: string
   return value;
 }
 
+/** Map LabValidationError into FabricTaskError for producer outcome parsing. */
 function wrapValidationError(error: unknown): void {
   if (error instanceof LabValidationError) {
     throw new FabricTaskError(error.message, "malformed_producer_outcome", "harness");
@@ -114,6 +123,7 @@ function wrapValidationError(error: unknown): void {
   throw error;
 }
 
+/** Validate verifier payload shape and reject unknown nested verifier fields. */
 function validateFabricVerifier(raw: Record<string, unknown>): void {
   for (const key of Object.keys(raw)) {
     if (!VERIFIER_KEYS.has(key)) {
@@ -160,18 +170,21 @@ function validateFabricVerifier(raw: Record<string, unknown>): void {
   }
 }
 
+/** Validate non-negative usage counters on a producer outcome. */
 function validateFabricUsage(raw: Record<string, unknown>): void {
   for (const key of USAGE_KEYS) {
     assertNonNegativeIntegerField(raw, key);
   }
 }
 
+/** Validate non-negative limit fields on a producer outcome. */
 function validateFabricLimits(raw: Record<string, unknown>): void {
   for (const key of LIMIT_KEYS) {
     assertNonNegativeIntegerField(raw, key);
   }
 }
 
+/** Validate failure record shape and known attribution values. */
 function validateFailureRecord(raw: Record<string, unknown>): void {
   for (const key of Object.keys(raw)) {
     if (!FAILURE_KEYS.has(key)) {
@@ -192,10 +205,12 @@ function validateFailureRecord(raw: Record<string, unknown>): void {
   }
 }
 
+/** Compare top-level and nested route subjects by canonical JSON equality. */
 function routeSubjectsMatch(top: RouteSubjectV1, nested: RouteSubjectV1): boolean {
   return JSON.stringify(top) === JSON.stringify(nested);
 }
 
+/** Build an allowlisted verifier_summary artifact with sanitized diagnostics. */
 function sanitizedVerifierSummary(outcome: FabricTaskOutcomeV1): Record<string, unknown> {
   const verifier = {
     verifierId: outcome.verifier.verifierId,
@@ -221,6 +236,7 @@ function sanitizedVerifierSummary(outcome: FabricTaskOutcomeV1): Record<string, 
   };
 }
 
+/** Parse and deeply validate a fabric producer outcome before persistence. */
 export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new FabricTaskError("malformed producer outcome", "malformed_producer_outcome", "harness");
@@ -294,6 +310,7 @@ export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   return raw as FabricTaskOutcomeV1;
 }
 
+/** Convert a validated fabric outcome into a ledger-ready observation and artifacts. */
 export function observationFromFabricOutcome(
   outcomeRaw: unknown,
   opts: PersistFabricOptions = {},
@@ -404,6 +421,7 @@ export function observationFromFabricOutcome(
   }
 }
 
+/** Persist a fabric outcome observation to the compatibility ledger when absent. */
 export function persistFabricOutcome(
   outcome: FabricTaskOutcomeV1,
   opts: PersistFabricOptions = {},

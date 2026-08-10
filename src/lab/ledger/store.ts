@@ -33,6 +33,7 @@ interface LedgerLockMeta {
   createdAt: number;
 }
 
+/** Block synchronously for the given duration (ledger lock retry only). */
 function sleepSyncMs(ms: number): void {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -40,6 +41,7 @@ function sleepSyncMs(ms: number): void {
   }
 }
 
+/** Read pid and createdAt metadata from a ledger lock file, if well-formed. */
 function readLedgerLockMeta(lockPath: string): LedgerLockMeta | null {
   try {
     const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as LedgerLockMeta;
@@ -50,12 +52,14 @@ function readLedgerLockMeta(lockPath: string): LedgerLockMeta | null {
   return null;
 }
 
+/** Return true when a ledger lock file is missing metadata or older than the stale window. */
 function isLedgerLockStale(lockPath: string): boolean {
   const meta = readLedgerLockMeta(lockPath);
   if (!meta) return true;
   return Date.now() - meta.createdAt > LEDGER_LOCK_STALE_MS;
 }
 
+/** Create a ledger lock file exclusively, recovering stale locks when needed. */
 function tryAcquireLedgerLock(lockPath: string): number {
   try {
     const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
@@ -74,6 +78,7 @@ function tryAcquireLedgerLock(lockPath: string): number {
   }
 }
 
+/** Run a ledger mutation while holding the compatibility ledger lock file. */
 function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
   const lockPath = `${ledgerPath}.lock`;
   mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
@@ -99,6 +104,7 @@ function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
   }
 }
 
+/** Load or build the in-memory event-id index for a ledger path. */
 function loadEventIdIndex(ledgerPath: string): Set<string> {
   let index = eventIdIndexByLedger.get(ledgerPath);
   if (!index) {

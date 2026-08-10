@@ -84,6 +84,7 @@ export type SyntheticPatchProducer = (ctx: {
   reportActivity: () => void;
 }) => SyntheticPatchV1 | Promise<SyntheticPatchV1>;
 
+/** Typed error for fabric task producer, verifier, and sandbox failures. */
 export class FabricTaskError extends Error {
   override readonly name = "FabricTaskError";
   constructor(

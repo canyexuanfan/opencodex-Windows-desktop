@@ -29,6 +29,7 @@ import type {
 import { FabricTaskError } from "./types";
 import { verifyExactTreeDiffV1 } from "./verifier";
 
+/** Options for running the bounded synthetic-patch fabric task executor. */
 export interface RunFabricTaskOptions {
   routeSubject: RouteSubjectV1;
   producePatch: SyntheticPatchProducer;
@@ -41,6 +42,7 @@ export interface RunFabricTaskOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/** Map a FabricTaskError into a ledger failure record. */
 function failureFromError(error: FabricTaskError): FailureRecordV1 {
   return {
     class: error.code,
@@ -50,6 +52,7 @@ function failureFromError(error: FabricTaskError): FailureRecordV1 {
   };
 }
 
+/** Map a failure record to the observation outcome kind for persistence. */
 function outcomeFromFailure(failure: FailureRecordV1): FabricTaskOutcomeV1["outcome"] {
   if (failure.class === "behavioral_failure") return "fail";
   if (failure.attribution === "harness") return "inconclusive";
@@ -253,6 +256,7 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
   }
 }
 
+/** Assemble an immutable FabricTaskOutcomeV1 from executor state. */
 function sealOutcome(input: {
   taskSubject: FabricTaskOutcomeV1["taskSubject"];
   subjectId: string;
@@ -294,6 +298,7 @@ function sealOutcome(input: {
   return sealed;
 }
 
+/** Arm total and inactivity deadlines around producer execution. */
 function createTimeoutController(
   totalMs: number,
   inactivityMs: number,

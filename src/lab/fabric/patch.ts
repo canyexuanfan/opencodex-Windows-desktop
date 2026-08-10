@@ -5,6 +5,7 @@ import { FabricTaskError, type SyntheticPatchV1 } from "./types";
 const ALLOWED_KEYS = new Set(["schemaVersion", "operations"]);
 const OP_KEYS = new Set(["op", "path", "contentUtf8"]);
 
+/** Parse and validate a synthetic-patch producer payload. */
 export function parseSyntheticPatchV1(raw: unknown): SyntheticPatchV1 {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new FabricTaskError("malformed producer outcome: patch must be object", "malformed_producer_outcome", "harness");
@@ -50,6 +51,7 @@ export function parseSyntheticPatchV1(raw: unknown): SyntheticPatchV1 {
   };
 }
 
+/** Apply a validated synthetic patch inside the scratch tree under budget limits. */
 export function applySyntheticPatch(scratchRoot: string, patch: SyntheticPatchV1): { bytesWritten: number; filesTouched: number; patchOperations: number } {
   if (patch.operations.length > FABRIC_LIMITS.maxPatchOperations) {
     throw new FabricTaskError("too many patch operations", "budget_exhausted", "environment");

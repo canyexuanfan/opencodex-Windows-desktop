@@ -41,6 +41,7 @@ export function isScenarioApplicable(
   return true;
 }
 
+/** Match protocol subject fields against scenario requirement lists. */
 function scenarioApplicableToRequirements(
   requirements: ScenarioRequirements,
   subject: ProtocolSubjectV1,
@@ -92,6 +93,7 @@ export function taskSubjectApplicableToRequirements(
   return platformOk && featuresOk && preconditionsOk;
 }
 
+/** Return true for non-negative integer values used in freshness parsing. */
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

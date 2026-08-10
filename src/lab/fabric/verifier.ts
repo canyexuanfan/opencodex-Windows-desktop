@@ -11,6 +11,7 @@ import { verifierManifestDigest } from "./subject";
 import type { ExactTreeDiffResultV1 } from "./types";
 import { FabricTaskError } from "./types";
 
+/** SHA-256 hex digest of a UTF-8 string for verifier tree comparisons. */
 function sha256Utf8(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }

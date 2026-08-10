@@ -1,3 +1,4 @@
+/** CL-07 fabric module public surface (explicit allowlist re-exports). */
 export {
   FABRIC_SUITE_ID,
   FABRIC_SUITE_VERSION,

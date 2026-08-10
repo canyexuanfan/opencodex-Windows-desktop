@@ -16,10 +16,12 @@ const SANDBOX_DOMAIN = "ocx-lab:fabric-sandbox-profile:v1";
 const VERIFIER_DOMAIN = "ocx-lab:fabric-verifier-manifest:v1";
 const FIXTURE_DOMAIN = "ocx-lab:fabric-task-fixture:v1";
 
+/** Domain hash of the frozen fabric sandbox profile object. */
 export function sandboxProfileDigest(profile: unknown = SANDBOX_PROFILE_V1): string {
   return domainHash(SANDBOX_DOMAIN, jcsStringify(profile));
 }
 
+/** Canonical exact-tree-diff verifier manifest object for CL-07. */
 export function verifierManifestObject(): Record<string, unknown> {
   return {
     schemaVersion: 1,
@@ -39,10 +41,12 @@ export function verifierManifestObject(): Record<string, unknown> {
   };
 }
 
+/** Domain hash of the fabric verifier manifest object. */
 export function verifierManifestDigest(manifest: unknown = verifierManifestObject()): string {
   return domainHash(VERIFIER_DOMAIN, jcsStringify(manifest));
 }
 
+/** Canonical synthetic-patch task fixture object for CL-07. */
 export function taskFixtureObject(): Record<string, unknown> {
   return {
     schemaVersion: 1,
@@ -63,10 +67,12 @@ export function taskFixtureObject(): Record<string, unknown> {
   };
 }
 
+/** Domain hash of the fabric task fixture object. */
 export function taskFixtureDigest(fixture: unknown = taskFixtureObject()): string {
   return domainHash(FIXTURE_DOMAIN, jcsStringify(fixture));
 }
 
+/** Build a frozen TaskSubjectV1 for the synthetic-patch fabric task. */
 export function buildTaskSubjectV1(input: {
   routeSubject: RouteSubjectV1;
   taskClassId?: string;
@@ -94,6 +100,7 @@ export function buildTaskSubjectV1(input: {
   });
 }
 
+/** Stable subject id for a fabric TaskSubjectV1. */
 export function taskSubjectId(subject: TaskSubjectV1): string {
   return subjectIdForSubject(subject);
 }

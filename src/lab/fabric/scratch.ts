@@ -21,6 +21,8 @@ import { ensureLabDirs, ensureRestrictedDir, labScratchDir } from "../paths";
 import { FABRIC_LIMITS, SYNTHETIC_BEFORE_UTF8, SYNTHETIC_VALUE_PATH } from "./constants";
 import { FabricTaskError } from "./types";
 
+/** CL-07 restricted scratch tree IO for the synthetic-patch fabric task. */
+
 const O_NOFOLLOW = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
 const O_DIRECTORY = (fsConstants as { O_DIRECTORY?: number }).O_DIRECTORY;
 const FILE_MODE = 0o600;
@@ -43,37 +45,44 @@ interface TrustedScratchDir {
 let scratchIoMode: ScratchIoMode | null = null;
 const trustedScratchRoots = new Map<string, TrustedScratchDir>();
 
+/** Require stats to describe a regular file, not a symlink or special node. */
 function assertRegularFile(stats: Stats, label: string): void {
   if (!stats.isFile() || stats.isSymbolicLink() || stats.isDirectory() || stats.isFIFO() || stats.isSocket() || stats.isCharacterDevice() || stats.isBlockDevice()) {
     throw new FabricTaskError(`${label} must be a regular file`, "sandbox_violation", "harness");
   }
 }
 
+/** Require stats to describe a real directory, not a symlink. */
 function assertRealDirectory(stats: Stats, label: string): void {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new FabricTaskError(`${label} must be a real directory`, "sandbox_violation", "harness");
   }
 }
 
+/** Stable device/inode identity string for a filesystem node. */
 function identityOf(stats: Stats): string {
   return `${stats.dev}:${stats.ino}`;
 }
 
+/** Whether the host supports O_NOFOLLOW for scratch open operations. */
 function platformSupportsNoFollow(): boolean {
   return typeof O_NOFOLLOW === "number" && O_NOFOLLOW !== 0;
 }
 
+/** Compose open flags, optionally adding O_NOFOLLOW when supported. */
 function openFlags(base: number, noFollow = true): number {
   if (noFollow && platformSupportsNoFollow()) return base | O_NOFOLLOW!;
   return base;
 }
 
+/** Reject scratch relative names that traverse or embed forbidden characters. */
 function assertScratchName(name: string): void {
   if (name.includes("/") || name.includes("\\") || name.includes("..") || name.includes("\0")) {
     throw new FabricTaskError("invalid scratch relative name", "sandbox_violation", "harness");
   }
 }
 
+/** Re-open scratch dir fd and confirm its identity has not changed. */
 function revalidateScratchDir(dir: TrustedScratchDir): void {
   const stats = fstatSync(dir.fd);
   assertRealDirectory(stats, "scratch dir");
@@ -82,12 +91,14 @@ function revalidateScratchDir(dir: TrustedScratchDir): void {
   }
 }
 
+/** Resolve a single path segment under a trusted scratch directory. */
 function childScratchPath(dir: TrustedScratchDir, name: string): string {
   revalidateScratchDir(dir);
   assertScratchName(name);
   return join(dir.path, name);
 }
 
+/** Detect whether scratch IO uses dirfd openat or win32 pinned path mode. */
 function detectScratchIoMode(dir: TrustedScratchDir): ScratchIoMode {
   if (scratchIoMode !== null) return scratchIoMode;
   if (process.platform === "win32") {
@@ -113,6 +124,7 @@ function detectScratchIoMode(dir: TrustedScratchDir): ScratchIoMode {
   return scratchIoMode;
 }
 
+/** Open a single name relative to a trusted scratch directory fd. */
 function openAtScratch(dir: TrustedScratchDir, name: string, flags: number, mode = 0, expectDirectory = false): number {
   revalidateScratchDir(dir);
   assertScratchName(name);
@@ -134,6 +146,7 @@ function openAtScratch(dir: TrustedScratchDir, name: string, flags: number, mode
   return fd;
 }
 
+/** Pin an absolute scratch root path into a trusted directory handle. */
 function openTrustedScratchRoot(scratchRoot: string): TrustedScratchDir {
   const abs = resolve(scratchRoot);
   let fd: number;
@@ -147,6 +160,7 @@ function openTrustedScratchRoot(scratchRoot: string): TrustedScratchDir {
   return { path: abs, fd, identity: identityOf(stats) };
 }
 
+/** Return a cached trusted scratch handle, opening the root on first use. */
 function getTrustedScratch(scratchRoot: string): TrustedScratchDir {
   const abs = resolve(scratchRoot);
   let trusted = trustedScratchRoots.get(abs);
@@ -158,6 +172,7 @@ function getTrustedScratch(scratchRoot: string): TrustedScratchDir {
   return trusted;
 }
 
+/** Close and drop a cached trusted scratch directory handle. */
 function releaseTrustedScratch(scratchRoot: string): void {
   const abs = resolve(scratchRoot);
   const trusted = trustedScratchRoots.get(abs);
@@ -170,6 +185,7 @@ function releaseTrustedScratch(scratchRoot: string): void {
   }
 }
 
+/** Open a relative scratch path by walking trusted directory handles. */
 function openScratchRelativePath(
   root: TrustedScratchDir,
   relativePath: string,
@@ -209,6 +225,7 @@ function openScratchRelativePath(
   }
 }
 
+/** Read exactly size bytes from an open scratch file descriptor. */
 function readAllFromFd(fd: number, size: number): string {
   const buf = Buffer.alloc(size);
   let offset = 0;
@@ -244,6 +261,7 @@ export function assertSafeRelativePosixPath(raw: string): string {
   return normalized;
 }
 
+/** Prove a resolved path remains under the scratch root prefix. */
 function assertUnderScratchRoot(root: string, target: string): void {
   if (target !== root && !target.startsWith(root + sep)) {
     throw new FabricTaskError("path escapes scratch root", "sandbox_violation", "harness");
@@ -282,11 +300,13 @@ export function resolveInsideScratch(scratchRoot: string, relativePath: string, 
   return current;
 }
 
+/** Handle for a fabric scratch tree and its best-effort cleanup callback. */
 export interface ScratchTree {
   root: string;
   cleanup: () => void;
 }
 
+/** Create an isolated scratch tree with the frozen synthetic-patch fixture file. */
 export function createSyntheticScratch(configDir?: string): ScratchTree {
   ensureLabDirs(configDir);
   const base = labScratchDir(configDir);
@@ -324,6 +344,7 @@ export function createSyntheticScratch(configDir?: string): ScratchTree {
   };
 }
 
+/** One regular file discovered during a bounded scratch tree walk. */
 export interface WalkedFile {
   relativePosix: string;
   absolute: string;
@@ -376,6 +397,7 @@ export function walkScratchFiles(scratchRoot: string): WalkedFile[] {
   return out;
 }
 
+/** Read a scratch file as UTF-8 text under a byte budget. */
 export function readScratchFileUtf8(scratchRoot: string, relativePath: string, maxBytes: number): string {
   resolveInsideScratch(scratchRoot, relativePath);
   const trusted = getTrustedScratch(scratchRoot);
@@ -395,6 +417,7 @@ export function readScratchFileUtf8(scratchRoot: string, relativePath: string, m
   }
 }
 
+/** Write UTF-8 content to a scratch file, replacing any existing bytes. */
 export function writeScratchFileUtf8(scratchRoot: string, relativePath: string, contentUtf8: string, maxBytes: number): number {
   const bytes = Buffer.from(contentUtf8, "utf8");
   if (bytes.byteLength > maxBytes) {
