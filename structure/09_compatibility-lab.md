@@ -19,3 +19,7 @@ The two machine-readable Live V1 authority copies are required to be byte-identi
 ## Scope guard
 
 CL-03 does not expose a management CLI/API or UI. Those surfaces remain CL-04+ work. Production request routing must not synchronously trigger Compatibility Lab probing or rebuild Lab evidence.
+
+## CL-05 GUI read surface
+
+CL-05 adds a read-only Models tab (`#models/compatibility`) that visualizes the compatibility verdict matrix from existing `GET /api/lab/*` management APIs. The legacy `#lab` hash redirects to `#models/compatibility`. The GUI never triggers probe execution, projection rebuilds, or evidence mutation. Verdicts remain per `(subject, evidence layer, suite)`; layers are not collapsed into a universal score.

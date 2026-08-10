@@ -45,6 +45,7 @@ function installFetch(): { hits: Map<string, number> } {
     if (url.includes("/api/routing-analytics")) return Response.json(null);
     if (url.includes("/api/shadow-call-settings")) return Response.json({ enabled: false });
     if (url.includes("/api/v2")) return new Response(null, { status: 404 });
+    if (url.includes("/api/lab/status")) return Response.json({ projectionAvailable: false });
     return new Response(null, { status: 404 });
   }) as typeof fetch;
   return { hits };
@@ -93,12 +94,12 @@ async function mountModels(): Promise<{ container: HTMLElement; root: Root }> {
 const tabs = (container: HTMLElement) => [...container.querySelectorAll('[role="tab"]')] as HTMLButtonElement[];
 const panel = (container: HTMLElement, id: string) => container.querySelector(`#models-panel-${id}`);
 
-test("the strip renders all three tabs with the catalog selected on the bare hash", async () => {
+test("the strip renders all four tabs with the catalog selected on the bare hash", async () => {
   installFetch();
   const { container, root } = await mountModels();
   try {
     expect(tabs(container).map(t => t.id)).toEqual([
-      "models-tab-catalog", "models-tab-combos", "models-tab-routing",
+      "models-tab-catalog", "models-tab-combos", "models-tab-routing", "models-tab-compatibility",
     ]);
     const selected = tabs(container).filter(t => t.getAttribute("aria-selected") === "true");
     expect(selected).toHaveLength(1);
@@ -130,11 +131,11 @@ test("a cold catalog never removes the tab strip", async () => {
   const { container, root } = await mountModels();
   try {
     // Still cold here: the catalog fetch is parked on the gate.
-    expect(tabs(container)).toHaveLength(3);
+    expect(tabs(container)).toHaveLength(4);
     expect(panel(container, "catalog")).toBeTruthy();
     releaseCatalog();
     await act(async () => { await Promise.resolve(); });
-    expect(tabs(container)).toHaveLength(3);
+    expect(tabs(container)).toHaveLength(4);
   } finally {
     await act(async () => root.unmount());
   }
@@ -156,7 +157,7 @@ test("a cold catalog failure still lets the user reach another tab", async () =>
   const { container, root } = await mountModels();
   try {
     await act(async () => { await Promise.resolve(); });
-    expect(tabs(container)).toHaveLength(3);
+    expect(tabs(container)).toHaveLength(4);
 
     // "Reachable" has to mean the click works and the panel actually appears — asserting
     // the button merely exists would pass with a dead tab.
@@ -225,13 +226,13 @@ test("every rendered panel is wired to its tab", async () => {
   installFetch();
   const { container, root } = await mountModels();
   try {
-    for (const id of ["combos", "routing"]) {
+    for (const id of ["combos", "routing", "compatibility"]) {
       await act(async () => {
         (container.querySelector(`#models-tab-${id}`) as HTMLButtonElement).click();
       });
       await act(async () => { await Promise.resolve(); });
     }
-    for (const id of ["catalog", "combos", "routing"]) {
+    for (const id of ["catalog", "combos", "routing", "compatibility"]) {
       const p = panel(container, id)!;
       expect(p.getAttribute("role")).toBe("tabpanel");
       expect(p.getAttribute("aria-labelledby")).toBe(`models-tab-${id}`);
@@ -246,7 +247,7 @@ test("every rendered panel is wired to its tab", async () => {
 /*
  * The ARIA test above pins wiring, not isolation — it would pass with every boundary
  * deleted. This one makes a panel actually throw. App's boundary is keyed by page, and
- * all three tabs are now one page, so without per-panel boundaries one broken tab would
+ * all four tabs are now one page, so without per-panel boundaries one broken tab would
  * take the whole workspace down and stay broken across a switch.
  */
 test("a panel load failure does not take its siblings with it", async () => {
@@ -275,7 +276,7 @@ test("a panel load failure does not take its siblings with it", async () => {
     // failed LOAD, not a render throw — the boundary mechanism itself is covered by
     // error-boundary.test.tsx; what matters here is that one panel's failure is
     // contained.
-    expect(tabs(container)).toHaveLength(3);
+    expect(tabs(container)).toHaveLength(4);
     await act(async () => {
       (container.querySelector("#models-tab-routing") as HTMLButtonElement).click();
     });

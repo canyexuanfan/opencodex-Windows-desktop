@@ -23,7 +23,8 @@ independent review, blockers, and whether a later phase is authorized.
 | CL-01 | `feat/cl-01-conformance-harness` | `c2113ca47b8a05c5a5f90679e4eaa640ca2c6a66` | `22d608c82d82e2746c0cef9cd761db19a8e465ee` | [#1320](https://github.com/lidge-jun/opencodex/pull/1320) | MERGED TO `dev` at `4bb249b756abd468c675d2d92fffe4da95ad3e2a` |
 | CL-02 | `feat/cl-02-evidence-ledger` | `4bb249b756abd468c675d2d92fffe4da95ad3e2a` | NOT RECORDED | [#1333](https://github.com/lidge-jun/opencodex/pull/1333) | MERGED TO `dev` at `025c37916225dd685d9217e5b40190600f06d278`; POST-MERGE HARDENING [#1343](https://github.com/lidge-jun/opencodex/pull/1343) MERGED at `eee2dab4d1bbacefce56057adad51d734f346702`; FINAL CLOSURE GATE [#1348](https://github.com/lidge-jun/opencodex/pull/1348) |
 | CL-03 | `feat/cl-03-live-route-probes` | `4f746d13799888ea0a8c7a111aa2ad61c2126ea0` | `003f7402f49bfe8dd710a7beba52f717051bfadf` | [#1352](https://github.com/lidge-jun/opencodex/pull/1352) | MERGED TO `dev` at `68c71a4e9cdf882d812f09fd94783a28749db629`; ACCEPTED/CLOSED |
-| CL-04 | `feat/cl-04-lab-read-surfaces` | `68c71a4e9cdf882d812f09fd94783a28749db629` | NOT RECORDED | DRAFT PENDING | IMPLEMENTATION IN PROGRESS (not accepted) |
+| CL-04 | `feat/cl-04-lab-read-surfaces` | `68c71a4e9cdf882d812f09fd94783a28749db629` | NOT RECORDED | [#1378](https://github.com/lidge-jun/opencodex/pull/1378) | MERGED TO `dev` at `d517161aeaa3a974ad3c0360ff0c97b03b4c4520` |
+| CL-05 | `feat/cl-05-compatibility-matrix-ui` | `d517161aeaa3a974ad3c0360ff0c97b03b4c4520` | `2a159b8b7` (Models tab placement) | [#1384](https://github.com/lidge-jun/opencodex/pull/1384) | IMPLEMENTATION IN PROGRESS (not accepted) |
 
 The CL-01 starting SHA is the exact CL-00 tip recorded when CL-01 began. Its
 moving base-ref name is not a substitute for that historical SHA.
@@ -158,7 +159,8 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 - CL-01: **MERGED** via #1320 at `4bb249b756abd468c675d2d92fffe4da95ad3e2a`.
 - CL-02: **MERGED** via #1333 at `025c37916225dd685d9217e5b40190600f06d278`; post-merge hardening #1343 is also **MERGED** at `eee2dab4d1bbacefce56057adad51d734f346702`; final closure is tracked in #1348.
 - CL-03: **ACCEPTED/CLOSED** via [#1352](https://github.com/lidge-jun/opencodex/pull/1352), merged to `dev` at `68c71a4e9cdf882d812f09fd94783a28749db629`.
-- CL-04: **IMPLEMENTATION IN PROGRESS**, authorized from accepted CL-03 merge `68c71a4e9cdf882d812f09fd94783a28749db629`.
+- CL-04: **MERGED** via #1378 at `d517161aeaa3a974ad3c0360ff0c97b03b4c4520`.
+- CL-05: **IMPLEMENTATION IN PROGRESS**, authorized from CL-04 merge `d517161aeaa3a974ad3c0360ff0c97b03b4c4520`.
 
 ## CL-03 implementation log (2026-08-09)
 
