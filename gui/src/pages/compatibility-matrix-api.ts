@@ -39,44 +39,46 @@ function buildQuery(params: Record<string, string | undefined>, cursor?: string)
   return query.toString();
 }
 
-function invalidResponse(surface: string): Error {
-  return new Error(`Invalid Compatibility Lab ${surface} response`);
+export class LabDataContractError extends Error {}
+
+function invalidResponse(): LabDataContractError {
+  return new LabDataContractError();
 }
 
-function assertPaginationContract(raw: Record<string, unknown>, hasMore: boolean, nextCursor: string | undefined, surface: string) {
-  if (raw.hasMore !== undefined && typeof raw.hasMore !== "boolean") throw invalidResponse(surface);
-  if (raw.nextCursor !== undefined && typeof raw.nextCursor !== "string") throw invalidResponse(surface);
-  if (hasMore && !nextCursor) throw invalidResponse(surface);
+function assertPaginationContract(raw: Record<string, unknown>, hasMore: boolean, nextCursor: string | undefined) {
+  if (raw.hasMore !== undefined && typeof raw.hasMore !== "boolean") throw invalidResponse();
+  if (raw.nextCursor !== undefined && typeof raw.nextCursor !== "string") throw invalidResponse();
+  if (hasMore && !nextCursor) throw invalidResponse();
 }
 
 function parseStrictVerdictPage(raw: unknown): PaginatedVerdicts {
-  if (!isPlainObject(raw) || !Array.isArray(raw.verdicts)) throw invalidResponse("verdicts");
+  if (!isPlainObject(raw) || !Array.isArray(raw.verdicts)) throw invalidResponse();
   const page = parseVerdictPage(raw);
-  if (page.verdicts.length !== raw.verdicts.length) throw invalidResponse("verdicts");
-  assertPaginationContract(raw, page.hasMore, page.nextCursor, "verdicts");
+  if (page.verdicts.length !== raw.verdicts.length) throw invalidResponse();
+  assertPaginationContract(raw, page.hasMore, page.nextCursor);
   return page;
 }
 
 function parseStrictSubjectPage(raw: unknown): PaginatedSubjects {
-  if (!isPlainObject(raw) || !Array.isArray(raw.subjects)) throw invalidResponse("subjects");
+  if (!isPlainObject(raw) || !Array.isArray(raw.subjects)) throw invalidResponse();
   const page = parseSubjectPage(raw);
-  if (page.subjects.length !== raw.subjects.length) throw invalidResponse("subjects");
-  assertPaginationContract(raw, page.hasMore, page.nextCursor, "subjects");
+  if (page.subjects.length !== raw.subjects.length) throw invalidResponse();
+  assertPaginationContract(raw, page.hasMore, page.nextCursor);
   return page;
 }
 
 function parseStrictObservationPage(raw: unknown): PaginatedObservations {
-  if (!isPlainObject(raw) || !Array.isArray(raw.observations)) throw invalidResponse("observations");
+  if (!isPlainObject(raw) || !Array.isArray(raw.observations)) throw invalidResponse();
   const page = parseObservationsPage(raw);
-  if (page.observations.length !== raw.observations.length) throw invalidResponse("observations");
-  assertPaginationContract(raw, page.hasMore, page.nextCursor, "observations");
+  if (page.observations.length !== raw.observations.length) throw invalidResponse();
+  assertPaginationContract(raw, page.hasMore, page.nextCursor);
   return page;
 }
 
 export async function fetchLabStatus(apiBase: string, signal: AbortSignal): Promise<LabStatusDto> {
   const raw = await fetchLabJson<unknown>(apiBase, "/api/lab/status", signal);
   const status = parseLabStatus(raw);
-  if (!status) throw invalidResponse("status");
+  if (!status) throw invalidResponse();
   return status;
 }
 
@@ -110,7 +112,6 @@ export async function fetchSubjectPage(
 
 async function collectPages<T>(
   loadPage: (cursor: string | undefined) => Promise<{ rows: T[]; hasMore: boolean; nextCursor?: string }>,
-  surface: string,
 ): Promise<T[]> {
   const rows: T[] = [];
   const seen = new Set<string>();
@@ -121,12 +122,12 @@ async function collectPages<T>(
     if (!page.hasMore) return rows;
     const next = page.nextCursor;
     if (!next || seen.has(next) || next === cursor) {
-      throw new Error(`Compatibility Lab ${surface} pagination did not advance`);
+      throw new LabDataContractError();
     }
     seen.add(next);
     cursor = next;
   }
-  throw new Error(`Compatibility Lab ${surface} pagination exceeded ${MAX_PAGES} pages`);
+  throw new LabDataContractError();
 }
 
 export async function fetchAllSubjects(apiBase: string, signal: AbortSignal): Promise<SubjectListItemDto[]> {
@@ -135,7 +136,6 @@ export async function fetchAllSubjects(apiBase: string, signal: AbortSignal): Pr
       const page = await fetchSubjectPage(apiBase, cursor, signal);
       return { rows: page.subjects, hasMore: page.hasMore, nextCursor: page.nextCursor };
     },
-    "subjects",
   );
 }
 
@@ -146,7 +146,7 @@ export async function fetchSubjectDetail(
 ): Promise<SubjectDetailDto> {
   const raw = await fetchLabJson<unknown>(apiBase, `/api/lab/subjects/${encodeURIComponent(subjectId)}`, signal);
   const subject = parseSubjectDetail(raw);
-  if (!subject) throw invalidResponse("subject detail");
+  if (!subject) throw invalidResponse();
   return subject;
 }
 
@@ -178,14 +178,13 @@ async function fetchAllObservations(
       const page = await fetchObservationsPage(apiBase, filters, cursor, signal);
       return { rows: page.observations, hasMore: page.hasMore, nextCursor: page.nextCursor };
     },
-    "observations",
   );
 }
 
 export async function fetchEventById(apiBase: string, eventId: string, signal: AbortSignal): Promise<LabEventDto> {
   const raw = await fetchLabJson<unknown>(apiBase, `/api/lab/events/${encodeURIComponent(eventId)}`, signal);
   const event = parseLabEvent(raw);
-  if (!event) throw invalidResponse("event detail");
+  if (!event) throw invalidResponse();
   return event;
 }
 
@@ -196,7 +195,7 @@ export async function fetchArtifactByDigest(
 ): Promise<ArtifactMetadataDto> {
   const raw = await fetchLabJson<unknown>(apiBase, `/api/lab/artifacts/${encodeURIComponent(digest)}`, signal);
   const artifact = parseArtifactMetadata(raw);
-  if (!artifact) throw invalidResponse("artifact detail");
+  if (!artifact) throw invalidResponse();
   return artifact;
 }
 
