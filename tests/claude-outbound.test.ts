@@ -306,6 +306,60 @@ describe("claude outbound SSE", () => {
     expect(msg2.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking).toBe("AB");
   });
 
+  test("huge reasoning identities stay bounded without collapsing item or part boundaries", async () => {
+    const hugeItemA = "a".repeat(1024 * 1024);
+    const hugeItemB = `${"a".repeat(1024 * 1024 - 1)}b`;
+    const hugePartA = "p".repeat(1024 * 1024);
+    const hugePartB = `${"p".repeat(1024 * 1024 - 1)}q`;
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "B",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartA, delta: "C",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartB, delta: "D",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("AB\n\nC\n\nD");
+  });
+
+  test("malformed array reasoning identities retain distinct boundaries", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [1], summary_index: [0], delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [2], summary_index: [0], delta: "B",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("A\n\nB");
+  });
+
   test("data-only Responses frames infer event names from payload types", async () => {
     const upstream = [
       dataOnlySse({ type: "response.created", response: { id: "resp_data_only", status: "in_progress" } }),
