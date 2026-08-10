@@ -407,6 +407,33 @@ function projectObservationGroup(
           notes.push("incomplete_required_coverage");
         }
       }
+    } else if (key.evidenceLayer === "task_effectiveness" && newestCurrent?.executionMode === "fabric") {
+      if (!suiteManifest) {
+        verdict = "PROBED";
+        notes.push("suite_manifest_unavailable");
+      } else {
+        const evaluation = evaluateAllApplicableRequiredPassV1(
+          suiteManifest,
+          ordered,
+          newestCurrent.executionMode,
+          {
+            subject: newestCurrent.subject.subjectKind === "task" ? newestCurrent.subject : undefined,
+            loadScenarioManifest: opts.loadScenarioManifest,
+            loadScenarioRequirements: opts.loadScenarioRequirements,
+            asOf,
+          },
+        );
+        notes.push(...evaluation.notes);
+        if (evaluation.applicableRequiredScenarioIds.length === 0) {
+          verdict = "UNKNOWN";
+        } else if (evaluation.canVerify) {
+          verdict = "VERIFIED";
+          notes.push("all-applicable-required-pass-v1");
+        } else {
+          verdict = "PROBED";
+          notes.push("incomplete_required_coverage");
+        }
+      }
     } else {
       verdict = "PROBED";
     }

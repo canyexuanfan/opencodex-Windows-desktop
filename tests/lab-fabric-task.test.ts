@@ -23,6 +23,7 @@ import {
   observationFromFabricOutcome,
   persistFabricOutcome,
   queryLabCatalog,
+  readVerdictSnapshot,
   rebuildLabProjection,
   replayLabLedger,
   runFabricSyntheticPatchTask,
@@ -371,6 +372,13 @@ describe("CL-07 task effectiveness producer", () => {
     const rebuilt = rebuildLabProjection(home);
     expect(rebuilt.events).toBeGreaterThan(0);
     expect(rebuilt.corruptions).toEqual([]);
+    expect(rebuilt.verdicts).toBeGreaterThan(0);
+    const snap = readVerdictSnapshot(rebuilt.sqlitePath) as Array<{
+      evidence_layer?: string;
+      verdict?: string;
+    }>;
+    const taskRow = snap.find((row) => row.evidence_layer === "task_effectiveness");
+    expect(taskRow?.verdict).toBe("VERIFIED");
 
     const inv = assignEventId({
       schemaVersion: LAB_EVENT_SCHEMA_VERSION,

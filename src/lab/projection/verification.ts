@@ -1,4 +1,4 @@
-import type { ObservationEvent, ProtocolSubjectV1, RouteSubjectV1 } from "../events/types";
+import type { ObservationEvent, ProtocolSubjectV1, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 import { EVIDENCE_LAYERS, type ExecutionMode } from "../constants";
 import type { SuiteManifestV1 } from "../conformance/suite-manifest";
 import type { VerificationRole } from "../conformance/types";
@@ -139,7 +139,7 @@ export function evaluateAllApplicableRequiredPassV1(
   observations: ObservationEvent[],
   executionMode: ExecutionMode,
   opts: {
-    subject?: ProtocolSubjectV1 | RouteSubjectV1;
+    subject?: ProtocolSubjectV1 | RouteSubjectV1 | TaskSubjectV1;
     /** For live projection this must come from validated current claim snapshots for subjectId. */
     routeSupportedClaims?: readonly string[];
     loadScenarioManifest?: LoadScenarioManifest;
@@ -163,6 +163,26 @@ export function evaluateAllApplicableRequiredPassV1(
     }
     if (opts.routeSupportedClaims === undefined) {
       return { applicableRequiredScenarioIds: [], passingRequiredScenarioIds: [], missingRequiredScenarioIds: [], canVerify: false, notes: ["route_claim_state_required"] };
+    }
+  }
+  if (suiteManifest.evidenceLayer === "task_effectiveness") {
+    if (opts.subject?.subjectKind !== "task") {
+      return {
+        applicableRequiredScenarioIds: [],
+        passingRequiredScenarioIds: [],
+        missingRequiredScenarioIds: [],
+        canVerify: false,
+        notes: ["task_subject_required"],
+      };
+    }
+    if (executionMode !== "fabric") {
+      return {
+        applicableRequiredScenarioIds: [],
+        passingRequiredScenarioIds: [],
+        missingRequiredScenarioIds: [],
+        canVerify: false,
+        notes: ["fabric_execution_mode_required"],
+      };
     }
   }
 
