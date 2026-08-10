@@ -181,6 +181,11 @@ describe("codex routing", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 1 }, "go")).toBe(CODEX_UNKNOWN_USAGE_SCORE);
   });
 
+  test("usage score treats non-string plans as unknown weekly plans", () => {
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, { tier: "go" })).toBe(27);
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, 1)).toBe(27);
+  });
+
   test("usage score treats unknown quota conservatively", () => {
     expect(computeCodexUsageScore(null)).toBe(CODEX_UNKNOWN_USAGE_SCORE);
     expect(computeCodexUsageScore({})).toBe(CODEX_UNKNOWN_USAGE_SCORE);
