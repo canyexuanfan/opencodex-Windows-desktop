@@ -523,6 +523,56 @@ export async function saveCredential(
   }, [provider, safe]);
 }
 
+/**
+ * Atomically insert or replace an identity-bearing credential and report the disposition.
+ * Importers use this instead of a read-then-save pair so duplicate detection and persistence
+ * happen inside the existing serialized temp-then-rename store mutation.
+ */
+export async function upsertCredentialByIdentity(
+  provider: string,
+  cred: OAuthCredentials,
+): Promise<"inserted" | "updated"> {
+  const safe = normalizeCredential(cred);
+  if (!safe || (!safe.accountId && !safe.email)) {
+    throw new Error("Refusing to persist OAuth credential without verified identity");
+  }
+  return await mutateStore(store => {
+    const set = store[provider];
+    const matches = (account: ProviderAccount): boolean => {
+      if (safe.accountId) {
+        if (account.credential.accountId) return account.credential.accountId === safe.accountId;
+        return Boolean(
+          safe.email
+          && account.credential.email
+          && account.credential.email.toLowerCase() === safe.email.toLowerCase(),
+        );
+      }
+      if (account.credential.accountId) return false;
+      return Boolean(
+        safe.email
+        && account.credential.email
+        && account.credential.email.toLowerCase() === safe.email.toLowerCase(),
+      );
+    };
+    const existing = set?.accounts.find(matches);
+    if (existing && set) {
+      existing.credential = safe;
+      delete existing.needsReauth;
+      set.activeAccountId ??= existing.id;
+      return "updated";
+    }
+    const id = newAccountId(safe);
+    const account: ProviderAccount = { id, credential: safe, addedAt: Date.now() };
+    if (set) {
+      set.accounts.push(account);
+      set.activeAccountId ??= id;
+    } else {
+      store[provider] = { activeAccountId: id, accounts: [account] };
+    }
+    return "inserted";
+  }, [provider, safe]);
+}
+
 /** Remove the ACTIVE account; remaining accounts promote the first one. */
 export async function removeCredential(provider: string): Promise<void> {
   await mutateStore(store => {

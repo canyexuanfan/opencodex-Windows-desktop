@@ -180,12 +180,18 @@ export function decodeRequestBody(
   return assertBodySizeWithinLimit(decoded, maxBytes);
 }
 
-/** Parse a bounded JSON request body, transparently decoding compressed payloads. */
+/**
+ * Parse a bounded JSON request body, transparently decoding compressed payloads.
+ *
+ * `options.signal`, when provided, replaces `req.signal` rather than composing with
+ * it. Callers that need both (for example request disconnect plus a deadline) must
+ * merge them into one AbortSignal before calling.
+ */
 export async function readBoundedJsonRequestBody(
   req: Request,
   maxBytes: number,
   budget?: TranslatorBudget,
-  options?: { emptyBodyFallback?: unknown },
+  options?: { emptyBodyFallback?: unknown; signal?: AbortSignal },
 ): Promise<unknown> {
   const encoding = req.headers.get("content-encoding");
   const declaredLength = declaredBodyLength(req);
@@ -201,7 +207,7 @@ export async function readBoundedJsonRequestBody(
     : undefined;
   let raw: Uint8Array;
   try {
-    raw = await readRequestBodyBytesCapped(req.body, maxBytes, req.signal);
+    raw = await readRequestBodyBytesCapped(req.body, maxBytes, options?.signal ?? req.signal);
   } finally {
     releaseReservation?.();
   }
