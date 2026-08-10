@@ -279,10 +279,10 @@ export function createSyntheticScratch(configDir?: string): ScratchTree {
   const base = labScratchDir(configDir);
   ensureRestrictedDir(base, labBoundary);
   const root = join(base, `fabric-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`);
-  ensureRestrictedDir(root, labBoundary);
-  ensureRestrictedDir(join(root, dirname(SYNTHETIC_VALUE_PATH)), labBoundary);
   let trusted: TrustedScratchDir | undefined;
   try {
+    ensureRestrictedDir(root, labBoundary);
+    ensureRestrictedDir(join(root, dirname(SYNTHETIC_VALUE_PATH)), labBoundary);
     trusted = openTrustedScratchRoot(root);
     const bytes = Buffer.from(SYNTHETIC_BEFORE_UTF8, "utf8");
     if (bytes.byteLength > FABRIC_LIMITS.maxAggregateIoBytes) {
@@ -313,6 +313,11 @@ export function createSyntheticScratch(configDir?: string): ScratchTree {
     };
   } catch (error) {
     if (trusted) closeTrustedScratchRoot(trusted);
+    try {
+      rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+    } catch {
+      /* best-effort */
+    }
     throw error;
   }
 }

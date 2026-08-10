@@ -89,7 +89,7 @@ export function taskSubjectApplicableToRequirements(
   const preconditions = requirements.routePreconditions ?? [];
   const platformOk = platforms.includes("*")
     || capability.platforms.includes("*")
-    || platforms.every((platform) => capability.platforms.includes(platform));
+    || platforms.some((platform) => capability.platforms.includes(platform));
   const featuresOk = features.every((feature) => capability.harnessFeatures.includes(feature));
   const preconditionsOk = preconditions.every((item) => capability.routePreconditions.includes(item));
   return platformOk && featuresOk && preconditionsOk;

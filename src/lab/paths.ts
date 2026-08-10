@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, lstatSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { getConfigDir } from "../config";
 
@@ -11,18 +11,29 @@ function isAtOrBelowLabBoundary(path: string, labRootBoundary: string): boolean 
   return normalizedPath.startsWith(prefix) && normalizedPath.length > normalizedBoundary.length;
 }
 
+/** Reject symlink, non-directory, and reparse-point substitutions for a Lab-owned component. */
+function assertRestrictedDirectoryComponent(path: string): void {
+  const componentStats = lstatSync(path);
+  if (componentStats.isSymbolicLink()) {
+    throw new Error(`restricted directory component is a symbolic link: ${path}`);
+  }
+  if (!componentStats.isDirectory()) {
+    throw new Error(`restricted path component is not a directory: ${path}`);
+  }
+  const canonical = realpathSync.native(path);
+  if (resolve(canonical) !== resolve(path)) {
+    throw new Error(`restricted directory component contains a link or reparse-point substitution: ${path}`);
+  }
+}
+
 /**
  * Create (or harden) a directory to mode 0o700 without following symlinks on Lab-owned
  * components. Ancestors above labRootBoundary are treated as infrastructure and are not
  * inspected for symlinks (for example macOS /var → /private/var).
  */
-export function ensureRestrictedDir(dir: string, labRootBoundary?: string): void {
-  if (process.platform === "win32") {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    return;
-  }
+export function ensureRestrictedDir(dir: string, labRootBoundary: string): void {
   const abs = resolve(dir);
-  const boundary = resolve(labRootBoundary ?? abs);
+  const boundary = resolve(labRootBoundary);
   const parts = abs.split(sep);
   let current = parts[0] === "" ? sep : parts[0]!;
   for (const part of parts.slice(1)) {
@@ -35,26 +46,16 @@ export function ensureRestrictedDir(dir: string, labRootBoundary?: string): void
       if (code !== "EEXIST") throw error;
     }
     if (isAtOrBelowLabBoundary(current, boundary)) {
-      const componentStats = lstatSync(current);
-      if (componentStats.isSymbolicLink()) {
-        throw new Error(`restricted directory component is a symbolic link: ${current}`);
-      }
-      if (!componentStats.isDirectory()) {
-        throw new Error(`restricted path component is not a directory: ${current}`);
-      }
+      assertRestrictedDirectoryComponent(current);
     }
   }
   if (!existsSync(abs)) return;
   if (!isAtOrBelowLabBoundary(abs, boundary)) return;
-  const stats = lstatSync(abs);
-  if (stats.isSymbolicLink()) {
-    throw new Error(`restricted directory is a symbolic link: ${abs}`);
+  assertRestrictedDirectoryComponent(abs);
+  if (process.platform !== "win32") {
+    const mode = lstatSync(abs).mode & 0o777;
+    if (mode !== 0o700) chmodSync(abs, 0o700);
   }
-  if (!stats.isDirectory()) {
-    throw new Error(`restricted path is not a directory: ${abs}`);
-  }
-  const mode = stats.mode & 0o777;
-  if (mode !== 0o700) chmodSync(abs, 0o700);
 }
 
 /** Canonical Compatibility Lab state root under the OpenCodex config dir. */

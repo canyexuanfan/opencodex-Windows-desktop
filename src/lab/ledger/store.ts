@@ -77,7 +77,13 @@ function isLockHolderAlive(pid: number): boolean {
 /** Return true when a ledger lock file has dead metadata and can be recovered. */
 function isLedgerLockStale(lockPath: string): boolean {
   const meta = readLedgerLockMeta(lockPath);
-  if (!meta) return false;
+  if (!meta) {
+    try {
+      return Date.now() - statSync(lockPath).mtimeMs > LEDGER_LOCK_STALE_MS;
+    } catch {
+      return false;
+    }
+  }
   if (isLockHolderAlive(meta.pid)) return false;
   return Date.now() - meta.createdAt > LEDGER_LOCK_STALE_MS;
 }
@@ -92,6 +98,11 @@ function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number;
         writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8"));
       } catch (error) {
         closeSync(fd);
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          /* best-effort */
+        }
         throw error;
       }
       return { fd, token };

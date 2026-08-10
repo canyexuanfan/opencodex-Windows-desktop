@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as nodeFs from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -60,6 +61,17 @@ function tempHome(): string {
   HOMES.push(dir);
   return dir;
 }
+
+function linkDirectory(target: string, linkPath: string): boolean {
+  try {
+    symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const RESTRICTED_LINK_ERROR = /symbolic link|reparse-point substitution/i;
 
 afterEach(() => {
   for (const dir of HOMES.splice(0)) {
@@ -396,6 +408,24 @@ describe("CL-07 task effectiveness producer", () => {
       platforms: ["win32", "*"],
       routePreconditions: [],
     })).toBe(true);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: [],
+      platforms: ["linux", "darwin"],
+      routePreconditions: [],
+    }, {
+      harnessFeatures: [],
+      platforms: ["linux"],
+      routePreconditions: [],
+    })).toBe(true);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: [],
+      platforms: ["linux", "darwin"],
+      routePreconditions: [],
+    }, {
+      harnessFeatures: [],
+      platforms: ["win32"],
+      routePreconditions: [],
+    })).toBe(false);
   });
 
   test("malformed nested outcome fields throw FabricTaskError", async () => {
@@ -484,51 +514,55 @@ describe("CL-07 task effectiveness producer", () => {
   });
 
   test("symlinked lab scratch dir is rejected", () => {
-    if (process.platform === "win32") return;
     const home = tempHome();
     const outside = join(home, "outside-scratch");
     mkdirSync(outside, { recursive: true, mode: 0o700 });
     mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
     const scratchLink = join(home, "lab", "scratch");
-    try {
-      symlinkSync(outside, scratchLink);
-    } catch {
-      return;
-    }
+    if (!linkDirectory(outside, scratchLink)) return;
     expect(() => createSyntheticScratch(home)).toThrow();
     expect(readdirSync(outside).some((name) => name.startsWith("fabric-"))).toBe(false);
   });
 
+  test("failed scratch construction removes partial fabric directories", () => {
+    const home = tempHome();
+    const originalWriteSync = nodeFs.writeSync;
+    const writeSpy = spyOn(nodeFs, "writeSync").mockImplementation((...args: Parameters<typeof nodeFs.writeSync>) => {
+      const buffer = args[1];
+      if (Buffer.isBuffer(buffer) && buffer.toString("utf8") === SYNTHETIC_BEFORE_UTF8) {
+        throw new Error("simulated fixture write failure");
+      }
+      return originalWriteSync(...args);
+    });
+    try {
+      expect(() => createSyntheticScratch(home)).toThrow("simulated fixture write failure");
+      const scratchBase = join(home, "lab", "scratch");
+      expect(readdirSync(scratchBase).some((name) => name.startsWith("fabric-"))).toBe(false);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
   test("symlinked lab root rejects directory escape via ensureLabDirs", () => {
-    if (process.platform === "win32") return;
     const home = tempHome();
     const outside = join(home, "outside-lab");
     mkdirSync(outside, { recursive: true, mode: 0o700 });
     const labLink = join(home, "lab");
-    try {
-      symlinkSync(outside, labLink);
-    } catch {
-      return;
-    }
-    expect(() => ensureLabDirs(home)).toThrow(/symbolic link/i);
+    if (!linkDirectory(outside, labLink)) return;
+    expect(() => ensureLabDirs(home)).toThrow(RESTRICTED_LINK_ERROR);
     expect(existsSync(join(outside, "scratch"))).toBe(false);
     expect(existsSync(join(outside, "artifacts"))).toBe(false);
   });
 
   test("symlink under lab boundary is rejected by ensureRestrictedDir", () => {
-    if (process.platform === "win32") return;
     const home = tempHome();
     const labDir = join(home, "lab");
     const outside = join(home, "outside-scratch");
     mkdirSync(labDir, { recursive: true, mode: 0o700 });
     mkdirSync(outside, { recursive: true, mode: 0o700 });
     const scratchLink = join(labDir, "scratch");
-    try {
-      symlinkSync(outside, scratchLink);
-    } catch {
-      return;
-    }
-    expect(() => ensureRestrictedDir(join(labDir, "scratch", "nested"), labDir)).toThrow(/symbolic link/i);
+    if (!linkDirectory(outside, scratchLink)) return;
+    expect(() => ensureRestrictedDir(join(labDir, "scratch", "nested"), labDir)).toThrow(RESTRICTED_LINK_ERROR);
   });
 
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {
