@@ -23,7 +23,14 @@ import {
 // Z.AI needs this because its OpenAI path rejects glm-5.2[1m] with 400 code 1211;
 // unflagged OpenAI-compatible providers and the Anthropic adapter keep ids verbatim.
 export function stripBracketedModelSuffix(modelId: string): string {
-  return modelId.replace(/\[[^\]]*\]\s*$/, "");
+  const suffixEnd = modelId.trimEnd().length;
+  if (suffixEnd === 0 || modelId[suffixEnd - 1] !== "]") return modelId;
+
+  let suffixStart = -1;
+  for (let i = suffixEnd - 2; i >= 0 && modelId[i] !== "]"; i--) {
+    if (modelId[i] === "[") suffixStart = i;
+  }
+  return suffixStart === -1 ? modelId : modelId.slice(0, suffixStart);
 }
 
 // 260715 (issue #126): surface upstream error detail through the web-search sidecar loop.
