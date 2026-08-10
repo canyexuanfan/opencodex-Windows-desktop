@@ -42,6 +42,16 @@ class ManualScheduler implements ResponsesTerminalRepairScheduler {
     }
   }
 
+  takeDue(ms: number): () => void {
+    this.current += ms;
+    const due = [...this.jobs.entries()]
+      .filter(([, job]) => job.at <= this.current)
+      .sort((left, right) => left[1].at - right[1].at)[0];
+    if (!due) throw new Error("no due scheduler job");
+    this.jobs.delete(due[0]);
+    return due[1].callback;
+  }
+
   pending(): number { return this.jobs.size; }
 }
 
@@ -85,6 +95,19 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
     if (done) return out + decoder.decode();
     out += decoder.decode(value, { stream: true });
   }
+}
+
+async function readUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  pattern: string,
+): Promise<string> {
+  let out = "";
+  while (!out.includes(pattern)) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error(`stream closed before ${pattern}`);
+    out += decoder.decode(value, { stream: true });
+  }
+  return out;
 }
 
 async function settle(): Promise<void> {
@@ -405,9 +428,12 @@ describe("DeepSeek Responses terminal repair", () => {
     ));
     source.push(completedMessageLifecycle());
     await settle();
+    expect(scheduler.pending()).toBe(1);
+    const dueCallback = scheduler.takeDue(5_000);
     source.push(sse({ type: "response.completed", response: { id: "resp_message", status: "completed" }, sequence_number: 3 }));
     source.close();
-    scheduler.advance(5_000);
+    await settle();
+    dueCallback();
     const output = await outputPromise;
     expect(terminalTypes(output)).toEqual(["response.completed"]);
     expect(scheduler.pending()).toBe(0);
@@ -447,9 +473,11 @@ describe("DeepSeek Responses terminal repair", () => {
       createTestTranslatorBudget(),
       cancelScheduler,
     );
+    const cancelReader = cancelled.getReader();
     cancelSource.push(completedMessageLifecycle());
-    await settle();
-    await cancelled.cancel("client gone");
+    expect(await readUntil(cancelReader, "response.output_item.done")).toContain("response.output_item.done");
+    expect(cancelScheduler.pending()).toBe(1);
+    await cancelReader.cancel("client gone");
     cancelScheduler.advance(5_000);
     expect(cancelSource.cancelled()).toBe(true);
     expect(cancelScheduler.pending()).toBe(0);
@@ -464,13 +492,15 @@ describe("DeepSeek Responses terminal repair", () => {
       createTestTranslatorBudget(),
       abortScheduler,
     );
+    const abortReader = aborted.getReader();
     abortSource.push(completedMessageLifecycle());
-    await settle();
+    expect(await readUntil(abortReader, "response.output_item.done")).toContain("response.output_item.done");
+    expect(abortScheduler.pending()).toBe(1);
     abortUpstream.abort("shutdown");
     await settle();
     expect(abortSource.cancelled()).toBe(true);
     expect(abortScheduler.pending()).toBe(0);
-    await aborted.cancel("test cleanup");
+    await abortReader.cancel("test cleanup");
   });
 
   test("retained-state overflow throws translation_buffer_limit and releases budget", async () => {

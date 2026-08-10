@@ -33,6 +33,8 @@ function partialCustomToolInput(argumentsText: string): string {
     if (escaped === "n") output += "\n";
     else if (escaped === "t") output += "\t";
     else if (escaped === "r") output += "\r";
+    else if (escaped === "b") output += "\b";
+    else if (escaped === "f") output += "\f";
     else if (escaped === "u") {
       const hex = body.slice(index + 1, index + 5);
       if (hex.length !== 4 || !/^[0-9a-fA-F]{4}$/.test(hex)) break;

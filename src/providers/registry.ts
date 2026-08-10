@@ -2399,8 +2399,9 @@ export function providerModelResponsesTerminalRepair(
   const entry = getProviderRegistryEntry(id);
   if (!entry?.modelResponsesTerminalRepair || !providerMatchesRegistryTransport(id, provider)) return undefined;
   const policy = entry.modelResponsesTerminalRepair[modelId.trim().toLowerCase()];
-  if (!policy || !Number.isFinite(policy.graceMs) || policy.graceMs <= 0) return undefined;
-  return { graceMs: Math.floor(policy.graceMs) };
+  const graceMs = Math.floor(policy?.graceMs ?? 0);
+  if (!Number.isFinite(graceMs) || graceMs <= 0) return undefined;
+  return { graceMs };
 }
 
 /**

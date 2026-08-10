@@ -195,7 +195,7 @@ max | ultra` ladder; unsupported values are mapped or clamped before the upstrea
 
 ### Routed local tools
 
-Non-OpenAI catalog rows use `tool_mode: "code_mode_only"`. This lets Codex expose its official
+Non-native routed catalog rows use `tool_mode: "code_mode_only"`. This lets Codex expose its official
 `exec` entrypoint and nested MCP tools, including Browser and Computer Use, while opencodex routes
 only the model's ordinary function call. Tool execution, permissions, and confirmations remain
 local to Codex; opencodex does not implement a second browser or desktop-control executor.

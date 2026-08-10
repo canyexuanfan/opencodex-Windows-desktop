@@ -46,6 +46,7 @@ class ManualTerminalScheduler implements ResponsesTerminalRepairScheduler {
     return id;
   }
   cancel(handle: unknown): void { this.jobs.delete(handle as number); }
+  pending(): number { return this.jobs.size; }
   advance(ms: number): void {
     this.current += ms;
     for (const [id, job] of [...this.jobs.entries()]) {
@@ -142,6 +143,19 @@ describe("DeepSeek wire selection is scoped to the inbound protocol", () => {
     expect(providerModelResponsesTerminalRepair("deepseek", provider, MODEL)).toEqual({ graceMs: 5_000 });
     expect(providerModelResponsesTerminalRepair("deepseek", provider, "deepseek-chat")).toBeUndefined();
     expect(providerModelResponsesTerminalRepair("custom-deepseek", provider, MODEL)).toBeUndefined();
+  });
+
+  test("terminal repair rejects a fractional grace that normalizes to zero", () => {
+    const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === "deepseek");
+    const policy = entry?.modelResponsesTerminalRepair?.[MODEL];
+    if (!policy) throw new Error("missing DeepSeek terminal-repair fixture");
+    const originalGraceMs = policy.graceMs;
+    try {
+      policy.graceMs = 0.5;
+      expect(providerModelResponsesTerminalRepair("deepseek", deepseekProvider(), MODEL)).toBeUndefined();
+    } finally {
+      policy.graceMs = originalGraceMs;
+    }
   });
 });
 
@@ -269,7 +283,10 @@ describe("the inbound scope survives the handleResponses replay", () => {
           sequence_number: 6,
         }),
       ].join(""));
-      await Bun.sleep(0);
+      for (let attempts = 0; attempts < 20 && scheduler.pending() === 0; attempts += 1) {
+        await Bun.sleep(0);
+      }
+      expect(scheduler.pending()).toBe(1);
       scheduler.advance(5_000);
       const remainder = await Promise.race([
         drainReader(reader),

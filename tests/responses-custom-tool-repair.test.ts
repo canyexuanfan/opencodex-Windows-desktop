@@ -167,6 +167,35 @@ describe("routed Responses custom-tool compatibility", () => {
     rewrite.dispose?.();
   });
 
+  test("keeps progressive exec input consistent for escaped control characters", () => {
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
+    rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: { type: "function_call", id: "fc_exec", call_id: "call_exec", name: "exec", arguments: "", status: "in_progress" },
+    }));
+
+    const fragments = ['{"inp', 'ut":"before\\', 'b\\fafter"}'];
+    let streamedInput = "";
+    for (const delta of fragments) {
+      const blocks = rewrite(frame("response.function_call_arguments.delta", {
+        output_index: 0,
+        item_id: "fc_exec",
+        delta,
+      }));
+      for (const block of blocks) streamedInput += String(dataPayload(block).delta ?? "");
+    }
+
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: fragments.join(""),
+    }));
+    const doneInput = dataPayload(done[0]!).input;
+    expect(streamedInput).toBe(doneInput);
+    expect(streamedInput).toBe("before\b\fafter");
+    rewrite.dispose?.();
+  });
+
   test("handleResponses sends an upstream-safe exec function and restores client SSE", async () => {
     const savedFetch = globalThis.fetch;
     let outboundBody: Record<string, unknown> | undefined;
