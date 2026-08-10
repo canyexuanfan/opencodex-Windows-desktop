@@ -119,7 +119,7 @@ OAuth 凭据中带有稳定账号 id 或邮箱的提供商可以保存多个登�
 
 ### Cockpit Tools Antigravity 导入
 
-v1 中 OpenCodex 仅支持为 `google-antigravity` 提供商导入 **Cockpit Tools Antigravity** JSON 导出文件。在 Providers 仪表板中打开该提供商的 Accounts 标签并选择本地 JSON 文件。仪表板不会显示文件内容或凭据值，只报告已导入、已更新、失败和不支持的数量。v1 不支持其他 Cockpit 提供商。
+v1 中 OpenCodex 仅支持为 `google-antigravity` 提供商导入 **Cockpit Tools Antigravity** JSON 导出文件。在 Providers 仪表板中打开该提供商的 Accounts 标签并选择本地 JSON 文件。仪表板不会显示文件内容或凭据值，只报告已导入、已更新、失败和不支持的数量。v1 会拒绝其他 Cockpit 提供商的导入。
 
 CLI 仅从文件或标准输入读取导出文件，不能将其粘贴到命令参数中：
 

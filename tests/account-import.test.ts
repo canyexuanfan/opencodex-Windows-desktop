@@ -145,6 +145,13 @@ describe("Cockpit account-import service and adapter", () => {
     expect(await mismatch.importRecord({ email: "user@example.com", refreshToken: CANARY }))
       .toEqual({ status: "failed", code: "identity_mismatch" });
 
+    const noProviderEmail = createAntigravityAccountImportAdapter({
+      validate: async () => ({ ...baseCredential, email: undefined }),
+      upsert: async () => "inserted",
+    });
+    expect(await noProviderEmail.importRecord({ email: "user@example.com", refreshToken: CANARY }))
+      .toEqual({ status: "failed", code: "credential_rejected" });
+
     const noProject = createAntigravityAccountImportAdapter({
       validate: async () => ({ ...baseCredential, projectId: undefined }),
       upsert: async () => "inserted",
