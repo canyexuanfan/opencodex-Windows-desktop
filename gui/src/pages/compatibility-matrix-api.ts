@@ -110,16 +110,21 @@ export async function fetchSubjectPage(
   return parseStrictSubjectPage(raw);
 }
 
+type CollectedPages<T> = {
+  rows: T[];
+  truncated: boolean;
+};
+
 async function collectPages<T>(
   loadPage: (cursor: string | undefined) => Promise<{ rows: T[]; hasMore: boolean; nextCursor?: string }>,
-): Promise<T[]> {
+): Promise<CollectedPages<T>> {
   const rows: T[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
     const page = await loadPage(cursor);
     rows.push(...page.rows);
-    if (!page.hasMore) return rows;
+    if (!page.hasMore) return { rows, truncated: false };
     const next = page.nextCursor;
     if (!next || seen.has(next) || next === cursor) {
       throw new LabDataContractError();
@@ -127,10 +132,13 @@ async function collectPages<T>(
     seen.add(next);
     cursor = next;
   }
-  throw new LabDataContractError();
+  // The server kept advancing correctly but exceeded the browser-side safety bound.
+  // Preserve the coherent prefix and report truncation separately instead of
+  // misclassifying a legitimate large dataset as a broken pagination contract.
+  return { rows, truncated: true };
 }
 
-export async function fetchAllSubjects(apiBase: string, signal: AbortSignal): Promise<SubjectListItemDto[]> {
+export async function fetchAllSubjects(apiBase: string, signal: AbortSignal): Promise<CollectedPages<SubjectListItemDto>> {
   return collectPages(
     async cursor => {
       const page = await fetchSubjectPage(apiBase, cursor, signal);
@@ -172,7 +180,7 @@ async function fetchAllObservations(
   apiBase: string,
   filters: { subjectId: string; layer?: string; suiteId?: string },
   signal: AbortSignal,
-): Promise<ObservationDto[]> {
+): Promise<CollectedPages<ObservationDto>> {
   return collectPages(
     async cursor => {
       const page = await fetchObservationsPage(apiBase, filters, cursor, signal);
@@ -203,6 +211,7 @@ export type LabPageData = {
   status: LabStatusDto;
   verdicts: VerdictDto[];
   subjects: SubjectListItemDto[];
+  subjectsTruncated: boolean;
   hasMore: boolean;
   nextCursor?: string;
 };
@@ -213,7 +222,9 @@ export async function fetchLabPageData(
   signal: AbortSignal,
 ): Promise<LabPageData> {
   const status = await fetchLabStatus(apiBase, signal);
-  if (!status.projectionAvailable) return { status, verdicts: [], subjects: [], hasMore: false };
+  if (!status.projectionAvailable) {
+    return { status, verdicts: [], subjects: [], subjectsTruncated: false, hasMore: false };
+  }
   const [verdictPage, subjects] = await Promise.all([
     fetchVerdictPage(apiBase, filters, undefined, signal),
     fetchAllSubjects(apiBase, signal),
@@ -221,7 +232,8 @@ export async function fetchLabPageData(
   return {
     status,
     verdicts: verdictPage.verdicts,
-    subjects,
+    subjects: subjects.rows,
+    subjectsTruncated: subjects.truncated,
     hasMore: verdictPage.hasMore,
     nextCursor: verdictPage.nextCursor,
   };
@@ -239,6 +251,7 @@ export async function fetchMoreVerdicts(
 export type VerdictDetailData = {
   subject: SubjectDetailDto;
   observations: ObservationDto[];
+  observationsTruncated: boolean;
   events: LabEventDto[];
   artifacts: ArtifactMetadataDto[];
 };
@@ -288,5 +301,11 @@ export async function fetchVerdictDetail(
     mapSettledBounded(eventIds, DETAIL_CONCURRENCY, signal, id => fetchEventById(apiBase, id, signal)),
     mapSettledBounded(digests, DETAIL_CONCURRENCY, signal, digest => fetchArtifactByDigest(apiBase, digest, signal)),
   ]);
-  return { subject, observations, events, artifacts };
+  return {
+    subject,
+    observations: observations.rows,
+    observationsTruncated: observations.truncated,
+    events,
+    artifacts,
+  };
 }
