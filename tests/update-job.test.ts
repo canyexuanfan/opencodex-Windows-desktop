@@ -463,7 +463,7 @@ describe("GUI update execution decisions", () => {
       log: [],
       releaseNotesUrl: "",
     };
-    writeFileSync(updateJobPath(job.id), JSON.stringify(job));
+    writeFileSync(updateJobPath(), JSON.stringify(job));
     await restartAfterUpdateForTests(job, { port: 19997, hostname: "127.0.0.1" }, {
       serviceInstalledFn: () => true,
       serviceViableFn: () => true,
