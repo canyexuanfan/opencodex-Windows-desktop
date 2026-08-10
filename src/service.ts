@@ -285,11 +285,12 @@ export function serviceEnvironmentOwnedHere(): boolean {
 export function assertServiceEnvironmentMatchesInstall(): void {
   const state = readServiceInstallState();
   if (!state) return;
+  const actualCodexHome = currentCodexHome();
   const expected = normalizePathForCompare(state.codexHome);
-  const actual = normalizePathForCompare(currentCodexHome());
+  const actual = normalizePathForCompare(actualCodexHome);
   if (expected !== actual) {
     throw new ServiceOwnershipError(
-      `Service was installed with CODEX_HOME=${state.codexHome}, but current CODEX_HOME=${currentCodexHome()}. ` +
+      `Service was installed with CODEX_HOME=${state.codexHome}, but current CODEX_HOME=${actualCodexHome}. ` +
         "Run the service command from the same Codex home so native Codex restore updates the correct config.",
     );
   }
