@@ -89,6 +89,7 @@ export const en = {
   "routing.candidate": "Candidate",
   "routing.eligible": "Eligible",
   "routing.exclusions": "Exclusions",
+  "routing.costCap": "Cost cap",
   "routing.score": "Score",
   "routing.selected": "selected",
   "routing.yes": "yes",

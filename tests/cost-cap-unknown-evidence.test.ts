@@ -1,30 +1,25 @@
 /**
- * Reproduction for issue #1181 — "Routing: define hard cost-cap behavior when
- * runtime cost evidence is unknown".
+ * Regression coverage for issue #1181 — "Routing: define hard cost-cap behavior
+ * when runtime cost evidence is unknown".
  *
  * The hard ceiling `limits.maxEstimatedCostUsd` is documented as a hard
- * per-request cap. In the live routing path it never fires, because
+ * per-request cap. In the live routing path it never fires by itself, because
  * `router.ts` assembles cost evidence WITHOUT usage:
  *
  *   costEvidenceForCandidate({ provider, model, limitUsd })   // no `usage`
  *
  * `costEvidenceForCandidate` then returns `{ limitUsd, incomplete: true }`
- * with no `estimatedUsd`, and the evaluator's cap check
- * (evaluator.ts:307-310) requires `typeof estimatedCost === "number"`, so an
- * unknown estimate silently passes a cap the operator configured as hard.
+ * with no `estimatedUsd`, and the evaluator's known-over-cap check requires a
+ * finite estimate. These tests pin both sides of `limits.onUnknownCost`:
  *
- * The existing test in cost-scoring.test.ts only exercises the cap with
- * `usage: USAGE` supplied — i.e. on a code path production never takes.
+ *   - default `"allow"` — candidate stays eligible and the trace stamps
+ *     `cost.capOutcome: "unknown-allowed"` (not an exclusion)
+ *   - opt-in `"exclude"` — ineligible with `cost-limit-unknown` and
+ *     `capOutcome: "unknown-excluded"`
  *
- * These tests pin both sides of `limits.onUnknownCost`:
- *   - the default `"allow"`, which preserves the documented dry-run contract
- *     and lets an unprovable candidate through, and
- *   - the opt-in `"exclude"`, which makes the ceiling genuinely hard and
- *     reports the distinct `cost-limit-unknown` exclusion.
- *
- * The first case was originally written as a failing reproduction before the
- * evaluator change landed; it is retained to keep the fail-open default
- * asserted rather than assumed.
+ * Coverage includes the evaluator unit surface plus dry-run API and live
+ * `routeModel` acceptance paths so the operator-visible outcome stays
+ * consistent end-to-end.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -33,7 +28,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { costEvidenceForCandidate } from "../src/routing/cost";
 import { evaluatePolicyProfile } from "../src/routing/evaluator";
+import { normalizeRouteDecisionTrace } from "../src/routing/trace";
+import { NoEligiblePolicyCandidateError, routeModel } from "../src/router";
+import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
+import { ManagementRequest } from "./helpers/management-auth";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -47,7 +46,12 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
-  if (testDir) rmSync(testDir, { recursive: true, force: true });
+  if (!testDir) return;
+  try {
+    rmSync(testDir, { recursive: true, force: true });
+  } catch {
+    // Windows may keep a handle briefly after management/router I/O.
+  }
 });
 
 /** Mirrors the live routing path: a cap is configured, usage is NOT available. */
@@ -75,16 +79,17 @@ function configWithCap(capUsd: number, overrides: Record<string, unknown> = {}):
   } as OcxConfig;
 }
 
-describe("issue #1181 — hard cost cap under unknown evidence", () => {
-  test("default allow: live-path evidence carries no estimate, so the cap does not fire", async () => {
-    // Exactly how router.ts:515-519 builds it — no `usage` argument.
-    const evidence = costEvidenceForCandidate({
-      provider: "anthropic",
-      model: "claude-opus-5",
-      limitUsd: 0.000001, // an absurdly low cap; nothing should realistically pass
-    });
+function livePathEvidence(capUsd: number) {
+  return costEvidenceForCandidate({
+    provider: "anthropic",
+    model: "claude-opus-5",
+    limitUsd: capUsd,
+  });
+}
 
-    // The evidence is explicitly unknown, and correctly so.
+describe("issue #1181 — hard cost cap under unknown evidence", () => {
+  test("default allow: live-path evidence stays eligible with unknown-allowed capOutcome", () => {
+    const evidence = livePathEvidence(0.000001);
     expect(evidence.estimatedUsd).toBeUndefined();
     expect(evidence.incomplete).toBe(true);
     expect(evidence.limitUsd).toBe(0.000001);
@@ -98,24 +103,19 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
       },
     ]);
 
-    // Current behaviour: the candidate is eligible and selected despite a cap
-    // of $0.000001. No `cost-limit` exclusion is recorded, and nothing in the
-    // trace distinguishes "known below cap" from "cost unknown".
-    expect(result.candidates[0]!.eligible).toBe(true);
-    expect(
-      result.candidates[0]!.exclusions.some(e => e.code === "cost-limit"),
-    ).toBe(false);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.exclusions.some(e => e.code === "cost-limit")).toBe(false);
+    expect(candidate.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(false);
+    expect(candidate.cost?.capOutcome).toBe("unknown-allowed");
     expect(result.selectedIndex).toBe(0);
+    expect(result.trace.candidates[0]?.cost?.capOutcome).toBe("unknown-allowed");
+    expect(normalizeRouteDecisionTrace(result.trace)?.candidates[0]?.cost?.capOutcome)
+      .toBe("unknown-allowed");
   });
 
-  test("opt-in exclude: fail-closed cap excludes unknown-cost candidates", async () => {
-    const evidence = costEvidenceForCandidate({
-      provider: "anthropic",
-      model: "claude-opus-5",
-      limitUsd: 0.000001,
-    });
-
-    // Proposed opt-in policy: limits.onUnknownCost = "exclude".
+  test("opt-in exclude: fail-closed cap excludes unknown-cost candidates", () => {
+    const evidence = livePathEvidence(0.000001);
     const result = evaluatePolicyProfile(
       configWithCap(0.000001, { limits: { maxEstimatedCostUsd: 0.000001, onUnknownCost: "exclude" } }),
       "cost",
@@ -130,24 +130,30 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
       ],
     );
 
-    expect(result.candidates[0]!.eligible).toBe(false);
-    // Distinct code so operators can tell "over a known cap" from "cost unknown".
-    expect(
-      result.candidates[0]!.exclusions.some(e => e.code === "cost-limit-unknown"),
-    ).toBe(true);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(true);
+    expect(candidate.cost?.capOutcome).toBe("unknown-excluded");
     expect(result.selectedIndex).toBeNull();
   });
 
-  test("cap policy and unknownEvidence.cost are distinct mechanisms", async () => {
-    // unknownEvidence.cost governs SCORING of an unknown-cost candidate;
-    // limits.onUnknownCost governs whether the hard CEILING applies to it.
-    // They must produce distinct exclusion codes so a trace stays diagnosable.
-    const evidence = costEvidenceForCandidate({
-      provider: "anthropic",
-      model: "claude-opus-5",
-      limitUsd: 0.000001,
-    });
+  test("known estimate under the cap stamps satisfied without exclusions", () => {
+    const result = evaluatePolicyProfile(configWithCap(1), "cost", {}, [
+      {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        capability: { contextWindow: 200000 },
+        cost: { estimatedUsd: 0.01, incomplete: false, limitUsd: 1 },
+      },
+    ]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.exclusions).toEqual([]);
+    expect(candidate.cost?.capOutcome).toBe("satisfied");
+  });
 
+  test("cap policy and unknownEvidence.cost are distinct mechanisms", () => {
+    const evidence = livePathEvidence(0.000001);
     const scoringExcluded = evaluatePolicyProfile(
       configWithCap(0.000001, {
         unknownEvidence: { capability: "allow", health: "allow", quota: "allow", cost: "exclude" },
@@ -161,9 +167,11 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
     expect(codes).toContain("unknown-price");
     expect(codes).not.toContain("cost-limit-unknown");
     expect(scoringExcluded.candidates[0]!.eligible).toBe(false);
+    // Cap policy still stamps the allow-path outcome; scoring exclusion is separate.
+    expect(scoringExcluded.candidates[0]!.cost?.capOutcome).toBe("unknown-allowed");
   });
 
-  test("no cap configured — onUnknownCost is inert", async () => {
+  test("no cap configured — onUnknownCost is inert", () => {
     const evidence = costEvidenceForCandidate({ provider: "anthropic", model: "claude-opus-5" });
     const noCap = {
       port: 10100,
@@ -175,7 +183,7 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
         cost: {
           candidates: [{ provider: "anthropic", model: "claude-opus-5" }],
           optimize: { cost: 0.8 },
-          limits: { onUnknownCost: "exclude" }, // no maxEstimatedCostUsd
+          limits: { onUnknownCost: "exclude" },
           unknownEvidence: { capability: "allow", health: "allow", quota: "allow", cost: "allow" },
         },
       },
@@ -185,32 +193,116 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
       { provider: "anthropic", model: "claude-opus-5", capability: { contextWindow: 200000 }, cost: evidence },
     ]);
 
-    // Without a ceiling there is nothing to fail closed against.
     expect(result.candidates[0]!.eligible).toBe(true);
-    expect(
-      result.candidates[0]!.exclusions.some(e => e.code === "cost-limit-unknown"),
-    ).toBe(false);
+    expect(result.candidates[0]!.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(false);
+    expect(result.candidates[0]!.cost?.capOutcome).toBeUndefined();
   });
 
-  test("default stays allow — the documented contract is unchanged", async () => {
-    const evidence = costEvidenceForCandidate({
-      provider: "anthropic",
-      model: "claude-opus-5",
-      limitUsd: 0.000001,
+  test("explicit onUnknownCost allow matches omitted default", () => {
+    const evidence = livePathEvidence(0.000001);
+    const omitted = evaluatePolicyProfile(configWithCap(0.000001), "cost", {}, [
+      { provider: "anthropic", model: "claude-opus-5", capability: { contextWindow: 200000 }, cost: evidence },
+    ]);
+    const explicit = evaluatePolicyProfile(
+      configWithCap(0.000001, { limits: { maxEstimatedCostUsd: 0.000001, onUnknownCost: "allow" } }),
+      "cost",
+      {},
+      [{ provider: "anthropic", model: "claude-opus-5", capability: { contextWindow: 200000 }, cost: evidence }],
+    );
+
+    expect(omitted.candidates[0]!.eligible).toBe(true);
+    expect(explicit.candidates[0]!.eligible).toBe(true);
+    expect(omitted.candidates[0]!.cost?.capOutcome).toBe("unknown-allowed");
+    expect(explicit.candidates[0]!.cost?.capOutcome).toBe("unknown-allowed");
+    expect(omitted.selectedIndex).toBe(0);
+    expect(explicit.selectedIndex).toBe(0);
+  });
+
+  test("dry-run API and live routeModel share allow/exclude cap outcomes", async () => {
+    const allowConfig = configWithCap(0.000001);
+    const excludeConfig = configWithCap(0.000001, {
+      limits: { maxEstimatedCostUsd: 0.000001, onUnknownCost: "exclude" },
     });
 
-    // No onUnknownCost configured → must behave exactly as today (fail-open),
-    // so existing deployments do not lose every live route on upgrade.
-    const result = evaluatePolicyProfile(configWithCap(0.000001), "cost", {}, [
-      {
-        provider: "anthropic",
-        model: "claude-opus-5",
-        capability: { contextWindow: 200000 },
-        cost: evidence,
-      },
-    ]);
+    const allowDry = await handleManagementAPI(
+      new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ profile: "cost" }),
+      }),
+      new URL("http://localhost/api/routing-profiles/dry-run"),
+      allowConfig,
+      { refreshCodexCatalog: async () => {} },
+    );
+    expect(allowDry!.status).toBe(200);
+    const allowBody = await allowDry!.json() as {
+      candidates: Array<{
+        eligible: boolean;
+        exclusions: Array<{ code: string }>;
+        cost?: { capOutcome?: string };
+      }>;
+      selectedIndex: number | null;
+      trace: { candidates: Array<{ cost?: { capOutcome?: string }; exclusions: Array<{ code: string }> }> };
+    };
+    expect(allowBody.candidates[0]!.eligible).toBe(true);
+    expect(allowBody.candidates[0]!.cost?.capOutcome).toBe("unknown-allowed");
+    expect(allowBody.trace.candidates[0]?.cost?.capOutcome).toBe("unknown-allowed");
+    expect(allowBody.candidates[0]!.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(false);
 
-    expect(result.candidates[0]!.eligible).toBe(true);
-    expect(result.selectedIndex).toBe(0);
+    const allowLive = routeModel(allowConfig, "policy/cost");
+    expect(allowLive.routeKind).toBe("policy");
+    expect(allowLive.routeDecision?.candidates[0]?.eligible).toBe(true);
+    expect(allowLive.routeDecision?.candidates[0]?.cost?.capOutcome).toBe("unknown-allowed");
+    expect(allowLive.routeDecision?.candidates[0]?.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(false);
+
+    const excludeDry = await handleManagementAPI(
+      new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ profile: "cost" }),
+      }),
+      new URL("http://localhost/api/routing-profiles/dry-run"),
+      excludeConfig,
+      { refreshCodexCatalog: async () => {} },
+    );
+    expect(excludeDry!.status).toBe(200);
+    const excludeBody = await excludeDry!.json() as {
+      candidates: Array<{
+        eligible: boolean;
+        exclusions: Array<{ code: string }>;
+        cost?: { capOutcome?: string };
+      }>;
+      selectedIndex: number | null;
+    };
+    expect(excludeBody.candidates[0]!.eligible).toBe(false);
+    expect(excludeBody.candidates[0]!.cost?.capOutcome).toBe("unknown-excluded");
+    expect(excludeBody.candidates[0]!.exclusions.some(e => e.code === "cost-limit-unknown")).toBe(true);
+    expect(excludeBody.selectedIndex).toBeNull();
+
+    expect(() => routeModel(excludeConfig, "policy/cost")).toThrow(NoEligiblePolicyCandidateError);
+  });
+
+  test("unknownEvidence.cost exclude stays distinguishable on the dry-run path", async () => {
+    const config = configWithCap(0.000001, {
+      unknownEvidence: { capability: "allow", health: "allow", quota: "allow", cost: "exclude" },
+    });
+    const res = await handleManagementAPI(
+      new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ profile: "cost" }),
+      }),
+      new URL("http://localhost/api/routing-profiles/dry-run"),
+      config,
+      { refreshCodexCatalog: async () => {} },
+    );
+    expect(res!.status).toBe(200);
+    const body = await res!.json() as {
+      candidates: Array<{ exclusions: Array<{ code: string }>; cost?: { capOutcome?: string } }>;
+    };
+    const codes = body.candidates[0]!.exclusions.map(e => e.code);
+    expect(codes).toContain("unknown-price");
+    expect(codes).not.toContain("cost-limit-unknown");
+    expect(body.candidates[0]!.cost?.capOutcome).toBe("unknown-allowed");
   });
 });

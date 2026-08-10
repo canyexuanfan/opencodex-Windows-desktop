@@ -11,7 +11,7 @@ The **Models → Routing** tab in the OpenCodex dashboard can manage `config.rou
 2. Select **Create profile**.
 3. Enter an `id`. The canonical model id is `policy/<id>`.
 4. Add one or more explicit provider/model candidates.
-5. Configure optional requirements, scoring weights, cost limits, and unknown-evidence behavior.
+5. Configure optional requirements, scoring weights, cost limits (`maxEstimatedCostUsd`, optional `onUnknownCost`), and unknown-evidence behavior.
 6. Save the profile.
 
 Profile ids are immutable after creation. To use a different id, create a new profile and remove the old one after updating callers.
@@ -27,6 +27,8 @@ The dashboard sends the same profile object used by `config.routingProfiles` to 
 - at least one optimization weight must be positive.
 
 A successful save persists the profile through the normal config writer, reconciles live state, and refreshes the model catalog. Validation failures leave the previous configuration unchanged and are shown in the editor.
+
+`limits.onUnknownCost` defaults to `"allow"`: an unknown cost estimate stays eligible, and dry-run / live route-decision traces stamp `cost.capOutcome: "unknown-allowed"` so operators can tell the cap was not proven. Set `"exclude"` when the ceiling must fail closed (`cost-limit-unknown`). This is separate from `unknownEvidence.cost`, which only affects scoring.
 
 ## Dry-run a saved profile
 
@@ -57,7 +59,7 @@ Example save payload:
     ],
     "require": { "tools": true, "minContextWindow": 128000 },
     "optimize": { "latency": 0.55, "health": 0.25, "cost": 0.1, "quota": 0.1 },
-    "limits": { "maxEstimatedCostUsd": 0.5 },
+    "limits": { "maxEstimatedCostUsd": 0.5, "onUnknownCost": "allow" },
     "unknownEvidence": {
       "capability": "exclude",
       "health": "penalize",

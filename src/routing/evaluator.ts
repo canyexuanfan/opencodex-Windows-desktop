@@ -314,15 +314,34 @@ export function evaluatePolicyProfile(
     // A cap can only be *proven* satisfied when the estimate is known. The live
     // routing path often has no usage evidence yet, so the default stays
     // "allow" to preserve the documented dry-run contract; operators who need a
-    // genuine hard ceiling opt into "exclude". The distinct exclusion code lets
-    // a trace distinguish "known above the cap" from "cost is unknown".
-    const unknownCostBlocked = costLimit !== undefined
-      && !costEstimateKnown
+    // genuine hard ceiling opt into "exclude". Exclusions cover only the
+    // fail-closed path; the allow path stamps `cost.capOutcome` so operators
+    // can still distinguish "known under the cap" from "unknown cost allowed".
+    const unknownCostUnderCap = costLimit !== undefined && !costEstimateKnown;
+    const unknownCostBlocked = unknownCostUnderCap
       && profile.limits.onUnknownCost === "exclude";
     if (unknownCostBlocked) {
       exclusions.push({ code: "cost-limit-unknown", detail: "maxEstimatedCostUsd" });
     }
     let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit && !unknownCostBlocked;
+
+    // Stamp a copy of cost evidence with the cap outcome so traces/dry-run
+    // carry operator-visible status without mutating caller-supplied objects.
+    let costForCandidate = evidence.cost;
+    if (costLimit !== undefined) {
+      const capOutcome = overCostLimit
+        ? "exceeded" as const
+        : unknownCostBlocked
+          ? "unknown-excluded" as const
+          : unknownCostUnderCap
+            ? "unknown-allowed" as const
+            : "satisfied" as const;
+      costForCandidate = {
+        ...(evidence.cost ?? {}),
+        limitUsd: evidence.cost?.limitUsd ?? costLimit,
+        capOutcome,
+      };
+    }
 
     // Health scoring (RI-06): live hard cooldown is authoritative and
     // excludes; unknown health follows the profile's unknownEvidence policy;
@@ -358,7 +377,7 @@ export function evaluatePolicyProfile(
 
     // Cost scoring (RI-08): the hard per-request ceiling was already checked
     // above; unknown cost follows the profile's unknownEvidence policy.
-    const cost = evidence.cost;
+    const cost = costForCandidate;
     let costValue = cost ? costScore(cost) : null;
     if (costValue === null && profile.unknownEvidence.cost === "exclude") {
       exclusions.push({ code: "unknown-price" });
@@ -405,7 +424,7 @@ export function evaluatePolicyProfile(
       ...(evidence.capability ? { capability: evidence.capability } : {}),
       ...(evidence.health ? { health: evidence.health } : {}),
       ...(evidence.quota ? { quota: evidence.quota } : {}),
-      ...(evidence.cost ? { cost: evidence.cost } : {}),
+      ...(costForCandidate ? { cost: costForCandidate } : {}),
       score,
     };
     candidates.push(evaluated);
