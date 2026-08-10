@@ -11,6 +11,7 @@ import {
   type OptionalBoolean,
   type RoutingProfileDraft,
   type RoutingProfileDto,
+  type UnknownCostCapMode,
   type UnknownEvidenceMode,
 } from "../routing-profile-editor-data";
 import { readJsonIfOk } from "../fetch-json";
@@ -23,6 +24,7 @@ type DryRunCandidate = {
   eligible: boolean;
   exclusions: Array<{ code: string; detail?: string }>;
   score?: { total: number; components: Record<string, number | undefined> };
+  cost?: { capOutcome?: string; estimatedUsd?: number; incomplete?: boolean; limitUsd?: number };
 };
 
 type Analytics = {
@@ -69,6 +71,7 @@ const NUMERIC_REQUIREMENTS = Object.keys(NUMERIC_REQUIREMENT_SPEC) as Array<keyo
 const OPTIMIZE_KEYS = ["latency", "health", "cost", "quota"] as const;
 const UNKNOWN_EVIDENCE_KEYS = ["capability", "health", "quota", "cost"] as const;
 const UNKNOWN_EVIDENCE_OPTIONS: UnknownEvidenceMode[] = ["allow", "penalize", "exclude"];
+const UNKNOWN_COST_CAP_OPTIONS: UnknownCostCapMode[] = ["allow", "exclude"];
 
 function fmtMs(value: number | undefined, unavailable: string): string {
   return value === undefined ? unavailable : `${Math.round(value)}ms`;
@@ -76,6 +79,48 @@ function fmtMs(value: number | undefined, unavailable: string): string {
 
 function fmtRate(value: number | null | undefined, unavailable: string): string {
   return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
+}
+
+function fmtCapOutcome(
+  value: string | undefined,
+  t: ReturnType<typeof useT>,
+  unavailable: string,
+): string {
+  switch (value) {
+    case "satisfied":
+      return t("routing.capOutcome.satisfied");
+    case "exceeded":
+      return t("routing.capOutcome.exceeded");
+    case "unknown-allowed":
+      return t("routing.capOutcome.unknown-allowed");
+    case "unknown-excluded":
+      return t("routing.capOutcome.unknown-excluded");
+    default:
+      return unavailable;
+  }
+}
+
+function fmtExclusion(code: string, t: ReturnType<typeof useT>): string {
+  switch (code) {
+    case "capability-unsatisfied":
+      return t("routing.exclusion.capability-unsatisfied");
+    case "unknown-capability":
+      return t("routing.exclusion.unknown-capability");
+    case "cost-limit":
+      return t("routing.exclusion.cost-limit");
+    case "cost-limit-unknown":
+      return t("routing.exclusion.cost-limit-unknown");
+    case "cooldown":
+      return t("routing.exclusion.cooldown");
+    case "unknown-health":
+      return t("routing.exclusion.unknown-health");
+    case "unknown-quota":
+      return t("routing.exclusion.unknown-quota");
+    case "unknown-price":
+      return t("routing.exclusion.unknown-price");
+    default:
+      return t("routing.exclusion.other", { code });
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -709,9 +754,27 @@ export default function RoutingProfiles({
                 value={draft.limits.maxEstimatedCostUsd}
                 onChange={event => setDraft(current => current ? {
                   ...current,
-                  limits: { maxEstimatedCostUsd: event.target.value },
+                  limits: { ...current.limits, maxEstimatedCostUsd: event.target.value },
                 } : current)}
               />
+            </label>
+            <label className="field-label">
+              <code>onUnknownCost</code>
+              <select
+                className="input"
+                value={draft.limits.onUnknownCost}
+                onChange={event => setDraft(current => current ? {
+                  ...current,
+                  limits: {
+                    ...current.limits,
+                    onUnknownCost: event.target.value as UnknownCostCapMode,
+                  },
+                } : current)}
+              >
+                {UNKNOWN_COST_CAP_OPTIONS.map(mode => (
+                  <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
+                ))}
+              </select>
             </label>
           </fieldset>
 
@@ -817,6 +880,7 @@ export default function RoutingProfiles({
                 <th>{t("routing.candidate")}</th>
                 <th>{t("routing.eligible")}</th>
                 <th>{t("routing.exclusions")}</th>
+                <th>{t("routing.costCap")}</th>
                 <th>{t("routing.score")}</th>
               </tr>
             </thead>
@@ -828,7 +892,8 @@ export default function RoutingProfiles({
                     {index === dryRunResult.selectedIndex ? ` ✓ (${t("routing.selected")})` : ""}
                   </td>
                   <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
-                  <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
+                  <td>{candidate.exclusions.map(exclusion => fmtExclusion(exclusion.code, t)).join(", ") || t("routing.none")}</td>
+                  <td>{fmtCapOutcome(candidate.cost?.capOutcome, t, unavailable)}</td>
                   <td>{candidate.score ? candidate.score.total.toFixed(3) : unavailable}</td>
                 </tr>
               ))}
