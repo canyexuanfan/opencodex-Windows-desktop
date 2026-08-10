@@ -5,6 +5,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   statSync,
   unlinkSync,
@@ -24,6 +25,13 @@ export interface LedgerStore {
 }
 
 const eventIdIndexByLedger = new Map<string, Set<string>>();
+const LEDGER_LOCK_STALE_MS = 60_000;
+const LEDGER_LOCK_WAIT_MS = 5_000;
+
+interface LedgerLockMeta {
+  pid: number;
+  createdAt: number;
+}
 
 function sleepSyncMs(ms: number): void {
   const end = Date.now() + ms;
@@ -32,14 +40,48 @@ function sleepSyncMs(ms: number): void {
   }
 }
 
+function readLedgerLockMeta(lockPath: string): LedgerLockMeta | null {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as LedgerLockMeta;
+    if (typeof parsed.pid === "number" && typeof parsed.createdAt === "number") return parsed;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function isLedgerLockStale(lockPath: string): boolean {
+  const meta = readLedgerLockMeta(lockPath);
+  if (!meta) return true;
+  return Date.now() - meta.createdAt > LEDGER_LOCK_STALE_MS;
+}
+
+function tryAcquireLedgerLock(lockPath: string): number {
+  try {
+    const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+    writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now() }), "utf8"));
+    return fd;
+  } catch (error) {
+    if (existsSync(lockPath) && isLedgerLockStale(lockPath)) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* ignore */
+      }
+      return tryAcquireLedgerLock(lockPath);
+    }
+    throw error;
+  }
+}
+
 function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
   const lockPath = `${ledgerPath}.lock`;
   mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + LEDGER_LOCK_WAIT_MS;
   let lockFd: number | undefined;
   while (lockFd === undefined) {
     try {
-      lockFd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
+      lockFd = tryAcquireLedgerLock(lockPath);
     } catch (error) {
       if (Date.now() >= deadline) throw error;
       sleepSyncMs(10);

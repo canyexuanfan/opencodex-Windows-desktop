@@ -49,7 +49,7 @@ function failureFromLiveResult(result: LiveScenarioRunResult, retryable: boolean
   if (result.passed || result.classification === "inconclusive") return undefined;
   const attribution: FailureRecordV1["attribution"] = result.classification === "harness_failure"
     ? "harness"
-    : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "budget_exhausted"].includes(result.classification)
+    : ["authentication_blocked", "quota_blocked", "region_blocked", "network_failure", "provider_transient", "timeout", "inactivity_timeout", "budget_exhausted"].includes(result.classification)
       ? "environment"
       : "route";
   return {

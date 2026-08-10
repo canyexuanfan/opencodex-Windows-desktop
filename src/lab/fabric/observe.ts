@@ -5,10 +5,13 @@ import {
   LAB_PRODUCER,
   LAB_PRODUCER_VERSION,
   OBSERVATION_LIMIT_NAMES,
+  OUTCOMES,
 } from "../constants";
-import { fixtureDigest } from "../digest";
+import { FAILURE_CLASSIFICATIONS } from "../conformance/types";
+import { fixtureDigest, isSha256Hex } from "../digest";
 import type { ObservationEvent, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
-import { assignEventId } from "../events/validate";
+import { LabValidationError } from "../events/errors";
+import { assignEventId, validateSubject } from "../events/validate";
 import { appendLabEventIfAbsent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import {
@@ -17,6 +20,8 @@ import {
   FABRIC_SCENARIO_VERSION,
   FABRIC_SUITE_ID,
   FABRIC_SUITE_VERSION,
+  FABRIC_LIMITS,
+  FABRIC_VERIFIER_ID,
 } from "./constants";
 import {
   expandFabricScenario,
@@ -25,7 +30,7 @@ import {
   fabricSuiteManifestDigest,
   loadFabricCaseAuthority,
 } from "./manifest";
-import type { FabricTaskOutcomeV1 } from "./types";
+import type { FabricLimitsV1, FabricTaskOutcomeV1 } from "./types";
 import { FabricTaskError } from "./types";
 
 export interface PersistFabricOptions {
@@ -63,6 +68,14 @@ const OUTCOME_KEYS = new Set([
   "sourceRefs",
 ]);
 
+const VERIFIER_KEYS = new Set(["verifierId", "manifestDigest", "passed", "pathSummaries", "reason"]);
+const PATH_SUMMARY_KEYS = new Set(["path", "kind", "beforeDigest", "afterDigest", "reason"]);
+const PATH_SUMMARY_KINDS = new Set(["unchanged", "modified", "added", "deleted", "rejected"]);
+const USAGE_KEYS = ["inputBytes", "outputBytes", "patchOperations", "filesTouched", "artifactBytes", "elapsedMs", "inactiveMs"] as const;
+const LIMIT_KEYS = Object.keys(FABRIC_LIMITS) as Array<keyof FabricLimitsV1>;
+const FAILURE_KEYS = new Set(["class", "code", "retryable", "attribution"]);
+const FAILURE_ATTRIBUTIONS = new Set(["opencodex", "route", "environment", "harness"]);
+
 function assertPlainObject(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new FabricTaskError(`malformed producer outcome: ${label}`, "malformed_producer_outcome", "harness");
@@ -86,6 +99,128 @@ function assertIntegerField(obj: Record<string, unknown>, key: string): number {
   return value;
 }
 
+function assertNonNegativeIntegerField(obj: Record<string, unknown>, key: string): number {
+  const value = assertIntegerField(obj, key);
+  if (value < 0) {
+    throw new FabricTaskError(`malformed producer outcome: ${key}`, "malformed_producer_outcome", "harness");
+  }
+  return value;
+}
+
+function wrapValidationError(error: unknown): void {
+  if (error instanceof LabValidationError) {
+    throw new FabricTaskError(error.message, "malformed_producer_outcome", "harness");
+  }
+  throw error;
+}
+
+function validateFabricVerifier(raw: Record<string, unknown>): void {
+  for (const key of Object.keys(raw)) {
+    if (!VERIFIER_KEYS.has(key)) {
+      throw new FabricTaskError(`unknown verifier field ${key}`, "malformed_producer_outcome", "harness");
+    }
+  }
+  if (raw.verifierId !== FABRIC_VERIFIER_ID) {
+    throw new FabricTaskError("malformed producer outcome: verifierId", "malformed_producer_outcome", "harness");
+  }
+  const manifestDigest = assertStringField(raw, "manifestDigest");
+  if (!isSha256Hex(manifestDigest)) {
+    throw new FabricTaskError("malformed producer outcome: manifestDigest", "malformed_producer_outcome", "harness");
+  }
+  if (typeof raw.passed !== "boolean") {
+    throw new FabricTaskError("malformed producer outcome: passed", "malformed_producer_outcome", "harness");
+  }
+  if (!Array.isArray(raw.pathSummaries)) {
+    throw new FabricTaskError("malformed producer outcome: pathSummaries", "malformed_producer_outcome", "harness");
+  }
+  for (const row of raw.pathSummaries) {
+    const summary = assertPlainObject(row, "pathSummaries[]");
+    for (const key of Object.keys(summary)) {
+      if (!PATH_SUMMARY_KEYS.has(key)) {
+        throw new FabricTaskError(`unknown path summary field ${key}`, "malformed_producer_outcome", "harness");
+      }
+    }
+    assertStringField(summary, "path");
+    const kind = assertStringField(summary, "kind");
+    if (!PATH_SUMMARY_KINDS.has(kind)) {
+      throw new FabricTaskError("malformed producer outcome: path summary kind", "malformed_producer_outcome", "harness");
+    }
+    if (summary.beforeDigest !== undefined && !isSha256Hex(assertStringField(summary, "beforeDigest"))) {
+      throw new FabricTaskError("malformed producer outcome: beforeDigest", "malformed_producer_outcome", "harness");
+    }
+    if (summary.afterDigest !== undefined && !isSha256Hex(assertStringField(summary, "afterDigest"))) {
+      throw new FabricTaskError("malformed producer outcome: afterDigest", "malformed_producer_outcome", "harness");
+    }
+    if (summary.reason !== undefined && typeof summary.reason !== "string") {
+      throw new FabricTaskError("malformed producer outcome: path summary reason", "malformed_producer_outcome", "harness");
+    }
+  }
+  if (raw.reason !== undefined && typeof raw.reason !== "string") {
+    throw new FabricTaskError("malformed producer outcome: reason", "malformed_producer_outcome", "harness");
+  }
+}
+
+function validateFabricUsage(raw: Record<string, unknown>): void {
+  for (const key of USAGE_KEYS) {
+    assertNonNegativeIntegerField(raw, key);
+  }
+}
+
+function validateFabricLimits(raw: Record<string, unknown>): void {
+  for (const key of LIMIT_KEYS) {
+    assertNonNegativeIntegerField(raw, key);
+  }
+}
+
+function validateFailureRecord(raw: Record<string, unknown>): void {
+  for (const key of Object.keys(raw)) {
+    if (!FAILURE_KEYS.has(key)) {
+      throw new FabricTaskError(`unknown failure field ${key}`, "malformed_producer_outcome", "harness");
+    }
+  }
+  const failureClass = assertStringField(raw, "class");
+  if (!FAILURE_CLASSIFICATIONS.includes(failureClass as typeof FAILURE_CLASSIFICATIONS[number])) {
+    throw new FabricTaskError("malformed producer outcome: failure.class", "malformed_producer_outcome", "harness");
+  }
+  assertStringField(raw, "code");
+  if (typeof raw.retryable !== "boolean") {
+    throw new FabricTaskError("malformed producer outcome: failure.retryable", "malformed_producer_outcome", "harness");
+  }
+  const attribution = assertStringField(raw, "attribution");
+  if (!FAILURE_ATTRIBUTIONS.has(attribution)) {
+    throw new FabricTaskError("malformed producer outcome: failure.attribution", "malformed_producer_outcome", "harness");
+  }
+}
+
+function routeSubjectsMatch(top: RouteSubjectV1, nested: RouteSubjectV1): boolean {
+  return JSON.stringify(top) === JSON.stringify(nested);
+}
+
+function sanitizedVerifierSummary(outcome: FabricTaskOutcomeV1): Record<string, unknown> {
+  const verifier = {
+    verifierId: outcome.verifier.verifierId,
+    manifestDigest: outcome.verifier.manifestDigest,
+    passed: outcome.verifier.passed,
+    pathSummaries: outcome.verifier.pathSummaries.map((row) => ({
+      path: row.path,
+      kind: row.kind,
+      ...(row.beforeDigest ? { beforeDigest: row.beforeDigest } : {}),
+      ...(row.afterDigest ? { afterDigest: row.afterDigest } : {}),
+      ...(row.reason ? { reason: truncateUtf8(sanitizeDiagnostic(row.reason), 512) } : {}),
+    })),
+    ...(outcome.verifier.reason
+      ? { reason: truncateUtf8(sanitizeDiagnostic(outcome.verifier.reason), 512) }
+      : {}),
+  };
+  return {
+    scenarioId: FABRIC_SCENARIO_ID,
+    passed: outcome.verifier.passed,
+    verifier,
+    usage: outcome.usage,
+    outcome: outcome.outcome,
+  };
+}
+
 export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new FabricTaskError("malformed producer outcome", "malformed_producer_outcome", "harness");
@@ -101,36 +236,59 @@ export function assertFabricOutcomeV1(raw: unknown): FabricTaskOutcomeV1 {
   }
 
   const taskSubjectObj = assertPlainObject(obj.taskSubject, "taskSubject");
-  if (taskSubjectObj.subjectKind !== "task") {
-    throw new FabricTaskError("task layer rejects non-task subjects", "layer_subject_mismatch", "harness");
-  }
-  const routeFromTask = assertPlainObject(taskSubjectObj.routeSubject, "taskSubject.routeSubject");
-  if (routeFromTask.subjectKind !== "route") {
-    throw new FabricTaskError("nested route subject required", "layer_subject_mismatch", "harness");
-  }
-
   const routeSubjectObj = assertPlainObject(obj.routeSubject, "routeSubject");
-  if (routeSubjectObj.subjectKind !== "route") {
-    throw new FabricTaskError("nested route subject required", "layer_subject_mismatch", "harness");
+
+  let taskSubject!: TaskSubjectV1;
+  let routeSubject!: RouteSubjectV1;
+  try {
+    taskSubject = validateSubject(taskSubjectObj, "task_effectiveness") as TaskSubjectV1;
+    routeSubject = validateSubject(routeSubjectObj, "live_route_compatibility") as RouteSubjectV1;
+  } catch (error) {
+    wrapValidationError(error);
+  }
+  if (!routeSubjectsMatch(routeSubject, taskSubject.routeSubject)) {
+    throw new FabricTaskError("contradictory route subjects", "layer_subject_mismatch", "harness");
   }
 
   assertStringField(obj, "taskClassId");
   assertStringField(obj, "taskClassVersion");
-  assertStringField(obj, "subjectId");
-  assertStringField(obj, "taskFixtureDigest");
-  assertStringField(obj, "verifierManifestDigest");
+  const subjectId = assertStringField(obj, "subjectId");
+  if (!isSha256Hex(subjectId)) {
+    throw new FabricTaskError("malformed producer outcome: subjectId", "malformed_producer_outcome", "harness");
+  }
+  const taskFixtureDigest = assertStringField(obj, "taskFixtureDigest");
+  const verifierManifestDigest = assertStringField(obj, "verifierManifestDigest");
+  if (!isSha256Hex(taskFixtureDigest) || !isSha256Hex(verifierManifestDigest)) {
+    throw new FabricTaskError("malformed producer outcome: digest field", "malformed_producer_outcome", "harness");
+  }
   assertStringField(obj, "fabricCompatibilityVersion");
-  assertStringField(obj, "sandboxProfileDigest");
+  const sandboxProfileDigest = assertStringField(obj, "sandboxProfileDigest");
+  if (!isSha256Hex(sandboxProfileDigest)) {
+    throw new FabricTaskError("malformed producer outcome: sandboxProfileDigest", "malformed_producer_outcome", "harness");
+  }
   assertIntegerField(obj, "startedAt");
   assertIntegerField(obj, "completedAt");
-  assertPlainObject(obj.limits, "limits");
-  assertPlainObject(obj.usage, "usage");
-  assertPlainObject(obj.verifier, "verifier");
-  if (typeof obj.outcome !== "string") {
+  validateFabricLimits(assertPlainObject(obj.limits, "limits"));
+  validateFabricUsage(assertPlainObject(obj.usage, "usage"));
+  validateFabricVerifier(assertPlainObject(obj.verifier, "verifier"));
+  if (!OUTCOMES.includes(obj.outcome as typeof OUTCOMES[number])) {
     throw new FabricTaskError("malformed producer outcome: outcome", "malformed_producer_outcome", "harness");
   }
   if (!Array.isArray(obj.artifactDigests)) {
     throw new FabricTaskError("malformed producer outcome: artifactDigests", "malformed_producer_outcome", "harness");
+  }
+  for (const digest of obj.artifactDigests) {
+    if (typeof digest !== "string" || !isSha256Hex(digest)) {
+      throw new FabricTaskError("malformed producer outcome: artifactDigests", "malformed_producer_outcome", "harness");
+    }
+  }
+  if (obj.failure !== undefined) {
+    validateFailureRecord(assertPlainObject(obj.failure, "failure"));
+  }
+  if (obj.sourceRefs !== undefined) {
+    if (!Array.isArray(obj.sourceRefs) || !obj.sourceRefs.every((row) => typeof row === "string" && row.length > 0)) {
+      throw new FabricTaskError("malformed producer outcome: sourceRefs", "malformed_producer_outcome", "harness");
+    }
   }
 
   return raw as FabricTaskOutcomeV1;
@@ -188,13 +346,7 @@ export function observationFromFabricOutcome(
     }));
     artifacts.push(store.put({
       artifactClass: "verifier_summary",
-      payload: {
-        scenarioId: FABRIC_SCENARIO_ID,
-        passed: outcome.verifier.passed,
-        verifier: outcome.verifier,
-        usage: outcome.usage,
-        outcome: outcome.outcome,
-      },
+      payload: sanitizedVerifierSummary(outcome),
     }));
 
     const limits: Record<string, number | null> = {};

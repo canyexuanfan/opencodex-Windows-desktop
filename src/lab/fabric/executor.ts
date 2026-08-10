@@ -107,13 +107,15 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
     let patchRaw: unknown;
     try {
       const controller = createTimeoutController(FABRIC_LIMITS.totalTimeoutMs, FABRIC_LIMITS.inactivityTimeoutMs, options);
-      const producePromise = Promise.resolve(options.producePatch({
-        taskClassId: FABRIC_TASK_CLASS_ID,
-        taskClassVersion: FABRIC_TASK_CLASS_VERSION,
-        scratchRoot: scratch.root,
-        reportActivity: controller.reportActivity,
-      }));
-      patchRaw = await controller.race(producePromise);
+      const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      patchRaw = await controller.race(
+        sleep(0).then(() => options.producePatch({
+          taskClassId: FABRIC_TASK_CLASS_ID,
+          taskClassVersion: FABRIC_TASK_CLASS_VERSION,
+          scratchRoot: scratch!.root,
+          reportActivity: controller.reportActivity,
+        })),
+      );
     } catch (error) {
       const completedAt = options.now?.() ?? Date.now();
       usage.elapsedMs = completedAt - startedAt;

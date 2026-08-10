@@ -83,7 +83,7 @@ export function taskSubjectApplicableToRequirements(
     routePreconditions: readonly string[];
   },
 ): boolean {
-  const platforms = requirements.platforms ?? [];
+  const platforms = requirements.platforms ?? ["*"];
   const features = requirements.requiredHarnessFeatures ?? [];
   const preconditions = requirements.routePreconditions ?? [];
   const platformOk = platforms.includes("*") || platforms.some((platform) => capability.platforms.includes(platform));

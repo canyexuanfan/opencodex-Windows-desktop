@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -44,6 +45,8 @@ import { FabricTaskError } from "../src/lab/fabric/types";
 import { writeScratchFileUtf8, readScratchFileUtf8 } from "../src/lab/fabric/scratch";
 import { routingProfileIssues } from "../src/routing/profile";
 import { buildInvalidationIndex } from "../src/lab/ledger/invalidation";
+import { createArtifactStore } from "../src/lab/artifacts/store";
+import { ensureLabDirs } from "../src/lab/paths";
 import { verifyExactTreeDiffV1 } from "../src/lab/fabric/verifier";
 import { parseSyntheticPatchV1 } from "../src/lab/fabric/patch";
 import { FABRIC_LIMITS } from "../src/lab/fabric/constants";
@@ -376,6 +379,99 @@ describe("CL-07 task effectiveness producer", () => {
       platforms: ["win32"],
       routePreconditions: ["exact-route-subject"],
     })).toBe(true);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: ["fabric-scratch-v1"],
+      routePreconditions: ["exact-route-subject"],
+    }, {
+      harnessFeatures: ["fabric-scratch-v1"],
+      platforms: ["win32"],
+      routePreconditions: ["exact-route-subject"],
+    })).toBe(true);
+  });
+
+  test("malformed nested outcome fields throw FabricTaskError", async () => {
+    const home = tempHome();
+    const base = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    expect(() => observationFromFabricOutcome({ ...base, verifier: {} })).toThrow();
+    expect(() => observationFromFabricOutcome({
+      ...base,
+      usage: { ...base.usage, inputBytes: -1 },
+    })).toThrow();
+    expect(() => observationFromFabricOutcome({
+      ...base,
+      taskSubject: { ...base.taskSubject, subjectKind: "route" },
+    })).toThrow();
+  });
+
+  test("verifier summary artifact omits raw credential diagnostics", async () => {
+    const home = tempHome();
+    const paths = ensureLabDirs(home);
+    const store = createArtifactStore(paths.artifactsDir);
+    const base = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz1234567890";
+    try {
+      const { artifacts } = observationFromFabricOutcome({
+        ...base,
+        verifier: {
+          ...base.verifier,
+          reason: `failed ${secret}`,
+        },
+      }, { configDir: home, artifactStore: store });
+      const summaryRef = artifacts.find((row) => row.artifactClass === "verifier_summary");
+      expect(summaryRef).toBeDefined();
+      const text = new TextDecoder().decode(store.get(summaryRef!.digest));
+      expect(text.includes(secret)).toBe(false);
+      persistFabricOutcome({
+        ...base,
+        verifier: {
+          ...base.verifier,
+          reason: `failed ${secret}`,
+        },
+      }, { configDir: home });
+      const ledger = readFileSync(join(home, "lab", "compatibility.jsonl"), "utf8");
+      expect(ledger.includes(secret)).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("expired ledger lock is recovered before append", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
+    const lockPath = join(home, "lab", "compatibility.jsonl.lock");
+    writeFileSync(lockPath, JSON.stringify({ pid: 99999, createdAt: Date.now() - 120_000 }), { mode: 0o600 });
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    persistFabricOutcome(outcome, { configDir: home });
+    expect(existsSync(join(home, "lab", "compatibility.jsonl"))).toBe(true);
+  });
+
+  test("symlinked lab scratch dir is rejected", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    const outside = join(home, "outside-scratch");
+    mkdirSync(outside, { recursive: true, mode: 0o700 });
+    mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
+    const scratchLink = join(home, "lab", "scratch");
+    try {
+      symlinkSync(outside, scratchLink);
+    } catch {
+      return;
+    }
+    expect(() => createSyntheticScratch(home)).toThrow();
+    expect(readdirSync(outside).some((name) => name.startsWith("fabric-"))).toBe(false);
   });
 
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, lstatSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
 
@@ -6,7 +6,15 @@ import { getConfigDir } from "../config";
 export function ensureRestrictedDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (process.platform === "win32") return;
-  const mode = lstatSync(dir).mode & 0o777;
+  if (!existsSync(dir)) return;
+  const stats = lstatSync(dir);
+  if (stats.isSymbolicLink()) {
+    throw new Error(`restricted directory is a symbolic link: ${dir}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`restricted path is not a directory: ${dir}`);
+  }
+  const mode = stats.mode & 0o777;
   if (mode !== 0o700) chmodSync(dir, 0o700);
 }
 
