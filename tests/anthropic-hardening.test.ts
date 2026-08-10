@@ -56,6 +56,19 @@ describe("anthropic provider hardening", () => {
     expect(cred.expires).toBeGreaterThan(Date.now());
   });
 
+  test("refresh with an overflowing expires_in falls back to a finite default expiry", async () => {
+    globalThis.fetch = (async () => new Response(
+      // Number.MAX_VALUE passes Number.isFinite but overflows to Infinity when
+      // multiplied by 1000 — the computed expiry must still be guarded.
+      '{"access_token":"at","refresh_token":"rt","expires_in":1.7976931348623157e308}',
+      { status: 200 },
+    )) as typeof fetch;
+
+    const cred = await refreshAnthropicToken("secret");
+    expect(Number.isFinite(cred.expires)).toBe(true);
+    expect(cred.expires).toBeGreaterThan(Date.now());
+  });
+
   test("key mode rejects a blank API key", async () => {
     const adapter = createAnthropicAdapter(provider({ apiKey: "   " }));
 

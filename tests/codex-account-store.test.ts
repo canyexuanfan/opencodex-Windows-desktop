@@ -286,6 +286,31 @@ describe("codex-account-store CRUD", () => {
     }
   });
 
+  test("refresh with an overflowing expires_in falls back to a finite default expiry", async () => {
+    const {
+      getCodexAccountCredential,
+      getValidCodexToken,
+      saveCodexAccountCredential,
+    } = await import("../src/codex/account-store");
+    saveCodexAccountCredential("refresh-overflow-expiry", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
+    const originalFetch = globalThis.fetch;
+    // Number.MAX_VALUE passes Number.isFinite but overflows to Infinity when
+    // multiplied by 1000 — the computed expiresAt must still be guarded.
+    globalThis.fetch = (async () => new Response(
+      '{"access_token":"new","refresh_token":"new-r","expires_in":1.7976931348623157e308}',
+      { status: 200 },
+    )) as typeof fetch;
+
+    try {
+      await getValidCodexToken("refresh-overflow-expiry");
+      const stored = getCodexAccountCredential("refresh-overflow-expiry")!;
+      expect(Number.isFinite(stored.expiresAt)).toBe(true);
+      expect(stored.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("refresh waits behind file lock and reuses credential refreshed by another process", async () => {
     const {
       getValidCodexToken,

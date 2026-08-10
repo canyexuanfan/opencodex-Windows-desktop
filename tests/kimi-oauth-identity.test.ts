@@ -86,6 +86,17 @@ describe("Kimi token-response wiring (production parseTokenPayload path)", () =>
 
     await expect(refreshKimiToken("old-refresh")).rejects.toThrow("missing required fields");
   });
+
+  test("refreshKimiToken rejects an overflowing expires_in (finite input, Infinity expiry)", async () => {
+    globalThis.fetch = (async () => new Response(
+      // Number.MAX_VALUE passes Number.isFinite but overflows to Infinity when
+      // multiplied by 1000 — the computed expiry must be rejected as malformed.
+      `{"access_token":"at","refresh_token":"rt","expires_in":1.7976931348623157e308}`,
+      { status: 200 },
+    )) as typeof fetch;
+
+    await expect(refreshKimiToken("old-refresh")).rejects.toThrow("missing required fields");
+  });
 });
 
 describe("Kimi multiauth via saveCredential", () => {

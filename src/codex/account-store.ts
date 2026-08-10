@@ -495,11 +495,15 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
     // a NaN expiry would never compare as expired and would block refresh forever.
     const expiresIn =
       typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
+    // The computed timestamp itself must stay finite: Number.MAX_VALUE passes
+    // Number.isFinite but overflows to Infinity once multiplied by 1000.
+    const expiresAt = Date.now() + expiresIn * 1000;
+    const safeExpiresAt = Number.isFinite(expiresAt) ? expiresAt : Date.now() + 3600 * 1000;
 
     const updated: CodexAccountCredentials = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token ?? lockedCred.refreshToken,
-      expiresAt: Date.now() + expiresIn * 1000,
+      expiresAt: safeExpiresAt,
       chatgptAccountId: lockedCred.chatgptAccountId,
     };
     if (!saveCodexAccountCredentialIfGeneration(id, startGeneration, updated)) {

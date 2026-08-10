@@ -85,10 +85,14 @@ function credsFrom(data: AnthropicTokenResponse, refreshFallback?: string): OAut
   // a NaN expiry would never compare as expired and would block refresh forever.
   const expiresIn =
     typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
+  // The computed timestamp itself must stay finite: Number.MAX_VALUE passes
+  // Number.isFinite but overflows to Infinity once multiplied by 1000.
+  const computedExpires = Date.now() + expiresIn * 1000 - 5 * 60 * 1000;
+  const expires = Number.isFinite(computedExpires) ? computedExpires : Date.now() + 3600 * 1000 - 5 * 60 * 1000;
   return {
     refresh: data.refresh_token || refreshFallback || "",
     access: data.access_token,
-    expires: Date.now() + expiresIn * 1000 - 5 * 60 * 1000,
+    expires,
     accountId: typeof accountUuid === "string" && accountUuid.length > 0 ? accountUuid : undefined,
     email: typeof email === "string" && email.length > 0 ? email : undefined,
   };

@@ -53,10 +53,14 @@ function credsFromToken(data: Record<string, unknown>): OAuthCredentials {
   // produce a NaN expiry that never compares as expired (refresh blocked forever).
   const expiresIn =
     typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
+  // The computed timestamp itself must stay finite: Number.MAX_VALUE passes
+  // Number.isFinite but overflows to Infinity once multiplied by 1000.
+  const computedExpires = Date.now() + expiresIn * 1000;
+  const expires = Number.isFinite(computedExpires) ? computedExpires : Date.now() + 3600 * 1000;
   return {
     access: accessToken,
     refresh: (data.refresh_token as string) ?? "",
-    expires: Date.now() + expiresIn * 1000,
+    expires,
     accountId: extractAccountId(idToken, accessToken),
     email: extractEmail(idToken, accessToken),
   };
