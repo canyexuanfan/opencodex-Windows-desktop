@@ -217,6 +217,32 @@ describe("SEC-02 sanitizer boundary", () => {
     expect(sanitizeDiagnostic("ETIMEDOUT after 30 seconds")).toBe("ETIMEDOUT after 30 seconds");
   });
 
+  test("marker confidence decides how much context is trusted", () => {
+    // STRONG markers — resolver and socket errors, `host=`, `connect to` —
+    // name a destination by construction, so even a bare word is a host.
+    expect(sanitizeDiagnostic("dial tcp localhost:11434: connect: refused"))
+      .toBe("dial tcp [host]:11434: connect: refused");
+    expect(sanitizeDiagnostic("getaddrinfo ENOTFOUND redis")).toBe("getaddrinfo ENOTFOUND [host]");
+    expect(sanitizeDiagnostic("connect to gateway failed")).toBe("connect to [host] failed");
+    // WEAK markers appear in prose, so a dotted namespace after one survives.
+    expect(sanitizeDiagnostic("upstream provider.metric.p95 exceeded"))
+      .toBe("upstream provider.metric.p95 exceeded");
+  });
+
+  test("full-word account labels and both MAC notations are covered", () => {
+    // `organization_id` is at least as common as `org_id`.
+    expect(sanitizeDiagnostic("organization_id=abc123def")).toBe("organization_id=[account]");
+    expect(sanitizeDiagnostic('{"organizationId":"abc123def"}')).toBe('{"organizationId":"[account]"}');
+    // Hyphen-separated MAC notation is ordinary on Windows.
+    expect(sanitizeDiagnostic("iface_01-23-45-67-89-ab_down")).toBe("iface_[mac]_down");
+  });
+
+  test("an internationalized domain does not preserve the address", () => {
+    const at = "@";
+    expect(sanitizeDiagnostic(`用户${at}例子.公司`)).toBe("[email]");
+    expect(sanitizeDiagnostic(`ops${at}例子.公司`)).toBe("[email]");
+  });
+
   test("machine-formatted identifiers are not hidden by underscores", () => {
     // `\b` counts `_` as a word character, so it never fires between `_` and a
     // digit — and machine-generated diagnostics are full of that shape.

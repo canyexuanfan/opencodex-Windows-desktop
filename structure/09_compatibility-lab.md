@@ -22,9 +22,9 @@ the write path and the read path (`sanitizePublicText`) no longer disagree
 about what may be stored.
 
 Redacted: filesystem paths including UNC shares, HTTP(S) URLs, credential-bearing
-and other-scheme URIs, JWT-shaped tokens, email addresses, prefixed account
+and other-scheme URIs, JWT-shaped tokens, email addresses including internationalized local parts and domains, prefixed account
 identifiers (`acct_`, `cus_`, `sub_`, `org-`), account values under an
-ID-bearing label (`user_id`, `userID`, `accountId`, …), MAC addresses, IPv4,
+ID-bearing label (`user_id`, `userID`, `organization_id`, `accountId`, …; matched case-insensitively), MAC addresses in either colon or hyphen notation, IPv4,
 IPv6 including mapped and scoped forms, and multi-label hostnames whose final
 label is alphabetic or punycode.
 
@@ -32,12 +32,19 @@ label is alphabetic or punycode.
 `api.us-east-1` — is simultaneously a valid internal hostname and a valid
 metric or version namespace (`provider.metric.p95`, `lib.v2-rc1`). Shape cannot
 separate them. Those forms are therefore redacted only when an unambiguous
-network marker introduces them (`ENOTFOUND`, `ECONNREFUSED`, `ETIMEDOUT`,
-`dial tcp`, `upstream`, `connect to`, `host=`/`host:`), and survive otherwise.
-The captured candidate is validated as host-shaped before replacement, so a
-marker followed by prose (`ETIMEDOUT after 30 seconds`) is left alone. Both
-directions are asserted — the context syntax variants and the prose-preserving
-cases — so the boundary cannot drift silently either way.
+network marker introduces them, and survive otherwise.
+ 
+Markers carry two confidence levels, because treating them alike lost accuracy
+in both directions. **Strong** markers (`ENOTFOUND`, `EAI_AGAIN`,
+`ECONNREFUSED`, `ETIMEDOUT`, `EHOSTUNREACH`, `dial tcp`, `connect to`,
+`host=`/`host:`) name a destination by construction, so even a bare word after
+one is a host — that is what covers `getaddrinfo ENOTFOUND redis` and
+`dial tcp localhost:11434`. **Weak** markers (`upstream`) appear in ordinary
+prose, so they redact only a candidate that is already host-shaped and is not a
+plain dotted namespace; `upstream provider.metric.p95 exceeded` survives intact.
+ 
+Every case above is asserted in both directions, so the boundary cannot drift
+silently either way.
 A retained URL path also has identifier-shaped content redacted wherever it
 appears, independent of the punctuation around it — colon action suffixes and
 matrix parameters are ordinary API syntax, so enumerating delimiters does not

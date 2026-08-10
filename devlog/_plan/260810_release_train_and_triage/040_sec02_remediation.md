@@ -36,7 +36,7 @@ final casing/whole-match corrections). Local to `dev`; not yet pushed.
 - `src/lab/artifacts/store.ts` — non-contract artifacts declare
   `sanitized_evidence_v2`. Contract classes bypass mutation, so their pinned
   digests are unchanged.
-- `tests/lab-evidence-sanitization.test.ts` — 21 tests covering redaction,
+- `tests/lab-evidence-sanitization.test.ts` — 24 tests covering redaction,
   recorded residuals, adversarial timing, truncation boundaries, and activation
   on both constructors and both sinks.
 - `structure/09_compatibility-lab.md` — documents the enforced boundary and the
@@ -45,7 +45,7 @@ final casing/whole-match corrections). Local to `dev`; not yet pushed.
 ## Process record
 
 The plan passed **7 adversarial audit rounds** (19 blockers folded, none
-rebutted), and the shipped implementation then went through **7 rounds of
+rebutted), and the implementation then went through **7 rounds of
 independent security re-review**, which found **17 further defects**. Every one
 was reproduced locally before being fixed, and each fix carries a regression
 test plus an ablation showing the test fails without it.
@@ -65,8 +65,8 @@ Two lessons are worth keeping, because both cost several rounds:
 
 ## Verification
 
-- `bun test tests/lab-evidence-sanitization.test.ts` — 21 pass / 0 fail
-- `bun test tests/lab-*.test.ts` — 152 pass / 0 fail
+- `bun test tests/lab-evidence-sanitization.test.ts` — 24 pass / 0 fail
+- `bun test tests/lab-*.test.ts` — 155 pass / 0 fail
 - full suite — see the unit outcome record for the final count
 - `bun run typecheck` exit 0; `bun run privacy:scan` passed
 - Activation proven by ablation rather than a green suite: reverting the event

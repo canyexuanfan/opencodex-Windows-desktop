@@ -106,7 +106,7 @@ const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8
 // quoted local part is still the account-identifying half of the address, and
 // matching only the domain left `用户@[host]` and `"ops"@[host]` behind.
 const EMAIL_RE =
-  /(?:"[^"\n]{1,64}"|[^\s@<>()[\],;:"]{1,64})@[A-Za-z0-9.-]{1,255}\.[A-Za-z][A-Za-z0-9-]{1,31}(?![\w.-])/gu;
+  /(?:"[^"\n]{1,64}"|[^\s@<>()[\],;:"]{1,64})@[^\s@<>()[\],;:"]{1,255}\.(?:xn--[a-z0-9-]{1,55}|\p{L}{2,24})(?![\w.-])/giu;
 // The value run includes hyphens so `acct_abcdef-prod` is consumed whole. A
 // `\b`-terminated form matched only `acct_abcdef` and left `-prod` dangling
 // after the token, which reads as redacted while leaking the remainder.
@@ -116,7 +116,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 // digit: `backend_203.0.113.7_timeout` and `iface_01:23:45:67:89:ab_down` are
 // ordinary machine-generated diagnostics that slipped past a `\b` form. These
 // use explicit non-identifier boundaries on both sides instead.
-const MAC_RE = /(?<![0-9A-Za-z:])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Za-z:])/g;
+// Colon notation is usual on POSIX, hyphen notation on Windows; separators
+// must be consistent within one address.
+const MAC_RE = /(?<![0-9A-Za-z:-])(?:(?:[0-9A-Fa-f]{2}:){5}|(?:[0-9A-Fa-f]{2}-){5})[0-9A-Fa-f]{2}(?![0-9A-Za-z:-])/g;
 const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z.])/g;
 // The final label is either an ordinary alphabetic TLD or a punycode one.
 // Allowing hyphens and digits in every final label was too broad: it ate
@@ -153,8 +155,25 @@ const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(
 // before replacement. Accepting any following token turned
 // `ETIMEDOUT after 30 seconds` into `ETIMEDOUT [host] 30 seconds`: a redaction
 // that destroys the diagnostic and hides nothing.
-const HOST_CONTEXT_RE =
-  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|dial\s+(?:tcp|udp)|upstream|connect(?:ing)?\s+to|host)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
+// Markers differ in confidence, and treating them alike cost accuracy both
+// ways. STRONG markers are resolver/socket errors and `host=`: whatever
+// follows is a host by construction, so a bare `redis` or `localhost` counts.
+// WEAK markers appear in ordinary prose (`upstream provider.metric.p95
+// exceeded`), so they only redact a candidate that is already host-shaped.
+const STRONG_HOST_CONTEXT_RE =
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|dial\s+(?:tcp|udp)|connect(?:ing)?\s+to|host)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
+const WEAK_HOST_CONTEXT_RE =
+  /\b(?:upstream)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
+
+/**
+ * A dotted run of plain alphabetic words with no digits or hyphens in any
+ * label — `provider.metric.p95` reads as a namespace, not a host. Under a
+ * WEAK marker this is left alone; under a STRONG one the marker decides.
+ */
+const DOTTED_NAMESPACE_RE = /^[a-z]+(?:\.[a-z]+)*\.[a-z]+[0-9]*$/i;
+
+/** Words that can follow a strong marker without being the host itself. */
+const HOST_MARKER_WORDS = new Set(["tcp", "udp", "to", "at", "for", "after", "failed", "error"]);
 
 /**
  * A dotted label run whose final label may be numeric or hyphenated — the
@@ -177,7 +196,7 @@ const CONTEXTUAL_HOST_TOKEN_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$|^[a-z]+[0-9][a-
 // Case-insensitive throughout: `UserID`, `USER_ID`, and `AccountId` are all
 // realistic field spellings, and matching only the lowercase base label left
 // them intact.
-const ACCOUNT_LABEL_RE = /\b(?:user|account|org|tenant)(_?id)?\b/gi;
+const ACCOUNT_LABEL_RE = /\b(?:user|account|organization|org|tenant|workspace|project)(_?id)?\b/gi;
 const IDENTIFIER_ONLY_RE = /^[A-Za-z0-9_-]+$/;
 const UNQUOTED_TERMINATOR = /[\s,;)\]}]/;
 
@@ -447,8 +466,11 @@ function scrubString(value: string): string {
   s = s.replace(IPV4_RE, (m) => (isIpv4(m) ? "[ip]" : m));
   // 11. Multi-label hostnames, plus single-label names in a host-bearing context.
   s = s.replace(HOSTNAME_RE, "[host]");
-  s = s.replace(HOST_CONTEXT_RE, (m, name: string) =>
-    AMBIGUOUS_HOST_RE.test(name) || CONTEXTUAL_HOST_TOKEN_RE.test(name) ? m.replace(name, "[host]") : m,
+  s = s.replace(STRONG_HOST_CONTEXT_RE, (m, name: string) =>
+    HOST_MARKER_WORDS.has(name.toLowerCase()) ? m : m.replace(name, "[host]"),
+  );
+  s = s.replace(WEAK_HOST_CONTEXT_RE, (m, name: string) =>
+    CONTEXTUAL_HOST_TOKEN_RE.test(name) && !DOTTED_NAMESPACE_RE.test(name) ? m.replace(name, "[host]") : m,
   );
   const bytes = new TextEncoder().encode(s);
   if (bytes.byteLength > MAX_SANITIZED_STRING_FIELD) {
