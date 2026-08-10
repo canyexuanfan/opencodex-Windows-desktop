@@ -7,6 +7,7 @@ import {
 import { createRoutedCustomToolRestoreBlockRewrite } from "../src/server/responses-custom-tool-repair";
 import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
+import { createTestTranslatorBudget } from "./helpers/translator-budget";
 
 function dataPayload(block: string): Record<string, unknown> {
   const line = block.split(/\r?\n/).find(entry => entry.startsWith("data:"));
@@ -167,6 +168,90 @@ describe("routed Responses custom-tool compatibility", () => {
     rewrite.dispose?.();
   });
 
+  test("buffers argument events until a missing added event is identified by item done", () => {
+    const budget = createTestTranslatorBudget();
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
+    const deltaBlock = frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      item_id: "fc_exec",
+      delta: "{\"input\":\"echo",
+    });
+    const argumentsDoneBlock = frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_exec",
+      arguments: "{\"input\":\"echo ok\"}",
+    });
+
+    expect(rewrite(deltaBlock)).toEqual([]);
+    expect(rewrite(argumentsDoneBlock)).toEqual([]);
+    expect(budget.snapshot().currentBytes).toBeGreaterThan(0);
+
+    const replayed = rewrite(frame("response.output_item.done", {
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_exec",
+        call_id: "call_exec",
+        name: "exec",
+        arguments: "{\"input\":\"echo ok\"}",
+        status: "completed",
+      },
+    }));
+    expect(replayed.map(block => dataPayload(block).type)).toEqual([
+      "response.custom_tool_call_input.delta",
+      "response.custom_tool_call_input.done",
+      "response.output_item.done",
+    ]);
+    expect(dataPayload(replayed[0]!)).toMatchObject({ item_id: "ctc_exec", delta: "echo" });
+    expect(dataPayload(replayed[1]!)).toMatchObject({ item_id: "ctc_exec", input: "echo ok" });
+    expect(dataPayload(replayed[2]!).item).toMatchObject({
+      type: "custom_tool_call",
+      id: "ctc_exec",
+      name: "exec",
+      input: "echo ok",
+    });
+    expect(budget.snapshot().currentBytes).toBe(0);
+    rewrite.dispose?.();
+  });
+
+  test("replays buffered events unchanged when item done identifies an ordinary function", () => {
+    const budget = createTestTranslatorBudget();
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]), budget);
+    const deltaBlock = frame("response.function_call_arguments.delta", {
+      output_index: 1,
+      item_id: "fc_other",
+      delta: "{}",
+    });
+
+    expect(rewrite(deltaBlock)).toEqual([]);
+    expect(budget.snapshot().currentBytes).toBeGreaterThan(0);
+
+    const replayed = rewrite(frame("response.output_item.done", {
+      output_index: 1,
+      item: {
+        type: "function_call",
+        id: "fc_other",
+        call_id: "call_other",
+        name: "ordinary",
+        arguments: "{}",
+        status: "completed",
+      },
+    }));
+    expect(replayed).toEqual([deltaBlock, frame("response.output_item.done", {
+      output_index: 1,
+      item: {
+        type: "function_call",
+        id: "fc_other",
+        call_id: "call_other",
+        name: "ordinary",
+        arguments: "{}",
+        status: "completed",
+      },
+    })]);
+    expect(budget.snapshot().currentBytes).toBe(0);
+    rewrite.dispose?.();
+  });
+
   test("keeps progressive exec input consistent for escaped control characters", () => {
     const rewrite = createRoutedCustomToolRestoreBlockRewrite(new Set(["exec"]));
     rewrite(frame("response.output_item.added", {
@@ -250,7 +335,112 @@ describe("routed Responses custom-tool compatibility", () => {
       expect(clientSse).toContain('"type":"response.custom_tool_call_input.done"');
       expect(clientSse).toContain('"input":"const apps = await sky.list_apps();"');
       expect(clientSse).not.toContain("response.function_call_arguments.done");
+      expect(clientSse).not.toContain('"type":"function_call"');
       expect(clientSse).toContain("data: [DONE]");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("handleResponses restores routed custom calls in non-streaming JSON", async () => {
+    const savedFetch = globalThis.fetch;
+    const upstreamItem = {
+      type: "function_call",
+      id: "fc_exec",
+      call_id: "call_exec",
+      name: "exec",
+      arguments: "{\"input\":\"const apps = await sky.list_apps();\"}",
+      status: "completed",
+    };
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: "resp_json",
+      status: "completed",
+      output: [upstreamItem],
+    }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.test/v1",
+          authMode: "key",
+          apiKey: "fixture-key",
+        },
+      },
+    } as OcxConfig;
+
+    try {
+      const response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/deepseek-v4-flash",
+          stream: false,
+          input: [{ role: "user", content: [{ type: "input_text", text: "list apps" }] }],
+          tools: [{ type: "custom", name: "exec", description: "Run JavaScript", format: { type: "grammar", syntax: "lark" } }],
+        }),
+      }), config, { model: "", provider: "" });
+      const body = await response.json() as { output: Array<Record<string, unknown>> };
+
+      expect(body.output[0]).toMatchObject({
+        type: "custom_tool_call",
+        id: "ctc_exec",
+        name: "exec",
+        input: "const apps = await sky.list_apps();",
+      });
+      expect(body.output[0]).not.toHaveProperty("arguments");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("handleResponses leaves custom tools native for forward-auth passthrough", async () => {
+    const savedFetch = globalThis.fetch;
+    let outboundBody: Record<string, unknown> | undefined;
+    const upstreamItem = {
+      type: "function_call",
+      id: "fc_exec",
+      call_id: "call_exec",
+      name: "exec",
+      arguments: "{\"input\":\"native\"}",
+      status: "completed",
+    };
+    globalThis.fetch = (async (_input, init) => {
+      outboundBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ id: "resp_forward", status: "completed", output: [upstreamItem] }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://forward.fixture.test",
+          authMode: "forward",
+        },
+      },
+    } as OcxConfig;
+
+    try {
+      const response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer caller-token" },
+        body: JSON.stringify({
+          model: "fixture/native-model",
+          stream: false,
+          input: "run",
+          tools: [{ type: "custom", name: "exec", description: "Run JavaScript", format: { type: "grammar", syntax: "lark" } }],
+        }),
+      }), config, { model: "", provider: "" });
+      const clientBody = await response.json() as { output: Array<Record<string, unknown>> };
+      const outboundTools = outboundBody?.tools as Array<Record<string, unknown>> | undefined;
+
+      expect(outboundTools?.[0]).toMatchObject({ type: "custom", name: "exec" });
+      expect(clientBody.output[0]).toMatchObject({ type: "function_call", name: "exec" });
+      expect(clientBody.output[0]).not.toHaveProperty("input");
     } finally {
       globalThis.fetch = savedFetch;
     }

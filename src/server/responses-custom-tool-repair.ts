@@ -65,12 +65,21 @@ type OpenCustomCall = {
   retainedBytes: number;
 };
 
+type PendingArgumentBlock = {
+  block: string;
+  itemId?: string;
+  outputIndex?: number;
+  retainedBytes: number;
+};
+
 export function createRoutedCustomToolRestoreBlockRewrite(
   names: ReadonlySet<string>,
   budget?: TranslatorBudget,
 ): SseBlockRewrite {
   const itemNames = new Map<string, string>();
+  const ordinaryItemIds = new Set<string>();
   const openCalls = new Map<string, OpenCustomCall>();
+  let pendingArguments: PendingArgumentBlock[] = [];
   let disposed = false;
 
   const releaseCall = (itemId: string): void => {
@@ -86,7 +95,42 @@ export function createRoutedCustomToolRestoreBlockRewrite(
     if (disposed) return;
     disposed = true;
     for (const itemId of openCalls.keys()) releaseCall(itemId);
+    const pendingBytes = pendingArguments.reduce((total, pending) => total + pending.retainedBytes, 0);
+    if (pendingBytes > 0) {
+      budget?.releaseRetained(pendingBytes, { kind: "retained_collectors" });
+    }
+    pendingArguments = [];
     itemNames.clear();
+    ordinaryItemIds.clear();
+  };
+
+  const retainPendingArgument = (
+    block: string,
+    itemId: string | undefined,
+    outputIndex: number | undefined,
+  ): void => {
+    const retainedBytes = Buffer.byteLength(block, "utf8");
+    if (retainedBytes > 0) budget?.chargeRetained(retainedBytes, { kind: "retained_collectors" });
+    pendingArguments.push({ block, itemId, outputIndex, retainedBytes });
+  };
+
+  const takePendingArguments = (
+    itemId: string | undefined,
+    outputIndex: number | undefined,
+  ): string[] => {
+    const matched: PendingArgumentBlock[] = [];
+    const remaining: PendingArgumentBlock[] = [];
+    for (const pending of pendingArguments) {
+      const sameItem = itemId !== undefined && pending.itemId === itemId;
+      const sameIndex = outputIndex !== undefined && pending.outputIndex === outputIndex;
+      (sameItem || sameIndex ? matched : remaining).push(pending);
+    }
+    pendingArguments = remaining;
+    const retainedBytes = matched.reduce((total, pending) => total + pending.retainedBytes, 0);
+    if (retainedBytes > 0) {
+      budget?.releaseRetained(retainedBytes, { kind: "retained_collectors" });
+    }
+    return matched.map(pending => pending.block);
   };
 
   const rewrite: SseBlockRewrite = (block: string): readonly string[] => {
@@ -101,28 +145,56 @@ export function createRoutedCustomToolRestoreBlockRewrite(
     if (!isPlainObject(parsed)) return [block];
 
     const type = typeof parsed.type === "string" ? parsed.type : "";
+    const outputIndex = typeof parsed.output_index === "number"
+      && Number.isInteger(parsed.output_index)
+      && parsed.output_index >= 0
+      ? parsed.output_index
+      : undefined;
     if (
       (type === "response.output_item.added" || type === "response.output_item.done")
       && isPlainObject(parsed.item)
       && parsed.item.type === "function_call"
       && typeof parsed.item.name === "string"
-      && names.has(parsed.item.name)
     ) {
       const upstreamItemId = typeof parsed.item.id === "string" ? parsed.item.id : undefined;
+      const routed = names.has(parsed.item.name);
       if (upstreamItemId) {
-        itemNames.set(upstreamItemId, parsed.item.name);
-        if (type === "response.output_item.added") {
+        if (routed) {
+          itemNames.set(upstreamItemId, parsed.item.name);
+          ordinaryItemIds.delete(upstreamItemId);
+        } else {
+          ordinaryItemIds.add(upstreamItemId);
+        }
+        if (routed && type === "response.output_item.added") {
           openCalls.set(upstreamItemId, { argumentsText: "", emittedInput: "", retainedBytes: 0 });
         }
       }
+      const pending = takePendingArguments(upstreamItemId, outputIndex);
+      if (!routed) {
+        if (type === "response.output_item.done" && upstreamItemId) ordinaryItemIds.delete(upstreamItemId);
+        return [...pending, block];
+      }
+      if (upstreamItemId && pending.length > 0 && !openCalls.has(upstreamItemId)) {
+        openCalls.set(upstreamItemId, { argumentsText: "", emittedInput: "", retainedBytes: 0 });
+      }
       const restored = restoreRoutedCustomCalls(parsed, names);
+      const restoredBlock = restored.changed
+        ? replaceSseDataPayload(block, JSON.stringify(restored.value))
+        : block;
+      const replayed = pending.flatMap(pendingBlock => rewrite(pendingBlock));
       if (type === "response.output_item.done" && upstreamItemId) releaseCall(upstreamItemId);
-      return restored.changed
-        ? [replaceSseDataPayload(block, JSON.stringify(restored.value))]
-        : [block];
+      return type === "response.output_item.added"
+        ? [restoredBlock, ...replayed]
+        : [...replayed, restoredBlock];
     }
 
     const upstreamItemId = typeof parsed.item_id === "string" ? parsed.item_id : undefined;
+    const argumentEvent = type === "response.function_call_arguments.delta"
+      || type === "response.function_call_arguments.done";
+    if (argumentEvent && (!upstreamItemId || (!itemNames.has(upstreamItemId) && !ordinaryItemIds.has(upstreamItemId)))) {
+      retainPendingArgument(block, upstreamItemId, outputIndex);
+      return [];
+    }
     if (
       type === "response.function_call_arguments.delta"
       && upstreamItemId

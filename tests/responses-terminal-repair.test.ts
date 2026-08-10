@@ -337,6 +337,19 @@ describe("DeepSeek Responses terminal repair", () => {
     expect(output.endsWith("data: [DONE]\n\n")).toBe(true);
   });
 
+  test("an unframed output item done suffix taints EOF completion", async () => {
+    const framed = completedMessageLifecycle();
+    const finalDelimiter = framed.lastIndexOf("\n\n");
+    expect(finalDelimiter).toBeGreaterThan(0);
+    const input = framed.slice(0, finalDelimiter);
+
+    const { output } = await repairClosedText(input);
+
+    expect(output).toContain('"type":"response.output_item.done"');
+    expect(terminalTypes(output)).toEqual(["response.incomplete"]);
+    expect(output).not.toContain('"type":"response.completed"');
+  });
+
   test("DONE is replaced by completed then one DONE only for a complete candidate", async () => {
     const { output } = await repairClosedText(completedMessageLifecycle() + "data: [DONE]\n\n");
     expect(terminalTypes(output)).toEqual(["response.completed"]);

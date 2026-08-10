@@ -292,10 +292,10 @@ export function relayResponsesSseWithTerminalRepair(
         if (done) {
           appendBuffer(decoder.decode());
           if (buffer.length > 0) {
-            const kind = inspectPayload(sseDataPayload(buffer));
-            if (kind === "done" && !realTerminalSeen) {
-              emitSynthetic(completeCandidate() ? "completed" : "incomplete", controller);
-            }
+            // A delimiter-less suffix is not a complete SSE event. Preserve the
+            // upstream bytes for passthrough compatibility, but never let a
+            // truncated lifecycle frame establish synthetic success.
+            tainted = true;
             controller.enqueue(encoder.encode(buffer));
           }
           if (!realTerminalSeen) {
