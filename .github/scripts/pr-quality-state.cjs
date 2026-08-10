@@ -201,23 +201,21 @@ function migrateLegacyGateState(enforcerState, readinessState) {
  */
 
 /**
- * Bot-side verification of the two checklist claims the gate can check itself.
- * The CI box only holds when the head's `ci` check is green, and the
- * latest-dev box only holds while the head is at most
- * READINESS_LATEST_DEV_BEHIND_MAX commits behind the base. Unknown state
- * (compare or checks lookup failed) fails closed: an unverifiable claim is a
- * violation, because an attestation must not ride on missing evidence.
+ * Bot-side verification of the checklist claim the gate can check itself for
+ * ancestry. The local-CI box is an author attestation only (fork contributors
+ * cannot start repository CI; a maintainer has to), so it is never disproved
+ * here — head-drift still resets every box after a new push. The latest-dev
+ * box only holds while the head is at most READINESS_LATEST_DEV_BEHIND_MAX
+ * commits behind the base. Unknown state (compare lookup failed) fails closed:
+ * an unverifiable claim is a violation, because an attestation must not ride
+ * on missing evidence.
  */
 function readinessClaimViolations({
-  ciGreen,
   behindBase,
   behindUnknown = false,
   behindMax = READINESS_LATEST_DEV_BEHIND_MAX
 }) {
   const violations = [];
-  if (!ciGreen) {
-    violations.push("ci_green");
-  }
   if (behindUnknown || behindBase > behindMax) {
     violations.push("latest_dev");
   }

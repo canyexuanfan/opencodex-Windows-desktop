@@ -171,9 +171,10 @@ export type RunOptions = {
   /** Page-keyed open PR fixtures for `pulls.list` (1-based via array index). */
   openPullPages?: unknown[][];
   /**
-   * Check-runs `checks.listForRef` reports for the head. Defaults to a green
-   * `ci` check so completed-checklist scenarios pass the claim check.
-   * Pass a red/pending/missing set to exercise the claim-check reset paths.
+   * Check-runs `checks.listForRef` used to report for readiness claim checks.
+   * Local CI is now an author attestation only, so the gate no longer lists
+   * checks; these fixtures remain so older scenarios that pass `checkRuns`
+   * still construct cleanly without affecting gate behavior.
    */
   checkRuns?: Array<{
     name: string;
@@ -188,7 +189,7 @@ export type RunOptions = {
     conclusion: string | null;
     app?: { id: number } | null;
   }>>;
-  /** Optional filtered total for proving truncated check evidence fails closed. */
+  /** Optional filtered total; unused now that the gate skips check listing. */
   checkRunTotalCount?: number;
   /**
    * Review threads `pullRequestReviewThreads` (via GraphQL) reports for the PR.
