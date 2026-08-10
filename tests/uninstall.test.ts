@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  setUninstallServiceHooksForTests,
+  uninstallServiceIfInstalled,
+} from "../src/service";
 
 const root = new URL("../", import.meta.url);
 
@@ -7,6 +11,8 @@ async function readText(path: string): Promise<string> {
 }
 
 describe("full uninstall command", () => {
+  afterEach(() => setUninstallServiceHooksForTests(null));
+
   test("CLI exposes a one-shot local state cleanup command", async () => {
     const cli = await readText("src/cli/index.ts");
 
@@ -39,6 +45,43 @@ describe("full uninstall command", () => {
     expect(service).toContain("uninstallLaunchd");
     expect(service).toContain("uninstallWindows");
     expect(service).toContain("uninstallSystemd");
+  });
+
+  test("native service removal failure propagates without deleting install state", () => {
+    const calls: string[] = [];
+    let stateRemovals = 0;
+    setUninstallServiceHooksForTests({
+      platform: "win32",
+      assertEnvironment: () => {},
+      probeWindowsTask: () => ({ status: "present" }),
+      uninstallWindowsTask: () => { calls.push("scheduler"); },
+      nativeStatus: () => "started",
+      uninstallNative: () => {
+        calls.push("native");
+        throw new Error("native removal failed");
+      },
+      removeInstallState: () => { stateRemovals++; },
+    });
+
+    expect(() => uninstallServiceIfInstalled()).toThrow("native removal failed");
+    expect(calls).toEqual(["scheduler", "native"]);
+    expect(stateRemovals).toBe(0);
+  });
+
+  test("scheduler removal failure propagates without deleting install state", () => {
+    let stateRemovals = 0;
+    setUninstallServiceHooksForTests({
+      platform: "win32",
+      assertEnvironment: () => {},
+      probeWindowsTask: () => ({ status: "present" }),
+      uninstallWindowsTask: () => { throw new Error("scheduler removal failed"); },
+      nativeStatus: () => "nonexistent",
+      uninstallNative: () => {},
+      removeInstallState: () => { stateRemovals++; },
+    });
+
+    expect(() => uninstallServiceIfInstalled()).toThrow("scheduler removal failed");
+    expect(stateRemovals).toBe(0);
   });
 
   test("full uninstall kills the tracked proxy before deleting service assets", async () => {
