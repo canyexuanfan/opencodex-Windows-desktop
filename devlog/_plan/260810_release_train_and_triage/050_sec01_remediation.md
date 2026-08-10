@@ -27,6 +27,16 @@ Commit `e4947062c`.
   forbidding the new literal. They now extract the checkout step's ref and
   compare the whole expression, because independent substring checks would pass
   with the operator grouping wrong.
+- `tests/ci-workflows.test.ts`,
+  `tests/zz-pr-coderabbit-readiness-revalidation.test.ts` — two further suites
+  pinned the same expression from the Bun side and were only found by running
+  the full suite. Four tests in total guarded this one line, which is a good
+  sign about the repository and a reminder that a focused run is not a green
+  build.
+- Both CJS suites additionally gate the **whole workflow file** against
+  interpolating a PR head ref, not just the checkout step. The re-review showed
+  a malicious `run:` step could otherwise be added while every existing
+  assertion still passed.
 
 ## Honest scope of the change
 

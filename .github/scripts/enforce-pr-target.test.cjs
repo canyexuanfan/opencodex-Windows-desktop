@@ -163,6 +163,16 @@ describe("enforce-pr-target workflow", () => {
       "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
     );
     assert.doesNotMatch(ref, /base\.sha|head\.(?:sha|ref)/);
+    // Pinning the checkout ref only gates one step. A later `run:` or
+    // `github-script` step interpolating a head ref would execute
+    // PR-controlled content with this workflow's write-capable token, so the
+    // whole file is gated. (`pr.head.sha` read back from the API is an
+    // identity for comparison, not an interpolated ref, and is unaffected.)
+    assert.doesNotMatch(
+      workflow,
+      /github\.event\.pull_request\.head\.(?:sha|ref|repo)/,
+      "no step in a pull_request_target workflow may interpolate a PR head ref",
+    );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);

@@ -1013,11 +1013,16 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout",
     ]);
     expect(checkout.with).toEqual({
-      // Normal PR events pin scripts to the event's base SHA. A trusted
-      // `status` event has no pull_request payload, so it loads scripts from
-      // the same default-branch trust boundary that owns the event.
+      // The trusted ref comes from a fixed set of integration branches, never
+      // from the pull request: a stacked child's base is another open PR's
+      // head, so an unpromoted commit must not select the code that runs with
+      // this workflow's write-capable token. A `status` event has no
+      // pull_request payload and loads scripts from the default-branch trust
+      // boundary that owns the event; a `main`-targeting PR loads from `main`
+      // so the scripts match the workflow definition `pull_request_target`
+      // itself loaded; everything else resolves to `dev`.
       ref:
-        "${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
+        "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.

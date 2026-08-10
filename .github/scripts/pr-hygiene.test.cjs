@@ -284,6 +284,21 @@ describe("pr-hygiene workflow trust boundary", () => {
     assert.match(checkoutStep, /persist-credentials:\s*false/);
   });
 
+  it("never lets a PR-controlled ref reach an executable step", () => {
+    // Pinning the checkout ref is not enough on its own: a later `run:` or
+    // `github-script` step could fetch and execute PR head content and a
+    // checkout-scoped assertion would still pass. This gates the whole file.
+    //
+    // `pull_request_target` grants a write-capable token, so no executable
+    // surface here may interpolate a head ref, and nothing may reference the
+    // head repository at all.
+    assert.doesNotMatch(
+      workflow,
+      /pull_request\.head\.(?:sha|ref|repo)/,
+      "no step in a pull_request_target workflow may consume a PR head ref",
+    );
+  });
+
   it("uses repository permission level for the sponsorship exemption", () => {
     assert.match(workflow, /getCollaboratorPermissionLevel/);
     assert.match(workflow, /authorHasPushPermission\(authorPermission\)/);
