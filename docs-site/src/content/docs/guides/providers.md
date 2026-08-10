@@ -398,10 +398,11 @@ Create a key in the [Featherless dashboard](https://featherless.ai/account/api-k
 **Novita discovery.** The key-based preset uses the `openai-chat` adapter and sends its Bearer key
 only to Novita's fixed OpenAI-compatible host. Its public model list is filtered to rows that report
 both `model_type: chat` and the `chat/completions` endpoint, with discovery capped at 512 KiB and 256
-raw rows. Because the catalog is public, login reports the key as unverifiable instead of treating a
-successful list response as proof. Model capabilities vary, so the preset does not advertise
-provider-wide parallel tool calls or OpenAI `reasoning_effort`. Create a key in
-[Novita's key manager](https://novita.ai/settings/key-management).
+raw rows. Model ids must be preserved exactly as Novita returns them, including slash-delimited ids,
+and must not be normalized or rewritten before routing. Because the catalog is public, login reports
+the key as unverifiable instead of treating a successful list response as proof. Model capabilities
+vary, so the preset does not advertise provider-wide parallel tool calls or OpenAI `reasoning_effort`.
+Create a key in [Novita's key manager](https://novita.ai/settings/key-management).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > only. Use a personal [API key](https://docs.baseten.co/organization/api-keys) for local use, or a team key
