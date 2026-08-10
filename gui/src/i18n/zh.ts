@@ -46,6 +46,7 @@ export const zh: Record<TKey, string> = {
   "routing.candidate": "候选",
   "routing.eligible": "合格",
   "routing.exclusions": "排除项",
+  "routing.costCap": "成本上限",
   "routing.score": "分数",
   "routing.selected": "已选择",
   "routing.yes": "是",

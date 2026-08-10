@@ -46,6 +46,7 @@ export const ko: Record<TKey, string> = {
   "routing.candidate": "후보",
   "routing.eligible": "적격",
   "routing.exclusions": "제외",
+  "routing.costCap": "비용 상한",
   "routing.score": "점수",
   "routing.selected": "선택됨",
   "routing.yes": "예",

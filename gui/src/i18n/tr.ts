@@ -88,6 +88,7 @@ export const tr: Record<TKey, string> = {
   "routing.candidate": "Aday",
   "routing.eligible": "Uygun",
   "routing.exclusions": "Hariç Tutulanlar",
+  "routing.costCap": "Maliyet tavanı",
   "routing.score": "Puan",
   "routing.selected": "seçildi",
   "routing.yes": "evet",

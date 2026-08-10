@@ -46,6 +46,7 @@ export const de: Record<TKey, string> = {
   "routing.candidate": "Kandidat",
   "routing.eligible": "Geeignet",
   "routing.exclusions": "Ausschlüsse",
+  "routing.costCap": "Kostenobergrenze",
   "routing.score": "Punktzahl",
   "routing.selected": "ausgewählt",
   "routing.yes": "ja",

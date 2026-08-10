@@ -46,6 +46,7 @@ export const ja: Record<TKey, string> = {
   "routing.candidate": "候補",
   "routing.eligible": "対象",
   "routing.exclusions": "除外",
+  "routing.costCap": "コスト上限",
   "routing.score": "スコア",
   "routing.selected": "選択済み",
   "routing.yes": "はい",

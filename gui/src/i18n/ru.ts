@@ -46,6 +46,7 @@ export const ru: Record<TKey, string> = {
   "routing.candidate": "Кандидат",
   "routing.eligible": "Допустим",
   "routing.exclusions": "Исключения",
+  "routing.costCap": "Лимит стоимости",
   "routing.score": "Оценка",
   "routing.selected": "выбран",
   "routing.yes": "да",
