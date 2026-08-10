@@ -198,6 +198,51 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
     expect(result.candidates[0]!.cost?.capOutcome).toBeUndefined();
   });
 
+  test("trace stamps the profile cap even when evidence carries a different limitUsd", () => {
+    const result = evaluatePolicyProfile(configWithCap(0.000001), "cost", {}, [
+      {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        capability: { contextWindow: 200000 },
+        cost: { estimatedUsd: 0.01, incomplete: false, limitUsd: 1 },
+      },
+    ]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(false);
+    expect(candidate.exclusions.some(e => e.code === "cost-limit")).toBe(true);
+    expect(candidate.cost?.limitUsd).toBe(0.000001);
+    expect(candidate.cost?.capOutcome).toBe("exceeded");
+    expect(result.trace.candidates[0]?.cost?.limitUsd).toBe(0.000001);
+  });
+
+  test("normalizeRouteDecisionTrace drops capOutcome without a finite limitUsd", () => {
+    const dirty = {
+      version: 1 as const,
+      decisionId: "abcdef012345",
+      createdAt: 1,
+      requestedModel: "policy/cost",
+      routeKind: "policy" as const,
+      requirements: [],
+      candidates: [{
+        provider: "anthropic",
+        model: "claude-opus-5",
+        eligible: true,
+        exclusions: [],
+        cost: { incomplete: true, capOutcome: "unknown-allowed" as const },
+      }],
+      selected: {
+        candidateIndex: 0,
+        provider: "anthropic",
+        model: "claude-opus-5",
+        reason: "policy-selected",
+      },
+    };
+    const normalized = normalizeRouteDecisionTrace(dirty);
+    expect(normalized).not.toBeNull();
+    expect(normalized?.candidates[0]?.cost?.capOutcome).toBeUndefined();
+    expect(normalized?.candidates[0]?.cost?.incomplete).toBe(true);
+  });
+
   test("explicit onUnknownCost allow matches omitted default", () => {
     const evidence = livePathEvidence(0.000001);
     const omitted = evaluatePolicyProfile(configWithCap(0.000001), "cost", {}, [

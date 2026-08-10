@@ -563,7 +563,9 @@ function parseCost(raw: unknown, caps: ParseCaps): RouteCostEvidence | undefined
   }
   if (typeof raw.incomplete === "boolean") out.incomplete = raw.incomplete;
   if (finiteNumber(raw.limitUsd)) out.limitUsd = raw.limitUsd;
-  if (typeof raw.capOutcome === "string" && COST_CAP_OUTCOMES.has(raw.capOutcome as RouteCostCapOutcome)) {
+  if (out.limitUsd !== undefined
+    && typeof raw.capOutcome === "string"
+    && COST_CAP_OUTCOMES.has(raw.capOutcome as RouteCostCapOutcome)) {
     out.capOutcome = raw.capOutcome as RouteCostCapOutcome;
   }
   return Object.keys(out).length > 0 ? out : undefined;

@@ -338,7 +338,7 @@ export function evaluatePolicyProfile(
             : "satisfied" as const;
       costForCandidate = {
         ...(evidence.cost ?? {}),
-        limitUsd: evidence.cost?.limitUsd ?? costLimit,
+        limitUsd: costLimit,
         capOutcome,
       };
     }

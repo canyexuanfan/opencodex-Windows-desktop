@@ -81,6 +81,25 @@ function fmtRate(value: number | null | undefined, unavailable: string): string 
   return value === null || value === undefined ? unavailable : `${Math.round(value * 100)}%`;
 }
 
+function fmtCapOutcome(
+  value: string | undefined,
+  t: ReturnType<typeof useT>,
+  unavailable: string,
+): string {
+  switch (value) {
+    case "satisfied":
+      return t("routing.capOutcome.satisfied");
+    case "exceeded":
+      return t("routing.capOutcome.exceeded");
+    case "unknown-allowed":
+      return t("routing.capOutcome.unknown-allowed");
+    case "unknown-excluded":
+      return t("routing.capOutcome.unknown-excluded");
+    default:
+      return unavailable;
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -851,7 +870,7 @@ export default function RoutingProfiles({
                   </td>
                   <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
                   <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
-                  <td>{candidate.cost?.capOutcome ?? t("routing.none")}</td>
+                  <td>{fmtCapOutcome(candidate.cost?.capOutcome, t, unavailable)}</td>
                   <td>{candidate.score ? candidate.score.total.toFixed(3) : unavailable}</td>
                 </tr>
               ))}
