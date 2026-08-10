@@ -788,7 +788,9 @@ describe("GitHub Actions hardening", () => {
       "repos.getCollaboratorPermissionLevel",
       "repos.compareCommitsWithBasehead",
       "repos.compareCommitsWithBasehead",
+      "pulls.get",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -801,7 +803,9 @@ describe("GitHub Actions hardening", () => {
       "issues.listComments",
       "repos.getCollaboratorPermissionLevel",
       "pulls.list",
+      "pulls.get",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -818,8 +822,10 @@ describe("GitHub Actions hardening", () => {
       "repos.compareCommitsWithBasehead",
       // The harness walks every paginate call across the same page count, so
       // listFiles appears once per comment page even when the file list is empty.
+      "pulls.get",
       "pulls.listFiles",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -1090,8 +1096,11 @@ describe("GitHub Actions hardening", () => {
     expect(script).toContain("collectPrQualityFailures");
     expect(script).toContain("collectDeterministicHygieneFailures");
     expect(script).toContain("github.rest.pulls.listFiles");
-    // The GUI screenshot gate reads the title as well as the body.
-    expect(script).toContain("title: pr.title");
+    // The GUI screenshot gate reads changed file paths under gui/.
+    expect(script).toContain("changedFilePaths");
+    expect(script).toContain("filesTruncated");
+    expect(script).toContain("isChangedFileListTruncated");
+    expect(script).toContain("PR head moved while listing changed files");
     expect(script).toContain("github.rest.repos.getCollaboratorPermissionLevel");
     expect(script).toContain("github.rest.repos.compareCommitsWithBasehead");
     // The allow-list is the gate's whole policy, so it is pinned by value and
@@ -1300,6 +1309,11 @@ describe("GitHub Actions hardening", () => {
       "",
       "- [@Wibias](https://github.com/Wibias) was added as a maintainer.",
     ].join("\n");
+
+    const GUI_CHANGED_FILES = [
+      { filename: "gui/src/App.tsx" },
+      { filename: "tests/smoke.test.ts" },
+    ];
 
     /** A PR body whose readiness checklist has exactly `checked` boxes ticked. */
     function readinessChecklistBody(checked: number, base = CONTRIBUTOR_BODY): string {
@@ -2458,6 +2472,7 @@ describe("GitHub Actions hardening", () => {
           title: "GUI: fix provider list spacing",
           body: readinessChecklistBody(4),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
@@ -2617,6 +2632,7 @@ describe("GitHub Actions hardening", () => {
         },
         authorPermission: "read",
         maintainersFile: MAINTAINERS_FIXTURE,
+        files: GUI_CHANGED_FILES,
       });
       expect(
         result.warnings.some(
@@ -2842,9 +2858,10 @@ describe("GitHub Actions hardening", () => {
       expect(injected.body).toContain(CHECKLIST_START);
     });
 
-    test("gui in the title without a screenshot fails and drafts", async () => {
+    test("gui/ changes without a screenshot fail and draft", async () => {
       const result = await run({
-        pr: { base: { ref: "dev" }, title: "GUI: fix provider list spacing" },
+        pr: { base: { ref: "dev" }, title: "Fix dashboard spacing" },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
@@ -2855,7 +2872,56 @@ describe("GitHub Actions hardening", () => {
       expect(callsTo(result, "graphql")).toHaveLength(1);
     });
 
-    test("gui in the body without a screenshot fails", async () => {
+    test("gui in the title alone does not demand a screenshot", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, title: "GUI: fix provider list spacing" },
+        authorPermission: "write",
+        files: [{ filename: "scripts/foo.ts" }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+    });
+
+    test("no gui changes text without gui/ file changes does not demand a screenshot", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "Fix proxy routing",
+          body: [
+            "## Summary",
+            "",
+            "This change adjusts proxy routing only; there are no gui changes in this PR.",
+            "The handler in scripts/foo.ts keeps the same public surface while fixing retry semantics.",
+            "",
+            "## Test plan",
+            "",
+            "- Ran \`bun test tests/ci-workflows.test.ts\`",
+          ].join("\n"),
+        },
+        authorPermission: "write",
+        files: [{ filename: "scripts/foo.ts" }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+    });
+
+    test("malformed changed_files metadata fails closed on the screenshot gate", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          changed_files: 2.5,
+        },
+        files: [{ filename: "scripts/foo.ts" }],
+        authorPermission: "write",
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+    });
+
+    test("gui in the body without a screenshot fails when gui/ changed", async () => {
       const result = await run({
         pr: {
           base: { ref: "dev" },
@@ -2868,6 +2934,7 @@ describe("GitHub Actions hardening", () => {
             "- Ran bun test tests/ci-workflows.test.ts",
           ].join("\n"),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
@@ -2890,6 +2957,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "lidge-jun" }, author_association: "OWNER", body: "Not touching gui here." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       // The screenshot failure is gone: no setFailed for it, and the comment
@@ -2915,6 +2983,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "no gui changes needed" },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2947,6 +3016,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "lidge-jun" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2975,6 +3045,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "lidge-jun" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -3008,6 +3079,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "unauthorized-contributor" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       // The screenshot failure must remain because the label was applied by
@@ -3040,6 +3112,8 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(callsTo(result, "pulls.get")).toEqual([
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
         { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
       ]);
       expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toEqual([]);
@@ -3199,6 +3273,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "contributor" }, author_association: "CONTRIBUTOR", body: "Not touching gui here." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
@@ -3222,6 +3297,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "lidge-jun" }, author_association: "OWNER", body: "This is gui related, please add a screenshot." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
@@ -3244,6 +3320,7 @@ describe("GitHub Actions hardening", () => {
           ].join("\n"),
         },
         authorPermission: "write",
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase());
@@ -3268,6 +3345,7 @@ describe("GitHub Actions hardening", () => {
           ].join("\n"),
         },
         authorPermission: "write",
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase());
@@ -3291,6 +3369,7 @@ describe("GitHub Actions hardening", () => {
             "- Ran bun test tests/ci-workflows.test.ts",
           ].join("\n"),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
