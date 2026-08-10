@@ -308,6 +308,17 @@ test("a stale IPv6 loopback URL is moved to the running proxy port", () => {
   expect(env.ANTHROPIC_AUTH_TOKEN).toBe("admission-key");
 });
 
+test("a default-port loopback URL is moved to the running proxy port", () => {
+  const env = buildClaudeEnv(
+    cfg(undefined, [{ key: "admission-key" }]), 10100,
+    { ANTHROPIC_BASE_URL: "http://localhost" },
+    {},
+    { authDetect: fileAuth("present"), preBunAnthropicSlots: ["ANTHROPIC_BASE_URL"] },
+  );
+  expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:10100");
+  expect(env.ANTHROPIC_AUTH_TOKEN).toBe("admission-key");
+});
+
 test("a stale loopback warning omits URL credentials, paths, and queries", () => {
   const error = spyOn(console, "error").mockImplementation(() => {});
   try {

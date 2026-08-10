@@ -119,7 +119,10 @@ export function buildClaudeEnv(
   if (existingBaseUrl) {
     try {
       const parsed = new URL(existingBaseUrl);
-      if (isClaudeLoopbackHostname(parsed.hostname) && parsed.port !== "" && Number(parsed.port) !== port) {
+      const effectivePort = parsed.port === "" ? 80 : Number(parsed.port);
+      if (parsed.protocol === "http:"
+        && isClaudeLoopbackHostname(parsed.hostname)
+        && effectivePort !== port) {
         const replacement = `http://127.0.0.1:${port}`;
         console.error(`⚠ Replacing stale opencodex ANTHROPIC_BASE_URL ${parsed.origin} with ${replacement}.`);
         env.ANTHROPIC_BASE_URL = replacement;
