@@ -205,6 +205,33 @@ describe("SEC-02 sanitizer boundary", () => {
     expect(sanitizeDiagnostic("db.prod-1")).toBe("db.prod-1");
   });
 
+  test("the network-context grammar covers real syntax without eating prose", () => {
+    // Separator and quoting variants a provider actually emits.
+    expect(sanitizeDiagnostic("connect to db.prod-1 failed")).toBe("connect to [host] failed");
+    expect(sanitizeDiagnostic("host: db.prod-1")).toBe("host: [host]");
+    expect(sanitizeDiagnostic("ENOTFOUND db-primary")).toBe("ENOTFOUND [host]");
+    // ...and does not swallow the words that follow a marker. Accepting any
+    // token turned `ETIMEDOUT after 30 seconds` into `ETIMEDOUT [host] 30
+    // seconds`: a redaction that destroys the message and hides nothing.
+    expect(sanitizeDiagnostic("upstream request failed")).toBe("upstream request failed");
+    expect(sanitizeDiagnostic("ETIMEDOUT after 30 seconds")).toBe("ETIMEDOUT after 30 seconds");
+  });
+
+  test("machine-formatted identifiers are not hidden by underscores", () => {
+    // `\b` counts `_` as a word character, so it never fires between `_` and a
+    // digit — and machine-generated diagnostics are full of that shape.
+    expect(sanitizeDiagnostic("backend_203.0.113.7_timeout")).toBe("backend_[ip]_timeout");
+    expect(sanitizeDiagnostic("iface_01:23:45:67:89:ab_down")).toBe("iface_[mac]_down");
+  });
+
+  test("an address is redacted whatever its local part looks like", () => {
+    // Matching only an ASCII dot-atom local part left the account-identifying
+    // half in place while replacing the domain.
+    const at = "@";
+    expect(sanitizeDiagnostic(`用户${at}corp.example`)).toBe("[email]");
+    expect(sanitizeDiagnostic(`"ops"${at}corp.example`)).toBe("[email]");
+  });
+
   test("a trailing-dot FQDN is a hostname, not an escape hatch", () => {
     // Forbidding a trailing dot to avoid eating sentence punctuation let the
     // FQDN root form through untouched. An optional trailing dot does not fix

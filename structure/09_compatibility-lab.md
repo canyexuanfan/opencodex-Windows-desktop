@@ -32,9 +32,12 @@ label is alphabetic or punycode.
 `api.us-east-1` — is simultaneously a valid internal hostname and a valid
 metric or version namespace (`provider.metric.p95`, `lib.v2-rc1`). Shape cannot
 separate them. Those forms are therefore redacted only when an unambiguous
-network marker introduces them (`ENOTFOUND`, `ECONNREFUSED`, `dial tcp`,
-`upstream`, `host=`, …), and survive otherwise. Both behaviors are asserted, so
-the boundary cannot drift silently in either direction.
+network marker introduces them (`ENOTFOUND`, `ECONNREFUSED`, `ETIMEDOUT`,
+`dial tcp`, `upstream`, `connect to`, `host=`/`host:`), and survive otherwise.
+The captured candidate is validated as host-shaped before replacement, so a
+marker followed by prose (`ETIMEDOUT after 30 seconds`) is left alone. Both
+directions are asserted — the context syntax variants and the prose-preserving
+cases — so the boundary cannot drift silently either way.
 A retained URL path also has identifier-shaped content redacted wherever it
 appears, independent of the punctuation around it — colon action suffixes and
 matrix parameters are ordinary API syntax, so enumerating delimiters does not

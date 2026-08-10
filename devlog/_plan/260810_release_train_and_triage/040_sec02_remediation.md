@@ -18,7 +18,7 @@ security re-review before push and moved to scratch. Worth restating: the rule
 binds this agent exactly as `AGENTS.md` says it binds maintainers, and drafting
 the plan in the public tree was a violation rather than a judgment call.
 
-## What shipped
+## What landed locally
 
 Commits `7fda2c524` and the follow-up hardening from seven re-review rounds
 (`4bcaef080`, `0449d72d4`, `3a958242e`, `31151acfa`, `4d010a4e5`, plus the
@@ -36,7 +36,7 @@ final casing/whole-match corrections). Local to `dev`; not yet pushed.
 - `src/lab/artifacts/store.ts` — non-contract artifacts declare
   `sanitized_evidence_v2`. Contract classes bypass mutation, so their pinned
   digests are unchanged.
-- `tests/lab-evidence-sanitization.test.ts` — 18 tests covering redaction,
+- `tests/lab-evidence-sanitization.test.ts` — 21 tests covering redaction,
   recorded residuals, adversarial timing, truncation boundaries, and activation
   on both constructors and both sinks.
 - `structure/09_compatibility-lab.md` — documents the enforced boundary and the
@@ -65,9 +65,9 @@ Two lessons are worth keeping, because both cost several rounds:
 
 ## Verification
 
-- `bun test tests/lab-evidence-sanitization.test.ts` — 18 pass / 0 fail
-- `bun test tests/lab-*.test.ts` — 149 pass / 0 fail
-- full suite — 10,533 pass / 7 skip / 0 fail
+- `bun test tests/lab-evidence-sanitization.test.ts` — 21 pass / 0 fail
+- `bun test tests/lab-*.test.ts` — 152 pass / 0 fail
+- full suite — see the unit outcome record for the final count
 - `bun run typecheck` exit 0; `bun run privacy:scan` passed
 - Activation proven by ablation rather than a green suite: reverting the event
   sink, and separately the sanitizer rules, each turned the new tests red.

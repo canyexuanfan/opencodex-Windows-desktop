@@ -10,7 +10,7 @@ Same rule as `040`: `AGENTS.md` keeps pre-disclosure reasoning out of the public
 tree until the fix ships. The trust analysis, the severity assessment, and the
 scope reasoning are in scratch. This file records the outcome.
 
-## What shipped
+## What landed locally
 
 Commits `13f3a73fe` and `febd8c8e3`. Local to `dev`; not yet pushed.
 

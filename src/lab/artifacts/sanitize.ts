@@ -102,17 +102,22 @@ const JWT_RE = /\beyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8
 // hyphen and left `[email]--p1ai`, and `acct_abcdef-prod` left `[account]-prod`.
 // A prefix replacement looks redacted while the tail leaks, which is the one
 // thing this module must never do.
-const EMAIL_RE = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z][A-Za-z0-9-]{1,31}(?![\w.-])/g;
+// The local part accepts more than an ASCII dot-atom: an internationalized or
+// quoted local part is still the account-identifying half of the address, and
+// matching only the domain left `用户@[host]` and `"ops"@[host]` behind.
+const EMAIL_RE =
+  /(?:"[^"\n]{1,64}"|[^\s@<>()[\],;:"]{1,64})@[A-Za-z0-9.-]{1,255}\.[A-Za-z][A-Za-z0-9-]{1,31}(?![\w.-])/gu;
 // The value run includes hyphens so `acct_abcdef-prod` is consumed whole. A
 // `\b`-terminated form matched only `acct_abcdef` and left `-prod` dangling
 // after the token, which reads as redacted while leaking the remainder.
 const PREFIXED_ACCOUNT_RE = /\b(?:acct|cus|sub|org)[_-][A-Za-z0-9][A-Za-z0-9-]{5,63}(?![\w-])/g;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAC_RE = /\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/g;
-const IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
-// `\b` does not fire between `_` and a digit, so `x_203.0.113.7` slipped past
-// the word-boundary form above.
-const UNDERSCORE_ADJACENT_IPV4_RE = /_((?:\d{1,3}\.){3}\d{1,3})\b/g;
+// `\b` treats `_` as a word character, so it does not fire between `_` and a
+// digit: `backend_203.0.113.7_timeout` and `iface_01:23:45:67:89:ab_down` are
+// ordinary machine-generated diagnostics that slipped past a `\b` form. These
+// use explicit non-identifier boundaries on both sides instead.
+const MAC_RE = /(?<![0-9A-Za-z:])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Za-z:])/g;
+const IPV4_RE = /(?<![0-9A-Za-z.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9A-Za-z.])/g;
 // The final label is either an ordinary alphabetic TLD or a punycode one.
 // Allowing hyphens and digits in every final label was too broad: it ate
 // ordinary diagnostic tokens such as `foo.bar-baz` and `metric.p95`, which
@@ -142,11 +147,37 @@ const HOSTNAME_RE = /(?<![\w.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}(
 // Shape cannot decide it, so context does: these forms are redacted only when
 // an unambiguous network marker introduces them. Outside such a marker they
 // survive, and that is a recorded limit rather than an oversight.
+//
+// The marker grammar accepts the separators these messages actually use —
+// whitespace, `=`, `:`, and JSON quoting — and the CANDIDATE IS VALIDATED
+// before replacement. Accepting any following token turned
+// `ETIMEDOUT after 30 seconds` into `ETIMEDOUT [host] 30 seconds`: a redaction
+// that destroys the diagnostic and hides nothing.
 const HOST_CONTEXT_RE =
-  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|dial\s+(?:tcp|udp)|upstream|connecting\s+to|host)[\s=]+([A-Za-z0-9_.-]{1,255})/gi;
+  /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|dial\s+(?:tcp|udp)|upstream|connect(?:ing)?\s+to|host)["']?\s*[\s=:]\s*["']?([A-Za-z0-9_.-]{1,255})/gi;
+
+/**
+ * A dotted label run whose final label may be numeric or hyphenated — the
+ * shape that is ambiguous between an internal hostname and a metric namespace.
+ * A single-label token is NOT a host: accepting one turned
+ * `upstream request failed` into `upstream [host] failed`.
+ */
+const AMBIGUOUS_HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1,8}[a-z0-9][a-z0-9-]{0,61}$/i;
+
+/**
+ * A single-label internal name (`db-primary`, `db_prod.internal`'s owner). A
+ * bare word is only treated as a host inside an explicit network context, and
+ * it must still look like a name rather than an English word carrying the
+ * message — `request` and `after` are rejected by requiring a digit, hyphen,
+ * underscore, or dot somewhere in the token.
+ */
+const CONTEXTUAL_HOST_TOKEN_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)+$|^[a-z]+[0-9][a-z0-9]*$/i;
 // `userID` is at least as common as `userId` in provider payloads, so the id
 // suffix is matched case-insensitively.
-const ACCOUNT_LABEL_RE = /\b(?:user|account|org|tenant)(_?[iI][dD])?\b/g;
+// Case-insensitive throughout: `UserID`, `USER_ID`, and `AccountId` are all
+// realistic field spellings, and matching only the lowercase base label left
+// them intact.
+const ACCOUNT_LABEL_RE = /\b(?:user|account|org|tenant)(_?id)?\b/gi;
 const IDENTIFIER_ONLY_RE = /^[A-Za-z0-9_-]+$/;
 const UNQUOTED_TERMINATOR = /[\s,;)\]}]/;
 
@@ -414,10 +445,11 @@ function scrubString(value: string): string {
   // 9-10. Addresses: IPv6 first so mapped forms are replaced whole.
   s = redactIpv6(s);
   s = s.replace(IPV4_RE, (m) => (isIpv4(m) ? "[ip]" : m));
-  s = s.replace(UNDERSCORE_ADJACENT_IPV4_RE, (m, ip: string) => (isIpv4(ip) ? m.replace(ip, "[ip]") : m));
   // 11. Multi-label hostnames, plus single-label names in a host-bearing context.
   s = s.replace(HOSTNAME_RE, "[host]");
-  s = s.replace(HOST_CONTEXT_RE, (m, name: string) => m.replace(name, "[host]"));
+  s = s.replace(HOST_CONTEXT_RE, (m, name: string) =>
+    AMBIGUOUS_HOST_RE.test(name) || CONTEXTUAL_HOST_TOKEN_RE.test(name) ? m.replace(name, "[host]") : m,
+  );
   const bytes = new TextEncoder().encode(s);
   if (bytes.byteLength > MAX_SANITIZED_STRING_FIELD) {
     return new TextDecoder().decode(bytes.slice(0, MAX_SANITIZED_STRING_FIELD));
