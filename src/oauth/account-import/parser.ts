@@ -71,5 +71,13 @@ export function parseCockpitAccountDocument(document: unknown): CockpitDocumentP
   if (!Array.isArray(document) || document.length === 0 || document.length > ACCOUNT_IMPORT_MAX_RECORDS) {
     return { ok: false, code: "invalid_document" };
   }
-  return { ok: true, records: document.map(parseRecord) };
+  const seen = new Set<string>();
+  const records = document.map((value, index): ParsedCockpitRecord => {
+    const parsed = parseRecord(value, index);
+    if ("code" in parsed) return parsed;
+    if (seen.has(parsed.record.email)) return { index, code: "invalid_record" };
+    seen.add(parsed.record.email);
+    return parsed;
+  });
+  return { ok: true, records };
 }

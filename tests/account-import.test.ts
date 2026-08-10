@@ -58,6 +58,22 @@ describe("Cockpit account-import parser", () => {
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.records.every(item => "code" in item && item.code === "invalid_record")).toBe(true);
   });
+
+  test("marks later duplicate emails in one document as invalid records", () => {
+    const parsed = parseCockpitAccountDocument([
+      record({ email: "User@example.com", refresh_token: "first" }),
+      record({ email: "user@example.com", refresh_token: "second" }),
+      record({ email: "other@example.com", refresh_token: "third" }),
+    ]);
+    expect(parsed).toEqual({
+      ok: true,
+      records: [
+        { index: 0, record: { email: "user@example.com", refreshToken: "first" } },
+        { index: 1, code: "invalid_record" },
+        { index: 2, record: { email: "other@example.com", refreshToken: "third" } },
+      ],
+    });
+  });
 });
 
 describe("Cockpit account-import service and adapter", () => {
@@ -318,5 +334,51 @@ describe("Cockpit account-import atomic identity upsert", () => {
     expect(set?.accounts).toHaveLength(1);
     expect(set?.accounts[0]?.credential).toMatchObject({ access: "access-two", projectId: "project-two" });
     expect(JSON.parse(readFileSync(join(testHome, "auth.json"), "utf8"))[ACCOUNT_IMPORT_PROVIDER].accounts).toHaveLength(1);
+  });
+
+  test("rejects credentials without verified identity", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    await expect(upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-none",
+      refresh: "refresh-none",
+      expires: 1,
+    })).rejects.toThrow("Refusing to persist OAuth credential without verified identity");
+    expect(getAccountSet(ACCOUNT_IMPORT_PROVIDER)).toBeNull();
+  });
+
+  test("preserves an already selected active account when importing another identity", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-one",
+      refresh: "refresh-one",
+      expires: 1,
+      email: "first@example.com",
+      projectId: "project-one",
+    });
+    const before = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(before?.activeAccountId).toBeTruthy();
+    const activeBefore = before!.activeAccountId;
+
+    await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-two",
+      refresh: "refresh-two",
+      expires: 2,
+      email: "second@example.com",
+      projectId: "project-two",
+    });
+    const after = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(after?.accounts).toHaveLength(2);
+    expect(after?.activeAccountId).toBe(activeBefore);
+
+    await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-one-rotated",
+      refresh: "refresh-one-rotated",
+      expires: 3,
+      email: "first@example.com",
+      projectId: "project-one-rotated",
+    });
+    expect(getAccountSet(ACCOUNT_IMPORT_PROVIDER)?.activeAccountId).toBe(activeBefore);
   });
 });

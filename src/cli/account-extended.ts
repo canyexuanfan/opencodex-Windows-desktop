@@ -23,6 +23,7 @@ import {
   warnIfCodexCatalogRefreshPending,
 } from "./account-catalog-refresh";
 import {
+  ACCOUNT_IMPORT_DEADLINE_MS,
   ACCOUNT_IMPORT_FORMAT,
   ACCOUNT_IMPORT_MAX_BYTES,
   ACCOUNT_IMPORT_PROVIDER,
@@ -46,7 +47,7 @@ const EXTENDED_USAGE = `Usage:
 const PIPE_GUIDANCE = `Pipe the API key on stdin, for example:
   ocx account add-key <provider> <<< "$MY_KEY"
   security find-generic-password -w <item> | ocx account add-key <provider>`;
-const ACCOUNT_IMPORT_TIMEOUT_MS = 600_000;
+const ACCOUNT_IMPORT_TIMEOUT_MS = ACCOUNT_IMPORT_DEADLINE_MS;
 
 function flag(args: string[], value: string): boolean {
   const index = args.indexOf(value);
@@ -519,7 +520,11 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
     ? Math.min(ACCOUNT_IMPORT_TIMEOUT_MS, Math.max(1, Math.floor(configuredImportTimeout)))
     : ACCOUNT_IMPORT_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), importTimeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, importTimeoutMs);
   let response;
   try {
     response = await apiJson(deps, baseUrl, "POST", "/api/oauth/accounts/import", {
@@ -530,12 +535,17 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
   } finally {
     clearTimeout(timer);
   }
-  if (response.status === 0) return proxyUnreachable();
+  if (response.status === 0) {
+    if (!timedOut) return proxyUnreachable();
+    console.error(`Error: import_timeout after ${importTimeoutMs}ms`);
+    return 1;
+  }
   if (response.status !== 200) {
-    const code = IMPORT_CODES.has(response.json.code as AccountImportCode)
-      ? response.json.code as AccountImportCode
-      : "invalid_document";
-    console.error(`Error: ${code}`);
+    if (IMPORT_CODES.has(response.json.code as AccountImportCode)) {
+      console.error(`Error: ${response.json.code as AccountImportCode}`);
+    } else {
+      console.error(`Error: import_request_failed (status ${response.status})`);
+    }
     return 1;
   }
   const result = safeImportResult(response.json);

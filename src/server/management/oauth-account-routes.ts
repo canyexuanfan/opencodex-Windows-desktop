@@ -69,14 +69,13 @@ import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, C
 import type { ManagementContext } from "./context";
 import { readManagementJsonBody, readManagementJsonBodyOr, rethrowManagementBodyTooLarge } from "./body";
 import { codexAccountNamespaceProviderCollisionError } from "../../codex/account-namespace-match";
-import { ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../../oauth/account-import";
+import { ACCOUNT_IMPORT_DEADLINE_MS, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../../oauth/account-import";
 import { readBoundedJsonRequestBody } from "../request-decompress";
 
-// Match the public CLI's bounded import window. Individual provider requests keep
-// their own shorter timeouts, while the batch still has enough time to process
-// the admitted maximum of 25 records. A disconnected request aborts immediately
-// through req.signal below; this is only the server-side backstop.
-const ACCOUNT_IMPORT_DEADLINE_MS = 600_000;
+// ACCOUNT_IMPORT_DEADLINE_MS is the shared CLI/server import window. Individual
+// provider requests keep their own shorter timeouts; this is only the server-side
+// backstop for the admitted batch. A disconnected request aborts immediately
+// through req.signal below.
 
 /**
  * Parses a bounded JSON object body, or null. Malformed JSON is swallowed; an

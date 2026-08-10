@@ -1,5 +1,6 @@
 export { importAccounts } from "./service";
 export {
+  ACCOUNT_IMPORT_DEADLINE_MS,
   ACCOUNT_IMPORT_FORMAT,
   ACCOUNT_IMPORT_MAX_BYTES,
   ACCOUNT_IMPORT_MAX_REQUEST_BYTES,

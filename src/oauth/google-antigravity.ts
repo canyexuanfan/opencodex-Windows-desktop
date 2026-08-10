@@ -246,9 +246,12 @@ export async function validateAntigravityImportCredential(
     signal: requestSignal(signal),
   });
   if (!response.ok) throw new Error(`Antigravity identity request failed: ${response.status}`);
-  const body = (await response.json().catch(() => undefined)) as { email?: unknown } | undefined;
+  const body = (await response.json().catch(() => undefined)) as { email?: unknown; id?: unknown } | undefined;
   if (typeof body?.email !== "string" || body.email.length === 0) {
     throw new Error("Antigravity identity response did not include an email");
   }
-  return { ...credential, email: body.email.toLowerCase() };
+  if (typeof body.id !== "string" || body.id.length === 0) {
+    throw new Error("Antigravity identity response did not include an account id");
+  }
+  return { ...credential, accountId: body.id, email: body.email.toLowerCase() };
 }

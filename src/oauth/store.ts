@@ -550,14 +550,14 @@ export async function upsertCredentialByIdentity(
     if (existing && set) {
       existing.credential = safe;
       delete existing.needsReauth;
-      set.activeAccountId = existing.id;
+      set.activeAccountId ??= existing.id;
       return "updated";
     }
     const id = newAccountId(safe);
     const account: ProviderAccount = { id, credential: safe, addedAt: Date.now() };
     if (set) {
       set.accounts.push(account);
-      set.activeAccountId = id;
+      set.activeAccountId ??= id;
     } else {
       store[provider] = { activeAccountId: id, accounts: [account] };
     }

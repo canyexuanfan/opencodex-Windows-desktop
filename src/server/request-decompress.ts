@@ -180,7 +180,13 @@ export function decodeRequestBody(
   return assertBodySizeWithinLimit(decoded, maxBytes);
 }
 
-/** Parse a bounded JSON request body, transparently decoding compressed payloads. */
+/**
+ * Parse a bounded JSON request body, transparently decoding compressed payloads.
+ *
+ * `options.signal`, when provided, replaces `req.signal` rather than composing with
+ * it. Callers that need both (for example request disconnect plus a deadline) must
+ * merge them into one AbortSignal before calling.
+ */
 export async function readBoundedJsonRequestBody(
   req: Request,
   maxBytes: number,

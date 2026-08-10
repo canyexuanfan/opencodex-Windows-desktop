@@ -11,7 +11,7 @@ import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import { getAccountSet } from "../src/oauth/store";
-import { ACCOUNT_IMPORT_MAX_BYTES, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../src/oauth/account-import/types";
+import { ACCOUNT_IMPORT_DEADLINE_MS, ACCOUNT_IMPORT_MAX_BYTES, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../src/oauth/account-import/types";
 import { handleOauthAccountRoutes } from "../src/server/management/oauth-account-routes";
 
 let testDir = "";
@@ -196,6 +196,9 @@ describe("multiauth accounts API", () => {
         [{ provider: "google-antigravity", format: "unknown", document: [] }, "unsupported_format"],
         [{ provider: "google-antigravity", format: "cockpit-tools", document: { accounts: [] } }, "invalid_document"],
         [{ provider: "google-antigravity", format: "cockpit-tools", document: "not-an-array" }, "invalid_document"],
+        [{ provider: "Google-Antigravity", format: "cockpit-tools", document: [] }, "unsupported_provider"],
+        [{ provider: " google-antigravity ", format: "cockpit-tools", document: [] }, "unsupported_provider"],
+        [{ provider: "google-antigravity", format: "Cockpit-Tools", document: [] }, "unsupported_format"],
       ] as const) {
         const response = await fetch(new URL("/api/oauth/accounts/import", server.url), {
           method: "POST",
@@ -233,7 +236,7 @@ describe("multiauth accounts API", () => {
     } as RequestInit & { duplex: "half" });
     const originalSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
-      originalSetTimeout(handler, timeout === 600_000 ? 0 : timeout, ...args)) as typeof setTimeout;
+      originalSetTimeout(handler, timeout === ACCOUNT_IMPORT_DEADLINE_MS ? 0 : timeout, ...args)) as typeof setTimeout;
     try {
       const response = await handleOauthAccountRoutes({
         req: request,
@@ -273,7 +276,7 @@ describe("multiauth accounts API", () => {
         }
         return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
       }
-      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "first@example.com" });
+      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ id: "google-subject-first", email: "first@example.com" });
       if (raw.includes(":loadCodeAssist")) return Response.json({ cloudaicompanionProject: "project-import" });
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -281,7 +284,7 @@ describe("multiauth accounts API", () => {
     const server = startServer(0);
     const originalSetTimeout = globalThis.setTimeout;
     globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 600_000) {
+      if (timeout === ACCOUNT_IMPORT_DEADLINE_MS) {
         if (typeof handler !== "function") throw new TypeError("deadline handler must be callable");
         fireDeadline = () => handler(...args);
         return originalSetTimeout(() => {}, 60_000);
@@ -327,7 +330,7 @@ describe("multiauth accounts API", () => {
         const refresh = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
         return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
       }
-      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "imported@example.com" });
+      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ id: "google-subject-imported", email: "imported@example.com" });
       if (raw.includes(":loadCodeAssist")) return Response.json({ cloudaicompanionProject: "project-import" });
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -410,7 +413,13 @@ describe("multiauth accounts API", () => {
         if (refresh === "rejected-token") return new Response("raw upstream secret detail", { status: 400 });
         return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
       }
-      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "provider@example.com" });
+      if (raw.includes("/oauth2/v2/userinfo")) {
+        const authorization = new Headers(init?.headers).get("Authorization") ?? "";
+        if (authorization.includes("missing-project")) {
+          return Response.json({ id: "google-subject-missing", email: "missing@example.com" });
+        }
+        return Response.json({ id: "google-subject-provider", email: "provider@example.com" });
+      }
       if (raw.includes(":loadCodeAssist")) {
         const authorization = new Headers(init?.headers).get("Authorization") ?? "";
         return authorization.includes("missing-project")
@@ -432,8 +441,8 @@ describe("multiauth accounts API", () => {
           document: [
             { email: "claimed@example.com", refresh_token: canary },
             { email: "provider@example.com", refresh_token: "rejected-token" },
-            { email: "provider@example.com", refresh_token: "missing-project" },
-            { email: "provider@example.com", refresh_token: "control\nvalue" },
+            { email: "missing@example.com", refresh_token: "missing-project" },
+            { email: "bad@example.com", refresh_token: "control\nvalue" },
           ],
         }),
       });
@@ -462,7 +471,7 @@ describe("multiauth accounts API", () => {
         body: JSON.stringify({
           provider: "google-antigravity",
           format: "cockpit-tools",
-          document: [{ email: "provider@example.com", refresh_token: "safe", notes: "x".repeat(256 * 1024) }],
+          document: [{ email: "provider@example.com", refresh_token: "safe", notes: "x".repeat(ACCOUNT_IMPORT_MAX_BYTES) }],
         }),
       });
       expect(oversized.status).toBe(400);

@@ -6,6 +6,9 @@ export const ACCOUNT_IMPORT_MAX_BYTES = 256 * 1024;
 // The HTTP request also carries the fixed provider/format envelope. Keep that envelope bounded
 // without making a valid document at the 256 KiB contract boundary fail at the API layer.
 export const ACCOUNT_IMPORT_MAX_REQUEST_BYTES = ACCOUNT_IMPORT_MAX_BYTES + 1024;
+// Shared CLI POST timeout and management-route deadline. Individual provider requests keep
+// shorter timeouts; this bounds the full admitted batch (up to ACCOUNT_IMPORT_MAX_RECORDS).
+export const ACCOUNT_IMPORT_DEADLINE_MS = 600_000;
 export const ACCOUNT_IMPORT_MAX_RECORDS = 25;
 export const ACCOUNT_IMPORT_MAX_EMAIL_LENGTH = 254;
 export const ACCOUNT_IMPORT_MAX_REFRESH_TOKEN_BYTES = 16 * 1024;

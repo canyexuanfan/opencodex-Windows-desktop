@@ -1776,7 +1776,7 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
     });
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("Proxy not reachable");
+    expect(result.stderr).toContain("import_timeout after 5ms");
     expect(capturedSignal?.aborted).toBe(true);
   });
 
@@ -1850,6 +1850,33 @@ describe("ocx account CLI (issue #180 matrix)", () => {
       expect(result.stderr).toBe("Error: invalid_response");
       expect(result.output).not.toContain(canary);
     }
+  });
+
+  test("Cockpit import renders an accepted mixed result and exits non-zero", async () => {
+    importResultOverride = {
+      totalCount: 3,
+      importedCount: 1,
+      updatedCount: 0,
+      failedCount: 1,
+      unsupportedCount: 1,
+      results: [
+        { index: 0, status: "imported", code: "imported" },
+        { index: 1, status: "failed", code: "credential_rejected" },
+        { index: 2, status: "unsupported", code: "unsupported_format" },
+      ],
+    };
+    const result = await run([
+      "import", "google-antigravity", "--format", "cockpit-tools", "--stdin",
+    ], {
+      ...defaultDeps(),
+      stdinImpl: stdinFrom('[{"email":"user@example.com","refresh_token":"safe-fixture-token"}]'),
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("1 imported, 0 updated, 1 failed, 1 unsupported");
+    expect(result.stdout).toContain("#2 failed (credential_rejected)");
+    expect(result.stdout).toContain("#3 unsupported (unsupported_format)");
   });
 
   test("pending Codex login keeps success and prints generic recovery guidance", async () => {
