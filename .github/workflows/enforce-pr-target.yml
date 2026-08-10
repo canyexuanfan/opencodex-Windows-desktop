@@ -144,6 +144,7 @@ jobs:
               collectPrQualityFailures,
               authorHasPushPermission,
               hasGuiOverride,
+              isChangedFileListTruncated,
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
@@ -539,6 +540,51 @@ jobs:
               }
             }
 
+            const changedFiles = [];
+            const changedFilePaths = [];
+            let filesTruncated = true;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              const { data: fileSnapshot } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number
+              });
+              const headShaForFiles = fileSnapshot.head?.sha ?? "";
+              const listedFiles = await github.paginate(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              );
+              const { data: fileVerify } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number
+              });
+              const headMatches = fileVerify.head?.sha === headShaForFiles;
+              if (!headMatches && attempt === 0) {
+                core.info(
+                  "PR head moved while listing changed files; retrying once."
+                );
+                continue;
+              }
+              if (!headMatches) {
+                core.warning(
+                  "PR head moved during changed-file snapshot; treating file list as truncated."
+                );
+              }
+              changedFiles.length = 0;
+              changedFiles.push(...listedFiles);
+              changedFilePaths.length = 0;
+              changedFilePaths.push(
+                ...listedFiles.map(file => file.filename).filter(Boolean)
+              );
+              filesTruncated = isChangedFileListTruncated(
+                fileSnapshot.changed_files,
+                listedFiles.length,
+                headMatches
+              );
+              break;
+            }
+
             let failures = collectPrQualityFailures({
               baseRef: pr.base.ref,
               allowedBases: ALLOWED_BASES,
@@ -553,17 +599,15 @@ jobs:
               stackedBase,
               // A maintainer issue comment ("not touching gui") waives the
               // GUI-screenshot gate; the comments are already fetched above.
-              guiOverrideComments: comments
+              guiOverrideComments: comments,
+              changedFilePaths,
+              filesTruncated
             });
 
             // Hygiene is a separate workflow that owns the blocked label and
             // the Hygiene comment section, but Ready / review-ready must not
             // clear while those checks fail. Re-assess here from the same
             // trusted scripts so the gate cannot race ahead of hygiene.
-            const changedFiles = await github.paginate(
-              github.rest.pulls.listFiles,
-              { owner, repo, pull_number, per_page: 100 }
-            );
             const labelNames = (pr.labels ?? []).map(label => label.name);
             failures = [
               ...failures,

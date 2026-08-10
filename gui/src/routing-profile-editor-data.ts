@@ -1,4 +1,5 @@
 export type UnknownEvidenceMode = "allow" | "penalize" | "exclude";
+export type UnknownCostCapMode = "allow" | "exclude";
 export type OptionalBoolean = "" | "true" | "false";
 
 export type RoutingProfileCandidate = {
@@ -52,6 +53,7 @@ export type RoutingProfileDto = {
   };
   limits: {
     maxEstimatedCostUsd?: number;
+    onUnknownCost?: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
 };
@@ -80,6 +82,7 @@ export type RoutingProfileDraft = {
   };
   limits: {
     maxEstimatedCostUsd: string;
+    onUnknownCost: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
 };
@@ -134,7 +137,7 @@ export function newRoutingProfileDraft(
       encryptedCodexTasks: "",
     },
     optimize: { ...DEFAULT_OPTIMIZE },
-    limits: { maxEstimatedCostUsd: "" },
+    limits: { maxEstimatedCostUsd: "", onUnknownCost: "allow" },
     unknownEvidence: { ...DEFAULT_UNKNOWN_EVIDENCE },
   };
 }
@@ -164,6 +167,7 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
     },
     limits: {
       maxEstimatedCostUsd: numberInput(profile.limits.maxEstimatedCostUsd),
+      onUnknownCost: profile.limits.onUnknownCost === "exclude" ? "exclude" : "allow",
     },
     unknownEvidence: { ...profile.unknownEvidence },
   };
@@ -209,6 +213,11 @@ export function routingProfilePutBody(
     encryptedCodexTasks: draftBoolean(draft.require.encryptedCodexTasks),
   });
   const maxEstimatedCostUsd = optionalNumber(draft.limits.maxEstimatedCostUsd);
+  const onUnknownCost = draft.limits.onUnknownCost === "exclude" ? "exclude" as const : undefined;
+  const limits = compactRecord({
+    maxEstimatedCostUsd,
+    onUnknownCost,
+  });
 
   return {
     mode,
@@ -227,9 +236,7 @@ export function routingProfilePutBody(
         cost: Number(draft.optimize.cost),
         quota: Number(draft.optimize.quota),
       },
-      ...(maxEstimatedCostUsd !== undefined
-        ? { limits: { maxEstimatedCostUsd } }
-        : {}),
+      ...(Object.keys(limits).length > 0 ? { limits } : {}),
       unknownEvidence: { ...draft.unknownEvidence },
     },
   };

@@ -154,7 +154,7 @@ OAuth-провайдеры, чьи учётные данные содержат 
 
 ## 3. Каталог API-ключей
 
-opencodex поставляется с 76 встроенными пресетами: 64 на основе ключей, восемь OAuth, три локальных и
+opencodex поставляется с 78 встроенными пресетами: 66 на основе ключей, восемь OAuth, три локальных и
 один пресет ChatGPT-форварда по умолчанию. Селектор **Add provider** в дашборде открывает страницу
 выдачи ключей провайдера, проверяет ключ и сохраняет его; проверка зависит от провайдера.
 Наиболее заметные записи:
@@ -187,6 +187,7 @@ opencodex поставляется с 76 встроенными пресетам
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Chutes | `https://llm.chutes.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
@@ -197,6 +198,7 @@ opencodex поставляется с 76 встроенными пресетам
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
 | Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
+| Featherless AI | `https://api.featherless.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -238,6 +240,14 @@ Volcengine Agent Plan использует нативную конечную т�
 > `doubao-seed-2-1-pro-260628`; его статический каталог также включает актуальные текстовые модели
 > DeepSeek и GLM. Для Coding Plan модель по умолчанию — `ark-code-latest`, для Agent Plan —
 > `deepseek-v4-pro`.
+
+**Discovery для Chutes.** Пресет `chutes` использует фиксированный общий OpenAI-совместимый LLM
+gateway Chutes. Из публичного каталога `/v1/models` он оставляет только строки, где
+`supported_features` содержит `tools`, сохраняет нативные id со знаком `/` и безопасные live metadata,
+а также ограничивает discovery размером 256 KiB и 128 исходными строками. Публичный каталог не может
+подтвердить корректность введённого ключа, но chat-запросы всё равно аутентифицируются настроенным
+Bearer-ключом. Пользовательские Chute host и API не для LLM требуют custom provider. Ключ создаётся в
+[дашборде Chutes](https://chutes.ai/auth/start).
 
 **Discovery для DeepInfra.** `deepinfra` — провайдер OpenAI Chat Completions с аутентификацией по
 ключу; он использует адаптер `openai-chat` и Bearer API-ключ. Принадлежащий registry URL списка
@@ -293,6 +303,15 @@ embedding-, transcription- и прочие media-model id исключаются
 ограничен 128 KiB и 128 исходными строками. Используется общий endpoint Project по умолчанию; URL с
 Project ID и dedicated deployment настраиваются как custom provider. API-ключ создаётся в
 [консоли Scaleway](https://console.scaleway.com/generative-api).
+
+**Discovery для Featherless.** Пресет проходит аутентификацию на фиксированном OpenAI-совместимом
+хосте и запрашивает только первые 100 популярных моделей, отфильтрованных по chat и текущему plan.
+Затем registry по принципу fail closed требует, чтобы каждая строка отдельно подтверждала доступность
+по plan, отсутствие Hugging Face gate и `features.tool_use: true`. Discovery ограничен 128 KiB и 100
+исходными строками, поэтому каталог из десятков тысяч моделей не загружается и не кэшируется целиком.
+`/v1/models` описан как вызываемый как с аутентификацией, так и без неё, поэтому не может подтвердить корректность введённого ключа, но chat-запросы всё равно аутентифицируются настроенным Bearer-ключом.
+Индивидуальные plan предназначены для interactive/prototype; произвольные приложения требуют Scale
+plan. Ключ создаётся в [дашборде Featherless](https://featherless.ai/account/api-keys).
 
 > **Область Baseten:** пресет поддерживает только общие [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > Baseten. Для локальной работы используйте личный [API-ключ](https://docs.baseten.co/organization/api-keys),

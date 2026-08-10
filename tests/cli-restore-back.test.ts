@@ -1,16 +1,30 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimOwnedServiceHome } from "./helpers/owned-service-home";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = join(import.meta.dir, "..");
+
+// Every case spawns the real CLI; match cli-provider.test.ts budgets so a wedged
+// child fails fast instead of burning the whole shard timeout on Linux CI.
+setDefaultTimeout(SPAWN_BUDGET_MS);
 
 function ownedEnvironment(codexHome: string, ocxHome: string): Record<string, string> {
   const home = join(ocxHome, "home");
   mkdirSync(home, { recursive: true });
   return { HOME: home, USERPROFILE: home, ...claimOwnedServiceHome(codexHome, ocxHome, home).env };
+}
+
+function runCli(args: string[], env: Record<string, string>) {
+  return spawnSync(process.execPath, ["run", "src/cli/index.ts", ...args], {
+    cwd: repoRoot,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: SPAWN_BUDGET_MS - 5_000,
+  });
 }
 
 describe("ocx restore back", () => {
@@ -20,10 +34,11 @@ describe("ocx restore back", () => {
     try {
       writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({ providers: {}, defaultProvider: "openai", checkForUpdates: false }), "utf8");
-      const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "restore"], {
-        cwd: repoRoot,
-        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
-        encoding: "utf8",
+      const result = runCli(["restore"], {
+        ...ownedEnvironment(codexHome, ocxHome),
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: ocxHome,
+        CI: "1",
       });
       expect(result.status).toBe(0);
       expect(JSON.parse(readFileSync(join(ocxHome, "config.json"), "utf8")).clientIntegrations.codex).toBe(false);
@@ -43,10 +58,10 @@ describe("ocx restore back", () => {
         providers: {}, defaultProvider: "openai", checkForUpdates: false,
         clientIntegrations: { codex: false },
       }), "utf8");
-      const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "restore", "--json"], {
-        cwd: repoRoot,
-        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
-        encoding: "utf8",
+      const result = runCli(["restore", "--json"], {
+        ...ownedEnvironment(codexHome, ocxHome),
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: ocxHome,
       });
       expect(result.status).toBe(0);
       const envelope = JSON.parse(result.stdout) as {
@@ -77,10 +92,11 @@ describe("ocx restore back", () => {
       writeFileSync(configPath, 'model = "gpt-5"\n', "utf8");
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({ providers: {}, defaultProvider: "openai", clientIntegrations: { codex: false }, checkForUpdates: false }), "utf8");
       const before = statSync(configPath).mtimeMs;
-      const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "sync"], {
-        cwd: repoRoot,
-        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
-        encoding: "utf8",
+      const result = runCli(["sync"], {
+        ...ownedEnvironment(codexHome, ocxHome),
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: ocxHome,
+        CI: "1",
       });
       expect(result.status).toBe(0);
       expect(`${result.stdout}\n${result.stderr}`).toContain("Codex integration is OFF; sync skipped and no Codex files changed.");
@@ -117,10 +133,11 @@ describe("ocx restore back", () => {
         checkForUpdates: false,
       }), "utf8");
 
-      const result = spawnSync(process.execPath, ["run", "src/cli/index.ts", "sync"], {
-        cwd: repoRoot,
-        env: { ...process.env, ...ownedEnvironment(codexHome, ocxHome), CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, CI: "1" },
-        encoding: "utf8",
+      const result = runCli(["sync"], {
+        ...ownedEnvironment(codexHome, ocxHome),
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: ocxHome,
+        CI: "1",
       });
 
       expect(result.status).toBe(1);
@@ -133,23 +150,27 @@ describe("ocx restore back", () => {
   });
 
   test("help documents both directions of the switch", () => {
+    const codexHome = mkdtempSync(join(tmpdir(), "ocx-cli-help-codex-"));
     const ocxHome = mkdtempSync(join(tmpdir(), "ocx-cli-help-home-"));
     try {
+      writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
       writeFileSync(join(ocxHome, "config.json"), JSON.stringify({
         providers: {}, defaultProvider: "openai", checkForUpdates: false,
       }), "utf8");
-      const run = (...cliArgs: string[]) => spawnSync(process.execPath, ["run", "src/cli/index.ts", ...cliArgs], {
-        cwd: repoRoot,
-        env: { ...process.env, OPENCODEX_HOME: ocxHome, CI: "1" },
-        encoding: "utf8",
-      });
-      const usage = run("help");
+      const env = {
+        ...ownedEnvironment(codexHome, ocxHome),
+        CODEX_HOME: codexHome,
+        OPENCODEX_HOME: ocxHome,
+        CI: "1",
+      };
+      const usage = runCli(["help"], env);
       expect(usage.status).toBe(0);
       expect(`${usage.stdout}\n${usage.stderr}`).toContain("ocx restore back");
-      const restoreHelp = run("help", "restore");
+      const restoreHelp = runCli(["help", "restore"], env);
       expect(restoreHelp.status).toBe(0);
       expect(`${restoreHelp.stdout}\n${restoreHelp.stderr}`).toContain("ocx restore [back]");
     } finally {
+      rmSync(codexHome, { recursive: true, force: true });
       rmSync(ocxHome, { recursive: true, force: true });
     }
   });
