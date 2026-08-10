@@ -14,6 +14,7 @@ import {
   type UnknownCostCapMode,
   type UnknownEvidenceMode,
   type CompatibilitySuiteDraft,
+  normalizeCompatibilityDto,
 } from "../routing-profile-editor-data";
 import { readJsonIfOk } from "../fetch-json";
 import { Notice } from "../ui";
@@ -185,7 +186,17 @@ function parseProfiles(raw: unknown): RoutingProfileDto[] {
       && isPlainObject(profile.optimize)
       && isPlainObject(profile.limits)
       && isPlainObject(profile.unknownEvidence);
-  }).map(profile => ({ ...profile, alias: profile.alias ?? null }));
+  }).map(profile => {
+    const compatibility = normalizeCompatibilityDto(
+      "compatibility" in profile ? profile.compatibility : undefined,
+    );
+    const { compatibility: _ignored, ...rest } = profile;
+    return {
+      ...rest,
+      alias: profile.alias ?? null,
+      ...(compatibility ? { compatibility } : {}),
+    };
+  });
 }
 
 function parseModels(raw: unknown): ModelOption[] {
@@ -348,7 +359,7 @@ export default function RoutingProfiles({
         configRes.ok ? configRes.json() as Promise<ConfigDto> : Promise.resolve({} as ConfigDto),
         modelsRes.ok ? modelsRes.json() as Promise<unknown> : Promise.resolve([]),
         catalogRes.ok
-          ? catalogRes.json() as Promise<{ scenarios?: unknown[] }>
+          ? (catalogRes.json() as Promise<{ scenarios?: unknown[] }>).catch(() => null)
           : Promise.resolve(null),
       ]);
       if (generation !== loadGenerationRef.current) return;

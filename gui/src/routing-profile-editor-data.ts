@@ -113,6 +113,55 @@ export type ModelOption = {
   id: string;
 };
 
+/** Keep only well-formed suite rows so editor list helpers never call `.some` on garbage. */
+export function normalizeCompatibilitySuites(raw: unknown): CompatibilitySuiteDraft[] {
+  if (!Array.isArray(raw)) return [];
+  const suites: CompatibilitySuiteDraft[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const suiteId = typeof (row as { suiteId?: unknown }).suiteId === "string"
+      ? (row as { suiteId: string }).suiteId.trim()
+      : "";
+    const evidenceLayer = (row as { evidenceLayer?: unknown }).evidenceLayer;
+    if (
+      !suiteId
+      || (evidenceLayer !== "protocol_conformance" && evidenceLayer !== "live_route_compatibility")
+    ) {
+      continue;
+    }
+    suites.push({ suiteId, evidenceLayer });
+  }
+  return suites;
+}
+
+/**
+ * Normalize an optional compatibility DTO. Malformed blocks become `undefined`
+ * (treated as no compatibility policy) rather than crashing the editor.
+ */
+export function normalizeCompatibilityDto(
+  raw: unknown,
+): RoutingProfileDto["compatibility"] | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const compatibility: NonNullable<RoutingProfileDto["compatibility"]> = {
+    requiredSuites: normalizeCompatibilitySuites(obj.requiredSuites),
+  };
+  if (obj.minStatus === "PROBED" || obj.minStatus === "VERIFIED") {
+    compatibility.minStatus = obj.minStatus;
+  }
+  if (typeof obj.maxEvidenceAgeMs === "number" && Number.isFinite(obj.maxEvidenceAgeMs) && obj.maxEvidenceAgeMs >= 0) {
+    compatibility.maxEvidenceAgeMs = obj.maxEvidenceAgeMs;
+  }
+  if (obj.unknownEvidence === "allow" || obj.unknownEvidence === "penalize" || obj.unknownEvidence === "exclude") {
+    compatibility.unknownEvidence = obj.unknownEvidence;
+  }
+  if (obj.degradedEvidence === "allow" || obj.degradedEvidence === "penalize" || obj.degradedEvidence === "exclude") {
+    compatibility.degradedEvidence = obj.degradedEvidence;
+  }
+  return compatibility;
+}
+
 const DEFAULT_OPTIMIZE = {
   latency: "0.55",
   health: "0.25",
@@ -172,6 +221,7 @@ export function newRoutingProfileDraft(
 }
 
 export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingProfileDraft {
+  const compatibility = normalizeCompatibilityDto(profile.compatibility);
   return {
     id: profile.id,
     alias: profile.alias ?? "",
@@ -200,12 +250,12 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
     },
     unknownEvidence: { ...profile.unknownEvidence },
     compatibility: {
-      enabled: Boolean(profile.compatibility),
-      requiredSuites: profile.compatibility?.requiredSuites ?? [],
-      minStatus: profile.compatibility?.minStatus ?? "",
-      maxEvidenceAgeMs: numberInput(profile.compatibility?.maxEvidenceAgeMs),
-      unknownEvidence: profile.compatibility?.unknownEvidence ?? "exclude",
-      degradedEvidence: profile.compatibility?.degradedEvidence ?? "penalize",
+      enabled: Boolean(compatibility),
+      requiredSuites: compatibility?.requiredSuites ?? [],
+      minStatus: compatibility?.minStatus ?? "",
+      maxEvidenceAgeMs: numberInput(compatibility?.maxEvidenceAgeMs),
+      unknownEvidence: compatibility?.unknownEvidence ?? "exclude",
+      degradedEvidence: compatibility?.degradedEvidence ?? "penalize",
     },
   };
 }

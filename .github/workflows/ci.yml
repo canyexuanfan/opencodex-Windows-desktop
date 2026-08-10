@@ -297,7 +297,7 @@ jobs:
         run: bun test --isolate tests --path-ignore-patterns 'tests/api-storage-policy*.test.ts' --path-ignore-patterns 'tests/api-storage.test.ts' --path-ignore-patterns 'tests/api-usage.test.ts' --shard=${{ matrix.shard }}/4
 
   # Bun 1.3.14 has shown a Linux isolate/epoll race around the storage-policy
-  # harness. Keep the entire five-file family in one fresh process so a runtime
+  # harness. Keep the entire six-file family in one fresh process so a runtime
   # failure is bounded to this job instead of poisoning a general test shard.
   storage-policy:
     name: storage policy

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   modelOptionsForProvider,
   newRoutingProfileDraft,
+  normalizeCompatibilityDto,
+  normalizeCompatibilitySuites,
   routingProfileDraftFromDto,
   routingProfilePutBody,
   routingProfileResponseError,
@@ -157,5 +159,32 @@ describe("routing profile editor data", () => {
     draft.compatibility.enabled = false;
     const body = routingProfilePutBody(draft, "create");
     expect(body.profile).not.toHaveProperty("compatibility");
+  });
+
+  test("normalizes malformed compatibility suites instead of crashing the editor draft", () => {
+    expect(normalizeCompatibilitySuites("not-an-array")).toEqual([]);
+    expect(normalizeCompatibilitySuites([
+      { suiteId: "ok", evidenceLayer: "protocol_conformance" },
+      { suiteId: "bad", evidenceLayer: "other" },
+      { suiteId: "  ", evidenceLayer: "live_route_compatibility" },
+      null,
+      "skip",
+    ])).toEqual([{ suiteId: "ok", evidenceLayer: "protocol_conformance" }]);
+
+    expect(normalizeCompatibilityDto("broken")).toBeUndefined();
+    expect(normalizeCompatibilityDto({
+      requiredSuites: { suiteId: "object-not-array" },
+      minStatus: "CLAIMED",
+      unknownEvidence: "explode",
+    })).toEqual({ requiredSuites: [] });
+
+    const draft = routingProfileDraftFromDto({
+      ...profile,
+      compatibility: {
+        requiredSuites: "responses-core",
+      } as RoutingProfileDto["compatibility"],
+    });
+    expect(draft.compatibility.enabled).toBe(true);
+    expect(draft.compatibility.requiredSuites).toEqual([]);
   });
 });

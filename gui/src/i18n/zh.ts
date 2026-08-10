@@ -62,7 +62,7 @@ export const zh: Record<TKey, string> = {
   "routing.exclusion.capability-unsatisfied": "能力未满足",
   "routing.exclusion.unknown-capability": "能力未知",
   "routing.exclusion.cost-limit": "超出成本上限",
-  "routing.exclusion.cost-limit-unknown": "上限下成本未知",
+  "routing.exclusion.cost-limit-unknown": "无法确认成本是否在上限内",
   "routing.exclusion.cooldown": "冷却中",
   "routing.exclusion.unknown-health": "健康状态未知",
   "routing.exclusion.unknown-quota": "配额未知",
