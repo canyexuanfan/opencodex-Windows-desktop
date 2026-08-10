@@ -232,9 +232,9 @@ Typecheck; focused fabric/subject/sandbox/verifier/observe/ledger/projection/rea
 ## M. Status
 
 - **Authorization:** IN PROGRESS from CL-06 merge `b66e33ce7207d91014644d99317e456c992a3418`
-- **Implementation head:** pending commit on `feat/cl-07-task-effectiveness-producer`
+- **Implementation head:** `ed8e0794189b214398d835e1af828905f29fbc53`
 - **Accepted head:** NOT YET
-- **PR:** pending draft
+- **PR:** [#1438](https://github.com/lidge-jun/opencodex/pull/1438) (draft)
 
 ### Local validation (pre-PR)
 
