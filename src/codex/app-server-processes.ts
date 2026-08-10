@@ -272,12 +272,12 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
   // Top-level exec failure propagates: callers decide their own safe default
   // (restart flow → treat as none; staleness check → unknown, never "fresh").
   const output = uid !== undefined
-    ? execFileSync("ps", ["-u", String(uid), "-o", "pid=,command="], {
+    ? execFileSync("/bin/ps", ["-u", String(uid), "-o", "pid=,command="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
     })
-    : execFileSync("ps", ["-axo", "pid=,uid=,command="], {
+    : execFileSync("/bin/ps", ["-axo", "pid=,uid=,command="], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
@@ -444,7 +444,7 @@ function readLinuxProcStartMs(pid: number): number | null {
 /** `ps` lstart → epoch ms, or null (macOS). */
 function readDarwinProcStartMs(pid: number): number | null {
   try {
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    const out = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 4_000,
@@ -493,7 +493,7 @@ export function readProcessStartMsBatch(
   if (pids.length === 0) return out;
   if (platform === "darwin") {
     try {
-      const stdout = execFileSync("ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
+      const stdout = execFileSync("/bin/ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 3_000,
