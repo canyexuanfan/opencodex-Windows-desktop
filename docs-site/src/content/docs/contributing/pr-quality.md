@@ -64,10 +64,12 @@ tells you exactly what to change:
   `dev` clears the wrong-branch message automatically and is remembered by the
   gate; the draft stays until the checklist is complete.
   Before a completion is accepted, the gate verifies the checklist claims it
-  can check itself: the head's `ci` check must be green, the branch must be on
-  the latest `dev` commit or at most 10 commits behind it, and every Codex and
-  CodeRabbit review thread authored by a review bot on the current head must be
-  resolved (unresolved threads from other authors do not block). CodeRabbit
+  can check itself: the branch must be on the latest `dev` commit or at most
+  10 commits behind it, and every Codex and CodeRabbit review thread authored
+  by a review bot on the current head must be resolved (unresolved threads
+  from other authors do not block). The local-CI box is an author attestation
+  only — fork contributors cannot start repository CI; a maintainer has to —
+  so the gate never disproves it; a new push still resets every box. CodeRabbit
   findings that fall outside the diff range and are reported only in a review
   body on the current head add to the unresolved count while a bot review
   thread is open; resolving every bot thread clears the box. A disproved claim
