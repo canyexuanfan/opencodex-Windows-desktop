@@ -54,6 +54,8 @@ export function ensureLabDirs(configDir = getConfigDir()): {
   const exportDir = labExportDir(configDir);
   ensureRestrictedDir(root);
   ensureRestrictedDir(artifactsDir);
+  ensureRestrictedDir(scratchDir);
+  ensureRestrictedDir(exportDir);
   return {
     root,
     ledgerPath: labLedgerPath(configDir),

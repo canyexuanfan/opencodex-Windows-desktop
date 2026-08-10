@@ -14,6 +14,12 @@ import {
 import {
   suiteManifestDigestForCase,
 } from "../conformance/suite-manifest";
+import {
+  discoverFabricScenarios,
+  fabricScenarioManifestDigest,
+  fabricSuiteManifestDigest,
+  loadFabricCaseAuthority,
+} from "../fabric/manifest";
 import { scenarioManifestDigest } from "../digest";
 import type { CaseRecord } from "../conformance/types";
 import type { CatalogFilters, CatalogScenarioDto } from "./types";
@@ -60,6 +66,30 @@ export function queryLabCatalog(filters: CatalogFilters = {}): CatalogScenarioDt
     const scenarios = discoverLiveScenarios(authority, suites ?? undefined);
     for (const caseRecord of scenarios) {
       items.push(mapCaseToCatalogScenario(caseRecord, authority, liveSuiteManifestDigestForCase, expandLiveScenario));
+    }
+  }
+  if (!filters.layer || filters.layer === "task_effectiveness") {
+    const authority = loadFabricCaseAuthority();
+    const suites = filters.suiteId ? [filters.suiteId] : undefined;
+    const scenarios = discoverFabricScenarios(authority, suites ?? undefined);
+    for (const caseRecord of scenarios) {
+      items.push({
+        scenarioId: caseRecord.id,
+        scenarioVersion: authority.manifestDefaults.version,
+        evidenceLayer: authority.manifestDefaults.evidenceLayer,
+        suiteId: caseRecord.suite,
+        suiteVersion: authority.manifestDefaults.suiteVersion,
+        capability: caseRecord.capability,
+        verificationRole: caseRecord.verificationRole ?? authority.manifestDefaults.verificationRole,
+        requirements: {
+          inboundProtocols: [...caseRecord.requirements.inboundProtocols],
+          upstreamProtocols: [...caseRecord.requirements.upstreamProtocols],
+          surfaces: [...caseRecord.requirements.surfaces],
+        },
+        freshness: { ...authority.manifestDefaults.freshness },
+        scenarioManifestDigest: fabricScenarioManifestDigest(caseRecord, authority),
+        suiteManifestDigest: fabricSuiteManifestDigest(caseRecord.suite, authority),
+      });
     }
   }
   return items.sort((a, b) => {

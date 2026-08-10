@@ -1,0 +1,438 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  appendLabEvent,
+  assertNotUnderUserRepo,
+  assertSafeRelativePosixPath,
+  assignEventId,
+  buildTaskSubjectV1,
+  correctSyntheticPatch,
+  createSyntheticScratch,
+  fabricScratchCapabilityProbe,
+  LAB_EVENT_SCHEMA_VERSION,
+  LAB_PRODUCER,
+  observationFromFabricOutcome,
+  persistFabricOutcome,
+  queryLabCatalog,
+  rebuildLabProjection,
+  replayLabLedger,
+  runFabricSyntheticPatchTask,
+  sandboxProfileDigest,
+  subjectIdForSubject,
+  taskFixtureDigest,
+  taskSubjectId,
+  verifierManifestDigest,
+  writeScratchFileUtf8,
+  type RouteSubjectV1,
+} from "../src/lab";
+import { routingProfileIssues } from "../src/routing/profile";
+import { buildInvalidationIndex } from "../src/lab/ledger/invalidation";
+import { verifyExactTreeDiffV1 } from "../src/lab/fabric/verifier";
+import { parseSyntheticPatchV1 } from "../src/lab/fabric/patch";
+import { FABRIC_LIMITS, SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "../src/lab/fabric/constants";
+
+const HOMES: string[] = [];
+
+function tempHome(): string {
+  const dir = join(tmpdir(), `ocx-cl07-${process.pid}-${Math.random().toString(16).slice(2)}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  HOMES.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of HOMES.splice(0)) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  delete process.env.OPENCODEX_HOME;
+});
+
+function routeSubject(overrides: Partial<RouteSubjectV1> = {}): RouteSubjectV1 {
+  return {
+    subjectSchemaVersion: 1,
+    subjectKind: "route",
+    providerId: "provider-a",
+    providerInstanceFingerprint: "a".repeat(64),
+    clientModelId: "model-a",
+    upstreamModelId: "model-a",
+    effectiveAdapter: "openai-responses",
+    inboundProtocol: "openai-responses",
+    upstreamProtocol: "openai-responses",
+    surface: "responses-http",
+    opencodexCompatibilityVersion: "b".repeat(64),
+    behaviorFingerprint: "c".repeat(64),
+    endpointFingerprint: "d".repeat(64),
+    dependencies: [],
+    ...overrides,
+  };
+}
+
+describe("CL-07 task effectiveness producer", () => {
+  test("canonical TaskSubjectV1 identity is stable", () => {
+    const subject = buildTaskSubjectV1({ routeSubject: routeSubject() });
+    expect(subject.subjectKind).toBe("task");
+    expect(taskSubjectId(subject)).toBe(subjectIdForSubject(subject));
+    expect(taskSubjectId(buildTaskSubjectV1({ routeSubject: routeSubject() }))).toBe(taskSubjectId(subject));
+  });
+
+  test("route change changes task subject", () => {
+    const a = taskSubjectId(buildTaskSubjectV1({ routeSubject: routeSubject() }));
+    const b = taskSubjectId(buildTaskSubjectV1({
+      routeSubject: routeSubject({ providerId: "provider-b", endpointFingerprint: "e".repeat(64) }),
+    }));
+    expect(a).not.toBe(b);
+  });
+
+  test("fixture/verifier/sandbox/fabric version changes change task subject", () => {
+    const base = taskSubjectId(buildTaskSubjectV1({ routeSubject: routeSubject() }));
+    expect(taskSubjectId(buildTaskSubjectV1({
+      routeSubject: routeSubject(),
+      taskFixtureDigest: "1".repeat(64),
+    }))).not.toBe(base);
+    expect(taskSubjectId(buildTaskSubjectV1({
+      routeSubject: routeSubject(),
+      verifierManifestDigest: "2".repeat(64),
+    }))).not.toBe(base);
+    expect(taskSubjectId(buildTaskSubjectV1({
+      routeSubject: routeSubject(),
+      sandboxProfileDigest: "3".repeat(64),
+    }))).not.toBe(base);
+    expect(taskSubjectId(buildTaskSubjectV1({
+      routeSubject: routeSubject(),
+      fabricCompatibilityVersion: "other-fabric-v1",
+    }))).not.toBe(base);
+    expect(taskFixtureDigest()).toMatch(/^[0-9a-f]{64}$/);
+    expect(verifierManifestDigest()).toMatch(/^[0-9a-f]{64}$/);
+    expect(sandboxProfileDigest()).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("exact synthetic patch passes", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    expect(outcome.outcome).toBe("pass");
+    expect(outcome.verifier.passed).toBe(true);
+  });
+
+  test("unchanged / wrong / added / deleted trees fail verifier", () => {
+    const home = tempHome();
+    const scratch = createSyntheticScratch(home);
+    try {
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(verifyExactTreeDiffV1(scratch.root).reason).toBe("unchanged_file");
+
+      writeScratchFileUtf8(scratch.root, SYNTHETIC_VALUE_PATH, "nope\n", FABRIC_LIMITS.maxAggregateIoBytes);
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(verifyExactTreeDiffV1(scratch.root).reason?.startsWith("expected_digest_")).toBe(true);
+
+      writeScratchFileUtf8(scratch.root, SYNTHETIC_VALUE_PATH, SYNTHETIC_AFTER_UTF8, FABRIC_LIMITS.maxAggregateIoBytes);
+      writeScratchFileUtf8(scratch.root, "src/extra.txt", "x\n", FABRIC_LIMITS.maxAggregateIoBytes);
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(verifyExactTreeDiffV1(scratch.root).reason).toBe("unexpected_tree_shape");
+    } finally {
+      scratch.cleanup();
+    }
+
+    const deleted = createSyntheticScratch(home);
+    try {
+      rmSync(join(deleted.root, "src", "value.txt"), { force: true });
+      expect(verifyExactTreeDiffV1(deleted.root).passed).toBe(false);
+    } finally {
+      deleted.cleanup();
+    }
+  });
+
+  test("renamed file fails verifier", () => {
+    const home = tempHome();
+    const scratch = createSyntheticScratch(home);
+    try {
+      writeScratchFileUtf8(scratch.root, "src/renamed.txt", SYNTHETIC_AFTER_UTF8, FABRIC_LIMITS.maxAggregateIoBytes);
+      rmSync(join(scratch.root, "src", "value.txt"), { force: true });
+      const result = verifyExactTreeDiffV1(scratch.root);
+      expect(result.passed).toBe(false);
+      expect(result.pathSummaries.some((row) => row.kind === "added" || row.kind === "deleted")).toBe(true);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  test("symlink and path traversal are rejected", () => {
+    expect(() => assertSafeRelativePosixPath("../etc/passwd")).toThrow();
+    expect(() => assertSafeRelativePosixPath("/abs")).toThrow();
+    expect(() => assertSafeRelativePosixPath("C:\\windows")).toThrow();
+
+    const home = tempHome();
+    const scratch = createSyntheticScratch(home);
+    try {
+      const target = join(scratch.root, "src", "value.txt");
+      const link = join(scratch.root, "src", "link.txt");
+      try {
+        symlinkSync(target, link);
+      } catch {
+        return;
+      }
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  test("special file is rejected where supported", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    const scratch = createSyntheticScratch(home);
+    try {
+      const fifo = join(scratch.root, "src", "fifo");
+      try {
+        symlinkSync("/dev/null", fifo);
+      } catch {
+        return;
+      }
+      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  test("oversized patch fails safely", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const huge = "x".repeat(FABRIC_LIMITS.maxAggregateIoBytes + 8);
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => ({
+        schemaVersion: 1,
+        operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: huge }],
+      }),
+    });
+    expect(outcome.outcome).not.toBe("pass");
+    expect(outcome.failure?.code).toBe("budget_exhausted");
+  });
+
+  test("execution and inactivity timeouts are bounded", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: async () => {
+        await Bun.sleep(FABRIC_LIMITS.inactivityTimeoutMs + 50);
+        return correctSyntheticPatch();
+      },
+    });
+    expect(["blocked", "inconclusive"]).toContain(outcome.outcome);
+    expect(["timeout", "inactivity_timeout"]).toContain(outcome.failure?.code ?? "");
+  }, 20_000);
+
+  test("network / user MCP / arbitrary shell remain unavailable", () => {
+    expect(fabricScratchCapabilityProbe()).toEqual({
+      network: false,
+      userMcp: false,
+      arbitraryShell: false,
+      userRepository: false,
+    });
+  });
+
+  test("user repository cannot host the scratch root", () => {
+    const home = tempHome();
+    const repo = join(home, "user-repo");
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "value.txt"), "before\n");
+    expect(() => assertNotUnderUserRepo(repo, repo)).toThrow();
+    const scratch = createSyntheticScratch(home);
+    try {
+      expect(existsSync(join(scratch.root, "src", "value.txt"))).toBe(true);
+      expect(scratch.root.startsWith(join(home, "lab", "scratch"))).toBe(true);
+    } finally {
+      scratch.cleanup();
+    }
+  });
+
+  test("malformed producer result is rejected", () => {
+    expect(() => parseSyntheticPatchV1({ schemaVersion: 1, operations: [], extra: true })).toThrow();
+    expect(() => parseSyntheticPatchV1({
+      schemaVersion: 2,
+      operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: "after\n" }],
+    })).toThrow();
+    expect(() => observationFromFabricOutcome({
+      schemaVersion: 1,
+      taskSubject: { subjectKind: "route" },
+    })).toThrow();
+  });
+
+  test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+      now: () => 1_000,
+    });
+    const first = persistFabricOutcome(outcome, { configDir: home, recordedAt: 1_000, attempt: 1 });
+    const second = persistFabricOutcome(outcome, { configDir: home, recordedAt: 1_000, attempt: 1 });
+    expect(second.event.eventId).toBe(first.event.eventId);
+    const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
+    const ids = replay.events.filter((row) => row.eventKind === "observation").map((row) => row.eventId);
+    expect(ids).toEqual([first.event.eventId]);
+    expect(replay.corruptions.filter((row) => row.kind === "duplicate_event")).toEqual([]);
+
+    const secondAttempt = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+      now: () => 2_000,
+    });
+    const third = persistFabricOutcome(secondAttempt, { configDir: home, recordedAt: 2_000, attempt: 2 });
+    expect(third.event.eventId).not.toBe(first.event.eventId);
+  });
+
+  test("structured result converts to fabric Lab observation", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    const { event } = observationFromFabricOutcome(outcome, { configDir: home });
+    expect(event.evidenceLayer).toBe("task_effectiveness");
+    expect(event.executionMode).toBe("fabric");
+    expect(event.subject.subjectKind).toBe("task");
+    expect(event.suiteId).toBe("fabric-core");
+    const serialized = JSON.stringify(event);
+    expect(serialized.includes("sk-")).toBe(false);
+    expect(serialized.includes("OPENAI_API_KEY")).toBe(false);
+  });
+
+  test("task layer rejects RouteSubjectV1 mismatches", () => {
+    expect(() => observationFromFabricOutcome({
+      schemaVersion: 1,
+      taskClassId: "x",
+      taskClassVersion: "1",
+      routeSubject: routeSubject(),
+      taskSubject: { subjectSchemaVersion: 1, subjectKind: "route" },
+      subjectId: "a".repeat(64),
+      taskFixtureDigest: "b".repeat(64),
+      verifierManifestDigest: "c".repeat(64),
+      fabricCompatibilityVersion: "v",
+      sandboxProfileDigest: "d".repeat(64),
+      startedAt: 1,
+      completedAt: 2,
+      limits: FABRIC_LIMITS,
+      usage: {
+        inputBytes: 0,
+        outputBytes: 0,
+        patchOperations: 0,
+        filesTouched: 0,
+        artifactBytes: 0,
+        elapsedMs: 1,
+        inactiveMs: 0,
+      },
+      outcome: "pass",
+      verifier: {
+        verifierId: "exact-tree-diff-v1",
+        manifestDigest: "c".repeat(64),
+        passed: true,
+        pathSummaries: [],
+      },
+      artifactDigests: [],
+    })).toThrow();
+  });
+
+  test("projection rebuild and invalidation work for task evidence", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+      now: () => 5_000,
+    });
+    const persisted = persistFabricOutcome(outcome, { configDir: home, recordedAt: 5_000 });
+    const rebuilt = rebuildLabProjection(home);
+    expect(rebuilt.events).toBeGreaterThan(0);
+    expect(rebuilt.corruptions).toEqual([]);
+
+    const inv = assignEventId({
+      schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+      eventKind: "invalidation" as const,
+      recordedAt: 6_000,
+      producer: LAB_PRODUCER,
+      producerVersion: "2.10.2",
+      targetEventIds: [persisted.event.eventId],
+      reason: "manual_correction" as const,
+    });
+    appendLabEvent(join(home, "lab", "compatibility.jsonl"), inv as never);
+    const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
+    const index = buildInvalidationIndex(replay.events);
+    expect(index.invalidatedBy.has(persisted.event.eventId)).toBe(true);
+  });
+
+  test("artifacts are bounded and catalog exposes task evidence", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+    });
+    const { event, artifacts } = observationFromFabricOutcome(outcome, { configDir: home });
+    expect(artifacts.length).toBeGreaterThan(0);
+    expect(artifacts.every((row) => row.byteCount <= 256 * 1024)).toBe(true);
+    expect(event.artifactRefs.every((row) => /^[0-9a-f]{64}$/.test(row.digest))).toBe(true);
+
+    const catalog = queryLabCatalog({ layer: "task_effectiveness" });
+    expect(catalog.some((row) => row.suiteId === "fabric-core" && row.scenarioId === "fabric-core.task.synthetic-patch")).toBe(true);
+  });
+
+  test("CL-06 routing still rejects task_effectiveness required suites", () => {
+    const issues = routingProfileIssues("p", {
+      candidates: [{ provider: "a", model: "m" }],
+      compatibility: {
+        requiredSuites: [{
+          suiteId: "fabric-core",
+          evidenceLayer: "task_effectiveness" as "live_route_compatibility",
+        }],
+      },
+    }, {
+      providers: {
+        a: { type: "openai", baseUrl: "http://127.0.0.1:9", models: { m: {} } },
+      },
+    } as never);
+    expect(issues.some((row) => row.message.includes("protocol_conformance or live_route_compatibility"))).toBe(true);
+  });
+
+  test("ledger lines omit prompts and credentials", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outcome = await runFabricSyntheticPatchTask({
+      routeSubject: routeSubject(),
+      configDir: home,
+      producePatch: () => correctSyntheticPatch(),
+      sourceRefs: ["routeDecision:abcd1234"],
+    });
+    persistFabricOutcome(outcome, { configDir: home });
+    const text = readFileSync(join(home, "lab", "compatibility.jsonl"), "utf8");
+    expect(text.includes("system prompt")).toBe(false);
+    expect(text.includes("sk-")).toBe(false);
+  });
+});
