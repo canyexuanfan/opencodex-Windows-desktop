@@ -100,6 +100,29 @@ function fmtCapOutcome(
   }
 }
 
+function fmtExclusion(code: string, t: ReturnType<typeof useT>): string {
+  switch (code) {
+    case "capability-unsatisfied":
+      return t("routing.exclusion.capability-unsatisfied");
+    case "unknown-capability":
+      return t("routing.exclusion.unknown-capability");
+    case "cost-limit":
+      return t("routing.exclusion.cost-limit");
+    case "cost-limit-unknown":
+      return t("routing.exclusion.cost-limit-unknown");
+    case "cooldown":
+      return t("routing.exclusion.cooldown");
+    case "unknown-health":
+      return t("routing.exclusion.unknown-health");
+    case "unknown-quota":
+      return t("routing.exclusion.unknown-quota");
+    case "unknown-price":
+      return t("routing.exclusion.unknown-price");
+    default:
+      return t("routing.exclusion.other", { code });
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -869,7 +892,7 @@ export default function RoutingProfiles({
                     {index === dryRunResult.selectedIndex ? ` ✓ (${t("routing.selected")})` : ""}
                   </td>
                   <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
-                  <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
+                  <td>{candidate.exclusions.map(exclusion => fmtExclusion(exclusion.code, t)).join(", ") || t("routing.none")}</td>
                   <td>{fmtCapOutcome(candidate.cost?.capOutcome, t, unavailable)}</td>
                   <td>{candidate.score ? candidate.score.total.toFixed(3) : unavailable}</td>
                 </tr>

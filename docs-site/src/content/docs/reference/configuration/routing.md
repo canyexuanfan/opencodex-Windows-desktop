@@ -114,7 +114,7 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `alias?` | `string` | — | Optional public model id in place of `policy/<id>`. |
 | `require?` | object | `{}` | Hard capability requirements evaluated before scoring (see below). |
 | `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights, normalized deterministically. `health`, `quota`, and `cost` have score dimensions; the configured-priority share is `1 - health - quota - cost` (default 0.55), and `latency` folds into that priority share rather than scoring independently. |
-| `limits?` | object | — | Hard limits. `maxEstimatedCostUsd` excludes a candidate when its estimated cost is known and above the cap. `onUnknownCost` (`"allow"` default, or `"exclude"`) controls unknown estimates for that ceiling: allow prevents a cap-specific exclusion and records `cost.capOutcome: "unknown-allowed"`; exclude emits `cost-limit-unknown` and `capOutcome: "unknown-excluded"`. Separate from `unknownEvidence.cost`, which can still exclude or penalize unknown prices via `unknown-price` / scoring. |
+| `limits?` | object | — | Hard limits. `maxEstimatedCostUsd` excludes a candidate when its estimated cost is known and above the cap. When that cap is set, `onUnknownCost` (`"allow"` default, or `"exclude"`) controls unknown estimates: allow prevents a cap-specific exclusion and records `cost.capOutcome: "unknown-allowed"`; exclude emits `cost-limit-unknown` and `capOutcome: "unknown-excluded"`. `onUnknownCost` alone (no cap) is inert. Separate from `unknownEvidence.cost`, which can still exclude or penalize unknown prices via `unknown-price` / scoring. |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
 `require` supports: `minContextWindow` (positive integer), `minQuotaHeadroom` (0..1 fraction),
@@ -186,7 +186,7 @@ is chosen. Profile scoring combines the configured-priority component with the h
 quota (RI-07), and cost (RI-08) score dimensions where evidence is present; the `latency` weight
 folds into the priority share rather than scoring independently. Cost is also enforced through the
 `limits.maxEstimatedCostUsd` cap: a candidate whose estimated cost is known and exceeds the cap is
-excluded (`cost-limit`). When the estimate is unknown, the default `limits.onUnknownCost: "allow"`
+excluded (`cost-limit`). When a cap is configured and the estimate is unknown, the default `limits.onUnknownCost: "allow"`
 records `cost.capOutcome: "unknown-allowed"` on the route-decision trace without a cap exclusion;
 set `onUnknownCost: "exclude"` for a fail-closed ceiling (`cost-limit-unknown`). Cap outcome is not
 overall eligibility — `unknownEvidence.cost: "exclude"` can still add `unknown-price` and mark the

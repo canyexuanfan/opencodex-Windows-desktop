@@ -28,10 +28,10 @@ The dashboard sends the same profile object used by `config.routingProfiles` to 
 
 A successful save persists the profile through the normal config writer, reconciles live state, and refreshes the model catalog. Validation failures leave the previous configuration unchanged and are shown in the editor.
 
-`limits.onUnknownCost` defaults to `"allow"`: an unknown cost estimate does not get a
+When `limits.maxEstimatedCostUsd` is configured, `limits.onUnknownCost` defaults to `"allow"`: an unknown cost estimate does not get a
 cap-specific exclusion, and dry-run / live route-decision traces stamp
 `cost.capOutcome: "unknown-allowed"` so operators can tell the cap was not proven. Set `"exclude"`
-when the ceiling must fail closed (`cost-limit-unknown`). This is separate from
+when the ceiling must fail closed (`cost-limit-unknown`). Configuring `onUnknownCost` alone is inert and does not emit a cap outcome. This is separate from
 `unknownEvidence.cost`, which can still exclude or penalize unknown prices independently of the
 cap outcome.
 
