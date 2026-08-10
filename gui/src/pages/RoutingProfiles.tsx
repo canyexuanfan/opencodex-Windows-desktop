@@ -13,10 +13,13 @@ import {
   type RoutingProfileDto,
   type UnknownCostCapMode,
   type UnknownEvidenceMode,
+  type CompatibilitySuiteDraft,
+  normalizeCompatibilityDto,
 } from "../routing-profile-editor-data";
 import { readJsonIfOk } from "../fetch-json";
 import { Notice } from "../ui";
-import { useT } from "../i18n/shared";
+import { useI18n, useT } from "../i18n/shared";
+import { ROUTING_COMPATIBILITY_FIELD_LABELS } from "../i18n/routing-compatibility-labels";
 
 type DryRunCandidate = {
   provider: string;
@@ -73,6 +76,48 @@ const UNKNOWN_EVIDENCE_KEYS = ["capability", "health", "quota", "cost"] as const
 const UNKNOWN_EVIDENCE_OPTIONS: UnknownEvidenceMode[] = ["allow", "penalize", "exclude"];
 const UNKNOWN_COST_CAP_OPTIONS: UnknownCostCapMode[] = ["allow", "exclude"];
 
+type LabCatalogScenario = CompatibilitySuiteDraft;
+type LabCatalogSuiteOption = CompatibilitySuiteDraft & { key: string };
+
+function catalogSuiteKey(suite: CompatibilitySuiteDraft): string {
+  return `${suite.evidenceLayer}:${suite.suiteId}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function uniqueCatalogSuites(scenarios: unknown[]): LabCatalogSuiteOption[] {
+  const seen = new Set<string>();
+  const suites: LabCatalogSuiteOption[] = [];
+  for (const scenario of scenarios) {
+    if (!isPlainObject(scenario)) continue;
+    const suiteId = typeof scenario.suiteId === "string" ? scenario.suiteId.trim() : "";
+    const evidenceLayer = scenario.evidenceLayer;
+    if (!suiteId || (evidenceLayer !== "protocol_conformance" && evidenceLayer !== "live_route_compatibility")) {
+      continue;
+    }
+    const suite: LabCatalogScenario = { suiteId, evidenceLayer };
+    const key = catalogSuiteKey(suite);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    suites.push({ ...suite, key });
+  }
+  return suites.sort((a, b) => {
+    const layerCmp = a.evidenceLayer.localeCompare(b.evidenceLayer);
+    if (layerCmp !== 0) return layerCmp;
+    return a.suiteId.localeCompare(b.suiteId);
+  });
+}
+
+function suiteSelected(
+  requiredSuites: CompatibilitySuiteDraft[],
+  suite: CompatibilitySuiteDraft,
+): boolean {
+  return requiredSuites.some(row =>
+    row.suiteId === suite.suiteId && row.evidenceLayer === suite.evidenceLayer);
+}
+
 function fmtMs(value: number | undefined, unavailable: string): string {
   return value === undefined ? unavailable : `${Math.round(value)}ms`;
 }
@@ -123,9 +168,6 @@ function fmtExclusion(code: string, t: ReturnType<typeof useT>): string {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function parseProfiles(raw: unknown): RoutingProfileDto[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
@@ -144,7 +186,18 @@ function parseProfiles(raw: unknown): RoutingProfileDto[] {
       && isPlainObject(profile.optimize)
       && isPlainObject(profile.limits)
       && isPlainObject(profile.unknownEvidence);
-  }).map(profile => ({ ...profile, alias: profile.alias ?? null }));
+  }).map(profile => {
+    const compatibility = normalizeCompatibilityDto(
+      "compatibility" in profile ? profile.compatibility : undefined,
+    );
+    const rest = { ...profile };
+    delete rest.compatibility;
+    return {
+      ...rest,
+      alias: profile.alias ?? null,
+      ...(compatibility ? { compatibility } : {}),
+    };
+  });
 }
 
 function parseModels(raw: unknown): ModelOption[] {
@@ -200,7 +253,8 @@ export default function RoutingProfiles({
   /** Reports the profile count up to the tab strip. */
   onCountChange?: (count: number) => void;
 }) {
-  const t = useT();
+  const { locale, t } = useI18n();
+  const compatibilityFieldLabels = ROUTING_COMPATIBILITY_FIELD_LABELS[locale];
   const unavailable = t("routing.unavailable");
   const [profiles, setProfiles] = useState<RoutingProfileDto[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -219,6 +273,8 @@ export default function RoutingProfiles({
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState("");
   const [running, setRunning] = useState(false);
+  const [catalogSuites, setCatalogSuites] = useState<LabCatalogSuiteOption[]>([]);
+  const [catalogError, setCatalogError] = useState(false);
   const selectedRef = useRef<RoutingProfileDto | null>(null);
   const loadGenerationRef = useRef(0);
   /** Owned by `load` so every entry point — mount, Retry, save, delete — is cancellable. */
@@ -290,18 +346,22 @@ export default function RoutingProfiles({
     const generation = ++loadGenerationRef.current;
     setLoadError("");
     try {
-      const [profilesRes, analyticsRes, configRes, modelsRes] = await Promise.all([
+      const [profilesRes, analyticsRes, configRes, modelsRes, catalogRes] = await Promise.all([
         fetch(`${apiBase}/api/routing-profiles`, { signal }),
         fetch(`${apiBase}/api/routing-analytics`, { signal }),
         fetch(`${apiBase}/api/config`, { signal }),
         fetch(`${apiBase}/api/models`, { signal }),
+        fetch(`${apiBase}/api/lab/catalog`, { signal }),
       ]);
       if (!profilesRes.ok) throw new Error(`load-${profilesRes.status}`);
-      const [profilesJson, analyticsJson, configJson, modelsJson] = await Promise.all([
+      const [profilesJson, analyticsJson, configJson, modelsJson, catalogJson] = await Promise.all([
         profilesRes.json() as Promise<unknown>,
         analyticsRes.ok ? analyticsRes.json() as Promise<Analytics> : Promise.resolve(null),
         configRes.ok ? configRes.json() as Promise<ConfigDto> : Promise.resolve({} as ConfigDto),
         modelsRes.ok ? modelsRes.json() as Promise<unknown> : Promise.resolve([]),
+        catalogRes.ok
+          ? (catalogRes.json() as Promise<{ scenarios?: unknown[] }>).catch(() => null)
+          : Promise.resolve(null),
       ]);
       if (generation !== loadGenerationRef.current) return;
 
@@ -327,6 +387,13 @@ export default function RoutingProfiles({
       setProviderNames(nextProviderNames);
       setProviderDefaults(nextDefaults);
       setModels(parseModels(modelsJson));
+      if (catalogJson && Array.isArray(catalogJson.scenarios)) {
+        setCatalogSuites(uniqueCatalogSuites(catalogJson.scenarios));
+        setCatalogError(false);
+      } else {
+        setCatalogSuites([]);
+        setCatalogError(true);
+      }
       if (!current || !refreshed || current.id !== refreshed.id || current.revision !== refreshed.revision) {
         clearDryRun();
       }
@@ -802,6 +869,131 @@ export default function RoutingProfiles({
                 </label>
               ))}
             </div>
+          </fieldset>
+
+          <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+            <legend className="field-label">{t("routing.compatibility.title")}</legend>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={draft.compatibility.enabled}
+                onChange={event => setDraft(current => current ? {
+                  ...current,
+                  compatibility: { ...current.compatibility, enabled: event.target.checked },
+                } : current)}
+              />
+              {t("routing.compatibility.enabled")}
+            </label>
+            {draft.compatibility.enabled ? (
+              <div className="model-grid" style={{ marginTop: 10 }}>
+                <div className="field-label" style={{ gridColumn: "1 / -1" }}>
+                  {t("routing.compatibility.requiredSuites")}
+                  {catalogError ? (
+                    <div style={{ marginTop: 6 }}>
+                      <Notice tone="warn">{t("routing.compatibility.catalogUnavailable")}</Notice>
+                    </div>
+                  ) : null}
+                  {catalogSuites.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                      {catalogSuites.map(suite => (
+                        <label key={suite.key} className="checkbox">
+                          <input
+                            type="checkbox"
+                            checked={suiteSelected(draft.compatibility.requiredSuites, suite)}
+                            onChange={event => setDraft(current => {
+                              if (!current) return current;
+                              const selected = event.target.checked;
+                              const requiredSuites = selected
+                                ? [...current.compatibility.requiredSuites, { suiteId: suite.suiteId, evidenceLayer: suite.evidenceLayer }]
+                                : current.compatibility.requiredSuites.filter(row =>
+                                  !(row.suiteId === suite.suiteId && row.evidenceLayer === suite.evidenceLayer));
+                              return {
+                                ...current,
+                                compatibility: { ...current.compatibility, requiredSuites },
+                              };
+                            })}
+                          />
+                          <span>
+                            {suite.suiteId}
+                            {" "}
+                            <span className="muted">
+                              ({t(`routing.compatibility.layer.${suite.evidenceLayer}` as const)})
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <label className="field-label">
+                  {t("routing.compatibility.minStatus")}
+                  <select
+                    className="input"
+                    value={draft.compatibility.minStatus}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      compatibility: {
+                        ...current.compatibility,
+                        minStatus: event.target.value as RoutingProfileDraft["compatibility"]["minStatus"],
+                      },
+                    } : current)}
+                  >
+                    <option value="">{t("routing.none")}</option>
+                    <option value="PROBED">{t("lab.verdict.PROBED")}</option>
+                    <option value="VERIFIED">{t("lab.verdict.VERIFIED")}</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  {compatibilityFieldLabels.maxEvidenceAgeMs}
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    value={draft.compatibility.maxEvidenceAgeMs}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      compatibility: { ...current.compatibility, maxEvidenceAgeMs: event.target.value },
+                    } : current)}
+                  />
+                </label>
+                <label className="field-label">
+                  {compatibilityFieldLabels.unknownEvidence}
+                  <select
+                    className="input"
+                    value={draft.compatibility.unknownEvidence}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      compatibility: {
+                        ...current.compatibility,
+                        unknownEvidence: event.target.value as UnknownEvidenceMode,
+                      },
+                    } : current)}
+                  >
+                    {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
+                      <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field-label">
+                  {compatibilityFieldLabels.degradedEvidence}
+                  <select
+                    className="input"
+                    value={draft.compatibility.degradedEvidence}
+                    onChange={event => setDraft(current => current ? {
+                      ...current,
+                      compatibility: {
+                        ...current.compatibility,
+                        degradedEvidence: event.target.value as UnknownEvidenceMode,
+                      },
+                    } : current)}
+                  >
+                    {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
+                      <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : null}
           </fieldset>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>

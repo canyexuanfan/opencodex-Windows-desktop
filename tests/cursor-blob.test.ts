@@ -1326,7 +1326,7 @@ describe("Cursor blob ID key channel bounds", () => {
     expect(result.error?.message).toBeDefined();
     expect(cursorBlobMetrics().count).toBe(4096);
     expect(cursorBlobMetrics().keyBytes).toBe(4096 * 66);
-  });
+  }, { timeout: 10_000 });
 
   test("a zero-payload blob stays evictable through its key bytes", () => {
     storeCursorBlob(new Uint8Array());

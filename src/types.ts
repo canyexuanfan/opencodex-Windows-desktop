@@ -995,6 +995,19 @@ export interface OcxRoutingProfileUnknownEvidence {
   cost?: OcxRoutingUnknownEvidenceMode;
 }
 
+export interface OcxRoutingProfileCompatibilitySuite {
+  suiteId: string;
+  evidenceLayer: "protocol_conformance" | "live_route_compatibility";
+}
+
+export interface OcxRoutingProfileCompatibility {
+  requiredSuites?: OcxRoutingProfileCompatibilitySuite[];
+  minStatus?: "PROBED" | "VERIFIED";
+  maxEvidenceAgeMs?: number;
+  unknownEvidence?: OcxRoutingUnknownEvidenceMode;
+  degradedEvidence?: OcxRoutingUnknownEvidenceMode;
+}
+
 export interface OcxRoutingProfileConfig {
   /**
    * Explicit candidate allowlist (`provider/model` refs). No implicit
@@ -1010,6 +1023,8 @@ export interface OcxRoutingProfileConfig {
   limits?: OcxRoutingProfileLimits;
   /** How unknown evidence is handled per dimension. */
   unknownEvidence?: OcxRoutingProfileUnknownEvidence;
+  /** Optional Compatibility Lab policy (CL-06). */
+  compatibility?: OcxRoutingProfileCompatibility;
 }
 
 /**
