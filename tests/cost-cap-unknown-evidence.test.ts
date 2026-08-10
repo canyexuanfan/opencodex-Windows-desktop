@@ -251,6 +251,28 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
     });
   });
 
+  test("non-finite estimatedUsd is stamped as incomplete unknown, not Infinity", () => {
+    const result = evaluatePolicyProfile(configWithCap(0.5), "cost", {}, [
+      {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        capability: { contextWindow: 200000 },
+        cost: { estimatedUsd: Number.POSITIVE_INFINITY, incomplete: false, priceSource: "registry" },
+      },
+    ]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.exclusions.some(e => e.code === "cost-limit")).toBe(false);
+    expect(candidate.cost?.estimatedUsd).toBeUndefined();
+    expect(candidate.cost).toEqual({
+      incomplete: true,
+      priceSource: "registry",
+      limitUsd: 0.5,
+      capOutcome: "unknown-allowed",
+    });
+    expect(result.trace.candidates[0]?.cost?.estimatedUsd).toBeUndefined();
+  });
+
   test("normalizeRouteDecisionTrace drops capOutcome without a finite limitUsd", () => {
     const dirty = {
       version: 1 as const,

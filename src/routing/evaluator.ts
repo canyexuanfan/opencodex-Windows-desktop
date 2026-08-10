@@ -338,14 +338,23 @@ export function evaluatePolicyProfile(
           : unknownCostUnderCap
             ? "unknown-allowed" as const
             : "satisfied" as const;
-      const synthesizedFromNothing = evidence.cost === undefined;
-      costForCandidate = {
-        ...(evidence.cost ?? {}),
-        // Match costEvidenceForCandidate: absent usage/price is incomplete.
-        ...(synthesizedFromNothing ? { incomplete: true } : {}),
-        limitUsd: costLimit,
-        capOutcome,
-      };
+      if (!costEstimateKnown) {
+        // Missing or non-finite estimates are the same unknown: never stamp
+        // Infinity/NaN into the trace, and always mark incomplete.
+        const { estimatedUsd: _nonFiniteOrMissing, ...rest } = evidence.cost ?? {};
+        costForCandidate = {
+          ...rest,
+          incomplete: true,
+          limitUsd: costLimit,
+          capOutcome,
+        };
+      } else {
+        costForCandidate = {
+          ...evidence.cost!,
+          limitUsd: costLimit,
+          capOutcome,
+        };
+      }
     }
 
     // Health scoring (RI-06): live hard cooldown is authoritative and
