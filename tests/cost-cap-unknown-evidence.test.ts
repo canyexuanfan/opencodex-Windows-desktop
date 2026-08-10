@@ -215,6 +215,42 @@ describe("issue #1181 — hard cost cap under unknown evidence", () => {
     expect(result.trace.candidates[0]?.cost?.limitUsd).toBe(0.000001);
   });
 
+  test("trace limitUsd normalization does not change costScore for eligible candidates", () => {
+    // Profile cap 0.5; caller evidence carries limitUsd 1. Scoring must keep
+    // the caller's reference (1 - 0.4/1 = 0.6), not the stamped profile cap
+    // (1 - 0.4/0.5 = 0.2).
+    const result = evaluatePolicyProfile(configWithCap(0.5), "cost", {}, [
+      {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        capability: { contextWindow: 200000 },
+        cost: { estimatedUsd: 0.4, incomplete: false, limitUsd: 1 },
+      },
+    ]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.cost?.limitUsd).toBe(0.5);
+    expect(candidate.cost?.capOutcome).toBe("satisfied");
+    expect(candidate.score?.components.cost).toBeCloseTo(0.6, 5);
+  });
+
+  test("synthesized cost evidence from missing input marks incomplete", () => {
+    const result = evaluatePolicyProfile(configWithCap(0.5), "cost", {}, [
+      {
+        provider: "anthropic",
+        model: "claude-opus-5",
+        capability: { contextWindow: 200000 },
+      },
+    ]);
+    const candidate = result.candidates[0]!;
+    expect(candidate.eligible).toBe(true);
+    expect(candidate.cost).toEqual({
+      incomplete: true,
+      limitUsd: 0.5,
+      capOutcome: "unknown-allowed",
+    });
+  });
+
   test("normalizeRouteDecisionTrace drops capOutcome without a finite limitUsd", () => {
     const dirty = {
       version: 1 as const,

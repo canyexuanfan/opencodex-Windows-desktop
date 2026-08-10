@@ -325,8 +325,10 @@ export function evaluatePolicyProfile(
     }
     let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit && !unknownCostBlocked;
 
-    // Stamp a copy of cost evidence with the cap outcome so traces/dry-run
-    // carry operator-visible status without mutating caller-supplied objects.
+    // Trace/dry-run copy only: report the profile cap that was applied and the
+    // operator-visible outcome. Do not feed this copy into costScore() — that
+    // would silently change ranking when a caller supplied a different
+    // limitUsd (costScore uses limitUsd as its reference denominator).
     let costForCandidate = evidence.cost;
     if (costLimit !== undefined) {
       const capOutcome = overCostLimit
@@ -336,8 +338,11 @@ export function evaluatePolicyProfile(
           : unknownCostUnderCap
             ? "unknown-allowed" as const
             : "satisfied" as const;
+      const synthesizedFromNothing = evidence.cost === undefined;
       costForCandidate = {
         ...(evidence.cost ?? {}),
+        // Match costEvidenceForCandidate: absent usage/price is incomplete.
+        ...(synthesizedFromNothing ? { incomplete: true } : {}),
         limitUsd: costLimit,
         capOutcome,
       };
@@ -377,7 +382,9 @@ export function evaluatePolicyProfile(
 
     // Cost scoring (RI-08): the hard per-request ceiling was already checked
     // above; unknown cost follows the profile's unknownEvidence policy.
-    const cost = costForCandidate;
+    // Score against the caller's original evidence so trace stamping cannot
+    // move the costScore reference / ranking.
+    const cost = evidence.cost;
     let costValue = cost ? costScore(cost) : null;
     if (costValue === null && profile.unknownEvidence.cost === "exclude") {
       exclusions.push({ code: "unknown-price" });
