@@ -15,33 +15,51 @@
 - **Models → Compatibility tab** at `#models/compatibility` (not a standalone sidebar page)
 - Legacy `#lab` hash redirects to `#models/compatibility`
 - `CompatibilityMatrix.tsx` - read-only verdict matrix over CL-04 management APIs
-- `compatibility-matrix-api.ts` - paginated fetch helpers for `/api/lab/status`, `/api/lab/verdicts`, `/api/lab/subjects`, detail reads
-- `compatibility-matrix-shared.ts` - DTO parsing, matrix grouping, filters
+- `compatibility-matrix-api.ts` - bounded paginated fetch helpers for `/api/lab/status`, `/api/lab/verdicts`, `/api/lab/subjects`, and detail reads
+- `compatibility-matrix-shared.ts` - fail-closed DTO parsing, matrix grouping, and filters
 - `styles-compatibility-matrix.css` - scrollable matrix + detail pane
-- i18n keys in all seven locales (`en`, `de`, `ko`, `zh`, `ru`, `ja`, `tr`)
-- Component/layout tests under `gui/tests/compatibility-lab.test.tsx`
+- Compatibility Lab copy localized for all seven locales (`en`, `de`, `ko`, `zh`, `ru`, `ja`, `tr`)
+- Component/layout tests in `gui/tests/compatibility-lab.test.tsx` and `gui/tests/compatibility-matrix-layout.test.ts`
 
 ### Behaviour
 
 - Projection status cards (subjects, verdicts, observations, events, built-at)
 - Subject × evidence-layer matrix with per-suite verdict badges
-- Server-side verdict filters (layer, verdict, subjectId, suiteId) with paginated "Load more"
-- Verdict detail pane (subject, observations, contributing events, artifact metadata only)
-- Empty/unavailable/incompatible projection states via existing data-surface contract
-- Lazy mount with `active` / `pauseWhenHidden` gating inside Models workspace
+- Server-side verdict filters for evidence layer, verdict, and an exact Subject-ID picker, with paginated "Load more"
+- Verdict detail pane (subject, all paginated observations, bounded evidence events, artifact metadata only)
+- Verdict selection is presentation state only; it never changes matrix filters or pagination identity
+- Empty/unavailable/incompatible projection states via existing data-surface contract; malformed successful API payloads fail closed as load errors
+- Lazy mount with `active` / hidden-panel gating inside Models workspace
 - No probe execution, projection rebuild, or evidence mutation
 
-## Validation (local)
+## Review remediation
+
+The follow-up review pass addresses all validated CodeRabbit findings plus the independent lifecycle findings found while reviewing #1384:
+
+- legacy `#lab` cold-load page alignment and delimiter-aware regression coverage
+- repeated-cursor/page-count guards for subject and observation pagination
+- strict verdict/detail DTO validation and malformed-200 handling
+- bounded, partial-failure-tolerant event/artifact enrichment
+- detail-selection and load-more stale-response protection
+- first-page refresh/poll invalidation of appended cursor pages
+- exact Subject-ID picker semantics instead of misleading free-text search
+- localized closed-value labels and neutral evidence-event wording
+- real button semantics for verdict-detail selection
+- inactive-panel, selection/filter, pagination, localization, and routing regression coverage
+- Models-tab layout test updated from the removed standalone App/sidebar architecture
+
+## Validation recorded before review remediation
 
 - `bun x tsc --noEmit` - passed
 - `bun test tests/lab-read-surfaces.test.ts tests/models-workspace-tabs.test.ts` - 33/33 passed
 - `cd gui && bun test tests/compatibility-lab.test.tsx tests/models-workspace-panels.test.tsx` - 29/29 passed
 - `bun run lint:gui && bun run doctor:gui && bun run build:gui && bun run privacy:scan` - passed
 
+The remediation commit requires a fresh CI pass before acceptance; these earlier results are retained only as the pre-review baseline.
+
 ## Acceptance blockers
 
-- Draft PR requires cross-platform CI green
-- GUI screenshot in PR body (or `gui-screenshot-waived` label)
+- Fresh cross-platform CI on the remediation head must be green
 - Independent acceptance review not performed
 
 ## Out of scope (confirmed)

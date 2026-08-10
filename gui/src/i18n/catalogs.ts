@@ -5,11 +5,29 @@ import { zh } from "./zh";
 import { ru } from "./ru";
 import { ja } from "./ja";
 import { tr } from "./tr";
+import { LAB_CATALOG_OVERRIDES, type LabLocale } from "./lab-translations";
 
 /** React-free locale catalog registry for formatters and other shared helpers. */
-export type Locale = "en" | "de" | "ko" | "zh" | "ru" | "ja" | "tr";
+export type Locale = LabLocale;
 
-export const DICTS: Record<Locale, Record<TKey, string>> = { en, de, ko, zh, ru, ja, tr };
+function withLabTranslations(locale: Locale, catalog: Record<TKey, string>): Record<TKey, string> {
+  return { ...catalog, ...LAB_CATALOG_OVERRIDES[locale] };
+}
+
+/**
+ * CL-05 translations are overlaid centrally so the compatibility surface cannot regress to
+ * copied English values in a locale catalog. The locale parity test still validates the base
+ * catalogs; this overlay is deliberately limited to the closed `lab.*` namespace.
+ */
+export const DICTS: Record<Locale, Record<TKey, string>> = {
+  en: withLabTranslations("en", en),
+  de: withLabTranslations("de", de),
+  ko: withLabTranslations("ko", ko),
+  zh: withLabTranslations("zh", zh),
+  ru: withLabTranslations("ru", ru),
+  ja: withLabTranslations("ja", ja),
+  tr: withLabTranslations("tr", tr),
+};
 
 /** Native language names shown by the language picker, kept inside i18n rather than UI metadata. */
 export function localeDisplayName(locale: Locale): string {

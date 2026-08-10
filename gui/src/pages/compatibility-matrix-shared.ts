@@ -23,6 +23,9 @@ export const COMPATIBILITY_VERDICTS = [
 
 export type CompatibilityVerdict = (typeof COMPATIBILITY_VERDICTS)[number];
 
+export const ARTIFACT_STATUSES = ["present", "corrupt", "purged_unavailable"] as const;
+export type ArtifactStatus = (typeof ARTIFACT_STATUSES)[number];
+
 export type LabStatusDto = {
   projectionAvailable: boolean;
   projectionIncompatible?: boolean;
@@ -111,7 +114,7 @@ export type ArtifactMetadataDto = {
   artifactClass: string | null;
   mediaType: string | null;
   byteCount: number | null;
-  status: "present" | "corrupt" | "purged_unavailable";
+  status: ArtifactStatus;
   lastError: string | null;
 };
 
@@ -141,11 +144,12 @@ export type PaginatedEvents = {
 
 export type MatrixRow = {
   subjectId: string;
+  /** Empty means the subject page did not contain a matching row. */
   subjectKind: string;
   byLayer: Record<EvidenceLayer, VerdictDto[]>;
 };
 
-/** UI filter state; subjectQuery maps to the API subjectId param when refetching. */
+/** UI filter state. subjectQuery is an exact subject id selected from the subject picker. */
 export type VerdictFilters = {
   layer: EvidenceLayer | "";
   verdict: CompatibilityVerdict | "";
@@ -164,30 +168,60 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
+
 export function parseLabStatus(raw: unknown): LabStatusDto | null {
-  if (!isPlainObject(raw)) return null;
-  if (typeof raw.projectionAvailable !== "boolean") return null;
+  if (!isPlainObject(raw) || typeof raw.projectionAvailable !== "boolean") return null;
+  if (raw.projectionIncompatible !== undefined && typeof raw.projectionIncompatible !== "boolean") return null;
+  for (const key of [
+    "sqliteSchemaVersion",
+    "builtAtMs",
+    "eventCount",
+    "subjectCount",
+    "observationCount",
+    "claimCount",
+    "verdictCount",
+    "artifactCount",
+    "corruptionCount",
+  ] as const) {
+    if (!isOptionalFiniteNumber(raw[key])) return null;
+  }
+  if (raw.projectionSpecVersion !== undefined && typeof raw.projectionSpecVersion !== "string") return null;
   return raw as LabStatusDto;
 }
 
 export function parseVerdictDto(raw: unknown): VerdictDto | null {
   if (!isPlainObject(raw)) return null;
-  if (typeof raw.subjectId !== "string") return null;
-  if (typeof raw.evidenceLayer !== "string") return null;
-  if (!EVIDENCE_LAYERS.includes(raw.evidenceLayer as EvidenceLayer)) return null;
-  if (typeof raw.suiteId !== "string") return null;
-  if (typeof raw.verdict !== "string") return null;
-  if (!COMPATIBILITY_VERDICTS.includes(raw.verdict as CompatibilityVerdict)) return null;
+  if (typeof raw.projectionKey !== "string" || raw.projectionKey.length === 0) return null;
+  if (typeof raw.subjectId !== "string" || raw.subjectId.length === 0) return null;
+  if (typeof raw.evidenceLayer !== "string" || !EVIDENCE_LAYERS.includes(raw.evidenceLayer as EvidenceLayer)) return null;
+  if (typeof raw.suiteId !== "string" || raw.suiteId.length === 0) return null;
+  if (typeof raw.suiteVersion !== "string") return null;
+  if (typeof raw.suiteManifestDigest !== "string") return null;
+  if (typeof raw.projectionSpecVersion !== "string") return null;
+  if (typeof raw.verdict !== "string" || !COMPATIBILITY_VERDICTS.includes(raw.verdict as CompatibilityVerdict)) return null;
+  if (typeof raw.asOf !== "number" || !Number.isFinite(raw.asOf)) return null;
+  if (!isStringArray(raw.scenarioManifestDigests)) return null;
+  if (!isNullableString(raw.claimSourceDigest)) return null;
+  if (!isStringArray(raw.contributingEventIds)) return null;
+  if (!isStringArray(raw.contradictingEventIds)) return null;
+  if (!isStringArray(raw.notes)) return null;
   return raw as VerdictDto;
 }
 
 export function parseVerdictPage(raw: unknown): PaginatedVerdicts {
-  if (!isPlainObject(raw) || !Array.isArray(raw.verdicts)) {
-    return { verdicts: [], hasMore: false };
-  }
-  const verdicts = raw.verdicts
-    .map(parseVerdictDto)
-    .filter((row): row is VerdictDto => row !== null);
+  if (!isPlainObject(raw) || !Array.isArray(raw.verdicts)) return { verdicts: [], hasMore: false };
+  const verdicts = raw.verdicts.map(parseVerdictDto).filter((row): row is VerdictDto => row !== null);
   return {
     verdicts,
     hasMore: raw.hasMore === true,
@@ -196,13 +230,9 @@ export function parseVerdictPage(raw: unknown): PaginatedVerdicts {
 }
 
 export function parseSubjectPage(raw: unknown): PaginatedSubjects {
-  if (!isPlainObject(raw) || !Array.isArray(raw.subjects)) {
-    return { subjects: [], hasMore: false };
-  }
-  const subjects = raw.subjects.filter((row): row is SubjectListItemDto => {
-    if (!isPlainObject(row)) return false;
-    return typeof row.subjectId === "string" && typeof row.subjectKind === "string";
-  });
+  if (!isPlainObject(raw) || !Array.isArray(raw.subjects)) return { subjects: [], hasMore: false };
+  const subjects = raw.subjects.filter((row): row is SubjectListItemDto =>
+    isPlainObject(row) && typeof row.subjectId === "string" && typeof row.subjectKind === "string");
   return {
     subjects,
     hasMore: raw.hasMore === true,
@@ -212,29 +242,27 @@ export function parseSubjectPage(raw: unknown): PaginatedSubjects {
 
 export function parseSubjectDetail(raw: unknown): SubjectDetailDto | null {
   if (!isPlainObject(raw) || !isPlainObject(raw.subject)) return null;
-  const subject = raw.subject;
-  if (typeof subject.subjectKind !== "string") return null;
-  return subject as SubjectDetailDto;
+  if (typeof raw.subject.subjectKind !== "string") return null;
+  return raw.subject as SubjectDetailDto;
 }
 
 export function parseObservationDto(raw: unknown): ObservationDto | null {
   if (!isPlainObject(raw)) return null;
-  if (typeof raw.eventId !== "string") return null;
-  if (typeof raw.subjectId !== "string") return null;
-  if (typeof raw.evidenceLayer !== "string") return null;
-  if (!EVIDENCE_LAYERS.includes(raw.evidenceLayer as EvidenceLayer)) return null;
-  if (typeof raw.suiteId !== "string") return null;
-  if (typeof raw.outcome !== "string") return null;
+  if (typeof raw.eventId !== "string" || typeof raw.subjectId !== "string") return null;
+  if (typeof raw.evidenceLayer !== "string" || !EVIDENCE_LAYERS.includes(raw.evidenceLayer as EvidenceLayer)) return null;
+  if (typeof raw.suiteId !== "string" || typeof raw.suiteVersion !== "string") return null;
+  if (typeof raw.suiteManifestDigest !== "string") return null;
+  if (typeof raw.scenarioId !== "string" || typeof raw.scenarioVersion !== "string") return null;
+  if (typeof raw.scenarioManifestDigest !== "string" || typeof raw.outcome !== "string") return null;
+  if (typeof raw.completedAt !== "number" || !Number.isFinite(raw.completedAt)) return null;
+  if (typeof raw.executionMode !== "string" || typeof raw.excluded !== "boolean") return null;
+  if (!isNullableString(raw.exclusionReason)) return null;
   return raw as ObservationDto;
 }
 
 export function parseObservationsPage(raw: unknown): PaginatedObservations {
-  if (!isPlainObject(raw) || !Array.isArray(raw.observations)) {
-    return { observations: [], hasMore: false };
-  }
-  const observations = raw.observations
-    .map(parseObservationDto)
-    .filter((row): row is ObservationDto => row !== null);
+  if (!isPlainObject(raw) || !Array.isArray(raw.observations)) return { observations: [], hasMore: false };
+  const observations = raw.observations.map(parseObservationDto).filter((row): row is ObservationDto => row !== null);
   return {
     observations,
     hasMore: raw.hasMore === true,
@@ -244,18 +272,15 @@ export function parseObservationsPage(raw: unknown): PaginatedObservations {
 
 export function parseEventListItem(raw: unknown): EventListItemDto | null {
   if (!isPlainObject(raw)) return null;
-  if (typeof raw.eventId !== "string") return null;
-  if (typeof raw.eventKind !== "string") return null;
+  if (typeof raw.eventId !== "string" || typeof raw.eventKind !== "string") return null;
+  if (typeof raw.recordedAt !== "number" || !Number.isFinite(raw.recordedAt)) return null;
+  if (typeof raw.excluded !== "boolean" || !isNullableString(raw.exclusionReason)) return null;
   return raw as EventListItemDto;
 }
 
 export function parseEventsPage(raw: unknown): PaginatedEvents {
-  if (!isPlainObject(raw) || !Array.isArray(raw.events)) {
-    return { events: [], hasMore: false };
-  }
-  const events = raw.events
-    .map(parseEventListItem)
-    .filter((row): row is EventListItemDto => row !== null);
+  if (!isPlainObject(raw) || !Array.isArray(raw.events)) return { events: [], hasMore: false };
+  const events = raw.events.map(parseEventListItem).filter((row): row is EventListItemDto => row !== null);
   return {
     events,
     hasMore: raw.hasMore === true,
@@ -267,8 +292,10 @@ export function parseLabEvent(raw: unknown): LabEventDto | null {
   if (!isPlainObject(raw) || !isPlainObject(raw.event)) return null;
   const event = { ...raw.event };
   delete event.payload_json;
-  if (typeof event.eventKind !== "string") return null;
-  if (typeof event.eventId !== "string") return null;
+  if (typeof event.eventKind !== "string" || typeof event.eventId !== "string") return null;
+  if (typeof event.recordedAt !== "number" || !Number.isFinite(event.recordedAt)) return null;
+  if (typeof event.producer !== "string" || typeof event.producerVersion !== "string") return null;
+  if (typeof event.excluded !== "boolean" || !isNullableString(event.exclusionReason)) return null;
   return event as LabEventDto;
 }
 
@@ -276,7 +303,10 @@ export function parseArtifactMetadata(raw: unknown): ArtifactMetadataDto | null 
   if (!isPlainObject(raw) || !isPlainObject(raw.artifact)) return null;
   const artifact = raw.artifact;
   if (typeof artifact.digest !== "string") return null;
-  if (typeof artifact.status !== "string") return null;
+  if (typeof artifact.status !== "string" || !ARTIFACT_STATUSES.includes(artifact.status as ArtifactStatus)) return null;
+  if (!isNullableString(artifact.artifactClass) || !isNullableString(artifact.mediaType)) return null;
+  if (artifact.byteCount !== null && (typeof artifact.byteCount !== "number" || !Number.isFinite(artifact.byteCount))) return null;
+  if (!isNullableString(artifact.lastError)) return null;
   return artifact as ArtifactMetadataDto;
 }
 
@@ -298,29 +328,25 @@ export function emptyLayerMap(): Record<EvidenceLayer, VerdictDto[]> {
   };
 }
 
-export function buildMatrixRows(
-  verdicts: VerdictDto[],
-  subjects: SubjectListItemDto[],
-): MatrixRow[] {
+export function buildMatrixRows(verdicts: VerdictDto[], subjects: SubjectListItemDto[]): MatrixRow[] {
   const kindById = new Map(subjects.map(row => [row.subjectId, row.subjectKind]));
   const bySubject = new Map<string, MatrixRow>();
-
   for (const verdict of verdicts) {
     let row = bySubject.get(verdict.subjectId);
     if (!row) {
       row = {
         subjectId: verdict.subjectId,
-        subjectKind: kindById.get(verdict.subjectId) ?? "unknown",
+        subjectKind: kindById.get(verdict.subjectId) ?? "",
         byLayer: emptyLayerMap(),
       };
       bySubject.set(verdict.subjectId, row);
     }
     row.byLayer[verdict.evidenceLayer].push(verdict);
   }
-
   return [...bySubject.values()].sort((a, b) => a.subjectId.localeCompare(b.subjectId));
 }
 
+/** Client-side helper retained for tests and future local-only filters. */
 export function filterVerdicts(verdicts: VerdictDto[], filters: VerdictFilters): VerdictDto[] {
   const query = filters.subjectQuery.trim().toLowerCase();
   return verdicts.filter(verdict => {
@@ -344,8 +370,8 @@ export function formatAsOf(ms: number, locale: string): string {
 
 export function artifactDigestsForVerdict(verdict: VerdictDto): string[] {
   const digests = new Set<string>();
-  digests.add(verdict.suiteManifestDigest);
-  for (const digest of verdict.scenarioManifestDigests) digests.add(digest);
+  if (verdict.suiteManifestDigest) digests.add(verdict.suiteManifestDigest);
+  for (const digest of verdict.scenarioManifestDigests) if (digest) digests.add(digest);
   if (verdict.claimSourceDigest) digests.add(verdict.claimSourceDigest);
   return [...digests];
 }
