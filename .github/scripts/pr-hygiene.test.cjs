@@ -264,12 +264,24 @@ describe("pr-hygiene workflow trust boundary", () => {
     "utf8",
   );
 
-  it("checks out the PR base SHA, not the repository default branch", () => {
-    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
-    assert.doesNotMatch(
-      workflow,
-      /Checkout trusted hygiene script[\s\S]*?ref:\s*\$\{\{\s*github\.event\.repository\.default_branch/,
+  it("checks out trusted scripts from an integration branch, never a PR-controlled ref", () => {
+    // Scope to the checkout step so a stray `ref:` elsewhere cannot satisfy
+    // this, and compare the whole expression rather than matching fragments:
+    // independent substring checks would pass even with the operator grouping
+    // wrong or a `base.sha` fallback still present.
+    const checkoutStep = workflow
+      .split("- name: Checkout trusted hygiene script")[1]
+      .split(/\n {6}- name:/)[0];
+    const ref = checkoutStep.match(/^\s*ref:\s*(.+)$/m)?.[1];
+    assert.ok(ref, "trusted checkout must declare ref");
+    assert.equal(
+      ref.replace(/\s+/g, " ").trim(),
+      "${{ github.event.pull_request.base.ref == 'main' && 'main' || 'dev' }}",
     );
+    // A stacked child PR's base is another open PR's head; neither a base nor
+    // a head ref may select the code that runs with the write-capable token.
+    assert.doesNotMatch(ref, /base\.sha|head\.(?:sha|ref)/);
+    assert.match(checkoutStep, /persist-credentials:\s*false/);
   });
 
   it("uses repository permission level for the sponsorship exemption", () => {

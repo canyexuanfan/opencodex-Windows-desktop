@@ -143,14 +143,26 @@ describe("enforce-pr-target workflow", () => {
       .split("- name: Checkout trusted PR-quality scripts")[1]
       .split(/\n {6}- name:/)[0];
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
-    // `pull_request_target` pins the PR base SHA. Trusted `status`
-    // revalidation has no pull_request payload, so it sources scripts from the
-    // repository default branch that supplied the privileged workflow itself.
-    assert.match(
-      checkoutStep,
-      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'status'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
+    // The trusted ref comes from a fixed set of integration branches, never
+    // from the PR's own base commit: a stacked child's base is another open
+    // PR's head, and `base.sha` would let that unpromoted commit choose the
+    // code that runs with this job's write-capable token.
+    //
+    // `status` has no pull_request payload and sources from the default branch
+    // that supplied the privileged workflow. A `main`-targeting PR sources
+    // from `main` so the workflow definition and the scripts match. Everything
+    // else resolves to `dev`.
+    //
+    // Exact equality, not fragment matching: separate checks for `status`,
+    // `main`, and `dev` would all pass with the operator grouping wrong or a
+    // surviving `base.sha` fallback.
+    const ref = checkoutStep.match(/^\s*ref:\s*(.+)$/m)?.[1];
+    assert.ok(ref, "trusted checkout must declare ref");
+    assert.equal(
+      ref.replace(/\s+/g, " ").trim(),
+      "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
     );
-    assert.doesNotMatch(checkoutStep, /\|\|\s*'dev'/);
+    assert.doesNotMatch(ref, /base\.sha|head\.(?:sha|ref)/);
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);

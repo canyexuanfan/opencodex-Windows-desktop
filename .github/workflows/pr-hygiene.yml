@@ -30,9 +30,17 @@ jobs:
       - name: Checkout trusted hygiene script
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # pull_request_target must pin scripts to the PR base SHA, not the
-          # repository default branch: PRs target `dev` while `main` may lag.
-          ref: ${{ github.event.pull_request.base.sha }}
+          # Source trusted scripts from an integration branch, never from the
+          # PR's own base commit. A stacked child PR's base is another open
+          # PR's head, so `base.sha` let an unpromoted commit choose which code
+          # runs with this job's issues/pull-requests write token.
+          #
+          # The branch is chosen, not fixed: `pull_request_target` loads this
+          # workflow from the default branch, so a `main`-targeting PR must
+          # take its scripts from `main` too, or the gate runs a `main`
+          # workflow against `dev` scripts. Everything else, including stacked
+          # bases, resolves to `dev`, the single integration line.
+          ref: ${{ github.event.pull_request.base.ref == 'main' && 'main' || 'dev' }}
           persist-credentials: false
           sparse-checkout: .github/scripts
 
