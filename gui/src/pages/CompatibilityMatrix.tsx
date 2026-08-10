@@ -54,6 +54,14 @@ const ARTIFACT_STATUS_LABEL: Record<ArtifactStatus, LabSupplementKey> = {
   purged_unavailable: "artifact.purged_unavailable",
 };
 
+type ExtraVerdictPage = {
+  baseData: LabPageData;
+  queryKey: string;
+  verdicts: VerdictDto[];
+  nextCursor?: string;
+  hasMore: boolean;
+};
+
 function localizedFetchError(e: unknown, fallback: string): string {
   if (!(e instanceof Error)) return fallback;
   const msg = e.message;
@@ -241,9 +249,7 @@ export default function CompatibilityMatrix({
 }) {
   const { t, locale } = useI18n();
   const [filters, setFilters] = useState<VerdictFilters>({ layer: "", verdict: "", subjectQuery: "", suiteId: "" });
-  const [extraVerdicts, setExtraVerdicts] = useState<VerdictDto[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | undefined>();
-  const [hasMore, setHasMore] = useState(false);
+  const [extraPage, setExtraPage] = useState<ExtraVerdictPage | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedVerdict, setSelectedVerdict] = useState<VerdictDto | null>(null);
   const [detail, setDetail] = useState<VerdictDetailData | null>(null);
@@ -253,8 +259,6 @@ export default function CompatibilityMatrix({
   const loadMoreRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
   const selectedKeyRef = useRef<string | null>(null);
-  const queryKeyRef = useRef("");
-  const surfaceDataRef = useRef<LabPageData | undefined>(undefined);
 
   const queryFilters = useMemo(() => verdictQueryFromFilters(filters), [filters]);
   const queryKey = JSON.stringify(queryFilters);
@@ -274,9 +278,7 @@ export default function CompatibilityMatrix({
   const resetPagination = useCallback(() => {
     loadMoreRef.current?.abort();
     loadMoreRef.current = null;
-    setExtraVerdicts([]);
-    setNextCursor(undefined);
-    setHasMore(false);
+    setExtraPage(null);
     setLoadingMore(false);
   }, []);
 
@@ -291,23 +293,11 @@ export default function CompatibilityMatrix({
   }, []);
 
   useEffect(() => {
-    queryKeyRef.current = queryKey;
-    // A query identity change makes an in-flight cursor page stale immediately.
+    // A refreshed first page makes any in-flight cursor request stale. The associated
+    // appended-page state is identity-bound below, so it becomes invisible immediately
+    // without synchronously cascading state from this effect.
     loadMoreRef.current?.abort();
-  }, [queryKey]);
-
-  useEffect(() => {
-    surfaceDataRef.current = surface.data;
-    // A new first-page snapshot (filter change, manual refresh, or poll) invalidates every
-    // appended cursor page. Keeping them would merge different projection snapshots.
-    resetPagination();
-  }, [surface.data, resetPagination]);
-
-  useEffect(() => {
-    if (active) return;
-    clearDetail();
-    resetPagination();
-  }, [active, clearDetail, resetPagination]);
+  }, [surface.data]);
 
   useEffect(() => () => {
     loadMoreRef.current?.abort();
@@ -320,17 +310,23 @@ export default function CompatibilityMatrix({
     setFilters(updater);
   }, [clearDetail, resetPagination]);
 
+  const validExtraPage = extraPage?.baseData === surface.data && extraPage.queryKey === queryKey
+    ? extraPage
+    : null;
+
   const reportedCount = useMemo(() => {
     if (!active || !surface.data?.status.projectionAvailable) return null;
     const total = surface.data.status.verdictCount;
-    return typeof total === "number" ? total : surface.data.verdicts.length + extraVerdicts.length;
-  }, [active, extraVerdicts.length, surface.data]);
+    return typeof total === "number"
+      ? total
+      : surface.data.verdicts.length + (validExtraPage?.verdicts.length ?? 0);
+  }, [active, surface.data, validExtraPage]);
 
   useEffect(() => { onCountChange?.(reportedCount); }, [onCountChange, reportedCount]);
 
   const allVerdicts = useMemo(
-    () => surface.data ? [...surface.data.verdicts, ...extraVerdicts] : [],
-    [extraVerdicts, surface.data],
+    () => surface.data ? [...surface.data.verdicts, ...(validExtraPage?.verdicts ?? [])] : [],
+    [surface.data, validExtraPage],
   );
   const matrixRows = useMemo(
     () => surface.data ? buildMatrixRows(allVerdicts, surface.data.subjects) : [],
@@ -338,7 +334,7 @@ export default function CompatibilityMatrix({
   );
 
   const loadMore = useCallback(async () => {
-    const cursor = nextCursor ?? surface.data?.nextCursor;
+    const cursor = validExtraPage?.nextCursor ?? surface.data?.nextCursor;
     const baseData = surface.data;
     if (!cursor || !baseData || loadingMore) return;
     loadMoreRef.current?.abort();
@@ -348,21 +344,28 @@ export default function CompatibilityMatrix({
     setLoadingMore(true);
     try {
       const page = await fetchMoreVerdicts(apiBase, queryFilters, cursor, controller.signal);
-      if (controller.signal.aborted || queryKeyRef.current !== startedKey || surfaceDataRef.current !== baseData) return;
-      setExtraVerdicts(current => [...current, ...page.verdicts]);
-      setNextCursor(page.nextCursor);
-      setHasMore(page.hasMore);
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        // Keep the current rows. The normal refresh action retries from a consistent first page.
-      }
+      if (controller.signal.aborted) return;
+      setExtraPage(current => {
+        const existing = current?.baseData === baseData && current.queryKey === startedKey
+          ? current.verdicts
+          : [];
+        return {
+          baseData,
+          queryKey: startedKey,
+          verdicts: [...existing, ...page.verdicts],
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+        };
+      });
+    } catch {
+      // Keep the current rows. The normal refresh action retries from a consistent first page.
     } finally {
       if (loadMoreRef.current === controller) {
         loadMoreRef.current = null;
-        if (!controller.signal.aborted) setLoadingMore(false);
+        setLoadingMore(false);
       }
     }
-  }, [apiBase, loadingMore, nextCursor, queryFilters, queryKey, surface.data]);
+  }, [apiBase, loadingMore, queryFilters, queryKey, surface.data, validExtraPage]);
 
   const selectVerdict = useCallback(async (verdict: VerdictDto) => {
     if (!active) return;
@@ -397,7 +400,7 @@ export default function CompatibilityMatrix({
   }, [clearDetail, refreshSurface, resetPagination]);
 
   const visibleSelection = active ? selectedVerdict : null;
-  const pageHasMore = extraVerdicts.length > 0 ? hasMore : (surface.data?.hasMore ?? false);
+  const pageHasMore = validExtraPage ? validExtraPage.hasMore : (surface.data?.hasMore ?? false);
   const layerOptions = [
     { value: "", label: t("lab.filter.all") },
     ...EVIDENCE_LAYERS.map(layer => ({ value: layer, label: t(LAYER_LABEL[layer]) })),
