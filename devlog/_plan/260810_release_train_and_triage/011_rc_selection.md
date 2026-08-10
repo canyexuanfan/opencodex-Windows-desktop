@@ -1,5 +1,13 @@
 # 011 — WP1: release-candidate selection under a moving branch
 
+> **SUPERSEDED for the shipped release. The RC below (`dc4dd45b0`) was the
+> WP1 choice while the train was blocked on the security gate. After the
+> fix-first decision, WP4/WP5 remediation landed and `dev` was pushed to
+> `9c051342d`, which is the RC this train actually released.** The analysis
+> below is kept because its root cause is still true and still constrains any
+> future train. What changed, and what it invalidates, is recorded in
+> "Re-pick after remediation" at the end of this file.
+
 The RC rule in `010` is "the newest `dev` commit holding a completed successful
 Cross-platform CI run on its exact SHA". Applying it required understanding why
 the newer heads keep failing to produce one.
@@ -96,3 +104,44 @@ Windows full shards were skipped by the runner-selection job, while the
 separate Windows keyring and npm-global smoke jobs passed. Local gates on the
 same tree: `bun run typecheck` exit 0, `bun run test` 10,526 pass / 0 fail,
 `bun run privacy:scan` passed.
+
+## Re-pick after remediation — RC = `9c051342d`
+
+The security gate returned BLOCK, the owner chose fix first, and the
+remediation work-phases (WP4 SEC-02, WP5 SEC-01) plus eight rounds of
+re-review produced 20 new local commits. Pushing them moved `origin/dev` from
+`0de4fd2d7` to `9c051342d`, and a release must ship the remediated tree — the
+whole point of the fix-first decision. So the RC is re-picked:
+
+**RC = `9c051342d7ff7ad81b71911e359ad5935eaaf235`.**
+
+Delta against the superseded RC: `git rev-list --count dc4dd45b0..9c051342d`
+is **41 commits**, `git diff --shortstat` is **120 files, +8,520 / −225**.
+
+### This voids the omission risk acceptance above
+
+The section "Why omitting three commits is acceptable here" asked the owner to
+accept shipping without #1398, #1396, and #1010. That acceptance is now **moot**
+— all three are ancestors of the new RC:
+
+```
+$ git merge-base --is-ancestor 277354073 9c051342d   # #1398  -> exit 0
+$ git merge-base --is-ancestor 0a76ee854 9c051342d   # #1396  -> exit 0
+$ git merge-base --is-ancestor 2beeea654 9c051342d   # #1010  -> exit 0
+```
+
+Nothing is being omitted from this train, so no risk acceptance is required for
+it. `010`'s "Out of scope" line about #1398 is stale for the same reason.
+
+### Evidence that does NOT carry over
+
+Every gate result recorded against `dc4dd45b0` — the exact-SHA CI run
+`31352564082`, the `10,526 pass` suite, the merge dry runs — describes a tree
+that is 120 files different from what ships. None of it is reused. The RC's own
+gates are captured in `013_release_record.md`.
+
+### What still holds from the analysis above
+
+The branch-keyed `concurrency` group is unchanged, so an older `dev` commit
+still cannot reliably be re-driven green while merges continue. The difference
+this time is that the RC *is* the live head rather than a commit behind it.

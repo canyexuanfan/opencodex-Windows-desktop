@@ -47,6 +47,23 @@ the tree went back through review.
 | Final verdict | **`READY TO SHIP`** |
 | Residual findings | 2 Low, both non-blocking and both now disclosed in `structure/09_compatibility-lab.md` |
 
+### The reviewed tree is the released tree
+
+The RC published by this train is `9c051342d`, one commit past the reviewed
+`76c544c65`. That gap is **this file** and nothing else:
+
+```
+$ git diff --name-only 76c544c65 9c051342d
+devlog/_plan/260810_release_train_and_triage/012_security_gate_record.md
+```
+
+So the reviewed source tree and the shipped source tree are byte-identical; the
+only change is the record you are reading. `0de4fd2d7` (the `origin/dev` head at
+review time) is a genuine ancestor of both, merged in at `01a29ab6d` —
+`git merge-base --is-ancestor 0de4fd2d7 76c544c65` exits 0. A later audit read
+that line as claiming a merge that never happened; the ancestry check above is
+the disproof.
+
 The final reviewer verified the shipped limits table against the code and found
 it accurate: every disclosed residual behaves as documented, and nothing the
 table claims to cover failed. Performance is linear to 400 KB. Three regression
@@ -88,16 +105,23 @@ suite 10,526 pass / 7 skip / 0 fail.
 
 | ID | Introduced by this delta? | Reaches the npm artifact? | Blocks the release? |
 |----|---------------------------|---------------------------|---------------------|
-| SEC-01 | yes | **no** — repository automation only | yes, pending owner decision |
-| SEC-02 | yes | **yes** — shipped runtime code | yes, pending owner decision |
+| SEC-01 | yes | **no** — repository automation only | no longer — **CLOSED**, see re-review above |
+| SEC-02 | yes | **yes** — shipped runtime code | no longer — **CLOSED**, see re-review above |
 | SEC-03 | **no** — pre-existing, byte-identical at v2.11.1 | yes (unchanged) | no |
 | SEC-04 | yes | yes | no — hardening item |
 
-SEC-03's classification was independently re-verified: `src/oauth/store.ts`
+> The two "blocks the release" cells above read `yes, pending owner decision`
+> until the remediation landed. They are settled now: the owner chose option 1
+> and both findings are CLOSED. The historical BLOCK verdict earlier in this
+> file is kept as a record of what the gate caught, not as the current state.
+
+SEC-03's classification was independently re-verified: the file carrying it
 resolves to the same blob at the v2.11.1 tag and at the RC, `git diff
 --exit-code` succeeds, and the path log over the delta is empty. It is a
 pre-existing defect surfaced by neighbouring work, not a regression this
-release introduces.
+release introduces. SEC-03 is **unfixed**, so its location is deliberately not
+named here — naming the file for an open finding is the same disclosure the
+rest of this record avoids.
 
 ## Correction: SEC-02 does reach users
 
@@ -113,9 +137,11 @@ normalizes permissions. So:
   opt-in path. It is an end-user risk and must be named as one in any risk
   acceptance.
 
-## Owner decision packet
+## Owner decision packet — RESOLVED: option 1, fix first
 
-The release does not proceed on this verdict. To continue, the owner picks one:
+The release did not proceed on the BLOCK verdict. The owner was given these
+three options and **chose option 1**; the remediation and re-review are recorded
+in the "gate CLEARED" section above, and the train resumed from there.
 
 1. **Fix first** — remediate SEC-01 and SEC-02, re-run the security review
    against the new RC, then run the train. Safest; costs a fix cycle.
@@ -128,3 +154,7 @@ The release does not proceed on this verdict. To continue, the owner picks one:
 
 Generic deploy authorization does not cover this: it was given before either
 finding existed. That is the whole reason the gate was added.
+
+The owner's answer was recorded in-session on 2026-08-10: *"고치고 배포 — 두 발견
+수정 후 재리뷰"*, i.e. option 1. WP4/WP5 implemented the fixes, WP6 obtained the
+non-BLOCK re-review, and WP7 executed the release on the remediated tree.
