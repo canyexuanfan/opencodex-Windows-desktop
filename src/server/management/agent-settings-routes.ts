@@ -300,9 +300,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const {
       isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads, transitionMultiAgentV2,
       getAgentsEnabled, getAgentsMaxDepth, getSubagentDeveloperInstructions,
-      getMultiAgentModeHintText, setAgentsEnabled, setAgentsMaxDepth,
+      getMultiAgentModeHintText, probeCodexSupportsModeHint, setAgentsEnabled, setAgentsMaxDepth,
       setSubagentDeveloperInstructions, setMultiAgentModeHintText,
     } = await import("../../codex/features");
+    // Probe the capability before any combined-request mutation. The scalar writer
+    // repeats this check, but doing it here prevents an earlier flag/mode/agents
+    // write from landing before an unsupported runtime returns 502.
+    if (wantsModeHintText && body.multiAgentModeHintText !== null
+        && probeCodexSupportsModeHint() === false) {
+      return jsonResponse({
+        error: "writing multiAgentModeHintText failed: installed Codex does not support multi_agent_mode_hint_text; update Codex first",
+      }, 502);
+    }
     const warnings: string[] = [];
     const requestedFlag = wantsFlag ? body.enabled as boolean : modeFlag;
     if (requestedFlag !== undefined || wantsThreads) {

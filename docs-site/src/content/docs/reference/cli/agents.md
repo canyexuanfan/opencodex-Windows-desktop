@@ -49,12 +49,15 @@ a failed transition restores the original `config.toml`. Changes apply to new Co
 running sessions keep their pinned surface.
 
 `mode-hint` writes `features.multi_agent_v2.multi_agent_mode_hint_text` in Codex's
-`$CODEX_HOME/config.toml`. The hint overrides codex-rs's effort-derived multi-agent
-policy, so any model and any reasoning effort receives the Proactive delegation
-prompt. It does **not** change reasoning effort itself. A missing argument or a
-whitespace-only value is rejected; only `--clear` removes the hint. This is the
-Ultra mode toggle exposed in the Subagents dashboard, which also requires the
-`multi_agent_v2` feature (see `ocx v2 on`).
+`$CODEX_HOME/config.toml` even when `multi_agent_v2` is currently disabled. The
+command only persists the override; it does not enable or disable the feature, so
+the hint takes effect when a matching Codex surface is active. The hint overrides
+codex-rs's effort-derived multi-agent policy, so any model and any reasoning effort
+receives the Proactive delegation prompt. It does **not** change reasoning effort
+itself. A missing argument or a whitespace-only value is rejected; only `--clear`
+removes the hint. The Subagents dashboard's Ultra mode **on** toggle has a stricter
+gate: it requires the native feature to be enabled with an explicit v2 surface
+(`ocx v2 mode v2`); `ocx v2 on` alone does not satisfy that dashboard gate.
 
 ## Combo routing
 

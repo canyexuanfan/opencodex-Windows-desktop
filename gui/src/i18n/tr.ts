@@ -611,6 +611,14 @@ export const tr: Record<TKey, string> = {
   "sub.workspace.selectModel": "Bir model seçin",
   "sub.workspace.selectModelDesc": "Detayları görmek için listeden bir model seçin.",
   "sub.workspace.selector": "Genel seçici",
+  "sub.ultraMode": "Ultra modu",
+  "sub.ultraModeHint": "Tüm modeller ve reasoning effort için Proactive çoklu ajan delegasyon politikasını etkinleştirir (reasoning effort değerini değiştirmez). config.toml dosyasına multi_agent_mode_hint_text yazar.",
+  "sub.ultraModeV2Required": "v2 çoklu ajan yüzeyi gerekir — önce multi_agent_v2'yi etkinleştirin ve alt ajan modu denetiminde v2'yi seçin.",
+  "sub.ultraModeText": "Ultra modu delegasyon metni",
+  "sub.ultraModePreset": "Ön ayarı geri yükle",
+  "sub.ultraModeLoadFail": "Ultra modu ayarları yüklenemedi — proxy çalışıyor mu?",
+  "sub.ultraModeSaveFail": "Ultra modu ayarları kaydedilemedi",
+  "sub.ultraModeSaved": "Ultra modu kaydedildi. Yeni Codex oturumlarına uygulanır.",
 
   // logs
   "logs.title": "İstek Günlükleri",

@@ -30,7 +30,7 @@
  * catalog.ts:40-54) so tests can point fixtures via env or the explicit
  * `configPath` parameter without fighting the module-load-time const in paths.ts.
  */
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { realpathSync } from "node:fs";
@@ -664,6 +664,24 @@ function findInlineEntry(text: string, bodyStart: number, bodyEnd: number, key: 
   return null;
 }
 
+/** Whether a TOML assignment's value starts with a triple-quoted string. */
+function isMultilineTomlString(text: string, valueStart: number): boolean {
+  let start = valueStart;
+  while (text[start] === " " || text[start] === "\t") start++;
+  return text.startsWith('"""', start) || text.startsWith("'''", start);
+}
+
+/** Whether one field in a supported inline `multi_agent_v2` table is triple-quoted. */
+function hasInlineMultilineTomlString(text: string, assignment: InlineEntry, key: string): boolean {
+  let openIdx = assignment.valueStart;
+  while (text[openIdx] === " " || text[openIdx] === "\t") openIdx++;
+  if (text[openIdx] !== "{") return false;
+  const closeIdx = findInlineTableEnd(text, openIdx);
+  if (closeIdx === -1) return false;
+  const entry = findInlineEntry(text, openIdx + 1, closeIdx, key);
+  return entry !== null && isMultilineTomlString(text, entry.valueStart);
+}
+
 /**
  * Set or remove one scalar key inside a top-level TOML table, preserving every
  * other line byte-for-byte — including the existing value's trailing comment,
@@ -862,16 +880,6 @@ function setV2StringField(key: string, value: string | null, configPath?: string
   if (content === null) return { ok: false, error: `config.toml not readable at ${path}` };
   const encoded = value === null ? null : encodeTomlBasicString(value);
 
-  // Multiline TOML strings ("""...""" / '''...''') span multiple lines and the
-  // single-line table editor cannot rewrite or remove them without corrupting
-  // the document (scanTomlValueEnd stops at the second quote). Refuse the edit
-  // rather than write invalid TOML; the user can convert the value to a single
-  // line first. Single-line literals and basic strings are unaffected.
-  const multilinePrefix = new RegExp(`^\\s*${tomlKeyPattern(key)}\\s*=\\s*("""|''')`, "m");
-  if (multilinePrefix.test(content)) {
-    return { ok: false, error: `multi-line TOML string for ${key} is not editable; convert it to a single-line string first` };
-  }
-
   // A parsed V2 object without one of the supported source forms came from
   // dotted/quoted path segments. Appending a dedicated table would redefine it
   // and make Codex reject the file, so fail closed without changing any bytes.
@@ -887,14 +895,26 @@ function setV2StringField(key: string, value: string | null, configPath?: string
 
   const dedicatedStringBody = tomlTableBodyForStringFields(content, "features.multi_agent_v2");
   if (dedicatedStringBody !== null) {
+    // Multiline TOML strings ("""...""" / '''...''') span multiple lines and the
+    // single-line table editor cannot rewrite or remove them without corrupting
+    // the document. Scope this guard to the target V2 table so an unrelated
+    // table carrying the same key does not block an otherwise safe edit.
+    const dedicatedEntry = findTomlAssignment(dedicatedStringBody, key);
+    if (dedicatedEntry !== null && isMultilineTomlString(dedicatedStringBody, dedicatedEntry.valueStart)) {
+      return { ok: false, error: `multi-line TOML string for ${key} is not editable; convert it to a single-line string first` };
+    }
     const legacyDedicatedBody = tomlTableBody(content, "features.multi_agent_v2") ?? "";
-    if (findTomlAssignment(dedicatedStringBody, key) !== null && findTomlAssignment(legacyDedicatedBody, key) === null) {
+    if (dedicatedEntry !== null && findTomlAssignment(legacyDedicatedBody, key) === null) {
       return { ok: false, error: `cannot edit ${key} after a header-shaped multiline value safely` };
     }
     const next = editScalarInTable(content, "features.multi_agent_v2", key, encoded);
     if (next === content) return { ok: true, changed: false };
     atomicWriteFile(path, next);
     return { ok: true, changed: true };
+  }
+
+  if (featuresBody !== null && featuresV2Entry !== null && hasInlineMultilineTomlString(featuresBody, featuresV2Entry, key)) {
+    return { ok: false, error: `multi-line TOML string for ${key} is not editable; convert it to a single-line string first` };
   }
 
   const eol = dominantEol(content);
@@ -1010,9 +1030,18 @@ export function probeCodexSupportsModeHint(): boolean | null {
     const selectedPath = resolveSelectedCommandPath(runtime.command);
     let selectedIdentity = selectedPath ?? "";
     try { if (selectedPath) selectedIdentity = realpathSync(selectedPath); } catch { /* keep lexical path */ }
-    const cacheKey = `${runtime.command}\0${runtime.version ?? ""}\0${selectedIdentity}`;
-    if (modeHintCapabilityCache.has(cacheKey)) return modeHintCapabilityCache.get(cacheKey)!;
     const candidates = codexNativeBinaryCandidates(runtime.command);
+    const binaryStatFingerprint = candidates.map(candidate => {
+      try {
+        const stat = statSync(candidate);
+        return `${candidate}\0${stat.dev}\0${stat.ino}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}`;
+      } catch {
+        return `${candidate}\0missing`;
+      }
+    }).join("\0");
+    const cacheKey = `${runtime.command}\0${runtime.version ?? ""}\0${selectedIdentity}\0${binaryStatFingerprint}`;
+    const cached = modeHintCapabilityCache.get(cacheKey);
+    if (cached !== undefined) return cached;
     let sawBinary = false;
     for (const candidate of candidates) {
       try {

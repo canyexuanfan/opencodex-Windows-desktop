@@ -573,7 +573,7 @@ export const ja: Record<TKey, string> = {
   "sub.workspace.selectModelDesc": "一覧からモデルを選んで詳細を確認し、spawn_agent のおすすめに設定します。",
   "sub.workspace.selector": "公開セレクター",
   "sub.ultraMode": "ウルトラモード",
-  "sub.ultraModeHint": "すべてのモデルと reasoning effort で Proactive マルチエージェント委任ポリシーを有効にします（reasoning effort 自体は変更しません）。config.toml に multi_agent_mode_hint_text を書き込みます。",
+  "sub.ultraModeHint": "すべてのモデルと reasoning effort で Proactive マルチエージェント委任ポリシーを有効にします（reasoning effort 自体は変更しません）。config.toml に features.multi_agent_v2.multi_agent_mode_hint_text を書き込みます。",
   "sub.ultraModeV2Required": "v2 マルチエージェントサーフェスが必要です — 先に multi_agent_v2 を有効にし、サブエージェントモードで v2 を選択してください。",
   "sub.ultraModeText": "ウルトラモード委任テキスト",
   "sub.ultraModePreset": "プリセットを復元",

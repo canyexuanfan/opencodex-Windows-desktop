@@ -32,12 +32,16 @@ Mode changes apply to new sessions. `maxConcurrentThreadsPerSession` is a `PUT /
 **Ultra mode** (the Subagents dashboard toggle, `PUT /api/v2` field
 `multiAgentModeHintText`, and `ocx v2 mode-hint`) writes
 `features.multi_agent_v2.multi_agent_mode_hint_text` in Codex's
-`$CODEX_HOME/config.toml`. The hint overrides codex-rs's effort-derived multi-agent
-policy, so any model and any reasoning effort receives the Proactive delegation
-prompt; it does **not** change reasoning effort. A `null` value removes the key so
-the effort-derived policy (ultra = proactive, otherwise explicit) resumes; empty or
-whitespace-only values are rejected because a present empty override would suppress
-even the ultra-derived Proactive message. Requires the `multi_agent_v2` feature.
+`$CODEX_HOME/config.toml`. The CLI `ocx v2 mode-hint` command persists this key even
+when `multi_agent_v2` is disabled; it does not toggle the feature. The hint overrides
+codex-rs's effort-derived multi-agent policy, so any model and any reasoning effort
+receives the Proactive delegation prompt; it does **not** change reasoning effort.
+A `null` value removes the key so the effort-derived policy (ultra = proactive,
+otherwise explicit) resumes; empty or whitespace-only values are rejected because a
+present empty override would suppress even the ultra-derived Proactive message. The
+Subagents dashboard's Ultra mode **on** toggle requires both the native feature and
+an explicit v2 surface (`multiAgentMode: "v2"`, equivalent to `ocx v2 mode v2`);
+`ocx v2 on` alone does not satisfy that dashboard gate.
 
 The management API exposes `GET`/`PUT /api/v2`, `/api/injection-model`, `/api/effort-caps`,
 `/api/subagent-models`, and `/api/subagent-model-fallback`. Injection-model updates are partial;

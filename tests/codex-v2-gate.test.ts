@@ -3,10 +3,10 @@
  * The v2 toggle controls the multi-agent surface only, not ultra visibility.
  * config.toml reader + max_concurrent_threads_per_session writer fixtures.
  */
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import {
   buildCatalogEntries,
@@ -75,6 +75,26 @@ function fixtureConfig(content: string): string {
   const path = join(dir, "config.toml");
   writeFileSync(path, content);
   return path;
+}
+
+function native(supported: boolean, windows = false): Buffer {
+  return Buffer.concat([
+    windows ? Buffer.from("MZ00") : Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+    Buffer.from(supported ? "multi_agent_mode_hint_text" : "older_codex_schema"),
+  ]);
+}
+
+function selectRuntime(command: string, version = "test"): void {
+  resetCodexRuntimeResolveCacheForTests();
+  setCodexRuntimeResolveCacheForTests({ runtime: { command, version, source: "fallback" }, failures: [] });
+}
+
+function installModeHintRuntime(supported = true): string {
+  const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-runtime-"));
+  const command = join(dir, "codex");
+  writeFileSync(command, native(supported));
+  selectRuntime(command);
+  return command;
 }
 
 describe("catalog ultra (always-on)", () => {
@@ -369,6 +389,14 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
   const PRESET = "Proactive multi-agent delegation is active.";
   const TABLE = "# keep me\n[features.multi_agent_v2]\nenabled = true\nmax_concurrent_threads_per_session = 17 # tuned\n\n[notice]\nhide = true\n";
 
+  beforeEach(() => {
+    installModeHintRuntime(true);
+  });
+
+  afterEach(() => {
+    resetCodexRuntimeResolveCacheForTests();
+  });
+
   test("reader: present, absent key, absent table, empty string", () => {
     const present = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = \"Proactive delegation\"\n");
     expect(getMultiAgentModeHintText(present)).toBe("Proactive delegation");
@@ -504,6 +532,13 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
     expect(getMultiAgentModeHintText(path)).toBe(PRESET);
   });
 
+  test("same-named multi-line key in an unrelated table does not block the V2 writer", () => {
+    const path = fixtureConfig('[unrelated]\nmulti_agent_mode_hint_text = """\nleave me alone\n"""\n\n[features.multi_agent_v2]\nenabled = true\n');
+    expect(setMultiAgentModeHintText(PRESET, path)).toEqual({ ok: true, changed: true });
+    expect(readFileSync(path, "utf8")).toContain('multi_agent_mode_hint_text = """\nleave me alone\n"""');
+    expect(getMultiAgentModeHintText(path)).toBe(PRESET);
+  });
+
   test("inline V2 after bracket-shaped multiline prose is read and fails closed on edit", () => {
     const original = '[features]\nother = """\n[prose]\n"""\nmulti_agent_v2 = { enabled = true, multi_agent_mode_hint_text = "inline" }\n';
     const path = fixtureConfig(original);
@@ -523,15 +558,6 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
 });
 
 describe("multi_agent_mode_hint_text native capability probe", () => {
-  const native = (supported: boolean, windows = false) => Buffer.concat([
-    windows ? Buffer.from("MZ00") : Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
-    Buffer.from(supported ? "multi_agent_mode_hint_text" : "older_codex_schema"),
-  ]);
-  const selectRuntime = (command: string, version = "test") => {
-    resetCodexRuntimeResolveCacheForTests();
-    setCodexRuntimeResolveCacheForTests({ runtime: { command, version, source: "fallback" }, failures: [] });
-  };
-
   test("clear bypasses an unsupported runtime probe so invalid old config can recover", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-clear-"));
     const command = join(dir, "codex-old");
@@ -546,7 +572,7 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
     }
   });
 
-  test("probe caches by selected command/version and invalidates on selection change", () => {
+  test("probe cache tracks in-place replacement and selected command changes", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-mode-hint-cache-"));
     const supported = join(dir, "codex-supported");
     const unsupported = join(dir, "codex-unsupported");
@@ -556,6 +582,8 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
       selectRuntime(supported, "1");
       expect(probeCodexSupportsModeHint()).toBe(true);
       writeFileSync(supported, native(false));
+      expect(probeCodexSupportsModeHint()).toBe(false);
+      writeFileSync(supported, native(true));
       expect(probeCodexSupportsModeHint()).toBe(true);
       selectRuntime(unsupported, "1");
       expect(probeCodexSupportsModeHint()).toBe(false);
@@ -572,7 +600,7 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
     writeFileSync(selected, native(false));
     writeFileSync(join(unrelated, "codex.opencodex-real"), native(true));
     const oldPath = process.env.PATH;
-    process.env.PATH = `${unrelated}:${oldPath ?? ""}`;
+    process.env.PATH = `${unrelated}${delimiter}${oldPath ?? ""}`;
     try {
       selectRuntime(selected);
       expect(probeCodexSupportsModeHint()).toBe(false);
@@ -617,7 +645,7 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
     writeFileSync(binary, native(true));
     symlinkSync(js, join(binDir, "codex.opencodex-real"));
     const oldPath = process.env.PATH;
-    process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+    process.env.PATH = `${binDir}${delimiter}${oldPath ?? ""}`;
     try {
       selectRuntime("codex.opencodex-real");
       expect(probeCodexSupportsModeHint()).toBe(true);
@@ -638,10 +666,10 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
     writeFileSync(join(oldDir, command), native(false));
     const oldPath = process.env.PATH;
     try {
-      process.env.PATH = `${supportedDir}:${oldPath ?? ""}`;
+      process.env.PATH = `${supportedDir}${delimiter}${oldPath ?? ""}`;
       selectRuntime(command, "same-version");
       expect(probeCodexSupportsModeHint()).toBe(true);
-      process.env.PATH = `${oldDir}:${oldPath ?? ""}`;
+      process.env.PATH = `${oldDir}${delimiter}${oldPath ?? ""}`;
       selectRuntime(command, "same-version");
       expect(probeCodexSupportsModeHint()).toBe(false);
     } finally {
@@ -662,7 +690,7 @@ describe("multi_agent_mode_hint_text native capability probe", () => {
     const oldCwd = process.cwd();
     const oldPath = process.env.PATH;
     process.chdir(cwd);
-    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    process.env.PATH = `${bin}${delimiter}${oldPath ?? ""}`;
     try {
       selectRuntime(command);
       expect(probeCodexSupportsModeHint()).toBe(false);
@@ -1216,12 +1244,14 @@ describe("management API parity surface for the WP2 keys", () => {
     const oldOcxHome = process.env.OPENCODEX_HOME;
     process.env.CODEX_HOME = dirname(path);
     process.env.OPENCODEX_HOME = mkdtempSync(join(tmpdir(), "ocx-api-parity-"));
+    installModeHintRuntime(true);
     const toggle = (enabled: boolean) => {
       const current = readFileSync(path, "utf8");
       writeFileSync(path, current.replace(/^enabled\s*=\s*(?:true|false)$/m, `enabled = ${enabled}`));
     };
     return run(path, { toggleCodexMultiAgentV2: toggle, createManagementConvergeCodex: catalogConvergenceFactory() })
       .finally(() => {
+        resetCodexRuntimeResolveCacheForTests();
         if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
         if (oldOcxHome === undefined) delete process.env.OPENCODEX_HOME; else process.env.OPENCODEX_HOME = oldOcxHome;
       });
@@ -1267,6 +1297,29 @@ describe("management API parity surface for the WP2 keys", () => {
       const cleared = await handleManagementAPI(put({ multiAgentModeHintText: null }), new URL("http://localhost/api/v2"), config, deps);
       expect(cleared?.status).toBe(200);
       expect(getMultiAgentModeHintText(path)).toBe(null);
+    });
+  });
+
+  test("unsupported mode-hint preflight leaves a combined request entirely unchanged", async () => {
+    await withConfig("[features.multi_agent_v2]\nenabled = false\n", async (path, deps) => {
+      installModeHintRuntime(false);
+      const originalToml = readFileSync(path, "utf8");
+      const localConfig = { providers: [], multiAgentMode: "v1" as const };
+      let toggles = 0;
+      const response = await handleManagementAPI(
+        put({ enabled: true, multiAgentMode: "v2", multiAgentModeHintText: "custom" }),
+        new URL("http://localhost/api/v2"),
+        localConfig as never,
+        { ...deps, toggleCodexMultiAgentV2: () => { toggles++; } },
+      );
+      expect(response?.status).toBe(502);
+      expect(await response?.json()).toEqual({
+        error: "writing multiAgentModeHintText failed: installed Codex does not support multi_agent_mode_hint_text; update Codex first",
+      });
+      expect(toggles).toBe(0);
+      expect(readFileSync(path, "utf8")).toBe(originalToml);
+      expect(isMultiAgentV2Enabled(path)).toBe(false);
+      expect(localConfig.multiAgentMode).toBe("v1");
     });
   });
 
@@ -1496,6 +1549,7 @@ describe("cli surface", () => {
     const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
     const oldCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = dirname(path);
+    installModeHintRuntime(true);
     const logs: string[] = [];
     const log = { log: (m?: unknown) => { logs.push(String(m)); }, error: (m?: unknown) => { logs.push(String(m)); } };
     try {
@@ -1506,6 +1560,7 @@ describe("cli surface", () => {
       expect(await cmdV2(["mode-hint", "--clear"], { log })).toBe(0);
       expect(getMultiAgentModeHintText(path)).toBe(null);
     } finally {
+      resetCodexRuntimeResolveCacheForTests();
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
     }
   });
@@ -1514,6 +1569,7 @@ describe("cli surface", () => {
     const path = fixtureConfig("[features.multi_agent_v2]\nenabled = true\n");
     const oldCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = dirname(path);
+    installModeHintRuntime(true);
     const logs: string[] = [];
     const log = { log: (m?: unknown) => { logs.push(String(m)); }, error: (m?: unknown) => { logs.push(String(m)); } };
     try {
@@ -1532,6 +1588,7 @@ describe("cli surface", () => {
       expect(await cmdV2(["mode-hint", "--clear"], { log })).toBe(0);
       expect(getMultiAgentModeHintText(path)).toBe(null);
     } finally {
+      resetCodexRuntimeResolveCacheForTests();
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldCodexHome;
     }
   });
