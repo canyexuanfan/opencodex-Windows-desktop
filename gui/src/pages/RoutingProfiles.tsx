@@ -16,7 +16,8 @@ import {
 } from "../routing-profile-editor-data";
 import { readJsonIfOk } from "../fetch-json";
 import { Notice } from "../ui";
-import { useT } from "../i18n/shared";
+import { useI18n } from "../i18n/shared";
+import { ROUTING_COMPATIBILITY_FIELD_LABELS } from "../i18n/routing-compatibility-labels";
 
 type DryRunCandidate = {
   provider: string;
@@ -127,9 +128,6 @@ function parseProfiles(raw: unknown): RoutingProfileDto[] {
   if (!Array.isArray(profiles)) return [];
   return profiles.filter((profile): profile is RoutingProfileDto => {
     if (!isPlainObject(profile)) return false;
-    // Validate the complete DTO shape: routingProfileDraftFromDto dereferences
-    // these nested objects, so a management response that omits any of them
-    // must be rejected here rather than crash the load path.
     return typeof profile.id === "string"
       && typeof profile.model === "string"
       && typeof profile.revision === "string"
@@ -186,15 +184,11 @@ export default function RoutingProfiles({
   onCountChange,
 }: {
   apiBase: string;
-  /**
-   * False while this panel is mounted but hidden behind another Models tab. Defaults
-   * true so a direct render (tests) behaves like a visible panel.
-   */
   active?: boolean;
-  /** Reports the profile count up to the tab strip. */
   onCountChange?: (count: number) => void;
 }) {
-  const t = useT();
+  const { locale, t } = useI18n();
+  const compatibilityFieldLabels = ROUTING_COMPATIBILITY_FIELD_LABELS[locale];
   const unavailable = t("routing.unavailable");
   const [profiles, setProfiles] = useState<RoutingProfileDto[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -217,26 +211,8 @@ export default function RoutingProfiles({
   const [catalogError, setCatalogError] = useState(false);
   const selectedRef = useRef<RoutingProfileDto | null>(null);
   const loadGenerationRef = useRef(0);
-  /** Owned by `load` so every entry point — mount, Retry, save, delete — is cancellable. */
   const loadAbortRef = useRef<AbortController | null>(null);
-  /*
-   * Cancelling in-flight work is not enough on its own. A save or delete can resolve
-   * AFTER the panel is hidden or unmounted and then call `load()`, which would open a
-   * fresh controller and four requests that the deactivation effect has already run
-   * past — and whose generation is current, so its writes would land in a panel nobody
-   * is looking at. `load` checks this before it starts anything.
-   */
   const loadEnabledRef = useRef(true);
-
-  /*
-   * Stop loading and cancel whatever is running.
-   *
-   * A stable callback rather than inline cleanup: reading the refs at cleanup time is
-   * the point — whatever load is in flight NOW is what must be cancelled, and the
-   * generation has to move past the value that load captured. Inline, that reads as a
-   * stale-ref mistake to both the linter and the next reader. Naming it says the
-   * latest-value read is deliberate, and it works for deactivation and unmount alike.
-   */
   const cancelActiveLoad = useCallback(() => {
     loadEnabledRef.current = false;
     loadAbortRef.current?.abort();
@@ -271,14 +247,6 @@ export default function RoutingProfiles({
 
   const load = useCallback(async (preferredId?: string) => {
     if (!loadEnabledRef.current) return;
-    /*
-     * `load` owns the controller, not the effect that happens to call it.
-     *
-     * There are four entry points — the mount effect, Retry, post-save, and
-     * post-delete — so an effect-local controller would cancel only the first and let
-     * a Retry or a mutation reload keep running after the tab hides. Generation
-     * invalidation stops the state write but not the network work.
-     */
     loadAbortRef.current?.abort();
     const controller = new AbortController();
     loadAbortRef.current = controller;
@@ -339,35 +307,26 @@ export default function RoutingProfiles({
       }
     } catch (error) {
       if (generation !== loadGenerationRef.current) return;
-      // An aborted supersede or deactivate is not a failure worth showing.
       if (signal.aborted) return;
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
-      // Clear only if this request still owns the ref; a newer load may have replaced it.
       if (loadAbortRef.current === controller) loadAbortRef.current = null;
     }
   }, [apiBase, clearDryRun]);
 
   useEffect(() => {
     if (!active) {
-      // Hidden: stop new loads, cancel work in flight, and invalidate its generation so
-      // a late resolve cannot write into a panel nobody is looking at.
       cancelActiveLoad();
       return;
     }
     loadEnabledRef.current = true;
     const timer = window.setTimeout(() => void load(), 0);
-    // Unmounting counts too — leaving Models entirely must not strand a request.
     return () => {
       window.clearTimeout(timer);
       cancelActiveLoad();
     };
   }, [active, cancelActiveLoad, load]);
 
-  /*
-   * Report the count up to the tab strip from an effect keyed on the list length, not
-   * during render.
-   */
   useEffect(() => {
     onCountChange?.(profiles.length);
   }, [onCountChange, profiles.length]);
@@ -504,19 +463,14 @@ export default function RoutingProfiles({
     try {
       const evidence: Record<string, number | boolean> = {};
       const contextTokens = context.trim() ? Number(context.trim()) : NaN;
-      if (Number.isFinite(contextTokens) && contextTokens > 0) {
-        evidence.contextWindow = contextTokens;
-      }
+      if (Number.isFinite(contextTokens) && contextTokens > 0) evidence.contextWindow = contextTokens;
       if (tools) evidence.toolsRequired = true;
       if (image) evidence.imageInputRequired = true;
       if (structured) evidence.structuredOutputRequired = true;
       const response = await fetch(`${apiBase}/api/routing-profiles/dry-run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          profile: selected.id,
-          evidence,
-        }),
+        body: JSON.stringify({ profile: selected.id, evidence }),
       });
       if (generation !== dryRunGenerationRef.current) return;
       if (!response.ok) {
@@ -532,9 +486,7 @@ export default function RoutingProfiles({
       if (generation !== dryRunGenerationRef.current) return;
       setDryRunError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (generation === dryRunGenerationRef.current) {
-        setRunning(false);
-      }
+      if (generation === dryRunGenerationRef.current) setRunning(false);
     }
   };
 
@@ -544,13 +496,6 @@ export default function RoutingProfiles({
 
   return (
     <div className="page" data-page="routing">
-      {/*
-        Embedded as a Models tab, so the page title and subtitle belong to the shell.
-        Rendering them here too put "Routing Intelligence (beta)" and its description on
-        screen twice — visible the moment the panel was opened in a browser, invisible to
-        every static gate. The actions stay; a heading cannot carry buttons, so they sit
-        in a plain toolbar row.
-      */}
       <div className="row" style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginBottom: 12 }}>
         <button type="button" className="btn btn-primary btn-sm" onClick={startCreate}>
           <span aria-hidden="true">+</span> {t("routing.createProfile")}
@@ -599,21 +544,13 @@ export default function RoutingProfiles({
           <div className="model-grid">
             <label className="field-label">
               <code>id</code>
-              <input
-                className="input"
-                required
-                disabled={selected !== null}
-                value={draft.id}
-                onChange={event => setDraft(current => current ? { ...current, id: event.target.value } : current)}
-              />
+              <input className="input" required disabled={selected !== null} value={draft.id}
+                onChange={event => setDraft(current => current ? { ...current, id: event.target.value } : current)} />
             </label>
             <label className="field-label">
               <code>alias</code>
-              <input
-                className="input"
-                value={draft.alias}
-                onChange={event => setDraft(current => current ? { ...current, alias: event.target.value } : current)}
-              />
+              <input className="input" value={draft.alias}
+                onChange={event => setDraft(current => current ? { ...current, alias: event.target.value } : current)} />
             </label>
           </div>
 
@@ -628,37 +565,24 @@ export default function RoutingProfiles({
                     <div className="model-grid">
                       <label className="field-label">
                         <code>provider</code>
-                        <select
-                          className="input"
-                          required
-                          value={candidate.provider}
-                          onChange={event => updateCandidate(index, "provider", event.target.value)}
-                        >
+                        <select className="input" required value={candidate.provider}
+                          onChange={event => updateCandidate(index, "provider", event.target.value)}>
                           <option value="" disabled>{t("routing.none")}</option>
                           {candidateProviders.map(provider => <option key={provider} value={provider}>{provider}</option>)}
                         </select>
                       </label>
                       <label className="field-label">
                         <code>model</code>
-                        <input
-                          className="input"
-                          required
-                          list={listId}
-                          value={candidate.model}
-                          onChange={event => updateCandidate(index, "model", event.target.value)}
-                        />
+                        <input className="input" required list={listId} value={candidate.model}
+                          onChange={event => updateCandidate(index, "model", event.target.value)} />
                         <datalist id={listId}>
                           {selectedModelOptions[index]?.map(model => <option key={model.id} value={model.id} />)}
                         </datalist>
                       </label>
                     </div>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      disabled={draft.candidates.length === 1}
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={draft.candidates.length === 1}
                       onClick={() => removeCandidate(index)}
-                      aria-label={t("routing.removeCandidate", { provider: candidate.provider, model: candidate.model })}
-                    >
+                      aria-label={t("routing.removeCandidate", { provider: candidate.provider, model: candidate.model })}>
                       {t("common.remove")}
                     </button>
                   </div>
@@ -676,47 +600,33 @@ export default function RoutingProfiles({
               {NUMERIC_REQUIREMENTS.map(key => (
                 <label key={key} className="field-label">
                   <code>{key}</code>
-                  <input
-                    className="input"
-                    type="number"
-                    min={NUMERIC_REQUIREMENT_SPEC[key].min}
-                    max={NUMERIC_REQUIREMENT_SPEC[key].max}
-                    step={NUMERIC_REQUIREMENT_SPEC[key].step}
+                  <input className="input" type="number" min={NUMERIC_REQUIREMENT_SPEC[key].min}
+                    max={NUMERIC_REQUIREMENT_SPEC[key].max} step={NUMERIC_REQUIREMENT_SPEC[key].step}
                     value={draft.require[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
                       require: { ...current.require, [key]: event.target.value },
-                    } : current)}
-                  />
+                    } : current)} />
                 </label>
               ))}
               {STRING_REQUIREMENTS.map(key => (
                 <label key={key} className="field-label">
                   <code>{key}</code>
-                  <input
-                    className="input"
-                    value={draft.require[key]}
+                  <input className="input" value={draft.require[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
                       require: { ...current.require, [key]: event.target.value },
-                    } : current)}
-                  />
+                    } : current)} />
                 </label>
               ))}
               {BOOLEAN_REQUIREMENTS.map(key => (
                 <label key={key} className="field-label">
                   <code>{key}</code>
-                  <select
-                    className="input"
-                    value={draft.require[key]}
+                  <select className="input" value={draft.require[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
-                      require: {
-                        ...current.require,
-                        [key]: event.target.value as OptionalBoolean,
-                      },
-                    } : current)}
-                  >
+                      require: { ...current.require, [key]: event.target.value as OptionalBoolean },
+                    } : current)}>
                     <option value="">{t("routing.none")}</option>
                     <option value="true">{t("routing.yes")}</option>
                     <option value="false">{t("routing.no")}</option>
@@ -732,18 +642,11 @@ export default function RoutingProfiles({
               {OPTIMIZE_KEYS.map(key => (
                 <label key={key} className="field-label">
                   <code>{key}</code>
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    step="any"
-                    required
-                    value={draft.optimize[key]}
+                  <input className="input" type="number" min={0} step="any" required value={draft.optimize[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
                       optimize: { ...current.optimize, [key]: event.target.value },
-                    } : current)}
-                  />
+                    } : current)} />
                 </label>
               ))}
             </div>
@@ -753,17 +656,11 @@ export default function RoutingProfiles({
             <legend className="field-label">{t("routing.limits")}</legend>
             <label className="field-label">
               <code>maxEstimatedCostUsd</code>
-              <input
-                className="input"
-                type="number"
-                min={0}
-                step="any"
-                value={draft.limits.maxEstimatedCostUsd}
+              <input className="input" type="number" min={0} step="any" value={draft.limits.maxEstimatedCostUsd}
                 onChange={event => setDraft(current => current ? {
                   ...current,
                   limits: { maxEstimatedCostUsd: event.target.value },
-                } : current)}
-              />
+                } : current)} />
             </label>
           </fieldset>
 
@@ -773,17 +670,11 @@ export default function RoutingProfiles({
               {UNKNOWN_EVIDENCE_KEYS.map(key => (
                 <label key={key} className="field-label">
                   <code>{key}</code>
-                  <select
-                    className="input"
-                    value={draft.unknownEvidence[key]}
+                  <select className="input" value={draft.unknownEvidence[key]}
                     onChange={event => setDraft(current => current ? {
                       ...current,
-                      unknownEvidence: {
-                        ...current.unknownEvidence,
-                        [key]: event.target.value as UnknownEvidenceMode,
-                      },
-                    } : current)}
-                  >
+                      unknownEvidence: { ...current.unknownEvidence, [key]: event.target.value as UnknownEvidenceMode },
+                    } : current)}>
                     {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
                       <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
                     ))}
@@ -796,14 +687,11 @@ export default function RoutingProfiles({
           <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
             <legend className="field-label">{t("routing.compatibility.title")}</legend>
             <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={draft.compatibility.enabled}
+              <input type="checkbox" checked={draft.compatibility.enabled}
                 onChange={event => setDraft(current => current ? {
                   ...current,
                   compatibility: { ...current.compatibility, enabled: event.target.checked },
-                } : current)}
-              />
+                } : current)} />
               {t("routing.compatibility.enabled")}
             </label>
             {draft.compatibility.enabled ? (
@@ -819,28 +707,18 @@ export default function RoutingProfiles({
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
                       {catalogSuites.map(suite => (
                         <label key={suite.key} className="checkbox">
-                          <input
-                            type="checkbox"
-                            checked={suiteSelected(draft.compatibility.requiredSuites, suite)}
+                          <input type="checkbox" checked={suiteSelected(draft.compatibility.requiredSuites, suite)}
                             onChange={event => setDraft(current => {
                               if (!current) return current;
-                              const selected = event.target.checked;
-                              const requiredSuites = selected
+                              const requiredSuites = event.target.checked
                                 ? [...current.compatibility.requiredSuites, { suiteId: suite.suiteId, evidenceLayer: suite.evidenceLayer }]
                                 : current.compatibility.requiredSuites.filter(row =>
                                   !(row.suiteId === suite.suiteId && row.evidenceLayer === suite.evidenceLayer));
-                              return {
-                                ...current,
-                                compatibility: { ...current.compatibility, requiredSuites },
-                              };
-                            })}
-                          />
+                              return { ...current, compatibility: { ...current.compatibility, requiredSuites } };
+                            })} />
                           <span>
-                            {suite.suiteId}
-                            {" "}
-                            <span className="muted">
-                              ({t(`routing.compatibility.layer.${suite.evidenceLayer}` as const)})
-                            </span>
+                            {suite.suiteId}{" "}
+                            <span className="muted">({t(`routing.compatibility.layer.${suite.evidenceLayer}` as const)})</span>
                           </span>
                         </label>
                       ))}
@@ -849,66 +727,46 @@ export default function RoutingProfiles({
                 </div>
                 <label className="field-label">
                   {t("routing.compatibility.minStatus")}
-                  <select
-                    className="input"
-                    value={draft.compatibility.minStatus}
+                  <select className="input" value={draft.compatibility.minStatus}
                     onChange={event => setDraft(current => current ? {
                       ...current,
                       compatibility: {
                         ...current.compatibility,
                         minStatus: event.target.value as RoutingProfileDraft["compatibility"]["minStatus"],
                       },
-                    } : current)}
-                  >
+                    } : current)}>
                     <option value="">{t("routing.none")}</option>
                     <option value="PROBED">{t("lab.verdict.PROBED")}</option>
                     <option value="VERIFIED">{t("lab.verdict.VERIFIED")}</option>
                   </select>
                 </label>
                 <label className="field-label">
-                  <code>maxEvidenceAgeMs</code>
-                  <input
-                    className="input"
-                    type="number"
-                    min={1}
-                    value={draft.compatibility.maxEvidenceAgeMs}
+                  {compatibilityFieldLabels.maxEvidenceAgeMs}
+                  <input className="input" type="number" min={1} value={draft.compatibility.maxEvidenceAgeMs}
                     onChange={event => setDraft(current => current ? {
                       ...current,
                       compatibility: { ...current.compatibility, maxEvidenceAgeMs: event.target.value },
-                    } : current)}
-                  />
+                    } : current)} />
                 </label>
                 <label className="field-label">
-                  <code>unknownEvidence</code>
-                  <select
-                    className="input"
-                    value={draft.compatibility.unknownEvidence}
+                  {compatibilityFieldLabels.unknownEvidence}
+                  <select className="input" value={draft.compatibility.unknownEvidence}
                     onChange={event => setDraft(current => current ? {
                       ...current,
-                      compatibility: {
-                        ...current.compatibility,
-                        unknownEvidence: event.target.value as UnknownEvidenceMode,
-                      },
-                    } : current)}
-                  >
+                      compatibility: { ...current.compatibility, unknownEvidence: event.target.value as UnknownEvidenceMode },
+                    } : current)}>
                     {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
                       <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
                     ))}
                   </select>
                 </label>
                 <label className="field-label">
-                  <code>degradedEvidence</code>
-                  <select
-                    className="input"
-                    value={draft.compatibility.degradedEvidence}
+                  {compatibilityFieldLabels.degradedEvidence}
+                  <select className="input" value={draft.compatibility.degradedEvidence}
                     onChange={event => setDraft(current => current ? {
                       ...current,
-                      compatibility: {
-                        ...current.compatibility,
-                        degradedEvidence: event.target.value as UnknownEvidenceMode,
-                      },
-                    } : current)}
-                  >
+                      compatibility: { ...current.compatibility, degradedEvidence: event.target.value as UnknownEvidenceMode },
+                    } : current)}>
                     {UNKNOWN_EVIDENCE_OPTIONS.map(mode => (
                       <option key={mode} value={mode}>{t(`routing.unknownEvidence.${mode}` as const)}</option>
                     ))}
@@ -922,9 +780,7 @@ export default function RoutingProfiles({
             <button type="submit" className="btn btn-primary" disabled={saving}>
               {saving ? t("common.saving") : t("common.save")}
             </button>
-            <button type="button" className="btn btn-ghost" disabled={saving} onClick={cancelEdit}>
-              {t("common.cancel")}
-            </button>
+            <button type="button" className="btn btn-ghost" disabled={saving} onClick={cancelEdit}>{t("common.cancel")}</button>
             {selected ? (
               <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => void removeProfile()}>
                 {t("common.remove")}
@@ -938,49 +794,19 @@ export default function RoutingProfiles({
         <h3>{t("routing.dryRun")}</h3>
         <label className="field-label" htmlFor="routing-context">
           {t("routing.dryRunContext")}
-          <input
-            id="routing-context"
-            className="input"
-            type="number"
-            min={1}
-            value={context}
-            onChange={event => {
-              setContext(event.target.value);
-              clearDryRun();
-            }}
-          />
+          <input id="routing-context" className="input" type="number" min={1} value={context}
+            onChange={event => { setContext(event.target.value); clearDryRun(); }} />
         </label>
         <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={tools}
-            onChange={event => {
-              setTools(event.target.checked);
-              clearDryRun();
-            }}
-          />
+          <input type="checkbox" checked={tools} onChange={event => { setTools(event.target.checked); clearDryRun(); }} />
           {t("routing.dryRunTools")}
         </label>
         <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={image}
-            onChange={event => {
-              setImage(event.target.checked);
-              clearDryRun();
-            }}
-          />
+          <input type="checkbox" checked={image} onChange={event => { setImage(event.target.checked); clearDryRun(); }} />
           {t("routing.dryRunImage")}
         </label>
         <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={structured}
-            onChange={event => {
-              setStructured(event.target.checked);
-              clearDryRun();
-            }}
-          />
+          <input type="checkbox" checked={structured} onChange={event => { setStructured(event.target.checked); clearDryRun(); }} />
           {t("routing.dryRunStructured")}
         </label>
         <button type="button" className="btn btn-primary" disabled={!selected || running} onClick={() => void runDryRun()}>
@@ -989,21 +815,16 @@ export default function RoutingProfiles({
         {dryRunError ? <Notice tone="err">{dryRunError}</Notice> : null}
         {dryRunResult ? (
           <table className="tbl">
-            <thead>
-              <tr>
-                <th>{t("routing.candidate")}</th>
-                <th>{t("routing.eligible")}</th>
-                <th>{t("routing.exclusions")}</th>
-                <th>{t("routing.score")}</th>
-              </tr>
-            </thead>
+            <thead><tr>
+              <th>{t("routing.candidate")}</th>
+              <th>{t("routing.eligible")}</th>
+              <th>{t("routing.exclusions")}</th>
+              <th>{t("routing.score")}</th>
+            </tr></thead>
             <tbody>
               {dryRunResult.candidates.map((candidate, index) => (
                 <tr key={`${candidate.provider}/${candidate.model}`}>
-                  <td>
-                    {candidate.provider}/{candidate.model}
-                    {index === dryRunResult.selectedIndex ? ` ✓ (${t("routing.selected")})` : ""}
-                  </td>
+                  <td>{candidate.provider}/{candidate.model}{index === dryRunResult.selectedIndex ? ` ✓ (${t("routing.selected")})` : ""}</td>
                   <td>{candidate.eligible ? t("routing.yes") : t("routing.no")}</td>
                   <td>{candidate.exclusions.map(exclusion => exclusion.code).join(", ") || t("routing.none")}</td>
                   <td>{candidate.score ? candidate.score.total.toFixed(3) : unavailable}</td>
@@ -1030,14 +851,12 @@ export default function RoutingProfiles({
               {analytics.historyTruncated ? <span className="badge badge-muted">{t("routing.analyticsTruncated")}</span> : null}
             </div>
             <table className="tbl">
-              <thead>
-                <tr>
-                  <th>{t("routing.candidate")}</th>
-                  <th>{t("routing.analyticsRequests")}</th>
-                  <th>{t("routing.analyticsSuccessRate")}</th>
-                  <th>{t("routing.analyticsP50")}</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th>{t("routing.candidate")}</th>
+                <th>{t("routing.analyticsRequests")}</th>
+                <th>{t("routing.analyticsSuccessRate")}</th>
+                <th>{t("routing.analyticsP50")}</th>
+              </tr></thead>
               <tbody>
                 {analytics.breakdown.map(row => (
                   <tr key={`${row.provider}/${row.model}`}>
@@ -1050,9 +869,7 @@ export default function RoutingProfiles({
               </tbody>
             </table>
           </>
-        ) : (
-          <p className="muted">{t("routing.analyticsEmpty")}</p>
-        )}
+        ) : <p className="muted">{t("routing.analyticsEmpty")}</p>}
       </div>
     </div>
   );
