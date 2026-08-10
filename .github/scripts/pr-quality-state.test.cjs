@@ -236,7 +236,10 @@ describe("readinessClaimViolations", () => {
 
   it("never treats local CI as a bot-verifiable claim", () => {
     // Fork contributors attest local green; repository CI is maintainer-started.
-    assert.deepEqual(readinessClaimViolations({ behindBase: 0 }), []);
+    assert.deepEqual(
+      readinessClaimViolations({ behindBase: 0, ciGreen: false }),
+      [],
+    );
   });
 
   it("flags a head more than the threshold behind the base", () => {

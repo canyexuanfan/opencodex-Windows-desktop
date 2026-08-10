@@ -99,10 +99,8 @@ jobs:
     needs: resolve-pr
     if: needs.resolve-pr.outputs.pull-number != ''
     runs-on: ubuntu-latest
-    # The write job also reads the current head's aggregate check evidence.
     # Job-scoped permissions replace, rather than extend, the workflow default.
     permissions:
-      checks: read
       contents: write
       pull-requests: write
     concurrency:

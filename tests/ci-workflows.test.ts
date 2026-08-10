@@ -933,8 +933,7 @@ describe("GitHub Actions hardening", () => {
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
     expect(Object.prototype.hasOwnProperty.call(workflow.on ?? {}, "status")).toBe(true);
 
-    // Exactly the scopes this gate needs. `checks: read` covers the live
-    // current-head CI evidence lookup. `pull-requests: write` covers title and
+    // Exactly the scopes this gate needs. `pull-requests: write` covers title and
     // comment updates. `contents: write` is required for the draft GraphQL
     // mutations with GITHUB_TOKEN (#626: "Resource not accessible by integration"
     // when contents was unset). Asserting the whole object pins both presence
@@ -994,7 +993,6 @@ describe("GitHub Actions hardening", () => {
     ]);
     expect(job?.["runs-on"]).toBe("ubuntu-latest");
     expect(job?.permissions).toEqual({
-      checks: "read",
       contents: "write",
       "pull-requests": "write",
     });
