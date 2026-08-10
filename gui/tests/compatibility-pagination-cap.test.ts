@@ -20,6 +20,9 @@ test("advancing pagination at the safety cap is truncated, not a contract error"
   try {
     const result = await fetchAllSubjects(API_BASE, new AbortController().signal);
     expect(result.rows).toHaveLength(200);
+    expect(result.rows.map(row => row.subjectId)).toEqual(
+      Array.from({ length: 200 }, (_, cursor) => `subject-${cursor}`),
+    );
     expect(result.truncated).toBe(true);
     expect(requests).toBe(200);
   } finally {
