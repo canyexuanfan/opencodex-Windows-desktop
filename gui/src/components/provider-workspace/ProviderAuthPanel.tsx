@@ -40,10 +40,18 @@ const COCKPIT_RESULT_KEYS = new Set([
   "totalCount", "importedCount", "updatedCount", "failedCount", "unsupportedCount", "results",
 ]);
 const COCKPIT_RESULT_STATUSES = new Set(["imported", "updated", "failed", "unsupported"]);
-const COCKPIT_RESULT_CODES = new Set([
-  "imported", "updated", "unsupported_provider", "unsupported_format", "invalid_document",
-  "invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed",
-]);
+const COCKPIT_STATUS_CODES: Record<string, ReadonlySet<string>> = {
+  imported: new Set(["imported"]),
+  updated: new Set(["updated"]),
+  failed: new Set([
+    "invalid_record",
+    "credential_rejected",
+    "identity_mismatch",
+    "missing_project",
+    "persist_failed",
+  ]),
+  unsupported: new Set(["unsupported_provider", "unsupported_format"]),
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -72,10 +80,12 @@ function safeCockpitImportResult(value: unknown): CockpitImportResult | null {
   const observed = { imported: 0, updated: 0, failed: 0, unsupported: 0 };
   for (const [index, result] of results.entries()) {
     if (!isPlainObject(result) || Object.keys(result).some(key => !["index", "status", "code"].includes(key))) return null;
-    if (result.index !== index || !COCKPIT_RESULT_STATUSES.has(String(result.status)) || !COCKPIT_RESULT_CODES.has(String(result.code))) {
-      return null;
-    }
-    observed[result.status as keyof typeof observed] += 1;
+    const status = String(result.status);
+    const code = String(result.code);
+    if (result.index !== index || !COCKPIT_RESULT_STATUSES.has(status)) return null;
+    const allowedCodes = COCKPIT_STATUS_CODES[status];
+    if (!allowedCodes?.has(code)) return null;
+    observed[status as keyof typeof observed] += 1;
   }
   if (
     observed.imported !== importedCount

@@ -185,7 +185,7 @@ export async function readBoundedJsonRequestBody(
   req: Request,
   maxBytes: number,
   budget?: TranslatorBudget,
-  options?: { emptyBodyFallback?: unknown },
+  options?: { emptyBodyFallback?: unknown; signal?: AbortSignal },
 ): Promise<unknown> {
   const encoding = req.headers.get("content-encoding");
   const declaredLength = declaredBodyLength(req);
@@ -201,7 +201,7 @@ export async function readBoundedJsonRequestBody(
     : undefined;
   let raw: Uint8Array;
   try {
-    raw = await readRequestBodyBytesCapped(req.body, maxBytes, req.signal);
+    raw = await readRequestBodyBytesCapped(req.body, maxBytes, options?.signal ?? req.signal);
   } finally {
     releaseReservation?.();
   }

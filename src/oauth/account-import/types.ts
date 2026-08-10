@@ -15,6 +15,7 @@ export type AccountImportStatus = "imported" | "updated" | "failed" | "unsupport
 export type AccountImportCode =
   | "imported"
   | "updated"
+  | "import_cancelled"
   | "unsupported_provider"
   | "unsupported_format"
   | "invalid_document"
@@ -43,6 +44,19 @@ export interface AccountImportRequest {
   provider: string;
   format: string;
   document: unknown;
+  signal?: AbortSignal;
+}
+
+/** A secret-free terminal signal for a cancelled import request. */
+export class AccountImportAbortError extends Error {
+  constructor() {
+    super("Account import cancelled");
+    this.name = "AccountImportAbortError";
+  }
+}
+
+export function throwIfAccountImportAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new AccountImportAbortError();
 }
 
 export interface CockpitAccountRecord {
@@ -65,7 +79,7 @@ export type AccountImportRecordOutcome =
 export interface AccountImportAdapter {
   readonly provider: typeof ACCOUNT_IMPORT_PROVIDER;
   readonly format: typeof ACCOUNT_IMPORT_FORMAT;
-  importRecord(record: CockpitAccountRecord): Promise<AccountImportRecordOutcome>;
+  importRecord(record: CockpitAccountRecord, signal?: AbortSignal): Promise<AccountImportRecordOutcome>;
 }
 
 export interface ValidatedAntigravityCredential extends OAuthCredentials {

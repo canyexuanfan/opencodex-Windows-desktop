@@ -9,6 +9,7 @@ import {
   ACCOUNT_IMPORT_FORMAT,
   ACCOUNT_IMPORT_MAX_RECORDS,
   ACCOUNT_IMPORT_PROVIDER,
+  AccountImportAbortError,
   type AccountImportAdapter,
 } from "../src/oauth/account-import/types";
 import { getAccountSet, upsertCredentialByIdentity } from "../src/oauth/store";
@@ -141,6 +142,155 @@ describe("Cockpit account-import service and adapter", () => {
     const outcome = await writeFailure.importRecord({ email: "user@example.com", refreshToken: CANARY });
     expect(outcome).toEqual({ status: "failed", code: "persist_failed" });
     expect(JSON.stringify(outcome)).not.toContain(CANARY);
+  });
+
+  test("returns import_cancelled when the request is already aborted before import starts", async () => {
+    let calls = 0;
+    const adapter: AccountImportAdapter = {
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      async importRecord() {
+        calls += 1;
+        return { status: "imported", code: "imported" };
+      },
+    };
+    const controller = new AbortController();
+    controller.abort();
+    expect(await importAccounts({
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      document: [record()],
+      signal: controller.signal,
+    }, { resolveAdapter: () => ({ ok: true, adapter }) }))
+      .toEqual({ ok: false, status: 408, code: "import_cancelled" });
+    expect(calls).toBe(0);
+  });
+
+  test("cancels a delayed validation before upsert and does not begin following records", async () => {
+    const controller = new AbortController();
+    let resolveValidation: ((credential: {
+      access: string;
+      refresh: string;
+      expires: number;
+      email: string;
+      projectId: string;
+    }) => void) | undefined;
+    const delayedValidation = new Promise<{
+      access: string;
+      refresh: string;
+      expires: number;
+      email: string;
+      projectId: string;
+    }>(resolve => {
+      resolveValidation = resolve;
+    });
+    let validationCalls = 0;
+    let upsertCalls = 0;
+    const adapter = createAntigravityAccountImportAdapter({
+      validate: async () => {
+        validationCalls += 1;
+        return delayedValidation;
+      },
+      upsert: async () => {
+        upsertCalls += 1;
+        return "inserted";
+      },
+    });
+
+    const imported = importAccounts({
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      document: [record(), record({ email: "second@example.com" })],
+      signal: controller.signal,
+    }, { resolveAdapter: () => ({ ok: true, adapter }) });
+
+    controller.abort();
+    resolveValidation?.({
+      access: "access-safe",
+      refresh: "refresh-safe",
+      expires: Date.now() + 60_000,
+      email: "user@example.com",
+      projectId: "project-safe",
+    });
+
+    expect(await imported).toEqual({ ok: false, status: 408, code: "import_cancelled" });
+    expect(validationCalls).toBe(1);
+    expect(upsertCalls).toBe(0);
+  });
+
+  test("cancels between validation and atomic upsert", async () => {
+    const controller = new AbortController();
+    let upsertCalls = 0;
+    const credential = {
+      access: "access-safe",
+      refresh: "refresh-safe",
+      expires: Date.now() + 60_000,
+      email: "user@example.com",
+      get projectId() {
+        controller.abort();
+        return "project-safe";
+      },
+    };
+    const adapter = createAntigravityAccountImportAdapter({
+      validate: async () => credential,
+      upsert: async () => {
+        upsertCalls += 1;
+        return "inserted";
+      },
+    });
+
+    expect(await importAccounts({
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      document: [record()],
+      signal: controller.signal,
+    }, { resolveAdapter: () => ({ ok: true, adapter }) }))
+      .toEqual({ ok: false, status: 408, code: "import_cancelled" });
+    expect(upsertCalls).toBe(0);
+  });
+
+  test("preserves a committed-change signal when a later record is cancelled", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const adapter: AccountImportAdapter = {
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      async importRecord() {
+        calls += 1;
+        if (calls === 1) return { status: "imported", code: "imported" };
+        controller.abort();
+        throw new AccountImportAbortError();
+      },
+    };
+
+    expect(await importAccounts({
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      document: [record(), record({ email: "second@example.com" })],
+      signal: controller.signal,
+    }, { resolveAdapter: () => ({ ok: true, adapter }) }))
+      .toEqual({ ok: false, status: 408, code: "import_cancelled", changed: true });
+    expect(calls).toBe(2);
+  });
+
+  test("records a committed outcome before observing cancellation from the same record", async () => {
+    const controller = new AbortController();
+    const adapter: AccountImportAdapter = {
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      async importRecord() {
+        controller.abort();
+        return { status: "updated", code: "updated" };
+      },
+    };
+
+    expect(await importAccounts({
+      provider: ACCOUNT_IMPORT_PROVIDER,
+      format: ACCOUNT_IMPORT_FORMAT,
+      document: [record()],
+      signal: controller.signal,
+    }, { resolveAdapter: () => ({ ok: true, adapter }) }))
+      .toEqual({ ok: false, status: 408, code: "import_cancelled", changed: true });
   });
 });
 

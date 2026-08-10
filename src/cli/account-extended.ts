@@ -136,7 +136,7 @@ async function readBoundedImportStdin(deps: AccountDeps): Promise<string> {
 
 const IMPORT_STATUSES = new Set<AccountImportStatus>(["imported", "updated", "failed", "unsupported"]);
 const IMPORT_CODES = new Set<AccountImportCode>([
-  "imported", "updated", "unsupported_provider", "unsupported_format", "invalid_document",
+  "imported", "updated", "import_cancelled", "unsupported_provider", "unsupported_format", "invalid_document",
   "invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed",
 ]);
 const IMPORT_RESULT_FIELDS = new Set([

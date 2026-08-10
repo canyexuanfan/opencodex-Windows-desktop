@@ -171,3 +171,28 @@ test("handles unsupported result codes without exposing them and resets for repe
   expect(host.textContent).not.toContain("unsupported_provider");
   expect(input().value).toBe("");
 });
+
+test("rejects contradictory status/code pairs without exposing backend codes or canaries", async () => {
+  await mount();
+
+  for (const contradictory of [
+    { status: "imported", code: "persist_failed" },
+    { status: "updated", code: "credential_rejected" },
+    { status: "failed", code: "imported" },
+    { status: "unsupported", code: "invalid_document" },
+  ]) {
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({
+      totalCount: 1,
+      importedCount: contradictory.status === "imported" ? 1 : 0,
+      updatedCount: contradictory.status === "updated" ? 1 : 0,
+      failedCount: contradictory.status === "failed" ? 1 : 0,
+      unsupportedCount: contradictory.status === "unsupported" ? 1 : 0,
+      results: [{ index: 0, status: contradictory.status, code: contradictory.code, error: CANARY }],
+    })));
+    await select("[]");
+    expect(host.textContent).toContain("The account import could not be completed.");
+    expect(host.textContent).not.toContain(contradictory.code);
+    expect(host.textContent).not.toContain(CANARY);
+    expect(retryAccounts).not.toHaveBeenCalled();
+  }
+});

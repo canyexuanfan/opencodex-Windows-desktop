@@ -5,13 +5,14 @@ import {
   ACCOUNT_IMPORT_FORMAT,
   ACCOUNT_IMPORT_MAX_EMAIL_LENGTH,
   ACCOUNT_IMPORT_PROVIDER,
+  throwIfAccountImportAborted,
   type AccountImportAdapter,
   type CockpitAccountRecord,
   type ValidatedAntigravityCredential,
 } from "./types";
 
 export interface AntigravityImportAdapterDeps {
-  validate(refreshToken: string): Promise<ValidatedAntigravityCredential>;
+  validate(refreshToken: string, signal?: AbortSignal): Promise<ValidatedAntigravityCredential>;
   upsert(credential: OAuthCredentials): Promise<"inserted" | "updated">;
 }
 
@@ -36,13 +37,17 @@ export function createAntigravityAccountImportAdapter(
   return {
     provider: ACCOUNT_IMPORT_PROVIDER,
     format: ACCOUNT_IMPORT_FORMAT,
-    async importRecord(record: CockpitAccountRecord) {
+    async importRecord(record: CockpitAccountRecord, signal?: AbortSignal) {
+      throwIfAccountImportAborted(signal);
       let credential: ValidatedAntigravityCredential;
       try {
-        credential = await deps.validate(record.refreshToken);
+        credential = await deps.validate(record.refreshToken, signal);
       } catch {
+        throwIfAccountImportAborted(signal);
         return { status: "failed", code: "credential_rejected" };
       }
+
+      throwIfAccountImportAborted(signal);
 
       const providerEmail = safeProviderEmail(credential.email);
       if (!providerEmail) return { status: "failed", code: "credential_rejected" };
@@ -51,6 +56,7 @@ export function createAntigravityAccountImportAdapter(
         return { status: "failed", code: "missing_project" };
       }
 
+      throwIfAccountImportAborted(signal);
       try {
         const disposition = await deps.upsert({
           ...credential,

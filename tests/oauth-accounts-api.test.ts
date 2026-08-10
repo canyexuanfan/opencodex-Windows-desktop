@@ -12,6 +12,7 @@ import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isol
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import { getAccountSet } from "../src/oauth/store";
 import { ACCOUNT_IMPORT_MAX_BYTES, ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../src/oauth/account-import/types";
+import { handleOauthAccountRoutes } from "../src/server/management/oauth-account-routes";
 
 let testDir = "";
 let previousHome: string | undefined;
@@ -204,8 +205,116 @@ describe("multiauth accounts API", () => {
         expect(response.status).toBe(400);
         expect(await response.json()).toEqual({ code });
       }
+      const malformed = await fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toEqual({ code: "invalid_document" });
       expect(getAccountSet("google-antigravity")).toBeNull();
     } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("POST Cockpit import deadline bounds a still-streaming body and returns import_cancelled", async () => {
+    let bodyCancelled = false;
+    const request = new Request("http://localhost/api/oauth/accounts/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"provider":"google-antigravity",'));
+        },
+        cancel() { bodyCancelled = true; },
+      }),
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+      originalSetTimeout(handler, timeout === 600_000 ? 0 : timeout, ...args)) as typeof setTimeout;
+    try {
+      const response = await handleOauthAccountRoutes({
+        req: request,
+        url: new URL(request.url),
+        config: baseConfig(),
+        deps: {},
+        convergeCodexCatalog: async () => ({ status: "failed", reason: "disk" }),
+        syncClaudeAgentDefsBestEffort: async () => {},
+      });
+      expect(response?.status).toBe(408);
+      expect(await response?.json()).toEqual({ code: "import_cancelled" });
+      expect(request.signal.aborted).toBe(false);
+      expect(bodyCancelled).toBe(true);
+      expect(getAccountSet("google-antigravity")).toBeNull();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  test("POST Cockpit import deadline returns 408 and reconciles caches after a partial commit", async () => {
+    let secondValidationStarted!: () => void;
+    const secondValidation = new Promise<void>(resolve => { secondValidationStarted = resolve; });
+    let fireDeadline!: () => void;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const raw = input instanceof Request ? input.url : String(input);
+      if (raw.includes("/api/")) return originalFetch(input, init);
+      if (raw.includes("oauth2.googleapis.com/token")) {
+        const refresh = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+        if (refresh === "second-refresh") {
+          secondValidationStarted();
+          return await new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            const rejectAbort = () => reject(signal?.reason ?? new DOMException("aborted", "AbortError"));
+            if (signal?.aborted) rejectAbort();
+            else signal?.addEventListener("abort", rejectAbort, { once: true });
+          });
+        }
+        return Response.json({ access_token: `access-${refresh}`, expires_in: 3600 });
+      }
+      if (raw.includes("/oauth2/v2/userinfo")) return Response.json({ email: "first@example.com" });
+      if (raw.includes(":loadCodeAssist")) return Response.json({ cloudaicompanionProject: "project-import" });
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const server = startServer(0);
+    const originalSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 600_000) {
+        if (typeof handler !== "function") throw new TypeError("deadline handler must be callable");
+        fireDeadline = () => handler(...args);
+        return originalSetTimeout(() => {}, 60_000);
+      }
+      return originalSetTimeout(handler, timeout, ...args);
+    }) as typeof setTimeout;
+    try {
+      setCached("google-antigravity", [{ provider: "google-antigravity", id: "stale-before-import" }]);
+      const importing = fetch(new URL("/api/oauth/accounts/import", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "google-antigravity",
+          format: "cockpit-tools",
+          document: [
+            { email: "first@example.com", refresh_token: "first-refresh" },
+            { email: "second@example.com", refresh_token: "second-refresh" },
+          ],
+        }),
+      });
+      await secondValidation;
+      fireDeadline();
+      const response = await importing;
+      expect(response.status).toBe(408);
+      const responseText = await response.text();
+      expect(responseText).not.toContain("first-refresh");
+      expect(responseText).not.toContain("second-refresh");
+      expect(JSON.parse(responseText)).toEqual({ code: "import_cancelled" });
+      expect(getAccountSet("google-antigravity")?.accounts).toHaveLength(1);
+      expect(getAccountSet("google-antigravity")?.accounts[0]?.credential.refresh).toBe("first-refresh");
+      expect(getStaleCached("google-antigravity")).toBeNull();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
       await server.stop(true);
     }
   });

@@ -72,6 +72,12 @@ import { codexAccountNamespaceProviderCollisionError } from "../../codex/account
 import { ACCOUNT_IMPORT_MAX_REQUEST_BYTES } from "../../oauth/account-import";
 import { readBoundedJsonRequestBody } from "../request-decompress";
 
+// Match the public CLI's bounded import window. Individual provider requests keep
+// their own shorter timeouts, while the batch still has enough time to process
+// the admitted maximum of 25 records. A disconnected request aborts immediately
+// through req.signal below; this is only the server-side backstop.
+const ACCOUNT_IMPORT_DEADLINE_MS = 600_000;
+
 /**
  * Parses a bounded JSON object body, or null. Malformed JSON is swallowed; an
  * oversized body still throws so the management dispatcher can return 413.
@@ -387,29 +393,52 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   }
 
   if (url.pathname === "/api/oauth/accounts/import" && req.method === "POST") {
-    let rawBody: unknown;
+    const controller = new AbortController();
+    const abortRequest = () => controller.abort();
+    if (req.signal.aborted) abortRequest();
+    else req.signal.addEventListener("abort", abortRequest, { once: true });
+    const deadline = setTimeout(abortRequest, ACCOUNT_IMPORT_DEADLINE_MS);
     try {
-      rawBody = await readBoundedJsonRequestBody(req, ACCOUNT_IMPORT_MAX_REQUEST_BYTES);
-    } catch {
-      return jsonResponse({ code: "invalid_document" }, 400);
+      let rawBody: unknown;
+      try {
+        rawBody = await readBoundedJsonRequestBody(
+          req,
+          ACCOUNT_IMPORT_MAX_REQUEST_BYTES,
+          undefined,
+          { signal: controller.signal },
+        );
+      } catch {
+        if (controller.signal.aborted) return jsonResponse({ code: "import_cancelled" }, 408);
+        return jsonResponse({ code: "invalid_document" }, 400);
+      }
+      if (!isPlainRecord(rawBody)) return jsonResponse({ code: "invalid_document" }, 400);
+      const provider = typeof rawBody.provider === "string" ? rawBody.provider : "";
+      const format = typeof rawBody.format === "string" ? rawBody.format : "";
+      const { importAccounts } = await import("../../oauth/account-import");
+      const imported = await importAccounts({
+        provider,
+        format,
+        document: rawBody.document,
+        signal: controller.signal,
+      });
+      const changed = imported.ok
+        ? imported.result.importedCount > 0 || imported.result.updatedCount > 0
+        : imported.changed === true;
+      if (changed) {
+        reconcileLiveStateStores();
+        const { clearModelCache } = await import("../../codex/model-cache");
+        const { clearGatherRoutedModelsInflight } = await import("../../codex/catalog");
+        clearModelCache(provider);
+        clearGatherRoutedModelsInflight();
+        clearProviderQuotaCache();
+        clearAccountQuotaCache(provider);
+      }
+      if (!imported.ok) return jsonResponse({ code: imported.code }, imported.status);
+      return jsonResponse(imported.result);
+    } finally {
+      clearTimeout(deadline);
+      req.signal.removeEventListener("abort", abortRequest);
     }
-    if (!isPlainRecord(rawBody)) return jsonResponse({ code: "invalid_document" }, 400);
-    const provider = typeof rawBody.provider === "string" ? rawBody.provider : "";
-    const format = typeof rawBody.format === "string" ? rawBody.format : "";
-    const { importAccounts } = await import("../../oauth/account-import");
-    const imported = await importAccounts({ provider, format, document: rawBody.document });
-    if (!imported.ok) return jsonResponse({ code: imported.code }, imported.status);
-
-    if (imported.result.importedCount > 0 || imported.result.updatedCount > 0) {
-      reconcileLiveStateStores();
-      const { clearModelCache } = await import("../../codex/model-cache");
-      const { clearGatherRoutedModelsInflight } = await import("../../codex/catalog");
-      clearModelCache(provider);
-      clearGatherRoutedModelsInflight();
-      clearProviderQuotaCache();
-      clearAccountQuotaCache(provider);
-    }
-    return jsonResponse(imported.result);
   }
 
   if (url.pathname === "/api/oauth/accounts/alias" && req.method === "PUT") {
