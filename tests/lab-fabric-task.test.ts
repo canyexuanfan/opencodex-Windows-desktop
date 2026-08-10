@@ -387,6 +387,15 @@ describe("CL-07 task effectiveness producer", () => {
       platforms: ["win32"],
       routePreconditions: ["exact-route-subject"],
     })).toBe(true);
+    expect(taskSubjectApplicableToRequirements({
+      requiredHarnessFeatures: [],
+      platforms: ["linux"],
+      routePreconditions: [],
+    }, {
+      harnessFeatures: [],
+      platforms: ["win32", "*"],
+      routePreconditions: [],
+    })).toBe(true);
   });
 
   test("malformed nested outcome fields throw FabricTaskError", async () => {
@@ -396,15 +405,27 @@ describe("CL-07 task effectiveness producer", () => {
       configDir: home,
       producePatch: () => correctSyntheticPatch(),
     });
-    expect(() => observationFromFabricOutcome({ ...base, verifier: {} })).toThrow();
-    expect(() => observationFromFabricOutcome({
-      ...base,
-      usage: { ...base.usage, inputBytes: -1 },
-    })).toThrow();
-    expect(() => observationFromFabricOutcome({
-      ...base,
-      taskSubject: { ...base.taskSubject, subjectKind: "route" },
-    })).toThrow();
+    expect(() => observationFromFabricOutcome({ ...base, verifier: {} })).toThrow(FabricTaskError);
+    try {
+      observationFromFabricOutcome({
+        ...base,
+        usage: { ...base.usage, inputBytes: -1 },
+      });
+      throw new Error("expected malformed usage to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FabricTaskError);
+      expect((error as FabricTaskError).code).toBe("malformed_producer_outcome");
+    }
+    try {
+      observationFromFabricOutcome({
+        ...base,
+        routeSubject: routeSubject({ providerId: "other-provider" }),
+      });
+      throw new Error("expected layer mismatch to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FabricTaskError);
+      expect((error as FabricTaskError).code).toBe("layer_subject_mismatch");
+    }
   });
 
   test("verifier summary artifact omits raw credential diagnostics", async () => {
@@ -448,7 +469,7 @@ describe("CL-07 task effectiveness producer", () => {
     process.env.OPENCODEX_HOME = home;
     mkdirSync(join(home, "lab"), { recursive: true, mode: 0o700 });
     const lockPath = join(home, "lab", "compatibility.jsonl.lock");
-    writeFileSync(lockPath, JSON.stringify({ pid: 99999, createdAt: Date.now() - 120_000 }), { mode: 0o600 });
+    writeFileSync(lockPath, JSON.stringify({ pid: 99999, createdAt: Date.now() - 120_000, token: "stale-lock-token" }), { mode: 0o600 });
     const outcome = await runFabricSyntheticPatchTask({
       routeSubject: routeSubject(),
       configDir: home,
@@ -472,6 +493,22 @@ describe("CL-07 task effectiveness producer", () => {
     }
     expect(() => createSyntheticScratch(home)).toThrow();
     expect(readdirSync(outside).some((name) => name.startsWith("fabric-"))).toBe(false);
+  });
+
+  test("symlinked lab root rejects directory escape via ensureLabDirs", () => {
+    if (process.platform === "win32") return;
+    const home = tempHome();
+    const outside = join(home, "outside-lab");
+    mkdirSync(outside, { recursive: true, mode: 0o700 });
+    const labLink = join(home, "lab");
+    try {
+      symlinkSync(outside, labLink);
+    } catch {
+      return;
+    }
+    expect(() => ensureLabDirs(home)).toThrow();
+    expect(existsSync(join(outside, "scratch"))).toBe(false);
+    expect(existsSync(join(outside, "artifacts"))).toBe(false);
   });
 
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {

@@ -6,12 +6,9 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readdirSync,
   readSync,
-  renameSync,
   rmSync,
-  unlinkSync,
   writeSync,
   type Stats,
 } from "node:fs";
@@ -23,27 +20,15 @@ import { FabricTaskError } from "./types";
 
 /** CL-07 restricted scratch tree IO for the synthetic-patch fabric task. */
 
-const O_NOFOLLOW = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
 const O_DIRECTORY = (fsConstants as { O_DIRECTORY?: number }).O_DIRECTORY;
+const O_NOFOLLOW = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
 const FILE_MODE = 0o600;
-
-type OpenSyncWithDir = (
-  path: string,
-  flags: number,
-  mode: number,
-  options: { dir: number },
-) => number;
-
-type ScratchIoMode = "dirfd" | "win32_pinned";
 
 interface TrustedScratchDir {
   path: string;
   fd: number;
   identity: string;
 }
-
-let scratchIoMode: ScratchIoMode | null = null;
-const trustedScratchRoots = new Map<string, TrustedScratchDir>();
 
 /** Require stats to describe a regular file, not a symlink or special node. */
 function assertRegularFile(stats: Stats, label: string): void {
@@ -82,9 +67,9 @@ function assertScratchName(name: string): void {
   }
 }
 
-/** Re-open scratch dir fd and confirm its identity has not changed. */
+/** Confirm the scratch root path still refers to the same directory inode. */
 function revalidateScratchDir(dir: TrustedScratchDir): void {
-  const stats = fstatSync(dir.fd);
+  const stats = lstatSync(dir.path);
   assertRealDirectory(stats, "scratch dir");
   if (identityOf(stats) !== dir.identity) {
     throw new FabricTaskError("scratch directory identity changed", "sandbox_violation", "harness");
@@ -98,47 +83,18 @@ function childScratchPath(dir: TrustedScratchDir, name: string): string {
   return join(dir.path, name);
 }
 
-/** Detect whether scratch IO uses dirfd openat or win32 pinned path mode. */
-function detectScratchIoMode(dir: TrustedScratchDir): ScratchIoMode {
-  if (scratchIoMode !== null) return scratchIoMode;
-  if (process.platform === "win32") {
-    scratchIoMode = "win32_pinned";
-    return scratchIoMode;
-  }
-  const probe = `.dirfd-probe-${process.pid}`;
-  const finalName = `${probe}.ok`;
-  try {
-    const openWithDir = openSync as unknown as OpenSyncWithDir;
-    const fd = openWithDir(probe, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR, FILE_MODE, { dir: dir.fd });
-    closeSync(fd);
-    renameSync(join(dir.path, probe), join(dir.path, finalName));
-    if (!existsSync(join(dir.path, finalName))) {
-      scratchIoMode = "win32_pinned";
-      return scratchIoMode;
-    }
-    unlinkSync(join(dir.path, finalName));
-    scratchIoMode = "dirfd";
-  } catch {
-    scratchIoMode = "win32_pinned";
-  }
-  return scratchIoMode;
-}
-
-/** Open a single name relative to a trusted scratch directory fd. */
+/** Open a single name relative to a trusted scratch directory using pinned paths. */
 function openAtScratch(dir: TrustedScratchDir, name: string, flags: number, mode = 0, expectDirectory = false): number {
   revalidateScratchDir(dir);
   assertScratchName(name);
-  const mode_ = detectScratchIoMode(dir);
-  if (mode_ === "dirfd") {
-    return (openSync as unknown as OpenSyncWithDir)(name, flags, mode, { dir: dir.fd });
-  }
-  const fd = openSync(childScratchPath(dir, name), flags, mode);
+  const path = childScratchPath(dir, name);
+  const fd = openSync(path, openFlags(flags), mode);
   const opened = fstatSync(fd);
   if (expectDirectory) {
     assertRealDirectory(opened, name);
   } else {
     assertRegularFile(opened, name);
-    const pathEntry = lstatSync(childScratchPath(dir, name));
+    const pathEntry = lstatSync(path);
     if (identityOf(opened) !== identityOf(pathEntry)) {
       throw new FabricTaskError("scratch path redirection detected", "sandbox_violation", "harness");
     }
@@ -160,26 +116,10 @@ function openTrustedScratchRoot(scratchRoot: string): TrustedScratchDir {
   return { path: abs, fd, identity: identityOf(stats) };
 }
 
-/** Return a cached trusted scratch handle, opening the root on first use. */
-function getTrustedScratch(scratchRoot: string): TrustedScratchDir {
-  const abs = resolve(scratchRoot);
-  let trusted = trustedScratchRoots.get(abs);
-  if (!trusted) {
-    trusted = openTrustedScratchRoot(abs);
-    trustedScratchRoots.set(abs, trusted);
-  }
-  revalidateScratchDir(trusted);
-  return trusted;
-}
-
-/** Close and drop a cached trusted scratch directory handle. */
-function releaseTrustedScratch(scratchRoot: string): void {
-  const abs = resolve(scratchRoot);
-  const trusted = trustedScratchRoots.get(abs);
-  if (!trusted) return;
-  trustedScratchRoots.delete(abs);
+/** Close a trusted scratch directory handle. */
+function closeTrustedScratchRoot(dir: TrustedScratchDir): void {
   try {
-    closeSync(trusted.fd);
+    closeSync(dir.fd);
   } catch {
     /* ignore */
   }
@@ -210,7 +150,11 @@ function openScratchRelativePath(
         current = { path: join(current.path, part), fd: subFd, identity: identityOf(subStats) };
         continue;
       }
-      return openAtScratch(current, part, flags, mode);
+      const finalFd = openAtScratch(current, part, flags, mode);
+      for (const fd of intermediateFds) {
+        closeSync(fd);
+      }
+      return finalFd;
     }
     throw new FabricTaskError("empty scratch path", "sandbox_violation", "harness");
   } catch (error) {
@@ -300,6 +244,28 @@ export function resolveInsideScratch(scratchRoot: string, relativePath: string, 
   return current;
 }
 
+/** Create a relative directory tree under scratch without following symlink components. */
+function ensureScratchRelativeDir(scratchRoot: string, relativeDir: string): void {
+  const safe = assertSafeRelativePosixPath(relativeDir);
+  const root = resolve(scratchRoot);
+  const rootStats = lstatSync(root);
+  assertRealDirectory(rootStats, "scratch root");
+  let current = root;
+  for (const part of safe.split("/")) {
+    const next = join(current, part);
+    assertUnderScratchRoot(root, next);
+    if (!existsSync(next)) {
+      mkdirSync(next, { mode: 0o700 });
+    }
+    const stats = lstatSync(next);
+    if (stats.isSymbolicLink()) {
+      throw new FabricTaskError("symlink rejected", "sandbox_violation", "harness");
+    }
+    assertRealDirectory(stats, next);
+    current = next;
+  }
+}
+
 /** Handle for a fabric scratch tree and its best-effort cleanup callback. */
 export interface ScratchTree {
   root: string;
@@ -314,34 +280,40 @@ export function createSyntheticScratch(configDir?: string): ScratchTree {
   const root = join(base, `fabric-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`);
   ensureRestrictedDir(root);
   ensureRestrictedDir(join(root, dirname(SYNTHETIC_VALUE_PATH)));
-  const trusted = openTrustedScratchRoot(root);
-  trustedScratchRoots.set(trusted.path, trusted);
-  const bytes = Buffer.from(SYNTHETIC_BEFORE_UTF8, "utf8");
-  if (bytes.byteLength > FABRIC_LIMITS.maxAggregateIoBytes) {
-    throw new FabricTaskError("fixture exceeds io budget", "budget_exhausted", "harness");
-  }
-  const fd = openScratchRelativePath(
-    trusted,
-    SYNTHETIC_VALUE_PATH,
-    openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, true),
-    FILE_MODE,
-  );
+  let trusted: TrustedScratchDir | undefined;
   try {
-    writeSync(fd, bytes);
-  } finally {
-    closeSync(fd);
+    trusted = openTrustedScratchRoot(root);
+    const bytes = Buffer.from(SYNTHETIC_BEFORE_UTF8, "utf8");
+    if (bytes.byteLength > FABRIC_LIMITS.maxAggregateIoBytes) {
+      throw new FabricTaskError("fixture exceeds io budget", "budget_exhausted", "harness");
+    }
+    const fd = openScratchRelativePath(
+      trusted,
+      SYNTHETIC_VALUE_PATH,
+      openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, true),
+      FILE_MODE,
+    );
+    try {
+      writeSync(fd, bytes);
+    } finally {
+      closeSync(fd);
+    }
+    const trustedForCleanup = trusted;
+    return {
+      root,
+      cleanup: () => {
+        closeTrustedScratchRoot(trustedForCleanup);
+        try {
+          rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+        } catch {
+          // best-effort cleanup
+        }
+      },
+    };
+  } catch (error) {
+    if (trusted) closeTrustedScratchRoot(trusted);
+    throw error;
   }
-  return {
-    root,
-    cleanup: () => {
-      releaseTrustedScratch(root);
-      try {
-        rmSync(root, { recursive: true, force: true, maxRetries: 3 });
-      } catch {
-        // best-effort cleanup
-      }
-    },
-  };
 }
 
 /** One regular file discovered during a bounded scratch tree walk. */
@@ -400,20 +372,21 @@ export function walkScratchFiles(scratchRoot: string): WalkedFile[] {
 /** Read a scratch file as UTF-8 text under a byte budget. */
 export function readScratchFileUtf8(scratchRoot: string, relativePath: string, maxBytes: number): string {
   resolveInsideScratch(scratchRoot, relativePath);
-  const trusted = getTrustedScratch(scratchRoot);
-  const fd = openScratchRelativePath(trusted, relativePath, openFlags(fsConstants.O_RDONLY, true), 0);
+  const trusted = openTrustedScratchRoot(scratchRoot);
   try {
-    const stats = fstatSync(fd);
-    if (stats.isSymbolicLink()) {
-      throw new FabricTaskError("symlink rejected", "sandbox_violation", "harness");
+    const fd = openScratchRelativePath(trusted, relativePath, openFlags(fsConstants.O_RDONLY, true), 0);
+    try {
+      const stats = fstatSync(fd);
+      assertRegularFile(stats, relativePath);
+      if (stats.size > maxBytes) {
+        throw new FabricTaskError("file exceeds io budget", "budget_exhausted", "environment");
+      }
+      return readAllFromFd(fd, stats.size);
+    } finally {
+      closeSync(fd);
     }
-    assertRegularFile(stats, relativePath);
-    if (stats.size > maxBytes) {
-      throw new FabricTaskError("file exceeds io budget", "budget_exhausted", "environment");
-    }
-    return readAllFromFd(fd, stats.size);
   } finally {
-    closeSync(fd);
+    closeTrustedScratchRoot(trusted);
   }
 }
 
@@ -425,26 +398,27 @@ export function writeScratchFileUtf8(scratchRoot: string, relativePath: string, 
   }
   const safe = assertSafeRelativePosixPath(relativePath);
   const parentPath = safe.includes("/") ? safe.slice(0, safe.lastIndexOf("/")) : "";
-  if (parentPath) {
-    ensureRestrictedDir(join(scratchRoot, parentPath.split("/").join(sep)));
-  }
   resolveInsideScratch(scratchRoot, relativePath, { allowMissingFinal: true });
-  const trusted = getTrustedScratch(scratchRoot);
-  const fd = openScratchRelativePath(
-    trusted,
-    relativePath,
-    openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC, true),
-    FILE_MODE,
-  );
+  if (parentPath) {
+    ensureScratchRelativeDir(scratchRoot, parentPath);
+  }
+  const trusted = openTrustedScratchRoot(scratchRoot);
   try {
-    const stats = fstatSync(fd);
-    if (stats.isSymbolicLink()) {
-      throw new FabricTaskError("symlink rejected", "sandbox_violation", "harness");
+    const fd = openScratchRelativePath(
+      trusted,
+      relativePath,
+      openFlags(fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC, true),
+      FILE_MODE,
+    );
+    try {
+      const stats = fstatSync(fd);
+      assertRegularFile(stats, relativePath);
+      writeSync(fd, bytes);
+    } finally {
+      closeSync(fd);
     }
-    assertRegularFile(stats, relativePath);
-    writeSync(fd, bytes);
   } finally {
-    closeSync(fd);
+    closeTrustedScratchRoot(trusted);
   }
   return bytes.byteLength;
 }

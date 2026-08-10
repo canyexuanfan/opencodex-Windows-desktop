@@ -11,6 +11,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { jcsStringify } from "../digest";
 import { MAX_SERIALIZED_EVENT_BYTES } from "../constants";
@@ -31,6 +32,7 @@ const LEDGER_LOCK_WAIT_MS = 5_000;
 interface LedgerLockMeta {
   pid: number;
   createdAt: number;
+  token: string;
 }
 
 /** Block synchronously for the given duration (ledger lock retry only). */
@@ -41,40 +43,83 @@ function sleepSyncMs(ms: number): void {
   }
 }
 
-/** Read pid and createdAt metadata from a ledger lock file, if well-formed. */
+/** Read pid, createdAt, and token metadata from a ledger lock file, if well-formed. */
 function readLedgerLockMeta(lockPath: string): LedgerLockMeta | null {
   try {
     const parsed = JSON.parse(readFileSync(lockPath, "utf8")) as LedgerLockMeta;
-    if (typeof parsed.pid === "number" && typeof parsed.createdAt === "number") return parsed;
+    if (
+      typeof parsed.pid === "number"
+      && typeof parsed.createdAt === "number"
+      && typeof parsed.token === "string"
+      && parsed.token.length > 0
+    ) {
+      return parsed;
+    }
   } catch {
     /* ignore */
   }
   return null;
 }
 
-/** Return true when a ledger lock file is missing metadata or older than the stale window. */
+/** Return true when the lock holder process is still running. */
+function isLockHolderAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Return true when a ledger lock file is missing metadata or its holder is gone and stale. */
 function isLedgerLockStale(lockPath: string): boolean {
   const meta = readLedgerLockMeta(lockPath);
   if (!meta) return true;
+  if (isLockHolderAlive(meta.pid)) return false;
   return Date.now() - meta.createdAt > LEDGER_LOCK_STALE_MS;
 }
 
 /** Create a ledger lock file exclusively, recovering stale locks when needed. */
-function tryAcquireLedgerLock(lockPath: string): number {
-  try {
-    const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
-    writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now() }), "utf8"));
-    return fd;
-  } catch (error) {
-    if (existsSync(lockPath) && isLedgerLockStale(lockPath)) {
+function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number; token: string } {
+  while (Date.now() < deadline) {
+    const token = randomBytes(16).toString("hex");
+    try {
+      const fd = openSync(lockPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600);
       try {
-        unlinkSync(lockPath);
-      } catch {
-        /* ignore */
+        writeSync(fd, Buffer.from(JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }), "utf8"));
+      } catch (error) {
+        closeSync(fd);
+        throw error;
       }
-      return tryAcquireLedgerLock(lockPath);
+      return { fd, token };
+    } catch (error) {
+      if (existsSync(lockPath) && isLedgerLockStale(lockPath)) {
+        try {
+          unlinkSync(lockPath);
+        } catch (unlinkError) {
+          if (Date.now() >= deadline) throw unlinkError;
+        }
+        continue;
+      }
+      if (Date.now() >= deadline) throw error;
+      sleepSyncMs(10);
     }
-    throw error;
+  }
+  throw new Error("ledger lock acquisition timed out");
+}
+
+/** Release a ledger lock only when the token still matches the lock file. */
+function releaseLedgerLock(lockPath: string, lockFd: number, token: string): void {
+  try {
+    closeSync(lockFd);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const meta = readLedgerLockMeta(lockPath);
+    if (meta?.token === token) unlinkSync(lockPath);
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -83,24 +128,11 @@ function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
   const lockPath = `${ledgerPath}.lock`;
   mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LEDGER_LOCK_WAIT_MS;
-  let lockFd: number | undefined;
-  while (lockFd === undefined) {
-    try {
-      lockFd = tryAcquireLedgerLock(lockPath);
-    } catch (error) {
-      if (Date.now() >= deadline) throw error;
-      sleepSyncMs(10);
-    }
-  }
+  const { fd, token } = tryAcquireLedgerLock(lockPath, deadline);
   try {
     return fn();
   } finally {
-    closeSync(lockFd);
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* best-effort */
-    }
+    releaseLedgerLock(lockPath, fd, token);
   }
 }
 

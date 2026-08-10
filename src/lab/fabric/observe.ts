@@ -116,7 +116,7 @@ function assertNonNegativeIntegerField(obj: Record<string, unknown>, key: string
 }
 
 /** Map LabValidationError into FabricTaskError for producer outcome parsing. */
-function wrapValidationError(error: unknown): void {
+function wrapValidationError(error: unknown): never {
   if (error instanceof LabValidationError) {
     throw new FabricTaskError(error.message, "malformed_producer_outcome", "harness");
   }

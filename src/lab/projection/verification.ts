@@ -87,7 +87,9 @@ export function taskSubjectApplicableToRequirements(
   const platforms = requirements.platforms ?? ["*"];
   const features = requirements.requiredHarnessFeatures ?? [];
   const preconditions = requirements.routePreconditions ?? [];
-  const platformOk = platforms.includes("*") || platforms.some((platform) => capability.platforms.includes(platform));
+  const platformOk = platforms.includes("*")
+    || capability.platforms.includes("*")
+    || platforms.every((platform) => capability.platforms.includes(platform));
   const featuresOk = features.every((feature) => capability.harnessFeatures.includes(feature));
   const preconditionsOk = preconditions.every((item) => capability.routePreconditions.includes(item));
   return platformOk && featuresOk && preconditionsOk;
@@ -98,6 +100,7 @@ function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+/** Parse a freshness object from a scenario manifest fragment. */
 function parseFreshness(value: unknown): { maxAgeMs: number | null } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const maxAgeMs = (value as { maxAgeMs?: unknown }).maxAgeMs;
@@ -106,6 +109,7 @@ function parseFreshness(value: unknown): { maxAgeMs: number | null } | null {
   return { maxAgeMs };
 }
 
+/** Parse a string array requirement field from a manifest fragment. */
 function parseStringArray(value: unknown): string[] | null {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
   return value;
