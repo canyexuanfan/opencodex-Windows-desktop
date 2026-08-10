@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
+import { buildToolBridgeMaps } from "../src/server/responses";
 
 describe("Responses parser", () => {
   test("normalizes function tool schemas to an object root without corrupting valid schemas (#745)", () => {
@@ -91,6 +92,57 @@ describe("Responses parser", () => {
     });
 
     expect(parsed.options.toolChoice).toEqual({ allowedTools: ["web_search"], mode: "required" });
+  });
+
+  test("restores only namespace, freeform, and tool-search calls allowed by tool_choice", () => {
+    const parsed = parseRequest({
+      model: "umans/umans-kimi-k2.7",
+      input: "use the safe tool",
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp__tools",
+          tools: [
+            { type: "function", name: "safe", parameters: { type: "object" } },
+            { type: "function", name: "secret", parameters: { type: "object" } },
+          ],
+        },
+        { type: "custom", name: "apply_patch", description: "Apply" },
+        { type: "tool_search" },
+      ],
+      tool_choice: {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [
+          { type: "function", name: "mcp__tools.safe" },
+          { type: "custom", name: "apply_patch" },
+        ],
+      },
+    });
+
+    let maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap]).toEqual([
+      ["mcp__tools__safe", { namespace: "mcp__tools", name: "safe" }],
+    ]);
+    expect([...maps.freeformToolNames]).toEqual(["apply_patch"]);
+    expect([...maps.toolSearchToolNames]).toEqual([]);
+
+    parsed.options.toolChoice = { allowedTools: ["mcp__tools__safe"], mode: "required" };
+    maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__tools__safe"]);
+    expect([...maps.freeformToolNames]).toEqual([]);
+
+    parsed.options.toolChoice = { name: "tool_search" };
+    maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap]).toEqual([]);
+    expect([...maps.freeformToolNames]).toEqual([]);
+    expect([...maps.toolSearchToolNames]).toEqual(["tool_search"]);
+
+    parsed.options.toolChoice = "none";
+    maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap]).toEqual([]);
+    expect([...maps.freeformToolNames]).toEqual([]);
+    expect([...maps.toolSearchToolNames]).toEqual([]);
   });
 
   test("maps hosted allowed_tools entries to their synthetic routed tool names", () => {
