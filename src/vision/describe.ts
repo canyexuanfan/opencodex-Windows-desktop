@@ -80,8 +80,8 @@ export async function describeImage(
       "what's relevant to the user's request. Output only the description.",
     input: [{ type: "message", role: "user", content }],
     reasoning: { effort: settings.reasoning },
-    // The ChatGPT (codex) backend rejects `max_output_tokens` ("Unsupported parameter"); the
-    // description is clamped downstream (DESC_MAX_CHARS) instead.
+    // The ChatGPT (codex) backend rejects `max_output_tokens` ("Unsupported parameter"); the shared
+    // SSE parser bounds raw response bytes before DESC_MAX_CHARS applies its display clamp.
     store: false,
     stream: true,
   };
