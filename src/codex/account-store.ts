@@ -491,11 +491,15 @@ export async function getValidCodexToken(id: string): Promise<CodexTokenResult> 
       throw new TokenRefreshError(reason, `Codex token refresh failed (${reason}); reauthenticate the account.`);
     }
     const data = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number };
+    // Guard against a missing/non-finite expires_in (malformed upstream response):
+    // a NaN expiry would never compare as expired and would block refresh forever.
+    const expiresIn =
+      typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
 
     const updated: CodexAccountCredentials = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token ?? lockedCred.refreshToken,
-      expiresAt: Date.now() + data.expires_in * 1000,
+      expiresAt: Date.now() + expiresIn * 1000,
       chatgptAccountId: lockedCred.chatgptAccountId,
     };
     if (!saveCodexAccountCredentialIfGeneration(id, startGeneration, updated)) {

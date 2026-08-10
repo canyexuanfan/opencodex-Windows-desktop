@@ -43,6 +43,19 @@ describe("anthropic provider hardening", () => {
     await expect(refreshAnthropicToken("secret")).rejects.toMatchObject({ httpStatus: 503, oauthError: undefined });
   });
 
+  test("refresh with a non-finite expires_in falls back to a finite default expiry", async () => {
+    globalThis.fetch = (async () => new Response(
+      // JSON.stringify would turn Infinity into null; hand-write 1e999 so JSON.parse
+      // yields Infinity, which would previously produce expires: NaN (never refreshing).
+      '{"access_token":"at","refresh_token":"rt","expires_in":1e999}',
+      { status: 200 },
+    )) as typeof fetch;
+
+    const cred = await refreshAnthropicToken("secret");
+    expect(Number.isFinite(cred.expires)).toBe(true);
+    expect(cred.expires).toBeGreaterThan(Date.now());
+  });
+
   test("key mode rejects a blank API key", async () => {
     const adapter = createAnthropicAdapter(provider({ apiKey: "   " }));
 

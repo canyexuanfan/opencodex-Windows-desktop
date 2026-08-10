@@ -151,7 +151,9 @@ async function requestDeviceAuthorization(): Promise<{
 }
 
 function parseTokenPayload(payload: TokenResponse, refreshFallback?: string): OAuthCredentials {
-  if (!payload.access_token || typeof payload.expires_in !== "number") {
+  // Number.isFinite is required here: typeof NaN === "number", so the type check
+  // alone would let a NaN expires_in through and produce a never-refreshing expiry.
+  if (!payload.access_token || typeof payload.expires_in !== "number" || !Number.isFinite(payload.expires_in)) {
     throw new Error("Kimi token response missing required fields");
   }
   const refresh = payload.refresh_token ?? refreshFallback;

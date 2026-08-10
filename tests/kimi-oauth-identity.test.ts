@@ -75,6 +75,17 @@ describe("Kimi token-response wiring (production parseTokenPayload path)", () =>
     expect(cred.accountId).toBe("wired-user");
     expect(cred.email).toBe(["w", String.fromCharCode(64), "kimi.example"].join(""));
   });
+
+  test("refreshKimiToken rejects a non-finite expires_in (would otherwise yield NaN expiry)", async () => {
+    globalThis.fetch = (async () => new Response(
+      // JSON.stringify would turn Infinity into null; hand-write 1e999 so JSON.parse
+      // yields Infinity, which typeof === "number" alone would let through.
+      `{"access_token":"at","refresh_token":"rt","expires_in":1e999}`,
+      { status: 200 },
+    )) as typeof fetch;
+
+    await expect(refreshKimiToken("old-refresh")).rejects.toThrow("missing required fields");
+  });
 });
 
 describe("Kimi multiauth via saveCredential", () => {

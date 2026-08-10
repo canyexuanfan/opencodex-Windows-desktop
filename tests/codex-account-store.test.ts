@@ -261,6 +261,31 @@ describe("codex-account-store CRUD", () => {
     }
   });
 
+  test("refresh with a non-finite expires_in falls back to a finite default expiry", async () => {
+    const {
+      getCodexAccountCredential,
+      getValidCodexToken,
+      saveCodexAccountCredential,
+    } = await import("../src/codex/account-store");
+    saveCodexAccountCredential("refresh-bad-expiry", { accessToken: "old", refreshToken: "old-r", expiresAt: 0, chatgptAccountId: "acc" });
+    const originalFetch = globalThis.fetch;
+    // JSON.stringify turns NaN into null; hand-write 1e999 so JSON.parse yields Infinity,
+    // the realistic corrupt shape that would previously produce expiresAt: NaN.
+    globalThis.fetch = (async () => new Response(
+      '{"access_token":"new","refresh_token":"new-r","expires_in":1e999}',
+      { status: 200 },
+    )) as typeof fetch;
+
+    try {
+      await getValidCodexToken("refresh-bad-expiry");
+      const stored = getCodexAccountCredential("refresh-bad-expiry")!;
+      expect(Number.isFinite(stored.expiresAt)).toBe(true);
+      expect(stored.expiresAt).toBeGreaterThan(Date.now());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("refresh waits behind file lock and reuses credential refreshed by another process", async () => {
     const {
       getValidCodexToken,

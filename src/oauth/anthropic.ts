@@ -81,10 +81,14 @@ function parseTokenResponse(responseBody: string): AnthropicTokenResponse {
 function credsFrom(data: AnthropicTokenResponse, refreshFallback?: string): OAuthCredentials {
   const accountUuid = data.account?.uuid;
   const email = data.account?.email_address;
+  // Guard against a missing/non-finite expires_in (malformed upstream response):
+  // a NaN expiry would never compare as expired and would block refresh forever.
+  const expiresIn =
+    typeof data.expires_in === "number" && Number.isFinite(data.expires_in) ? data.expires_in : 3600;
   return {
     refresh: data.refresh_token || refreshFallback || "",
     access: data.access_token,
-    expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+    expires: Date.now() + expiresIn * 1000 - 5 * 60 * 1000,
     accountId: typeof accountUuid === "string" && accountUuid.length > 0 ? accountUuid : undefined,
     email: typeof email === "string" && email.length > 0 ? email : undefined,
   };
