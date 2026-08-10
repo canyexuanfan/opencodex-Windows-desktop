@@ -336,6 +336,36 @@ describe("Cockpit account-import atomic identity upsert", () => {
     expect(JSON.parse(readFileSync(join(testHome, "auth.json"), "utf8"))[ACCOUNT_IMPORT_PROVIDER].accounts).toHaveLength(1);
   });
 
+  test("keeps distinct accountId identities even when email matches", async () => {
+    testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
+    process.env.OPENCODEX_HOME = testHome;
+    const first = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-one",
+      refresh: "refresh-one",
+      expires: 1,
+      email: "shared@example.com",
+      accountId: "google-subject-1",
+      projectId: "project-one",
+    });
+    const second = await upsertCredentialByIdentity(ACCOUNT_IMPORT_PROVIDER, {
+      access: "access-two",
+      refresh: "refresh-two",
+      expires: 2,
+      email: "shared@example.com",
+      accountId: "google-subject-2",
+      projectId: "project-two",
+    });
+    expect(first).toBe("inserted");
+    expect(second).toBe("inserted");
+    const set = getAccountSet(ACCOUNT_IMPORT_PROVIDER);
+    expect(set?.accounts).toHaveLength(2);
+    expect(set?.accounts.map(account => account.credential.accountId).sort()).toEqual([
+      "google-subject-1",
+      "google-subject-2",
+    ]);
+    expect(set?.accounts.every(account => account.credential.email === "shared@example.com")).toBe(true);
+  });
+
   test("rejects credentials without verified identity", async () => {
     testHome = mkdtempSync(join(tmpdir(), "ocx-account-import-store-"));
     process.env.OPENCODEX_HOME = testHome;
