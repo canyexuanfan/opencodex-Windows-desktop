@@ -121,7 +121,7 @@ export function buildClaudeEnv(
       const parsed = new URL(existingBaseUrl);
       if (isClaudeLoopbackHostname(parsed.hostname) && parsed.port !== "" && Number(parsed.port) !== port) {
         const replacement = `http://127.0.0.1:${port}`;
-        console.error(`⚠ Replacing stale opencodex ANTHROPIC_BASE_URL ${existingBaseUrl} with ${replacement}.`);
+        console.error(`⚠ Replacing stale opencodex ANTHROPIC_BASE_URL ${parsed.origin} with ${replacement}.`);
         env.ANTHROPIC_BASE_URL = replacement;
       }
     } catch {
@@ -172,6 +172,14 @@ export function buildClaudeEnv(
   if (!env.ANTHROPIC_AUTH_TOKEN && !hasUserApiKey && targetsLocalProxy && resolved.markerMode === "proxy") {
     env.ANTHROPIC_AUTH_TOKEN = PROXY_MARKER;
   }
+  const finalAuthToken = env.ANTHROPIC_AUTH_TOKEN;
+  const hostOwnsAuthentication = targetsLocalProxy
+    && !hasUserApiKey
+    && typeof finalAuthToken === "string"
+    && (
+      finalAuthToken.trim() === PROXY_MARKER
+      || isProxyAdmissionSecret(finalAuthToken, config)
+    );
   if (resolved.origin === "auto-unknown") {
     console.error("⚠ Claude 인증을 확인하지 못했습니다 — 구독 방식으로 진행합니다. GUI에서 인증 모드를 직접 지정하면 이 판단을 덮어쓸 수 있습니다.");
   }
@@ -193,7 +201,7 @@ export function buildClaudeEnv(
   // Claude Code 2.1.206+ also treats this as a host-auth assertion. Injecting it
   // without a host token makes a valid claude.ai subscription look logged out,
   // so the guard is only safe when opencodex actually owns authentication.
-  if (env.ANTHROPIC_AUTH_TOKEN) {
+  if (hostOwnsAuthentication) {
     setDefault("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "1");
   }
   // Opt-in effort forcing (devlog 136 B6): opus-shaped aliases already carry

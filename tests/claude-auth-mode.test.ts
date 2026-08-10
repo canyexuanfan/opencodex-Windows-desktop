@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { buildClaudeEnv } from "../src/cli/claude";
 import { PROXY_MARKER, type AuthDetectDeps, type AuthPresence } from "../src/claude/auth-detect";
 import { authModeIntent, resolveClaudeAuthMode } from "../src/claude/auth-mode";
@@ -308,6 +308,26 @@ test("a stale IPv6 loopback URL is moved to the running proxy port", () => {
   expect(env.ANTHROPIC_AUTH_TOKEN).toBe("admission-key");
 });
 
+test("a stale loopback warning omits URL credentials, paths, and queries", () => {
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const env = buildClaudeEnv(
+      cfg(undefined, [{ key: "admission-key" }]), 10100,
+      { ANTHROPIC_BASE_URL: "http://user:oauth-token@localhost:9999/private?token=query-secret" },
+      {},
+      { authDetect: fileAuth("present"), preBunAnthropicSlots: ["ANTHROPIC_BASE_URL"] },
+    );
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:10100");
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("http://localhost:9999"));
+    const warning = String(error.mock.calls[0]?.[0] ?? "");
+    expect(warning).not.toContain("oauth-token");
+    expect(warning).not.toContain("query-secret");
+    expect(warning).not.toContain("user:");
+  } finally {
+    error.mockRestore();
+  }
+});
+
 test("an inherited admission key is stripped when the destination is external", () => {
   const env = buildClaudeEnv(
     cfg(undefined, [{ key: "admission-key" }]), 10100,
@@ -380,6 +400,7 @@ test("an external gateway keeps a user-owned auth token", () => {
     },
   );
   expect(env.ANTHROPIC_AUTH_TOKEN).toBe("user-gateway-token");
+  expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
 });
 
 test("a user API key outranks an inherited local admission token", () => {
