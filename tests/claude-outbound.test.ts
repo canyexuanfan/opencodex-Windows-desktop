@@ -306,6 +306,60 @@ describe("claude outbound SSE", () => {
     expect(msg2.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking).toBe("AB");
   });
 
+  test("huge reasoning identities stay bounded without collapsing item or part boundaries", async () => {
+    const hugeItemA = "a".repeat(1024 * 1024);
+    const hugeItemB = `${"a".repeat(1024 * 1024 - 1)}b`;
+    const hugePartA = "p".repeat(1024 * 1024);
+    const hugePartB = `${"p".repeat(1024 * 1024 - 1)}q`;
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemA, summary_index: hugePartA, delta: "B",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartA, delta: "C",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: hugeItemB, summary_index: hugePartB, delta: "D",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("AB\n\nC\n\nD");
+  });
+
+  test("malformed array reasoning identities retain distinct boundaries", async () => {
+    const upstream = [
+      sse("response.created", { response: { id: "resp_1", status: "in_progress" } }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [1], summary_index: [0], delta: "A",
+      }),
+      sse("response.reasoning_summary_text.delta", {
+        item_id: [2], summary_index: [0], delta: "B",
+      }),
+      sse("response.completed", {
+        response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join("");
+
+    const msg = await collectAnthropicMessage(
+      responsesSseToAnthropicSse(streamFromChunks([upstream]), "m"),
+      "m",
+    ) as Record<string, any>;
+    expect(msg.content.find((b: Record<string, unknown>) => b.type === "thinking").thinking)
+      .toBe("A\n\nB");
+  });
+
   test("data-only Responses frames infer event names from payload types", async () => {
     const upstream = [
       dataOnlySse({ type: "response.created", response: { id: "resp_data_only", status: "in_progress" } }),
@@ -541,23 +595,17 @@ describe("claude outbound SSE", () => {
     expect(events.at(-1)).toMatchObject({ name: "error", data: { error: { type: "overloaded_error" } } });
   });
 
-  test("idle keepalive pings flow during upstream silence", async () => {
-    // Upstream: created frame, a stretch of silence, then a clean completion.
-    //
-    // The silence is deliberately many intervals long. At 90ms with a 25ms ping the
-    // margin was 3.6 intervals against a >=3 assertion, so a single coalesced timer on
-    // a loaded runner failed it — which is how this went red on macos-latest while
-    // passing everywhere else. Timer scheduling is best-effort, not exact.
-    //
-    // The assertion below is unchanged. What changed is the headroom: the test still
-    // proves idle pings flow during silence, it just no longer depends on the runner
-    // delivering timers on schedule.
+  test("idle keepalive pings flow after semantic output during upstream silence", async () => {
+    // response.created is transport-only and must not start Anthropic framing because the
+    // next semantic frame could still be an initial error. Once real output starts the
+    // Anthropic message, periodic pings keep an otherwise idle connection alive.
     const PING_INTERVAL_MS = 25;
     const SILENCE_MS = 300;
     const encoder = new TextEncoder();
     const upstream = new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(encoder.encode(sse("response.created", { response: {} })));
+        controller.enqueue(encoder.encode(sse("response.output_text.delta", { delta: "x" })));
         await new Promise(r => setTimeout(r, SILENCE_MS));
         controller.enqueue(encoder.encode(sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })));
         controller.close();
@@ -565,7 +613,7 @@ describe("claude outbound SSE", () => {
     });
     const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: PING_INTERVAL_MS }));
     const pings = events.filter(e => e.name === "ping").length;
-    expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings
+    expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings after semantic start
     expect(events.at(-1)!.name).toBe("message_stop");
   });
 

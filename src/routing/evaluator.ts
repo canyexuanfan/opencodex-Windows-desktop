@@ -304,14 +304,58 @@ export function evaluatePolicyProfile(
     const excludedByUnknown = unknown && profile.unknownEvidence.capability === "exclude";
     const costLimit = profile.limits.maxEstimatedCostUsd;
     const estimatedCost = evidence.cost?.estimatedUsd;
+    const costEstimateKnown = typeof estimatedCost === "number" && Number.isFinite(estimatedCost);
     const overCostLimit = costLimit !== undefined
-      && typeof estimatedCost === "number"
-      && Number.isFinite(estimatedCost)
-      && estimatedCost > costLimit;
+      && costEstimateKnown
+      && estimatedCost! > costLimit;
     if (overCostLimit) {
       exclusions.push({ code: "cost-limit", detail: "maxEstimatedCostUsd" });
     }
-    let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit;
+    // A cap can only be *proven* satisfied when the estimate is known. The live
+    // routing path often has no usage evidence yet, so the default stays
+    // "allow" to preserve the documented dry-run contract; operators who need a
+    // genuine hard ceiling opt into "exclude". Exclusions cover only the
+    // fail-closed path; the allow path stamps `cost.capOutcome` so operators
+    // can still distinguish "known under the cap" from "unknown cost allowed".
+    const unknownCostUnderCap = costLimit !== undefined && !costEstimateKnown;
+    const unknownCostBlocked = unknownCostUnderCap
+      && profile.limits.onUnknownCost === "exclude";
+    if (unknownCostBlocked) {
+      exclusions.push({ code: "cost-limit-unknown", detail: "maxEstimatedCostUsd" });
+    }
+    let eligible = !unsatisfied && !excludedByUnknown && !overCostLimit && !unknownCostBlocked;
+
+    // Trace/dry-run copy only: report the profile cap that was applied and the
+    // operator-visible outcome. Do not feed this copy into costScore() — that
+    // would silently change ranking when a caller supplied a different
+    // limitUsd (costScore uses limitUsd as its reference denominator).
+    let costForCandidate = evidence.cost;
+    if (costLimit !== undefined) {
+      const capOutcome = overCostLimit
+        ? "exceeded" as const
+        : unknownCostBlocked
+          ? "unknown-excluded" as const
+          : unknownCostUnderCap
+            ? "unknown-allowed" as const
+            : "satisfied" as const;
+      if (!costEstimateKnown) {
+        // Missing or non-finite estimates are the same unknown: never stamp
+        // Infinity/NaN into the trace, and always mark incomplete.
+        const { estimatedUsd: _nonFiniteOrMissing, ...rest } = evidence.cost ?? {};
+        costForCandidate = {
+          ...rest,
+          incomplete: true,
+          limitUsd: costLimit,
+          capOutcome,
+        };
+      } else {
+        costForCandidate = {
+          ...evidence.cost!,
+          limitUsd: costLimit,
+          capOutcome,
+        };
+      }
+    }
 
     // Health scoring (RI-06): live hard cooldown is authoritative and
     // excludes; unknown health follows the profile's unknownEvidence policy;
@@ -347,6 +391,8 @@ export function evaluatePolicyProfile(
 
     // Cost scoring (RI-08): the hard per-request ceiling was already checked
     // above; unknown cost follows the profile's unknownEvidence policy.
+    // Score against the caller's original evidence so trace stamping cannot
+    // move the costScore reference / ranking.
     const cost = evidence.cost;
     let costValue = cost ? costScore(cost) : null;
     if (costValue === null && profile.unknownEvidence.cost === "exclude") {
@@ -394,7 +440,7 @@ export function evaluatePolicyProfile(
       ...(evidence.capability ? { capability: evidence.capability } : {}),
       ...(evidence.health ? { health: evidence.health } : {}),
       ...(evidence.quota ? { quota: evidence.quota } : {}),
-      ...(evidence.cost ? { cost: evidence.cost } : {}),
+      ...(costForCandidate ? { cost: costForCandidate } : {}),
       score,
     };
     candidates.push(evaluated);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconRefresh } from "../icons";
 import { type TFn, useI18n } from "../i18n/shared";
+import { navigateHash } from "../hash-routing";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { Notice } from "../ui";
 import { useDataSurface } from "../data-surface";
@@ -288,7 +289,9 @@ export default function Startup({ apiBase }: { apiBase: string }) {
           <p className="page-sub startup-page-sub">{t("startup.subtitle")}</p>
         </div>
         <div className="startup-page-head-actions">
-          <a className="btn btn-ghost btn-sm" href="#dashboard">{t("startup.backToDashboard")}</a>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigateHash("dashboard")}>
+            {t("startup.backToDashboard")}
+          </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => refresh()} disabled={loading}>
             <IconRefresh /> {t("startup.refresh")}
           </button>

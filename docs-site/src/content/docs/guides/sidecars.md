@@ -100,6 +100,11 @@ model field.
   keys (Anthropic keys omit it, since that field is ignored there); mutable `https:` images are not
   cached.
 
+The management API and Dashboard picker now list models that can actually accept image input.
+When the matching backend is available, `gpt-5.6-luna` (OpenAI) and `claude-haiku-4-5` (Anthropic)
+are always offered as baseline options. `PUT /api/sidecar-settings` rejects a model known to be
+text-only, but still accepts an unknown id so custom or ahead-of-catalog names keep working.
+
 ```json
 {
   "visionSidecar": {

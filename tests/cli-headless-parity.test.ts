@@ -87,6 +87,7 @@ describe("headless GUI parity CLI", () => {
       ["/api/injection", "ocx agent"],
       ["/api/keys", "ocx access"],
       ["/api/logs", "ocx observe"],
+      ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
       ["/api/settings", "ocx system"],
       // Routing Intelligence (RI-04..RI-10): profiles + dry-run are mirrored by

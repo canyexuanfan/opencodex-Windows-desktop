@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { codexShimReadinessWarnings } from "../src/cli/codex-shim-readiness";
 
@@ -137,6 +137,43 @@ describe("Codex shim install readiness", () => {
       expect(result.stderr).toContain("config.proxy");
       expect(`${result.stdout}\n${result.stderr}`).not.toContain(proxyUrl);
       expect(`${result.stdout}\n${result.stderr}`).not.toContain("user:secret");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps install advisory when the Codex config cannot be read", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-shim-unreadable-config-"));
+    const codexHome = join(root, "codex-home");
+    const opencodexHome = join(root, "opencodex-home");
+    const binDir = join(root, "bin");
+    mkdirSync(codexHome);
+    mkdirSync(opencodexHome);
+    mkdirSync(binDir);
+    try {
+      mkdirSync(join(codexHome, "config.toml"));
+      const codex = join(binDir, process.platform === "win32" ? "codex.cmd" : "codex");
+      writeFileSync(
+        codex,
+        process.platform === "win32" ? "@echo off\r\nexit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+        "utf8",
+      );
+      if (process.platform !== "win32") chmodSync(codex, 0o755);
+
+      const result = spawnSync(process.execPath, [cliPath, "codex-shim", "install"], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          CODEX_HOME: codexHome,
+          OPENCODEX_HOME: opencodexHome,
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        },
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toStartWith("⚠️  Codex autostart shim installed");
+      expect(result.stderr).toContain("Codex routing could not be verified");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

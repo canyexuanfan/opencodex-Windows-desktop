@@ -13,6 +13,7 @@ import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
+  getCodexQuotaHealthSnapshot,
   getCodexUpstreamHealth,
   isCodexAccountSoftAvoided,
   recordCodexUpstreamOutcome,
@@ -194,6 +195,7 @@ async function startPoolRetryHarness(
     pausedAccountIds?: string[];
     reauthAccountIds?: string[];
     omitCredentialAccountIds?: string[];
+    combos?: OcxConfig["combos"];
   } = {},
 ): Promise<PoolRetryHarness> {
   await removeTestDirBestEffort(TEST_DIR);
@@ -250,6 +252,7 @@ async function startPoolRetryHarness(
     ...(options.visionSidecarModel ? { visionSidecar: { model: options.visionSidecarModel } } : {}),
     ...(options.websockets ? { websockets: true } : {}),
     ...(options.streamMode ? { streamMode: options.streamMode } : {}),
+    ...(options.combos ? { combos: options.combos } : {}),
   } as OcxConfig;
   saveConfig(config);
   if (!options.omitCredentialAccountIds?.includes("pool-a")) {
@@ -429,6 +432,46 @@ describe("server local API auth", () => {
     expect(dto.providers.openai).not.toHaveProperty("apiKey");
     expect(dto.providers.openai).not.toHaveProperty("headers");
     expect(dto.providers.openai.disabled).toBeUndefined();
+  });
+
+  test("safeConfigDTO preserves reasoning placeholder policies without adjacent secrets", () => {
+    const dto = safeConfigDTO({
+      ...config("127.0.0.1"),
+      providers: {
+        required: {
+          adapter: "openai-chat",
+          baseUrl: "https://user:password@example.test/v1?token=url-secret",
+          apiKey: "required-api-secret",
+          headers: { Authorization: "Bearer required-header-secret" },
+          requiresReasoningPlaceholderModels: ["deepseek-reasoner"],
+        },
+        optedOut: {
+          adapter: "openai-chat",
+          baseUrl: "https://example.test/v1",
+          apiKey: "opt-out-api-secret",
+          headers: { "X-Private-Key": "opt-out-header-secret" },
+          requiresReasoningPlaceholderModels: [],
+        },
+      },
+    } as OcxConfig) as {
+      providers: Record<string, Record<string, unknown>>;
+    };
+
+    expect(dto.providers.required.requiresReasoningPlaceholderModels).toEqual(["deepseek-reasoner"]);
+    expect(dto.providers.optedOut.requiresReasoningPlaceholderModels).toEqual([]);
+    expect(dto.providers.required).not.toHaveProperty("apiKey");
+    expect(dto.providers.required).not.toHaveProperty("headers");
+    expect(dto.providers.optedOut).not.toHaveProperty("apiKey");
+    expect(dto.providers.optedOut).not.toHaveProperty("headers");
+    const serialized = JSON.stringify(dto);
+    for (const secret of [
+      "password",
+      "url-secret",
+      "required-api-secret",
+      "required-header-secret",
+      "opt-out-api-secret",
+      "opt-out-header-secret",
+    ]) expect(serialized).not.toContain(secret);
   });
 
   test("safeConfigDTO exposes keyOptional for saved free-tier providers", () => {
@@ -2277,6 +2320,113 @@ describe("server local API auth", () => {
       await stopPoolRetryHarness(harness);
     }
   });
+
+  test("#584: Retry-After cools the first account even when its account retry fails", async () => {
+    const harness = await startPoolRetryHarness(accountId => accountId === "acct-pool-a"
+      ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      })
+      : new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }));
+    try {
+      const response = await harness.request();
+      expect(response.status).toBe(503);
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      const health = getCodexUpstreamHealth("pool-a");
+      expect(health).toMatchObject({
+        cooldownSource: "retry-after",
+      });
+      expect(health?.cooldownUntil).toBeGreaterThan(Date.now());
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral still cools the first account when its account retry succeeds", async () => {
+    const harness = await startPoolRetryHarness(
+      accountId => accountId === "acct-pool-a"
+        ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+          },
+        })
+        : Response.json({ id: "combo-account-retry-success", status: "completed", output: [] }),
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-account-retry-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toMatchObject({
+        cooldownUntil: expect.any(Number),
+        cooldownSource: "reset-derived",
+        quotaScope: "shared",
+      });
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral preserves the first account when its account retry also fails", async () => {
+    const harness = await startPoolRetryHarness(
+      async (accountId, request) => {
+        const body = await request.json() as { model?: string };
+        if (body.model === `${POOL_RETRY_MODEL}-fallback`) {
+          return Response.json({ id: "combo-later-model-success", status: "completed", output: [] });
+        }
+        if (accountId === "acct-pool-a") {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+            },
+          });
+        }
+        return new Response(JSON.stringify({ error: { message: "retry later" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "60" },
+        });
+      },
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-later-model-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b", "acct-pool-a"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toBeNull();
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#584: pre-stream 429 with one eligible account preserves the original 429", async () => {
     const body = JSON.stringify({ error: { message: "rate limited" } });

@@ -217,7 +217,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 76 built-in presets: 64 key-based, eight OAuth, three local, and one default
+opencodex ships 78 built-in presets: 66 key-based, eight OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
@@ -249,6 +249,7 @@ free-experimentation model.
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Chutes | `https://llm.chutes.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
@@ -259,6 +260,7 @@ free-experimentation model.
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
 | Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
+| Featherless AI | `https://api.featherless.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -275,6 +277,16 @@ free-experimentation model.
 | GitLab Duo | `https://cloud.gitlab.com/ai/v1/proxy/openai/v1` |
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …and more | opencode zen, Vercel AI Gateway, Venice, NanoGPT, Synthetic, Qianfan, Alibaba, Parallel, ZenMux, LiteLLM |
+
+**OpenCode Zen** (`opencode-zen`) and the keyless **OpenCode Free** preset share
+`https://opencode.ai/zen/v1`. Free models on that gateway often hit a short-window burst
+limit around 15–20 requests/minute (community-measured; OpenCode does not publish RPM).
+Zen may return generic rate-limit 429 responses without `Retry-After` / `X-RateLimit-*`
+headers. That is separate from the keyless desktop quota OpenCode advertises
+(~200 Big Pickle/free-model requests per 5 hours on `opencode-free`). When Zen omits
+`Retry-After` on such a 429, opencodex adds provider guidance to the client error and a
+synthetic `Retry-After`; an upstream `Retry-After` still takes precedence. Same-key
+wait-and-retry remains opt-in via [`retryOn429`](/reference/configuration/).
 
 Most use the `openai-chat` adapter with a bearer key; a few that expose only an Anthropic-compatible
 endpoint (e.g. **Xiaomi MiMo**) use the `anthropic` adapter (`x-api-key`).
@@ -296,6 +308,13 @@ Volcengine Agent Plan uses its native Responses endpoint through `openai-respons
 > calls may suspend the subscription or ban the account. Routing Codex or Claude Code through
 > opencodex is the documented use; pointing other automation at a plan key is not. The
 > pay-as-you-go `volcengine` route carries no such restriction.
+
+**Chutes discovery.** The `chutes` preset uses Chutes' fixed shared OpenAI-compatible LLM gateway.
+It reads the public `/v1/models` catalog, keeps only rows whose `supported_features` advertise
+`tools`, preserves slash-containing model ids and safe live metadata, and caps discovery at 256 KiB
+and 128 raw rows. Because that catalog is public, it cannot prove a supplied key is valid; chat
+requests still use the configured Bearer key. User-deployed custom Chute hosts and Chutes' non-LLM
+APIs remain custom-provider territory. Create a key from the [Chutes dashboard](https://chutes.ai/auth/start).
 
 **DeepInfra discovery.** The key-based `deepinfra` OpenAI Chat Completions provider uses the
 `openai-chat` adapter with a Bearer API key. Its registry-owned model-list URL keeps only rows tagged
@@ -349,6 +368,14 @@ transcription, and other media-model ids fail closed; discovery is capped at 128
 rows. It uses the default Project's shared endpoint; project-qualified URLs and dedicated
 deployments require a custom provider. Create an API key in the
 [Scaleway console](https://console.scaleway.com/generative-api).
+
+**Featherless discovery.** The preset authenticates against the fixed OpenAI-compatible host and
+requests only the first 100 popular models filtered upstream to chat and the current plan. Registry
+rules then fail closed unless each row independently reports plan availability, no Hugging Face
+gate, and `features.tool_use: true`. Discovery is capped at 128 KiB and 100 raw rows, so the service's
+tens-of-thousands-model catalog is never downloaded or cached in full. Because `/v1/models` is documented as callable with or without authentication, it cannot prove a supplied key is valid; chat requests still use the configured Bearer key. Featherless terms reserve
+individual plans for interactive/prototyping use; arbitrary applications require a Scale plan.
+Create a key in the [Featherless dashboard](https://featherless.ai/account/api-keys).
 
 > **Baseten scope:** The preset covers Baseten's shared [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > only. Use a personal [API key](https://docs.baseten.co/organization/api-keys) for local use, or a team key
@@ -496,4 +523,3 @@ Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
 Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
 Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, and any a6api-backed
 custom provider.
-

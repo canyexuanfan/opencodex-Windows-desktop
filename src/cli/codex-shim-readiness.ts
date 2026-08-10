@@ -60,9 +60,16 @@ export function codexShimReadinessWarnings(
 
 export function collectCodexShimReadinessWarnings(): string[] {
   const config = loadConfig();
+  let externalProvider: string | null = null;
+  try {
+    externalProvider = currentExternalCodexModelProvider();
+  } catch {
+    // Routing readiness is advisory; getCodexRoutingKind() already reports an
+    // unreadable config as unknown, so preserve that warning instead of failing.
+  }
   return codexShimReadinessWarnings({
     routingKind: getCodexRoutingKind(),
-    externalProvider: currentExternalCodexModelProvider(),
+    externalProvider,
     processProxyEnvPresent: PROXY_ENV_KEYS.some(key => Boolean(process.env[key]?.trim())),
     configuredProxyResolved: Boolean(resolveEnvValue(config.proxy)?.trim()),
   });

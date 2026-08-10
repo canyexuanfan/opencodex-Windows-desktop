@@ -63,8 +63,12 @@ describe("workflow comment-spam hardening", () => {
     const checkoutStep = job?.steps?.find(
       step => step.name === "Checkout trusted PR-quality scripts",
     );
+    // Trusted scripts come from a fixed set of integration branches, never
+    // from the pull request itself. `status` keeps the default-branch
+    // boundary that owns the event; a `main`-targeting PR matches the workflow
+    // definition loaded from `main`; every other base resolves to `dev`.
     expect(checkoutStep?.with?.ref).toBe(
-      "${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
+      "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
     );
 
     const gateStep = job?.steps?.find(

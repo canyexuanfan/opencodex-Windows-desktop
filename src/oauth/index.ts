@@ -740,6 +740,11 @@ const OAUTH_RECONCILE_FIELDS: (keyof OcxProviderConfig)[] = [
   "autoToolChoiceOnlyModels",
   "preserveReasoningContentModels",
 ];
+// `requiresReasoningPlaceholderModels` is deliberately NOT reconciled here: no
+// OAuth preset seeds it, so the delete-when-preset-undefined branch would wipe
+// an explicit user opt-out (`[]`) on every startup. Registry seeds still reach
+// existing rows through enrichProviderFromRegistry, which is fill-only and
+// preserves explicit saved values.
 
 const GOOGLE_ANTIGRAVITY_PROVIDER = "google-antigravity";
 const GOOGLE_ANTIGRAVITY_LIVE_DISCOVERY_VERSION = 2 as const;
@@ -882,6 +887,12 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   // existing pin so authentication changes do not silently revert the documented control.
   if (existing?.commandCodeVersion !== undefined) {
     next.commandCodeVersion = existing.commandCodeVersion;
+  }
+  // User-configured price overlays are operator data, not preset state; a
+  // re-login, add-account, or reauth must not silently drop them from the
+  // Logs/Usage estimates.
+  if (existing?.modelCosts !== undefined) {
+    next.modelCosts = existing.modelCosts;
   }
   if (existing && getProviderRegistryEntry(provider)?.allowKeyAuthOverride === true) {
     // Shared sanitizeApiKeyValue trim / no-CRLF checks from api-key pool writes.
@@ -1174,8 +1185,16 @@ export function getLoginStatus(provider: string): { loggedIn: boolean; email?: s
     ...(a.needsReauth ? { needsReauth: true } : {}),
     expiresAt: a.credential.expires,
   }));
+
+  // A stored credential counts as "logged in" when it exists and is not marked for
+  // re-authentication. An expired access token with a valid refresh token is still
+  // logged in: request resolution refreshes expired/near-expiry credentials lazily.
+  // Invalid/unknown local-import expiries are handled at parse/adoption time
+  // (local-token-detect.ts), never by over-reporting login state here.
+  const activeNeedsReauth = set?.accounts
+    .find(a => a.id === set.activeAccountId)?.needsReauth === true;
   return {
-    loggedIn: !!cred,
+    loggedIn: !!cred && !activeNeedsReauth,
     email: maskEmail(cred?.email) ?? undefined,
     source: cred?.source,
     error: st?.error,

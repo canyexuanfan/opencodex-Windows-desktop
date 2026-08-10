@@ -18,6 +18,7 @@ import {
   selectPriorityTier,
 } from "./pool-rotation";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./quota";
+import { isThirtyDayOnlyCodexPlan } from "./plan";
 import { MAIN_CODEX_ACCOUNT_ID, getMainAccountPlan } from "./main-account";
 import { isSelectableCodexPoolAccount } from "./account-id";
 import type { OcxConfig } from "../types";
@@ -314,10 +315,9 @@ function deleteScopedHealth(accountId: string, scope: CodexQuotaScope): void {
 export function computeCodexUsageScore(quota: {
   weeklyPercent?: number;
   monthlyPercent?: number;
-} | null, plan?: string | null): number {
+} | null, plan?: unknown): number {
   if (!quota) return CODEX_UNKNOWN_USAGE_SCORE;
-  const normalizedPlan = plan?.trim().toLowerCase();
-  if (normalizedPlan === "go" || normalizedPlan === "free") {
+  if (isThirtyDayOnlyCodexPlan(plan)) {
     return typeof quota.monthlyPercent === "number" && Number.isFinite(quota.monthlyPercent)
       ? quota.monthlyPercent
       : CODEX_UNKNOWN_USAGE_SCORE;

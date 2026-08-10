@@ -187,6 +187,11 @@ export interface ProviderRegistryEntry {
    */
   statelessResponses?: boolean;
   /**
+   * Responses parser requires a matched tool result directly after its call. This is
+   * seeded/backfilled like other fixed upstream wire-contract capabilities.
+   */
+  requiresAdjacentResponsesToolResults?: boolean;
+  /**
    * Registry default for the provider's Responses `service_tier` support; see
    * `OcxProviderConfig.supportsServiceTier`. Registry-only: backfilled (never
    * overriding) at enrich/route time and deliberately NOT seeded into saved
@@ -209,6 +214,12 @@ export interface ProviderRegistryEntry {
   modelDefaultReasoningEfforts?: Record<string, string>;
   reasoningEffortMap?: Record<string, string>;
   modelReasoningEffortMap?: Record<string, Record<string, string>>;
+  /**
+   * Registry-authoritative models that send OpenAI's direct `reasoning_effort` field.
+   * Runtime enrichment uses this to repair stale preset metadata that still classifies a model
+   * as a thinking-budget/toggle model. This is registry-only and is never persisted as user config.
+   */
+  directReasoningEffortModels?: string[];
   reasoningWireFormat?: OcxProviderConfig["reasoningWireFormat"];
   noVisionModels?: string[];
   noReasoningModels?: string[];
@@ -221,6 +232,7 @@ export interface ProviderRegistryEntry {
   promptCacheKey?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
+  requiresReasoningPlaceholderModels?: string[];
   reasoningSplitModels?: string[];
   thinkingToggleModels?: string[];
   thinkingBudgetModels?: string[];
@@ -243,7 +255,7 @@ export type ProviderConfigSeed = Pick<
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap" | "reasoningWireFormat"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "requiresReasoningPlaceholderModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
   | "googleMode" | "project" | "location" | "headers"
 >;
 
@@ -344,6 +356,9 @@ const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
 };
 const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"];
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// Qwen3.8-Max is the first Qwen3.x model with official direct `reasoning_effort` support.
+// Evidence: https://qwen.ai/blog?id=qwen3.8
+const QWEN38_REASONING_EFFORTS = ["low", "medium", "xhigh"];
 const THINKING_BUDGET_MODELS = [
   "qwen3.5-397b", "qwen3.6-35b",
   "qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus",
@@ -1359,6 +1374,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // "The API is stateless: responses and conversations are not stored on the
     // server." https://api-docs.deepseek.com/api/create-response/
     statelessResponses: true,
+    // DeepSeek rejects a valid Codex continuation when hook-provided developer
+    // context is persisted between a call and its matching result (#1292).
+    requiresAdjacentResponsesToolResults: true,
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
     - 대안 분석: Globally preserve reasoning_content for all OpenAI-compatible models; preserve it for legacy deepseek-reasoner too; mark only V4 thinking models in registry metadata.
@@ -1375,6 +1393,40 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
   // llama-3.3-70b was deprecated by Cerebras on 2026-02-16. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "cerebras", label: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://cloud.cerebras.ai/platform/apikeys", defaultModel: "gpt-oss-120b" },
+  {
+    // Primary sources checked 2026-08-08:
+    // - https://chutes.ai/pricing documents the shared llm.chutes.ai/v1 OpenAI-compatible
+    //   gateway, Bearer API keys, and chat completions. Its public
+    //   https://llm.chutes.ai/v1/models response supplies supported_features for filtering.
+    // - https://chutes.ai/terms identifies Chutes Global Corp as the platform operator, applies
+    //   to API consumers, and directs production/high-volume automated inference to PAYGO.
+    //   Maintainer: @olddonkey; no affiliation with Chutes.
+    id: "chutes",
+    label: "Chutes",
+    baseUrl: "https://llm.chutes.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://chutes.ai/auth/start",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The public model catalog cannot prove that a supplied Bearer key is valid.
+    apiKeyValidation: "unknown",
+    // Chutes documents tool calling, but not a provider-wide parallel tool-call contract.
+    parallelToolCalls: false,
+    // The live catalog reports reasoning support, but not a stable effort ladder.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 256 * 1024,
+      maxModels: 128,
+      filter: {
+        // The shared LLM catalog also contains rows without native tool support. Codex needs a
+        // complete agent loop, so admit only rows whose live metadata advertises tools.
+        allOf: [{ path: ["supported_features"], containsAny: ["tools"] }],
+      },
+    },
+    note: "Shared OpenAI-compatible LLM gateway only; live discovery exposes tool-capable rows. User-deployed custom Chute endpoints and non-LLM APIs require a custom provider.",
+  },
   {
     id: "deepinfra",
     label: "DeepInfra",
@@ -1621,6 +1673,53 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     note: "Shared Generative APIs Serverless Chat Completions only; project-qualified and dedicated deployment hosts require a custom provider.",
   },
+  {
+    // Primary sources checked 2026-08-08:
+    // - https://featherless.ai/docs/api-overview-and-common-options documents the fixed
+    //   OpenAI-compatible base URL, Bearer keys, and Chat Completions.
+    // - https://featherless.ai/docs/api-reference-models documents authenticated plan filtering,
+    //   chat capability filtering, popularity sorting, pagination, and per-row tool metadata.
+    // - https://featherless.ai/legal/terms-of-service identifies Featherless as a Delaware LLC,
+    //   covers developers building on its APIs, and reserves arbitrary applications for Scale
+    //   plans. Maintainer: @olddonkey; no affiliation with Featherless.
+    id: "featherless",
+    label: "Featherless AI",
+    baseUrl: "https://api.featherless.ai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://featherless.ai/account/api-keys",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // /v1/models is documented as callable authenticated or unauthenticated, so a 2xx catalog
+    // response cannot prove the supplied Bearer key is valid.
+    apiKeyValidation: "unknown",
+    // Featherless documents tool calling, but not a provider-wide parallel tool-call contract.
+    parallelToolCalls: false,
+    // Reasoning controls use model-specific chat_template_kwargs, not OpenAI reasoning_effort.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      query: {
+        available_on_current_plan: "true",
+        capabilities: "chat",
+        page: "1",
+        per_page: "100",
+        sort: "-popularity",
+      },
+      maxResponseBytes: 128 * 1024,
+      maxModels: 100,
+      filter: {
+        // Treat server-side filters as a size optimization, not an authority boundary. A row must
+        // independently prove plan availability, no separate Hugging Face gate, and tool support.
+        allOf: [
+          { path: ["available_on_current_plan"], equalsAny: [true] },
+          { path: ["is_gated"], equalsAny: [false] },
+          { path: ["features", "tool_use"], equalsAny: [true] },
+        ],
+      },
+    },
+    note: "Authenticated first page of popular chat models only; live discovery admits at most 100 plan-available, ungated rows whose metadata explicitly reports tool use.",
+  },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
   { id: "fireworks", label: "Fireworks", baseUrl: "https://api.fireworks.ai/inference/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://fireworks.ai/account/api-keys" },
@@ -1721,6 +1820,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS.map(id => [id, true]),
     ),
     preserveReasoningContentModels: ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS,
+    // GLM thinking is a binary toggle (low maps to disabled), so a legitimate
+    // tool round can carry no reasoning at all; never fabricate a placeholder
+    // for it, only replay real recorded text (P2 on #1205).
+    requiresReasoningPlaceholderModels: [],
     // No liveModels: GET /api/paas/v4/models has not been observed to answer on this host, and a
     // false live claim yields an empty picker at runtime. Flip it on once someone verifies it.
     note: "Domestic BigModel pay-as-you-go endpoint (open.bigmodel.cn)",
@@ -1899,11 +2002,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
+      "qwen3.8-max": QWEN38_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
     },
+    modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
     modelReasoningEffortMap: { "deepseek-v4-pro": deepseekReasoningMapFor("deepseek-v4-pro") },
-    thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS,
+    directReasoningEffortModels: ["qwen3.8-max"],
+    thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
     preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
     noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
   },
@@ -1932,7 +2038,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
-      "qwen3.8-max": ["low", "high", "xhigh"],
+      "qwen3.8-max": QWEN38_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
       "deepseek-v4-flash": deepseekThinkingEffortsFor("deepseek-v4-flash"),
@@ -1941,7 +2047,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "deepseek-v4-pro": deepseekReasoningMapFor("deepseek-v4-pro"),
       "deepseek-v4-flash": deepseekReasoningMapFor("deepseek-v4-flash"),
     },
-    thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS,
+    directReasoningEffortModels: ["qwen3.8-max"],
+    thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
     preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
     noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
@@ -1995,6 +2102,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
     modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
     preserveReasoningContentModels: MINIMAX_MODELS,
+    // MiniMax-M3 low effort maps to thinking disabled, so a legitimate tool
+    // round can carry no reasoning at all; only replay real recorded text,
+    // never a fabricated placeholder (chatgpt-codex-connector P2 on #1205).
+    requiresReasoningPlaceholderModels: [],
     reasoningSplitModels: MINIMAX_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "Subscription Key or API Key",
@@ -2007,6 +2118,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelDefaultReasoningEfforts: { "MiniMax-M3": "medium" },
     modelReasoningEffortMap: { "MiniMax-M3": MINIMAX_M3_REASONING_EFFORT_MAP },
     preserveReasoningContentModels: MINIMAX_MODELS,
+    requiresReasoningPlaceholderModels: [],
     reasoningSplitModels: MINIMAX_MODELS,
     thinkingToggleModels: ["MiniMax-M3"],
     jawcodeBundle: "minimax", metadataModelIdNormalize: "case-insensitive", note: "中国区 Subscription Key",
@@ -2037,6 +2149,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // continuations, or the gateway answers HTTP 400 (issues #950/#994). Mirror the DeepSeek
     // reasoning + thinking metadata so `opencode-zen/deepseek-v4-flash-free` — and the other
     // Zen DeepSeek thinking models — never serialize a bare tool-call turn.
+    note: "Keyed OpenCode Zen gateway. Free models on this tier are often short-window rate-limited at roughly 15-20 requests/minute (community-measured; OpenCode does not publish RPM). Zen may return generic 429s without Retry-After / X-RateLimit headers; when Retry-After is omitted, opencodex adds a synthetic backoff hint (upstream Retry-After still wins). Distinct from the keyless opencode-free desktop quota (~200 Big Pickle/free-model requests per 5 hours). Docs: https://opencode.ai/docs/zen/. Free-model prompts may be retained for training — do not send confidential material.",
     modelReasoningEfforts: Object.fromEntries(
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekThinkingEffortsFor(id)]),
     ),
@@ -2056,7 +2169,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     keyOptional: true,
     featured: true,
     liveModels: true,
-    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
+    note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. The same Zen gateway can also short-window rate-limit free models at roughly 15-20 requests/minute, and may return generic 429s without Retry-After (opencodex synthesizes backoff only when that header is omitted). Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
     dashboardUrl: "https://opencode.ai",
     staticHeaders: {
       "x-opencode-client": "desktop",

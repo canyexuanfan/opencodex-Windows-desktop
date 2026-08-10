@@ -144,7 +144,7 @@ Kiro のログインには Kiro CLI が必要です。Unix では `curl -fsSL ht
 
 ## 3. API キーカタログ
 
-opencodex には組み込みプリセットが 76 個含まれています。キー方式 64、OAuth 8、ローカル 3、
+opencodex には組み込みプリセットが 78 個含まれています。キー方式 66、OAuth 8、ローカル 3、
 デフォルト ChatGPT 転送プリセット 1 です。ダッシュボードの **Add provider** ピッカーはキー発行ページを開き、
 入力したキーを検証した後保存します(検証はプロバイダー固有です)。主な項目は以下のとおりです:
 
@@ -176,6 +176,7 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | MiniMax · MiniMax (CN) | `https://api.minimax.io/v1` · `https://api.minimaxi.com/v1` |
 | DeepSeek | `https://api.deepseek.com` |
 | Cerebras | `https://api.cerebras.ai/v1` |
+| Chutes | `https://llm.chutes.ai/v1` |
 | DeepInfra | `https://api.deepinfra.com/v1/openai` |
 | Hyperbolic | `https://api.hyperbolic.xyz/v1` |
 | Nscale Serverless Inference | `https://inference.api.nscale.com/v1` |
@@ -186,6 +187,7 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Nebius Token Factory | `https://api.tokenfactory.nebius.com/v1` |
 | DigitalOcean Serverless Inference | `https://inference.do-ai.run/v1` |
 | Scaleway Generative APIs | `https://api.scaleway.ai/v1` |
+| Featherless AI | `https://api.featherless.ai/v1` |
 | Together | `https://api.together.xyz/v1` |
 | Fireworks | `https://api.fireworks.ai/inference/v1` |
 | Moonshot (Kimi API) · Kimi (coding) | `https://api.moonshot.ai/v1` · `https://api.kimi.com/coding/v1` |
@@ -203,6 +205,9 @@ Cline IDE/CLI のみで API からは使えません。`minimax/minimax-m2.5` �
 | Cloudflare AI Gateway | `https://gateway.ai.cloudflare.com/v1/{account-id}/{gateway}/anthropic` |
 | …その他多数 | opencode zen、Vercel AI Gateway、Venice、NanoGPT、Synthetic、Qianfan、Alibaba、Parallel、ZenMux、LiteLLM |
 
+**OpenCode Zen**（`opencode-zen`）とキー不要の **OpenCode Free** プリセットは
+`https://opencode.ai/zen/v1` を共有します。このゲートウェイ上の無料モデルは、しばしばおおよそ毎分 15–20 リクエストの短時間レート制限に当たります（コミュニティ計測。OpenCode は RPM を公表しません）。Zen は `Retry-After` / `X-RateLimit-*` ヘッダーなしの汎用 429 を返すことがあります。これはキー不要デスクトップ枠（`opencode-free` で Big Pickle/無料モデル約 200 回 / 5 時間）とは別です。Zen がそのような 429 で `Retry-After` を省略した場合、opencodex はクライアント向けエラーに案内を足し、合成 `Retry-After` を付けます（上流の `Retry-After` があればそれが優先されます）。同一キーの待機再試行は [`retryOn429`](/ja/reference/configuration/) でオプトインします。
+
 大半は bearer キーと共に `openai-chat` アダプターを使い、Anthropic 互換エンドポイントのみを公開する一部
 (例: **Xiaomi MiMo**)は `anthropic` アダプター(`x-api-key`)を使います。
 Volcengine Agent Plan は `openai-responses` アダプターでネイティブ Responses エンドポイントを使用します。
@@ -217,6 +222,13 @@ Volcengine Agent Plan は `openai-responses` アダプターでネイティブ R
 > `doubao-seed-2-1-pro-260628` で、静的カタログには現在の DeepSeek と GLM のテキストモデルも
 > 含まれます。Coding Plan のデフォルトは `ark-code-latest`、Agent Plan は
 > `deepseek-v4-pro` です。
+
+**Chutes の discovery:** `chutes` preset は Chutes の固定された共有 OpenAI 互換 LLM gateway を使います。
+公開 `/v1/models` catalog から `supported_features` が `tools` を示す行だけを残し、スラッシュを含む
+model id と安全な live metadata を保持します。discovery は 256 KiB と raw 128 行に制限されます。
+catalog は公開されているため、入力したキーの有効性は証明できませんが、chat request は設定済みの
+Bearer キーで認証されます。ユーザーが deploy した custom Chute host と LLM 以外の API は custom
+provider の範囲です。キーは [Chutes dashboard](https://chutes.ai/auth/start) で作成します。
 
 **DeepInfra の discovery:** キー方式の OpenAI Chat Completions プロバイダー `deepinfra` は、
 `openai-chat` アダプターと Bearer API キーを使います。registry が所有する DeepInfra のモデル一覧 URL から
@@ -267,6 +279,13 @@ allowlist の積集合だけを公開します。未知、Responses 専用、emb
 id は fail closed で除外し、discovery を 128 KiB と raw 128 行に制限します。default Project の共有
 endpoint を使用します。Project id 付き URL と dedicated deployment は custom provider で設定してください。
 API キーは [Scaleway console](https://console.scaleway.com/generative-api) で作成します。
+
+**Featherless の discovery:** 固定の OpenAI 互換ホストで認証し、chat と現在の plan に絞った人気順の
+先頭 100 model だけを取得します。各 row が plan で利用可能、Hugging Face gate なし、かつ
+`features.tool_use: true` と独立して報告しない限り fail closed で除外します。discovery は 128 KiB と
+raw 100 行が上限で、数万件の catalog 全体を download / cache しません。`/v1/models` は認証あり・なしの両方で呼び出せると文書化されているため、入力したキーの有効性は証明できませんが、chat request は設定済みの Bearer キーで認証されます。個人 plan は interactive / prototype
+用途に限られ、任意の application には Scale plan が必要です。キーは
+[Featherless dashboard](https://featherless.ai/account/api-keys) で作成します。
 
 > **Baseten の対象範囲:** このプリセットは Baseten の共有 [Model APIs](https://docs.baseten.co/inference/model-apis/overview)
 > のみを対象とします。ローカル利用では個人の [API キー](https://docs.baseten.co/organization/api-keys)を、
