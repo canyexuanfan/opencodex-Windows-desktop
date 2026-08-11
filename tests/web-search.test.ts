@@ -2143,9 +2143,28 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       .map(f => String(f.data.delta ?? ""))
       .join("");
 
+  /**
+   * Bound a readUntil wait with a deadline that REJECTS. The deadline must never release an
+   * adapter gate: doing so would let a buffered implementation pass via the terminal replay.
+   */
+  const within = async <T>(wait: Promise<T>, what: string): Promise<T> => {
+    let timer!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timed out waiting for ${what} — output was not delivered live`)),
+        5_000,
+      );
+    });
+    try {
+      return await Promise.race([wait, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   test("leading text deltas stream live: the client sees them while the adapter is still mid-turn", async () => {
     // The adapter blocks after its first delta until the TEST has observed that delta on the wire.
-    // Buffered delivery would deadlock here; a 5s guard turns that into a clean failure.
+    // Buffered delivery would deadlock here; the rejecting 5s deadline turns that into a failure.
     let releaseAdapter!: () => void;
     const clientSawFirstDelta = new Promise<void>(resolve => { releaseAdapter = resolve; });
     const adapter: ProviderAdapter = {
@@ -2173,9 +2192,10 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       streamRoutedModelOutput: true,
     });
     const sse = frameReader(response.body!);
-    const guard = setTimeout(releaseAdapter, 5_000);
-    const first = await sse.readUntil(f => f.data.type === "response.output_text.delta");
-    clearTimeout(guard);
+    const first = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the first live text delta",
+    );
     expect(first?.data.delta).toBe("Hello ");
     releaseAdapter();
     const frames = await sse.drain();
@@ -2253,9 +2273,10 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       streamRoutedModelOutput: true,
     });
     const sse = frameReader(response.body!);
-    const guard = setTimeout(releaseToolCall, 5_000);
-    const prefixDelta = await sse.readUntil(f => f.data.type === "response.output_text.delta");
-    clearTimeout(guard);
+    const prefixDelta = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the live prefix delta before the tool call",
+    );
     expect(prefixDelta?.data.delta).toBe("prefix ");
     releaseToolCall();
     const frames = await sse.drain();
@@ -2314,9 +2335,10 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       streamRoutedModelOutput: true,
     });
     const sse = frameReader(response.body!);
-    const guard = setTimeout(releaseWebSearch, 5_000);
-    const preSearchDelta = await sse.readUntil(f => f.data.type === "response.output_text.delta");
-    clearTimeout(guard);
+    const preSearchDelta = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the live pre-search text delta",
+    );
     expect(preSearchDelta?.data.delta).toBe("Let me check. ");
     releaseWebSearch();
     const frames = await sse.drain();
