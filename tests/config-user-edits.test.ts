@@ -621,6 +621,32 @@ test("an unarmed config saves without reconciliation", () => {
   expect((diskConfig().claudeCode as Record<string, unknown>).authMode).toBe("subscription");
 });
 
+test("a live deletion of a key that only ever existed on disk is not undone by the rebase", () => {
+  // The live baseline is captured once, when the server arms it. A key written to
+  // disk afterwards — by saveConfig(), a hand edit, or another process — is absent
+  // from both the baseline and the live config, so reconciling it read "live never
+  // changed this key" and adopted the disk value. That resurrected a field the live
+  // writer had just deleted, which is how #1462's rebase broke
+  // `PUT /api/grok/selection` with an empty list.
+  const live = loadConfig();
+  armClaudeCodeBaseline(live);
+
+  // The field appears on disk only, after the baseline was armed.
+  const onDisk = loadConfig();
+  onDisk.grokExcludedModels = ["a"];
+  saveConfig(onDisk);
+  expect(diskConfig().grokExcludedModels).toEqual(["a"]);
+
+  // The live writer adopts it and then deletes it, exactly as the management route
+  // does for an empty selection.
+  live.grokExcludedModels = ["a"];
+  delete live.grokExcludedModels;
+  saveConfigPreservingClaudeCode(live);
+
+  expect(diskConfig().grokExcludedModels).toBeUndefined();
+  expect(live.grokExcludedModels).toBeUndefined();
+});
+
 test("a provider deletion from a newer disk snapshot survives an unrelated live save", () => {
   const live = loadConfig();
   live.providers.extra = {

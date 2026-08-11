@@ -3009,11 +3009,29 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
     if (baseline && onDisk !== undefined) {
       const persistedDiagnostics = configDiagnosticsFromRaw(JSON.stringify(onDisk));
       if (persistedDiagnostics.source === "file") {
+        // Only keys this live config is actually known to have diverged on may be
+        // rebased. The baseline is captured once when the server arms it, so any key
+        // that appeared on disk afterwards — through saveConfig(), a hand edit, or
+        // another process — is absent from the baseline as well as from the live
+        // config. Reconciling those keys reads "live never changed this" and adopts
+        // the disk value, which resurrects a field the live writer had deliberately
+        // deleted (#1462 regression: PUT /api/grok/selection with an empty list).
+        // Restrict the merge to keys the baseline knew about, plus keys the live
+        // config still carries; a key that exists only on disk is left to the
+        // ordinary whole-config write below.
+        const rebaseableKeys = new Set([
+          ...Object.keys(baseline as unknown as Record<string, unknown>),
+          ...Object.keys(config as unknown as Record<string, unknown>),
+        ]);
+        const skipped = new Set(["hostname", "port", "claudeCode"]);
+        for (const key of Object.keys(persistedDiagnostics.config as unknown as Record<string, unknown>)) {
+          if (!rebaseableKeys.has(key)) skipped.add(key);
+        }
         reconcileConfigRecord(
           config as unknown as Record<string, unknown>,
           baseline as unknown as Record<string, unknown>,
           persistedDiagnostics.config as unknown as Record<string, unknown>,
-          new Set(["hostname", "port", "claudeCode"]),
+          skipped,
         );
       }
     }
