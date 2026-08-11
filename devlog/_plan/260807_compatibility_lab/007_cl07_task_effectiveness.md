@@ -231,10 +231,11 @@ Typecheck; focused fabric/subject/sandbox/verifier/observe/ledger/projection/rea
 
 ## M. Status
 
-- **Authorization:** IN PROGRESS from CL-06 merge `b66e33ce7207d91014644d99317e456c992a3418`
-- **Implementation head:** pending push (authoritative route execution + isolated producer child)
-- **Accepted head:** NOT YET
-- **PR:** [#1438](https://github.com/lidge-jun/opencodex/pull/1438) (draft)
+- **State:** ACCEPTED / CLOSED
+- **Merge commit on `dev`:** `02e62fc8c7354c544ef71f8bb3db5ebba42cb600`
+- **Accepted / source head:** `0efe2c69514d3baefee686383fe740e4ecb37d83`
+- **Starting SHA:** `b66e33ce7207d91014644d99317e456c992a3418` (CL-06 merge #1394)
+- **PR:** [#1438](https://github.com/lidge-jun/opencodex/pull/1438) (merged)
 
 ### Authoritative route execution boundary
 
