@@ -853,7 +853,10 @@ exit 0
       expect(installed.installed).toBe(false);
       expect(installed.message).toContain("generated wrapper changed during its validation probe");
       expect(readFileSync(codexPath, "utf8")).toBe(concurrent);
-      expect(existsSync(`${codexPath}.opencodex-real`)).toBe(false);
+      // The backup is kept, not deleted: the source path is occupied by a file we
+      // do not own, so this backup is the only copy of the user's real launcher.
+      // A stray `codex.opencodex-real` is recoverable; a deleted launcher is not.
+      expect(existsSync(`${codexPath}.opencodex-real`)).toBe(true);
       expect(existsSync(join(home, "codex-shim.json"))).toBe(false);
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
@@ -900,13 +903,15 @@ exit 0
 
       expect(installed.installed).toBe(false);
       expect(installed.message).toContain("changed during its validation probe");
-      // The user is left with a working `codex`: the install refuses and restores
-      // the launcher it moved aside, rather than adopting the replacement as its
-      // own and unlinking it during rollback.
-      expect(readFileSync(codexPath, "utf8")).toBe(original);
-      // And no half-finished state is left behind.
+      // The replacement survives: it is not ours, so rollback must not unlink it.
+      expect(readFileSync(codexPath, "utf8")).toBe(intruder);
+      // The user's real launcher is preserved rather than deleted, because the
+      // path is occupied by a file we do not own. A stray backup is recoverable;
+      // a deleted launcher is not.
+      expect(existsSync(`${codexPath}.opencodex-real`)).toBe(true);
+      expect(readFileSync(`${codexPath}.opencodex-real`, "utf8")).toBe(original);
+      // No install state is published for a refused install.
       expect(existsSync(join(home, "codex-shim.json"))).toBe(false);
-      expect(existsSync(`${codexPath}.opencodex-real`)).toBe(false);
       // No staging artifact leaked into the user's PATH directory.
       expect(readdirSync(binDir).filter(name => name.includes("opencodex-staging"))).toEqual([]);
     } finally {

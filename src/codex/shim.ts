@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, extname, join, posix } from "node:path";
+import { basename, delimiter, dirname, extname, join, posix } from "node:path";
 import {
   chmodSync,
   closeSync,
@@ -794,6 +794,8 @@ interface FreshShimInstallJournalEntry {
   originalMovedToBackup: boolean;
   writtenWrapperFingerprint?: ShimPathFingerprint;
   wrapperWriteStarted: boolean;
+  /** dev/ino of the file our `writeShim()` created, recorded before anything can fail. */
+  writtenWrapperInode?: { dev: number; ino: number };
 }
 
 function rollbackFreshShimInstall(journal: readonly FreshShimInstallJournalEntry[]): void {
@@ -801,14 +803,19 @@ function rollbackFreshShimInstall(journal: readonly FreshShimInstallJournalEntry
   for (const entry of [...journal].reverse()) {
     const target = entry.target;
     let sourceOccupied = false;
+    let ownsWrapperNow = false;
     try {
       const wrapper = stableShimPathProbe(target.wrapperPath);
+      // Ownership is the inode our own write created. There is no marker-text
+      // fallback: the markers are public, so a concurrent updater's wrapper carries
+      // them too, and treating that as proof is how we would delete a file we never
+      // wrote. An in-place truncation of our file keeps the inode and is still ours
+      // to clean up; a replacement renamed over it has a different inode and is not.
       const ownsWrapper = !target.preserveOnly
         && entry.wrapperWriteStarted
         && wrapper !== null
-        && (entry.writtenWrapperFingerprint
-          ? sameFingerprint(wrapper.fingerprint, entry.writtenWrapperFingerprint)
-          : wrapper.prefix.includes(SHIM_MARKER));
+        && wrapperInodeIsOurs(wrapper, entry.writtenWrapperInode, entry.writtenWrapperFingerprint);
+      ownsWrapperNow = ownsWrapper;
       if (ownsWrapper) unlinkSync(target.wrapperPath);
       else {
         try {
@@ -829,10 +836,12 @@ function rollbackFreshShimInstall(journal: readonly FreshShimInstallJournalEntry
           throw new Error("Codex shim fresh-install backup changed during rollback");
         }
         if (sourceOccupied) {
-          if (!entry.writtenWrapperFingerprint) {
-            throw new Error("Codex shim fresh-install wrapper ownership changed during rollback");
-          }
-          unlinkSync(target.backupPath);
+          // Something else occupies the source path. Dropping the backup is correct
+          // only when that something is a file we own; when a concurrent updater
+          // owns it, this backup is the user's real launcher and deleting it would
+          // lose the command entirely. Keep it in that case — a stray
+          // `codex.opencodex-real` is recoverable, a deleted launcher is not.
+          if (ownsWrapperNow) unlinkSync(target.backupPath);
         } else renameSync(target.backupPath, target.originalPath);
       }
     } catch (error) {
@@ -1042,7 +1051,16 @@ function gitBashPath(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-function writeShim(wrapperPath: string, realCodexPath: string): void {
+/**
+ * Write the wrapper and return the identity of the inode this call created, or
+ * `undefined` where the platform still writes the destination in place.
+ *
+ * Callers must derive ownership from the returned identity rather than from a
+ * later `stat` of `wrapperPath`: the shim markers are public, so a concurrent
+ * updater's wrapper can carry them, and a replacement landing between the write
+ * and the observation is otherwise indistinguishable from our own file.
+ */
+function writeShim(wrapperPath: string, realCodexPath: string): { dev: number; ino: number } | undefined {
   const { bun, bunRuntimeSource, cli } = cliEntry();
   if (process.platform === "win32") {
     const lower = wrapperPath.toLowerCase();
@@ -1060,6 +1078,7 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
         "utf8",
       );
     }
+    return undefined;
   } else {
     // Stage the wrapper as its own inode and rename it into place, so ownership
     // comes from the write itself rather than from observing the path afterwards.
@@ -1067,19 +1086,21 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
     // updater can replace the file between our write and our fingerprint; we would
     // then adopt that replacement as ours and unlink it during rollback, deleting
     // an executable we never wrote.
-    const staged = `${wrapperPath}.opencodex-staging.${process.pid}.${randomUUID()}`;
+    // Hidden and non-executable while staged, so a crash between the write and the
+    // rename cannot leave an executable `codex*` artifact that a glob or a shell
+    // completion would surface.
+    const staged = join(dirname(wrapperPath), `.${basename(wrapperPath)}.opencodex-staging.${process.pid}.${randomUUID()}`);
     let renamed = false;
-    lastStagedWrapperInode = undefined;
     try {
       // "wx" fails if the staging path somehow exists, so we never inherit a file.
-      writeFileSync(staged, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), { encoding: "utf8", flag: "wx", mode: 0o755 });
-      chmodSync(staged, 0o755);
+      writeFileSync(staged, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), { encoding: "utf8", flag: "wx", mode: 0o600 });
       const stagedStat = lstatSync(staged);
+      chmodSync(staged, 0o755);
       renameSync(staged, wrapperPath);
       renamed = true;
       // rename() preserves dev/ino and updates ctime, so identity is the inode
       // pair, captured from the file we created rather than from the destination.
-      lastStagedWrapperInode = { dev: stagedStat.dev, ino: stagedStat.ino };
+      return { dev: stagedStat.dev, ino: stagedStat.ino };
     } finally {
       if (!renamed) {
         try { unlinkSync(staged); } catch { /* best-effort: nothing to clean up */ }
@@ -1089,12 +1110,50 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
 }
 
 /**
- * dev/ino of the file the most recent `writeShim()` actually created, on
- * platforms where the wrapper is staged and renamed into place. Ownership derived
- * from this survives a concurrent replacement of the destination path, which a
- * post-write `stat` of `wrapperPath` cannot distinguish from our own file.
+ * The fingerprint to record as "we wrote this", or `undefined` when the file at
+ * `wrapperPath` is not the inode `writeShim()` created. Returning `undefined`
+ * makes every rollback path treat the file as someone else's and leave it alone.
  */
-let lastStagedWrapperInode: { dev: number; ino: number } | undefined;
+function ownedWrapperFingerprint(
+  wrapperPath: string,
+  written: { dev: number; ino: number } | undefined,
+): ShimPathFingerprint | undefined {
+  const probe = stableShimPathProbe(wrapperPath);
+  if (!probe) return undefined;
+  // Platforms that still write in place (Windows) have no staged identity; fall
+  // back to the marker check they have always used.
+  if (!written) return probe.prefix.includes(SHIM_MARKER) ? probe.fingerprint : undefined;
+  if (probe.fingerprint.dev !== written.dev || probe.fingerprint.ino !== written.ino) return undefined;
+  return probe.fingerprint;
+}
+
+/**
+ * Whether the file now at the wrapper path is one this transaction may unlink.
+ *
+ * The inode our write created is the authority. It stays ours through an in-place
+ * truncation — a partial write we must clean up — and stops being ours the moment
+ * someone renames a different file over the path, which is exactly the concurrent
+ * updater we must not delete. Where no inode was recorded (Windows writes the
+ * destination directly), fall back to the exact fingerprint recorded at the time.
+ */
+function wrapperInodeIsOurs(
+  wrapper: StableShimPathProbe,
+  written: { dev: number; ino: number } | undefined,
+  recorded: ShimPathFingerprint | undefined,
+): boolean {
+  // A different inode is conclusive: someone renamed their own file over ours.
+  if (written && (wrapper.fingerprint.dev !== written.dev || wrapper.fingerprint.ino !== written.ino)) {
+    return false;
+  }
+  // Same inode is not sufficient on its own — an in-place truncation (shell `>`,
+  // writeFileSync) keeps it while replacing the contents. When we recorded a full
+  // fingerprint, require it to still match; that covers our own partial write,
+  // whose fingerprint we record before anything can fail.
+  if (recorded !== undefined) return sameFingerprint(wrapper.fingerprint, recorded);
+  // No recorded fingerprint: only the inode identity we captured at write time can
+  // speak for us, and there is nothing else to distinguish this file.
+  return written !== undefined;
+}
 
 function stateFiles(state: ShimState): ShimFileState[] {
   return state.wrappers?.length
@@ -1377,11 +1436,12 @@ function rollbackGuardedRefresh(journal: readonly GuardedRefreshJournalEntry[]):
     let sourceOccupied = false;
     attempt(() => {
       const wrapper = stableShimPathProbe(entry.operation.file.wrapperPath);
+      // No marker-text fallback: the markers are public, so a concurrent updater's
+      // wrapper carries them too. No recorded inode identity means not ours.
       const ownsWrapper = entry.wrapperWriteStarted
         && wrapper !== null
-        && (entry.writtenWrapperFingerprint !== undefined
-          ? sameFingerprint(wrapper.fingerprint, entry.writtenWrapperFingerprint)
-          : wrapper.prefix.includes(SHIM_MARKER));
+        && entry.writtenWrapperFingerprint !== undefined
+        && sameFingerprint(wrapper.fingerprint, entry.writtenWrapperFingerprint);
       if (ownsWrapper) {
         unlinkSync(entry.operation.file.wrapperPath);
       } else {
@@ -1450,13 +1510,16 @@ function applyGuardedRefreshTransaction(
       if (!movedReplacement) throw new Error("Codex shim guarded refresh could not fingerprint the staged launcher");
       entry.movedReplacementFingerprint = movedReplacement.fingerprint;
       entry.wrapperWriteStarted = true;
-      writeShim(operation.file.wrapperPath, operation.file.realPath ?? operation.file.backupPath);
+      const writtenInode = writeShim(operation.file.wrapperPath, operation.file.realPath ?? operation.file.backupPath);
+      // Claim our own partial write before the hook can fail (see fresh install).
+      entry.writtenWrapperFingerprint = ownedWrapperFingerprint(operation.file.wrapperPath, writtenInode);
       codexShimGuardedWriteHookForTests?.();
-      const writtenWrapper = stableShimPathProbe(operation.file.wrapperPath);
-      if (!writtenWrapper || !writtenWrapper.prefix.includes(SHIM_MARKER)) {
+      // Re-check: unset means a concurrent writer owns the path now, so rollback
+      // must leave it alone.
+      entry.writtenWrapperFingerprint = ownedWrapperFingerprint(operation.file.wrapperPath, writtenInode);
+      if (!entry.writtenWrapperFingerprint && !writtenInode) {
         throw new Error("Codex shim guarded refresh could not fingerprint the generated wrapper");
       }
-      entry.writtenWrapperFingerprint = writtenWrapper.fingerprint;
     } catch (error) {
       applyError = error instanceof Error ? error : new Error(String(error));
       break;
@@ -1590,12 +1653,14 @@ function refreshObsoleteUnixShims(files: readonly ShimFileState[]): ObsoleteUnix
         throw new Error("Codex autostart shim upgrade could not fingerprint the staged wrapper");
       }
       entry.wrapperWriteStarted = true;
-      writeShim(file.wrapperPath, file.realPath ?? file.backupPath);
+      const writtenInode = writeShim(file.wrapperPath, file.realPath ?? file.backupPath);
       const writtenWrapper = stableShimPathProbe(file.wrapperPath);
       if (!writtenWrapper || !isCurrentUnixShimProbe(writtenWrapper)) {
         throw new Error("Codex autostart shim upgrade could not fingerprint the regenerated wrapper");
       }
-      entry.writtenWrapperFingerprint = writtenWrapper.fingerprint;
+      // Identity is the inode we created; a replacement that landed since the
+      // rename leaves this unset so rollback treats the file as someone else's.
+      entry.writtenWrapperFingerprint = ownedWrapperFingerprint(file.wrapperPath, writtenInode);
     } catch (error) {
       applyError = error instanceof Error ? error : new Error(String(error));
       break;
@@ -1775,26 +1840,12 @@ function installCodexShimInternal(options: InstallCodexShimInternalOptions): { i
       }
       if (!target.preserveOnly) {
         entry.wrapperWriteStarted = true;
-        writeShim(target.wrapperPath, target.realPath ?? target.backupPath);
+        const writtenInode = writeShim(target.wrapperPath, target.realPath ?? target.backupPath);
+        entry.writtenWrapperInode = writtenInode;
         codexShimFreshWriteHookForTests?.();
         if (process.platform !== "win32") {
-          // Identity comes from the inode we staged, not from whatever now sits at
-          // the path: a concurrent updater may have replaced it, and that file is
-          // not ours to fingerprint, adopt, or later unlink.
-          const staged = lastStagedWrapperInode;
-          const writtenWrapper = stableShimPathProbe(target.wrapperPath);
-          if (!staged || !writtenWrapper || !writtenWrapper.prefix.includes(SHIM_MARKER)) {
-            throw new Error("Codex shim fresh install could not fingerprint the generated wrapper");
-          }
-          // Identity is the inode we created, not whatever now occupies the path.
-          // If another writer replaced the destination between our rename and this
-          // probe, dev/ino differ; leaving the fingerprint unset makes the existing
-          // `wrapperChangedDuringProbe` gate refuse the install and preserve the
-          // replacement, so rollback never unlinks a file we did not write.
-          entry.writtenWrapperFingerprint =
-            writtenWrapper.fingerprint.dev === staged.dev && writtenWrapper.fingerprint.ino === staged.ino
-              ? writtenWrapper.fingerprint
-              : undefined;
+          if (!writtenInode) throw new Error("Codex shim fresh install could not fingerprint the generated wrapper");
+          entry.writtenWrapperFingerprint = ownedWrapperFingerprint(target.wrapperPath, writtenInode);
         }
       }
     } catch (error) {
