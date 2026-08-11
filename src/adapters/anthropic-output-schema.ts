@@ -1,3 +1,5 @@
+// Mirrors Anthropic SDK's transformJSONSchema semantics with local unknown narrowing:
+// https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/lib/transform-json-schema.ts
 const SUPPORTED_STRING_FORMATS = new Set([
   "date-time",
   "time",
@@ -51,7 +53,10 @@ function normalizeSchema(schema: Record<string, unknown>): Record<string, unknow
     normalized.anyOf = oneOf.map(normalizeSubschema);
   } else if (Array.isArray(allOf)) {
     normalized.allOf = allOf.map(normalizeSubschema);
-  } else if (type !== undefined) {
+  } else {
+    if (type === undefined) {
+      throw new Error("JSON schema must have a type defined if anyOf/oneOf/allOf are not used");
+    }
     normalized.type = type;
   }
 

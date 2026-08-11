@@ -118,6 +118,18 @@ describe("anthropic extended-thinking gate", () => {
     });
   });
 
+  test("rejects a JSON Schema without a type or composition keyword", async () => {
+    const request = parseRequest({
+      model: "claude-sonnet-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "summarize this" }] }],
+      text: { format: { type: "json_schema", name: "summary", schema: { description: "summary" } } },
+    });
+
+    await expect(bodyOf(request)).rejects.toThrow(
+      "JSON schema must have a type defined if anyOf/oneOf/allOf are not used",
+    );
+  });
+
   test("adaptive-thinking model resizes max_tokens for high effort (issue #246)", async () => {
     const b = await bodyOf(parsed("max", {}, "claude-fable-5"));
     // Exact regression: effort=max budget is 32000; adaptive ceiling adds OUTPUT_HEADROOM (8192)
