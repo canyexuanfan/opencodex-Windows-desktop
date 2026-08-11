@@ -49,6 +49,37 @@ That is the regression this unit found with the full suite and fixed in
 `d6e4545b2`. `maintainerCanModify` is true on that branch, so the correction can
 be pushed to it rather than landed behind the contributor's back.
 
+### Except it is not a clean carry-forward
+
+Cherry-picking `d6e4545b2` onto `d51bd2856` conflicts, because the contributor
+redesigned that region rather than patching it. Reimplementing our rule inside
+their design then failed one of *their* tests, and that failure is the
+interesting part:
+
+| Scenario | Ours (`d6e4545b2`) | Theirs (`d51bd2856`) |
+|---|---|---|
+| live deletes a field, disk still has it (`PUT /api/grok/selection` with `[]`) | fixed — 10 pass | broken — 9 pass / 1 fail |
+| another writer adds a key after we loaded, we save something unrelated | **loses the key** | preserved (`config-user-edits`: "an independently loaded config rebases a non-server save") |
+
+Both rules read the same evidence — a key present on disk and absent in the live
+config — and reach opposite conclusions, because absence alone cannot say whether
+the writer deleted the key or never had it. Our fix assumes deletion; theirs
+assumes ignorance. Each is right about its own scenario and wrong about the
+other's.
+
+Making the distinction properly needs the live config to record deletion intent
+at the point of deletion — there are eight or more `delete config.<field>` sites
+across the management routes — or the baseline to be refreshed on every
+cooperating write rather than armed once at server startup. Both are real changes
+to the config subsystem, not a correction to smuggle into a bug-fix batch, and
+the contributor is actively working in exactly this code.
+
+**Disposition:** do not force our version onto their branch. Merge theirs, and
+file the `PUT /api/grok/selection` deletion case as its own issue against the
+design they just landed, with the two-scenario table above as the statement of
+the problem. Our `d6e4545b2` stays on `dev` as the record of the failing case and
+its repro.
+
 ## Publication order
 
 Merge order follows the same dependency logic as the landing order, and each
