@@ -584,6 +584,23 @@ family shared by unrelated upstreams.
 - 다른 대안 대신 이 방식을 선택한 이유: Global or heuristic rules regress supported providers and make custom gateway names part of the wire contract.
 - 장점, 단점 및 영향: Compatible siblings retain schema enforcement and explicitly incompatible models avoid the upstream 400; operators must classify each unsupported model they route.
 
+## Anthropic structured-output compatibility
+
+The Anthropic adapter lowers Responses `text.format` and Chat Completions `response_format` JSON
+Schema requests to `output_config.format`. The local transform follows Anthropic's TypeScript SDK
+subset so upstream rejects neither OpenAI-only envelope fields nor unsupported schema constraints.
+Unsupported constraints remain in `description` as model guidance instead of disappearing. Root
+`$defs` stay beside a root `$ref`, intentionally differing from the current SDK transform's early
+`$ref` return so local references remain resolvable.
+
+[Decision Log]
+- 목적과 의도: Preserve schema-constrained output when OpenAI-shaped Responses or Chat Completions requests route to Anthropic Messages.
+- 기존 구현 및 제약 조건: The parser retained the requested schema, but the Anthropic adapter dropped it; forwarding the OpenAI schema unchanged fails when it includes constraints outside Anthropic's supported subset.
+- 검토한 주요 대안: Keep tool-call emulation; forward the raw schema; depend on the full Anthropic SDK; maintain a local compatibility transform based on the SDK.
+- 선택한 방식: Emit Anthropic `output_config.format`, mirror the SDK transform locally with strict `unknown` narrowing, move unsupported constraints into descriptions, and preserve root `$defs` before returning a root `$ref`.
+- 다른 대안 대신 이 방식을 선택한 이유: Native structured output avoids synthetic tools, raw forwarding produces upstream 400s, and importing the full SDK only for a small wire transform would duplicate the adapter's direct HTTP ownership.
+- 장점, 단점 및 영향: Both OpenAI-shaped input surfaces gain native Anthropic schema enforcement and unsupported intent remains visible to the model; the copied subset must track upstream SDK changes, description-carried constraints are guidance rather than hard validation, and the root-reference fix is an intentional divergence to keep definitions reachable.
+
 ## Reasoning display parity (hideThinkingSummary)
 
 `hideThinkingSummary` (request reasoning summary absent/"none" — the routed catalog default) is

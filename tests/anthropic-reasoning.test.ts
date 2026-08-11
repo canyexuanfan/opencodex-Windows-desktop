@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createAnthropicAdapter as createAnthropicAdapterProduction } from "../src/adapters/anthropic";
+import { chatCompletionsToResponsesBody } from "../src/chat/inbound";
 import { parseRequest } from "../src/responses/parser";
 import { anthropicToResponsesBody } from "../src/claude/inbound";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
@@ -134,6 +135,36 @@ describe("anthropic extended-thinking gate", () => {
       reasoning: { effort: "high" },
       text: { format: { type: "json_schema", name: "summary", schema, strict: true } },
     }));
+
+    expect(b.output_config).toEqual({
+      effort: "high",
+      format: { type: "json_schema", schema },
+    });
+  });
+
+  test("translates Chat Completions JSON Schema output to Anthropic", async () => {
+    const schema = {
+      type: "object",
+      properties: { summary: { type: "string" } },
+      required: ["summary"],
+      additionalProperties: false,
+    };
+    const responsesBody = chatCompletionsToResponsesBody({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "summarize this" }],
+      reasoning_effort: "high",
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "summary",
+          description: "One summary object.",
+          schema,
+          strict: true,
+        },
+      },
+    });
+
+    const b = await bodyOf(parseRequest(responsesBody));
 
     expect(b.output_config).toEqual({
       effort: "high",

@@ -79,6 +79,14 @@ of the HTTP retry loop.
   maps reasoning effort to a budget (minimal 1024 … max 32000), then computes a safe `max_tokens` with
   output headroom, and **drops `temperature`/`top_p`** when thinking is enabled (Anthropic forbids
   them there).
+- **Structured output:** Responses `text.format` and Chat Completions `response_format` requests
+  with `type: "json_schema"` become Anthropic `output_config.format`. The adapter mirrors the
+  Anthropic TypeScript SDK's supported JSON Schema subset: unsupported constraints are moved into
+  `description` as model guidance, `oneOf` becomes `anyOf`, and object schemas receive
+  `additionalProperties: false`. A root `$ref` retains its adjacent `$defs` so the local reference
+  remains resolvable. OpenAI envelope fields such as schema `name`, envelope `description`, and
+  `strict` are not part of the Anthropic wire format. JSON object mode without a schema has no
+  Anthropic equivalent and is not translated.
 - Always sends `anthropic-version: 2023-06-01`. Streams `content_block_delta` (`text_delta`,
   `thinking_delta`, compatible `reasoning_delta`, `input_json_delta`). The SSE decoder preserves
   event state across fetch chunks and accepts a terminal `message_stop` without a trailing newline.
