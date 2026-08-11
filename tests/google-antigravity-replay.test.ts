@@ -790,6 +790,68 @@ describe("durable antigravity replay snapshot", () => {
     await expect(flushAntigravityReplay()).rejects.toThrow("simulated disk failure");
   });
 
+  test("flush rejects when its retry budget cannot converge", async () => {
+    // A mutation that lands during every attempted write means the durable
+    // generation never catches up. Resolving here would tell drainAndShutdown()
+    // the snapshot is durable while the latest thought signature may never have
+    // reached disk, so shutdown would report a durability we cannot demonstrate.
+    let writes = 0;
+    setAntigravityReplayWriteSeamForTests({
+      afterTempWrite: async () => {
+        writes += 1;
+        // Dirty the cache again inside every write, so each attempt finishes
+        // behind the newest mutation.
+        observeAntigravityReplay(MODEL, `-racer-${writes}`, [fcPart("get_y", { n: writes }, SIG)]);
+      },
+    });
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("get_x", { a: 1 }, SIG)]);
+    await expect(flushAntigravityReplay()).rejects.toThrow(
+      "Antigravity replay snapshot flush did not converge.",
+    );
+    // The bound is still honored: it gives up rather than spinning forever.
+    expect(writes).toBe(8);
+  });
+
+  test("the written snapshot stays within the byte cap once framing is counted", async () => {
+    // The cap must bound the file, not the sum of its entries. Counting only
+    // per-entry sizes ignored the {"version":N,"sessions":[...]} framing and the
+    // comma between entries, so the written document exceeded the advertised cap
+    // by a margin that grew with every additional session.
+    const sig = "s".repeat(120);
+    observeAntigravityReplay(MODEL, "-one", [fcPart("get_a", { i: 1 }, sig)]);
+    await Bun.sleep(2);
+    observeAntigravityReplay(MODEL, "-two", [fcPart("get_b", { i: 2 }, sig)]);
+    await Bun.sleep(2);
+    observeAntigravityReplay(MODEL, "-three", [fcPart("get_c", { i: 3 }, sig)]);
+    await flushAntigravityReplay();
+
+    // Set the cap to exactly the sum of the entry sizes. Per-entry accounting
+    // admits all three and writes `framing` bytes too many; correct accounting
+    // sees that the document does not fit and drops one entry.
+    const full = readFileSync(snapshotPath(), "utf8");
+    const entries = (JSON.parse(full) as { sessions: unknown[] }).sessions;
+    expect(entries).toHaveLength(3);
+    const entrySum = entries.reduce(
+      (bytes, entry) => bytes + Buffer.byteLength(JSON.stringify(entry), "utf8"),
+      0,
+    );
+    // The framing is what this test is about, so assert it is actually there.
+    expect(Buffer.byteLength(full, "utf8")).toBeGreaterThan(entrySum);
+    setAntigravityReplaySnapshotMaxBytesForTests(entrySum);
+
+    // Re-observe the identical call: the cache dirties without any size changing.
+    observeAntigravityReplay(MODEL, "-three", [fcPart("get_c", { i: 3 }, sig)]);
+    await flushAntigravityReplay();
+
+    const written = readFileSync(snapshotPath(), "utf8");
+    // The whole file honors the cap, not merely the entries inside it.
+    expect(Buffer.byteLength(written, "utf8")).toBeLessThanOrEqual(entrySum);
+    // Not vacuous: it drops what does not fit instead of emptying the snapshot.
+    const kept = (JSON.parse(written) as { sessions: unknown[] }).sessions;
+    expect(kept.length).toBeGreaterThanOrEqual(2);
+    expect(kept.length).toBeLessThan(3);
+  });
+
   test("background snapshot failures log a redacted warning and keep the service running", async () => {
     const FAKE_SECRET = "FAKE_SECRET_antigravity_replay_12345";
     let warned!: () => void;

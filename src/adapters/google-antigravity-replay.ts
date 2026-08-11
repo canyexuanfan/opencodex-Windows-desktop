@@ -212,7 +212,15 @@ async function persistReplaySnapshotNow(): Promise<void> {
   const writeGeneration = replayMutationGeneration;
   try {
     const sessions: Array<[string, unknown]> = [];
-    let total = 0;
+    // Account for the bytes actually written, not just the entries: the document
+    // is `{"version":N,"sessions":[...]}`, so the framing and the comma between
+    // entries count against the cap too. Summing per-entry sizes alone let the
+    // written file exceed replaySnapshotMaxBytes by a margin that grew with every
+    // additional session.
+    const prefix = `{"version":${JSON.stringify(REPLAY_SNAPSHOT_VERSION)},"sessions":[`;
+    const suffix = "]}";
+    const serialized: string[] = [];
+    let total = Buffer.byteLength(prefix, "utf8") + Buffer.byteLength(suffix, "utf8");
     // Most-recently-active first so the sessions that survive the snapshot
     // byte cap are the ones actually in use (Map order is insertion order).
     for (const [key, entry] of [...replayCache].sort((a, b) => b[1].lastActiveAtMs - a[1].lastActiveAtMs)) {
@@ -225,17 +233,25 @@ async function persistReplaySnapshotNow(): Promise<void> {
         expiresAtMs: entry.expiresAtMs,
         lastActiveAtMs: entry.lastActiveAtMs,
       }];
-      const size = Buffer.byteLength(JSON.stringify(persistEntry), "utf8");
+      const encoded = JSON.stringify(persistEntry);
+      const size = Buffer.byteLength(encoded, "utf8") + (serialized.length > 0 ? 1 : 0);
       if (total + size > replaySnapshotMaxBytes) break;
       total += size;
+      serialized.push(encoded);
       sessions.push(persistEntry);
     }
-    sessions.reverse();
+    serialized.reverse();
+    const document = `${prefix}${serialized.join(",")}${suffix}`;
+    // Defensive: the admitted entries are what we serialize, so this can only
+    // trip if the accounting above and the payload below ever drift apart.
+    if (Buffer.byteLength(document, "utf8") > replaySnapshotMaxBytes) {
+      throw new Error("Antigravity replay snapshot exceeded its configured byte cap.");
+    }
     mkdirSync(dirname(replaySnapshotPath()), { recursive: true, mode: 0o700 });
     try { chmodSync(dirname(replaySnapshotPath()), 0o700); } catch { /* best-effort (e.g. Windows) */ }
     await atomicWriteFileAsync(
       replaySnapshotPath(),
-      JSON.stringify({ version: REPLAY_SNAPSHOT_VERSION, sessions }),
+      document,
       undefined,
       replaySnapshotWriteSeam,
     );
@@ -258,6 +274,13 @@ export async function flushAntigravityReplay(): Promise<void> {
     await replaySnapshotPersistGate;
     if (replayMutationGeneration === replayWrittenGeneration && replaySnapshotPersistTimer === null) return;
   }
+  // Budget exhausted without convergence. Resolving here would tell
+  // drainAndShutdown() the snapshot is durable while the latest thought
+  // signature may never have reached disk, so shutdown diagnostics would claim
+  // a durability we cannot demonstrate. Reject instead, with fixed text: the
+  // shutdown path logs this message, so it must not carry session, model, or
+  // signature detail.
+  throw new Error("Antigravity replay snapshot flush did not converge.");
 }
 
 /**
