@@ -171,8 +171,10 @@ export async function runIsolatedFabricProducer(request: IsolateRequest): Promis
       finish(() => reject(new FabricTaskError(error.message, "harness_failure", "harness")));
     });
 
-    child.stdin?.on("error", () => {
-      /* EPIPE after close is expected */
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled || error.code === "EPIPE") return;
+      killChild(child);
+      finish(() => reject(new FabricTaskError(error.message, "harness_failure", "harness")));
     });
 
     const payload = JSON.stringify({
