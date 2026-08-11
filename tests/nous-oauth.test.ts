@@ -148,6 +148,24 @@ describe("Nous token-response wiring", () => {
     expect(cred.refresh).toBe("device-refresh");
     expect(cred.accountId).toBe("device-user");
   });
+
+  test("an implausible JWT exp falls back to expires_in instead of pinning a never-expiring credential", async () => {
+    // A too-large `exp` (e.g. milliseconds instead of seconds, or clock skew)
+    // must not produce an expiry so far in the future that the credential is
+    // never refreshed. The caller falls back to `expires_in`.
+    const access = jwtWithClaims({ sub: "wired-user", exp: 9_999_999_999 });
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      access_token: access,
+      refresh_token: "rotated-refresh",
+      expires_in: 3600,
+    }), { status: 200 })) as typeof fetch;
+
+    const cred = await refreshNousToken("old-refresh");
+    const expected = Date.now() + 3600_000 - 2 * 60 * 1000;
+    // The expiry is derived from expires_in (≈ now + 3600s - skew), not from the
+    // absurd exp claim.
+    expect(Math.abs(cred.expires - expected)).toBeLessThan(5000);
+  });
 });
 
 describe("Nous device-flow error handling", () => {
@@ -265,6 +283,80 @@ describe("Nous device-flow error handling", () => {
     globalThis.fetch = (async () => new Response("<html>not json</html>", { status: 200 })) as typeof fetch;
     const ctrl: OAuthController = { onAuth() {} };
     await expect(loginNous(ctrl)).rejects.toThrow("Nous Portal device authorization response missing required fields");
+  });
+
+  test("a device-login response missing refresh_token is an unusable-response error, not refresh_token_reused", async () => {
+    // In the device flow no refresh token was submitted, so a missing
+    // refresh_token must not be mislabeled as single-use reuse.
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/api/oauth/device/code")) {
+        return new Response(JSON.stringify({
+          device_code: "dev-123",
+          user_code: "ABCD-EFGH",
+          verification_uri_complete: "https://portal.nousresearch.com/activate?code=ABCD-EFGH",
+          expires_in: 600,
+          interval: 1,
+        }), { status: 200 });
+      }
+      // Token endpoint: unusable device-login response (no refresh_token).
+      return new Response(JSON.stringify({
+        access_token: jwtWithClaims({ sub: "device-user", exp: Math.floor(Date.now() / 1000) + 3600 }),
+      }), { status: 200 });
+    }) as typeof fetch;
+    const ctrl: OAuthController = { onAuth() {} };
+    let err: unknown;
+    try {
+      await loginNous(ctrl);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { oauthError?: string }).oauthError).toBe("invalid_token");
+    expect((err as { oauthError?: string }).oauthError).not.toBe("refresh_token_reused");
+  });
+
+  test("a successful device-flow response missing access_token is a terminal invalid_token error", async () => {
+    // A 200 token response that omits access_token must be routed through
+    // parseTokenPayload so it is classified as terminal invalid_token, not
+    // silently treated as a transient/unknown error that retries the login.
+    globalThis.fetch = deviceFlowFetch(() =>
+      new Response(JSON.stringify({ refresh_token: "device-refresh" }), { status: 200 }),
+    );
+    const ctrl: OAuthController = { onAuth() {} };
+    let err: unknown;
+    try {
+      await loginNous(ctrl);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("did not include an access token");
+    expect((err as { name?: string }).name).toBe("NousTokenError");
+    expect((err as { oauthError?: string }).oauthError).toBe("invalid_token");
+    expect((err as { terminal?: boolean }).terminal).toBe(true);
+  });
+
+  test("a successful device-flow response with a null body is a terminal invalid_token error, not a TypeError", async () => {
+    // A 200 response whose body is valid JSON `null` must be normalized to an
+    // empty object so parseTokenPayload raises the intended terminal
+    // invalid_token error instead of dereferencing null into a raw TypeError.
+    globalThis.fetch = deviceFlowFetch(() =>
+      new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const ctrl: OAuthController = { onAuth() {} };
+    let err: unknown;
+    try {
+      await loginNous(ctrl);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(TypeError);
+    expect((err as Error).message).toContain("did not include an access token");
+    expect((err as { name?: string }).name).toBe("NousTokenError");
+    expect((err as { oauthError?: string }).oauthError).toBe("invalid_token");
+    expect((err as { terminal?: boolean }).terminal).toBe(true);
   });
 });
 
