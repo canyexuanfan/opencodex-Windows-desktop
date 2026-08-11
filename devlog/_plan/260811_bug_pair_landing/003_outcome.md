@@ -105,7 +105,14 @@ Measured rather than assumed:
 Our changes did not make it slower — the clean baseline runs it in the same
 ~2.45s. The test sits at roughly half of bun's 5s default and only crosses the
 line under full-suite parallelism. It is a latent flake in the same family as
-#1302, not a regression from this unit, and it is worth its own timeout bump.
+#1302, not a regression from this unit, so `f3a2698eb` raises that file's
+default the way the heavier management suites already do.
+
+**Run 3** — `11037 pass / 8 skip / 0 fail` across 680 files (549s). Clean.
+
+Three full-suite runs were needed, and they earned their cost: run 1 found a
+real regression in a contributor commit whose own CI was green, and run 2 found
+the latent timeout. A focused suite would have shipped both.
 
 ## Verification gaps, stated plainly
 
