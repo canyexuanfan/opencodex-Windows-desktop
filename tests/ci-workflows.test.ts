@@ -2955,6 +2955,25 @@ describe("GitHub Actions hardening", () => {
       expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
     });
 
+    test("the resolver fails closed when two open PRs share the head SHA", async () => {
+      const headSha = "6c42d17f213a632fc2def56053f0cd574b13d459";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 4242, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        associatedPullRequests: [],
+        // Two open PRs on the same head: the live lookup is ambiguous, so the
+        // resolver must fail closed rather than guess which PR to revalidate.
+        openPulls: [
+          { number: 4242, state: "open", head: { sha: headSha } },
+          { number: 7777, state: "open", head: { sha: headSha } },
+        ],
+      });
+
+      expect(result.outputs).toEqual([]);
+      expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
+    });
+
     test("the resolver resolves via the association index when it is already fresh", async () => {
       const headSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
       const result = await runResolver({
@@ -2978,11 +2997,17 @@ describe("GitHub Actions hardening", () => {
         eventName: "status",
         statusSha: headSha,
         associatedPullRequests: [],
-        failOn: ["pulls.list"],
+        failOn: [
+          "repos.listPullRequestsAssociatedWithCommit",
+          "pulls.list",
+        ],
       });
 
       expect(result.outputs).toEqual([]);
       expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
+      expect(result.warnings.join(" ")).toContain(
+        "Could not list PRs associated with commit",
+      );
       expect(result.warnings.join(" ")).toContain("Could not list open PRs");
     });
 
