@@ -69,6 +69,55 @@ describe("anthropic extended-thinking gate", () => {
     expect(b.output_config).toEqual({ effort: "low" });
   });
 
+  test("forwards Responses JSON Schema output format to Anthropic", async () => {
+    const schema = {
+      type: "object",
+      properties: { score: { type: "integer", minimum: 1, maximum: 10 } },
+      required: ["score"],
+      additionalProperties: false,
+    };
+    const b = await bodyOf(parseRequest({
+      model: "claude-sonnet-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "score this" }] }],
+      text: { format: { type: "json_schema", name: "score", schema, strict: true } },
+    }));
+
+    expect(b.output_config).toEqual({
+      format: {
+        type: "json_schema",
+        schema: {
+          ...schema,
+          properties: {
+            score: {
+              type: "integer",
+              description: "{minimum: 1, maximum: 10}",
+            },
+          },
+        },
+      },
+    });
+  });
+
+  test("merges JSON Schema output format with adaptive thinking effort", async () => {
+    const schema = {
+      type: "object",
+      properties: { summary: { type: "string" } },
+      required: ["summary"],
+      additionalProperties: false,
+    };
+    const b = await bodyOf(parseRequest({
+      model: "claude-sonnet-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "summarize this" }] }],
+      reasoning: { effort: "high" },
+      text: { format: { type: "json_schema", name: "summary", schema, strict: true } },
+    }));
+
+    expect(b.output_config).toEqual({
+      effort: "high",
+      format: { type: "json_schema", schema },
+    });
+  });
+
   test("adaptive-thinking model resizes max_tokens for high effort (issue #246)", async () => {
     const b = await bodyOf(parsed("max", {}, "claude-fable-5"));
     // Exact regression: effort=max budget is 32000; adaptive ceiling adds OUTPUT_HEADROOM (8192)
