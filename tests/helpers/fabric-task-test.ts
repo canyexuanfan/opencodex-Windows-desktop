@@ -62,8 +62,8 @@ export function fabricCorrectPatchExecutor(): TrustedFabricPatchExecutor {
   return createHostIssuedFabricPatchExecutor(modulePath, async () => correctSyntheticPatch());
 }
 
-export function fabricRouteBoundPatchExecutor(expectedProviderId: string): TrustedFabricPatchExecutor {
-  const dir = join(FIXTURE_DIR, "generated");
+export function fabricRouteBoundPatchExecutor(home: string, expectedProviderId: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
   mkdirSync(dir, { recursive: true });
   const modulePath = join(dir, `route-bound-${expectedProviderId}.ts`);
   writeFileSync(modulePath, `

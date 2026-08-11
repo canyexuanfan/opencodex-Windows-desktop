@@ -421,7 +421,7 @@ export function observationFromFabricOutcome(
   }
 }
 
-/** Persist a fabric outcome observation to the compatibility ledger when absent. */
+/** @internal Ledger append helper; production evidence must use {@link persistFabricRunResult}. */
 export function persistFabricOutcome(
   outcome: FabricTaskOutcomeV1,
   opts: PersistFabricOptions = {},

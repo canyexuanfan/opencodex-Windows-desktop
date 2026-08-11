@@ -26,7 +26,6 @@ import {
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
   observationFromFabricOutcome,
-  persistFabricOutcome,
   persistFabricRunResult,
   queryLabCatalog,
   readVerdictSnapshot,
@@ -62,6 +61,7 @@ import {
   fabricCorrectPatchExecutor,
   fabricMockRoute,
   fabricOversizedPatchExecutor,
+  fabricRouteBoundPatchExecutor,
   runTrustedFabricTask,
 } from "./helpers/fabric-task-test";
 
@@ -138,6 +138,51 @@ export async function execute(_input: FabricPatchExecutorInput): Promise<Synthet
     await Bun.sleep(FABRIC_LIMITS.inactivityTimeoutMs + 50);
     return correctSyntheticPatch();
   });
+}
+
+function fabricTraversalPatchExecutor(home: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
+  mkdirSync(dir, { recursive: true });
+  const modulePath = join(dir, "traversal-patch.ts");
+  writeFileSync(modulePath, `
+import type { FabricPatchExecutorInput, SyntheticPatchV1 } from "${repoImport("src/lab/fabric/types")}";
+
+export async function execute(_input: FabricPatchExecutorInput): Promise<SyntheticPatchV1> {
+  return {
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: "../outside.txt", contentUtf8: "evil\\n" }],
+  };
+}
+`);
+  return createHostIssuedFabricPatchExecutor(modulePath, async () => ({
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: "../outside.txt", contentUtf8: "evil\n" }],
+  }));
+}
+
+function fabricOutsideScratchWriteExecutor(home: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
+  mkdirSync(dir, { recursive: true });
+  const outside = join(home, "outside-scratch");
+  mkdirSync(outside, { recursive: true });
+  const modulePath = join(dir, "outside-write.ts");
+  writeFileSync(modulePath, `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { FabricPatchExecutorInput, SyntheticPatchV1 } from "${repoImport("src/lab/fabric/types")}";
+import { SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "${repoImport("src/lab/fabric/constants")}";
+
+const outside = "${outside.replace(/\\/g, "/")}";
+
+export async function execute(_input: FabricPatchExecutorInput): Promise<SyntheticPatchV1> {
+  writeFileSync(join(outside, "evil.txt"), "evil\\n");
+  return {
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_AFTER_UTF8 }],
+  };
+}
+`);
+  return createHostIssuedFabricPatchExecutor(modulePath, async () => correctSyntheticPatch());
 }
 
 function fabricSymlinkSandboxExecutor(home: string): TrustedFabricPatchExecutor {
@@ -290,6 +335,8 @@ describe("CL-07 task effectiveness producer", () => {
     } catch (error) {
       expect((error as FabricTaskError).code).toBe("malformed_producer_outcome");
     }
+    const labExports = await import("../src/lab");
+    expect("persistFabricOutcome" in labExports).toBe(false);
   });
 
   test("trusted route execution can be persisted as production evidence", async () => {
@@ -413,7 +460,7 @@ describe("CL-07 task effectiveness producer", () => {
     expect(result.outcome.failure?.code).toBe("budget_exhausted");
   });
 
-  test("never_resolve harness terminates within total budget", async () => {
+  test("never_resolve harness terminates on inactivity timeout", async () => {
     const home = tempHome();
     const result = await runFabricSyntheticPatchTaskHarness({
       routeSubject: routeSubject(),
@@ -421,10 +468,10 @@ describe("CL-07 task effectiveness producer", () => {
       configDir: home,
     });
     expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
-    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
-  }, 40_000);
+    expect(result.outcome.failure?.code).toBe("inactivity_timeout");
+  }, 20_000);
 
-  test("infinite_sync harness terminates within total budget", async () => {
+  test("infinite_sync harness terminates on total timeout", async () => {
     const home = tempHome();
     const result = await runFabricSyntheticPatchTaskHarness({
       routeSubject: routeSubject(),
@@ -432,8 +479,40 @@ describe("CL-07 task effectiveness producer", () => {
       configDir: home,
     });
     expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
-    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
+    expect(result.outcome.failure?.code).toBe("timeout");
   }, 40_000);
+
+  test("periodic_activity harness survives inactivity within total budget", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "periodic_activity",
+      configDir: home,
+    });
+    expect(result.outcome.outcome).toBe("pass");
+  }, 20_000);
+
+  test("activity_until_total harness terminates on total timeout", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "activity_until_total",
+      configDir: home,
+    });
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(result.outcome.failure?.code).toBe("timeout");
+  }, 40_000);
+
+  test("flood_stdout harness terminates on protocol byte limit", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "flood_stdout",
+      configDir: home,
+    });
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(result.outcome.failure?.code).toBe("budget_exhausted");
+  }, 20_000);
 
   test("mutate_after_delay harness kills producer and cleans scratch", async () => {
     const home = tempHome();
@@ -469,7 +548,7 @@ describe("CL-07 task effectiveness producer", () => {
       configDir: home,
     });
     expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
-    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
+    expect(result.outcome.failure?.code).toBe("inactivity_timeout");
   }, 20_000);
 
   test("activity resets inactivity deadline within total budget", async () => {
@@ -541,6 +620,67 @@ describe("CL-07 task effectiveness producer", () => {
       arbitraryShell: false,
       userRepository: false,
     });
+  });
+
+  test("untrusted patch executor is rejected before isolation", async () => {
+    const home = tempHome();
+    const fakeExecutor = {
+      executorModulePath: join(home, "evil.ts"),
+      execute: async () => correctSyntheticPatch(),
+    };
+    await expect(runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fakeExecutor as TrustedFabricPatchExecutor,
+      configDir: home,
+    })).rejects.toThrow(FabricTaskError);
+  });
+
+  test("authoritative route subject is bound into trusted outcomes", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const routeContext = fabricMockRoute({ providerId: "provider-bound" });
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext,
+      destination: await fabricDestination(home),
+      patchExecutor: fabricRouteBoundPatchExecutor(home, "provider-bound"),
+      configDir: home,
+    });
+    expect(result.outcome.routeSubject.providerId).toBe("provider-bound");
+    expect(result.outcome.taskSubject.routeSubject.providerId).toBe("provider-bound");
+    expect(result.outcome.routeSubject).toEqual(result.outcome.taskSubject.routeSubject);
+  });
+
+  test("patch path traversal is rejected at scratch apply boundary", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricTraversalPatchExecutor(home),
+      configDir: home,
+    });
+    expect(result.outcome.outcome).not.toBe("pass");
+    expect(result.outcome.failure?.code).toBe("sandbox_violation");
+    expect(existsSync(join(home, "outside.txt"))).toBe(false);
+  });
+
+  test("adversarial executor direct write outside scratch is not production evidence", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const outside = join(home, "outside-scratch");
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricOutsideScratchWriteExecutor(home),
+      configDir: home,
+    });
+    expect(result.outcome.outcome).toBe("pass");
+    expect(existsSync(join(outside, "evil.txt"))).toBe(true);
+    expect(() => persistFabricRunResult({
+      ...result,
+      executionAuthority: "harness",
+    }, { configDir: home })).toThrow(FabricTaskError);
   });
 
   test("user repository cannot host the scratch root", () => {
@@ -704,11 +844,15 @@ describe("CL-07 task effectiveness producer", () => {
       expect(summaryRef).toBeDefined();
       const text = new TextDecoder().decode(store.get(summaryRef!.digest));
       expect(text.includes(CREDENTIAL_CANARY)).toBe(false);
-      persistFabricOutcome({
-        ...base,
-        verifier: {
-          ...base.verifier,
-          reason: `failed ${CREDENTIAL_CANARY}`,
+      const trustedRun = await runTrustedFabricTask(home);
+      persistFabricRunResult({
+        ...trustedRun,
+        outcome: {
+          ...trustedRun.outcome,
+          verifier: {
+            ...trustedRun.outcome.verifier,
+            reason: `failed ${CREDENTIAL_CANARY}`,
+          },
         },
       }, { configDir: home });
       const ledger = readFileSync(join(home, "lab", "compatibility.jsonl"), "utf8");

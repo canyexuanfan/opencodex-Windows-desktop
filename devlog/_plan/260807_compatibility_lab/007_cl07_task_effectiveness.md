@@ -143,7 +143,7 @@ Nested `RouteSubjectV1` must come from existing CL-03/CL-06 builders (`buildRout
 
 ## E. Lab ingestion
 
-`observationFromFabricOutcome` / `persistFabricOutcome`:
+`observationFromFabricOutcome` / internal `persistFabricOutcome` (not public):
 
 - `evidenceLayer: "task_effectiveness"`
 - `executionMode: "fabric"`
@@ -241,30 +241,41 @@ Typecheck; focused fabric/subject/sandbox/verifier/observe/ledger/projection/rea
 - Production evidence uses `runFabricSyntheticPatchTaskForRoute({ routeContext, destination, patchExecutor })`.
 - `RouteSubjectV1` is built only via `buildRouteSubjectV1(routeContext, destination)` — callers cannot supply an independent route identity.
 - Patch production requires a host-issued `TrustedFabricPatchExecutor` (`createHostIssuedFabricPatchExecutor` in `src/lib/fabric-task-host.ts`).
-- `persistFabricRunResult` rejects harness-only runs (`executionAuthority !== "trusted_route"`).
+- **Public ingestion:** `persistFabricRunResult` only; it rejects harness runs (`executionAuthority !== "trusted_route"`).
+- `persistFabricOutcome` is internal to `observe.ts` and is **not** exported from the fabric public surface.
 - Harness runs (`runFabricSyntheticPatchTaskHarness`) use closed `FabricHarnessProducerKind` values only; they cannot create production ledger evidence.
 
-### Termination / sandbox model
+### Child isolation / IPC / timeouts
 
-- Patch producers run in a dedicated Bun child (`producer-child.ts`) spawned by `producer-isolate.ts` with minimal env (`TZ`, `NO_COLOR`).
-- Hard `SIGKILL` on total timeout; child process cannot block the OpenCodex event loop with a synchronous infinite loop.
-- Scratch containment, symlink/path traversal rejection, byte/file limits, and cleanup remain in the parent executor after the child returns a validated `SyntheticPatchV1`.
+- Patch producers run in a dedicated Bun child (`producer-child.ts`) spawned by `producer-isolate.ts` with minimal env (`TZ`, `NO_COLOR`, `OCX_FABRIC_SCRATCH_ROOT`).
+- Parent↔child protocol is newline-delimited JSON on stdout only (`activity`, `result`, `error` in `producer-protocol.ts`). Arbitrary logging is not mixed into protocol output.
+- Parent owns **both** total and inactivity timeouts; both terminate the child via `SIGKILL`. Classification: `timeout` vs `inactivity_timeout`.
+- Child stdout is capped at 64 KiB protocol bytes; stderr diagnostic capture capped at 4 KiB. Exceeding protocol limits → `budget_exhausted` and child kill.
+- `lastActivityAt` is authoritative in the parent; child `reportActivity()` emits `activity` IPC messages that reset the inactivity deadline.
+- `infinite_sync` harness disables inactivity ceiling extension so synchronous CPU spin is classified under total timeout.
+
+### Sandbox enforcement (honest scope)
+
+- Scratch containment, symlink/path-traversal/special-file rejection, byte/file limits, and cleanup are enforced in the parent via `scratch.ts`, `patch.ts` (`assertSafeRelativePosixPath`), and `applySyntheticPatch`.
+- Child isolation strips proxy env vars on the parent path and runs producers in a separate process with minimal env — **not** an OS-level network/shell sandbox.
+- Host-issued executor modules may still perform direct host filesystem operations outside the scratch tree; that is outside the scratch-apply boundary and is not claimed as blocked.
+- Declared deny flags (`fabricDeclaredSandboxPolicy`) document intent; runtime enforcement matches the scratch/patch/verifier containment above.
 
 ### Failure attribution
 
 - Semantic verifier mismatch → `fail` / `behavioral_failure` / `route`.
-- Sandbox/containment (`FabricTaskError` from scratch/verifier infrastructure) → `blocked` or `inconclusive` / `sandbox_violation` / `harness` or `environment` — never route-attributed `behavioral_failure`.
+- Sandbox/containment (`FabricTaskError` from scratch/verifier/patch infrastructure) → `blocked` or `inconclusive` / `sandbox_violation` / `harness` or `environment` — never route-attributed `behavioral_failure`.
 - Timeouts / budget exhaustion → `blocked` / `environment`.
 - Harness defects → `inconclusive` / `harness`.
 
 ### Inactivity accounting
 
-- `inactiveMs` = `completedAt - lastActivityAt` where `lastActivityAt` resets on producer `reportActivity()` (trusted child executor path).
+- `inactiveMs` = `completedAt - lastActivityAt` where `lastActivityAt` is updated only from parent-received `activity` IPC (or initial start).
 
 ### Local validation (blocker fix head)
 
 - `bun x tsc --noEmit`: passed
-- `bun test tests/lab-fabric-task.test.ts`: 39/39 passed
+- `bun test tests/lab-fabric-task.test.ts`: 46/46 passed
 - `bun run privacy:scan`: passed
-- `bun test tests/lab-read-surfaces.test.ts tests/routing-compatibility.test.ts tests/lab-live-probe.test.ts`: passed
+- Windows sqlite projection flakes in `lab-evidence-ledger.test.ts` (EBUSY) — environmental, not CL-07
 - CL-08: **not started**

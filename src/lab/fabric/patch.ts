@@ -1,5 +1,5 @@
 import { FABRIC_LIMITS, SYNTHETIC_VALUE_PATH } from "./constants";
-import { writeScratchFileUtf8 } from "./scratch";
+import { assertSafeRelativePosixPath, writeScratchFileUtf8 } from "./scratch";
 import { FabricTaskError, type SyntheticPatchV1 } from "./types";
 
 const ALLOWED_KEYS = new Set(["schemaVersion", "operations"]);
@@ -37,6 +37,12 @@ export function parseSyntheticPatchV1(raw: unknown): SyntheticPatchV1 {
   }
   if (op.op !== "replace" || typeof op.path !== "string" || typeof op.contentUtf8 !== "string") {
     throw new FabricTaskError("malformed producer outcome: replace shape", "malformed_producer_outcome", "harness");
+  }
+  try {
+    assertSafeRelativePosixPath(op.path);
+  } catch (error) {
+    if (error instanceof FabricTaskError) throw error;
+    throw new FabricTaskError("patch path escapes scratch", "sandbox_violation", "harness");
   }
   if (op.path !== SYNTHETIC_VALUE_PATH) {
     throw new FabricTaskError("patch path must be src/value.txt", "behavioral_failure", "route");

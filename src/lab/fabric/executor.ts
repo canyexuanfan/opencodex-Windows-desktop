@@ -188,41 +188,44 @@ async function runFabricSyntheticPatchTaskInternal(input: {
     }
 
     const isolation = fabricProducerIsolationLimits();
+    const inactivityTimeoutMs =
+      input.harnessKind === "infinite_sync"
+        ? isolation.totalTimeoutMs + 1_000
+        : isolation.inactivityTimeoutMs;
     let patchRaw: unknown;
     try {
       if (input.harnessKind) {
         lastActivityAt = input.now?.() ?? Date.now();
-        patchRaw = await runIsolatedFabricProducer({
+        const isolated = await runIsolatedFabricProducer({
           harnessKind: input.harnessKind,
           scratchRoot: scratch.root,
           totalTimeoutMs: isolation.totalTimeoutMs,
-          inactivityTimeoutMs: isolation.inactivityTimeoutMs,
+          inactivityTimeoutMs,
+          now: input.now,
         });
+        patchRaw = isolated.patch;
+        lastActivityAt = isolated.lastActivityAt;
         producerCompletedAt = input.now?.() ?? Date.now();
-        lastActivityAt = producerCompletedAt;
       } else if (input.patchExecutor && input.routeContext && input.destination) {
-        const controller = new AbortController();
-        const executorInput = {
-          routeContext: input.routeContext,
-          destination: input.destination,
-          routeSubject: input.routeSubject,
-          scratchRoot: scratch.root,
-          reportActivity: () => {
-            lastActivityAt = input.now?.() ?? Date.now();
-          },
-          signal: controller.signal,
-        };
         lastActivityAt = input.now?.() ?? Date.now();
-        patchRaw = await runIsolatedFabricProducer({
+        const isolated = await runIsolatedFabricProducer({
           executorModulePath: input.patchExecutor.executorModulePath,
           scratchRoot: scratch.root,
           totalTimeoutMs: isolation.totalTimeoutMs,
           inactivityTimeoutMs: isolation.inactivityTimeoutMs,
-          executorInput,
+          executorInput: {
+            routeContext: input.routeContext,
+            destination: input.destination,
+            routeSubject: input.routeSubject,
+            scratchRoot: scratch.root,
+            reportActivity: () => undefined,
+            signal: new AbortController().signal,
+          },
+          now: input.now,
         });
+        patchRaw = isolated.patch;
+        lastActivityAt = isolated.lastActivityAt;
         producerCompletedAt = input.now?.() ?? Date.now();
-        lastActivityAt = producerCompletedAt;
-        controller.abort();
       } else {
         throw new FabricTaskError("fabric task run missing producer", "harness_failure", "harness");
       }
@@ -253,8 +256,37 @@ async function runFabricSyntheticPatchTaskInternal(input: {
       throw error;
     }
 
-    const patch = parseSyntheticPatchV1(patchRaw);
-    const applied = applySyntheticPatch(scratch.root, patch);
+    let patch;
+    let applied;
+    try {
+      patch = parseSyntheticPatchV1(patchRaw);
+      applied = applySyntheticPatch(scratch.root, patch);
+    } catch (error) {
+      const completedAt = input.now?.() ?? Date.now();
+      usage.elapsedMs = completedAt - startedAt;
+      usage.inactiveMs = Math.max(0, completedAt - lastActivityAt);
+      if (error instanceof FabricTaskError) {
+        const failure = failureFromError(error);
+        return {
+          executionAuthority: input.executionAuthority,
+          outcome: sealOutcome({
+            taskSubject,
+            subjectId,
+            fixtureDigest,
+            verifierDigest,
+            sandboxDigest,
+            startedAt,
+            completedAt,
+            usage,
+            outcome: outcomeFromFailure(failure),
+            verifier: infrastructureVerifier(verifierDigest, error.code),
+            failure,
+            sourceRefs: input.sourceRefs,
+          }),
+        };
+      }
+      throw error;
+    }
     usage.outputBytes = applied.bytesWritten;
     usage.patchOperations = applied.patchOperations;
     usage.filesTouched = applied.filesTouched;

@@ -75,7 +75,6 @@ export type { FabricCaseAuthority } from "./manifest";
 export {
   assertFabricOutcomeV1,
   observationFromFabricOutcome,
-  persistFabricOutcome,
   persistFabricRunResult,
 } from "./observe";
 export type { PersistFabricOptions, PersistedFabricObservation } from "./observe";

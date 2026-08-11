@@ -108,7 +108,10 @@ export type FabricHarnessProducerKind =
   | "deterministic_wrong"
   | "infinite_sync"
   | "never_resolve"
-  | "mutate_after_delay";
+  | "mutate_after_delay"
+  | "periodic_activity"
+  | "activity_until_total"
+  | "flood_stdout";
 
 /** @deprecated Test-only harness producer; use FabricHarnessProducerKind via runFabricSyntheticPatchTaskHarness. */
 export type SyntheticPatchProducer = (ctx: {
