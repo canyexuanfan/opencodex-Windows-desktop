@@ -1,10 +1,13 @@
 import type { FailureClassification } from "../conformance/types";
 import type { ObservationOutcome } from "../constants";
 import type { FailureRecordV1, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
+import type { LabDestinationV1, LabRouteContext } from "../live/types";
 
 export type FabricOutcomeKind = ObservationOutcome;
 
 export type FabricFailureClass = FailureClassification;
+
+export type FabricExecutionAuthority = "trusted_route" | "harness";
 
 export interface FabricLimitsV1 {
   maxFiles: number;
@@ -76,11 +79,42 @@ export interface FabricTaskOutcomeV1 {
   sourceRefs?: string[];
 }
 
+/** Authoritative route execution input for trusted fabric patch producers. */
+export interface FabricPatchExecutorInput {
+  routeContext: LabRouteContext;
+  destination: LabDestinationV1;
+  routeSubject: RouteSubjectV1;
+  scratchRoot: string;
+  reportActivity: () => void;
+  signal: AbortSignal;
+}
+
+export type FabricPatchExecutor = (input: FabricPatchExecutorInput) => SyntheticPatchV1 | Promise<SyntheticPatchV1>;
+
+/** Opaque host-issued capability for exact-route fabric patch production. */
+export interface TrustedFabricPatchExecutor {
+  execute(input: FabricPatchExecutorInput): Promise<SyntheticPatchV1>;
+  readonly executorModulePath: string;
+}
+
+/** Sealed fabric run result including evidence authority (not part of outcome JSON). */
+export interface FabricTaskRunResult {
+  outcome: FabricTaskOutcomeV1;
+  executionAuthority: FabricExecutionAuthority;
+}
+
+export type FabricHarnessProducerKind =
+  | "deterministic_correct"
+  | "deterministic_wrong"
+  | "infinite_sync"
+  | "never_resolve"
+  | "mutate_after_delay";
+
+/** @deprecated Test-only harness producer; use FabricHarnessProducerKind via runFabricSyntheticPatchTaskHarness. */
 export type SyntheticPatchProducer = (ctx: {
   taskClassId: string;
   taskClassVersion: string;
   scratchRoot: string;
-  /** Reset the inactivity deadline while the producer is making progress. */
   reportActivity: () => void;
 }) => SyntheticPatchV1 | Promise<SyntheticPatchV1>;
 

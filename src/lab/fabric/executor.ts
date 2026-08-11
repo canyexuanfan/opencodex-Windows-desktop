@@ -1,5 +1,8 @@
 import type { FailureRecordV1, RouteSubjectV1 } from "../events/types";
 import { labSandboxEnvironment, rejectProxyEnvironment } from "../live/sandbox";
+import type { LabDestinationV1, LabRouteContext } from "../live/types";
+import { buildRouteSubjectV1 } from "../subject/route-subject";
+import { isTrustedFabricPatchExecutor } from "../../lib/fabric-task-execution-authority";
 import {
   FABRIC_COMPATIBILITY_VERSION,
   FABRIC_LIMITS,
@@ -12,6 +15,7 @@ import {
   SYNTHETIC_VALUE_PATH,
 } from "./constants";
 import { applySyntheticPatch, parseSyntheticPatchV1 } from "./patch";
+import { fabricProducerIsolationLimits, runIsolatedFabricProducer } from "./producer-isolate";
 import { assertNotUnderUserRepo, createSyntheticScratch, type ScratchTree } from "./scratch";
 import {
   buildTaskSubjectV1,
@@ -21,25 +25,36 @@ import {
   verifierManifestDigest,
 } from "./subject";
 import type {
+  FabricExecutionAuthority,
+  FabricHarnessProducerKind,
   FabricTaskOutcomeV1,
+  FabricTaskRunResult,
   FabricUsageV1,
-  SyntheticPatchProducer,
   SyntheticPatchV1,
+  TrustedFabricPatchExecutor,
 } from "./types";
 import { FabricTaskError } from "./types";
 import { verifyExactTreeDiffV1 } from "./verifier";
 
-/** Options for running the bounded synthetic-patch fabric task executor. */
-export interface RunFabricTaskOptions {
+/** Options for harness-only fabric task runs (not persistable as production evidence). */
+export interface RunFabricTaskHarnessOptions {
   routeSubject: RouteSubjectV1;
-  producePatch: SyntheticPatchProducer;
+  harnessKind: FabricHarnessProducerKind;
   configDir?: string;
-  /** Optional absolute user repo path used only for containment proofs in tests. */
   userRepoRoot?: string;
   sourceRefs?: string[];
   now?: () => number;
-  /** Override clocks for inactivity/timeout tests. */
-  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Options for authoritative route-bound fabric task execution. */
+export interface RunFabricTaskForRouteOptions {
+  routeContext: LabRouteContext;
+  destination: LabDestinationV1;
+  patchExecutor: TrustedFabricPatchExecutor;
+  configDir?: string;
+  userRepoRoot?: string;
+  sourceRefs?: string[];
+  now?: () => number;
 }
 
 /** Map a FabricTaskError into a ledger failure record. */
@@ -68,19 +83,83 @@ export function correctSyntheticPatch(): SyntheticPatchV1 {
 }
 
 /**
- * Bounded Lab-owned fabric task executor for fabric-core.task.synthetic-patch@1.0.0.
- * Does not provide a general Agent Fabric platform.
+ * Authoritative CL-07 route-bound fabric task execution.
+ * Route identity is derived from routeContext + destination; patch production runs in an isolated child.
  */
-export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions): Promise<FabricTaskOutcomeV1> {
+export async function runFabricSyntheticPatchTaskForRoute(
+  options: RunFabricTaskForRouteOptions,
+): Promise<FabricTaskRunResult> {
+  if (!isTrustedFabricPatchExecutor(options.patchExecutor)) {
+    throw new FabricTaskError("untrusted fabric patch executor", "sandbox_violation", "harness");
+  }
+  const routeSubject = buildRouteSubjectV1(options.routeContext, options.destination, options.configDir);
+  return runFabricSyntheticPatchTaskInternal({
+    routeSubject,
+    routeContext: options.routeContext,
+    destination: options.destination,
+    patchExecutor: options.patchExecutor,
+    harnessKind: undefined,
+    executionAuthority: "trusted_route",
+    configDir: options.configDir,
+    userRepoRoot: options.userRepoRoot,
+    sourceRefs: options.sourceRefs,
+    now: options.now,
+  });
+}
+
+/** Harness-only fabric task execution; outcomes are not persistable as production evidence. */
+export async function runFabricSyntheticPatchTaskHarness(
+  options: RunFabricTaskHarnessOptions,
+): Promise<FabricTaskRunResult> {
+  return runFabricSyntheticPatchTaskInternal({
+    routeSubject: options.routeSubject,
+    harnessKind: options.harnessKind,
+    executionAuthority: "harness",
+    configDir: options.configDir,
+    userRepoRoot: options.userRepoRoot,
+    sourceRefs: options.sourceRefs,
+    now: options.now,
+  });
+}
+
+/**
+ * @deprecated Use runFabricSyntheticPatchTaskHarness or runFabricSyntheticPatchTaskForRoute.
+ */
+export async function runFabricSyntheticPatchTask(
+  options: RunFabricTaskHarnessOptions & { producePatch?: never; harnessKind?: FabricHarnessProducerKind },
+): Promise<FabricTaskOutcomeV1> {
+  const result = await runFabricSyntheticPatchTaskHarness({
+    routeSubject: options.routeSubject,
+    harnessKind: options.harnessKind ?? "deterministic_correct",
+    configDir: options.configDir,
+    userRepoRoot: options.userRepoRoot,
+    sourceRefs: options.sourceRefs,
+    now: options.now,
+  });
+  return result.outcome;
+}
+
+async function runFabricSyntheticPatchTaskInternal(input: {
+  routeSubject: RouteSubjectV1;
+  routeContext?: LabRouteContext;
+  destination?: LabDestinationV1;
+  patchExecutor?: TrustedFabricPatchExecutor;
+  harnessKind?: FabricHarnessProducerKind;
+  executionAuthority: FabricExecutionAuthority;
+  configDir?: string;
+  userRepoRoot?: string;
+  sourceRefs?: string[];
+  now?: () => number;
+}): Promise<FabricTaskRunResult> {
   rejectProxyEnvironment();
   labSandboxEnvironment();
 
-  const startedAt = options.now?.() ?? Date.now();
+  const startedAt = input.now?.() ?? Date.now();
   const fixtureDigest = taskFixtureDigest();
   const verifierDigest = verifierManifestDigest();
   const sandboxDigest = sandboxProfileDigest();
   const taskSubject = buildTaskSubjectV1({
-    routeSubject: options.routeSubject,
+    routeSubject: input.routeSubject,
     taskFixtureDigest: fixtureDigest,
     verifierManifestDigest: verifierDigest,
     sandboxProfileDigest: sandboxDigest,
@@ -99,33 +178,172 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
   };
 
   let scratch: ScratchTree | undefined;
+  let producerCompletedAt = startedAt;
+  let lastActivityAt = startedAt;
+
   try {
-    scratch = createSyntheticScratch(options.configDir);
-    if (options.userRepoRoot) {
-      assertNotUnderUserRepo(scratch.root, options.userRepoRoot);
+    scratch = createSyntheticScratch(input.configDir);
+    if (input.userRepoRoot) {
+      assertNotUnderUserRepo(scratch.root, input.userRepoRoot);
     }
 
-    const deadline = startedAt + FABRIC_LIMITS.totalTimeoutMs;
-    const produceStarted = options.now?.() ?? Date.now();
+    const isolation = fabricProducerIsolationLimits();
     let patchRaw: unknown;
     try {
-      const controller = createTimeoutController(FABRIC_LIMITS.totalTimeoutMs, FABRIC_LIMITS.inactivityTimeoutMs, options);
-      const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-      patchRaw = await controller.race(
-        sleep(0).then(() => options.producePatch({
-          taskClassId: FABRIC_TASK_CLASS_ID,
-          taskClassVersion: FABRIC_TASK_CLASS_VERSION,
-          scratchRoot: scratch!.root,
-          reportActivity: controller.reportActivity,
-        })),
-      );
+      if (input.harnessKind) {
+        lastActivityAt = input.now?.() ?? Date.now();
+        patchRaw = await runIsolatedFabricProducer({
+          harnessKind: input.harnessKind,
+          scratchRoot: scratch.root,
+          totalTimeoutMs: isolation.totalTimeoutMs,
+          inactivityTimeoutMs: isolation.inactivityTimeoutMs,
+        });
+        producerCompletedAt = input.now?.() ?? Date.now();
+        lastActivityAt = producerCompletedAt;
+      } else if (input.patchExecutor && input.routeContext && input.destination) {
+        const controller = new AbortController();
+        const executorInput = {
+          routeContext: input.routeContext,
+          destination: input.destination,
+          routeSubject: input.routeSubject,
+          scratchRoot: scratch.root,
+          reportActivity: () => {
+            lastActivityAt = input.now?.() ?? Date.now();
+          },
+          signal: controller.signal,
+        };
+        lastActivityAt = input.now?.() ?? Date.now();
+        patchRaw = await runIsolatedFabricProducer({
+          executorModulePath: input.patchExecutor.executorModulePath,
+          scratchRoot: scratch.root,
+          totalTimeoutMs: isolation.totalTimeoutMs,
+          inactivityTimeoutMs: isolation.inactivityTimeoutMs,
+          executorInput,
+        });
+        producerCompletedAt = input.now?.() ?? Date.now();
+        lastActivityAt = producerCompletedAt;
+        controller.abort();
+      } else {
+        throw new FabricTaskError("fabric task run missing producer", "harness_failure", "harness");
+      }
     } catch (error) {
-      const completedAt = options.now?.() ?? Date.now();
+      const completedAt = input.now?.() ?? Date.now();
       usage.elapsedMs = completedAt - startedAt;
-      usage.inactiveMs = Math.max(0, completedAt - produceStarted);
+      usage.inactiveMs = Math.max(0, completedAt - lastActivityAt);
       if (error instanceof FabricTaskError) {
         const failure = failureFromError(error);
-        return sealOutcome({
+        return {
+          executionAuthority: input.executionAuthority,
+          outcome: sealOutcome({
+            taskSubject,
+            subjectId,
+            fixtureDigest,
+            verifierDigest,
+            sandboxDigest,
+            startedAt,
+            completedAt,
+            usage,
+            outcome: outcomeFromFailure(failure),
+            verifier: infrastructureVerifier(verifierDigest, error.code),
+            failure,
+            sourceRefs: input.sourceRefs,
+          }),
+        };
+      }
+      throw error;
+    }
+
+    const patch = parseSyntheticPatchV1(patchRaw);
+    const applied = applySyntheticPatch(scratch.root, patch);
+    usage.outputBytes = applied.bytesWritten;
+    usage.patchOperations = applied.patchOperations;
+    usage.filesTouched = applied.filesTouched;
+
+    let verifier;
+    try {
+      verifier = verifyExactTreeDiffV1(scratch.root);
+    } catch (error) {
+      const completedAt = input.now?.() ?? Date.now();
+      usage.elapsedMs = completedAt - startedAt;
+      usage.inactiveMs = Math.max(0, completedAt - lastActivityAt);
+      if (error instanceof FabricTaskError) {
+        const failure = failureFromError(error);
+        return {
+          executionAuthority: input.executionAuthority,
+          outcome: sealOutcome({
+            taskSubject,
+            subjectId,
+            fixtureDigest,
+            verifierDigest,
+            sandboxDigest,
+            startedAt,
+            completedAt,
+            usage,
+            outcome: outcomeFromFailure(failure),
+            verifier: infrastructureVerifier(verifierDigest, error.code),
+            failure,
+            sourceRefs: input.sourceRefs,
+          }),
+        };
+      }
+      throw error;
+    }
+
+    const completedAt = input.now?.() ?? Date.now();
+    usage.elapsedMs = completedAt - startedAt;
+    usage.inactiveMs = Math.max(0, completedAt - lastActivityAt);
+
+    if (verifier.passed) {
+      return {
+        executionAuthority: input.executionAuthority,
+        outcome: sealOutcome({
+          taskSubject,
+          subjectId,
+          fixtureDigest,
+          verifierDigest,
+          sandboxDigest,
+          startedAt,
+          completedAt,
+          usage,
+          outcome: "pass",
+          verifier,
+          sourceRefs: input.sourceRefs,
+        }),
+      };
+    }
+
+    const failure: FailureRecordV1 = {
+      class: "behavioral_failure",
+      code: verifier.reason ?? "verifier_failed",
+      retryable: false,
+      attribution: "route",
+    };
+    return {
+      executionAuthority: input.executionAuthority,
+      outcome: sealOutcome({
+        taskSubject,
+        subjectId,
+        fixtureDigest,
+        verifierDigest,
+        sandboxDigest,
+        startedAt,
+        completedAt,
+        usage,
+        outcome: "fail",
+        verifier,
+        failure,
+        sourceRefs: input.sourceRefs,
+      }),
+    };
+  } catch (error) {
+    const completedAt = input.now?.() ?? Date.now();
+    usage.elapsedMs = completedAt - startedAt;
+    usage.inactiveMs = Math.max(0, completedAt - lastActivityAt);
+    if (error instanceof FabricTaskError) {
+      const failure = failureFromError(error);
+      return {
+        executionAuthority: input.executionAuthority,
+        outcome: sealOutcome({
           taskSubject,
           subjectId,
           fixtureDigest,
@@ -135,95 +353,11 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
           completedAt,
           usage,
           outcome: outcomeFromFailure(failure),
-          verifier: {
-            verifierId: FABRIC_VERIFIER_ID,
-            manifestDigest: verifierDigest,
-            passed: false,
-            pathSummaries: [],
-            reason: error.code,
-          },
+          verifier: infrastructureVerifier(verifierDigest, error.code),
           failure,
-          sourceRefs: options.sourceRefs,
-        });
-      }
-      throw error;
-    }
-
-    if ((options.now?.() ?? Date.now()) > deadline) {
-      throw new FabricTaskError("total timeout exceeded", "timeout", "environment");
-    }
-
-    const patch = parseSyntheticPatchV1(patchRaw);
-    const applied = applySyntheticPatch(scratch.root, patch);
-    usage.outputBytes = applied.bytesWritten;
-    usage.patchOperations = applied.patchOperations;
-    usage.filesTouched = applied.filesTouched;
-
-    const verifier = verifyExactTreeDiffV1(scratch.root);
-    const completedAt = options.now?.() ?? Date.now();
-    usage.elapsedMs = completedAt - startedAt;
-
-    if (verifier.passed) {
-      return sealOutcome({
-        taskSubject,
-        subjectId,
-        fixtureDigest,
-        verifierDigest,
-        sandboxDigest,
-        startedAt,
-        completedAt,
-        usage,
-        outcome: "pass",
-        verifier,
-        sourceRefs: options.sourceRefs,
-      });
-    }
-
-    const failure: FailureRecordV1 = {
-      class: "behavioral_failure",
-      code: verifier.reason ?? "verifier_failed",
-      retryable: false,
-      attribution: "route",
-    };
-    return sealOutcome({
-      taskSubject,
-      subjectId,
-      fixtureDigest,
-      verifierDigest,
-      sandboxDigest,
-      startedAt,
-      completedAt,
-      usage,
-      outcome: "fail",
-      verifier,
-      failure,
-      sourceRefs: options.sourceRefs,
-    });
-  } catch (error) {
-    const completedAt = options.now?.() ?? Date.now();
-    usage.elapsedMs = completedAt - startedAt;
-    if (error instanceof FabricTaskError) {
-      const failure = failureFromError(error);
-      return sealOutcome({
-        taskSubject,
-        subjectId,
-        fixtureDigest,
-        verifierDigest,
-        sandboxDigest,
-        startedAt,
-        completedAt,
-        usage,
-        outcome: outcomeFromFailure(failure),
-        verifier: {
-          verifierId: FABRIC_VERIFIER_ID,
-          manifestDigest: verifierDigest,
-          passed: false,
-          pathSummaries: [],
-          reason: error.code,
-        },
-        failure,
-        sourceRefs: options.sourceRefs,
-      });
+          sourceRefs: input.sourceRefs,
+        }),
+      };
     }
     const failure: FailureRecordV1 = {
       class: "harness_failure",
@@ -231,29 +365,36 @@ export async function runFabricSyntheticPatchTask(options: RunFabricTaskOptions)
       retryable: false,
       attribution: "harness",
     };
-    return sealOutcome({
-      taskSubject,
-      subjectId,
-      fixtureDigest,
-      verifierDigest,
-      sandboxDigest,
-      startedAt,
-      completedAt,
-      usage,
-      outcome: "inconclusive",
-      verifier: {
-        verifierId: FABRIC_VERIFIER_ID,
-        manifestDigest: verifierDigest,
-        passed: false,
-        pathSummaries: [],
-        reason: "harness_failure",
-      },
-      failure,
-      sourceRefs: options.sourceRefs,
-    });
+    return {
+      executionAuthority: input.executionAuthority,
+      outcome: sealOutcome({
+        taskSubject,
+        subjectId,
+        fixtureDigest,
+        verifierDigest,
+        sandboxDigest,
+        startedAt,
+        completedAt,
+        usage,
+        outcome: "inconclusive",
+        verifier: infrastructureVerifier(verifierDigest, "harness_failure"),
+        failure,
+        sourceRefs: input.sourceRefs,
+      }),
+    };
   } finally {
     scratch?.cleanup();
   }
+}
+
+function infrastructureVerifier(manifestDigest: string, reason: string): FabricTaskOutcomeV1["verifier"] {
+  return {
+    verifierId: FABRIC_VERIFIER_ID,
+    manifestDigest,
+    passed: false,
+    pathSummaries: [],
+    reason,
+  };
 }
 
 /** Assemble an immutable FabricTaskOutcomeV1 from executor state. */
@@ -271,7 +412,7 @@ function sealOutcome(input: {
   failure?: FailureRecordV1;
   sourceRefs?: string[];
 }): FabricTaskOutcomeV1 {
-  const sealed: FabricTaskOutcomeV1 = {
+  return {
     schemaVersion: 1,
     taskClassId: FABRIC_TASK_CLASS_ID,
     taskClassVersion: FABRIC_TASK_CLASS_VERSION,
@@ -294,76 +435,6 @@ function sealOutcome(input: {
     ...(input.failure ? { failure: { ...input.failure } } : {}),
     artifactDigests: [],
     ...(input.sourceRefs ? { sourceRefs: [...input.sourceRefs] } : {}),
-  };
-  return sealed;
-}
-
-/** Arm total and inactivity deadlines around producer execution. */
-function createTimeoutController(
-  totalMs: number,
-  inactivityMs: number,
-  options: RunFabricTaskOptions,
-): {
-  reportActivity: () => void;
-  race: <T>(promise: Promise<T>) => Promise<T>;
-} {
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  let settled = false;
-  let totalTimer: ReturnType<typeof setTimeout> | undefined;
-  let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
-  let rejectRef: ((error: FabricTaskError) => void) | undefined;
-
-  const clearTimers = () => {
-    if (totalTimer !== undefined) clearTimeout(totalTimer);
-    if (inactivityTimer !== undefined) clearTimeout(inactivityTimer);
-    totalTimer = undefined;
-    inactivityTimer = undefined;
-  };
-
-  const settleReject = (error: FabricTaskError) => {
-    if (settled) return;
-    settled = true;
-    clearTimers();
-    rejectRef?.(error);
-  };
-
-  const armInactivity = () => {
-    if (inactivityTimer !== undefined) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(() => {
-      settleReject(new FabricTaskError("inactivity timeout exceeded", "inactivity_timeout", "environment"));
-    }, inactivityMs);
-  };
-
-  return {
-    reportActivity: () => {
-      if (settled) return;
-      armInactivity();
-    },
-    race: async <T>(promise: Promise<T>): Promise<T> => {
-      return await new Promise<T>((resolve, reject) => {
-        rejectRef = reject;
-        totalTimer = setTimeout(() => {
-          settleReject(new FabricTaskError("total timeout exceeded", "timeout", "environment"));
-        }, totalMs);
-        armInactivity();
-        // Keep the injected sleep seam observable for tests without discarding work.
-        void sleep(0).catch(() => undefined);
-        promise.then(
-          (value) => {
-            if (settled) return;
-            settled = true;
-            clearTimers();
-            resolve(value);
-          },
-          (error) => {
-            if (settled) return;
-            settled = true;
-            clearTimers();
-            reject(error);
-          },
-        );
-      });
-    },
   };
 }
 

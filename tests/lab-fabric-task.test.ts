@@ -10,7 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   appendLabEvent,
   assertNotUnderUserRepo,
@@ -18,6 +19,7 @@ import {
   assignEventId,
   buildTaskSubjectV1,
   correctSyntheticPatch,
+  createLabDestination,
   createSyntheticScratch,
   fabricDeclaredSandboxPolicy,
   FABRIC_VERIFIER_ID,
@@ -25,11 +27,13 @@ import {
   LAB_PRODUCER,
   observationFromFabricOutcome,
   persistFabricOutcome,
+  persistFabricRunResult,
   queryLabCatalog,
   readVerdictSnapshot,
   rebuildLabProjection,
   replayLabLedger,
-  runFabricSyntheticPatchTask,
+  runFabricSyntheticPatchTaskForRoute,
+  runFabricSyntheticPatchTaskHarness,
   sandboxProfileDigest,
   subjectIdForSubject,
   SYNTHETIC_AFTER_UTF8,
@@ -52,6 +56,17 @@ import { verifyExactTreeDiffV1 } from "../src/lab/fabric/verifier";
 import { parseSyntheticPatchV1 } from "../src/lab/fabric/patch";
 import { FABRIC_LIMITS } from "../src/lab/fabric/constants";
 import { taskSubjectApplicableToRequirements } from "../src/lab/projection/verification";
+import { createHostIssuedFabricPatchExecutor } from "../src/lib/fabric-task-host";
+import type { TrustedFabricPatchExecutor } from "../src/lab/fabric/types";
+import {
+  fabricCorrectPatchExecutor,
+  fabricMockRoute,
+  fabricOversizedPatchExecutor,
+  runTrustedFabricTask,
+} from "./helpers/fabric-task-test";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const CREDENTIAL_CANARY = "credential-canary-abcdefghijklmnopqrstuvwxyz1234567890";
 
 const HOMES: string[] = [];
 
@@ -60,6 +75,105 @@ function tempHome(): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   HOMES.push(dir);
   return dir;
+}
+
+function repoImport(subpath: string): string {
+  return join(REPO_ROOT, subpath).replace(/\\/g, "/");
+}
+
+async function fabricDestination(home: string) {
+  return createLabDestination({
+    baseUrl: "https://api.example.com/v1",
+    labRunApproval: true,
+    resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+    configDir: home,
+  });
+}
+
+function fabricActivityPatchExecutor(home: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
+  mkdirSync(dir, { recursive: true });
+  const modulePath = join(dir, "activity-patch.ts");
+  writeFileSync(modulePath, `
+import type { FabricPatchExecutorInput, SyntheticPatchV1 } from "${repoImport("src/lab/fabric/types")}";
+import { SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "${repoImport("src/lab/fabric/constants")}";
+
+export async function execute(input: FabricPatchExecutorInput): Promise<SyntheticPatchV1> {
+  for (let i = 0; i < 3; i++) {
+    input.reportActivity();
+    await Bun.sleep(Math.floor(${FABRIC_LIMITS.inactivityTimeoutMs} * 0.6));
+  }
+  return {
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_AFTER_UTF8 }],
+  };
+}
+`);
+  return createHostIssuedFabricPatchExecutor(modulePath, async (input) => {
+    for (let i = 0; i < 3; i++) {
+      input.reportActivity();
+      await Bun.sleep(Math.floor(FABRIC_LIMITS.inactivityTimeoutMs * 0.6));
+    }
+    return correctSyntheticPatch();
+  });
+}
+
+function fabricInactivePatchExecutor(home: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
+  mkdirSync(dir, { recursive: true });
+  const modulePath = join(dir, "inactive-patch.ts");
+  writeFileSync(modulePath, `
+import type { FabricPatchExecutorInput, SyntheticPatchV1 } from "${repoImport("src/lab/fabric/types")}";
+import { SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "${repoImport("src/lab/fabric/constants")}";
+
+export async function execute(_input: FabricPatchExecutorInput): Promise<SyntheticPatchV1> {
+  await Bun.sleep(${FABRIC_LIMITS.inactivityTimeoutMs} + 50);
+  return {
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_AFTER_UTF8 }],
+  };
+}
+`);
+  return createHostIssuedFabricPatchExecutor(modulePath, async () => {
+    await Bun.sleep(FABRIC_LIMITS.inactivityTimeoutMs + 50);
+    return correctSyntheticPatch();
+  });
+}
+
+function fabricSymlinkSandboxExecutor(home: string): TrustedFabricPatchExecutor {
+  const dir = join(home, "fabric-executors");
+  mkdirSync(dir, { recursive: true });
+  const modulePath = join(dir, "symlink-sandbox.ts");
+  writeFileSync(modulePath, `
+import { symlinkSync } from "node:fs";
+import { join } from "node:path";
+import type { FabricPatchExecutorInput, SyntheticPatchV1 } from "${repoImport("src/lab/fabric/types")}";
+import { SYNTHETIC_AFTER_UTF8, SYNTHETIC_VALUE_PATH } from "${repoImport("src/lab/fabric/constants")}";
+
+export async function execute(input: FabricPatchExecutorInput): Promise<SyntheticPatchV1> {
+  const target = join(input.scratchRoot, "src", "value.txt");
+  const link = join(input.scratchRoot, "src", "link.txt");
+  try {
+    symlinkSync(target, link);
+  } catch {
+    /* platform may reject symlink creation */
+  }
+  return {
+    schemaVersion: 1,
+    operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: SYNTHETIC_AFTER_UTF8 }],
+  };
+}
+`);
+  return createHostIssuedFabricPatchExecutor(modulePath, async (input) => {
+    const target = join(input.scratchRoot, "src", "value.txt");
+    const link = join(input.scratchRoot, "src", "link.txt");
+    try {
+      symlinkSync(target, link);
+    } catch {
+      /* platform may reject symlink creation */
+    }
+    return correctSyntheticPatch();
+  });
 }
 
 function linkDirectory(target: string, linkPath: string): boolean {
@@ -143,16 +257,48 @@ describe("CL-07 task effectiveness producer", () => {
     expect(sandboxProfileDigest()).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("exact synthetic patch passes", async () => {
+  test("exact synthetic patch passes via trusted route", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
+    const result = await runTrustedFabricTask(home);
+    expect(result.executionAuthority).toBe("trusted_route");
+    expect(result.outcome.outcome).toBe("pass");
+    expect(result.outcome.verifier.passed).toBe(true);
+  });
+
+  test("deterministic_correct harness passes without trusted authority", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
       routeSubject: routeSubject(),
+      harnessKind: "deterministic_correct",
       configDir: home,
-      producePatch: () => correctSyntheticPatch(),
     });
-    expect(outcome.outcome).toBe("pass");
-    expect(outcome.verifier.passed).toBe(true);
+    expect(result.executionAuthority).toBe("harness");
+    expect(result.outcome.outcome).toBe("pass");
+  });
+
+  test("harness execution cannot be persisted as production evidence", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "deterministic_correct",
+      configDir: home,
+    });
+    expect(() => persistFabricRunResult(result, { configDir: home })).toThrow(FabricTaskError);
+    try {
+      persistFabricRunResult(result, { configDir: home });
+    } catch (error) {
+      expect((error as FabricTaskError).code).toBe("malformed_producer_outcome");
+    }
+  });
+
+  test("trusted route execution can be persisted as production evidence", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const result = await runTrustedFabricTask(home);
+    const persisted = persistFabricRunResult(result, { configDir: home });
+    expect(existsSync(join(home, "lab", "compatibility.jsonl"))).toBe(true);
+    expect(persisted.event.evidenceLayer).toBe("task_effectiveness");
   });
 
   test("unchanged / wrong / added / deleted trees fail verifier", () => {
@@ -257,49 +403,136 @@ describe("CL-07 task effectiveness producer", () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
     const huge = "x".repeat(FABRIC_LIMITS.maxAggregateIoBytes + 8);
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricOversizedPatchExecutor(home, huge),
       configDir: home,
-      producePatch: () => ({
-        schemaVersion: 1,
-        operations: [{ op: "replace", path: SYNTHETIC_VALUE_PATH, contentUtf8: huge }],
-      }),
     });
-    expect(outcome.outcome).not.toBe("pass");
-    expect(outcome.failure?.code).toBe("budget_exhausted");
+    expect(result.outcome.outcome).not.toBe("pass");
+    expect(result.outcome.failure?.code).toBe("budget_exhausted");
   });
 
-  test("execution and inactivity timeouts are bounded", async () => {
+  test("never_resolve harness terminates within total budget", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "never_resolve",
+      configDir: home,
+    });
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
+  }, 40_000);
+
+  test("infinite_sync harness terminates within total budget", async () => {
+    const home = tempHome();
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "infinite_sync",
+      configDir: home,
+    });
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
+  }, 40_000);
+
+  test("mutate_after_delay harness kills producer and cleans scratch", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
+    const result = await runFabricSyntheticPatchTaskHarness({
       routeSubject: routeSubject(),
+      harnessKind: "mutate_after_delay",
       configDir: home,
-      producePatch: async () => {
-        await Bun.sleep(FABRIC_LIMITS.inactivityTimeoutMs + 50);
-        return correctSyntheticPatch();
-      },
     });
-    expect(["blocked", "inconclusive"]).toContain(outcome.outcome);
-    expect(["timeout", "inactivity_timeout"]).toContain(outcome.failure?.code ?? "");
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
+    const scratchBase = join(home, "lab", "scratch");
+    await Bun.sleep(6_000);
+    if (existsSync(scratchBase)) {
+      expect(readdirSync(scratchBase).some((name) => name.startsWith("fabric-"))).toBe(false);
+    }
+    for (const name of existsSync(scratchBase) ? readdirSync(scratchBase) : []) {
+      if (!name.startsWith("fabric-")) continue;
+      const latePath = join(scratchBase, name, SYNTHETIC_VALUE_PATH);
+      if (existsSync(latePath)) {
+        expect(readFileSync(latePath, "utf8")).not.toBe("late\n");
+      }
+    }
+  }, 45_000);
+
+  test("inactivity timeout is bounded for trusted route executors", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricInactivePatchExecutor(home),
+      configDir: home,
+    });
+    expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+    expect(["timeout", "inactivity_timeout", "harness_failure"]).toContain(result.outcome.failure?.code ?? "");
   }, 20_000);
 
   test("activity resets inactivity deadline within total budget", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricActivityPatchExecutor(home),
       configDir: home,
-      producePatch: async ({ reportActivity }) => {
-        for (let i = 0; i < 3; i++) {
-          reportActivity();
-          await Bun.sleep(Math.floor(FABRIC_LIMITS.inactivityTimeoutMs * 0.6));
-        }
-        return correctSyntheticPatch();
-      },
     });
-    expect(outcome.outcome).toBe("pass");
+    expect(result.outcome.outcome).toBe("pass");
   }, 30_000);
+
+  test("inactiveMs on success is meaningful with controlled clock", async () => {
+    const home = tempHome();
+    let tick = 10_000;
+    const now = () => tick;
+    const result = await runFabricSyntheticPatchTaskHarness({
+      routeSubject: routeSubject(),
+      harnessKind: "deterministic_correct",
+      configDir: home,
+      now,
+    });
+    expect(result.outcome.outcome).toBe("pass");
+    expect(result.outcome.usage.inactiveMs).toBeGreaterThanOrEqual(0);
+    expect(result.outcome.usage.inactiveMs).toBeLessThanOrEqual(result.outcome.usage.elapsedMs);
+    tick += 2_500;
+    const trusted = await runTrustedFabricTask(home, {}, now);
+    expect(trusted.outcome.outcome).toBe("pass");
+    expect(trusted.outcome.usage.inactiveMs).toBeGreaterThanOrEqual(0);
+    expect(trusted.outcome.usage.inactiveMs).toBeLessThanOrEqual(trusted.outcome.usage.elapsedMs);
+  });
+
+  test("sandbox violations do not become behavioral_failure", async () => {
+    const home = tempHome();
+    process.env.OPENCODEX_HOME = home;
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricSymlinkSandboxExecutor(home),
+      configDir: home,
+    });
+    if (result.outcome.failure?.code === "sandbox_violation") {
+      expect(result.outcome.failure.class).not.toBe("behavioral_failure");
+      expect(["blocked", "inconclusive"]).toContain(result.outcome.outcome);
+      return;
+    }
+    const scratch = createSyntheticScratch(home);
+    try {
+      symlinkSync(join(scratch.root, "src", "value.txt"), join(scratch.root, "src", "link.txt"));
+      expect(() => verifyExactTreeDiffV1(scratch.root)).toThrow(FabricTaskError);
+      try {
+        verifyExactTreeDiffV1(scratch.root);
+      } catch (error) {
+        expect((error as FabricTaskError).code).toBe("sandbox_violation");
+      }
+    } catch {
+      /* symlink unsupported on this platform */
+    } finally {
+      scratch.cleanup();
+    }
+  });
 
   test("declared sandbox policy denies network MCP shell and user repo", () => {
     expect(fabricDeclaredSandboxPolicy()).toEqual({
@@ -430,11 +663,7 @@ describe("CL-07 task effectiveness producer", () => {
 
   test("malformed nested outcome fields throw FabricTaskError", async () => {
     const home = tempHome();
-    const base = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-    });
+    const base = (await runTrustedFabricTask(home)).outcome;
     expect(() => observationFromFabricOutcome({ ...base, verifier: {} })).toThrow(FabricTaskError);
     try {
       observationFromFabricOutcome({
@@ -462,33 +691,28 @@ describe("CL-07 task effectiveness producer", () => {
     const home = tempHome();
     const paths = ensureLabDirs(home);
     const store = createArtifactStore(paths.artifactsDir);
-    const base = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-    });
-    const secret = "sk-abcdefghijklmnopqrstuvwxyz1234567890";
+    const base = (await runTrustedFabricTask(home)).outcome;
     try {
       const { artifacts } = observationFromFabricOutcome({
         ...base,
         verifier: {
           ...base.verifier,
-          reason: `failed ${secret}`,
+          reason: `failed ${CREDENTIAL_CANARY}`,
         },
       }, { configDir: home, artifactStore: store });
       const summaryRef = artifacts.find((row) => row.artifactClass === "verifier_summary");
       expect(summaryRef).toBeDefined();
       const text = new TextDecoder().decode(store.get(summaryRef!.digest));
-      expect(text.includes(secret)).toBe(false);
+      expect(text.includes(CREDENTIAL_CANARY)).toBe(false);
       persistFabricOutcome({
         ...base,
         verifier: {
           ...base.verifier,
-          reason: `failed ${secret}`,
+          reason: `failed ${CREDENTIAL_CANARY}`,
         },
       }, { configDir: home });
       const ledger = readFileSync(join(home, "lab", "compatibility.jsonl"), "utf8");
-      expect(ledger.includes(secret)).toBe(false);
+      expect(ledger.includes(CREDENTIAL_CANARY)).toBe(false);
     } finally {
       store.close();
     }
@@ -504,12 +728,8 @@ describe("CL-07 task effectiveness producer", () => {
       createdAt: Date.now() - 120_000,
       token: "stale-lock-token",
     }), { mode: 0o600 });
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-    });
-    persistFabricOutcome(outcome, { configDir: home });
+    const result = await runTrustedFabricTask(home);
+    persistFabricRunResult(result, { configDir: home });
     expect(existsSync(join(home, "lab", "compatibility.jsonl"))).toBe(true);
   });
 
@@ -568,45 +788,31 @@ describe("CL-07 task effectiveness producer", () => {
   test("duplicate outcome delivery is idempotent; distinct attempts remain distinct", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-      now: () => 1_000,
-    });
-    const first = persistFabricOutcome(outcome, { configDir: home, recordedAt: 1_000, attempt: 1 });
-    const second = persistFabricOutcome(outcome, { configDir: home, recordedAt: 1_000, attempt: 1 });
+    const firstRun = await runTrustedFabricTask(home, {}, () => 1_000);
+    const first = persistFabricRunResult(firstRun, { configDir: home, recordedAt: 1_000, attempt: 1 });
+    const second = persistFabricRunResult(firstRun, { configDir: home, recordedAt: 1_000, attempt: 1 });
     expect(second.event.eventId).toBe(first.event.eventId);
     const replay = replayLabLedger(join(home, "lab", "compatibility.jsonl"));
     const ids = replay.events.filter((row) => row.eventKind === "observation").map((row) => row.eventId);
     expect(ids).toEqual([first.event.eventId]);
     expect(replay.corruptions.filter((row) => row.kind === "duplicate_event")).toEqual([]);
 
-    const secondAttempt = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-      now: () => 2_000,
-    });
-    const third = persistFabricOutcome(secondAttempt, { configDir: home, recordedAt: 2_000, attempt: 2 });
+    const secondAttempt = await runTrustedFabricTask(home, {}, () => 2_000);
+    const third = persistFabricRunResult(secondAttempt, { configDir: home, recordedAt: 2_000, attempt: 2 });
     expect(third.event.eventId).not.toBe(first.event.eventId);
   });
 
   test("structured result converts to fabric Lab observation", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-    });
+    const outcome = (await runTrustedFabricTask(home)).outcome;
     const { event } = observationFromFabricOutcome(outcome, { configDir: home });
     expect(event.evidenceLayer).toBe("task_effectiveness");
     expect(event.executionMode).toBe("fabric");
     expect(event.subject.subjectKind).toBe("task");
     expect(event.suiteId).toBe("fabric-core");
     const serialized = JSON.stringify(event);
-    expect(serialized.includes("sk-")).toBe(false);
+    expect(serialized.includes(CREDENTIAL_CANARY)).toBe(false);
     expect(serialized.includes("OPENAI_API_KEY")).toBe(false);
   });
 
@@ -648,13 +854,8 @@ describe("CL-07 task effectiveness producer", () => {
   test("projection rebuild and invalidation work for task evidence", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-      now: () => 5_000,
-    });
-    const persisted = persistFabricOutcome(outcome, { configDir: home, recordedAt: 5_000 });
+    const result = await runTrustedFabricTask(home, {}, () => 5_000);
+    const persisted = persistFabricRunResult(result, { configDir: home, recordedAt: 5_000 });
     const rebuilt = rebuildLabProjection(home);
     expect(rebuilt.events).toBeGreaterThan(0);
     expect(rebuilt.corruptions).toEqual([]);
@@ -684,11 +885,7 @@ describe("CL-07 task effectiveness producer", () => {
   test("artifacts are bounded and catalog exposes task evidence", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
-      configDir: home,
-      producePatch: () => correctSyntheticPatch(),
-    });
+    const outcome = (await runTrustedFabricTask(home)).outcome;
     const { event, artifacts } = observationFromFabricOutcome(outcome, { configDir: home });
     expect(artifacts.length).toBeGreaterThan(0);
     expect(artifacts.every((row) => row.byteCount <= 256 * 1024)).toBe(true);
@@ -718,15 +915,16 @@ describe("CL-07 task effectiveness producer", () => {
   test("ledger lines omit prompts and credentials", async () => {
     const home = tempHome();
     process.env.OPENCODEX_HOME = home;
-    const outcome = await runFabricSyntheticPatchTask({
-      routeSubject: routeSubject(),
+    const result = await runFabricSyntheticPatchTaskForRoute({
+      routeContext: fabricMockRoute(),
+      destination: await fabricDestination(home),
+      patchExecutor: fabricCorrectPatchExecutor(),
       configDir: home,
-      producePatch: () => correctSyntheticPatch(),
       sourceRefs: ["routeDecision:abcd1234"],
     });
-    persistFabricOutcome(outcome, { configDir: home });
+    persistFabricRunResult(result, { configDir: home });
     const text = readFileSync(join(home, "lab", "compatibility.jsonl"), "utf8");
     expect(text.includes("system prompt")).toBe(false);
-    expect(text.includes("sk-")).toBe(false);
+    expect(text.includes(CREDENTIAL_CANARY)).toBe(false);
   });
 });

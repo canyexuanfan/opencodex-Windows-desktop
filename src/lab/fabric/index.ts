@@ -18,6 +18,7 @@ export {
 export type {
   FabricOutcomeKind,
   FabricFailureClass,
+  FabricExecutionAuthority,
   FabricLimitsV1,
   SyntheticPatchOperationV1,
   SyntheticPatchV1,
@@ -25,7 +26,11 @@ export type {
   ExactTreeDiffPathSummaryV1,
   ExactTreeDiffResultV1,
   FabricTaskOutcomeV1,
-  SyntheticPatchProducer,
+  FabricTaskRunResult,
+  FabricHarnessProducerKind,
+  FabricPatchExecutorInput,
+  FabricPatchExecutor,
+  TrustedFabricPatchExecutor,
 } from "./types";
 export { FabricTaskError } from "./types";
 export {
@@ -49,10 +54,15 @@ export { verifyExactTreeDiffV1 } from "./verifier";
 export {
   correctSyntheticPatch,
   runFabricSyntheticPatchTask,
+  runFabricSyntheticPatchTaskForRoute,
+  runFabricSyntheticPatchTaskHarness,
   fabricDeclaredSandboxPolicy,
   fabricScratchCapabilityProbe,
 } from "./executor";
-export type { RunFabricTaskOptions } from "./executor";
+export type {
+  RunFabricTaskHarnessOptions,
+  RunFabricTaskForRouteOptions,
+} from "./executor";
 export {
   loadFabricCaseAuthority,
   discoverFabricScenarios,
@@ -66,5 +76,6 @@ export {
   assertFabricOutcomeV1,
   observationFromFabricOutcome,
   persistFabricOutcome,
+  persistFabricRunResult,
 } from "./observe";
 export type { PersistFabricOptions, PersistedFabricObservation } from "./observe";

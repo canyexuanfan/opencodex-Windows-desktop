@@ -105,9 +105,9 @@ No additional task classes in this phase.
 
 ### A.5 Patch producer seam
 
-Execution does **not** embed a general coding agent. The executor accepts a closed `SyntheticPatchV1` (single `replace` of `src/value.txt` under byte bounds) from a caller-supplied producer function.
+Execution does **not** embed a general coding agent. Production evidence requires a host-issued `TrustedFabricPatchExecutor` invoked through `runFabricSyntheticPatchTaskForRoute`, with `RouteSubjectV1` built from `routeContext` + `destination` via `buildRouteSubjectV1`. Patch producers run in an isolated Bun child with hard termination on timeout.
 
-- Tests inject deterministic patches.
+- Tests use `runFabricSyntheticPatchTaskHarness` with closed `FabricHarnessProducerKind` values or fixture executor modules; harness outcomes are not persistable via `persistFabricRunResult`.
 - A future live route adapter may call a provider **outside** the scratch sandbox and return only a validated `SyntheticPatchV1`; raw prompts/responses never enter Lab storage.
 - CL-07 does **not** ship automatic background execution (CL-08).
 
@@ -232,15 +232,39 @@ Typecheck; focused fabric/subject/sandbox/verifier/observe/ledger/projection/rea
 ## M. Status
 
 - **Authorization:** IN PROGRESS from CL-06 merge `b66e33ce7207d91014644d99317e456c992a3418`
-- **Implementation head:** `ed8e0794189b214398d835e1af828905f29fbc53`
+- **Implementation head:** pending push (authoritative route execution + isolated producer child)
 - **Accepted head:** NOT YET
 - **PR:** [#1438](https://github.com/lidge-jun/opencodex/pull/1438) (draft)
 
-### Local validation (pre-PR)
+### Authoritative route execution boundary
+
+- Production evidence uses `runFabricSyntheticPatchTaskForRoute({ routeContext, destination, patchExecutor })`.
+- `RouteSubjectV1` is built only via `buildRouteSubjectV1(routeContext, destination)` — callers cannot supply an independent route identity.
+- Patch production requires a host-issued `TrustedFabricPatchExecutor` (`createHostIssuedFabricPatchExecutor` in `src/lib/fabric-task-host.ts`).
+- `persistFabricRunResult` rejects harness-only runs (`executionAuthority !== "trusted_route"`).
+- Harness runs (`runFabricSyntheticPatchTaskHarness`) use closed `FabricHarnessProducerKind` values only; they cannot create production ledger evidence.
+
+### Termination / sandbox model
+
+- Patch producers run in a dedicated Bun child (`producer-child.ts`) spawned by `producer-isolate.ts` with minimal env (`TZ`, `NO_COLOR`).
+- Hard `SIGKILL` on total timeout; child process cannot block the OpenCodex event loop with a synchronous infinite loop.
+- Scratch containment, symlink/path traversal rejection, byte/file limits, and cleanup remain in the parent executor after the child returns a validated `SyntheticPatchV1`.
+
+### Failure attribution
+
+- Semantic verifier mismatch → `fail` / `behavioral_failure` / `route`.
+- Sandbox/containment (`FabricTaskError` from scratch/verifier infrastructure) → `blocked` or `inconclusive` / `sandbox_violation` / `harness` or `environment` — never route-attributed `behavioral_failure`.
+- Timeouts / budget exhaustion → `blocked` / `environment`.
+- Harness defects → `inconclusive` / `harness`.
+
+### Inactivity accounting
+
+- `inactiveMs` = `completedAt - lastActivityAt` where `lastActivityAt` resets on producer `reportActivity()` (trusted child executor path).
+
+### Local validation (blocker fix head)
 
 - `bun x tsc --noEmit`: passed
-- `bun test tests/lab-fabric-task.test.ts`: 20/20 passed
-- `bun test tests/lab-read-surfaces.test.ts tests/routing-compatibility.test.ts`: passed
-- `bun test tests/repo-hygiene.test.ts`: 11/11 passed
+- `bun test tests/lab-fabric-task.test.ts`: 39/39 passed
 - `bun run privacy:scan`: passed
+- `bun test tests/lab-read-surfaces.test.ts tests/routing-compatibility.test.ts tests/lab-live-probe.test.ts`: passed
 - CL-08: **not started**

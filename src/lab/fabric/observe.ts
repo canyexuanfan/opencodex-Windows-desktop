@@ -30,7 +30,7 @@ import {
   fabricSuiteManifestDigest,
   loadFabricCaseAuthority,
 } from "./manifest";
-import type { FabricLimitsV1, FabricTaskOutcomeV1 } from "./types";
+import type { FabricLimitsV1, FabricTaskOutcomeV1, FabricTaskRunResult } from "./types";
 import { FabricTaskError } from "./types";
 
 /** CL-07 fabric task outcome validation and observation persistence. */
@@ -436,4 +436,19 @@ export function persistFabricOutcome(
   } finally {
     if (ownsStore) store.close();
   }
+}
+
+/** Persist production fabric evidence from a trusted-route run result. */
+export function persistFabricRunResult(
+  result: FabricTaskRunResult,
+  opts: PersistFabricOptions = {},
+): PersistedFabricObservation {
+  if (result.executionAuthority !== "trusted_route") {
+    throw new FabricTaskError(
+      "fabric evidence requires trusted route execution authority",
+      "malformed_producer_outcome",
+      "harness",
+    );
+  }
+  return persistFabricOutcome(result.outcome, opts);
 }

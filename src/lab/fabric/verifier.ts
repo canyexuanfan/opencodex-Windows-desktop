@@ -98,17 +98,7 @@ export function verifyExactTreeDiffV1(scratchRoot: string): ExactTreeDiffResultV
     };
   } catch (error) {
     if (error instanceof FabricTaskError) {
-      return {
-        verifierId: FABRIC_VERIFIER_ID,
-        manifestDigest,
-        passed: false,
-        pathSummaries: [{
-          path: SYNTHETIC_VALUE_PATH,
-          kind: "rejected",
-          reason: error.code,
-        }],
-        reason: error.code,
-      };
+      throw error;
     }
     throw error;
   }
