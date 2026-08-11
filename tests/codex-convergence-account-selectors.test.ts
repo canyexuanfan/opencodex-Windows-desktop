@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -44,6 +44,13 @@ import {
 } from "../src/codex/runtime";
 import { markModelsFetchFailure } from "../src/codex/model-cache";
 import { legacyCustomModelCatalogSlugs } from "../src/codex/custom-model-catalog-migration";
+
+// The canonical-bytes case spawns real syncs and runs ~2.5s in isolation, on this
+// tree and on a clean baseline alike. That is half of bun's 5s default, but full
+// 680-file parallelism has pushed it past the line (observed 5709ms), which reads
+// as a failure rather than the scheduling flake it is. Same remedy the heavier
+// management suites already use.
+setDefaultTimeout(30_000);
 
 let root = "";
 let codexHome = "";
