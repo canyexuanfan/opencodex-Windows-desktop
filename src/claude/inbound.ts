@@ -78,7 +78,7 @@ function formatFromOutputConfig(outputConfig: unknown): Rec | undefined {
     || !isRec(format.schema)
     || !isAnthropicOutputSchema(format.schema)
   ) return undefined;
-  return { type: "json_schema", schema: format.schema };
+  return { type: "json_schema", name: "response", schema: format.schema };
 }
 
 function systemToInstructions(system: unknown): string | undefined {

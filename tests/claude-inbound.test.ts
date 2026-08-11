@@ -155,8 +155,8 @@ describe("claude inbound translation", () => {
       output_config: { format: { type: "json_schema", schema } },
     });
 
-    expect(body.text).toEqual({ format: { type: "json_schema", schema } });
-    expect(parseRequest(body).options.textFormat).toEqual({ type: "json_schema", schema });
+    expect(body.text).toEqual({ format: { type: "json_schema", name: "response", schema } });
+    expect(parseRequest(body).options.textFormat).toEqual({ type: "json_schema", name: "response", schema });
   });
 
   test("structured output rejects unsupported schemas and preserves root references", () => {
@@ -181,7 +181,9 @@ describe("claude inbound translation", () => {
     });
 
     expect(invalid.text).toBeUndefined();
-    expect(referenced.text).toEqual({ format: { type: "json_schema", schema: refSchema } });
+    expect(referenced.text).toEqual({
+      format: { type: "json_schema", name: "response", schema: refSchema },
+    });
   });
 
   test("tool_choice any/tool/none", () => {
