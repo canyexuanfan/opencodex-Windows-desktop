@@ -197,7 +197,7 @@ function validateFailureRecord(raw: Record<string, unknown>): void {
   }
   assertStringField(raw, "code");
   if (typeof raw.retryable !== "boolean") {
-    throw new FabricTaskError("malformed producer outcome: failure.retryable", "harness");
+    throw new FabricTaskError("malformed producer outcome: failure.retryable", "malformed_producer_outcome", "harness");
   }
   const attribution = assertStringField(raw, "attribution");
   if (!FAILURE_ATTRIBUTIONS.has(attribution)) {
