@@ -82,6 +82,7 @@ of the HTTP retry loop.
 - **Structured output:** Responses `text.format` and Chat Completions `response_format` requests
   with `type: "json_schema"` become Anthropic `output_config.format`. The format merges into an
   existing adaptive-thinking output configuration, preserving a compatible `output_config.effort`.
+  Routed Anthropic Messages requests preserve the same format through stored-OAuth translation.
   The adapter mirrors the Anthropic TypeScript SDK's supported JSON Schema subset: unsupported
   constraints are moved into `description` as model guidance, `oneOf` becomes `anyOf`, and object
   schemas receive `additionalProperties: false`. A root `$ref` retains its adjacent `$defs` so the

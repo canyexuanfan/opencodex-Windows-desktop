@@ -69,6 +69,13 @@ export function effortFromOutputConfig(outputConfig: unknown): string | undefine
   return typeof effort === "string" && OUTPUT_CONFIG_EFFORTS.has(effort) ? effort : undefined;
 }
 
+function formatFromOutputConfig(outputConfig: unknown): Rec | undefined {
+  if (!isRec(outputConfig) || !isRec(outputConfig.format)) return undefined;
+  const format = outputConfig.format;
+  if (format.type !== "json_schema" || !isRec(format.schema)) return undefined;
+  return { type: "json_schema", schema: format.schema };
+}
+
 function systemToInstructions(system: unknown): string | undefined {
   if (typeof system === "string") return system.length > 0 ? system : undefined;
   if (Array.isArray(system)) {
@@ -467,6 +474,8 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   if (Array.isArray(raw.stop_sequences) && raw.stop_sequences.length > 0) {
     body.stop = raw.stop_sequences.filter((s): s is string => typeof s === "string");
   }
+  const outputConfigFormat = formatFromOutputConfig(raw.output_config);
+  if (outputConfigFormat) body.text = { format: outputConfigFormat };
   let cacheKeySource: ClaudeCacheKeySource = null;
   if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") {
     body.user = raw.metadata.user_id;

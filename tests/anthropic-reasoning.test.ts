@@ -20,8 +20,8 @@ function parsed(reasoning?: string, extraOpts: Record<string, unknown> = {}, mod
   } as unknown as OcxParsedRequest;
 }
 
-async function bodyOf(p: OcxParsedRequest): Promise<Record<string, unknown>> {
-  const { body } = await createAnthropicAdapter(provider).buildRequest(p);
+async function bodyOf(p: OcxParsedRequest, configuredProvider = provider): Promise<Record<string, unknown>> {
+  const { body } = await createAnthropicAdapter(configuredProvider).buildRequest(p);
   return JSON.parse(typeof body === "string" ? body : JSON.stringify(body)) as Record<string, unknown>;
 }
 
@@ -374,6 +374,37 @@ describe("anthropic extended-thinking gate", () => {
     expect(JSON.stringify(messages)).not.toContain("rs_other_provider");
     expect(JSON.stringify(messages)).not.toContain("signature");
     expect(messages).toEqual([{ role: "user", content: "continue on anthropic" }]);
+  });
+});
+
+describe("Anthropic Messages stored-OAuth round trip", () => {
+  test("Messages structured output survives the stored OAuth round trip", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    const inbound = anthropicToResponsesBody({
+      model: "claude-sonnet-5",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "Return JSON" }],
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "high",
+        format: { type: "json_schema", schema },
+      },
+    });
+
+    const body = await bodyOf(parseRequest(inbound), {
+      ...provider,
+      authMode: "oauth",
+    });
+
+    expect(body.output_config).toEqual({
+      effort: "high",
+      format: { type: "json_schema", schema },
+    });
   });
 });
 

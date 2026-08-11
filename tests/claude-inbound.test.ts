@@ -141,6 +141,24 @@ describe("claude inbound translation", () => {
     }))).toEqual({ summary: "auto" });
   });
 
+  test("structured output maps output_config.format to text.format", () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    const body = anthropicToResponsesBody({
+      model: "claude-sonnet-5",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "Return JSON" }],
+      output_config: { format: { type: "json_schema", schema } },
+    });
+
+    expect(body.text).toEqual({ format: { type: "json_schema", schema } });
+    expect(parseRequest(body).options.textFormat).toEqual({ type: "json_schema", schema });
+  });
+
   test("tool_choice any/tool/none", () => {
     const base = { model: "m", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
     expect((anthropicToResponsesBody({ ...base, tool_choice: { type: "any" } }) as any).tool_choice).toBe("required");

@@ -591,6 +591,8 @@ Schema requests to `output_config.format`. The local transform follows Anthropic
 subset so upstream rejects neither OpenAI-only envelope fields nor unsupported schema constraints.
 The adapter merges `format` into an existing adaptive-thinking `output_config` rather than replacing
 it, so a compatible `output_config.effort` remains alongside the structured-output format.
+Routed Anthropic Messages input carries `output_config.format` through internal `text.format`, so
+stored-OAuth requests regain the same native format when the Anthropic adapter rebuilds the wire body.
 Unsupported constraints remain in `description` as model guidance instead of disappearing. Root
 `$defs` stay beside a root `$ref`, intentionally differing from the current SDK transform's early
 `$ref` return so local references remain resolvable.
