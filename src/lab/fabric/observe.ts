@@ -197,7 +197,7 @@ function validateFailureRecord(raw: Record<string, unknown>): void {
   }
   assertStringField(raw, "code");
   if (typeof raw.retryable !== "boolean") {
-    throw new FabricTaskError("malformed producer outcome: failure.retryable", "malformed_producer_outcome", "harness");
+    throw new FabricTaskError("malformed producer outcome: failure.retryable", "harness");
   }
   const attribution = assertStringField(raw, "attribution");
   if (!FAILURE_ATTRIBUTIONS.has(attribution)) {
@@ -421,8 +421,8 @@ export function observationFromFabricOutcome(
   }
 }
 
-/** @internal Ledger append helper; production evidence must use {@link persistFabricRunResult}. */
-export function persistFabricOutcome(
+/** Module-private ledger append helper; production evidence must use {@link persistFabricRunResult}. */
+function persistFabricOutcome(
   outcome: FabricTaskOutcomeV1,
   opts: PersistFabricOptions = {},
 ): PersistedFabricObservation {
