@@ -180,6 +180,11 @@ not fabricate official-client metadata. Doctor never mutates credentials or appl
 Fetch the live model list from every configured provider and re-inject the merged catalog into Codex.
 Run it after adding a provider or to refresh available models.
 
+Before provider discovery or catalog/cache replacement, `ocx sync` validates that the managed
+Codex configuration can be injected. If that validation refuses the config, the command exits
+nonzero, prints the concrete reason on stderr, and leaves the existing catalog and cache unchanged.
+`ocx restore back` uses the same no-write preflight before it re-enables routing.
+
 If long-lived Codex `app-server` processes are still running, `ocx sync` warns that they may keep
 serving the previous in-memory model list even though `opencodex-catalog.json` / `models_cache.json`
 were updated. Pass `--restart-codex` to send `SIGTERM` only to matching `codex … app-server` and

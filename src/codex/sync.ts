@@ -101,7 +101,8 @@ export async function syncModelsToCodex(
   const externalProvider = (deps.currentExternalCodexModelProvider ?? currentExternalCodexModelProvider)();
   if (externalProvider) {
     const result = await deps.injectCodexConfig(p, config, {});
-    log?.log(result.message);
+    if (result.success) log?.log(result.message);
+    else log?.error(result.message);
     reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
     return {
       status: "applied",
@@ -113,6 +114,29 @@ export async function syncModelsToCodex(
       cacheSynced: false,
       message: result.message,
       ...(result.nativeSubagentDefaultsWarning ? { nativeSubagentDefaultsWarning: result.nativeSubagentDefaultsWarning } : {}),
+    };
+  }
+
+  // Injection has deterministic refusal paths (for example an ambiguous marker-owned TOML
+  // table) that do not depend on provider discovery. Exercise the SAME transformation and
+  // coordination eligibility before catalog gathering: a known-bad config must not turn a
+  // working catalog/cache into the partial result of an otherwise unnecessary refresh.
+  const preflight = await deps.injectCodexConfig(p, config, { validateOnly: true });
+  if (!preflight.success) {
+    log?.error(preflight.message);
+    reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
+    return {
+      status: "applied",
+      ok: false,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: preflight.message,
+      ...(preflight.nativeSubagentDefaultsWarning
+        ? { nativeSubagentDefaultsWarning: preflight.nativeSubagentDefaultsWarning }
+        : {}),
     };
   }
 
@@ -168,7 +192,8 @@ export async function syncModelsToCodex(
       message: result.message,
     };
   }
-  log?.log(result.message);
+  if (result.success) log?.log(result.message);
+  else log?.error(result.message);
   reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
   const projectConfigWarnings = printProjectCodexConfigWarnings(log, { cwd: process.cwd() });
   return {

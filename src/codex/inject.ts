@@ -129,6 +129,12 @@ export interface InjectCodexOptions {
    * caller that is willing to wait can raise it.
    */
   lockTimeoutMs?: number;
+  /**
+   * Validate the same config transformations and write-coordination eligibility without
+   * changing the journal, config, profile, catalog, cache, or history. Sync uses this before
+   * provider discovery so a deterministic config refusal cannot degrade an existing catalog.
+   */
+  validateOnly?: boolean;
 }
 
 function configuredManagedSubagentDefaults(
@@ -660,7 +666,7 @@ export async function injectCodexConfig(
   if (activeProvider) {
     // A launcher may have journaled before the provider manager took ownership. Never let shutdown
     // replay that stale snapshot over externally managed config.
-    removeJournal();
+    if (!options.validateOnly) removeJournal();
     const nativeSubagentDefaultsWarning = configuredManagedSubagentDefaults(
       config,
     )
@@ -864,6 +870,13 @@ export async function injectCodexConfig(
     return {
       success: false,
       message: `Codex configuration was not written: ${eligibility.reason}.`,
+    };
+  }
+
+  if (options.validateOnly) {
+    return {
+      success: true,
+      message: "Codex config injection preflight passed; no files were changed.",
     };
   }
 
