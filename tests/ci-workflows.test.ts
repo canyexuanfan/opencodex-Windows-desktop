@@ -2952,6 +2952,18 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(result.outputs).toEqual([]);
+      // The fallback must actually have run: the resolver consults the live
+      // open-PR list exactly once, and both same-head candidates are weighed
+      // before failing closed as ambiguous. Without this assertion the test
+      // would still pass if the fallback were removed (the empty association
+      // index by itself already skips), silently losing coverage of the
+      // head-SHA reconciliation path.
+      expect(callsTo(result, "pulls.list")).toHaveLength(1);
+      expect(callsTo(result, "pulls.list")[0]).toMatchObject({
+        owner: "lidge-jun",
+        repo: "opencodex",
+        state: "open",
+      });
       expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
     });
 
