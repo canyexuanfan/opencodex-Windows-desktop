@@ -98,6 +98,29 @@ describe("anthropic extended-thinking gate", () => {
     });
   });
 
+  test("preserves root definitions used by a root JSON Schema reference", async () => {
+    const schema = {
+      $ref: "#/$defs/answer",
+      $defs: {
+        answer: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      },
+    };
+    const b = await bodyOf(parseRequest({
+      model: "claude-sonnet-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "answer this" }] }],
+      text: { format: { type: "json_schema", name: "answer", schema } },
+    }));
+
+    expect(b.output_config).toEqual({
+      format: { type: "json_schema", schema },
+    });
+  });
+
   test("merges JSON Schema output format with adaptive thinking effort", async () => {
     const schema = {
       type: "object",

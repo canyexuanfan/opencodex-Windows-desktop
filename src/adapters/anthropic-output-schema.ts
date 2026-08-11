@@ -1,4 +1,4 @@
-// Mirrors Anthropic SDK's transformJSONSchema semantics with local unknown narrowing:
+// Based on Anthropic SDK's transformJSONSchema, preserving root $defs required by root $ref:
 // https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/lib/transform-json-schema.ts
 const SUPPORTED_STRING_FORMATS = new Set([
   "date-time",
@@ -30,16 +30,17 @@ function normalizeSubschema(value: unknown): unknown {
 function normalizeSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = {};
 
-  const ref = take(schema, "$ref");
-  if (ref !== undefined) {
-    return { $ref: ref };
-  }
-
   const defs = take(schema, "$defs");
   if (isRecord(defs)) {
     normalized.$defs = Object.fromEntries(
       Object.entries(defs).map(([name, definition]) => [name, normalizeSubschema(definition)]),
     );
+  }
+
+  const ref = take(schema, "$ref");
+  if (ref !== undefined) {
+    normalized.$ref = ref;
+    return normalized;
   }
 
   const type = take(schema, "type");
