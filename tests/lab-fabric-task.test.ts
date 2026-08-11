@@ -358,7 +358,7 @@ describe("CL-07 task effectiveness producer", () => {
       } catch {
         return;
       }
-      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(() => verifyExactTreeDiffV1(scratch.root)).toThrow(FabricTaskError);
     } finally {
       scratch.cleanup();
     }
@@ -372,7 +372,7 @@ describe("CL-07 task effectiveness producer", () => {
       const fifo = join(scratch.root, "src", "fifo");
       const created = Bun.spawnSync(["mkfifo", fifo], { stdout: "pipe", stderr: "pipe" });
       if (created.exitCode !== 0) return;
-      expect(verifyExactTreeDiffV1(scratch.root).passed).toBe(false);
+      expect(() => verifyExactTreeDiffV1(scratch.root)).toThrow(FabricTaskError);
     } finally {
       scratch.cleanup();
     }
