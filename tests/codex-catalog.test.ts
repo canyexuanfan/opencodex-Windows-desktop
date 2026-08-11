@@ -4437,6 +4437,7 @@ describe("OpenAI API trusted catalog augmentation", () => {
   const exactIds = [
     "gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro",
+    "daybreak-red-latest", "daybreak-blue-latest",
   ];
 
   test("rebuilds the exact eight rows after partial/conflicting successful discovery", () => {
@@ -4487,6 +4488,21 @@ describe("OpenAI API trusted catalog augmentation", () => {
           reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
         });
       }
+      // Daybreak aliases carry their own metadata and, deliberately, NO effort ladder.
+      // They fall outside the gpt-5.6 loop above because the alias id is the registered
+      // name — the snapshot id is never registered.
+      expect(apiRows.find(row => row.id === "daybreak-red-latest")).toMatchObject({
+        contextWindow: 400_000,
+        maxInputTokens: 272_000,
+        inputModalities: ["text", "image"],
+        reasoningEfforts: [],
+      });
+      expect(apiRows.find(row => row.id === "daybreak-blue-latest")).toMatchObject({
+        contextWindow: 1_050_000,
+        maxInputTokens: 922_000,
+        inputModalities: ["text", "image"],
+        reasoningEfforts: [],
+      });
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();

@@ -83,7 +83,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
-    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"]);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro", "daybreak-red-latest", "daybreak-blue-latest"]);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-sol"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-terra"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-luna"]).toBe(1_050_000);
@@ -92,11 +92,26 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelInputModalities?.["gpt-5.5"]).toEqual(["text", "image"]);
     expect((KEY_LOGIN_PROVIDERS["openai-apikey"] as unknown as { virtualModels?: unknown }).virtualModels).toBeUndefined();
     const apiRegistry = PROVIDER_REGISTRY.find(entry => entry.id === "openai-apikey")!;
-    expect(apiRegistry.models).toHaveLength(8);
+    expect(apiRegistry.models).toHaveLength(10);
     expect(Object.keys(apiRegistry.virtualModels ?? {}).sort()).toEqual([
       "gpt-5.6-luna-pro", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro",
     ]);
     expect(apiRegistry.models).not.toContain("gpt-5.6-pro");
+    // Daybreak aliases: the `-latest` alias is the stable id OpenAI repoints, so the
+    // snapshot ids must NOT appear. Red tracks gpt-5.6-cyber (400k/272k), Blue tracks
+    // gpt-5.6-sol (1.05M/922k). Verified 2026-08-11 against the official model pages.
+    expect(apiRegistry.models).not.toContain("gpt-5.6-cyber");
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["daybreak-red-latest"]).toBe(400_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelMaxInputTokens?.["daybreak-red-latest"]).toBe(272_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["daybreak-blue-latest"]).toBe(1_050_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelMaxInputTokens?.["daybreak-blue-latest"]).toBe(922_000);
+    for (const alias of ["daybreak-red-latest", "daybreak-blue-latest"]) {
+      expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelInputModalities?.[alias]).toEqual(["text", "image"]);
+      // Explicit [] means "expose no effort control". An UNDEFINED entry would instead fall
+      // back to the full routed ladder, advertising efforts neither page documents.
+      expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelReasoningEfforts?.[alias]).toEqual([]);
+    }
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelReasoningEfforts?.["gpt-5.6-sol"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
     const derived = deriveKeyLoginMap()["openai-apikey"];
     expect(derived.modelMaxInputTokens).not.toBe(apiRegistry.modelMaxInputTokens);
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("anthropic/claude-sonnet-5");

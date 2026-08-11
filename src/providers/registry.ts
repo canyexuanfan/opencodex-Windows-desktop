@@ -320,6 +320,37 @@ const OPENAI_API_GPT56_VIRTUAL_MODELS: Record<string, { wireModelId: string; rea
   "gpt-5.6-luna-pro": { wireModelId: "gpt-5.6-luna", reasoningMode: "pro" },
 };
 const OPENAI_API_GPT56_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * Daybreak program aliases. These `-latest` ids are the stable contract: OpenAI repoints
+ * them at newer snapshots over time (red -> gpt-5.6-cyber, blue -> gpt-5.6-sol as of
+ * 2026-08-11), so registering the ALIAS inherits future model swaps while a pinned
+ * snapshot id would silently go stale. Snapshot ids are deliberately absent here.
+ * Responses-only per both published endpoint tables (`v1/chat/completions` is marked
+ * Not supported) — never add these to a chat-completions provider. Access needs separate
+ * Daybreak approval and provisioning, so neither is ever a default.
+ * Verified 2026-08-11: developers.openai.com/api/docs/models/daybreak-red-latest.md
+ * and .../daybreak-blue-latest.md
+ */
+const OPENAI_DAYBREAK_MODELS = ["daybreak-red-latest", "daybreak-blue-latest"];
+const OPENAI_DAYBREAK_CONTEXT_WINDOWS: Record<string, number> = {
+  "daybreak-red-latest": 400_000,
+  "daybreak-blue-latest": 1_050_000,
+};
+const OPENAI_DAYBREAK_MAX_INPUT_TOKENS: Record<string, number> = {
+  "daybreak-red-latest": 272_000,
+  "daybreak-blue-latest": 922_000,
+};
+/**
+ * Neither Daybreak page publishes a reasoning-effort ladder. An explicit empty array means
+ * "expose no effort control"; OMITTING the key would instead fall back to the full routed
+ * ladder (`configuredReasoningEfforts` returns undefined -> `applyReasoningLevels` uses
+ * ROUTED_REASONING_LEVELS), which would advertise efforts the models never documented.
+ * `noReasoningModels` is wrong here: both pages document reasoning-token support, so these
+ * are reasoning models with no *selectable* ladder.
+ */
+const OPENAI_DAYBREAK_REASONING_EFFORTS: Record<string, string[]> = Object.fromEntries(
+  OPENAI_DAYBREAK_MODELS.map(id => [id, [] as string[]]),
+);
 const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
 // OpenRouter's live /endpoints routes report 1,050,000; keep this separate from the
 // unverified OpenAI API-key seed. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
@@ -1108,16 +1139,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
     defaultModel: "gpt-5.5",
-    models: ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS],
+    models: ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS, ...OPENAI_DAYBREAK_MODELS],
     liveModels: true,
-    modelContextWindows: OPENAI_API_GPT56_CONTEXT_WINDOWS,
-    modelMaxInputTokens: OPENAI_API_GPT56_MAX_INPUT_TOKENS,
+    modelContextWindows: { ...OPENAI_API_GPT56_CONTEXT_WINDOWS, ...OPENAI_DAYBREAK_CONTEXT_WINDOWS },
+    modelMaxInputTokens: { ...OPENAI_API_GPT56_MAX_INPUT_TOKENS, ...OPENAI_DAYBREAK_MAX_INPUT_TOKENS },
     modelInputModalities: Object.fromEntries(
-      ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, ["text", "image"]]),
+      ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS, ...OPENAI_DAYBREAK_MODELS]
+        .map(id => [id, ["text", "image"]]),
     ),
-    modelReasoningEfforts: Object.fromEntries(
-      [...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_REASONING_EFFORTS]),
-    ),
+    modelReasoningEfforts: {
+      ...Object.fromEntries(
+        [...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_REASONING_EFFORTS]),
+      ),
+      ...OPENAI_DAYBREAK_REASONING_EFFORTS,
+    },
     virtualModels: OPENAI_API_GPT56_VIRTUAL_MODELS,
   },
   {
