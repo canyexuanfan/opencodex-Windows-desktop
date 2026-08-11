@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import * as serviceModule from "../src/service";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
 import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
@@ -663,18 +664,69 @@ describe("launchd service plist", () => {
 });
 
 describe("service lifecycle cleanup ordering", () => {
+  const registrationAttemptNonce = "service-test-attempt";
+
+  test("rollback preserves a task owned by another install attempt and reports residual state", async () => {
+    const deleteCalls: string[] = [];
+    const rollbackOwned = (serviceModule as unknown as {
+      rollbackWindowsSchedulerTaskOwnedByAttempt: (
+        attemptNonce: string,
+        taskName: string,
+        deps: {
+          queryXml: () => string;
+          deleteTask: () => Promise<void>;
+          probe: () => { status: "absent" | "present" | "unknown"; detail: string };
+        },
+      ) => Promise<string | null>;
+    }).rollbackWindowsSchedulerTaskOwnedByAttempt;
+
+    const result = await rollbackOwned("attempt-a", "opencodex-proxy", {
+      queryXml: () => buildWindowsTaskXml("ignored.cmd", "launcher.vbs", "attempt-b"),
+      deleteTask: async () => { deleteCalls.push("delete"); },
+      probe: () => ({ status: "present", detail: "present" }),
+    });
+
+    expect(deleteCalls).toEqual([]);
+    expect(result).toContain("ownership could not be proven");
+    expect(result).toContain("Residual scheduler state: task opencodex-proxy remains registered");
+  });
+
+  test("rollback deletes a task carrying this install attempt's nonce", async () => {
+    const deleteCalls: string[] = [];
+    const rollbackOwned = (serviceModule as unknown as {
+      rollbackWindowsSchedulerTaskOwnedByAttempt: (
+        attemptNonce: string,
+        taskName: string,
+        deps: {
+          queryXml: () => string;
+          deleteTask: () => Promise<void>;
+          probe: () => { status: "absent" | "present" | "unknown"; detail: string };
+        },
+      ) => Promise<string | null>;
+    }).rollbackWindowsSchedulerTaskOwnedByAttempt;
+
+    const result = await rollbackOwned("attempt-a", "opencodex-proxy", {
+      queryXml: () => buildWindowsTaskXml("ignored.cmd", "launcher.vbs", "attempt-a"),
+      deleteTask: async () => { deleteCalls.push("delete"); },
+      probe: () => ({ status: "absent", detail: "absent" }),
+    });
+
+    expect(deleteCalls).toEqual(["delete"]);
+    expect(result).toBeNull();
+  });
+
   test("fresh registration elevates only the fixed create after a structured denial", async () => {
     const calls: string[] = [];
     const stagedXml = "C:\\Users\\x\\.opencodex\\attempt.xml";
     const expectedArgs = buildWindowsSchtasksCreateArgsForXml(stagedXml);
-    await registerFreshWindowsSchedulerTask(stagedXml, {
+    await registerFreshWindowsSchedulerTask(stagedXml, registrationAttemptNonce, {
       create: args => {
         calls.push(`create:${args.join(" ")}`);
         throw new WindowsSchtasksError("create", "access-denied", "denied");
       },
       elevate: async args => { calls.push(`elevate:${args.join(" ")}`); },
       probe: () => ({ status: "present", detail: "present" }),
-      queryXml: () => buildWindowsTaskXml(),
+      queryXml: () => buildWindowsTaskXml(undefined, undefined, registrationAttemptNonce),
       rollback: async () => { calls.push("rollback"); return null; },
     });
 
@@ -686,14 +738,14 @@ describe("service lifecycle cleanup ordering", () => {
 
   test("fresh registration UAC denial returns before task probing or cleanup", async () => {
     const calls: string[] = [];
-    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", registrationAttemptNonce, {
       create: () => {
         calls.push("create");
         throw new WindowsSchtasksError("create", "access-denied", "denied");
       },
       elevate: async () => { calls.push("elevate"); throw new Error("UAC cancelled"); },
       probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
-      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(); },
+      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(undefined, undefined, registrationAttemptNonce); },
       rollback: async () => { calls.push("rollback"); return null; },
     })).rejects.toThrow("UAC cancelled");
 
@@ -702,11 +754,11 @@ describe("service lifecycle cleanup ordering", () => {
 
   test("fresh registration never elevates an unstructured scheduler failure", async () => {
     const calls: string[] = [];
-    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", registrationAttemptNonce, {
       create: () => { calls.push("create"); throw new Error("scheduler unavailable"); },
       elevate: async () => { calls.push("elevate"); },
       probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
-      queryXml: () => buildWindowsTaskXml(),
+      queryXml: () => buildWindowsTaskXml(undefined, undefined, registrationAttemptNonce),
       rollback: async () => { calls.push("rollback"); return null; },
     })).rejects.toThrow("scheduler unavailable");
 
@@ -715,11 +767,11 @@ describe("service lifecycle cleanup ordering", () => {
 
   test("create success followed by proven absence does not request a pointless rollback UAC", async () => {
     const calls: string[] = [];
-    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", registrationAttemptNonce, {
       create: () => { calls.push("create"); },
       elevate: async () => { calls.push("elevate"); },
       probe: () => { calls.push("probe"); return { status: "absent", detail: "absent" }; },
-      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(); },
+      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(undefined, undefined, registrationAttemptNonce); },
       rollback: async () => { calls.push("rollback"); return null; },
     })).rejects.toThrow(/registration is absent/);
 
@@ -728,7 +780,7 @@ describe("service lifecycle cleanup ordering", () => {
 
   test("fresh registration requires the live Task Scheduler XML before cleanup can begin", async () => {
     const calls: string[] = [];
-    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", registrationAttemptNonce, {
       create: () => { calls.push("create"); },
       probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
       queryXml: () => { calls.push("query"); throw new Error("query denied"); },
@@ -740,9 +792,13 @@ describe("service lifecycle cleanup ordering", () => {
 
   test("fresh Windows scheduler install gets registration approval before destructive cleanup", async () => {
     const calls: string[] = [];
+    let stagedNonce = "";
     await installFreshWindowsSchedulerSafely({
-      stageRegistrationXml: () => { calls.push("stage"); return "attempt.xml"; },
-      register: async path => { calls.push(`register:${path}`); },
+      stageRegistrationXml: nonce => { stagedNonce = nonce; calls.push("stage"); return "attempt.xml"; },
+      register: async (path, nonce) => {
+        expect(nonce).toBe(stagedNonce);
+        calls.push(`register:${path}`);
+      },
       prepare: async () => { calls.push("prepare:stop-managers-and-proxy"); },
       publishAssets: () => { calls.push("publish-assets"); },
       runTask: () => { calls.push("run-task"); },
@@ -760,6 +816,7 @@ describe("service lifecycle cleanup ordering", () => {
       "write-state",
       "remove:attempt.xml",
     ]);
+    expect(stagedNonce).not.toBe("");
   });
 
   test("UAC cancellation removes only staged XML and never enters cleanup or asset publication", async () => {

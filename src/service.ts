@@ -999,6 +999,48 @@ async function elevateSchtasks(args: string[]): Promise<void> {
   }
 }
 
+export interface WindowsSchedulerRollbackDeps {
+  queryXml?: () => string;
+  deleteTask?: () => Promise<void>;
+  probe?: () => WindowsSchedulerTaskProbe;
+}
+
+export async function rollbackWindowsSchedulerTaskOwnedByAttempt(
+  attemptNonce: string,
+  taskName = TASK,
+  deps: WindowsSchedulerRollbackDeps = {},
+): Promise<string | null> {
+  let registeredXml = "";
+  try {
+    registeredXml = (deps.queryXml ?? (() => querySchtasks(["/query", "/tn", taskName, "/xml"])))();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return `Task Scheduler task ${taskName} ownership could not be proven: ${detail}. Residual scheduler state: task ${taskName} presence is unknown; no rollback deletion was attempted.`;
+  }
+  if (!registeredXml.trim()) {
+    return `Task Scheduler task ${taskName} ownership could not be proven because its live XML was empty. Residual scheduler state: task ${taskName} presence is unknown; no rollback deletion was attempted.`;
+  }
+  if (!windowsTaskRegistrationOwnedByAttempt(registeredXml, attemptNonce)) {
+    return `Task Scheduler task ${taskName} ownership could not be proven because its attempt nonce does not match. Residual scheduler state: task ${taskName} remains registered; no rollback deletion was attempted.`;
+  }
+
+  try {
+    await (deps.deleteTask ?? (() => elevateSchtasks(["/delete", "/tn", taskName, "/f"])))();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return `Rollback deletion failed: ${detail}. Residual scheduler state: task ${taskName} may remain registered.`;
+  }
+  const probe = (deps.probe ?? (() => resolveWindowsSchedulerTaskProbe(taskName)))();
+  if (probe.status === "absent") return null;
+  if (probe.status === "unknown") {
+    return `Task Scheduler task ${taskName} presence could not be verified after rollback: ${probe.detail}. Residual scheduler state: task presence is unknown.`;
+  }
+  return `Residual scheduler state: task ${taskName} is still present after rollback.`;
+}
+
+// Legacy dashboard finalization creates and runs in one elevated child, whose protocol
+// performs its own rollback before returning. This fallback remains for indeterminate
+// protocol outcomes that predate the staged CLI transaction.
 async function rollbackElevatedSchedulerTask(taskName = TASK): Promise<string | null> {
   try {
     await elevateSchtasks(["/delete", "/tn", taskName, "/f"]);
@@ -1532,7 +1574,17 @@ export function buildWindowsLauncherVbs(script = windowsServiceScriptPath()): st
   return `${lines.join("\r\n")}\r\n`;
 }
 
-export function buildWindowsTaskXml(script = windowsServiceScriptPath(), launcher = windowsLauncherVbsPath()): string {
+function windowsTaskDescription(attemptNonce?: string): string {
+  return attemptNonce
+    ? `OpenCodex proxy service wrapper; install-attempt=${attemptNonce}`
+    : "OpenCodex proxy service wrapper";
+}
+
+export function buildWindowsTaskXml(
+  script = windowsServiceScriptPath(),
+  launcher = windowsLauncherVbsPath(),
+  attemptNonce?: string,
+): string {
   const escapedWscript = taskXmlString(windowsWscript());
   // Escape the launcher path independently for the <Arguments> element; quoting it
   // keeps spaces intact, and /b (batch mode) suppresses script error popups.
@@ -1540,7 +1592,7 @@ export function buildWindowsTaskXml(script = windowsServiceScriptPath(), launche
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>OpenCodex proxy service wrapper</Description>
+    <Description>${taskXmlString(windowsTaskDescription(attemptNonce))}</Description>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
@@ -1658,6 +1710,21 @@ function taskXmlOptionalValueEquals(xml: string, tag: string, expected: string):
   if (count > 1) return false;
   const value = new RegExp(`<${tag}(?:\\s[^>]*?)?>\\s*([^<]*?)\\s*<\\/${tag}>`, "i").exec(xml)?.[1];
   return value?.trim().toLowerCase() === expected.toLowerCase();
+}
+
+/** True only when the exported live task carries this install attempt's nonce. */
+export function windowsTaskRegistrationOwnedByAttempt(xml: string, attemptNonce: string): boolean {
+  if (!attemptNonce) return false;
+  const scrubbed = taskXmlWithoutCommentsAndCdata(xml);
+  if (taskXmlElementCount(scrubbed, "Data") > 0 || taskXmlHasPrefixedTag(scrubbed, "Data")) return false;
+  if (taskXmlHasPrefixedTag(scrubbed, "RegistrationInfo")) return false;
+  if (taskXmlElementCount(scrubbed, "RegistrationInfo") !== 1) return false;
+  const registrationInfo = taskXmlSection(scrubbed, "RegistrationInfo");
+  return taskXmlDecodedValueEquals(
+    registrationInfo,
+    "Description",
+    windowsTaskDescription(attemptNonce),
+  );
 }
 
 /** Validate the security/lifecycle-critical fields of the registered scheduler task. */
@@ -1829,14 +1896,14 @@ function writeWindowsSchedulerAssets(): void {
   writeServiceAssetWithRetry(windowsTaskXmlPath(), `\uFEFF${buildWindowsTaskXml(script)}`, "utf16le");
 }
 
-function stageWindowsSchedulerRegistrationXml(): string {
+function stageWindowsSchedulerRegistrationXml(attemptNonce: string): string {
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
   const path = join(getConfigDir(), `.opencodex-service-task.${randomUUID()}.xml`);
   // This document points at the canonical launcher but does not publish or rewrite that
   // launcher. UAC can therefore be refused while the current proxy still owns its port.
   writeServiceAssetWithRetry(
     path,
-    `\uFEFF${buildWindowsTaskXml(windowsServiceScriptPath(), windowsLauncherVbsPath())}`,
+    `\uFEFF${buildWindowsTaskXml(windowsServiceScriptPath(), windowsLauncherVbsPath(), attemptNonce)}`,
     "utf16le",
   );
   return path;
@@ -1852,6 +1919,7 @@ export interface FreshWindowsSchedulerRegistrationDeps {
 
 export async function registerFreshWindowsSchedulerTask(
   xmlPath: string,
+  attemptNonce: string,
   deps: FreshWindowsSchedulerRegistrationDeps = {},
 ): Promise<void> {
   const args = buildWindowsSchtasksCreateArgsForXml(xmlPath);
@@ -1870,7 +1938,7 @@ export async function registerFreshWindowsSchedulerTask(
     await (deps.elevate ?? elevateSchtasks)(args);
   }
 
-  const rollbackTask = deps.rollback ?? (() => rollbackElevatedSchedulerTask(TASK));
+  const rollbackTask = deps.rollback ?? (() => rollbackWindowsSchedulerTaskOwnedByAttempt(attemptNonce, TASK));
   const probe = (deps.probe ?? (() => probeWindowsSchedulerTask(TASK)))();
   if (probe.status === "absent") {
     throw new Error("Task Scheduler reported success, but the new registration is absent; no service cleanup was started.");
@@ -1898,10 +1966,13 @@ export async function registerFreshWindowsSchedulerTask(
       + (rollback ? ` Cleanup also failed: ${rollback}` : " The unverified registration was rolled back."),
     );
   }
-  if (!windowsTaskRegistrationHealthy(registeredXml)) {
+  if (
+    !windowsTaskRegistrationHealthy(registeredXml)
+    || !windowsTaskRegistrationOwnedByAttempt(registeredXml, attemptNonce)
+  ) {
     const rollback = await rollbackTask();
     throw new Error(
-      "Task Scheduler registration was created but failed the OpenCodex action/trigger verification."
+      "Task Scheduler registration was created but failed the OpenCodex action/trigger or attempt-ownership verification."
       + (rollback ? ` Cleanup also failed: ${rollback}` : " The invalid registration was rolled back."),
     );
   }
@@ -2522,13 +2593,13 @@ export async function installServiceSafely(
 }
 
 export interface FreshWindowsSchedulerInstallDeps {
-  stageRegistrationXml?: () => string;
-  register?: (xmlPath: string) => Promise<void>;
+  stageRegistrationXml?: (attemptNonce: string) => string;
+  register?: (xmlPath: string, attemptNonce: string) => Promise<void>;
   prepare?: () => Promise<void>;
   publishAssets?: () => void;
   runTask?: () => void;
   writeState?: () => void;
-  rollbackTask?: () => Promise<string | null>;
+  rollbackTask?: (attemptNonce: string) => Promise<string | null>;
   removeStagedXml?: (xmlPath: string) => void;
 }
 
@@ -2537,8 +2608,8 @@ export interface FreshWindowsSchedulerInstallDeps {
  *
  * The registration is created but never run before `prepare`: UAC cancellation and
  * create failure therefore cannot stop the existing proxy or trigger its native-routing
- * cleanup. This path is used only after Task Scheduler absence was proved, so rollback
- * can delete the exact registration this attempt created without touching prior state.
+ * cleanup. Rollback proves ownership from the live registration's attempt nonce before
+ * deleting, because the fixed task name can be replaced by another process at any time.
  */
 export async function installFreshWindowsSchedulerSafely(
   deps: FreshWindowsSchedulerInstallDeps = {},
@@ -2549,17 +2620,20 @@ export async function installFreshWindowsSchedulerSafely(
   const publishAssets = deps.publishAssets ?? writeWindowsSchedulerAssets;
   const runTask = deps.runTask ?? startWindows;
   const writeState = deps.writeState ?? (() => writeServiceInstallState("scheduler"));
-  const rollbackTask = deps.rollbackTask ?? (() => rollbackElevatedSchedulerTask(TASK));
+  const rollbackTask = deps.rollbackTask ?? ((attemptNonce: string) => (
+    rollbackWindowsSchedulerTaskOwnedByAttempt(attemptNonce, TASK)
+  ));
   const removeStagedXml = deps.removeStagedXml ?? ((path: string) => {
     if (existsSync(path)) unlinkSync(path);
   });
 
   let stagedXml: string | null = null;
+  const attemptNonce = randomUUID();
   let registered = false;
   let started = false;
   try {
-    stagedXml = stage();
-    await register(stagedXml);
+    stagedXml = stage(attemptNonce);
+    await register(stagedXml, attemptNonce);
     registered = true;
 
     // The destructive boundary begins only after Task Scheduler accepted the definition.
@@ -2571,7 +2645,7 @@ export async function installFreshWindowsSchedulerSafely(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     if (registered && !started) {
-      const rollback = await rollbackTask();
+      const rollback = await rollbackTask(attemptNonce);
       throw new Error(
         `${detail}\n`
         + (rollback
