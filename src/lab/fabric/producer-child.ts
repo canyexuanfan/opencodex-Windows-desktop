@@ -44,13 +44,14 @@ async function runHarness(kind: FabricHarnessProducerKind, scratchRoot: string):
       while (true) {
         await Bun.sleep(1_000);
       }
-    case "mutate_after_delay":
+    case "mutate_after_delay": {
       await Bun.sleep(FABRIC_LIMITS.totalTimeoutMs + 5_000);
       const { writeFileSync, mkdirSync } = await import("node:fs");
       const { join, dirname } = await import("node:path");
       mkdirSync(join(scratchRoot, dirname(SYNTHETIC_VALUE_PATH)), { recursive: true });
       writeFileSync(join(scratchRoot, SYNTHETIC_VALUE_PATH), "late\n");
       return correctPatch();
+    }
     case "periodic_activity":
       for (let i = 0; i < 20; i++) {
         writeLine({ type: "activity" });
