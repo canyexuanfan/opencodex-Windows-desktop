@@ -10,6 +10,7 @@
  *  - top_k is accepted and silently dropped (no Responses equivalent, CCR parity).
  */
 import type { OcxClaudeCodeConfig } from "../types";
+import { isAnthropicOutputSchema } from "../adapters/anthropic-output-schema";
 import { resolveAlias } from "./alias";
 import { stripOneMillionMarker } from "./context-windows";
 import { resolveDesktop3pAlias } from "./desktop-3p";
@@ -72,7 +73,11 @@ export function effortFromOutputConfig(outputConfig: unknown): string | undefine
 function formatFromOutputConfig(outputConfig: unknown): Rec | undefined {
   if (!isRec(outputConfig) || !isRec(outputConfig.format)) return undefined;
   const format = outputConfig.format;
-  if (format.type !== "json_schema" || !isRec(format.schema)) return undefined;
+  if (
+    format.type !== "json_schema"
+    || !isRec(format.schema)
+    || !isAnthropicOutputSchema(format.schema)
+  ) return undefined;
   return { type: "json_schema", schema: format.schema };
 }
 

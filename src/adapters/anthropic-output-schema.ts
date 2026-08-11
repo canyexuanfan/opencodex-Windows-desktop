@@ -126,3 +126,12 @@ export function normalizeAnthropicOutputSchema(
 ): Record<string, unknown> {
   return normalizeSchema(structuredClone(schema));
 }
+
+export function isAnthropicOutputSchema(schema: Record<string, unknown>): boolean {
+  try {
+    normalizeAnthropicOutputSchema(schema);
+    return true;
+  } catch {
+    return false;
+  }
+}

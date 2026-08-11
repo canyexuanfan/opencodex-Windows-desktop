@@ -159,6 +159,31 @@ describe("claude inbound translation", () => {
     expect(parseRequest(body).options.textFormat).toEqual({ type: "json_schema", schema });
   });
 
+  test("structured output rejects unsupported schemas and preserves root references", () => {
+    const base = {
+      model: "claude-sonnet-5",
+      max_tokens: 256,
+      messages: [{ role: "user", content: "Return JSON" }],
+    };
+    const invalid = anthropicToResponsesBody({
+      ...base,
+      output_config: {
+        format: { type: "json_schema", schema: { description: "answer" } },
+      },
+    });
+    const refSchema = {
+      $defs: { answer: { type: "object", properties: { value: { type: "string" } } } },
+      $ref: "#/$defs/answer",
+    };
+    const referenced = anthropicToResponsesBody({
+      ...base,
+      output_config: { format: { type: "json_schema", schema: refSchema } },
+    });
+
+    expect(invalid.text).toBeUndefined();
+    expect(referenced.text).toEqual({ format: { type: "json_schema", schema: refSchema } });
+  });
+
   test("tool_choice any/tool/none", () => {
     const base = { model: "m", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
     expect((anthropicToResponsesBody({ ...base, tool_choice: { type: "any" } }) as any).tool_choice).toBe("required");
