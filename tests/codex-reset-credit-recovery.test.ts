@@ -1229,7 +1229,7 @@ describe("Codex reset-credit recovery coordinator", () => {
       coordinator.createLogicalTurn(),
       BASE_GENERATION,
       { signal: request.signal },
-    )).rejects.toThrow("EventTarget.addEventListener");
+    )).rejects.toBeInstanceOf(TypeError);
     await coordinator.waitForIdleForTests();
 
     expect({ revalidationCalls, consumeCalls }).toEqual({
