@@ -115,22 +115,35 @@ then established by `stat`-ing that path, so a replacement landing between the
 write and the fingerprint was indistinguishable from our own file — and rollback
 would unlink it.
 
-Fixed on this branch. The Unix wrapper is created as its own inode
-(`.opencodex-staging.<pid>.<uuid>`, opened `wx`) and renamed into place; identity
-is the `dev`/`ino` pair captured from the file we created. A destination whose
-inode no longer matches after the rename fails the existing
-`wrapperChangedDuringProbe` gate, so the install refuses and restores the launcher
-it moved aside instead of adopting a stranger's file.
+Fixed on this branch, in two rounds. The Unix wrapper is created as its own file
+(hidden name, `wx`, mode 0600) and renamed into place; `writeShim()` returns the
+`dev`/`ino` of what it created, and each transaction records that identity before
+anything can fail. All three rollback paths — fresh install, guarded refresh,
+obsolete upgrade — ask only whether the file at the path is the inode we wrote.
 
-Two traps this cost us, recorded so the next person skips them:
+The first attempt fixed only fresh install and still deleted the replacement,
+because rollback fell through to a marker-text fallback when ownership was unset.
+The markers are public: a concurrent updater's wrapper carries them too, so
+"looks like a shim" was never evidence of ownership. Both fallbacks are gone.
+
+Three traps this cost us, recorded so the next person skips them:
 
 - Fingerprinting the staged file before the rename does not work. `rename()`
   preserves `dev`/`ino` but updates `ctime`, and the fingerprint comparison is
-  exact — comparing a pre-rename fingerprint fails every install. Capture
-  `dev`/`ino` from the staged file, then fingerprint the destination.
+  exact — a pre-rename fingerprint fails every install. Capture `dev`/`ino` from
+  the staged file, then fingerprint the destination.
 - A test that "replaces" the wrapper with `writeFileSync` proves nothing: that
   truncates our own inode in place. A real updater writes a new file and renames
-  it over ours, which is what the regression does.
+  it over ours.
+- Consequently the ownership rule needs both halves. A differing inode is
+  conclusively not ours; a matching inode must still match the recorded
+  fingerprint, which is what distinguishes our own partial write from a
+  stranger's in-place overwrite.
+
+One behavioral change worth calling out: when the source path is occupied by a
+file we do not own, the moved-aside backup is now kept instead of deleted. It is
+the only remaining copy of the user's real launcher, and a stray
+`codex.opencodex-real` is recoverable where a deleted launcher is not.
 
 ## Note for the maintainer, outside this unit's scope
 

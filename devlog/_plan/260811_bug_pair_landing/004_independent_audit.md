@@ -83,27 +83,52 @@ established by `stat`-ing that path. A replacement landing between the write and
 the fingerprint is indistinguishable from our own file, so it was adopted and
 later unlinked by rollback.
 
-Fixed on this branch: the Unix wrapper is now created as its own inode
-(`.opencodex-staging.<pid>.<uuid>`, opened `wx` so it can never inherit an
-existing file) and renamed into place. `rename()` preserves `dev`/`ino` and
-updates only `ctime`, so identity is the inode pair captured from the file we
-created. If the destination's inode no longer matches after the rename, the
-existing `wrapperChangedDuringProbe` gate refuses the install and restores the
-launcher it moved aside.
+### The fix took two rounds
 
-Two details worth recording because they cost time:
+The first attempt (`608b35b88`) staged the wrapper as its own inode and detected
+the mismatch — and still deleted the file. Rollback fell through to a
+marker-text fallback, so an unset ownership fingerprint meant "check whether the
+file looks like a shim" rather than "this is not ours". The returned message
+claimed the concurrent launcher had been preserved while it was being removed.
+The reviewer also found the identical shape in guarded refresh and obsolete
+upgrade, which that attempt had not touched.
 
-- Fingerprinting the staged file *before* the rename fails: `ctimeMs` changes,
-  and the fingerprint comparison is exact. Capture `dev`/`ino` instead, and
-  fingerprint the destination after the rename.
-- A probe that "replaces" the file with `writeFileSync` proves nothing here:
-  that truncates our inode in place. A faithful updater writes a new file and
-  renames it over ours, which is what the regression now does.
+The real fix (`b5aabc02f`):
 
-Regression: `tests/codex-shim.test.ts`, "Unix fresh install refuses to adopt a
-wrapper replaced between the write and the fingerprint". Red before the fix
-(`Expected: false, Received: true` — the install adopted the replacement), green
-after, with the whole shim suite at 67 pass / 0 fail.
+- `writeShim()` returns the `dev`/`ino` of the file it created, and every
+  transaction records it in its journal before anything can fail.
+- All three rollback paths — fresh install, guarded refresh, obsolete upgrade —
+  ask one question: is the file at this path the inode we wrote? Both marker-text
+  fallbacks are gone, because the markers are public and a concurrent updater's
+  wrapper carries them too.
+- A differing inode is conclusively not ours. A *matching* inode is not
+  sufficient by itself, because an in-place truncation (shell `>`,
+  `writeFileSync`) keeps the inode while replacing the contents, so it must also
+  still match the fingerprint recorded at write time. That is what separates our
+  own partial write, which rollback should clean up, from a stranger's file.
+- When the source path is occupied by a file we do not own, the moved-aside
+  backup is kept rather than deleted. It is the only remaining copy of the user's
+  real launcher: a stray `codex.opencodex-real` is recoverable, a deleted
+  launcher is not.
+- Staging is hidden and mode `0600` until the rename, so a crash in that window
+  cannot leave an executable `codex*` artifact on the user's `PATH`.
+
+Three details that cost time, recorded so the next person skips them:
+
+- Fingerprinting the staged file *before* the rename fails: `rename()` updates
+  `ctime` and the fingerprint comparison is exact. Capture `dev`/`ino` from the
+  staged file, fingerprint the destination after the rename.
+- A probe that "replaces" the file with `writeFileSync` proves nothing: that
+  truncates our own inode in place. A faithful updater writes a new file and
+  renames it over ours.
+- Those two facts pull in opposite directions, which is why the rule needs both
+  halves rather than either alone.
+
+Verification: the reviewer's scenario now yields
+`{"installed":false,"finalIsIntruder":true,"backupLeft":true,"stagingLeft":[]}`;
+the regression is red against the pre-fix code and green after; shim suites are
+81 pass / 0 fail; the full suite on this tree is 11050 pass / 8 skip / 0 fail
+across 681 files.
 
 ## Blocker 4 — devlog overstates and cites pre-rebase SHAs: OURS, FIXED
 

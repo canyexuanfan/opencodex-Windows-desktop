@@ -1899,7 +1899,7 @@ function installCodexShimInternal(options: InstallCodexShimInternalOptions): { i
       return {
         installed: false,
         message: wrapperChangedDuringProbe
-          ? `Refusing Codex autostart shim because ${reason}. The concurrent launcher was preserved; retry after the Codex update finishes.`
+          ? `Refusing Codex autostart shim because ${reason}. The concurrent launcher was preserved, and your previous launcher was kept alongside it as \`<codex>.opencodex-real\`; retry after the Codex update finishes, and remove that backup once you are satisfied the launcher on PATH is the one you want.`
           : `Refusing Codex autostart shim because ${reason}. The original launcher was restored; reinstall Codex as a concrete executable before enabling codexAutoStart.`,
       };
     }
