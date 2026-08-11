@@ -14,6 +14,14 @@ import {
 import { dirname, join } from "node:path";
 import { adminApiTokenFilePath } from "../lib/admin-secrets";
 import {
+  LOCAL_MANAGEMENT_CAPABILITY_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER,
+  LOCAL_MANAGEMENT_EXPECTED_PID_HEADER,
+  LOCAL_MANAGEMENT_NONCE_HEADER,
+  parseExpectedLocalManagementPid,
+  verifyLocalManagementReadCapability,
+} from "../lib/local-management-capability";
+import {
   SYSTEM_RESTART_CAPABILITY_HEADER,
   SYSTEM_RESTART_EXPECTED_PID_HEADER,
   SYSTEM_RESTART_NONCE_HEADER,
@@ -34,6 +42,9 @@ import {
 
 const GUI_SESSION_TTL_MS = 5 * 60_000;
 const GUI_SESSION_LIMIT = 128;
+const LOCAL_READ_REPLAY_LIMIT = 256;
+const consumedLocalReadCapabilities = new Map<string, number>();
+const admittedLocalReadRequests = new WeakSet<Request>();
 
 interface GuiSessionRecord {
   csrfToken: string;
@@ -253,10 +264,15 @@ export function issueGuiSession(
  * minted for a browser, and it only authorizes a mutation after the origin and the
  * per-session CSRF token match. Consent-bearing routes must key off this value
  * rather than off request headers, which the token holder can forge freely.
- * `system-restart-capability` is a process-scoped HMAC accepted only for the exact
- * restart route and bound to the current process PID and listening port.
+ * The capability principals are process-scoped HMACs bound to the current process
+ * PID and listening port. Local reads are accepted only for two exact GET paths;
+ * restart remains a separate wire contract for its exact POST.
  */
-export type ManagementPrincipal = "admin-token" | "gui-session" | "system-restart-capability";
+export type ManagementPrincipal =
+  | "admin-token"
+  | "gui-session"
+  | "local-read-capability"
+  | "system-restart-capability";
 
 export interface LocalManagementAuthContext {
   attestationSecret: string;
@@ -291,6 +307,53 @@ function hasSystemRestartCapability(
   );
 }
 
+function hasLocalReadCapability(
+  req: Request,
+  local: LocalManagementAuthContext | undefined,
+): boolean {
+  // requireManagementAuth and managementPrincipal inspect the same Request in
+  // sequence. Preserve that one admission without accepting a replayed request.
+  if (admittedLocalReadRequests.has(req)) return true;
+  if (!local || req.method !== "GET") return false;
+  let url: URL;
+  try {
+    url = new URL(req.url);
+  } catch {
+    return false;
+  }
+  // Do not let a future query-bearing variant silently inherit this narrow grant.
+  if (url.search !== "") return false;
+  const expectedPid = parseExpectedLocalManagementPid(
+    req.headers.get(LOCAL_MANAGEMENT_EXPECTED_PID_HEADER),
+  );
+  if (expectedPid.kind !== "present" || expectedPid.pid !== local.pid) return false;
+  const expiresAtRaw = req.headers.get(LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER);
+  if (!expiresAtRaw || !/^[1-9]\d*$/.test(expiresAtRaw)) return false;
+  const expiresAt = Number(expiresAtRaw);
+  if (!Number.isSafeInteger(expiresAt)) return false;
+  const capability = req.headers.get(LOCAL_MANAGEMENT_CAPABILITY_HEADER);
+  const now = Date.now();
+  if (!verifyLocalManagementReadCapability(
+    local.attestationSecret,
+    req.headers.get(LOCAL_MANAGEMENT_NONCE_HEADER),
+    req.method,
+    url.pathname,
+    local.pid,
+    local.port,
+    expiresAt,
+    capability,
+    now,
+  )) return false;
+  for (const [consumed, retainedUntil] of consumedLocalReadCapabilities) {
+    if (retainedUntil <= now) consumedLocalReadCapabilities.delete(consumed);
+  }
+  if (!capability || consumedLocalReadCapabilities.has(capability)) return false;
+  if (consumedLocalReadCapabilities.size >= LOCAL_READ_REPLAY_LIMIT) return false;
+  consumedLocalReadCapabilities.set(capability, expiresAt);
+  admittedLocalReadRequests.add(req);
+  return true;
+}
+
 /**
  * The principal for a request that already passed `requireManagementAuth`. Kept as a
  * separate resolution (rather than a changed return type) so every existing caller
@@ -305,6 +368,7 @@ export function managementPrincipal(
   local?: LocalManagementAuthContext,
 ): ManagementPrincipal | null {
   if (hasSystemRestartCapability(req, local)) return "system-restart-capability";
+  if (hasLocalReadCapability(req, local)) return "local-read-capability";
   if (!state.available) return null;
   const actual = req.headers.get("x-opencodex-api-key")?.trim()
     || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
@@ -322,6 +386,7 @@ export function requireManagementAuth(
   local?: LocalManagementAuthContext,
 ): Response | null {
   if (hasSystemRestartCapability(req, local)) return null;
+  if (hasLocalReadCapability(req, local)) return null;
   if (!state.available) {
     return Response.json({
       error: "management API unavailable",

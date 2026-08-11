@@ -30,6 +30,15 @@ import {
   verifyLocalAttestationProof,
 } from "../src/lib/local-management-attestation";
 import {
+  LOCAL_MANAGEMENT_CAPABILITY_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_TTL_MS,
+  LOCAL_MANAGEMENT_EXPECTED_PID_HEADER,
+  LOCAL_MANAGEMENT_NONCE_HEADER,
+  LOCAL_MANAGEMENT_READ_PATHS,
+  createLocalManagementReadCapability,
+} from "../src/lib/local-management-capability";
+import {
   SYSTEM_RESTART_CAPABILITY_HEADER,
   SYSTEM_RESTART_EXPECTED_PID_HEADER,
   SYSTEM_RESTART_METHOD,
@@ -204,6 +213,125 @@ describe("management and data-plane credential separation", () => {
       expect(requireManagementAuth(request, unavailable, remoteConfig(), local)).toBeNull();
       expect(managementPrincipal(request, unavailable, remoteConfig(), local))
         .toBe("system-restart-capability");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a local-read capability authorizes only its exact GET path", async () => {
+    const secret = "A".repeat(43);
+    const nonce = "B".repeat(43);
+    const unavailable = { available: false, reason: "injected unavailable state" } as const;
+    const server = startServer(0, {
+      localAttestationSecret: secret,
+      managementAuthState: unavailable,
+    });
+    const headersFor = (path: string, port = server.port, requestNonce = nonce) => {
+      const expiresAt = Date.now() + LOCAL_MANAGEMENT_CAPABILITY_TTL_MS;
+      return {
+        [LOCAL_MANAGEMENT_EXPECTED_PID_HEADER]: String(process.pid),
+        [LOCAL_MANAGEMENT_NONCE_HEADER]: requestNonce,
+        [LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER]: String(expiresAt),
+        [LOCAL_MANAGEMENT_CAPABILITY_HEADER]: createLocalManagementReadCapability(
+          secret,
+          requestNonce,
+          "GET",
+          path,
+          process.pid,
+          port,
+          expiresAt,
+        )!,
+      };
+    };
+    try {
+      const memoryHeaders = headersFor(LOCAL_MANAGEMENT_READ_PATHS.systemMemory);
+      const memory = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: memoryHeaders,
+      });
+      expect(memory.status).toBe(200);
+      const memoryBody = await memory.json() as { pid?: number; bunVersion?: string };
+      expect(memoryBody.pid).toBe(process.pid);
+      expect(memoryBody.bunVersion).toBe(Bun.version);
+
+      const replay = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: memoryHeaders,
+      });
+      expect(replay.status).toBe(503);
+
+      const memoryCapabilityOnAccounts = await fetch(
+        new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url),
+        {
+          headers: headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+            server.port,
+            "C".repeat(43),
+          ),
+        },
+      );
+      expect(memoryCapabilityOnAccounts.status).toBe(503);
+
+      const accountHeaders = headersFor(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts);
+      const accounts = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url), {
+        headers: accountHeaders,
+      });
+      expect(accounts.status).toBe(200);
+
+      const query = await fetch(
+        new URL(`${LOCAL_MANAGEMENT_READ_PATHS.codexAccounts}?include=all`, server.url),
+        {
+          headers: headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+            server.port,
+            "E".repeat(43),
+          ),
+        },
+      );
+      expect(query.status).toBe(503);
+
+      const mutation = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url), {
+        method: "POST",
+        headers: {
+          ...headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+            server.port,
+            "F".repeat(43),
+          ),
+          "content-type": "application/json",
+        },
+        body: "{}",
+      });
+      expect(mutation.status).toBe(503);
+
+      const foreignRoute = await fetch(new URL("/api/config", server.url), {
+        headers: headersFor(
+          LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+          server.port,
+          "G".repeat(43),
+        ),
+      });
+      expect(foreignRoute.status).toBe(503);
+
+      const wrongPort = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: headersFor(
+          LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+          server.port + 1,
+          "H".repeat(43),
+        ),
+      });
+      expect(wrongPort.status).toBe(503);
+
+      const principalHeaders = headersFor(
+        LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+        server.port,
+        "I".repeat(43),
+      );
+      const request = new Request(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: principalHeaders,
+      });
+      const local = { attestationSecret: secret, pid: process.pid, port: server.port };
+      expect(requireManagementAuth(request, unavailable, remoteConfig(), local)).toBeNull();
+      expect(managementPrincipal(request, unavailable, remoteConfig(), local))
+        .toBe("local-read-capability");
     } finally {
       await server.stop(true);
     }
