@@ -9,7 +9,10 @@ import {
   setWindowsPrincipalRunnerForTests,
   windowsPrincipalPowerShellCommandForTests,
 } from "../src/lib/windows-user-principal";
-import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/windows-elevation";
+import {
+  setTrustedWindowsElevationExecutablesForTests,
+  WindowsSystemDirectoryFfiUnavailableError,
+} from "../src/lib/windows-elevation";
 
 const ok = (stdout = "S-1-5-21-111-222-333-1001\r\n") => ({
   success: true,
@@ -42,7 +45,7 @@ describe("Windows effective ACL principal", () => {
   });
 
   test("Windows ARM64 uses only the fixed default PowerShell path when FFI resolution is unavailable", () => {
-    const lookupError = new Error("bun:ffi unavailable");
+    const lookupError = new WindowsSystemDirectoryFfiUnavailableError();
     const previousSystemRoot = process.env.SystemRoot;
     const previousWindir = process.env.WINDIR;
     const previousPath = process.env.PATH;
@@ -73,19 +76,71 @@ describe("Windows effective ACL principal", () => {
     }
   });
 
-  test("the ARM64 fallback never broadens to x64, non-Windows, or a missing fixed executable", () => {
-    const lookupError = new Error("trusted resolver failed");
-    const resolve = (platform: NodeJS.Platform, arch: string, present: boolean) =>
-      resolveWindowsPrincipalPowerShellExecutableForTests({
-        platform,
-        arch,
-        resolveTrusted: () => { throw lookupError; },
-        pathExists: () => present,
-      });
+  test("a GetSystemDirectoryW call failure is rethrown without probing the fixed fallback", () => {
+    const lookupError = new Error(
+      "GetSystemDirectoryW failed while resolving the trusted system directory.",
+    );
+    let fallbackProbes = 0;
+    expect(() => resolveWindowsPrincipalPowerShellExecutableForTests({
+      platform: "win32",
+      arch: "arm64",
+      resolveTrusted: () => { throw lookupError; },
+      pathExists: () => {
+        fallbackProbes += 1;
+        return true;
+      },
+    })).toThrow(lookupError);
+    expect(fallbackProbes).toBe(0);
+  });
 
-    expect(() => resolve("win32", "x64", true)).toThrow(lookupError);
-    expect(() => resolve("linux", "arm64", true)).toThrow(lookupError);
-    expect(() => resolve("win32", "arm64", false)).toThrow(lookupError);
+  test("an unusable non-default system directory is rethrown without probing the fixed fallback", () => {
+    const lookupError = new Error("GetSystemDirectoryW returned an unusable system directory.");
+    let fallbackProbes = 0;
+    expect(() => resolveWindowsPrincipalPowerShellExecutableForTests({
+      platform: "win32",
+      arch: "arm64",
+      resolveTrusted: () => { throw lookupError; },
+      pathExists: () => {
+        fallbackProbes += 1;
+        return true;
+      },
+    })).toThrow(lookupError);
+    expect(fallbackProbes).toBe(0);
+  });
+
+  test("trusted PowerShell validation failures are rethrown without probing the fixed fallback", () => {
+    const validationErrors = [
+      new Error("Trusted PowerShell was not found at D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe."),
+      new Error("PowerShell resolved outside the trusted Windows system directory."),
+    ];
+    for (const lookupError of validationErrors) {
+      let fallbackProbes = 0;
+      expect(() => resolveWindowsPrincipalPowerShellExecutableForTests({
+        platform: "win32",
+        arch: "arm64",
+        resolveTrusted: () => { throw lookupError; },
+        pathExists: () => {
+          fallbackProbes += 1;
+          return true;
+        },
+      })).toThrow(lookupError);
+      expect(fallbackProbes).toBe(0);
+    }
+  });
+
+  test("an arbitrary trusted resolver error is rethrown without probing the fixed fallback", () => {
+    const lookupError = new Error("unexpected trusted resolver failure");
+    let fallbackProbes = 0;
+    expect(() => resolveWindowsPrincipalPowerShellExecutableForTests({
+      platform: "win32",
+      arch: "arm64",
+      resolveTrusted: () => { throw lookupError; },
+      pathExists: () => {
+        fallbackProbes += 1;
+        return true;
+      },
+    })).toThrow(lookupError);
+    expect(fallbackProbes).toBe(0);
   });
 
   test("a successful trusted resolver always wins without probing the ARM64 fallback", () => {
@@ -100,6 +155,21 @@ describe("Windows effective ACL principal", () => {
       },
     })).toBe("D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     expect(fallbackProbes).toBe(0);
+  });
+
+  test("the FFI-unavailable sentinel fails closed off Windows ARM64 or without the fixed executable", () => {
+    const lookupError = new WindowsSystemDirectoryFfiUnavailableError();
+    const resolve = (platform: NodeJS.Platform, arch: string, present: boolean) =>
+      resolveWindowsPrincipalPowerShellExecutableForTests({
+        platform,
+        arch,
+        resolveTrusted: () => { throw lookupError; },
+        pathExists: () => present,
+      });
+
+    expect(() => resolve("win32", "x64", true)).toThrow(lookupError);
+    expect(() => resolve("linux", "arm64", true)).toThrow(lookupError);
+    expect(() => resolve("win32", "arm64", false)).toThrow(lookupError);
   });
 
   test("the default trusted runner resolves the real token on Windows", () => {

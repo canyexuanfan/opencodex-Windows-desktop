@@ -23,7 +23,10 @@
 import { existsSync } from "node:fs";
 import { win32 as windowsPath } from "node:path";
 
-import { resolveTrustedWindowsPowerShellExe } from "./windows-elevation";
+import {
+  resolveTrustedWindowsPowerShellExe,
+  WindowsSystemDirectoryFfiUnavailableError,
+} from "./windows-elevation";
 
 const SID_PATTERN = /^S-1-(?:\d+-)+\d+$/i;
 const SID_EXPRESSION =
@@ -65,6 +68,7 @@ function resolveWindowsPrincipalPowerShellExecutable(
     return resolution.resolveTrusted();
   } catch (error) {
     if (
+      !(error instanceof WindowsSystemDirectoryFfiUnavailableError) ||
       resolution.platform !== "win32" ||
       resolution.arch !== "arm64" ||
       !resolution.pathExists(DEFAULT_WINDOWS_ARM64_POWERSHELL)
