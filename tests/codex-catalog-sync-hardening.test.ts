@@ -1028,6 +1028,101 @@ describe("Codex catalog sync hardening", () => {
     expect(out.realChangeBumpedMtime).toBe(true);
   });
 
+  test("the no-op guard compares bytes, so a malformed byte decoding to U+FFFD is still repaired", () => {
+    // The guard above must not preserve corruption. `readFileSync(path, "utf8")`
+    // substitutes U+FFFD for every invalid byte, so a catalog holding a bare 0x80
+    // decodes equal to prepared content holding a real U+FFFD. A decoded-string
+    // comparison calls that pair identical, skips the atomic repair write, and
+    // reports catalogWritten:false while the bytes on disk differ from the bytes we
+    // prepared — leaving malformed UTF-8 in the file Codex reads.
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [{ ...nativeEntry("gpt-5.5", 0), description: "native \uFFFD tail" }],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { readFileSync, writeFileSync } = require("node:fs");
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      const path = ${JSON.stringify(catalogPath)};
+      (async () => {
+        // Converge first: the U+FFFD in the retained description survives into the
+        // prepared content, so the following sync is a genuine byte-identical no-op.
+        await syncCatalogModels({ providers: {} });
+        const converged = readFileSync(path);
+        const idempotent = await syncCatalogModels({ providers: {} });
+
+        // Now corrupt exactly that replacement character into a bare 0x80. The
+        // decoded strings stay equal; the bytes do not.
+        const replacement = Buffer.from([0xef, 0xbf, 0xbd]);
+        const at = converged.indexOf(replacement);
+        const corrupted = Buffer.concat([
+          converged.subarray(0, at),
+          Buffer.from([0x80]),
+          converged.subarray(at + replacement.length),
+        ]);
+        writeFileSync(path, corrupted);
+
+        const repair = await syncCatalogModels({ providers: {} });
+        const after = readFileSync(path);
+        // A bare 0x80 is only malformed as a *leading* byte; the converged catalog
+        // legitimately contains 0x80 as a continuation byte of multi-byte
+        // characters, so count decode failures instead of raw byte occurrences.
+        const malformedRuns = (buffer) => {
+          let count = 0;
+          for (let i = 0; i < buffer.length; i += 1) {
+            const byte = buffer[i];
+            if (byte < 0x80) continue;
+            const width = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 0;
+            if (width === 0) { count += 1; continue; }
+            let ok = true;
+            for (let k = 1; k < width; k += 1) {
+              const next = buffer[i + k];
+              if (next === undefined || next < 0x80 || next > 0xbf) { ok = false; break; }
+            }
+            if (!ok) { count += 1; continue; }
+            i += width - 1;
+          }
+          return count;
+        };
+        console.log(JSON.stringify({
+          foundReplacementByte: at >= 0,
+          decodedEqual: corrupted.toString("utf8") === converged.toString("utf8"),
+          bytesEqual: corrupted.equals(converged),
+          identicalResyncSkipped: idempotent.catalogWritten === false,
+          corruptedRewritten: repair.catalogWritten,
+          bytesRepaired: after.equals(converged),
+          malformedInCorrupted: malformedRuns(corrupted),
+          malformedAfterRepair: malformedRuns(after),
+        }));
+      })();
+    `);
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout) as {
+      foundReplacementByte: boolean;
+      decodedEqual: boolean;
+      bytesEqual: boolean;
+      identicalResyncSkipped: boolean;
+      corruptedRewritten: boolean;
+      bytesRepaired: boolean;
+      malformedInCorrupted: number;
+      malformedAfterRepair: number;
+    };
+    // The premise: these two buffers decode the same and differ in bytes.
+    expect(out.foundReplacementByte).toBe(true);
+    expect(out.decodedEqual).toBe(true);
+    expect(out.bytesEqual).toBe(false);
+    expect(out.malformedInCorrupted).toBe(1);
+    // Not vacuous: a truly byte-identical resync is still skipped, so this test
+    // fails if the no-op guard is deleted rather than corrected.
+    expect(out.identicalResyncSkipped).toBe(true);
+    // The correction: differing bytes are rewritten and the malformed byte is gone.
+    expect(out.corruptedRewritten).toBe(true);
+    expect(out.bytesRepaired).toBe(true);
+    expect(out.malformedAfterRepair).toBe(0);
+  });
+
   test("readCodexCatalogPath honors CODEX_HOME at call time", () => {
     const alternateHome = join(codexHome, "alternate-codex-home");
     mkdirSync(alternateHome, { recursive: true });

@@ -1186,10 +1186,19 @@ function revalidateRetainedCatalogSync(
   };
 }
 
-/** Exact bytes currently on disk at `path`, or null when unreadable/absent. */
-function currentCatalogFileContent(path: string): string | null {
+/**
+ * Exact bytes currently on disk at `path`, or null when unreadable/absent.
+ *
+ * Deliberately a Buffer rather than a decoded string: `readFileSync(path, "utf8")`
+ * substitutes U+FFFD for every invalid byte, so a file holding a raw 0x80 decodes
+ * equal to prepared content holding a legitimately encoded U+FFFD. Comparing the
+ * decoded strings would then classify a malformed catalog as identical, skip the
+ * atomic repair write, and leave the corruption on disk while reporting
+ * `catalogWritten: false`.
+ */
+function currentCatalogFileContent(path: string): Buffer | null {
   try {
-    return readFileSync(path, "utf8");
+    return readFileSync(path);
   } catch {
     return null;
   }
@@ -1377,7 +1386,8 @@ function writeRetainedCatalogSync({
   // nothing about the catalog changed. Skipping the no-op write keeps both the mtime
   // and `catalogWritten` honest; `added` still reports the routed rows the catalog
   // carries, because they are on disk either way.
-  if (currentCatalogFileContent(catalogPath) === content) {
+  const onDiskBytes = currentCatalogFileContent(catalogPath);
+  if (onDiskBytes !== null && onDiskBytes.equals(Buffer.from(content, "utf8"))) {
     return { added, path: catalogPath, catalogWritten: false, comboOmissions };
   }
 
