@@ -126,7 +126,10 @@ export async function runFabricSyntheticPatchTaskHarness(
  * @deprecated Use runFabricSyntheticPatchTaskHarness or runFabricSyntheticPatchTaskForRoute.
  */
 export async function runFabricSyntheticPatchTask(
-  options: RunFabricTaskHarnessOptions & { producePatch?: never; harnessKind?: FabricHarnessProducerKind },
+  options: Omit<RunFabricTaskHarnessOptions, "harnessKind"> & {
+    producePatch?: never;
+    harnessKind?: RunFabricTaskHarnessOptions["harnessKind"];
+  },
 ): Promise<FabricTaskOutcomeV1> {
   const result = await runFabricSyntheticPatchTaskHarness({
     routeSubject: options.routeSubject,
