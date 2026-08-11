@@ -92,7 +92,7 @@ afterEach(() => {
 });
 
 describe("GET /api/usage", () => {
-  test("returns documented shape with summary, days, models, providers", async () => {
+  test("returns documented shape with summary, days, models, providers, and accounts", async () => {
     writeFixture(Date.now());
     const server = startServer(0);
     try {
@@ -105,10 +105,12 @@ describe("GET /api/usage", () => {
       expect(body).toHaveProperty("days");
       expect(body).toHaveProperty("models");
       expect(body).toHaveProperty("providers");
+      expect(body).toHaveProperty("accounts");
       expect(body).toMatchObject({ historyTruncated: false, truncatedPrefixBytes: 0, entriesTruncated: false, entriesDropped: 0 });
       expect(Array.isArray(body.days)).toBe(true);
       expect(Array.isArray(body.models)).toBe(true);
       expect(Array.isArray(body.providers)).toBe(true);
+      expect(Array.isArray(body.accounts)).toBe(true);
     } finally {
       await server.stop(true);
     }
@@ -328,6 +330,7 @@ describe("GET /api/usage", () => {
       const body = await res.json();
       expect(body.surface).toBe("claude");
       expect(body.summary.requests).toBe(0);
+      expect(body.accounts).toEqual([]);
       expect(body.error).toBe("read_failed");
     } finally {
       await server.stop(true);

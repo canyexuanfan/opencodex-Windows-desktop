@@ -1371,6 +1371,7 @@ export const ru: Record<TKey, string> = {
   "integrations.semantics.kimi": "Чтобы применить, перезапустите клиент или выполните /reload (v2 отслеживает файл).",
   "integrations.semantics.gajae": "Применяется в новом сеансе или при открытии /model.",
   "codexAuth.mainAccount": "Основной аккаунт",
+  "codexAuth.logLabel": "Метка журнала",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "Вход через приложение",
   "codexAuth.accountPool": "Пул аккаунтов",

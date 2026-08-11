@@ -5,8 +5,14 @@ import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { usageDisplayTotalTokens } from "./totals";
 import type { OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
+import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
+export type CodexUsageAccountLogLabel = "main" | `p${string}`;
+
+export function isCodexUsageAccountLogLabel(value: unknown): value is CodexUsageAccountLogLabel {
+  return value === "main" || (typeof value === "string" && CODEX_ACCOUNT_LOG_LABEL_RE.test(value));
+}
 
 /**
  * Recovery kinds recorded per attempt in the usage log; the GUI renders localized labels
@@ -33,6 +39,8 @@ export interface PersistedUsageAttempt {
   sendCount: number;
   recoveryKinds: AttemptRecoveryKind[];
   usageStatus: UsageStatus;
+  /** Stable non-PII identity for the Codex pool account that served this attempt. */
+  accountLogLabel?: CodexUsageAccountLogLabel;
   inputTokenEstimate?: number;
   usage?: OcxUsage;
   totalTokens?: number;
@@ -58,6 +66,8 @@ export interface PersistedUsageEntry {
   admissionKind?: "configured" | "environment" | "loopback";
   /** The inbound wire, not the client product — see `surface`. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  /** Stable non-PII identity for Codex Pool usage; absent for Direct/non-Codex traffic. */
+  accountLogLabel?: CodexUsageAccountLogLabel;
   /** Best-effort chat/session correlation for Logs grouping (#330). */
   conversationId?: string;
   resolvedModel?: string;
@@ -271,6 +281,9 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
     sendCount: attempt.sendCount as number,
     recoveryKinds,
     usageStatus: attempt.usageStatus as UsageStatus,
+    ...(isCodexUsageAccountLogLabel(attempt.accountLogLabel)
+      ? { accountLogLabel: attempt.accountLogLabel }
+      : {}),
     ...(isNonNegativeFiniteNumber(attempt.inputTokenEstimate)
       ? { inputTokenEstimate: attempt.inputTokenEstimate }
       : {}),
@@ -350,6 +363,9 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
       : {}),
     ...(isKnownAdmissionKind(entry.admissionKind) ? { admissionKind: entry.admissionKind } : {}),
     ...(isKnownInboundProtocol(entry.inboundProtocol) ? { inboundProtocol: entry.inboundProtocol } : {}),
+    ...(isCodexUsageAccountLogLabel(entry.accountLogLabel)
+      ? { accountLogLabel: entry.accountLogLabel }
+      : {}),
     ...(typeof entry.conversationId === "string" && entry.conversationId.trim()
       ? { conversationId: entry.conversationId.trim().slice(0, 128) }
       : {}),

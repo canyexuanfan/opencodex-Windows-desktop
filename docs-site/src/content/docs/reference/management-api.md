@@ -124,7 +124,7 @@ See [Combos](/guides/combos/) for target strategies, cooldowns, aliases, and rou
 | `GET /api/debug/usage-logs` | Read bounded usage-debug entries | — |
 | `GET /api/debug/injection-logs` | Read bounded guidance-injection debug entries | — |
 | `GET /api/claude/inbound-debug` | Read Claude inbound debug state and entries | — |
-| `GET /api/usage` | Summarize usage by range and client surface | Returns an `error: "read_failed"` summary if storage cannot be read |
+| `GET /api/usage` | Summarize usage by range and client surface; Codex responses also include an `accounts` breakdown keyed by stable non-PII log labels | Returns an `error: "read_failed"` summary if storage cannot be read |
 | `GET /api/storage` | Scan Codex storage usage by bucket | Returns an `error: "scan_failed"` payload on scan failure |
 | `POST /api/storage/cleanup/preview` | Preview archived-session cleanup and return a binding digest | 400 `invalid_json` or `invalid_percent` |
 | `POST /api/storage/cleanup` | Quarantine or permanently remove the previewed archived set | 400 invalid input; 409 stale/busy/referenced state; 500 filesystem/database failure |
@@ -134,6 +134,14 @@ See [Combos](/guides/combos/) for target strategies, cooldowns, aliases, and rou
 | `GET, PUT /api/storage/cleanup-policy` | Read or update scheduled cleanup policy and job state | 400 invalid policy |
 | `POST /api/storage/cleanup-policy/run` | Start a manual cleanup-policy run | 409 `already_running`; 500 `cleanup_failed` |
 | `GET /api/storage/cleanup-policy/test-stream` | Test-only policy stream hook | 404 `not_found` when unavailable |
+
+For `GET /api/usage?range=30d&surface=codex`, `accounts` contains one row per observed Codex
+pool label. Each row reports `accountLogLabel`, token totals, `usageCoverageRatio`, and an optional
+`estimatedCostUsd` based on the currently configured display pricing. Active user `modelCosts`
+overlays take priority over bundled verified catalog and price fallbacks, and historical usage is
+re-estimated from the pricing active when the summary is read. This is an API-equivalent estimate,
+not a subscription charge. New main-pool requests use the reserved `main` label; legacy bare
+`openai` rows remain in an ambiguous bucket instead of being reassigned from current configuration.
 
 :::caution
 Storage cleanup endpoints can move or permanently remove archived session data. Always preview

@@ -27,11 +27,17 @@ let originalFetch: typeof globalThis.fetch;
 const account: CodexAccountEntry = {
   id: "pool-1",
   email: "pool@example.test",
+  logLabel: "pabc123",
   isMain: false,
   paused: false,
   priority: 0,
   hasCredential: true,
   quota: null,
+  usage30d: {
+    totalTokens: 1_500,
+    estimatedCostUsd: 0.125,
+    usageCoverageRatio: 0.75,
+  },
 };
 
 const mainAccount: CodexAccountEntry = {
@@ -198,4 +204,17 @@ test("a paused account is never shown as pinned", async () => {
 
   expect(hasPinnedBadge(host)).toBe(false);
   expect(hasPinnedHint(host)).toBe(false);
+});
+
+test("account cards show the same log label and 30-day usage identity", async () => {
+  await mountPool(makeController());
+
+  const pooled = cardFor("pool@example.test");
+  expect(pooled.textContent).toContain("Log label: pabc123");
+  expect(pooled.textContent).toContain("Total tokens: 1.5k");
+  expect(pooled.textContent).toContain("Estimated cost: ~$0.1250");
+  expect(pooled.textContent).toContain("Measured: 75%");
+
+  const main = cardFor("main@example.test");
+  expect(main.textContent).toContain("Log label: main");
 });

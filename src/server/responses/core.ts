@@ -95,6 +95,7 @@ import {
   recordCodexUpstreamOutcome,
   type CodexUpstreamOutcome,
 } from "../../codex/routing";
+import { codexAuthContextLogLabel } from "../../codex/account-label";
 import {
   applyUpstreamRecoveryInit,
   fetchWithResetRetry,
@@ -494,6 +495,13 @@ async function retryCodexPoolOnAlternateAccount(
     route.providerName,
     retryAuthCtx.accountId,
     config,
+  );
+  logCtx.accountLogLabel = codexAuthContextLogLabel(retryAuthCtx, config);
+  sealRequestAttemptIdentity(
+    logCtx.activeAttempt,
+    logCtx.provider,
+    retryAdapter.name,
+    logCtx.accountLogLabel,
   );
 
   noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
@@ -1170,6 +1178,7 @@ export async function handleComboResponses(
         attempt,
         childLog.provider,
         childLog.providerAdapter ?? attempt.adapter,
+        childLog.accountLogLabel,
       );
       finishRequestAttempt(attempt, 499, Date.now() - started, childLog.usage);
       (logCtx.attempts ??= []).push(attempt);
@@ -1224,6 +1233,7 @@ export async function handleComboResponses(
         attempt,
         childLog.provider,
         childLog.providerAdapter ?? attempt.adapter,
+        childLog.accountLogLabel,
       );
       (logCtx.attempts ??= []).push(attempt);
       attemptRetained = true;
@@ -1269,6 +1279,7 @@ export async function handleComboResponses(
       attempt,
       childLog.provider,
       childLog.providerAdapter ?? attempt.adapter,
+      childLog.accountLogLabel,
     );
     finishRequestAttempt(
       attempt,
@@ -1666,6 +1677,7 @@ async function handleResponsesInner(
   logCtx.provider = route.codexAccountNamespace
     ? `${route.providerName}-${route.codexAccountNamespace}`
     : formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
+  logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
   // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
   // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
   const identityScope = codexLogAccountId(authCtx);
@@ -1763,6 +1775,7 @@ async function handleResponsesInner(
     delete route.codexAccountId;
     delete route.codexAccountNamespace;
     logCtx.provider = route.providerName;
+    delete logCtx.accountLogLabel;
   }
   const adapter = resolveAdapter(adapterProvider, config.cacheRetention);
   logCtx.providerAdapter = adapter.name;
@@ -1779,7 +1792,7 @@ async function handleResponsesInner(
     logCtx.activeAttemptStartedAt = Date.now();
     (logCtx.attempts ??= []).push(attempt);
   }
-  sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name);
+  sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name, logCtx.accountLogLabel);
   // CL-09: attach only the opaque exact route-subject identity to the attempt.
   // This is best-effort passive metadata: no Lab state is created and failure
   // must never alter, retry, or delay the upstream request.
@@ -3077,7 +3090,7 @@ async function handleResponsesInner(
         : undefined;
       if (retryEstimate !== undefined) logCtx.usageLogInputTokens = retryEstimate;
       logCtx.providerAdapter = activeAdapter.name;
-      sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+      sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
       noteAttemptSend(logCtx.activeAttempt, retryEstimate, recovery);
       try {
         try {
@@ -3229,7 +3242,7 @@ async function handleResponsesInner(
             resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
             config.cacheRetention,
           );
-          sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+          sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
           const result = await rebuildAndRefetch("anthropic-oauth-429");
           if ("failed" in result) return result.failed;
           upstreamResponse = result;
@@ -3497,7 +3510,7 @@ async function handleResponsesInner(
               resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
               config.cacheRetention,
             );
-            sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name);
+            sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, activeAdapter.name, logCtx.accountLogLabel);
             nextContinuationRecoveryKind = "anthropic-oauth-429";
             continue;
           } catch {

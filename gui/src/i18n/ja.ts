@@ -1329,6 +1329,7 @@ export const ja: Record<TKey, string> = {
   "integrations.semantics.kimi": "再起動するか /reload を実行すると適用されます（v2 はファイルを監視します）。",
   "integrations.semantics.gajae": "新しいセッション、または /model を開いたときに適用されます。",
   "codexAuth.mainAccount": "メインアカウント",
+  "codexAuth.logLabel": "ログラベル",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "アプリログイン",
   "codexAuth.accountPool": "アカウントプール",

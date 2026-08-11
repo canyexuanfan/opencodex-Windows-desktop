@@ -53,6 +53,41 @@ describe("usage log", () => {
     expect(normalized.attempts).toEqual([]);
   });
 
+  test("preserves only valid non-PII Codex account log labels", () => {
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-account-label",
+      timestamp: 1,
+      provider: "openai-pabc123",
+      model: "gpt-test",
+      accountLogLabel: "pabc123",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      attempts: [{
+        ordinal: 1,
+        provider: "openai-pabc123",
+        model: "gpt-test",
+        adapter: "openai-responses",
+        accountLogLabel: "pabc123",
+        status: 200,
+        durationMs: 1,
+        sendCount: 1,
+        recoveryKinds: [],
+        usageStatus: "reported",
+      }],
+    });
+    expect(normalized.accountLogLabel).toBe("pabc123");
+    expect(normalized.attempts?.[0]?.accountLogLabel).toBe("pabc123");
+
+    const rejected = normalizeUsageEntryForTest({
+      ...normalized,
+      accountLogLabel: "raw-account-id",
+      attempts: [{ ...normalized.attempts![0]!, accountLogLabel: "person@example.test" }],
+    });
+    expect(rejected.accountLogLabel).toBeUndefined();
+    expect(rejected.attempts?.[0]?.accountLogLabel).toBeUndefined();
+  });
+
   test("persists the rate-limit-429 recovery kind on attempts", () => {
     const entry: PersistedUsageEntry = {
       requestId: "ocx-ratelimit-kind",

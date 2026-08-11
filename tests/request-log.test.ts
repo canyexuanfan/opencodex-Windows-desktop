@@ -263,7 +263,7 @@ describe("request log metadata", () => {
     noteAttemptSend(a, 100);
     noteAttemptSend(a, 120, "transient-5xx");
     noteAttemptSend(a, 120, "transient-5xx");
-    sealRequestAttemptIdentity(a, "chatgpt-pabcdef", "openai-responses");
+    sealRequestAttemptIdentity(a, "chatgpt-pabcdef", "openai-responses", "pabcdef");
     finishRequestAttempt(a, 503, 12);
 
     const b = beginRequestAttempt(2, "prov-b", "model-b", "openai-chat");
@@ -278,6 +278,7 @@ describe("request log metadata", () => {
     expect(a).toMatchObject({
       ordinal: 1,
       provider: "chatgpt-pabcdef",
+      accountLogLabel: "pabcdef",
       adapter: "openai-responses",
       status: 503,
       sendCount: 3,

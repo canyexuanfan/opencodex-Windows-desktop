@@ -1381,6 +1381,7 @@ export const en = {
   "integrations.semantics.kimi": "Restart or run /reload to apply it (v2 watches the file).",
   "integrations.semantics.gajae": "Applies to a new session or when opening /model.",
   "codexAuth.mainAccount": "Main Account",
+  "codexAuth.logLabel": "Log label",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "App login",
   "codexAuth.accountPool": "Account Pool",

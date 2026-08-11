@@ -20,6 +20,7 @@ import {
 } from "../src/codex/routing";
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/auth-api";
 import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
+import { fallbackCodexAccountLogLabel } from "../src/codex/account-label";
 import * as authContextModule from "../src/codex/auth-context";
 import {
   releaseCodexAuthContextProbeLease,
@@ -194,6 +195,47 @@ describe("native compact usage reporting", () => {
     const body = await response.json() as { usage?: Record<string, unknown> };
     expect(body.usage).toMatchObject({ input_tokens: 10, output_tokens: 5, total_tokens: 15 });
     expect(logCtx.usage).toMatchObject({ inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  });
+
+  test("main-pool and legacy added accounts carry their effective usage labels", async () => {
+    const testDir = mkdtempSync(join(tmpdir(), "ocx-compact-account-label-"));
+    const previousOpencodexHome = process.env.OPENCODEX_HOME;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.OPENCODEX_HOME = testDir;
+    process.env.CODEX_HOME = testDir;
+    try {
+      const mainConfig = nativePoolConfig();
+      mainConfig.codexAccounts = [];
+      mainConfig.activeCodexAccountId = MAIN_CODEX_ACCOUNT_ID;
+      writeFileSync(join(testDir, "auth.json"), JSON.stringify({
+        tokens: { access_token: "main-access-token", account_id: "main-account" },
+      }));
+      updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 0);
+      globalThis.fetch = (async () => jsonResponse(completedPayload("main compact"))) as typeof fetch;
+      const mainLog: RequestLogContext = { model: "", provider: "" };
+      expect((await handleResponsesCompact(compactionRequest(baseCompactionBody({})), mainConfig, mainLog)).status).toBe(200);
+      expect(mainLog.accountLogLabel).toBe("main");
+
+      const poolConfig = nativePoolConfig();
+      saveCodexAccountCredential("pool-a", {
+        accessToken: "pool-access-token",
+        refreshToken: "pool-refresh-token",
+        expiresAt: Date.now() + 300_000,
+        chatgptAccountId: "pool_acc",
+      });
+      updateAccountQuota("pool-a", 0);
+      const poolLog: RequestLogContext = { model: "", provider: "" };
+      expect((await handleResponsesCompact(compactionRequest(baseCompactionBody({})), poolConfig, poolLog)).status).toBe(200);
+      expect(poolLog.accountLogLabel).toBe(fallbackCodexAccountLogLabel("pool-a"));
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearAccountQuota();
+      rmSync(testDir, { recursive: true, force: true });
+      if (previousOpencodexHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousOpencodexHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+    }
   });
 });
 
@@ -642,15 +684,17 @@ describe("compact alternate-account attempt (#913)", () => {
           return jsonResponse(completedPayload("alternate compact response"));
         }) as typeof fetch;
 
+        const logCtx: RequestLogContext = { model: "", provider: "" };
         const res = await handleResponsesCompact(
           compactionRequest(baseCompactionBody({})),
           config,
-          { model: "", provider: "" },
+          logCtx,
         );
 
         // Two sends, not one and not three: the alternate ran once and did not recurse.
         expect(bearers).toEqual(["Bearer pool-a-access-token", "Bearer pool-b-access-token"]);
         expect(res.status).toBe(200);
+        expect(logCtx.accountLogLabel).toBe(fallbackCodexAccountLogLabel("pool-b"));
       });
     });
 
