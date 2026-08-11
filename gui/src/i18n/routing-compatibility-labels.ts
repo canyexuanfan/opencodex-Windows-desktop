@@ -33,6 +33,11 @@ export const ROUTING_COMPATIBILITY_FIELD_LABELS: Record<Locale, CompatibilityFie
     unknownEvidence: "未知证据",
     degradedEvidence: "降级证据",
   },
+  "zh-TW": {
+    maxEvidenceAgeMs: "證據最大有效期限（毫秒）",
+    unknownEvidence: "未知證據",
+    degradedEvidence: "降級證據",
+  },
   ru: {
     maxEvidenceAgeMs: "Максимальный возраст доказательств (мс)",
     unknownEvidence: "Неизвестные доказательства",

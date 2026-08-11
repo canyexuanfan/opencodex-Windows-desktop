@@ -2,6 +2,7 @@ import { en, type TKey } from "./en";
 import { de } from "./de";
 import { ko } from "./ko";
 import { zh } from "./zh";
+import { zhTW } from "./zh-TW";
 import { ru } from "./ru";
 import { ja } from "./ja";
 import { tr } from "./tr";
@@ -24,6 +25,7 @@ export const DICTS: Record<Locale, Record<TKey, string>> = {
   de: withLabTranslations("de", de),
   ko: withLabTranslations("ko", ko),
   zh: withLabTranslations("zh", zh),
+  "zh-TW": withLabTranslations("zh-TW", zhTW),
   ru: withLabTranslations("ru", ru),
   ja: withLabTranslations("ja", ja),
   tr: withLabTranslations("tr", tr),

@@ -8,6 +8,7 @@ export const LOCALES: { code: Locale; htmlLang: string }[] = [
   { code: "de", htmlLang: "de" },
   { code: "ko", htmlLang: "ko" },
   { code: "zh", htmlLang: "zh-CN" },
+  { code: "zh-TW", htmlLang: "zh-TW" },
   { code: "ru", htmlLang: "ru" },
   { code: "ja", htmlLang: "ja" },
   { code: "tr", htmlLang: "tr" },
@@ -20,12 +21,23 @@ let activeLocale: Locale | null = null;
 export function detectInitial(): Locale {
   try {
     const stored = localStorage.getItem(LANG_KEY);
-    if (stored === "en" || stored === "de" || stored === "ko" || stored === "zh" || stored === "ru" || stored === "ja" || stored === "tr") return stored;
+    if (stored === "en" || stored === "de" || stored === "ko" || stored === "zh" || stored === "zh-TW" || stored === "ru" || stored === "ja" || stored === "tr") return stored;
   } catch { /* ignore */ }
   const nav = typeof navigator !== "undefined" && navigator?.language ? navigator.language.toLowerCase() : "en";
   if (nav.startsWith("de")) return "de";
   if (nav.startsWith("ko")) return "ko";
-  if (nav.startsWith("zh")) return "zh";
+  if (nav.startsWith("zh")) {
+    // zh-TW / zh-HK / zh-MO / zh-Hant → Traditional; everything else → Simplified.
+    if (
+      nav.includes("tw") ||
+      nav.includes("hk") ||
+      nav.includes("mo") ||
+      nav.includes("hant")
+    ) {
+      return "zh-TW";
+    }
+    return "zh";
+  }
   if (nav.startsWith("ru")) return "ru";
   if (nav.startsWith("ja")) return "ja";
   if (nav.startsWith("tr")) return "tr";
