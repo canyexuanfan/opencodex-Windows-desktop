@@ -60,18 +60,50 @@ install path deleted by name unconditionally; now it proves ownership first.
 That is an improvement, and the doc claim in `030` overstated it as a guarantee.
 Corrected there.
 
-## Blocker 3 — shim rollback unlinks a marker-bearing wrapper: NOT OURS
+## Blocker 3 — shim rollback unlinks a marker-bearing wrapper: OURS, FIXED
 
-The reviewer's probe shows a concurrent wrapper carrying the public OpenCodex
-markers can be adopted as owned and unlinked. That logic is entirely contributor
-`comfuture`'s in PR #1441 (`git log --format=%an -- src/codex/shim.ts` →
-`comfuture`); this branch added no shim code and no correction commit there.
+The first draft of this section argued the defect was "not ours" because the shim
+code is contributor `comfuture`'s. The reviewer rejected that and was right:
+`git log origin/dev..dev -- src/codex/shim.ts` is **13 commits**, all of which
+this branch adds. Authorship decides credit; the merge boundary decides
+responsibility. A defect that arrives on `dev` because we merged it is ours to
+answer for, and the earlier "this branch added no shim code" sentence was simply
+false — it came from an unscoped `git log` that also swept in history already on
+`origin/dev`.
 
-It is a real narrowing of an already-narrow race: an attacker who can write the
-wrapper path during the probe window can already replace the user's `codex`
-outright. The fix the reviewer wants — stage and atomically rename a fingerprinted
-inode — is right, and it belongs to that PR's next round rather than to a merge
-gate for work that did not create it.
+The reviewer's probe, run against both trees:
+
+```text
+origin/dev: {"installed":true,"injected":true,"final":"concurrent"}   1 pass
+dev:        {"installed":false,"injected":true,"final":"original"}    0 pass / 1 fail
+```
+
+Root cause: `writeShim()` wrote straight to `wrapperPath`, and ownership was then
+established by `stat`-ing that path. A replacement landing between the write and
+the fingerprint is indistinguishable from our own file, so it was adopted and
+later unlinked by rollback.
+
+Fixed on this branch: the Unix wrapper is now created as its own inode
+(`.opencodex-staging.<pid>.<uuid>`, opened `wx` so it can never inherit an
+existing file) and renamed into place. `rename()` preserves `dev`/`ino` and
+updates only `ctime`, so identity is the inode pair captured from the file we
+created. If the destination's inode no longer matches after the rename, the
+existing `wrapperChangedDuringProbe` gate refuses the install and restores the
+launcher it moved aside.
+
+Two details worth recording because they cost time:
+
+- Fingerprinting the staged file *before* the rename fails: `ctimeMs` changes,
+  and the fingerprint comparison is exact. Capture `dev`/`ino` instead, and
+  fingerprint the destination after the rename.
+- A probe that "replaces" the file with `writeFileSync` proves nothing here:
+  that truncates our inode in place. A faithful updater writes a new file and
+  renames it over ours, which is what the regression now does.
+
+Regression: `tests/codex-shim.test.ts`, "Unix fresh install refuses to adopt a
+wrapper replaced between the write and the fingerprint". Red before the fix
+(`Expected: false, Received: true` — the install adopted the replacement), green
+after, with the whole shim suite at 67 pass / 0 fail.
 
 ## Blocker 4 — devlog overstates and cites pre-rebase SHAs: OURS, FIXED
 
@@ -100,6 +132,15 @@ the guarantees are stated as the narrowing they actually are.
 
 ## Disposition
 
-Three of four blockers describe defects this branch did not introduce and cannot
-responsibly fix inside it. They are recorded here so they are not lost. The one
-finding that is ours — overstated documentation — is corrected. The branch merges.
+Round 1 raised four findings; round 2 rejected my triage of one of them and was
+right to.
+
+| Blocker | Verdict | Action |
+|---|---|---|
+| 1 — config stale saves | predates the branch; reproduces identically on `origin/dev`, and the same-leaf half is documented policy | recorded, not fixed here |
+| 2 — scheduler rollback | legacy name-only path is upstream's; our commit narrows the install path but leaves a TOCTOU window | narrowing documented honestly in `030` |
+| 3 — shim ownership | **ours**, arrives with the 13 shim commits this branch adds | **fixed**, with a red-then-green regression |
+| 4 — devlog overclaims | ours | fixed: rebased SHAs, guarantees restated as narrowings |
+
+The lesson from round 2 is worth keeping: "the contributor wrote it" is an answer
+about authorship, not about whether we are responsible for what we merge.

@@ -1061,10 +1061,40 @@ function writeShim(wrapperPath: string, realCodexPath: string): void {
       );
     }
   } else {
-    writeFileSync(wrapperPath, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), "utf8");
-    chmodSync(wrapperPath, 0o755);
+    // Stage the wrapper as its own inode and rename it into place, so ownership
+    // comes from the write itself rather than from observing the path afterwards.
+    // Writing the destination directly leaves a window in which a concurrent
+    // updater can replace the file between our write and our fingerprint; we would
+    // then adopt that replacement as ours and unlink it during rollback, deleting
+    // an executable we never wrote.
+    const staged = `${wrapperPath}.opencodex-staging.${process.pid}.${randomUUID()}`;
+    let renamed = false;
+    lastStagedWrapperInode = undefined;
+    try {
+      // "wx" fails if the staging path somehow exists, so we never inherit a file.
+      writeFileSync(staged, buildUnixCodexShim(realCodexPath, bun, cli, bunRuntimeSource), { encoding: "utf8", flag: "wx", mode: 0o755 });
+      chmodSync(staged, 0o755);
+      const stagedStat = lstatSync(staged);
+      renameSync(staged, wrapperPath);
+      renamed = true;
+      // rename() preserves dev/ino and updates ctime, so identity is the inode
+      // pair, captured from the file we created rather than from the destination.
+      lastStagedWrapperInode = { dev: stagedStat.dev, ino: stagedStat.ino };
+    } finally {
+      if (!renamed) {
+        try { unlinkSync(staged); } catch { /* best-effort: nothing to clean up */ }
+      }
+    }
   }
 }
+
+/**
+ * dev/ino of the file the most recent `writeShim()` actually created, on
+ * platforms where the wrapper is staged and renamed into place. Ownership derived
+ * from this survives a concurrent replacement of the destination path, which a
+ * post-write `stat` of `wrapperPath` cannot distinguish from our own file.
+ */
+let lastStagedWrapperInode: { dev: number; ino: number } | undefined;
 
 function stateFiles(state: ShimState): ShimFileState[] {
   return state.wrappers?.length
@@ -1748,11 +1778,23 @@ function installCodexShimInternal(options: InstallCodexShimInternalOptions): { i
         writeShim(target.wrapperPath, target.realPath ?? target.backupPath);
         codexShimFreshWriteHookForTests?.();
         if (process.platform !== "win32") {
+          // Identity comes from the inode we staged, not from whatever now sits at
+          // the path: a concurrent updater may have replaced it, and that file is
+          // not ours to fingerprint, adopt, or later unlink.
+          const staged = lastStagedWrapperInode;
           const writtenWrapper = stableShimPathProbe(target.wrapperPath);
-          if (!writtenWrapper || !writtenWrapper.prefix.includes(SHIM_MARKER)) {
+          if (!staged || !writtenWrapper || !writtenWrapper.prefix.includes(SHIM_MARKER)) {
             throw new Error("Codex shim fresh install could not fingerprint the generated wrapper");
           }
-          entry.writtenWrapperFingerprint = writtenWrapper.fingerprint;
+          // Identity is the inode we created, not whatever now occupies the path.
+          // If another writer replaced the destination between our rename and this
+          // probe, dev/ino differ; leaving the fingerprint unset makes the existing
+          // `wrapperChangedDuringProbe` gate refuse the install and preserve the
+          // replacement, so rollback never unlinks a file we did not write.
+          entry.writtenWrapperFingerprint =
+            writtenWrapper.fingerprint.dev === staged.dev && writtenWrapper.fingerprint.ino === staged.ino
+              ? writtenWrapper.fingerprint
+              : undefined;
         }
       }
     } catch (error) {

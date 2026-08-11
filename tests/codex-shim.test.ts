@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { autoRestoreCodexShim, buildUnixCodexShim, buildWindowsCodexShim, buildWindowsPowerShellCodexShim, diagnoseCodexShim, findCodexOnPath, installCodexShim, isWindowsInteropDir, lastCodexDiscoveryError, setCodexShimFreshWriteHookForTests, setCodexShimGuardedWriteHookForTests, setCodexShimProbeHookForTests, setCodexShimProbeObservationMsForTests, setCodexShimProbeShellForTests, uninstallCodexShim } from "../src/codex/shim";
@@ -856,6 +856,61 @@ exit 0
       expect(existsSync(`${codexPath}.opencodex-real`)).toBe(false);
       expect(existsSync(join(home, "codex-shim.json"))).toBe(false);
     } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = oldHome;
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("Unix fresh install refuses to adopt a wrapper replaced between the write and the fingerprint", () => {
+    if (process.platform === "win32") return;
+
+    // Ownership must come from the inode we staged, not from stat-ing the path
+    // afterwards. A replacement that lands in that window carries the OpenCodex
+    // markers by coincidence or by design; adopting it means our rollback later
+    // unlinks an executable we never wrote.
+    const binDir = mkdtempSync(join(tmpdir(), "ocx-shim-adopt-bin-"));
+    const home = mkdtempSync(join(tmpdir(), "ocx-shim-adopt-home-"));
+    const oldPath = process.env.PATH;
+    const oldHome = process.env.OPENCODEX_HOME;
+    const codexPath = join(binDir, "codex");
+    const original = "#!/bin/sh\nexit 0\n";
+    // Marker-bearing, so a marker/prefix check alone would happily adopt it.
+    const intruder = `#!/bin/sh\n# ${SHIM_MARKER}\n# concurrent updater, not ours\nexit 0\n`;
+    try {
+      process.env.PATH = prependPath(binDir, oldPath);
+      process.env.OPENCODEX_HOME = home;
+      writeFileSync(codexPath, original, "utf8");
+      chmodSync(codexPath, 0o755);
+
+      setCodexShimFreshWriteHookForTests(() => {
+        // Replace the destination the way a real updater does: write a new file
+        // and rename it over ours, so the path now points at a different inode.
+        // (A plain writeFileSync would truncate our inode in place, which is a
+        // different situation — content tampering, not replacement.)
+        const replacement = `${codexPath}.updater-tmp`;
+        writeFileSync(replacement, intruder, "utf8");
+        chmodSync(replacement, 0o755);
+        renameSync(replacement, codexPath);
+      });
+      const installed = installCodexShim();
+
+      expect(installed.installed).toBe(false);
+      expect(installed.message).toContain("changed during its validation probe");
+      // The user is left with a working `codex`: the install refuses and restores
+      // the launcher it moved aside, rather than adopting the replacement as its
+      // own and unlinking it during rollback.
+      expect(readFileSync(codexPath, "utf8")).toBe(original);
+      // And no half-finished state is left behind.
+      expect(existsSync(join(home, "codex-shim.json"))).toBe(false);
+      expect(existsSync(`${codexPath}.opencodex-real`)).toBe(false);
+      // No staging artifact leaked into the user's PATH directory.
+      expect(readdirSync(binDir).filter(name => name.includes("opencodex-staging"))).toEqual([]);
+    } finally {
+      setCodexShimFreshWriteHookForTests(null);
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
       if (oldHome === undefined) delete process.env.OPENCODEX_HOME;

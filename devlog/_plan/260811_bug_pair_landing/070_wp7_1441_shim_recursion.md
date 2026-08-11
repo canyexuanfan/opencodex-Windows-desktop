@@ -41,7 +41,9 @@ with `--version` under `OCX_SHIM_BYPASS=1`, supervise a detached `/bin/sh` and
 record its process-group id, classify the outcome
 (`recursive` / `timeout` / `descendants` / `failed` / `cleanup`), re-fingerprint
 the wrapper, commit only on an exact match, otherwise roll back in reverse
-journal order while preserving any external replacement.
+journal order. On Unix the wrapper is created as its own inode and renamed into
+place, so "ours" means the inode we wrote rather than whatever occupies the path
+when we look — see the ownership section below for why that distinction matters.
 
 ## The three blockers, all addressed on the current head
 
@@ -105,22 +107,30 @@ Baseline on the contributor head: `tests/codex-shim.test.ts` 66 pass / 0 fail,
 `tests/codex-shim-autorestore.test.ts` 8 pass / 0 fail,
 `tests/codex-shim-readiness.test.ts` 6 pass / 0 fail, typecheck PASS.
 
-## Ownership is fingerprint-based, and that has a known hole
+## Ownership now comes from the write, not from looking at the path
 
-An independent audit (see `004`) showed a concurrent wrapper carrying the public
-OpenCodex markers can replace the generated file before post-write fingerprinting,
-be adopted as owned, fail the probe, and get unlinked. The claim above should be
-read as "unlinks only a file whose fingerprint it recorded", not "unlinks only a
-file it wrote".
+An independent audit (see `004`) showed the original design could adopt a wrapper
+it never wrote: `writeShim()` wrote straight to `wrapperPath`, and ownership was
+then established by `stat`-ing that path, so a replacement landing between the
+write and the fingerprint was indistinguishable from our own file — and rollback
+would unlink it.
 
-The remedy is to derive identity from the write itself — stage a fingerprinted
-inode and rename it atomically — rather than from a post-write observation of the
-path. That is contributor code this unit did not write or correct, so it belongs
-to #1441's next round. Recording it here so it is not lost.
+Fixed on this branch. The Unix wrapper is created as its own inode
+(`.opencodex-staging.<pid>.<uuid>`, opened `wx`) and renamed into place; identity
+is the `dev`/`ino` pair captured from the file we created. A destination whose
+inode no longer matches after the rename fails the existing
+`wrapperChangedDuringProbe` gate, so the install refuses and restores the launcher
+it moved aside instead of adopting a stranger's file.
 
-In practical terms it is a narrowing of an already-narrow race: anyone able to
-write the wrapper path during the probe window can already replace the user's
-`codex` outright.
+Two traps this cost us, recorded so the next person skips them:
+
+- Fingerprinting the staged file before the rename does not work. `rename()`
+  preserves `dev`/`ino` but updates `ctime`, and the fingerprint comparison is
+  exact — comparing a pre-rename fingerprint fails every install. Capture
+  `dev`/`ino` from the staged file, then fingerprint the destination.
+- A test that "replaces" the wrapper with `writeFileSync` proves nothing: that
+  truncates our own inode in place. A real updater writes a new file and renames
+  it over ours, which is what the regression does.
 
 ## Note for the maintainer, outside this unit's scope
 
