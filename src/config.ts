@@ -2811,7 +2811,8 @@ function indexCustomModels(value: ConfigMergeValue): IndexedCustomModels | null 
  * Merge custom-model rows by their stable id instead of treating the array as
  * one opaque value. A row changed only on disk is adopted, a row changed only
  * in the live config is retained, and disjoint edits to the same row recurse
- * through the normal three-way object merge.
+ * through the normal three-way object merge. A newer persisted row deletion
+ * wins over a stale live edit to that row.
  */
 function reconcileCustomModels(
   baseline: ConfigMergeValue,
@@ -2826,11 +2827,15 @@ function reconcileCustomModels(
   const order = [...liveRows.order, ...persistedRows.order.filter(id => !liveRows.byId.has(id))];
   const merged: Array<Record<string, unknown>> = [];
   for (const id of order) {
-    const row = reconcileConfigValue(
-      baselineRows.byId.get(id) ?? MISSING_CONFIG_VALUE,
-      liveRows.byId.get(id) ?? MISSING_CONFIG_VALUE,
-      persistedRows.byId.get(id) ?? MISSING_CONFIG_VALUE,
-    );
+    const baselineRow = baselineRows.byId.get(id) ?? MISSING_CONFIG_VALUE;
+    const persistedRow = persistedRows.byId.get(id) ?? MISSING_CONFIG_VALUE;
+    const row = baselineRow !== MISSING_CONFIG_VALUE && persistedRow === MISSING_CONFIG_VALUE
+      ? MISSING_CONFIG_VALUE
+      : reconcileConfigValue(
+          baselineRow,
+          liveRows.byId.get(id) ?? MISSING_CONFIG_VALUE,
+          persistedRow,
+        );
     if (row !== MISSING_CONFIG_VALUE) merged.push(row as Record<string, unknown>);
   }
   return merged;
@@ -2841,6 +2846,7 @@ function reconcileConfigRecord(
   baseline: Record<string, unknown>,
   persisted: Record<string, unknown>,
   skippedKeys?: ReadonlySet<string>,
+  persistedDeletionsWin = false,
 ): void {
   const keys = new Set([...Object.keys(baseline), ...Object.keys(live), ...Object.keys(persisted)]);
   for (const key of keys) {
@@ -2848,10 +2854,14 @@ function reconcileConfigRecord(
     const baselineValue = ownConfigValue(baseline, key);
     const liveValue = ownConfigValue(live, key);
     const persistedValue = ownConfigValue(persisted, key);
-    const merged = key === "customModels"
-      ? reconcileCustomModels(baselineValue, liveValue, persistedValue)
-        ?? reconcileConfigValue(baselineValue, liveValue, persistedValue)
-      : reconcileConfigValue(baselineValue, liveValue, persistedValue);
+    const merged = persistedDeletionsWin
+        && baselineValue !== MISSING_CONFIG_VALUE
+        && persistedValue === MISSING_CONFIG_VALUE
+      ? MISSING_CONFIG_VALUE
+      : key === "customModels"
+        ? reconcileCustomModels(baselineValue, liveValue, persistedValue)
+          ?? reconcileConfigValue(baselineValue, liveValue, persistedValue)
+        : reconcileConfigValue(baselineValue, liveValue, persistedValue, key === "providers");
     if (merged === MISSING_CONFIG_VALUE) delete live[key];
     else live[key] = merged;
   }
@@ -2861,6 +2871,7 @@ function reconcileConfigValue(
   baseline: ConfigMergeValue,
   live: ConfigMergeValue,
   persisted: ConfigMergeValue,
+  persistedChildDeletionsWin = false,
 ): ConfigMergeValue {
   const liveChanged = !deepEqual(live, baseline);
   const persistedChanged = !deepEqual(persisted, baseline);
@@ -2890,6 +2901,8 @@ function reconcileConfigValue(
       live,
       isPlainConfigRecord(baseline) ? baseline : {},
       persisted,
+      undefined,
+      persistedChildDeletionsWin,
     );
   }
   // Same-leaf conflicts prefer the pending live management mutation.
@@ -2979,6 +2992,8 @@ function readPersistedServerBinding(
  * - disk changed, we did not → their hand edit wins;
  * - disk changed AND we changed → disjoint fields are merged, while a same-leaf
  *   conflict keeps the live value;
+ * - a provider or custom-model row deleted on disk stays deleted even if stale
+ *   live state edited that same row;
  * - file missing/unreadable → save what we have, no throw.
  *
  * Custom-model rows are merged by their stable `id`, preserving independent

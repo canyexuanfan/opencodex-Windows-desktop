@@ -640,6 +640,25 @@ test("a provider deletion from a newer disk snapshot survives an unrelated live 
   expect(diskConfig().disabledModels).toEqual(["test/one"]);
 });
 
+test("a provider deletion from a newer disk snapshot wins over a stale edit to that provider", () => {
+  const live = loadConfig();
+  live.providers.extra = {
+    adapter: "openai-chat",
+    baseUrl: "http://127.0.0.1:2/v1",
+    apiKey: "original",
+    allowPrivateNetwork: true,
+  };
+  saveConfig(live);
+  armClaudeCodeBaseline(live);
+  resetPreservedDiskOnlyProvidersForTests();
+  writeDiskConfig({ providers: { test: live.providers.test } });
+
+  live.providers.extra.apiKey = "rotated";
+  saveConfigPreservingClaudeCode(live);
+
+  expect(Object.keys(diskConfig().providers as Record<string, unknown>)).toEqual(["test"]);
+});
+
 test("independent custom-model edits survive a guarded stale save", () => {
   const live = loadConfig();
   live.customModels = [customModel("one"), customModel("two")];
@@ -659,6 +678,19 @@ test("independent custom-model edits survive a guarded stale save", () => {
     { ...customModel("one"), modelId: "live-one" },
     { ...customModel("two"), modelId: "disk-two" },
   ]);
+});
+
+test("a custom-model deletion from a newer disk snapshot wins over a stale edit to that row", () => {
+  const live = loadConfig();
+  live.customModels = [customModel("one"), customModel("two")];
+  saveConfig(live);
+  armClaudeCodeBaseline(live);
+
+  writeDiskConfig({ customModels: [customModel("one")] });
+  live.customModels[1]!.modelId = "two-live-edit";
+  saveConfigPreservingClaudeCode(live);
+
+  expect(diskConfig().customModels).toEqual([customModel("one")]);
 });
 
 test("upstreamHostCircuitThreshold live writes accept only integer values from 0 through 20", () => {
