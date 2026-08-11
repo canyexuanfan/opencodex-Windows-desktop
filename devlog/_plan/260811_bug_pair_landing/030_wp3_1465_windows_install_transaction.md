@@ -54,6 +54,26 @@ residual scheduler state, which is what the issue thread already asks for
 ("if cleanup or ownership cannot be proved, the CLI will report the residual
 scheduler state instead of claiming that the prior runtime was restored").
 
+### What this does and does not guarantee
+
+Stated precisely, because the first draft of this document overclaimed and an
+independent audit caught it (see `004`):
+
+- The **install** paths (`src/service.ts:1941`, `2624`) now prove ownership
+  before deleting. That is strictly narrower than upstream, which deleted by
+  name unconditionally.
+- The **legacy dashboard finalizer** (`1128`, `1262`) still calls
+  `rollbackElevatedSchedulerTask()`, which deletes by name with no nonce check.
+  That function is upstream's (`origin/dev:src/service.ts:1001`, from
+  `0deda7caf`); this unit neither wrote nor widened it.
+- Even on the nonce-checked path the query and the elevated delete are **not one
+  atomic operation**, so a replacement registered in that window can still be
+  deleted. Closing that properly needs an attempt-unique task name or an elevated
+  attempt-bound transaction — a user-visible change to how the service registers,
+  which needs a real Windows host to validate and belongs in its own unit.
+
+So: a narrowing, not a guarantee.
+
 ## Regressions
 
 In `tests/service.test.ts`:

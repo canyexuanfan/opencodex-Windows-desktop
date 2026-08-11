@@ -6,17 +6,22 @@ maintainer's decisions.
 
 ## Commits, in landing order
 
+SHAs below are the **rebased** ones on `dev` after integration onto
+`origin/dev` `9ec2e2d94`. The pre-rebase SHAs survive only on
+`backup/pre-rebase-260811` and are given for cross-reference.
+
 | WP | Pair | Contributor commit | Our correction |
 |---|---|---|---|
-| — | plan | — | `cd4660ed9` devlog unit |
-| wp1 | #1459/#1460 | `95d50b95d` (tlsdnwn55) | `450bcbf66` byte compare |
-| wp4 | #1453/#1461 | `4eaa4dda6` (Ingwannu) | none needed |
-| wp7 | #1439/#1441 | `5cf00287a` merge, 15 commits (comfuture) | none needed |
-| wp6 | #1429/#1434 | `0e0f7d58e` merge (Yuxin-Qiao) | `88e31a989` flush + cap |
-| wp3 | #1454/#1465 | `4ed84d81d` (Ingwannu) | `86ce5f450` rollback ownership |
-| wp5 | #1449/#1452 | `71ebada71` (Ingwannu) | `6e220125b` typed sentinel |
-| wp2 | #1273/#1462 | `137334db4` (Yuxin Qiao) | `1c71b591a` deletion wins |
-| — | full-suite fallout | — | `d26cff553` disk-only key rebase |
+| — | plan | — | `847c63f8e` devlog unit (was `cd4660ed9`) |
+| wp1 | #1459/#1460 | `c7eec01ca` (tlsdnwn55, was `95d50b95d`) | `af80bb69a` byte compare (was `450bcbf66`) |
+| wp4 | #1453/#1461 | `e1b511e29` (Ingwannu, was `4eaa4dda6`) | none needed |
+| wp7 | #1439/#1441 | 15 commits (comfuture), merge `5cf00287a` flattened by the rebase | none needed |
+| wp6 | #1429/#1434 | Yuxin-Qiao's commits, merge `0e0f7d58e` flattened | `d065fd0ad` flush + cap (was `88e31a989`) |
+| wp3 | #1454/#1465 | `1fa020a90` (Ingwannu, was `4ed84d81d`) | `6312aef83` rollback ownership (was `86ce5f450`) |
+| wp5 | #1449/#1452 | `fcb337a18` (Ingwannu, was `71ebada71`) | `4368bb352` typed sentinel (was `6e220125b`) |
+| wp2 | #1273/#1462 | `022cbd21e` (Yuxin Qiao, was `137334db4`) | `1b655b74c` deletion wins (was `1c71b591a`) |
+| — | full-suite fallout | — | `d6e4545b2` disk-only key rebase (was `d26cff553`) |
+| — | flake | — | `f43110286` convergence timeout (was `f3a2698eb`) |
 
 Every contributor commit kept its original author. Corrections are separate
 commits so the contributor's work and ours stay distinguishable in `git log`.

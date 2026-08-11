@@ -105,6 +105,23 @@ Baseline on the contributor head: `tests/codex-shim.test.ts` 66 pass / 0 fail,
 `tests/codex-shim-autorestore.test.ts` 8 pass / 0 fail,
 `tests/codex-shim-readiness.test.ts` 6 pass / 0 fail, typecheck PASS.
 
+## Ownership is fingerprint-based, and that has a known hole
+
+An independent audit (see `004`) showed a concurrent wrapper carrying the public
+OpenCodex markers can replace the generated file before post-write fingerprinting,
+be adopted as owned, fail the probe, and get unlinked. The claim above should be
+read as "unlinks only a file whose fingerprint it recorded", not "unlinks only a
+file it wrote".
+
+The remedy is to derive identity from the write itself — stage a fingerprinted
+inode and rename it atomically — rather than from a post-write observation of the
+path. That is contributor code this unit did not write or correct, so it belongs
+to #1441's next round. Recording it here so it is not lost.
+
+In practical terms it is a narrowing of an already-narrow race: anyone able to
+write the wrapper path during the probe window can already replace the user's
+`codex` outright.
+
 ## Note for the maintainer, outside this unit's scope
 
 The reviewer's blockers were filed against a head the author has already
