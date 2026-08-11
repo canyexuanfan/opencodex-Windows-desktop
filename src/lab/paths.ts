@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { getConfigDir } from "../config";
 
 /** Return true when path is the Lab root or a descendant path component. */
@@ -20,8 +20,10 @@ function assertRestrictedDirectoryComponent(path: string): void {
   if (!componentStats.isDirectory()) {
     throw new Error(`restricted path component is not a directory: ${path}`);
   }
-  const canonical = realpathSync.native(path);
-  if (resolve(canonical) !== resolve(path)) {
+  const canonical = resolve(realpathSync.native(path));
+  const canonicalParent = resolve(realpathSync.native(dirname(path)));
+  const expectedCanonical = resolve(join(canonicalParent, basename(path)));
+  if (canonical !== expectedCanonical) {
     throw new Error(`restricted directory component contains a link or reparse-point substitution: ${path}`);
   }
 }
