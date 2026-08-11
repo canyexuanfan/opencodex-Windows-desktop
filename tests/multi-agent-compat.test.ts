@@ -887,28 +887,35 @@ describe("injectDeveloperMessage", () => {
       && (part as Record<string, unknown>).text === text;
   }).length;
 
-  test("appends to both the parsed messages and the raw passthrough input", () => {
-    const parsed = parsedFixture({ reasoning: "max" });
-    injectDeveloperMessage(parsed, "hello there");
-    const last = parsed.context.messages.at(-1)!;
-    expect(last.role).toBe("developer");
-    expect(last.content).toBe("hello there");
-    const rawInput = (parsed._rawBody as { input: unknown[] }).input;
-    expect(rawInput.at(-1)).toEqual({
-      type: "message",
-      role: "developer",
-      content: [{ type: "input_text", text: "hello there" }],
+  test("inserts after leading developer metadata and before conversation", () => {
+    const parsed = parseRequest({
+      model: "gpt-5.5",
+      input: [
+        { type: "message", role: "system", content: [{ type: "input_text", text: "system" }] },
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "native mode" }] },
+        { type: "additional_tools", role: "developer", tools: [] },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "work" }] },
+      ],
     });
+    injectDeveloperMessage(parsed, "hello there");
+
+    expect(parsed.context.systemPrompt).toEqual(["system"]);
+    expect(parsed.context.messages.map(message => message.role)).toEqual(["developer", "developer", "user"]);
+    expect(parsed.context.messages[1]!.content).toBe("hello there");
+    const rawInput = (parsed._rawBody as { input: unknown[] }).input;
+    expect(rawInput[2]).toMatchObject({ type: "additional_tools", role: "developer" });
+    expect(rawInput[3]).toEqual(generatedItem("hello there"));
+    expect(rawInput[4]).toMatchObject({ type: "message", role: "user" });
   });
 
   test("string raw input is left alone", () => {
     const parsed = parsedFixture({ reasoning: "max", rawInput: "plain" });
     injectDeveloperMessage(parsed, "note");
     expect((parsed._rawBody as { input: unknown }).input).toBe("plain");
-    expect(parsed.context.messages.at(-1)!.content).toBe("note");
+    expect(parsed.context.messages[0]!.content).toBe("note");
   });
 
-  test("inserts BEFORE compaction_trigger so it stays the final input item", () => {
+  test("inserts before conversation while compaction_trigger stays final", () => {
     const parsed = parsedFixture({ reasoning: "max" });
     const rawBody = parsed._rawBody as { input: unknown[] };
     rawBody.input = [
@@ -918,9 +925,135 @@ describe("injectDeveloperMessage", () => {
     injectDeveloperMessage(parsed, "guidance text");
     const input = rawBody.input;
     expect(input).toHaveLength(3);
-    expect((input[1] as { type: string }).type).toBe("message");
-    expect((input[1] as { role: string }).role).toBe("developer");
+    expect((input[0] as { type: string }).type).toBe("message");
+    expect((input[0] as { role: string }).role).toBe("developer");
+    expect((input[1] as { role: string }).role).toBe("user");
     expect((input[2] as { type: string }).type).toBe("compaction_trigger");
+  });
+
+  test("consecutive stateless requests keep one fresh guidance item before conversation", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [{
+      slug: "anthropic/claude-sonnet-5",
+      efforts: ["low", "medium", "high", "xhigh"],
+      multiAgentVersion: "v2",
+    }]);
+    const fixture = parsedFixture({ reasoning: "medium" });
+    const text = await multiAgentGuidanceText(
+      fixture,
+      {
+        injectionModel: "anthropic/claude-sonnet-5",
+      },
+      { collectCatalogState: () => ({ state: "fresh" }) },
+    );
+
+    expect(text).toContain("Preferred sub-agent");
+    for (const content of ["first", "second"]) {
+      const parsed = parsedFixture({
+        reasoning: "medium",
+        rawInput: [{ type: "message", role: "user", content }],
+      });
+      injectDeveloperMessage(parsed, text!);
+      const rawInput = (parsed._rawBody as { input: unknown[] }).input;
+      expect(countExact(rawInput, text!)).toBe(1);
+      expect(rawInput).toEqual([generatedItem(text!), { type: "message", role: "user", content }]);
+    }
+  });
+
+  test("keeps an unexpanded previous_response_id tool delta first", () => {
+    const parsed = parsedFixture({
+      reasoning: "max",
+      rawInput: [{ type: "function_call_output", call_id: "call_1", output: "ok" }],
+    });
+    parsed.previousResponseId = "resp_remote";
+    injectDeveloperMessage(parsed, guidance);
+
+    const rawInput = (parsed._rawBody as { input: unknown[] }).input;
+    expect(rawInput[0]).toMatchObject({ type: "function_call_output", call_id: "call_1" });
+    expect(rawInput[1]).toEqual(generatedItem());
+    expect(parsed.context.messages.at(-1)).toMatchObject({ role: "developer", content: guidance });
+  });
+
+  test("inserts changed stateful guidance before an ordinary new user delta", () => {
+    const guidanceA = "<multi_agent_mode>A</multi_agent_mode>";
+    const guidanceB = "<multi_agent_mode>B</multi_agent_mode>";
+    const rawInput = [
+      generatedItem(guidanceA),
+      { type: "message", role: "user", content: "previous turn" },
+      { type: "message", role: "assistant", content: "done" },
+      { type: "message", role: "user", content: "current turn" },
+    ];
+    const parsed = parseRequest({ model: "gpt-5.5", input: rawInput });
+    parsed.previousResponseId = "resp_1";
+    parsed._replayPrefixLen = 3;
+    parsed._continuationConversationMessageIndex = 3;
+
+    injectDeveloperMessage(parsed, guidanceB);
+
+    expect(rawInput).toEqual([
+      generatedItem(guidanceA),
+      { type: "message", role: "user", content: "previous turn" },
+      { type: "message", role: "assistant", content: "done" },
+      generatedItem(guidanceB),
+      { type: "message", role: "user", content: "current turn" },
+    ]);
+    expect(parsed.context.messages.map(message => message.role)).toEqual([
+      "developer",
+      "user",
+      "assistant",
+      "developer",
+      "user",
+    ]);
+  });
+
+  test("keeps leading stateful protocol items before changed guidance and conversation", () => {
+    const rawInput = [
+      { type: "function_call_output", call_id: "call_1", output: "ok" },
+      { type: "message", role: "user", content: "current turn" },
+    ];
+    const parsed = parseRequest({ model: "gpt-5.5", input: rawInput, previous_response_id: "resp_remote" });
+
+    injectDeveloperMessage(parsed, guidance);
+
+    expect(rawInput).toEqual([
+      { type: "function_call_output", call_id: "call_1", output: "ok" },
+      generatedItem(),
+      { type: "message", role: "user", content: "current turn" },
+    ]);
+    expect(parsed.context.messages.map(message => message.role)).toEqual(["toolResult", "developer", "user"]);
+  });
+
+  test("keeps raw and parsed stateful placement aligned across reconstructed compaction history", () => {
+    const rawInput = [
+      { type: "message", role: "user", content: "current turn" },
+      { type: "compaction", encrypted_content: "ocx1:c3VtbWFyeQ==" },
+    ];
+    const parsed = parseRequest({ model: "gpt-5.5", input: rawInput, previous_response_id: "resp_remote" });
+
+    injectDeveloperMessage(parsed, guidance);
+
+    expect(rawInput[0]).toEqual(generatedItem());
+    expect(parsed.context.messages.map(message => message.role)).toEqual(["developer", "user", "user"]);
+  });
+
+  test("stateful guidance dedup uses the latest tagged item across A-B-A transitions", () => {
+    const guidanceA = "<multi_agent_mode>A</multi_agent_mode>";
+    const guidanceB = "<multi_agent_mode>B</multi_agent_mode>";
+    const parsed = parsedFixture({ rawInput: [generatedItem(guidanceA), { role: "user", content: "work" }] });
+    parsed.previousResponseId = "resp_1";
+    parsed._replayPrefixLen = 2;
+    injectDeveloperMessage(parsed, guidanceB);
+
+    const replay = parsedFixture({ rawInput: [
+      ...(parsed._rawBody as { input: unknown[] }).input,
+      { role: "assistant", content: "done" },
+    ] });
+    replay.previousResponseId = "resp_2";
+    replay._replayPrefixLen = 4;
+    injectDeveloperMessage(replay, guidanceB);
+    expect((replay._rawBody as { input: unknown[] }).input).toHaveLength(4);
+    injectDeveloperMessage(replay, guidanceA);
+    expect((replay._rawBody as { input: unknown[] }).input.at(-1)).toEqual(generatedItem(guidanceA));
   });
 
   test("exact-guidance predicate rejects every near-match replay-prefix shape (#326)", () => {

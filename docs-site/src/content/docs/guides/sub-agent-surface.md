@@ -51,6 +51,13 @@ The dashboard's **Sub-agent delegation** controls three related settings:
 `multiAgentGuidanceEnabled` defaults to on and is the master switch for opencodex-authored guidance
 on both surfaces. Turning it off suppresses both the v2 designation block and v1 proactive text.
 
+For array-form stateless Responses requests, opencodex places generated guidance after leading
+system and developer metadata, including developer `additional_tools`, and before conversational
+input. Stateful `previous_response_id` continuations reuse tagged guidance only when it matches the latest
+tagged item in their trusted replay prefix. Other generated guidance is reused when an exact generated
+developer item exists in that prefix. When guidance changes, leading tool protocol stays first and
+the replacement is inserted before current conversational input.
+
 These are instructions to the main agent, not a proxy-side spawn router. On v2, a full-history fork
 inherits the parent model and rejects model or effort overrides. Guidance therefore tells Codex to
 use `fork_turns: "none"` (or a positive partial turn count such as `"3"`) when passing `model` or
