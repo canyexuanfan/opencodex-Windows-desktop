@@ -166,6 +166,13 @@ Claims cannot produce `PROBED`/`VERIFIED`.
 - CL-07: **ACCEPTED/CLOSED** via [#1438](https://github.com/lidge-jun/opencodex/pull/1438), merged to `dev` at `02e62fc8c7354c544ef71f8bb3db5ebba42cb600`; accepted head `0efe2c69514d3baefee686383fe740e4ecb37d83`; plan `007_cl07_task_effectiveness.md`.
 - CL-08: **not started**.
 
+## CL-06 closure log
+
+- **Merge commit on `dev`:** `b66e33ce7207d91014644d99317e456c992a3418` ([#1394](https://github.com/lidge-jun/opencodex/pull/1394))
+- **Accepted / source head:** `b96eae83f2a6d1654472aeeef84799070743aeb8`
+- **Starting/base SHA:** `1072b9c39c48a4982229131613ac300560740742` (CL-05 merge #1384)
+- **Scope delivered:** optional Routing Profile compatibility policy, Router Intelligence consumption, CL-06 routing regressions; no Fabric/task-effectiveness leakage.
+
 ## CL-07 closure log
 
 - **Merge commit on `dev`:** `02e62fc8c7354c544ef71f8bb3db5ebba42cb600` ([#1438](https://github.com/lidge-jun/opencodex/pull/1438))
