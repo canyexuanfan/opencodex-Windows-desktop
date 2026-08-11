@@ -714,16 +714,21 @@ describe("ready pre-parse before maybeAutoRestoreCodexShim (source-level, P1)", 
   });
 
   test("handleReady accepts pre-parsed ReadyArgs and never re-parses", () => {
-    const sig = cliSource.match(/async\s+function\s+handleReady\s*\(\s*\w+\s*:\s*ReadyArgs\s*\)\s*:\s*Promise<never>/);
-    expect(sig, "handleReady(args: ReadyArgs): Promise<never> signature must exist").not.toBeNull();
+    const sig = cliSource.match(/async\s+function\s+handleReady\s*\(\s*\w+\s*:\s*ReadyArgs\s*\)\s*:\s*Promise<number>/);
+    expect(sig, "handleReady(args: ReadyArgs): Promise<number> signature must exist").not.toBeNull();
     // The handleReady body (up to the next top-level function/switch) must not
     // call parseReadyArgs and must call runReady with the passed args.
     const start = sig!.index!;
     const rest = cliSource.slice(start);
-    const bodyEnd = rest.search(/\n(?:async function |function |switch \(command\))/);
+    const bodyEnd = rest.search(/\nprocess\.exit\(await dispatchCommand\(head|switch \(command\)/);
     const body = rest.slice(0, bodyEnd === -1 ? undefined : bodyEnd);
     expect(body).not.toContain("parseReadyArgs");
     expect(body).toContain("runReady");
+    // The normal ready result must propagate through dispatchCommand to the
+    // single top-level process.exit — handleReady must return runReady's code,
+    // not call process.exit itself (CodeRabbit #1455).
+    expect(body).toContain("return runReady(args)");
+    expect(body).not.toContain("process.exit");
   });
 
   test("valid ready dispatch reaches handleReady AFTER maybeAutoRestoreCodexShim, with fail-closed guard", () => {
@@ -731,8 +736,8 @@ describe("ready pre-parse before maybeAutoRestoreCodexShim (source-level, P1)", 
     // preflight inside root.ts) BEFORE dispatch.ts runs the ready runner.
     const runCliIdx = cliSource.indexOf("await runCli(process.argv.slice(2))");
     expect(runCliIdx, "index.ts must await runCli before dispatch").toBeGreaterThanOrEqual(0);
-    const dispatchIdx = cliSource.indexOf("await dispatchCommand(head");
-    expect(dispatchIdx, "index.ts must dispatch via dispatchCommand").toBeGreaterThanOrEqual(0);
+    const dispatchIdx = cliSource.indexOf("process.exit(await dispatchCommand(head");
+    expect(dispatchIdx, "index.ts must exit via dispatchCommand").toBeGreaterThanOrEqual(0);
     expect(runCliIdx).toBeLessThan(dispatchIdx);
     expect(rootSource).toContain("maybeAutoRestoreCodexShim(head.command, head.args)");
     // The ready runner lives in dispatch.ts (keyed "ready:"); slice its body
@@ -744,10 +749,11 @@ describe("ready pre-parse before maybeAutoRestoreCodexShim (source-level, P1)", 
     const nextCaseIdx = dispatchSource.indexOf("provider: async", readyCaseIdx + 1);
     const caseBody = dispatchSource.slice(readyCaseIdx, nextCaseIdx === -1 ? undefined : nextCaseIdx);
     // Passes the stashed readyArgs; fail-closed guard exits 64 with NO I/O if
-    // the impossible state (missing pre-parsed args) ever occurs.
+    // the impossible state (missing pre-parsed args) ever occurs. Phase 4 made
+    // the runner return 64; index.ts turns the returned code into process.exit.
     expect(caseBody).toContain("readyArgs");
     expect(caseBody).toContain("handleReady");
-    expect(caseBody).toContain("process.exit(64)");
+    expect(caseBody).toContain("return 64");
   });
 });
 
