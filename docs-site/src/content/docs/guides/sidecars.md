@@ -42,6 +42,11 @@ twice (the terminal replay skips what already streamed). Tradeoff: text the mode
 deciding to search — which buffered mode silently drops — becomes visible and may partially repeat
 in the post-search answer.
 
+Kiro commentary is independent of this option: commentary-phase text already streams ahead of the
+terminal event in buffered mode, and that bypass is unchanged — with or without
+`streamRoutedModelOutput`, only search-decision events (tool calls and everything after the first
+tool-call boundary) remain buffered for the atomic `web_search` decision.
+
 The injected result is wrapped in an untrusted-data boundary, length-capped, and de-duplicated by
 source URL. In structured-output turns (`json_schema` / `json_object`) it is handed over as compact
 JSON instead of prose. For text-only routed models, the search model is also told to describe

@@ -41,7 +41,9 @@ keeps both by construction:
 
 Accepted tradeoff (documented in `docs-site/.../sidecars.md`): text the model emits before deciding
 to search — which buffered mode silently drops — becomes visible and may partially repeat in the
-post-search answer. Reasoning-first models (the common case) are unaffected.
+post-search answer. Reasoning-first models (the common case) avoid the text-repetition case, though
+their leading reasoning deltas become client-visible too — that visibility is the point of the
+option.
 
 ## Verification
 

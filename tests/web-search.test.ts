@@ -2220,12 +2220,18 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
   });
 
   test("the live window closes at the first tool_call_start; the buffered tail replays once, in order", async () => {
+    // The adapter withholds the tool call until the TEST has seen "prefix " on the wire, so a
+    // buffered implementation (which delivers nothing before the terminal replay) deadlocks the
+    // gate instead of passing on identical final frames.
+    let releaseToolCall!: () => void;
+    const clientSawPrefix = new Promise<void>(resolve => { releaseToolCall = resolve; });
     const adapter: ProviderAdapter = {
       name: "tool-tail",
       buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
       fetchResponse: async () => new Response("wire", { status: 200 }),
       async *parseStream() {
         yield { type: "text_delta", text: "prefix " } satisfies AdapterEvent;
+        await clientSawPrefix;
         yield { type: "tool_call_start", id: "call_1", name: "shell" } satisfies AdapterEvent;
         yield { type: "tool_call_delta", arguments: "{\"cmd\":\"ls\"}" } satisfies AdapterEvent;
         yield { type: "tool_call_end" } satisfies AdapterEvent;
@@ -2246,17 +2252,35 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       maxSearches: 1,
       streamRoutedModelOutput: true,
     });
-    const frames = await collectSse(response.body!);
+    const sse = frameReader(response.body!);
+    const guard = setTimeout(releaseToolCall, 5_000);
+    const prefixDelta = await sse.readUntil(f => f.data.type === "response.output_text.delta");
+    clearTimeout(guard);
+    expect(prefixDelta?.data.delta).toBe("prefix ");
+    releaseToolCall();
+    const frames = await sse.drain();
     expect(outputTextOf(frames)).toBe("prefix suffix");
-    // The real tool call still reaches the client exactly once.
-    const callAdds = frames.filter(f =>
+    // The real tool call still reaches the client exactly once, and the replayed tail keeps
+    // wire order: prefix delta → function_call item → suffix delta.
+    const isCallAdd = (f: { data: Record<string, unknown> }) =>
       f.data.type === "response.output_item.added"
-      && (f.data.item as Record<string, unknown> | undefined)?.type === "function_call");
-    expect(callAdds.length).toBe(1);
+      && (f.data.item as Record<string, unknown> | undefined)?.type === "function_call";
+    expect(frames.filter(isCallAdd).length).toBe(1);
+    const prefixIdx = frames.findIndex(f => f.data.type === "response.output_text.delta" && f.data.delta === "prefix ");
+    const callIdx = frames.findIndex(isCallAdd);
+    const suffixIdx = frames.findIndex(f => f.data.type === "response.output_text.delta" && f.data.delta === "suffix");
+    expect(prefixIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(prefixIdx);
+    expect(suffixIdx).toBeGreaterThan(callIdx);
     expect(frames.some(f => f.event === "response.completed")).toBe(true);
   });
 
   test("search loop: pre-search text streams live (documented tradeoff), the final answer arrives once", async () => {
+    // The first pass withholds its web_search call until the TEST has seen "Let me check. " on
+    // the wire — a buffered implementation would deadlock the gate rather than pass on final
+    // frames alone.
+    let releaseWebSearch!: () => void;
+    const clientSawPreSearchText = new Promise<void>(resolve => { releaseWebSearch = resolve; });
     let pass = 0;
     const adapter: ProviderAdapter = {
       name: "search-then-answer",
@@ -2265,6 +2289,7 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       async *parseStream() {
         if (pass++ === 0) {
           yield { type: "text_delta", text: "Let me check. " } satisfies AdapterEvent;
+          await clientSawPreSearchText;
           yield { type: "tool_call_start", id: "ws1", name: "web_search" } satisfies AdapterEvent;
           yield { type: "tool_call_delta", arguments: "{\"query\":\"docs\"}" } satisfies AdapterEvent;
           yield { type: "tool_call_end" } satisfies AdapterEvent;
@@ -2288,7 +2313,13 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
       maxSearches: 1,
       streamRoutedModelOutput: true,
     });
-    const frames = await collectSse(response.body!);
+    const sse = frameReader(response.body!);
+    const guard = setTimeout(releaseWebSearch, 5_000);
+    const preSearchDelta = await sse.readUntil(f => f.data.type === "response.output_text.delta");
+    clearTimeout(guard);
+    expect(preSearchDelta?.data.delta).toBe("Let me check. ");
+    releaseWebSearch();
+    const frames = await sse.drain();
     const text = outputTextOf(frames);
     // Pre-search text is visible exactly once, then the post-search answer exactly once.
     expect(text).toBe("Let me check. Final answer.");
