@@ -102,6 +102,22 @@ the recorded service ownership.
 sequence number) to avoid collisions when concurrent writers (e.g. `ocx stop` and the proxy's own
 shutdown handler) both restore Codex config simultaneously. The temp is renamed atomically into place.
 
+Windows secret-file hardening resolves the effective token SID through an absolute, trusted
+PowerShell path before granting the owner and removing inherited broad ACL entries. The normal
+path obtains System32 from `GetSystemDirectoryW`. Windows ARM64 Bun builds that cannot execute
+`bun:ffi` use a narrower ACL-only fallback to the fixed protected default installation path
+`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`. The fallback never applies to UAC or
+Task Scheduler launch, never consults environment variables or `PATH`, and fails closed when the
+fixed executable is absent.
+
+[Decision Log]
+- 목적과 의도: Preserve required Windows ACL hardening on the bundled Windows ARM64 runtime without weakening executable trust.
+- 기존 구현 및 제약 조건: The effective-SID query depended on the shared `GetSystemDirectoryW` FFI resolver; Bun 1.3.14 Windows ARM64 has no working `bun:ffi`, so config mutation reached `EACLIDENTITY` before PowerShell could start.
+- 검토한 주요 대안: Restore `USERDOMAIN\\USERNAME`; trust `SystemRoot`, `WINDIR`, or `PATH`; weaken required ACL writes; broaden the shared elevation resolver; or add a fixed-path fallback only for the non-elevated SID query.
+- 선택한 방식: Keep FFI authoritative, then allow only Windows ARM64 to use the existing default `C:\Windows\System32` PowerShell binary for the SID query when that exact file exists.
+- 다른 대안 대신 이 방식을 선택한 이유: Names and environment paths are caller-controlled, required secret writes must not silently skip ACLs, and elevation has a larger authority boundary that should remain FFI-only.
+- 장점, 단점 및 영향: Default Windows ARM64 installations can start and harden secrets; non-default Windows roots continue to fail closed until Bun exposes a trustworthy native system-directory API without FFI.
+
 Response-state loading performs a bounded recovery pass for interrupted snapshot writes. It only
 matches regular files named `responses-state.json.ocx.<pid>.<sequence>.tmp`, waits at least 15
 minutes, and skips the current or any live PID. Eligible files are truncated before unlinking so a

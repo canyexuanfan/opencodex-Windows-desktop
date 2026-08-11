@@ -4,6 +4,7 @@ import {
   resetWindowsPrincipalForTests,
   resolveCurrentWindowsPrincipal,
   resolveCurrentWindowsPrincipalAsync,
+  resolveWindowsPrincipalPowerShellExecutableForTests,
   setAsyncWindowsPrincipalRunnerForTests,
   setWindowsPrincipalRunnerForTests,
   windowsPrincipalPowerShellCommandForTests,
@@ -38,6 +39,67 @@ describe("Windows effective ACL principal", () => {
       "-Command",
       "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     ]);
+  });
+
+  test("Windows ARM64 uses only the fixed default PowerShell path when FFI resolution is unavailable", () => {
+    const lookupError = new Error("bun:ffi unavailable");
+    const previousSystemRoot = process.env.SystemRoot;
+    const previousWindir = process.env.WINDIR;
+    const previousPath = process.env.PATH;
+    process.env.SystemRoot = "C:\\attacker-controlled";
+    process.env.WINDIR = "D:\\attacker-controlled";
+    process.env.PATH = "E:\\attacker-controlled";
+    try {
+      let observedPath = "";
+      const resolved = resolveWindowsPrincipalPowerShellExecutableForTests({
+        platform: "win32",
+        arch: "arm64",
+        resolveTrusted: () => { throw lookupError; },
+        pathExists: path => {
+          observedPath = path;
+          return true;
+        },
+      });
+      expect(observedPath).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+      expect(resolved).toBe(observedPath);
+      expect(resolved).not.toContain("attacker-controlled");
+    } finally {
+      if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = previousSystemRoot;
+      if (previousWindir === undefined) delete process.env.WINDIR;
+      else process.env.WINDIR = previousWindir;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
+  test("the ARM64 fallback never broadens to x64, non-Windows, or a missing fixed executable", () => {
+    const lookupError = new Error("trusted resolver failed");
+    const resolve = (platform: NodeJS.Platform, arch: string, present: boolean) =>
+      resolveWindowsPrincipalPowerShellExecutableForTests({
+        platform,
+        arch,
+        resolveTrusted: () => { throw lookupError; },
+        pathExists: () => present,
+      });
+
+    expect(() => resolve("win32", "x64", true)).toThrow(lookupError);
+    expect(() => resolve("linux", "arm64", true)).toThrow(lookupError);
+    expect(() => resolve("win32", "arm64", false)).toThrow(lookupError);
+  });
+
+  test("a successful trusted resolver always wins without probing the ARM64 fallback", () => {
+    let fallbackProbes = 0;
+    expect(resolveWindowsPrincipalPowerShellExecutableForTests({
+      platform: "win32",
+      arch: "arm64",
+      resolveTrusted: () => "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      pathExists: () => {
+        fallbackProbes += 1;
+        return true;
+      },
+    })).toBe("D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+    expect(fallbackProbes).toBe(0);
   });
 
   test("the default trusted runner resolves the real token on Windows", () => {
