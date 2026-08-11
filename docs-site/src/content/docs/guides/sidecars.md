@@ -29,10 +29,18 @@ When Codex requests hosted `web_search` for a non-passthrough routed model, open
    (default 3), then removes the search tool and forces a final answer. Real client tools such as
    `apply_patch` or shell finalize the turn so those calls reach Codex.
 
-Every routed-model iteration requests upstream `stream: true`, but opencodex fully buffers semantic
-events internally before deciding whether to search or return the final answer. Only the first
-iteration's final headers/status and 429 key rotations are acquired eagerly. Thus synthetic search
-calls and preliminary output are never exposed as client-visible model output.
+Every routed-model iteration requests upstream `stream: true`, but by default opencodex fully
+buffers semantic events internally before deciding whether to search or return the final answer.
+Only the first iteration's final headers/status and 429 key rotations are acquired eagerly. Thus
+synthetic search calls and preliminary output are never exposed as client-visible model output.
+
+Opt-in `webSearchSidecar.streamRoutedModelOutput` (default `false`) streams each iteration's
+leading text/thinking deltas live instead — the client sees output as soon as the model produces
+it, exactly like the sidecar-less path. The live window closes permanently at the first tool-call
+boundary, so the decision to intercept `web_search` stays atomic and nothing is ever delivered
+twice (the terminal replay skips what already streamed). Tradeoff: text the model emits *before*
+deciding to search — which buffered mode silently drops — becomes visible and may partially repeat
+in the post-search answer.
 
 The injected result is wrapped in an untrusted-data boundary, length-capped, and de-duplicated by
 source URL. In structured-output turns (`json_schema` / `json_object`) it is handed over as compact
@@ -48,7 +56,8 @@ relevant images in words and include their source URLs.
     "reasoning": "low",
     "maxSearchesPerTurn": 3,
     "routedModelStallTimeoutMs": 200000,
-    "timeoutMs": 200000
+    "timeoutMs": 200000,
+    "streamRoutedModelOutput": false
   }
 }
 ```
