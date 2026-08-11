@@ -44,15 +44,18 @@ function normalizeSchema(schema: Record<string, unknown>): Record<string, unknow
   }
 
   const type = take(schema, "type");
-  const anyOf = take(schema, "anyOf");
-  const oneOf = take(schema, "oneOf");
-  const allOf = take(schema, "allOf");
+  const anyOf = schema.anyOf;
+  const oneOf = schema.oneOf;
+  const allOf = schema.allOf;
 
   if (Array.isArray(anyOf)) {
+    take(schema, "anyOf");
     normalized.anyOf = anyOf.map(normalizeSubschema);
   } else if (Array.isArray(oneOf)) {
+    take(schema, "oneOf");
     normalized.anyOf = oneOf.map(normalizeSubschema);
   } else if (Array.isArray(allOf)) {
+    take(schema, "allOf");
     normalized.allOf = allOf.map(normalizeSubschema);
   } else {
     if (type === undefined) {

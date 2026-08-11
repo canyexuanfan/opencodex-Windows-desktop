@@ -142,6 +142,36 @@ describe("anthropic extended-thinking gate", () => {
     });
   });
 
+  test("preserves unselected composition keywords as model guidance", async () => {
+    const oneOf = [{ type: "number", minimum: 0 }];
+    const allOf = [{ type: "string", minLength: 1 }];
+    const b = await bodyOf(parseRequest({
+      model: "claude-sonnet-5",
+      input: [{ role: "user", content: [{ type: "input_text", text: "answer this" }] }],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "answer",
+          schema: {
+            anyOf: [{ type: "boolean" }],
+            oneOf,
+            allOf,
+          },
+        },
+      },
+    }));
+
+    expect(b.output_config).toEqual({
+      format: {
+        type: "json_schema",
+        schema: {
+          anyOf: [{ type: "boolean" }],
+          description: `{oneOf: ${JSON.stringify(oneOf)}, allOf: ${JSON.stringify(allOf)}}`,
+        },
+      },
+    });
+  });
+
   test("translates Chat Completions JSON Schema output to Anthropic", async () => {
     const schema = {
       type: "object",
