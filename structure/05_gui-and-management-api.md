@@ -197,6 +197,29 @@ the effective-token elevation probe may classify it as access denied only when t
 to be non-elevated. An unavailable probe remains `other` and cannot trigger UAC. Query, run, delete,
 native-service, file-write, and foreign task failures never use this fallback.
 
+For a fresh scheduler install whose task is proven absent, registration is the non-destructive
+first phase. OpenCodex writes a unique temporary XML definition and asks Task Scheduler to create
+the owned task without running it. Only after that succeeds may service-manager cleanup stop the
+existing proxy, publish the canonical scheduler assets, run the task, and write install state.
+UAC cancellation or create failure removes the temporary XML before any manager/proxy stop, so the
+working proxy's shutdown cleanup cannot strip Codex routing merely because elevation was refused.
+The Dashboard does not apply its ordinary 60-second child timeout to this Windows service command:
+killing only the CLI could orphan the already-launched elevated child, which might register a task
+after the UI reported failure. The asynchronous request and install-attempt lock remain pending
+until Windows returns approval or cancellation; other proxy requests keep running normally.
+Existing or conflicting registrations stay on the older fail-closed path because deleting or
+replacing them cannot be called a rollback without an exact prior-registration snapshot.
+
+```text
+[Decision Log]
+- 목적과 의도: Keep a refused fresh Windows service install from stopping a working proxy and removing managed Codex routing.
+- 기존 구현 및 제약 조건: The generic installer stopped service managers and the standalone proxy before the first scheduler create attempt; the Dashboard UAC path depended on assets produced by that already-destructive failure.
+- 검토한 주요 대안: Reject every non-elevated caller up front, restart and re-inject after failure, snapshot every runtime/config artifact for rollback, or separate registration approval from the destructive commit.
+- 선택한 방식: When scheduler absence is proven, create but do not run the owned registration from a temporary XML first; cleanup and canonical asset publication begin only after registration succeeds.
+- 다른 대안 대신 이 방식을 선택한 이유: An early rejection breaks Dashboard UAC, while a best-effort restart cannot prove that manager, proxy, and routing state were restored. The two-phase boundary makes denial/cancellation a real pre-commit failure.
+- 장점, 단점 및 영향: Fresh-install UAC failure preserves the live proxy and routing. Failures after registration remain explicit partial-install cases, and existing/conflicting scheduler recovery remains conservative until exact prior-state restoration is available.
+```
+
 ```text
 [Decision Log]
 - 목적과 의도: Make Windows scheduler installation recovery work on non-English systems without broadening the commands that may request UAC.

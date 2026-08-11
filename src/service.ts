@@ -29,6 +29,7 @@ import {
   runWindowsElevated,
   toWindowsSchtasksError,
   WindowsElevationError,
+  WindowsSchtasksError,
   type ElevatedSchedulerOutcome,
   type ElevatedSchtasksCreateAndRunExecution,
   type ElevatedSchtasksCreateAndRunResult,
@@ -1506,6 +1507,11 @@ export function buildWindowsSchtasksCreateArgs(script = windowsServiceScriptPath
   return ["/create", "/tn", TASK, "/xml", xml, "/f"];
 }
 
+/** Build the fixed scheduler-create command from an explicit staged XML document. */
+export function buildWindowsSchtasksCreateArgsForXml(xml: string): string[] {
+  return ["/create", "/tn", TASK, "/xml", xml, "/f"];
+}
+
 /**
  * VBS launcher that starts the batch wrapper with a hidden window (style 0).
  * bWaitOnReturn=True keeps wscript.exe resident for the wrapper's lifetime so the
@@ -1821,6 +1827,84 @@ function writeWindowsSchedulerAssets(): void {
   // paths on some WSH/codepage combinations — same contract as the task XML below.
   writeServiceAssetWithRetry(windowsLauncherVbsPath(), `\uFEFF${buildWindowsLauncherVbs(script)}`, "utf16le");
   writeServiceAssetWithRetry(windowsTaskXmlPath(), `\uFEFF${buildWindowsTaskXml(script)}`, "utf16le");
+}
+
+function stageWindowsSchedulerRegistrationXml(): string {
+  if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
+  const path = join(getConfigDir(), `.opencodex-service-task.${randomUUID()}.xml`);
+  // This document points at the canonical launcher but does not publish or rewrite that
+  // launcher. UAC can therefore be refused while the current proxy still owns its port.
+  writeServiceAssetWithRetry(
+    path,
+    `\uFEFF${buildWindowsTaskXml(windowsServiceScriptPath(), windowsLauncherVbsPath())}`,
+    "utf16le",
+  );
+  return path;
+}
+
+export interface FreshWindowsSchedulerRegistrationDeps {
+  create?: (args: string[]) => void;
+  elevate?: (args: string[]) => Promise<void>;
+  probe?: () => WindowsSchedulerTaskProbe;
+  queryXml?: () => string;
+  rollback?: () => Promise<string | null>;
+}
+
+export async function registerFreshWindowsSchedulerTask(
+  xmlPath: string,
+  deps: FreshWindowsSchedulerRegistrationDeps = {},
+): Promise<void> {
+  const args = buildWindowsSchtasksCreateArgsForXml(xmlPath);
+  try {
+    (deps.create ?? schtasks)(args);
+  } catch (error) {
+    if (
+      !(error instanceof WindowsSchtasksError)
+      || error.operation !== "create"
+      || error.reason !== "access-denied"
+    ) {
+      throw error;
+    }
+    // The elevated command is still the fixed trusted schtasks executable plus the
+    // owned create shape. It registers only; the task is not run until cleanup commits.
+    await (deps.elevate ?? elevateSchtasks)(args);
+  }
+
+  const rollbackTask = deps.rollback ?? (() => rollbackElevatedSchedulerTask(TASK));
+  const probe = (deps.probe ?? (() => probeWindowsSchedulerTask(TASK)))();
+  if (probe.status === "absent") {
+    throw new Error("Task Scheduler reported success, but the new registration is absent; no service cleanup was started.");
+  }
+  if (probe.status === "unknown") {
+    const rollback = await rollbackTask();
+    throw new Error(
+      `Task Scheduler registration was not verifiably present after create (${probe.detail}).`
+      + (rollback ? ` Cleanup also failed: ${rollback}` : " The unverified registration was rolled back."),
+    );
+  }
+
+  let registeredXml = "";
+  let queryDetail: string | null = null;
+  try {
+    registeredXml = (deps.queryXml ?? (() => querySchtasks(["/query", "/tn", TASK, "/xml"])))();
+  } catch (error) {
+    queryDetail = error instanceof Error ? error.message : String(error);
+  }
+  if (!registeredXml.trim()) {
+    const rollback = await rollbackTask();
+    throw new Error(
+      "Task Scheduler registration was created, but its live XML could not be verified."
+      + (queryDetail ? ` Query failed: ${queryDetail}` : " The query returned an empty document.")
+      + (rollback ? ` Cleanup also failed: ${rollback}` : " The unverified registration was rolled back."),
+    );
+  }
+  if (!windowsTaskRegistrationHealthy(registeredXml)) {
+    const rollback = await rollbackTask();
+    throw new Error(
+      "Task Scheduler registration was created but failed the OpenCodex action/trigger verification."
+      + (rollback ? ` Cleanup also failed: ${rollback}` : " The invalid registration was rolled back."),
+    );
+  }
 }
 
 function installWindows(): void {
@@ -2437,6 +2521,82 @@ export async function installServiceSafely(
   await install();
 }
 
+export interface FreshWindowsSchedulerInstallDeps {
+  stageRegistrationXml?: () => string;
+  register?: (xmlPath: string) => Promise<void>;
+  prepare?: () => Promise<void>;
+  publishAssets?: () => void;
+  runTask?: () => void;
+  writeState?: () => void;
+  rollbackTask?: () => Promise<string | null>;
+  removeStagedXml?: (xmlPath: string) => void;
+}
+
+/**
+ * Fresh Windows scheduler install with UAC before the destructive commit.
+ *
+ * The registration is created but never run before `prepare`: UAC cancellation and
+ * create failure therefore cannot stop the existing proxy or trigger its native-routing
+ * cleanup. This path is used only after Task Scheduler absence was proved, so rollback
+ * can delete the exact registration this attempt created without touching prior state.
+ */
+export async function installFreshWindowsSchedulerSafely(
+  deps: FreshWindowsSchedulerInstallDeps = {},
+): Promise<void> {
+  const stage = deps.stageRegistrationXml ?? stageWindowsSchedulerRegistrationXml;
+  const register = deps.register ?? registerFreshWindowsSchedulerTask;
+  const prepare = deps.prepare ?? (() => prepareServiceInstall("scheduler"));
+  const publishAssets = deps.publishAssets ?? writeWindowsSchedulerAssets;
+  const runTask = deps.runTask ?? startWindows;
+  const writeState = deps.writeState ?? (() => writeServiceInstallState("scheduler"));
+  const rollbackTask = deps.rollbackTask ?? (() => rollbackElevatedSchedulerTask(TASK));
+  const removeStagedXml = deps.removeStagedXml ?? ((path: string) => {
+    if (existsSync(path)) unlinkSync(path);
+  });
+
+  let stagedXml: string | null = null;
+  let registered = false;
+  let started = false;
+  try {
+    stagedXml = stage();
+    await register(stagedXml);
+    registered = true;
+
+    // The destructive boundary begins only after Task Scheduler accepted the definition.
+    await prepare();
+    publishAssets();
+    runTask();
+    started = true;
+    writeState();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (registered && !started) {
+      const rollback = await rollbackTask();
+      throw new Error(
+        `${detail}\n`
+        + (rollback
+          ? `The new Task Scheduler registration may remain: ${rollback}`
+          : "The new Task Scheduler registration was rolled back. The previous proxy/routing state was not assumed restored."),
+      );
+    }
+    if (started) {
+      throw new Error(
+        `${detail}\nThe scheduler task started, but install state was not published. `
+        + "The task was left in place; inspect `ocx service status` before retrying.",
+      );
+    }
+    throw error;
+  } finally {
+    if (stagedXml) {
+      try { removeStagedXml(stagedXml); } catch (error) {
+        console.error(
+          `⚠️  Failed to remove temporary Task Scheduler XML ${stagedXml}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+}
+
 /**
  * If a service is installed, stop it so the process manager doesn't respawn after `ocx stop`.
  * Returns true if a service was found and stopped.
@@ -2812,7 +2972,19 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       // restart-loops on EADDRINUSE, and the old standalone process makes the install
       // verification report a false success.
       try {
-        await installServiceSafely(backend, ops.install);
+        if (process.platform === "win32" && backend === "scheduler") {
+          const scheduler = probeWindowsSchedulerTask(TASK);
+          if (scheduler.status === "unknown") {
+            throw new Error(`Task Scheduler state could not be verified before install: ${scheduler.detail}`);
+          }
+          if (scheduler.status === "absent") {
+            await installFreshWindowsSchedulerSafely();
+          } else {
+            await installServiceSafely(backend, ops.install);
+          }
+        } else {
+          await installServiceSafely(backend, ops.install);
+        }
       } catch (error) {
         console.error(`❌ Service install cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;

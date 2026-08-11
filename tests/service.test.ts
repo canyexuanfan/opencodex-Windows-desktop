@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
+import { WindowsSchtasksError } from "../src/lib/windows-elevation";
 import type { OcxConfig } from "../src/types";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-service-test");
@@ -662,6 +663,172 @@ describe("launchd service plist", () => {
 });
 
 describe("service lifecycle cleanup ordering", () => {
+  test("fresh registration elevates only the fixed create after a structured denial", async () => {
+    const calls: string[] = [];
+    const stagedXml = "C:\\Users\\x\\.opencodex\\attempt.xml";
+    const expectedArgs = buildWindowsSchtasksCreateArgsForXml(stagedXml);
+    await registerFreshWindowsSchedulerTask(stagedXml, {
+      create: args => {
+        calls.push(`create:${args.join(" ")}`);
+        throw new WindowsSchtasksError("create", "access-denied", "denied");
+      },
+      elevate: async args => { calls.push(`elevate:${args.join(" ")}`); },
+      probe: () => ({ status: "present", detail: "present" }),
+      queryXml: () => buildWindowsTaskXml(),
+      rollback: async () => { calls.push("rollback"); return null; },
+    });
+
+    expect(calls).toEqual([
+      `create:${expectedArgs.join(" ")}`,
+      `elevate:${expectedArgs.join(" ")}`,
+    ]);
+  });
+
+  test("fresh registration UAC denial returns before task probing or cleanup", async () => {
+    const calls: string[] = [];
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+      create: () => {
+        calls.push("create");
+        throw new WindowsSchtasksError("create", "access-denied", "denied");
+      },
+      elevate: async () => { calls.push("elevate"); throw new Error("UAC cancelled"); },
+      probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
+      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(); },
+      rollback: async () => { calls.push("rollback"); return null; },
+    })).rejects.toThrow("UAC cancelled");
+
+    expect(calls).toEqual(["create", "elevate"]);
+  });
+
+  test("fresh registration never elevates an unstructured scheduler failure", async () => {
+    const calls: string[] = [];
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+      create: () => { calls.push("create"); throw new Error("scheduler unavailable"); },
+      elevate: async () => { calls.push("elevate"); },
+      probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
+      queryXml: () => buildWindowsTaskXml(),
+      rollback: async () => { calls.push("rollback"); return null; },
+    })).rejects.toThrow("scheduler unavailable");
+
+    expect(calls).toEqual(["create"]);
+  });
+
+  test("create success followed by proven absence does not request a pointless rollback UAC", async () => {
+    const calls: string[] = [];
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+      create: () => { calls.push("create"); },
+      elevate: async () => { calls.push("elevate"); },
+      probe: () => { calls.push("probe"); return { status: "absent", detail: "absent" }; },
+      queryXml: () => { calls.push("query"); return buildWindowsTaskXml(); },
+      rollback: async () => { calls.push("rollback"); return null; },
+    })).rejects.toThrow(/registration is absent/);
+
+    expect(calls).toEqual(["create", "probe"]);
+  });
+
+  test("fresh registration requires the live Task Scheduler XML before cleanup can begin", async () => {
+    const calls: string[] = [];
+    await expect(registerFreshWindowsSchedulerTask("attempt.xml", {
+      create: () => { calls.push("create"); },
+      probe: () => { calls.push("probe"); return { status: "present", detail: "present" }; },
+      queryXml: () => { calls.push("query"); throw new Error("query denied"); },
+      rollback: async () => { calls.push("rollback"); return null; },
+    })).rejects.toThrow(/live XML could not be verified/);
+
+    expect(calls).toEqual(["create", "probe", "query", "rollback"]);
+  });
+
+  test("fresh Windows scheduler install gets registration approval before destructive cleanup", async () => {
+    const calls: string[] = [];
+    await installFreshWindowsSchedulerSafely({
+      stageRegistrationXml: () => { calls.push("stage"); return "attempt.xml"; },
+      register: async path => { calls.push(`register:${path}`); },
+      prepare: async () => { calls.push("prepare:stop-managers-and-proxy"); },
+      publishAssets: () => { calls.push("publish-assets"); },
+      runTask: () => { calls.push("run-task"); },
+      writeState: () => { calls.push("write-state"); },
+      rollbackTask: async () => { calls.push("rollback-task"); return null; },
+      removeStagedXml: path => { calls.push(`remove:${path}`); },
+    });
+
+    expect(calls).toEqual([
+      "stage",
+      "register:attempt.xml",
+      "prepare:stop-managers-and-proxy",
+      "publish-assets",
+      "run-task",
+      "write-state",
+      "remove:attempt.xml",
+    ]);
+  });
+
+  test("UAC cancellation removes only staged XML and never enters cleanup or asset publication", async () => {
+    const calls: string[] = [];
+    mkdirSync(TEST_DIR, { recursive: true });
+    const routingPath = join(TEST_DIR, "config.toml");
+    const routingBefore = 'openai_base_url = "http://127.0.0.1:10100/v1"\nmodel_catalog_json = "keep.json"\n';
+    writeFileSync(routingPath, routingBefore, "utf8");
+    await expect(installFreshWindowsSchedulerSafely({
+      stageRegistrationXml: () => { calls.push("stage"); return "attempt.xml"; },
+      register: async path => {
+        calls.push(`register:${path}`);
+        throw new Error("UAC prompt was cancelled");
+      },
+      prepare: async () => { calls.push("prepare"); },
+      publishAssets: () => { calls.push("publish-assets"); },
+      runTask: () => { calls.push("run-task"); },
+      writeState: () => { calls.push("write-state"); },
+      rollbackTask: async () => { calls.push("rollback-task"); return null; },
+      removeStagedXml: path => { calls.push(`remove:${path}`); },
+    })).rejects.toThrow("UAC prompt was cancelled");
+
+    expect(calls).toEqual([
+      "stage",
+      "register:attempt.xml",
+      "remove:attempt.xml",
+    ]);
+    expect(readFileSync(routingPath, "utf8")).toBe(routingBefore);
+  });
+
+  test("a pre-run commit failure rolls back only the newly-created registration", async () => {
+    const calls: string[] = [];
+    await expect(installFreshWindowsSchedulerSafely({
+      stageRegistrationXml: () => "attempt.xml",
+      register: async () => { calls.push("register"); },
+      prepare: async () => { calls.push("prepare"); throw new Error("standalone stop failed"); },
+      publishAssets: () => { calls.push("publish-assets"); },
+      runTask: () => { calls.push("run-task"); },
+      writeState: () => { calls.push("write-state"); },
+      rollbackTask: async () => { calls.push("rollback-task"); return null; },
+      removeStagedXml: () => { calls.push("remove-stage"); },
+    })).rejects.toThrow(/previous proxy\/routing state was not assumed restored/);
+
+    expect(calls).toEqual(["register", "prepare", "rollback-task", "remove-stage"]);
+  });
+
+  test("a state-write failure leaves the already-started task for explicit diagnosis", async () => {
+    const calls: string[] = [];
+    await expect(installFreshWindowsSchedulerSafely({
+      stageRegistrationXml: () => "attempt.xml",
+      register: async () => { calls.push("register"); },
+      prepare: async () => { calls.push("prepare"); },
+      publishAssets: () => { calls.push("publish-assets"); },
+      runTask: () => { calls.push("run-task"); },
+      writeState: () => { calls.push("write-state"); throw new Error("state write failed"); },
+      rollbackTask: async () => { calls.push("rollback-task"); return null; },
+      removeStagedXml: () => { calls.push("remove-stage"); },
+    })).rejects.toThrow(/task was left in place/);
+
+    expect(calls).toEqual([
+      "register",
+      "prepare",
+      "publish-assets",
+      "run-task",
+      "write-state",
+      "remove-stage",
+    ]);
+  });
+
   test("service install stops the recorded backend, requested backend, and standalone before loading assets", async () => {
     const calls: string[] = [];
     const managerOps = (backend: "scheduler" | "native") => ({
@@ -761,6 +928,16 @@ describe("service lifecycle cleanup ordering", () => {
     expect(assetsHelper).toContain("writeServiceAssetWithRetry(windowsTaskXmlPath()");
     // Retry helper tolerates transient Windows file locks from the just-ended task.
     expect(service).toContain('code !== "EBUSY" && code !== "EPERM" && code !== "EACCES"');
+  });
+
+  test("fresh Windows scheduler wiring selects the pre-registration transaction", async () => {
+    const service = await readText("src/service.ts");
+    const installCase = service.slice(service.indexOf('case "install":'), service.indexOf('case "start":'));
+    expect(installCase).toContain('scheduler.status === "absent"');
+    expect(installCase).toContain("await installFreshWindowsSchedulerSafely()");
+    expect(installCase.indexOf('scheduler.status === "absent"')).toBeLessThan(
+      installCase.indexOf("await installFreshWindowsSchedulerSafely()"),
+    );
   });
 
   test("Windows service uninstall verifies task deletion before removing assets", async () => {
