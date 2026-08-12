@@ -195,6 +195,7 @@ import {
   createLocalAttestationSecret,
 } from "../lib/local-management-attestation";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
+import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../lib/local-provider-reload-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
@@ -478,9 +479,19 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
   return wrote;
 }
 
+export function warnAgentTaskRecoveryStartup(config: {
+  agentTaskRecovery?: { enabled?: boolean };
+}): void {
+  if (config.agentTaskRecovery?.enabled !== true) return;
+  console.warn("⚠️  Experimental encrypted V2 task recovery is enabled.");
+  console.warn("   A scoped cache miss may send an additional authenticated request to ChatGPT and may consume quota or add latency; concurrent misses can share one request.");
+  console.warn("   Recovered model output is retained only in a bounded in-memory cache; exact fidelity is not guaranteed and the path depends on undocumented backend behavior.");
+}
+
 export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
   const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
   const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
+  warnAgentTaskRecoveryStartup(config);
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
   assertServerAuthConfig(config);
@@ -811,6 +822,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           pid: process.pid,
           port: healthPort,
           restartCapability: SYSTEM_RESTART_CAPABILITY_VERSION,
+          providerReloadCapability: LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION,
         }, 200, req, policy);
         const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
         if (challenge) {
