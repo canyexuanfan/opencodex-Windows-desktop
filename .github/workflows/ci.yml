@@ -404,6 +404,12 @@ jobs:
           cd gui
           bun install --frozen-lockfile
 
+      - name: GUI lint (Oxlint)
+        if: needs.changes.outputs.gui == 'true'
+        run: |
+          cd gui
+          bun run lint
+
       - name: Typecheck
         run: |
           bun x tsc --noEmit
@@ -417,12 +423,6 @@ jobs:
 
       - name: Check release helper syntax
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
-
-      - name: GUI lint
-        if: needs.changes.outputs.gui == 'true'
-        run: |
-          cd gui
-          bun run lint
 
       - name: GUI build
         if: needs.changes.outputs.gui == 'true'
