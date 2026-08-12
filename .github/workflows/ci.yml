@@ -498,6 +498,9 @@ jobs:
       # the first attempt — only the crash signature is retried, exactly once.
       - name: Test
         run: |
+          # GitHub Actions starts bash `run:` blocks with `-e`. Disable
+          # errexit so a Bun crash reaches PIPESTATUS and the bounded retry.
+          set +e
           set -uo pipefail
           suite_log="$(mktemp -t ocx-macos-suite.XXXXXX)"
           for attempt in 1 2; do

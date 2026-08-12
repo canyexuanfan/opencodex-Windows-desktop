@@ -184,6 +184,10 @@ describe("GitHub Actions hardening", () => {
     // drop the crash-signature guard so an assertion failure gets retried into
     // green, or let the retry loop swallow a repeated crash. Pin both.
     const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate tests"))?.run ?? "";
+    // Actions invokes multiline `run:` blocks with `bash -e`. The retry loop
+    // must disable errexit before the crash-prone command or exit 133 aborts
+    // the step before PIPESTATUS can be inspected and the retry can run.
+    expect(hasExactShellCommand(macosTestRun, "set +e")).toBe(true);
     expect(macosTestRun).toContain("Segmentation fault at address");
     expect(macosTestRun).toContain("oh no: Bun has crashed");
     expect(macosTestRun).toContain("assertion failures are not retried");
