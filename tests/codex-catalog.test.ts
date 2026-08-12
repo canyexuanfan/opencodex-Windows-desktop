@@ -3955,9 +3955,9 @@ describe("Codex catalog routed normalization", () => {
   test("built-in DeepSeek and GLM effort models opt into Codex reasoning propagation (#1100)", async () => {
     const expected = [
       { slug: "deepseek/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
-      { slug: "deepseek/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "deepseek/deepseek-v4-pro", efforts: ["low", "high", "max", "ultra"] },
       { slug: "opencode-go/deepseek-v4-flash", efforts: ["low", "high", "max", "ultra"] },
-      { slug: "opencode-go/deepseek-v4-pro", efforts: ["high", "max", "ultra"] },
+      { slug: "opencode-go/deepseek-v4-pro", efforts: ["low", "high", "max", "ultra"] },
       { slug: "opencode-go/glm-5.2", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
       { slug: "opencode-go/glm-5.1", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },
       { slug: "opencode-go/glm-5", efforts: ["low", "medium", "high", "xhigh", "max", "ultra"] },

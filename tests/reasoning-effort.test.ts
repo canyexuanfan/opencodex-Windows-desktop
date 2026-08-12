@@ -167,7 +167,9 @@ describe("provider-specific reasoning effort mapping", () => {
     });
     const body = JSON.parse(req.body as string) as { reasoning_effort?: string; messages: Record<string, unknown>[] };
 
-    expect(body.reasoning_effort).toBe("max");
+    // V4 Pro GA (DeepSeek-V4-Pro-0813): the vendor thinking-mode table is now
+    // identical to Flash, so xhigh resolves to high on Pro too.
+    expect(body.reasoning_effort).toBe("high");
     expect(body.messages[1].reasoning_content).toBe("I need to inspect files before answering.");
     expect(body.messages[1]).toMatchObject({
       role: "assistant",

@@ -433,38 +433,35 @@ const OPENCODE_ZEN_TEXT_ONLY_MODELS = [
   "deepseek-v4-flash-free",
 ];
 /*
- * DeepSeek's Codex ladder is low/high/max, and the two V4 models resolve it
- * DIFFERENTLY. From the official thinking-mode table (api-docs.deepseek.com,
- * EN and zh-cn agree, re-verified 2026-08-06):
+ * DeepSeek's Codex ladder is low/high/max. With the V4 Pro GA release
+ * (DeepSeek-V4-Pro-0813) the official thinking-mode table is IDENTICAL for both
+ * V4 models (api-docs.deepseek.com/guides/thinking_mode, verified 2026-08-13):
  *
  *   requested  | v4-flash | v4-pro
- *   low        | low      | high
+ *   low        | low      | low
+ *   medium     | high     | high
  *   high       | high     | high
- *   xhigh      | high     | max
+ *   xhigh      | high     | high
  *   max        | max      | max
  *
- * Two consequences (#1057):
+ * Before GA, Pro silently upgraded low->high and mapped xhigh->max (#1057-era
+ * table); the page's footnote about an early-August Pro mapping update landed
+ * with this GA, so Pro now advertises the same three real tiers as Flash.
+ *
+ * Two standing notes (#1057):
  *
  * - `xhigh` is a COMPATIBILITY ALIAS, not a native tier. It stays in the wire maps
  *   so existing requests and saved configs keep working, but it is not advertised.
- * - Pro does NOT honor `low` — the vendor silently upgrades it to `high`. So Pro
- *   advertises only the two levels it actually distinguishes. Advertising `low`
- *   there would put a tier in the picker that costs `high`, which is the same
- *   defect this fixes wearing a different value.
- *
- * The vendor page footnotes that Pro's mapping updates in early August 2026; as of
- * the re-verification above it had not changed. When it does, Pro gains `low` here.
- *
- * `medium` has no row in the vendor table — mapping it to `high` is OUR
- * compatibility choice for clients that only speak the OpenAI ladder.
+ * - `medium` has no row in the vendor table — mapping it to `high` is OUR
+ *   compatibility choice for clients that only speak the OpenAI ladder.
  */
 const DEEPSEEK_FLASH_THINKING_EFFORTS = ["low", "high", "max"];
-const DEEPSEEK_PRO_THINKING_EFFORTS = ["high", "max"];
+const DEEPSEEK_PRO_THINKING_EFFORTS = ["low", "high", "max"];
 const DEEPSEEK_PRO_REASONING_MAP: Record<string, string> = {
-  low: "high",
+  low: "low",
   medium: "high",
   high: "high",
-  xhigh: "max",
+  xhigh: "high",
   max: "max",
 };
 const DEEPSEEK_FLASH_REASONING_MAP: Record<string, string> = {
@@ -1424,8 +1421,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Official DeepSeek Codex setup (codex-deepseek-setup.sh) advertises 1,048,576
     // for both V4 models; the older 1,000,000 figure was a rounded approximation.
     modelContextWindows: { "deepseek-v4-flash": 1_048_576, "deepseek-v4-pro": 1_048_576 },
-    // DeepSeek documents V4-Flash as a native Responses API model adapted for Codex. The
-    // API id is `deepseek-v4-flash`; `DeepSeek-V4-Flash-0731` is a release/version label.
+    // DeepSeek documents both V4 models as native Responses API models adapted for Codex
+    // (model table marks Responses API ✓ for flash and pro; the /responses reference lists
+    // both ids as accepted `model` values — verified 2026-08-13 with the V4 Pro GA,
+    // version label DeepSeek-V4-Pro-0813).
     modelWireDefaults: {
       // Codex speaks Responses natively and DeepSeek ships a Codex-compatible
       // apply_patch tool on that wire, so a Responses inbound goes straight out with
@@ -1434,6 +1433,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       // translating them into Responses would add a hop onto our newest upstream path
       // for no gain.
       "deepseek-v4-flash": { wire: "openai-responses", inbound: ["responses"] },
+      "deepseek-v4-pro": { wire: "openai-responses", inbound: ["responses"] },
     },
     // The #875-era bounded-JSON force (`modelResponsesUpstreamStreaming`) is retired
     // for this entry: the official guide documents a `response.completed` /
@@ -1448,7 +1448,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
     // Current official streams normally carry a real terminal; retain a narrow grace
     // repair for the historical shape that closes after a complete graph without one.
-    modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 } },
+    modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 }, "deepseek-v4-pro": { graceMs: 5_000 } },
     // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
     // clients stuck on an uncommitted turn (#938). Client-facing only — raw
     // continuation snapshots keep the upstream ids.

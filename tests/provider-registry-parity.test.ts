@@ -127,10 +127,10 @@ describe("provider registry parity", () => {
     // differently (api-docs.deepseek.com/guides/thinking_mode, verified 2026-08-06).
     // `xhigh` is an alias, so it stays in the wire map but is not advertised. Pro
     // does not honor `low` (the vendor maps it to `high`), so Pro must not offer it.
-    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEfforts?.["deepseek-v4-pro"]).toEqual(["high", "max"]);
+    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEfforts?.["deepseek-v4-pro"]).toEqual(["low", "high", "max"]);
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEfforts?.["deepseek-v4-flash"]).toEqual(["low", "high", "max"]);
-    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.low).toBe("high");
-    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.xhigh).toBe("max");
+    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.low).toBe("low");
+    expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.xhigh).toBe("high");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-pro"]?.max).toBe("max");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-flash"]?.low).toBe("low");
     expect(KEY_LOGIN_PROVIDERS.deepseek.modelReasoningEffortMap?.["deepseek-v4-flash"]?.xhigh).toBe("high");
@@ -1025,14 +1025,14 @@ describe("free-provider directory isolation", () => {
    * that actually receives the shared metadata, so a misclassification cannot land
    * silently — it fails here with the offending id named.
    *
-   * Ladders: Flash gets low/high/max; Pro gets high/max, because DeepSeek upgrades a
-   * requested `low` to `high` on Pro and advertising it would sell a tier the vendor
-   * does not deliver. Neither advertises `xhigh` — it is an alias, kept in the wire
-   * map only (api-docs.deepseek.com/guides/thinking_mode, verified 2026-08-06).
+   * Ladders: since the V4 Pro GA (DeepSeek-V4-Pro-0813) both models get low/high/max —
+   * the vendor's updated thinking-mode table is now identical for Flash and Pro.
+   * Neither advertises `xhigh` — it is an alias, kept in the wire map only
+   * (api-docs.deepseek.com/guides/thinking_mode, verified 2026-08-13).
    */
   test("every DeepSeek V4 entry advertises its own ladder and alias mapping", () => {
     const flashLadder = ["low", "high", "max"];
-    const proLadder = ["high", "max"];
+    const proLadder = ["low", "high", "max"];
     const cases: Array<{ provider: string; model: string; flash: boolean }> = [
       { provider: "deepseek", model: "deepseek-v4-pro", flash: false },
       { provider: "deepseek", model: "deepseek-v4-flash", flash: true },
@@ -1059,8 +1059,8 @@ describe("free-provider directory isolation", () => {
 
       const map = entry?.modelReasoningEffortMap?.[model];
       expect(map, `${provider}/${model} has no effort map`).toBeTruthy();
-      expect(map?.xhigh, `${provider}/${model} xhigh alias`).toBe(flash ? "high" : "max");
-      expect(map?.low, `${provider}/${model} low resolution`).toBe(flash ? "low" : "high");
+      expect(map?.xhigh, `${provider}/${model} xhigh alias`).toBe("high");
+      expect(map?.low, `${provider}/${model} low resolution`).toBe("low");
       expect(map?.max, `${provider}/${model} max`).toBe("max");
     }
   });

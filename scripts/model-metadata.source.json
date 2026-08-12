@@ -9446,10 +9446,10 @@
 				"supportsReasoningEffort": true,
 				"reasoningEffortMap": {
 					"minimal": "high",
-					"low": "high",
+					"low": "low",
 					"medium": "high",
 					"high": "high",
-					"xhigh": "max",
+					"xhigh": "high",
 					"max": "max"
 				},
 				"maxTokensField": "max_tokens",
@@ -9492,10 +9492,10 @@
 				"supportsReasoningEffort": true,
 				"reasoningEffortMap": {
 					"minimal": "high",
-					"low": "high",
+					"low": "low",
 					"medium": "high",
 					"high": "high",
-					"xhigh": "max",
+					"xhigh": "high",
 					"max": "max"
 				},
 				"maxTokensField": "max_tokens",
