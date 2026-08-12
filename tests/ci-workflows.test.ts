@@ -153,6 +153,22 @@ describe("GitHub Actions hardening", () => {
     const macosSteps = (ci.jobs?.["platform-macos"] as { steps?: { run?: string }[] })?.steps ?? [];
     expect(macosSteps.some(step => step.run?.includes("bun test --isolate tests"))).toBe(true);
     expect(macosSteps.some(step => step.run?.includes("--shard"))).toBe(false);
+
+    // The macOS leg retries ONLY a Bun runtime crash, and only once. Bun 1.3.14
+    // segfaults reclaiming a Worker at an `--isolate` file boundary with
+    // balanced worker counts, which is a runtime defect rather than a test
+    // result; the Linux shards already absorb that class in
+    // `scripts/ci/run-bun-test-batches.sh`. Two ways to break this silently:
+    // drop the crash-signature guard so an assertion failure gets retried into
+    // green, or let the retry loop swallow a repeated crash. Pin both.
+    const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate tests"))?.run ?? "";
+    expect(macosTestRun).toContain("Segmentation fault at address");
+    expect(macosTestRun).toContain("oh no: Bun has crashed");
+    expect(macosTestRun).toContain("assertion failures are not retried");
+    expect(macosTestRun).toContain("failing after one retry");
+    // `for attempt in 1 2` — one retry, never an unbounded loop.
+    expect(macosTestRun).toContain("for attempt in 1 2");
+    expect(macosTestRun).not.toContain("while true");
     expect((ci.jobs?.["platform-macos"] as { needs?: string; if?: string })?.needs).toBe("changes");
     expect((ci.jobs?.["platform-macos"] as { if?: string })?.if)
       .toBe("github.event_name != 'pull_request' || needs.changes.outputs.ci == 'true'");

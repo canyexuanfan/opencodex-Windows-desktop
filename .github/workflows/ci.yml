@@ -478,8 +478,40 @@ jobs:
           cd gui
           bun run build
 
+      # Bun 1.3.14 segfaults while reclaiming a Worker at an `--isolate` file
+      # boundary: the header shows BALANCED `workers_spawned(N)
+      # workers_terminated(N)` and the process dies with exit 133 after the last
+      # assertion in the file already passed. It landed on
+      # `storage-worker-lifecycle` and `server-background-lifecycle` — the two
+      # files that tear down a still-busy policy Worker — and accounted for most
+      # of this leg's red runs on `dev` while every failing SHA passed on rerun.
+      #
+      # This is a runtime crash, not a test result, and the Linux shards already
+      # retry exactly this class through `scripts/ci/run-bun-test-batches.sh`
+      # (`is_bun_runtime_crash`). The unsharded macOS control had no equivalent,
+      # so the same crash that Linux absorbs failed the whole promotion here.
+      #
+      # Keep the signature list in sync with `is_bun_runtime_crash` in
+      # scripts/ci/run-bun-test-batches.sh. An assertion failure still fails on
+      # the first attempt — only the crash signature is retried, exactly once.
       - name: Test
-        run: bun test --isolate tests
+        run: |
+          set -uo pipefail
+          suite_log="$(mktemp -t ocx-macos-suite.XXXXXX)"
+          for attempt in 1 2; do
+            bun test --isolate tests 2>&1 | tee "$suite_log"
+            suite_status="${PIPESTATUS[0]}"
+            if [ "$suite_status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -Eqi 'oh no: Bun has crashed|Segmentation fault at address|Illegal instruction|Bus error|Aborted \(core dumped\)' "$suite_log"; then
+              echo "::error::macOS suite failed on attempt ${attempt} (exit ${suite_status}); assertion failures are not retried."
+              exit "$suite_status"
+            fi
+            echo "::warning::Bun runtime crash in the macOS suite (exit ${suite_status}, attempt ${attempt})."
+          done
+          echo "::error::Bun runtime crash repeated on the macOS suite; failing after one retry."
+          exit 1
 
       - name: CLI help smoke
         run: bun run src/cli/index.ts help
