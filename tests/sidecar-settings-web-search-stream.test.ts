@@ -30,8 +30,9 @@ async function putSidecarSettings(config: OcxConfig, webSearch: Record<string, u
 }
 
 function emptyConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
-  // A schema-valid provider setup: loadConfig() discards invalid files wholesale
-  // (backup + defaults), which would silently void the reload assertions below.
+  // A schema-valid provider setup: for an invalid file, loadConfig() first retries with
+  // defaults merged in and falls back to backup + pure defaults only when that repair also
+  // fails validation — either path would silently void the reload assertions below.
   return {
     port: 10100,
     defaultProvider: "dummy",
