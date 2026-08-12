@@ -278,6 +278,17 @@ export const CONTEXT_TIERS: readonly ContextTier[] = [
     verifiedAt: "2026-08-03",
   },
   {
+    // 260813: grok-4.6 long-context tier mirrored from grok-4.5; the official pricing row
+    // was not yet published when the model page went up, so treat as provisional.
+    provider: "xai",
+    modelId: "grok-4.6",
+    thresholdInputTokens: 200_000,
+    inclusive: true,
+    multiplier: UNIFORM_DOUBLE,
+    source: "https://docs.x.ai/developers/pricing",
+    verifiedAt: "2026-08-13",
+  },
+  {
     // daybreak-blue-latest aliases gpt-5.6-sol, which publishes the full long-context row
     // ($10 / $1 / $12.50 / $45). Scoped to openai-apikey ON PURPOSE: Daybreak is not
     // routable on the Codex-login `openai` provider, so adding the alias to the shared

@@ -953,7 +953,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // devlog/model_update/260709_model_refresh/001_xai_lineup.md.
     // grok-4.20-multi-agent-0309 is intentionally absent: the OAuth chat-completions
     // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
-    models: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
+    // 260813: grok-4.6 added per the new docs.x.ai/developers/grok-4-6 page; specs mirrored
+    // from grok-4.5 until the official capability/pricing tables settle.
+    models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
     // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
     // models accept image input (JPEG/PNG, URL or base64). Without this the catalog leaves
@@ -962,6 +964,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // the app blocks attachments client-side. grok-build-0.1 / grok-composer-2.5-fast stay out
     // (they are already listed in noVisionModels below).
     modelInputModalities: {
+      "grok-4.6": ["text", "image"],
       "grok-4.5": ["text", "image"],
       "grok-4.3": ["text", "image"],
       "grok-4.20-0309-reasoning": ["text", "image"],
@@ -972,10 +975,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // reasoning_content as the top cause of prompt-cache misses on multi-turn conversations
     // (docs.x.ai prompt-caching/multi-turn, verified 2026-07-13 — devlog/_plan/260713_grok_caching).
     // Models that never emit reasoning simply have no thinking parts to replay (no-op).
-    preserveReasoningContentModels: ["grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
+    preserveReasoningContentModels: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
     // grok-4.5 reasoning is always-on with low/medium/high control (no off tier upstream).
-    modelReasoningEfforts: { "grok-4.5": ["low", "medium", "high"] },
+    modelReasoningEfforts: { "grok-4.6": ["low", "medium", "high"], "grok-4.5": ["low", "medium", "high"] },
     modelContextWindows: {
+      "grok-4.6": 500_000,
       "grok-4.5": 500_000,
       "grok-4.3": 1_000_000,
       "grok-4.20-0309-reasoning": 1_000_000,
