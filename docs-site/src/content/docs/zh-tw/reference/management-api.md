@@ -201,7 +201,7 @@ Session 簽發在需要 data-plane 認證時停用，這包含遠端綁定。遠
 
 | 方法與路徑 | 用途 | Notable errors |
 | --- | --- | --- |
-| `GET, POST, DELETE /api/codex-auth/accounts` | 列出／重新整理、可選擇匯入或刪除 Codex 帳號 | 400 無效輸入；手動匯入可被停用 |
+| `GET, POST, DELETE /api/codex-auth/accounts` | 列出／重新整理或刪除 Codex 帳號。POST 僅保留為已停用的相容 endpoint；成功的 DELETE 回應包含 `catalogRefreshPending`。 | POST 一律回傳 403 `manual_import_disabled`；DELETE 輸入無效時回傳 400 |
 | `PUT /api/codex-auth/accounts/alias` | 設定或清除帳號別名 | 400 無效帳號／別名 |
 | `PUT /api/codex-auth/accounts/pause` | 暫停或恢復一個帳號 | 400 無效帳號／狀態；404 缺失帳號 |
 | `PUT /api/codex-auth/accounts/pause-exhausted` | 暫停配額耗盡的帳號 | 變更鎖失敗變為 503 |
