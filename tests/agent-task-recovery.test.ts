@@ -180,10 +180,16 @@ describe("agent task recovery (opt-in, default off)", () => {
   });
 
   test("charges namespaced tool bridge maps only once across recovery reparse", async () => {
-    globalThis.fetch = (async (input) => {
-      if (String(input).includes("chatgpt.com")) {
+    const recoveryRequests: Request[] = [];
+    const providerRequests: Request[] = [];
+    const requestHeaders = codexHeaders();
+    globalThis.fetch = (async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.includes("chatgpt.com")) {
+        recoveryRequests.push(request);
         return new Response(recoverySse("Use the advertised tool."), { status: 200 });
       }
+      providerRequests.push(request);
       return providerResponse();
     }) as typeof fetch;
     const namespace = "mcp__review";
@@ -203,7 +209,7 @@ describe("agent task recovery (opt-in, default off)", () => {
         routedConfig(),
         "xai/grok-4.5",
         encryptedInput(),
-        codexHeaders(),
+        requestHeaders,
         undefined,
         {
           translatorBudget: budget,
@@ -216,6 +222,11 @@ describe("agent task recovery (opt-in, default off)", () => {
       );
 
       expect(response.status).toBe(200);
+      expect(recoveryRequests).toHaveLength(1);
+      expect(recoveryRequests[0]?.headers.get("authorization"))
+        .toBe(requestHeaders.get("authorization"));
+      expect(recoveryRequests[0]?.headers.get("chatgpt-account-id")).toBe("acct-caller");
+      expect(providerRequests).toHaveLength(1);
       expect(mappingCharges).toHaveLength(1);
     } finally {
       budget.dispose();
