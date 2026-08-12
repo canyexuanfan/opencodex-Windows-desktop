@@ -297,6 +297,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
       setInflightCount(count => Math.max(0, count - 1));
       setFirstAttemptSettled(true);
     }
+  // oxlint-disable-next-line react/react-compiler -- preserve existing callback dependency semantics during Oxlint migration
   }, [apiBase]);
 
   // Initial load plus background refresh. Owned here so mounting or unmounting a surface
