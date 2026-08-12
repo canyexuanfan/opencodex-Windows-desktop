@@ -40,7 +40,9 @@ it, exactly like the sidecar-less path. The live window closes permanently at th
 boundary, so the decision to intercept `web_search` stays atomic and nothing is ever delivered
 twice (the terminal replay skips what already streamed). Tradeoff: text the model emits *before*
 deciding to search — which buffered mode silently drops — becomes visible and may partially repeat
-in the post-search answer.
+in the post-search answer. The Dashboard overview page exposes this as the **Stream answers live**
+toggle on the web-search sidecar card (`PUT /api/sidecar-settings` with
+`webSearch.streamRoutedModelOutput`).
 
 Kiro commentary is independent of this option: commentary-phase text already streams ahead of the
 terminal event in buffered mode, and that bypass is unchanged — with or without

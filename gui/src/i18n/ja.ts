@@ -278,6 +278,8 @@ export const ja: Record<TKey, string> = {
   "dash.visionModelHint": "テキスト専用ルーティングモデルで画像を説明するために使うモデル。ChatGPT ログインが必要です。",
   "dash.webSearchSidecar": "ウェブ検索サイドカー",
   "dash.webSearchSidecarHint": "ルーティングモデルでウェブ検索に使うバックエンドとモデルを選択します。",
+  "dash.webSearchStream": "回答をライブ配信",
+  "dash.webSearchStreamHint": "ターン終了までバッファせず、ルーティングモデルの出力を逐次表示します。検索前のテキストは一部繰り返される場合があります。",
   "dash.visionSidecar": "ビジョンサイドカー",
   "dash.visionSidecarHint": "テキスト専用ルーティングモデルで画像を説明するために使うバックエンドとモデルを選択します。",
   "dash.shadowCallIntercept": "シャドウコール傍受",

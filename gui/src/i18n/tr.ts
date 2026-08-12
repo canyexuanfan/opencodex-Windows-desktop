@@ -279,6 +279,8 @@ export const tr: Record<TKey, string> = {
   "dash.visionModelHint": "Salt metin yönlendirilen modeller için görselleri tanımlamakta kullanılan model. ChatGPT girişi gerektirir.",
   "dash.webSearchSidecar": "Web arama yan aracı (sidecar)",
   "dash.webSearchSidecarHint": "Yönlendirilen modellerde web araması için kullanılan arka ucu ve modeli seçin.",
+  "dash.webSearchStream": "Yanıtları canlı akıt",
+  "dash.webSearchStreamHint": "Yönlendirilen modelin çıktısını tur sonuna kadar arabelleğe almak yerine anında gösterir. Aramadan önce yazılan metin kısmen tekrarlanabilir.",
   "dash.visionSidecar": "Görsel yan aracı (sidecar)",
   "dash.visionSidecarHint": "Salt metin modeller için görselleri tanımlamakta kullanılan arka ucu ve modeli seçin.",
   "dash.shadowCallIntercept": "Gölge Çağrı Yakalama",
