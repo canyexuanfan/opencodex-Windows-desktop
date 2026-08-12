@@ -2204,6 +2204,59 @@ describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
     expect(frames.some(f => f.event === "response.completed")).toBe(true);
   });
 
+  test("leading reasoning deltas stream live: the client sees them while the adapter is still mid-turn", async () => {
+    // Same gate as the text test, but for the reasoning path: thinking_delta must reach the
+    // client as response.reasoning_summary_text.delta before the adapter is allowed to finish.
+    let releaseAdapter!: () => void;
+    const clientSawFirstReasoning = new Promise<void>(resolve => { releaseAdapter = resolve; });
+    const adapter: ProviderAdapter = {
+      name: "gated-reasoning",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "thinking_delta", thinking: "Considering " } satisfies AdapterEvent;
+        await clientSawFirstReasoning;
+        yield { type: "thinking_delta", thinking: "options" } satisfies AdapterEvent;
+        yield { type: "text_delta", text: "Answer" } satisfies AdapterEvent;
+        yield { type: "done" } satisfies AdapterEvent;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      // Without reasoning.summary the parser sets hideThinkingSummary and no reasoning frame is
+      // ever client-visible; "auto" matches what Codex sends on real turns.
+      parsed: parseRequest({
+        model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }],
+        reasoning: { summary: "auto" },
+      }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      streamRoutedModelOutput: true,
+    });
+    const sse = frameReader(response.body!);
+    const first = await within(
+      sse.readUntil(f => f.data.type === "response.reasoning_summary_text.delta"),
+      "the first live reasoning delta",
+    );
+    expect(first?.data.delta).toBe("Considering ");
+    releaseAdapter();
+    const frames = await sse.drain();
+    // Each reasoning delta exactly once — the terminal replay must not duplicate the streamed head.
+    const reasoning = frames
+      .filter(f => f.data.type === "response.reasoning_summary_text.delta")
+      .map(f => String(f.data.delta ?? ""))
+      .join("");
+    expect(reasoning).toBe("Considering options");
+    expect(outputTextOf(frames)).toBe("Answer");
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
+  });
+
   test("default (flag unset) keeps full buffering: no text reaches the client before the adapter finishes", async () => {
     let adapterFinished = false;
     const adapter: ProviderAdapter = {
