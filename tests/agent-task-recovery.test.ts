@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createTranslatorBudget } from "../src/lib/translator-budget";
 import { warnAgentTaskRecoveryStartup } from "../src/server";
 import { resetAgentTaskRecoveryState } from "../src/server/responses/agent-task-recovery";
 import { agentTaskRecoveryWaiterCountForTests } from "../src/server/responses/agent-task-recovery-cache";
@@ -116,6 +117,8 @@ describe("agent task recovery (opt-in, default off)", () => {
       const warnings = capture({ enabled: true });
       expect(warnings).toHaveLength(3);
       expect(warnings.join("\n")).toContain("Experimental encrypted V2 task recovery is enabled");
+      expect(warnings.join("\n")).toContain("Recovered plaintext assignment data");
+      expect(warnings.join("\n")).toContain("process-local in-memory cache");
       expect(warnings.join("\n")).not.toContain(secret);
     } finally {
       console.warn = originalWarn;
@@ -174,6 +177,60 @@ describe("agent task recovery (opt-in, default off)", () => {
     expect(forwardedBodies[1]).toContain("Implement the focused regression test.");
     expect(forwardedBodies[1]).not.toContain(FERNET_TASK);
     expect(forwardedBodies[1].match(/Message Type: NEW_TASK/g)).toHaveLength(1);
+  });
+
+  test("charges namespaced tool bridge maps only once across recovery reparse", async () => {
+    const recoveryRequests: Request[] = [];
+    const providerRequests: Request[] = [];
+    const requestHeaders = codexHeaders();
+    globalThis.fetch = (async (input, init) => {
+      const request = new Request(input, init);
+      if (request.url.includes("chatgpt.com")) {
+        recoveryRequests.push(request);
+        return new Response(recoverySse("Use the advertised tool."), { status: 200 });
+      }
+      providerRequests.push(request);
+      return providerResponse();
+    }) as typeof fetch;
+    const namespace = "mcp__review";
+    const name = "read_file";
+    const wireName = `${namespace}__${name}`;
+    const mappingBytes = new TextEncoder().encode(JSON.stringify([wireName, namespace, name])).byteLength;
+    const budget = createTranslatorBudget();
+    const originalCharge = budget.chargeRetained.bind(budget);
+    const mappingCharges: number[] = [];
+    budget.chargeRetained = (bytes, scope) => {
+      if (scope.kind === "retained_collectors" && bytes === mappingBytes) mappingCharges.push(bytes);
+      originalCharge(bytes, scope);
+    };
+
+    try {
+      const response = await post(
+        routedConfig(),
+        "xai/grok-4.5",
+        encryptedInput(),
+        requestHeaders,
+        undefined,
+        {
+          translatorBudget: budget,
+          tools: [{
+            type: "namespace",
+            name: namespace,
+            tools: [{ type: "function", name, parameters: { type: "object" } }],
+          }],
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(recoveryRequests).toHaveLength(1);
+      expect(recoveryRequests[0]?.headers.get("authorization"))
+        .toBe(requestHeaders.get("authorization"));
+      expect(recoveryRequests[0]?.headers.get("chatgpt-account-id")).toBe("acct-caller");
+      expect(providerRequests).toHaveLength(1);
+      expect(mappingCharges).toHaveLength(1);
+    } finally {
+      budget.dispose();
+    }
   });
 
   test("accepts function-call-arguments SSE events", async () => {
