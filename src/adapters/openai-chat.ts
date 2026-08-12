@@ -211,6 +211,7 @@ type InvalidToolCallReason =
   | "tool_call_id_invalid"
   | "tool_call_function_not_object"
   | "tool_call_function_name_invalid"
+  | "tool_call_function_name_blank"
   | "tool_call_function_arguments_invalid";
 
 /**
@@ -234,8 +235,30 @@ function diagnoseInvalidToolCalls(
       };
     }
     if (mode === "stream") {
-      // Streaming currently rejects only the container/member shapes. Describe exactly that
-      // existing boundary instead of silently tightening compatibility in a diagnostic change.
+      // The streamed path validates the pieces it is about to store (#1531): a present
+      // `function` must be a record, and a present `name`/`arguments`/`id` must be a string.
+      // Blank names are caught later at flush, not here, so they are not diagnosed on this
+      // branch. Describe exactly that boundary rather than tightening compatibility in a
+      // diagnostic change.
+      const streamFunction = (rawToolCall as { function?: unknown }).function;
+      if (streamFunction !== undefined && streamFunction !== null) {
+        if (!isRecord(streamFunction)) {
+          return {
+            reason: "tool_call_function_not_object",
+            callIndex,
+            valueType: Array.isArray(streamFunction) ? "array" : typeof streamFunction,
+          };
+        }
+        if (streamFunction.name !== undefined && typeof streamFunction.name !== "string") {
+          return { reason: "tool_call_function_name_invalid", callIndex, valueType: typeof streamFunction.name };
+        }
+        if (streamFunction.arguments !== undefined && typeof streamFunction.arguments !== "string") {
+          return { reason: "tool_call_function_arguments_invalid", callIndex, valueType: typeof streamFunction.arguments };
+        }
+      }
+      if (rawToolCall.id !== undefined && typeof rawToolCall.id !== "string") {
+        return { reason: "tool_call_id_invalid", callIndex, valueType: typeof rawToolCall.id };
+      }
       continue;
     }
     if (typeof rawToolCall.id !== "string") {
@@ -250,6 +273,12 @@ function diagnoseInvalidToolCalls(
     }
     if (typeof rawToolCall.function.name !== "string") {
       return { reason: "tool_call_function_name_invalid", callIndex, valueType: typeof rawToolCall.function.name };
+    }
+    // #1531 also rejects a blank or whitespace-only name on this path, because such a call
+    // cannot select a dispatch target. Diagnosing it as `name_invalid` would report a type
+    // problem for a value that is correctly typed, so it gets its own reason code.
+    if (rawToolCall.function.name.trim().length === 0) {
+      return { reason: "tool_call_function_name_blank", callIndex, valueType: "string" };
     }
     if (typeof rawToolCall.function.arguments !== "string") {
       return { reason: "tool_call_function_arguments_invalid", callIndex, valueType: typeof rawToolCall.function.arguments };
@@ -1096,16 +1125,19 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               const rawFunction = (rawToolCall as { function?: unknown }).function;
               if (rawFunction !== undefined && rawFunction !== null) {
                 if (!isRecord(rawFunction)) {
+                  logInvalidToolCalls("stream", rawToolCalls);
                   return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
                 }
                 const rawName = rawFunction.name;
                 const rawArguments = rawFunction.arguments;
                 if ((rawName !== undefined && typeof rawName !== "string")
                   || (rawArguments !== undefined && typeof rawArguments !== "string")) {
+                  logInvalidToolCalls("stream", rawToolCalls);
                   return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
                 }
               }
               if (tc.id !== undefined && typeof tc.id !== "string") {
+                logInvalidToolCalls("stream", rawToolCalls);
                 return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
               }
               const key = typeof tc.index === "number"
