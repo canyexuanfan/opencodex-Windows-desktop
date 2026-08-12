@@ -100,7 +100,6 @@ import {
   addFinalRequestLog,
   hydrateRequestLogsFromDisk,
   httpStatusForRequestLogTerminal,
-  httpStatusForTerminalStatus,
   inspectResponseLogSsePayload,
   nextRequestLogId,
   recordFirstOutput,
@@ -1185,7 +1184,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
             onNativePassthroughTerminal: status => {
-              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+              finalizeNativePassthroughLog(httpStatusForRequestLogTerminal(status, logCtx), {
                 terminalStatus: status,
                 closeReason: "terminal",
               });

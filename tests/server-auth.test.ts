@@ -3004,6 +3004,78 @@ describe("server local API auth", () => {
     }
   });
 
+  test("passthrough SSE cyber terminal is logged as 400 cyber_policy", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearRequestLogsForTests();
+
+    const message = "This content was flagged for possible cybersecurity risk. To get authorized for security work, join the Trusted Access for Cyber program.";
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response([
+          "event: response.failed",
+          `data: ${JSON.stringify({
+            type: "response.failed",
+            response: {
+              status: "failed",
+              error: { type: "invalid_request_error", code: "cyber_policy", message },
+            },
+          })}`,
+          "",
+          "",
+        ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    redirectCanonicalCodexTo(upstream.url.toString());
+    saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: poolProviders(),
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("response.failed");
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()));
+      expect(logs.at(-1)).toMatchObject({
+        status: 400,
+        errorCode: "cyber_policy",
+        terminalStatus: "failed",
+        closeReason: "terminal",
+        upstreamError: message,
+        attempts: [expect.objectContaining({ status: 400, errorCode: "cyber_policy" })],
+      });
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+      clearRequestLogsForTests();
+    }
+  });
+
   test("native passthrough SSE records completed usage without pool terminal tracking", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

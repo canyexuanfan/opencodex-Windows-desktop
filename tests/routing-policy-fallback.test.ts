@@ -57,16 +57,19 @@ describe("policy candidate fallback", () => {
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
     const seenModels: string[] = [];
+    const seenTerminalCodes: Array<string | undefined> = [];
 
     const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, {
       runCore: async (req, _config, childLog) => {
         const body = await req.json() as { model: string };
         seenModels.push(body.model);
+        seenTerminalCodes.push(childLog.terminalErrorCode);
         const first = seenModels.length === 1;
         seedAttempt(childLog, first ? "provider-a" : "provider-b", first ? "model-a" : "model-b");
         if (first) {
           childLog.requestedModel = "policy/daily";
           childLog.routeDecision = trace;
+          childLog.terminalErrorCode = "cyber_policy";
           return new Response(JSON.stringify({ error: { message: "rate limited", type: "rate_limit_error" } }), {
             status: 429,
             headers: { "content-type": "application/json" },
@@ -80,6 +83,7 @@ describe("policy candidate fallback", () => {
 
     expect(response.status).toBe(200);
     expect(seenModels).toEqual(["policy/daily", "provider-b/model-b"]);
+    expect(seenTerminalCodes).toEqual([undefined, undefined]);
     expect(logCtx.requestedModel).toBe("policy/daily");
     expect(logCtx.routeDecision).toBe(trace);
     expect(logCtx.attempts).toHaveLength(2);

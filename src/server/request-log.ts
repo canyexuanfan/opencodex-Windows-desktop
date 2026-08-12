@@ -2,8 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import type { ResponsesTerminalStatus } from "../bridge";
 import {
   classifyError,
+  CYBER_POLICY_ERROR_CODE,
   httpStatusFromTerminalError as httpStatusFromClassifiedTerminalError,
   isClientClosedMessage,
+  isCyberPolicyCode,
 } from "../lib/errors";
 import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
 import { readCodexCatalogPath } from "../codex/catalog";
@@ -94,6 +96,8 @@ export interface RequestLogContext {
   upstreamError?: string;
   /** HTTP status derived from a terminal `response.failed` SSE payload (429/401/503/etc.). */
   terminalHttpStatus?: number;
+  /** Recognized structured terminal code whose exact identity must survive status mapping. */
+  terminalErrorCode?: typeof CYBER_POLICY_ERROR_CODE;
   /** Structured reason from `response.incomplete`; internal-only input to log classification. */
   terminalIncompleteReason?: string;
   affinity?: "reused" | "new_bind" | "rebound" | "cleared";
@@ -446,12 +450,26 @@ export function recordAdapterReasoning(
   }
 }
 
-export function requestLogErrorCode(status: number, upstreamError?: string): string | undefined {
+export function requestLogErrorCode(
+  status: number,
+  upstreamError?: string,
+  terminalErrorCode?: string,
+): string | undefined {
   if (status >= 200 && status < 400) return undefined;
+  // A structured terminal code is authoritative even when the provider message is localized,
+  // generic, or absent. Only preserve the one narrowly recognized policy code here: broadly
+  // forwarding arbitrary upstream codes would change unrelated request-log taxonomy.
+  if (isCyberPolicyCode(terminalErrorCode)) return CYBER_POLICY_ERROR_CODE;
+  const classifiedCode = upstreamError?.trim()
+    ? classifyError(status, "upstream_error", upstreamError).code
+    : undefined;
   // Defense in depth: mid-stream web-search aborts used to land as 502 with this message.
-  if (status === 499 || (upstreamError?.trim() && classifyError(status, "upstream_error", upstreamError).code === "client_closed_request")) {
+  if (status === 499 || classifiedCode === "client_closed_request") {
     return "client_closed_request";
   }
+  // Keep the high-confidence message fallback for runtimes/providers that stripped the
+  // structured code before emitting response.failed.
+  if (classifiedCode === CYBER_POLICY_ERROR_CODE) return CYBER_POLICY_ERROR_CODE;
   if (status === 400 || status === 409) return "invalid_request_error";
   if (status === 401) return "invalid_api_key";
   if (status === 403) {
@@ -719,9 +737,17 @@ function captureTerminalHttpStatus(
   if (json.type !== "response.failed") return;
   const error = json.response?.error;
   if (!error || typeof error !== "object") return;
+  const terminalCode = error.code === null || typeof error.code === "string"
+    ? error.code
+    : undefined;
+  if (isCyberPolicyCode(terminalCode)) {
+    logCtx.terminalErrorCode = CYBER_POLICY_ERROR_CODE;
+  } else {
+    delete logCtx.terminalErrorCode;
+  }
   logCtx.terminalHttpStatus = httpStatusFromTerminalError({
     type: typeof error.type === "string" ? error.type : undefined,
-    code: error.code === null || typeof error.code === "string" ? error.code : undefined,
+    code: terminalCode,
     message: typeof error.message === "string" ? error.message : undefined,
   });
 }
@@ -777,7 +803,11 @@ export function addFinalRequestLog(
   const effectiveStatus = status >= 500 && logCtx.upstreamError && isClientClosedMessage(logCtx.upstreamError)
     ? 499
     : status;
-  const errorCode = requestLogErrorCode(effectiveStatus, logCtx.upstreamError);
+  const errorCode = requestLogErrorCode(
+    effectiveStatus,
+    logCtx.upstreamError,
+    logCtx.terminalErrorCode,
+  );
   // A response.failed whose classified status is 499 is still a client cancel, not an upstream
   // terminal failure — keep /api/logs closeReason aligned with that.
   const closeReason = effectiveStatus === 499
@@ -790,6 +820,10 @@ export function addFinalRequestLog(
       Date.now() - (logCtx.activeAttemptStartedAt ?? start),
       logCtx.usage,
     );
+    // The final row and its active physical attempt describe the same terminal. Preserve the
+    // semantic code on both so detailed attempt telemetry cannot regress to a generic status code.
+    if (errorCode) logCtx.activeAttempt.errorCode = errorCode;
+    else delete logCtx.activeAttempt.errorCode;
   }
   const existing = finalizedUsage(
     logCtx.providerAdapter ?? logCtx.provider,
