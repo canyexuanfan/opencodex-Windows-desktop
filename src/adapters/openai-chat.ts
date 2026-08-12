@@ -836,6 +836,18 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
+      // Preserve a caller-selected service tier for OpenAI-compatible chat gateways. The
+      // request pipeline deliberately does not inject fast mode for this adapter, but dropping
+      // an explicit value here makes the Responses parser's serviceTier projection ineffective.
+      //
+      // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
+      // extension and 66 registry providers share this adapter, several of which reject
+      // unknown body fields. Forwarding unconditionally would turn a caller-supplied
+      // `service_tier` into an upstream 400 on those routes. `supportsServiceTier` is the
+      // Responses-wire flag (applyServiceTierGate) and deliberately does not gate this path.
+      if (provider.chatServiceTier && parsed.options.serviceTier !== undefined) {
+        body.service_tier = parsed.options.serviceTier;
+      }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
       const maxTokens = resolveMaxTokens(provider, parsed);
       const openRouterRouting = resolveOpenRouterRouting(provider, parsed.modelId);
