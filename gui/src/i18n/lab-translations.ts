@@ -1,7 +1,7 @@
 import type { TKey } from "./en";
 
 export type LabLocale = "en" | "de" | "ko" | "zh" | "zh-TW" | "ru" | "ja" | "tr";
-export type LabCatalogKey = Extract<TKey, `lab.${string}`>;
+export type LabCatalogKey = Exclude<Extract<TKey, `lab.${string}`>, `lab.production.${string}`>;
 export type LabSupplementKey =
   | "subjectKindUnknown"
   | "artifact.present"
