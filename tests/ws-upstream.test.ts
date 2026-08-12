@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import { providerFetch } from "../src/server/responses/fetch-helpers";
 import { codexWsUpstreamFetch, shouldUseCodexWsUpstream } from "../src/server/responses/ws-upstream";
 import type { OcxProviderConfig } from "../src/types";
@@ -187,6 +187,30 @@ describe("codexWsUpstreamFetch", () => {
     // The real HTTP status must reach the existing refresh/rotation handlers.
     expect(response).toBe(sentinel);
     expect(fallbackCalls).toBe(1);
+  });
+
+  test("falls back to the HTTP fetch when the upgrade deadline elapses without open or close", async () => {
+    jest.useFakeTimers();
+    try {
+      installFake(() => { /* handshake never settles */ });
+      const sentinel = new Response("sse-timeout-fallback", { status: 200 });
+      let fallbackCalls = 0;
+      const fallback = (async () => {
+        fallbackCalls += 1;
+        return sentinel;
+      }) as unknown as typeof fetch;
+
+      const responsePromise = codexWsUpstreamFetch(CODEX_URL, streamingInit(), fallback);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      jest.advanceTimersByTime(10_000);
+      const response = await responsePromise;
+
+      expect(response).toBe(sentinel);
+      expect(fallbackCalls).toBe(1);
+      expect(FakeWebSocket.instances[0].closed).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("falls back to the HTTP fetch when the frame send throws", async () => {
