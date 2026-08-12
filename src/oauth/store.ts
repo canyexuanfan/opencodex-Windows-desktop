@@ -286,15 +286,18 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
 }
 
 /**
- * Stable short account id. MUST be deterministic for a given credential: legacy
- * single-credential stores are re-normalized on EVERY load without being persisted,
+ * Stable collision-resistant account id. MUST be deterministic for a given credential:
+ * legacy single-credential stores are re-normalized on EVERY load without being persisted,
  * so a time-salted id would differ between two loads (getAccountSet vs
  * getAccountCredential), surfacing as a spurious OAuthLoginRequiredError and making
  * refresh persists silently miss the account (rotated refresh token lost).
+ *
+ * Keep 128 bits of SHA-256 rather than the historical 32-bit prefix. Existing persisted
+ * account ids are read as-is; only newly-derived ids and legacy normalization use this width.
  */
 function newAccountId(cred: OAuthCredentials): string {
   const identity = cred.accountId ?? cred.email ?? cred.refresh;
-  return createHash("sha256").update(identity).digest("hex").slice(0, 8);
+  return createHash("sha256").update(identity).digest("hex").slice(0, 32);
 }
 
 function normalizeAccount(value: unknown): ProviderAccount | null {
