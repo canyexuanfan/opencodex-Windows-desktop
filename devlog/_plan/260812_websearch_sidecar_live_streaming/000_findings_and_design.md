@@ -53,5 +53,10 @@ option.
   tail; search-loop pass with pre-search text delivered exactly once.
 - `bun test tests/web-search-*.test.ts` — 78 pass. `bun x tsc --noEmit` clean.
 - Live replay of the captured Codex request through a patched instance (sidecar-less path):
-  893 deltas, first at 2.6–3.3 s, unchanged totals. Sidecar-active live verification requires the
-  native-main-owner instance and is covered by the gated unit tests instead.
+  893 deltas, first at 2.6–3.3 s, unchanged totals.
+- Sidecar-ACTIVE live E2E (patched build running as the native-main owner with a real ChatGPT
+  credential, identical text-forcing request, routed `opencode-go/deepseek-v4-flash`): toggle off →
+  18.3 s silence then 2829 deltas in one 0.02 s burst; toggle on → first delta at 4.0 s, 2538
+  deltas over 9.9 s. The toggle applied without restart via `PUT /api/sidecar-settings`.
+  Field note: a paused ChatGPT account (`pausedCodexAccountIds`) silently disables the sidecar and
+  masks both bug and fix — everything streams because the sidecar-less path runs.
