@@ -205,6 +205,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+type InvalidToolCallReason =
+  | "tool_calls_not_array"
+  | "tool_call_not_object"
+  | "tool_call_id_invalid"
+  | "tool_call_function_not_object"
+  | "tool_call_function_name_invalid"
+  | "tool_call_function_arguments_invalid";
+
+/**
+ * Explain only the rejected wire shape, never its values. This diagnostic exists so provider
+ * compatibility can be tightened from evidence without retaining tool arguments or credentials.
+ */
+function diagnoseInvalidToolCalls(
+  rawToolCalls: unknown,
+  mode: "stream" | "response",
+): { reason: InvalidToolCallReason; callIndex?: number; valueType: string } | undefined {
+  if (!Array.isArray(rawToolCalls)) {
+    return { reason: "tool_calls_not_array", valueType: rawToolCalls === null ? "null" : typeof rawToolCalls };
+  }
+  for (let callIndex = 0; callIndex < rawToolCalls.length; callIndex++) {
+    const rawToolCall = rawToolCalls[callIndex];
+    if (!isRecord(rawToolCall)) {
+      return {
+        reason: "tool_call_not_object",
+        callIndex,
+        valueType: rawToolCall === null ? "null" : Array.isArray(rawToolCall) ? "array" : typeof rawToolCall,
+      };
+    }
+    if (mode === "stream") {
+      // Streaming currently rejects only the container/member shapes. Describe exactly that
+      // existing boundary instead of silently tightening compatibility in a diagnostic change.
+      continue;
+    }
+    if (typeof rawToolCall.id !== "string") {
+      return { reason: "tool_call_id_invalid", callIndex, valueType: typeof rawToolCall.id };
+    }
+    if (!isRecord(rawToolCall.function)) {
+      return {
+        reason: "tool_call_function_not_object",
+        callIndex,
+        valueType: rawToolCall.function === null ? "null" : Array.isArray(rawToolCall.function) ? "array" : typeof rawToolCall.function,
+      };
+    }
+    if (typeof rawToolCall.function.name !== "string") {
+      return { reason: "tool_call_function_name_invalid", callIndex, valueType: typeof rawToolCall.function.name };
+    }
+    if (typeof rawToolCall.function.arguments !== "string") {
+      return { reason: "tool_call_function_arguments_invalid", callIndex, valueType: typeof rawToolCall.function.arguments };
+    }
+  }
+  return undefined;
+}
+
+function logInvalidToolCalls(mode: "stream" | "response", rawToolCalls: unknown): void {
+  const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
+  if (diagnostic) debugProviderDiagnostic("openai-chat", "invalid-tool-calls", { mode, ...diagnostic });
+}
+
 function developerSystemText(message: OcxMessage): string | undefined {
   if (message.role !== "developer") return undefined;
   if (typeof message.content === "string") return message.content;
@@ -1018,10 +1076,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             // through the adapter error channel instead of escaping as TypeError (#1325). Null is
             // tolerated as absent because OpenAI-compatible providers may emit it as stream padding.
             if (!Array.isArray(rawToolCalls)) {
+              logInvalidToolCalls("stream", rawToolCalls);
               return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
             }
             for (const rawToolCall of rawToolCalls) {
               if (!isRecord(rawToolCall)) {
+                logInvalidToolCalls("stream", rawToolCalls);
                 return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
               }
               const tc = rawToolCall as {
@@ -1206,9 +1266,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (typeof msg.content === "string") events.push({ type: "text_delta", text: msg.content });
         const rawToolCalls = msg.tool_calls;
         if (rawToolCalls !== undefined && rawToolCalls !== null) {
-          if (!Array.isArray(rawToolCalls)) return [invalidToolCallsEvent(usage)];
+          if (!Array.isArray(rawToolCalls)) {
+            logInvalidToolCalls("response", rawToolCalls);
+            return [invalidToolCallsEvent(usage)];
+          }
           for (const rawToolCall of rawToolCalls) {
             if (!isRecord(rawToolCall) || !isRecord(rawToolCall.function)) {
+              logInvalidToolCalls("response", rawToolCalls);
               return [invalidToolCallsEvent(usage)];
             }
             const id = rawToolCall.id;
@@ -1219,6 +1283,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             // a whitespace-only function name is not a legitimate tool-call shape either.
             if (typeof id !== "string" || typeof name !== "string" || typeof args !== "string"
               || name.trim().length === 0) {
+              logInvalidToolCalls("response", rawToolCalls);
               return [invalidToolCallsEvent(usage)];
             }
             events.push({ type: "tool_call_start", id, name });

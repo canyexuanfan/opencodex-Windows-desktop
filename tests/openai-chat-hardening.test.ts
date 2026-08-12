@@ -1,11 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
+import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { resetDebugSettingsForTests } from "../src/lib/debug-settings";
 import { routeModel } from "../src/router";
 import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
 const createOpenAIChatAdapter = (...args: Parameters<typeof createOpenAIChatAdapterProduction>) =>
   withTestTranslatorBudget(createOpenAIChatAdapterProduction(...args));
+
+const previousDebug = process.env.OCX_DEBUG;
+
+afterEach(() => {
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
+  if (previousDebug === undefined) delete process.env.OCX_DEBUG;
+  else process.env.OCX_DEBUG = previousDebug;
+});
 
 function parsed(): OcxParsedRequest {
   return {
@@ -148,6 +159,37 @@ describe("openai-chat non-stream response hardening", () => {
       }]);
     }
   });
+
+  test("debug mode records only the non-stream tool-call shape failure", async () => {
+    process.env.OCX_DEBUG = "1";
+    const secretArguments = "private-tool-arguments";
+    const adapter = createOpenAIChatAdapter(provider());
+    const events = await adapter.parseResponse!(new Response(JSON.stringify({
+      choices: [{ message: { role: "assistant", tool_calls: [{
+        id: "call_1",
+        function: { name: "tool", arguments: { secretArguments } },
+      }] } }],
+    })));
+
+    expect(events).toEqual([{ type: "error", message: "upstream response contained invalid tool calls" }]);
+    const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+    expect(lines).toContain("[ocx:openai-chat:invalid-tool-calls]");
+    expect(lines).toContain('"mode":"response"');
+    expect(lines).toContain('"reason":"tool_call_function_arguments_invalid"');
+    expect(lines).toContain('"valueType":"object"');
+    expect(lines).not.toContain(secretArguments);
+    expect(lines).not.toContain("call_1");
+  });
+
+  test("tool-call structural diagnostics stay disabled by default", async () => {
+    delete process.env.OCX_DEBUG;
+    const adapter = createOpenAIChatAdapter(provider());
+    await adapter.parseResponse!(new Response(JSON.stringify({
+      choices: [{ message: { role: "assistant", tool_calls: { privateArguments: "secret" } } }],
+    })));
+
+    expect(getDebugLogEntries()).toHaveLength(0);
+  });
 });
 
 describe("openai-chat stream response hardening", () => {
@@ -226,6 +268,29 @@ describe("openai-chat stream response hardening", () => {
         usage: { inputTokens: 7, outputTokens: 2 },
       }]);
     }
+  });
+
+  test("debug mode classifies streaming tool-call structure without retaining values", async () => {
+    process.env.OCX_DEBUG = "1";
+    const privateName = "private-tool-name";
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{
+        privateName,
+        privateArguments: "private arguments",
+      }, null] } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    const events = await collect(adapter.parseStream(response));
+    expect(events).toEqual([{ type: "error", message: "upstream response contained invalid tool calls" }]);
+    const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+    expect(lines).toContain('"mode":"stream"');
+    expect(lines).toContain('"reason":"tool_call_not_object"');
+    expect(lines).toContain('"callIndex":1');
+    expect(lines).toContain('"valueType":"null"');
+    expect(lines).not.toContain(privateName);
+    expect(lines).not.toContain("private arguments");
   });
 });
 
