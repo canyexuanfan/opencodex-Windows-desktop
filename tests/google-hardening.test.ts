@@ -357,6 +357,33 @@ describe("google provider hardening", () => {
     }
   });
 
+  // `emittedContentEvent` decides `"content"` vs `"continue"`, and its only consumer is the
+  // synthetic-heartbeat suppression in the read loop. A thought delta is real upstream
+  // activity, so it must count as content: emitting a heartbeat alongside it would claim the
+  // stream was idle while the model was demonstrably working. Pinning that here keeps the
+  // classification a decision rather than a side effect of routing thought text elsewhere.
+  test("a thought-only frame counts as content, so no synthetic heartbeat is emitted", async () => {
+    const thoughtOnly = {
+      candidates: [{ content: { parts: [{ thought: true, text: "private analysis" }] } }],
+    };
+    const events = await collect(createGoogleAdapter(provider()).parseStream(sseResponse([thoughtOnly])));
+
+    expect(events).toContainEqual({ type: "reasoning_raw_delta", text: "private analysis" });
+    expect(events.some(e => e.type === "heartbeat")).toBe(false);
+  });
+
+  // The visible-text control for the assertion above: an ordinary text frame has always
+  // suppressed the heartbeat, so a divergence here would mean thought parts are classified
+  // differently from the text they replaced.
+  test("a visible-text frame also suppresses the synthetic heartbeat", async () => {
+    const textOnly = {
+      candidates: [{ content: { parts: [{ text: "visible answer" }] } }],
+    };
+    const events = await collect(createGoogleAdapter(provider()).parseStream(sseResponse([textOnly])));
+
+    expect(events).toContainEqual({ type: "text_delta", text: "visible answer" });
+    expect(events.some(e => e.type === "heartbeat")).toBe(false);
+  });
   test("sends Gemini Flash thinkingLevel only for direct AI Studio requests", async () => {
     const direct = createGoogleAdapter(provider({
       modelReasoningEfforts: {
