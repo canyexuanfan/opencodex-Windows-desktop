@@ -379,32 +379,33 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
             </div>
           </div>
           <div className="dash-delegation-controls">
-            <Select
-              value={visionModel}
-              options={visionModels}
-              onChange={model => {
-                const ladder = visionReasoningLadder(models, model);
-                const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
-                void saveSidecar({ vision: { model, backend: visionSidecarBackendForModel(models, visionModels, model), reasoning } });
-              }}
-              disabled={!sidecar || sidecarSaving}
-              label={t("dash.sidecarModel")}
-            />
-            <Select
-              value={visionReasoning}
-              // Raw wire value (low…max), matching the delegation panel's bare `high`.
-              options={visionReasoningOptionsFor(visionLadder, visionReasoning)
-                .map(value => ({ value, label: value }))}
-              onChange={reasoning => {
-                void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
-              }}
-              disabled={!sidecar || sidecarSaving}
-              align="right"
-              label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
-            />
-          </div>
-          <div className="dash-vision-advanced" role="group" aria-label={t("dash.visionAdvanced")}>
-            <label className="dash-vision-number">
+            <div className="dash-vision-select-row">
+              <Select
+                value={visionModel}
+                options={visionModels}
+                onChange={model => {
+                  const ladder = visionReasoningLadder(models, model);
+                  const reasoning = clampVisionReasoningToLadder(ladder, visionReasoning);
+                  void saveSidecar({ vision: { model, backend: visionSidecarBackendForModel(models, visionModels, model), reasoning } });
+                }}
+                disabled={!sidecar || sidecarSaving}
+                label={t("dash.sidecarModel")}
+              />
+              <Select
+                value={visionReasoning}
+                // Raw wire value (low…max), matching the delegation panel's bare `high`.
+                options={visionReasoningOptionsFor(visionLadder, visionReasoning)
+                  .map(value => ({ value, label: value }))}
+                onChange={reasoning => {
+                  void saveSidecar(visionReasoningPatch(reasoning as typeof visionReasoning));
+                }}
+                disabled={!sidecar || sidecarSaving}
+                align="right"
+                label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
+              />
+            </div>
+            <div className="dash-vision-advanced" role="group" aria-label={t("dash.visionAdvanced")}>
+              <label className="dash-vision-number">
               <span className="muted setting-hint" id="dash-vision-max-label">{t("dash.visionMaxDescriptions")}</span>
               <span className="codex-auto-switch-input-wrap">
                 <input
@@ -504,6 +505,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
                 </span>
               )}
             </label>
+          </div>
           </div>
         </div>
       </div>

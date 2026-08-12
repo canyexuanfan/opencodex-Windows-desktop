@@ -1,5 +1,10 @@
 import type { RefObject } from "react";
 import { useEffect, useRef } from "react";
+import {
+  DEFAULT_VISION_TIMEOUT_MS,
+  MAX_VISION_TIMEOUT_MS,
+  MIN_VISION_TIMEOUT_MS,
+} from "../../../src/vision/timeout-bounds";
 import { readJsonOrThrow } from "../fetch-json";
 import type { TKey } from "../i18n/shared";
 import type { StartupHealthStatus } from "../startup-health-ui";
@@ -205,10 +210,13 @@ export function visionTimeoutPatch(timeoutMs: number): SidecarPatch {
   return { vision: { timeoutMs } };
 }
 
-/** Must match `src/vision/index.ts` — pinned by tests/vision-sidecar-timeout-bounds.test.ts. */
-export const VISION_TIMEOUT_MS_MIN = 1;
-export const VISION_TIMEOUT_MS_MAX = 2_147_483_647;
-export const VISION_TIMEOUT_MS_DEFAULT = 45_000;
+/**
+ * Dashboard names for the runtime timeout contract in `src/vision/timeout-bounds.ts`.
+ * Pinned by `tests/vision-sidecar-timeout-bounds.test.ts`.
+ */
+export const VISION_TIMEOUT_MS_DEFAULT = DEFAULT_VISION_TIMEOUT_MS;
+export const VISION_TIMEOUT_MS_MAX = MAX_VISION_TIMEOUT_MS;
+export const VISION_TIMEOUT_MS_MIN = MIN_VISION_TIMEOUT_MS;
 export const VISION_MAX_DESCRIPTIONS_DEFAULT = 8;
 
 export function parsePositiveInteger(raw: string): number | undefined {

@@ -11,6 +11,11 @@ import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
 import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 import type { TranslatorBudget } from "../lib/translator-budget";
+import {
+  DEFAULT_VISION_TIMEOUT_MS,
+  MAX_VISION_TIMEOUT_MS,
+  MIN_VISION_TIMEOUT_MS,
+} from "./timeout-bounds";
 
 export { describeImage } from "./describe";
 export { describeImageAnthropic, parseAnthropicVisionSSE } from "./anthropic-describe";
@@ -23,17 +28,14 @@ export {
   visionEligibleModelOptions,
 } from "./eligibility";
 export type { VisionCandidateModel, VisionModelOption, VisionSidecarBackend } from "./eligibility";
+export {
+  DEFAULT_VISION_TIMEOUT_MS,
+  MAX_VISION_TIMEOUT_MS,
+  MIN_VISION_TIMEOUT_MS,
+};
 
 const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
-/** Default sidecar fetch timeout when `visionSidecar.timeoutMs` is unset. */
-export const DEFAULT_VISION_TIMEOUT_MS = 45_000;
-/**
- * Inclusive integer bounds for `visionSidecar.timeoutMs`.
- * The ceiling is the 32-bit timer delay used by `signalWithTimeout` / `setTimeout`.
- */
-export const MIN_VISION_TIMEOUT_MS = 1;
-export const MAX_VISION_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_REASONING: VisionReasoningEffort = "low";
 const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;

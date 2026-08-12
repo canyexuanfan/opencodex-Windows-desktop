@@ -33,6 +33,7 @@ const initialSidecar: SidecarData = {
   },
   visionModels: [
     { value: "gpt-5.6-luna", label: "gpt-5.6-luna", backend: "openai", baseline: true },
+    { value: "gpt-5.4-mini", label: "gpt-5.4-mini", backend: "openai", baseline: true },
   ],
 };
 
@@ -97,7 +98,10 @@ function harness(sidecar: SidecarData = initialSidecar) {
     sidecarSaving: false,
     sidecarModels: [{ value: "gpt-5.6-luna", label: "gpt-5.6-luna" }],
     visionModels: sidecar.visionModels ?? [],
-    models: [{ id: "gpt-5.6-luna", provider: "openai", namespaced: "gpt-5.6-luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] }],
+    models: [
+      { id: "gpt-5.6-luna", provider: "openai", namespaced: "gpt-5.6-luna", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "gpt-5.4-mini", provider: "openai", namespaced: "gpt-5.4-mini", reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+    ],
     saveSidecar,
     shadowCall: { enabled: false, model: "" },
     shadowCallSaving: false,
@@ -193,11 +197,42 @@ test("an unrelated web-search save does not include Vision fields", async () => 
   expect(patches).toEqual([{ webSearch: { streamRoutedModelOutput: true } }]);
 });
 
+function pickOption(label: string) {
+  return [...testWindow.document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    .find(option => option.textContent === label);
+}
+
+function assertVisionControlFieldsOmitted(patch: SidecarPatch) {
+  expect(patch.vision).toBeDefined();
+  expect(patch.vision).not.toHaveProperty("enabled");
+  expect(patch.vision).not.toHaveProperty("maxDescriptionsPerTurn");
+  expect(patch.vision).not.toHaveProperty("timeoutMs");
+}
+
 test("model and reasoning saves still omit enabled, limit, and timeout", async () => {
-  const src = await Bun.file(new URL("../src/pages/dashboard-overview-sections.tsx", import.meta.url)).text();
-  expect(src).toContain("visionSidecarBackendForModel(models, visionModels, model)");
-  expect(src).toContain("visionReasoningPatch");
-  expect(src).toContain("visionEnabledPatch(!visionEnabled)");
-  expect(src).toContain("visionMaxDescriptionsPatch");
-  expect(src).toContain("visionTimeoutPatch");
+  const { d, patches } = harness();
+  await mount(d);
+  const card = visionCard();
+  const modelTrigger = card.querySelector<HTMLButtonElement>(`button[role="combobox"][aria-label="${en["dash.sidecarModel"]}"]`)!;
+  const reasoningTrigger = card.querySelector<HTMLButtonElement>(
+    `button[role="combobox"][aria-label="${en["dash.visionSidecar"]} — ${en["dash.injectionEffortLabel"]}"]`,
+  )!;
+
+  await act(async () => { modelTrigger.click(); });
+  const nextModel = pickOption("gpt-5.4-mini");
+  expect(nextModel).toBeTruthy();
+  await act(async () => { nextModel!.click(); });
+  expect(patches).toHaveLength(1);
+  expect(patches[0]).toEqual({
+    vision: { model: "gpt-5.4-mini", backend: "openai", reasoning: "medium" },
+  });
+  assertVisionControlFieldsOmitted(patches[0]!);
+
+  await act(async () => { reasoningTrigger.click(); });
+  const nextReasoning = pickOption("high");
+  expect(nextReasoning).toBeTruthy();
+  await act(async () => { nextReasoning!.click(); });
+  expect(patches).toHaveLength(2);
+  expect(patches[1]).toEqual({ vision: { reasoning: "high" } });
+  assertVisionControlFieldsOmitted(patches[1]!);
 });

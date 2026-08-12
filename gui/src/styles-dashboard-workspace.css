@@ -148,6 +148,46 @@
   align-items: flex-start;
 }
 
+/* The shared sidecar copy rule is `flex: 1 1 0` so a one-row control group can
+   keep its intrinsic width. Vision's control column is two rows, and the number
+   fields alone are ~24rem; with a 0 basis the title collapses to a one-glyph
+   column and the card grows to over 1000px tall. Give copy a readable basis so
+   the card wraps to a stacked layout instead of shrinking the hint. */
+.dash-vision-sidecar-card .dash-sidecar-copy {
+  flex: 1 1 16rem;
+  min-width: min(100%, 14rem);
+}
+
+.dash-vision-sidecar-card .dash-delegation-controls {
+  flex: 1 1 20rem;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 12px;
+}
+
+.dash-vision-select-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  width: 100%;
+}
+
+.dash-vision-select-row .custom-select:first-child {
+  min-width: 10.5rem;
+  max-width: 14rem;
+}
+
+.dash-vision-select-row .custom-select:nth-child(2) {
+  min-width: 6.5rem;
+  max-width: 9rem;
+}
+
 .dash-vision-sidecar-head {
   display: flex;
   align-items: flex-start;
@@ -156,12 +196,11 @@
 }
 
 .dash-vision-advanced {
-  flex: 1 1 100%;
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 12px 16px;
-  padding-top: 4px;
+  width: 100%;
 }
 
 .dash-vision-number {
@@ -172,11 +211,44 @@
 }
 
 .dash-vision-number .codex-auto-switch-input-wrap {
-  width: 11.5rem;
+  width: min(11.5rem, 100%);
 }
 
 .dash-vision-number .codex-auto-switch-input {
   min-width: 0;
+}
+
+@media (max-width: 36rem) {
+  .dash-vision-sidecar-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dash-vision-sidecar-card .dash-sidecar-copy,
+  .dash-vision-sidecar-card .dash-delegation-controls {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .dash-vision-sidecar-card .dash-delegation-controls {
+    align-items: stretch;
+  }
+
+  .dash-vision-select-row,
+  .dash-vision-advanced {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 30rem) {
+  .dash-vision-advanced {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .dash-vision-number .codex-auto-switch-input-wrap {
+    width: 100%;
+  }
 }
 
 /* Below the width where a row can hold copy + two selects, stack instead of
