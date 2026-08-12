@@ -404,7 +404,7 @@ jobs:
           cd gui
           bun install --frozen-lockfile
 
-      - name: GUI lint (Oxlint)
+      - name: GUI lint
         if: needs.changes.outputs.gui == 'true'
         run: |
           cd gui
