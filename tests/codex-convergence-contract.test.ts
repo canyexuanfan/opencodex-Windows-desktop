@@ -344,3 +344,23 @@ test("the route inventory contains exactly the specified 7 + 6 + 2 + 2 convergen
     "agent-settings-routes.ts": 2,
   });
 });
+
+/**
+ * The inventory above is a bare count, so raising it is the obvious way to make this file
+ * green again — and a count that only ever gets raised stops being a contract. #1541's
+ * seventh call is legitimate: the attested reload route adopts a provider from disk into the
+ * live config, so it invalidates the same caches as the other write paths and must converge
+ * the catalog for the same reason. Assert that specific call directly, so a future bump
+ * cannot pass while some OTHER route quietly gained one, or while the reload route lost its own.
+ */
+test("the attested reload route converges the Codex catalog like the other write paths", () => {
+  const source = readFileSync(
+    join(import.meta.dir, "..", "src", "server", "management", "provider-routes.ts"),
+    "utf8",
+  );
+  const handlerStart = source.indexOf("LOCAL_PROVIDER_RELOAD_PATH && req.method === \"POST\"");
+  expect(handlerStart).toBeGreaterThan(-1);
+  // The reload handler returns before the next route check; scope the search to its body.
+  const handlerBody = source.slice(handlerStart, source.indexOf("url.pathname ===", handlerStart + 1));
+  expect(handlerBody).toContain("await convergeCodexCatalog()");
+});
