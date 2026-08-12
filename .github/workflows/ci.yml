@@ -405,10 +405,12 @@ jobs:
           bun install --frozen-lockfile
 
       - name: Typecheck
-        run: bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json
+        run: |
+          bun x tsc --noEmit
+          bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json
 
       - name: GUI tests
-        run: cd gui && bun test tests
+        run: cd gui && bun test --isolate tests
 
       - name: Privacy scan
         run: bun run privacy:scan
@@ -496,6 +498,9 @@ jobs:
       # the first attempt — only the crash signature is retried, exactly once.
       - name: Test
         run: |
+          # GitHub Actions starts bash `run:` blocks with `-e`. Disable
+          # errexit so a Bun crash reaches PIPESTATUS and the bounded retry.
+          set +e
           set -uo pipefail
           suite_log="$(mktemp -t ocx-macos-suite.XXXXXX)"
           for attempt in 1 2; do

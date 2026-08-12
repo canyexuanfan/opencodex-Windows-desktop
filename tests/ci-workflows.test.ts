@@ -147,6 +147,28 @@ describe("GitHub Actions hardening", () => {
     expect([...(gate?.needs ?? [])].sort())
       .toEqual(Object.keys(ci.jobs ?? {}).filter(name => name !== "ci").sort());
 
+    // The focused doctor contract config is ADDITIVE evidence. It must never
+    // replace the repository-wide strict typecheck: doing so made the aggregate
+    // CI check green while most of src/ was no longer typechecked by Actions.
+    const gatesSteps = (ci.jobs?.gates as { steps?: { name?: string; run?: string }[] })?.steps ?? [];
+    const gatesTypecheck = gatesSteps.find(step => step.name === "Typecheck")?.run ?? "";
+    const rootTypecheck = "bun x tsc --noEmit";
+    const doctorContractTypecheck =
+      "bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json";
+    expect(hasExactShellCommand(gatesTypecheck, rootTypecheck)).toBe(true);
+    expect(hasExactShellCommand(gatesTypecheck, doctorContractTypecheck)).toBe(true);
+    expect(gatesTypecheck.indexOf(rootTypecheck)).toBeLessThan(
+      gatesTypecheck.indexOf(doctorContractTypecheck),
+    );
+
+    // GUI tests mutate process globals (fetch, DOM, timers and React work).
+    // Hosted runners exposed order-dependent cross-file leaks when the 138
+    // files shared one realm. Pin isolation to the GATES job specifically — a
+    // broad workflow search would pass because macOS already uses --isolate.
+    const gatesGuiRun = gatesSteps.find(step => step.name === "GUI tests")?.run ?? "";
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test --isolate tests")).toBe(true);
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test tests")).toBe(false);
+
     // macOS is the unsharded control for every CI-relevant change. It may skip
     // only when the shared path filter says the entire expensive suite is out of
     // scope (for example a docs-site-only PR).
@@ -162,6 +184,10 @@ describe("GitHub Actions hardening", () => {
     // drop the crash-signature guard so an assertion failure gets retried into
     // green, or let the retry loop swallow a repeated crash. Pin both.
     const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate tests"))?.run ?? "";
+    // Actions invokes multiline `run:` blocks with `bash -e`. The retry loop
+    // must disable errexit before the crash-prone command or exit 133 aborts
+    // the step before PIPESTATUS can be inspected and the retry can run.
+    expect(hasExactShellCommand(macosTestRun, "set +e")).toBe(true);
     expect(macosTestRun).toContain("Segmentation fault at address");
     expect(macosTestRun).toContain("oh no: Bun has crashed");
     expect(macosTestRun).toContain("assertion failures are not retried");
@@ -572,11 +598,23 @@ describe("GitHub Actions hardening", () => {
     expect(ciLookup).toContain('--branch "${GITHUB_REF#refs/heads/}"');
     expect(ciLookup).toContain('--commit "$GITHUB_SHA"');
     expect(ciLookup).toContain("--event push");
-    expect(ciLookup).toContain("--status success");
-    expect(ciLookup).toContain("--json url");
-    expect(ciLookup).toContain("--jq '.[0].url // \"\"'");
+    expect(ciLookup).not.toContain("--status success");
+    expect(ciLookup).toContain("--json conclusion,url");
+    expect(ciLookup).toContain("select(.conclusion == \"success\")");
+    expect(ciLookup).toContain("[0].url // \"\"");
     expect(ciLookup).not.toContain("--arg");
     expect(ciLookup).not.toContain("$branch");
+
+    const serviceLookup = workflow
+      .split('service_url="$(')[1]?.split('\n            )"')[0];
+    expect(serviceLookup).toBeDefined();
+    expect(serviceLookup).toContain("--workflow service-lifecycle.yml");
+    expect(serviceLookup).toContain('--commit "$GITHUB_SHA"');
+    expect(serviceLookup).not.toContain("--status success");
+    expect(serviceLookup).toContain("--json conclusion,headSha,url,workflowName");
+    expect(serviceLookup).toContain("select(.conclusion == \"success\")");
+    expect(serviceLookup).toContain("[0].url // \"\"");
+    expect(serviceLookup).not.toContain("--arg");
 
     // Dry-run first by default; tokenless trusted publishing only.
     expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);

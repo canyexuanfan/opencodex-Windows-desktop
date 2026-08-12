@@ -510,9 +510,20 @@ test("two processes at the post-approval management seam serialize instead of in
       return { exitCode, stdout, stderr };
     }));
 
-    if (results.some(result => result.exitCode === 0)) break;
+    // A 2xx `skipped` result reached the total adapter but still proves no
+    // catalog serialization. Keep retrying until one attempt actually commits;
+    // the assertions below continue to fail closed if the deadline expires.
+    const committed = results.some(result => {
+      if (result.exitCode !== 0) return false;
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        catalogRefresh?: { status?: string };
+      };
+      return parsed.catalogRefresh?.status === "committed";
+    });
+    if (committed) break;
 
     for (const result of results) {
+      if (result.exitCode === 0) continue;
       expect({ preApproval: isPreApprovalLoss(result.stderr), stderr: result.stderr })
         .toMatchObject({ preApproval: true });
     }
