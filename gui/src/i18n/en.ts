@@ -281,6 +281,8 @@ export const en = {
   "dash.visionModelHint": "Model used to describe images for text-only routed models. Requires ChatGPT login.",
   "dash.webSearchSidecar": "Web search sidecar",
   "dash.webSearchSidecarHint": "Choose the backend and model used for web search on routed models.",
+  "dash.webSearchStream": "Stream answers live",
+  "dash.webSearchStreamHint": "Stream the model’s leading text and reasoning live until it decides on a tool call; the rest of the turn stays buffered for search interception. Text written before a search may partially repeat.",
   "dash.visionSidecar": "Vision sidecar",
   "dash.visionSidecarHint": "Choose the backend and model used to describe images for text-only routed models.",
   "dash.shadowCallIntercept": "Shadow Call Intercept",

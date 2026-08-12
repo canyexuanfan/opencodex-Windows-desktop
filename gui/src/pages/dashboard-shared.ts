@@ -56,7 +56,7 @@ export interface SettingsData {
 }
 export type SidecarBackend = "openai" | "anthropic";
 export type VisionReasoning = "low" | "medium" | "high" | "xhigh" | "max";
-export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning }
+export interface SidecarSetting { backend?: SidecarBackend; model: string; reasoning?: VisionReasoning; streamRoutedModelOutput?: boolean }
 export interface VisionModelOption { value: string; label: string; backend: SidecarBackend; baseline?: boolean }
 export interface SidecarData {
   webSearch: SidecarSetting;
@@ -67,7 +67,7 @@ export interface SidecarData {
   visionModels?: VisionModelOption[];
 }
 export interface SidecarPatch {
-  webSearch?: { backend?: SidecarBackend | null; model?: string };
+  webSearch?: { backend?: SidecarBackend | null; model?: string; streamRoutedModelOutput?: boolean };
   vision?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning };
 }
 export interface ShadowCallData { enabled: boolean; model: string; sourceModels?: string[] }
@@ -151,13 +151,14 @@ export function updateJobLabel(status: UpdateJobStatus, t: (key: TKey) => string
 
 export function mergeSidecarSetting(
   current: SidecarSetting,
-  update?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning },
+  update?: { backend?: SidecarBackend | null; model?: string; reasoning?: VisionReasoning; streamRoutedModelOutput?: boolean },
 ): SidecarSetting {
   const merged = { ...current };
   if (update?.model !== undefined) merged.model = update.model;
   if (update?.backend === null) delete merged.backend;
   else if (update?.backend !== undefined) merged.backend = update.backend;
   if (update?.reasoning !== undefined) merged.reasoning = update.reasoning;
+  if (update?.streamRoutedModelOutput !== undefined) merged.streamRoutedModelOutput = update.streamRoutedModelOutput;
   return merged;
 }
 

@@ -2969,6 +2969,7 @@ async function handleResponsesInner(
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       routedModelStallTimeoutMs: wsPlan.routedModelStallTimeoutMs,
       stallTimeoutSec: wsPlan.stallTimeoutSec,
+      streamRoutedModelOutput: wsPlan.streamRoutedModelOutput,
       on429: retryAfter => {
         const rotated = rotateProviderTransportOn429(config, route.providerName, route.provider, {
           retryAfter,

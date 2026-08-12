@@ -284,6 +284,21 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               disabled={!sidecar || sidecarSaving}
               label={t("dash.sidecarModel")}
             />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }} title={t("dash.webSearchStreamHint")}>
+              <span className="muted setting-hint">{t("dash.webSearchStream")}</span>
+              <button
+                type="button"
+                className={`switch ${sidecar?.webSearch.streamRoutedModelOutput ? "on" : ""}`}
+                onClick={() => {
+                  void saveSidecar({ webSearch: { streamRoutedModelOutput: !sidecar?.webSearch.streamRoutedModelOutput } });
+                }}
+                disabled={!sidecar || sidecarSaving}
+                aria-label={t("dash.webSearchStream")}
+                aria-pressed={sidecar?.webSearch.streamRoutedModelOutput === true}
+              >
+                <span className="knob" />
+              </button>
+            </div>
           </div>
         </div>
 
