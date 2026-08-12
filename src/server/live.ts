@@ -629,7 +629,12 @@ export async function handleLive(
       outboundContentType = rewritten.contentType;
     }
   } else {
-    url = keyedLiveUrl(relay.providerBaseUrl);
+    // Frameless API-shape call-create posts to `{base}/live` without the AVAS
+    // query (openai/codex RealtimeCallClient, realtime_call.rs); only the
+    // realtime/calls inbound shape keeps the legacy keyed AVAS endpoint.
+    url = new URL(req.url).pathname === "/v1/live"
+      ? forwardLiveUrl(relay.providerBaseUrl, /* usesBackendShape */ false)
+      : keyedLiveUrl(relay.providerBaseUrl);
   }
 
   headers["content-type"] = outboundContentType;

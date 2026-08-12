@@ -187,9 +187,9 @@ test("POST /v1/live rewrites ChatGPT multipart into backend realtime/calls JSON"
   }
 });
 
-test("POST /v1/live relays to an OpenAI API-key provider at /v1/realtime/calls", async () => {
+test("POST /v1/live relays to an OpenAI API-key provider at /v1/live without AVAS", async () => {
   const captured: CapturedRequest[] = [];
-  const upstream = fakeLiveUpstream(captured, 201, "/v1/realtime/calls/rtc_api");
+  const upstream = fakeLiveUpstream(captured, 201, "/v1/live/rtc_api");
   saveConfig({
     port: 0,
     defaultProvider: "openai-apikey",
@@ -212,12 +212,14 @@ test("POST /v1/live relays to an OpenAI API-key provider at /v1/realtime/calls",
       body,
     });
     expect(response.status).toBe(201);
-    expect(response.headers.get("location")).toBe("/v1/realtime/calls/rtc_api");
+    expect(response.headers.get("location")).toBe("/v1/live/rtc_api");
 
     expect(captured).toHaveLength(1);
-    expect(captured[0].path).toBe("/v1/realtime/calls");
-    expect(captured[0].url).toContain("intent=quicksilver");
-    expect(captured[0].url).toContain("architecture=avas");
+    // Frameless API shape posts to {base}/live without the AVAS query
+    // (openai/codex RealtimeCallClient, realtime_call.rs).
+    expect(captured[0].path).toBe("/v1/live");
+    expect(captured[0].url).not.toContain("intent=");
+    expect(captured[0].url).not.toContain("architecture=");
     expect(captured[0].headers.get("authorization")).toBe("Bearer sk-test-live");
     expect(captured[0].headers.get("content-type")).toContain("multipart/form-data");
     expect(captured[0].bodyText).toContain('name="sdp"');
