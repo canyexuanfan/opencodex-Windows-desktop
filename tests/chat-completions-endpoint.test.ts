@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { chatCompletionsToResponsesBody, ChatCompletionsRequestError } from "../src/chat/inbound";
@@ -697,6 +698,12 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
   }
 });
 
+/**
+ * This case sandboxes CODEX_HOME, so the service installed on the developer's
+ * machine is not evidence about it. See tests/helpers/owned-service-home.ts.
+ */
+const inspectNativeCodexOwnership = ownedServiceHomeInspection("chat replay main-enrichment test");
+
 test("Chat replay owns optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
@@ -730,7 +737,7 @@ test("Chat replay owns optional main enrichment while routed work survives drain
     },
   });
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
-  let server = startServer(0);
+  let server = startServer(0, { inspectNativeCodexOwnership });
   await waitForNativeMainStartupGate();
   const request = () => fetch(new URL("/v1/chat/completions", server.url), {
     method: "POST",
@@ -789,7 +796,7 @@ test("Chat replay owns optional main enrichment while routed work survives drain
       activeCodexAccountId: "__main__",
       autoSwitchThreshold: 0,
     } as OcxConfig);
-    server = startServer(0);
+    server = startServer(0, { inspectNativeCodexOwnership });
     await waitForNativeMainStartupGate();
     recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "chat-main-recovery-home";
     expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);

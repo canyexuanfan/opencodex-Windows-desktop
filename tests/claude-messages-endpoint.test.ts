@@ -9,6 +9,7 @@ import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { clearableDeadline } from "../src/lib/abort";
 import type { RequestLogContext } from "../src/server/request-log";
 import { startServer } from "../src/server";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import {
   estimateClaudeRequestTokens,
   fetchWithHeaderDeadline,
@@ -801,6 +802,12 @@ test("shadow-call rerouting cannot carry the main ChatGPT credential to a custom
   }
 });
 
+/**
+ * This case sandboxes CODEX_HOME, so the service installed on the developer's
+ * machine is not evidence about it. See tests/helpers/owned-service-home.ts.
+ */
+const inspectNativeCodexOwnership = ownedServiceHomeInspection("claude replay main-enrichment test");
+
 test("Claude replay owns optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
@@ -834,7 +841,7 @@ test("Claude replay owns optional main enrichment while routed work survives dra
     },
   });
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
-  let server = startServer(0);
+  let server = startServer(0, { inspectNativeCodexOwnership });
   await waitForNativeMainStartupGate();
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
   let recoveryHomeId: string | null = null;
@@ -898,7 +905,7 @@ test("Claude replay owns optional main enrichment while routed work survives dra
       activeCodexAccountId: "__main__",
       autoSwitchThreshold: 0,
     } as OcxConfig);
-    server = startServer(0);
+    server = startServer(0, { inspectNativeCodexOwnership });
     await waitForNativeMainStartupGate();
     recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "claude-main-recovery-home";
     expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);

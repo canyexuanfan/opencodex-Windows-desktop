@@ -39,6 +39,7 @@ import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
 
@@ -1133,6 +1134,13 @@ describe("server local API auth", () => {
   // Windows CI under the full suite can spend >1s opening WS turns and >5s on this
   // multi-server matrix; tight budgets flake as "tier websocket timeout" and cascade
   // into the next test via a late fetch restore (502 instead of the mocked 500).
+  /**
+   * This matrix points OPENCODEX_HOME at its own temp dir, so the service
+   * installed on the developer's machine is not evidence about it.
+   * See tests/helpers/owned-service-home.ts.
+   */
+  const inspectNativeCodexOwnership = ownedServiceHomeInspection("OpenAI option auth matrix test");
+
   test("OpenAI option auth matrix keeps direct, pool, and API credentials independent", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -1231,7 +1239,7 @@ describe("server local API auth", () => {
       markAccountNeedsReauth("direct-unusable");
       recordCodexUpstreamOutcome(directConfig, "direct-unusable", 429, { retryAfter: "60" });
       saveConfig(directConfig);
-      const direct = startServer(0);
+      const direct = startServer(0, { inspectNativeCodexOwnership });
       const directBaseline = {
         config: readFileSync(join(TEST_DIR, "config.json"), "utf8"),
         accounts: readFileSync(join(TEST_DIR, "codex-accounts.json"), "utf8"),
@@ -1287,7 +1295,7 @@ describe("server local API auth", () => {
         writeMainToken(state === "expired" ? `header.${expiredPayload}.signature` : "opaque-live-main-token");
         saveConfig(cfg);
         const before = seen.length;
-        const unusableMain = startServer(0);
+        const unusableMain = startServer(0, { inspectNativeCodexOwnership });
         try {
           await waitForNativeMainStartupGate();
           if (state === "reauth") markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
@@ -1316,7 +1324,7 @@ describe("server local API auth", () => {
         autoSwitchThreshold: 0,
       } as OcxConfig);
       const beforeMissingPool = seen.length;
-      const missingPool = startServer(0);
+      const missingPool = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(missingPool)).status).toBe(401);
         expect((await compact(missingPool)).status).toBe(401);
@@ -1341,7 +1349,7 @@ describe("server local API auth", () => {
         providers: cooldownCfg,
       } as OcxConfig, "pool-a", 429, { retryAfter: "60" });
       const beforeCooldown = seen.length;
-      const cooledMulti = startServer(0);
+      const cooledMulti = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await compact(cooledMulti)).status).toBe(429);
         expect(seen).toHaveLength(beforeCooldown);
@@ -1349,7 +1357,7 @@ describe("server local API auth", () => {
         await cooledMulti.stop(true);
       }
       clearCodexUpstreamHealth();
-      const multi = startServer(0);
+      const multi = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
         expect((await compact(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
@@ -1374,7 +1382,7 @@ describe("server local API auth", () => {
           "openai-apikey": { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "sk-platform" },
         },
       } as OcxConfig);
-      const api = startServer(0);
+      const api = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
         expect((await compact(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
