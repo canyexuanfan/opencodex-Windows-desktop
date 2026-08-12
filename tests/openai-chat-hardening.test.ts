@@ -190,6 +190,46 @@ describe("openai-chat non-stream response hardening", () => {
 
     expect(getDebugLogEntries()).toHaveLength(0);
   });
+
+  // The diagnostic's job is to say WHICH check rejected the payload. If its precedence drifts
+  // from the validator's, a payload with more than one problem is reported under the wrong
+  // reason and sends provider-compatibility work after the wrong shape. These cases each carry
+  // two defects at once, so only the matching order produces the expected reason.
+  describe("diagnostic precedence matches the buffered validator", () => {
+    async function reasonFor(toolCall: unknown): Promise<string> {
+      process.env.OCX_DEBUG = "1";
+      const adapter = createOpenAIChatAdapter(provider());
+      await adapter.parseResponse!(new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", tool_calls: [toolCall] } }],
+      })));
+      const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+      const match = /"reason":"([a-z_]+)"/.exec(lines);
+      return match?.[1] ?? "";
+    }
+
+    test("a bad function container outranks a bad id", async () => {
+      // Validator checks `!isRecord(rawToolCall.function)` before it reads `id`.
+      expect(await reasonFor({ id: 7, function: "not-an-object" }))
+        .toBe("tool_call_function_not_object");
+    });
+
+    test("a bad id outranks a bad name", async () => {
+      expect(await reasonFor({ id: 7, function: { name: 9, arguments: "{}" } }))
+        .toBe("tool_call_id_invalid");
+    });
+
+    test("a bad arguments type outranks a blank name", async () => {
+      // Both are rejected by the same validator condition; arguments is checked first there,
+      // so a blank name must not shadow it.
+      expect(await reasonFor({ id: "call_1", function: { name: "   ", arguments: 5 } }))
+        .toBe("tool_call_function_arguments_invalid");
+    });
+
+    test("a blank name is reported as blank, not as a type problem", async () => {
+      expect(await reasonFor({ id: "call_1", function: { name: "   ", arguments: "{}" } }))
+        .toBe("tool_call_function_name_blank");
+    });
+  });
 });
 
 describe("openai-chat stream response hardening", () => {

@@ -261,9 +261,11 @@ function diagnoseInvalidToolCalls(
       }
       continue;
     }
-    if (typeof rawToolCall.id !== "string") {
-      return { reason: "tool_call_id_invalid", callIndex, valueType: typeof rawToolCall.id };
-    }
+    // Precedence must mirror the buffered validator below, or a payload with more than one
+    // problem is reported under the wrong reason and sends compatibility work after the wrong
+    // shape. That validator checks the `function` container first (`!isRecord(rawToolCall) ||
+    // !isRecord(rawToolCall.function)`), then id/name/arguments types together, and only then
+    // the blank name.
     if (!isRecord(rawToolCall.function)) {
       return {
         reason: "tool_call_function_not_object",
@@ -271,17 +273,20 @@ function diagnoseInvalidToolCalls(
         valueType: rawToolCall.function === null ? "null" : Array.isArray(rawToolCall.function) ? "array" : typeof rawToolCall.function,
       };
     }
+    if (typeof rawToolCall.id !== "string") {
+      return { reason: "tool_call_id_invalid", callIndex, valueType: typeof rawToolCall.id };
+    }
     if (typeof rawToolCall.function.name !== "string") {
       return { reason: "tool_call_function_name_invalid", callIndex, valueType: typeof rawToolCall.function.name };
     }
-    // #1531 also rejects a blank or whitespace-only name on this path, because such a call
-    // cannot select a dispatch target. Diagnosing it as `name_invalid` would report a type
-    // problem for a value that is correctly typed, so it gets its own reason code.
-    if (rawToolCall.function.name.trim().length === 0) {
-      return { reason: "tool_call_function_name_blank", callIndex, valueType: "string" };
-    }
     if (typeof rawToolCall.function.arguments !== "string") {
       return { reason: "tool_call_function_arguments_invalid", callIndex, valueType: typeof rawToolCall.function.arguments };
+    }
+    // Last, matching the validator: #1531 also rejects a blank or whitespace-only name here,
+    // because such a call cannot select a dispatch target. Reporting it as `name_invalid`
+    // would claim a type problem for a correctly-typed value, so it gets its own code.
+    if (rawToolCall.function.name.trim().length === 0) {
+      return { reason: "tool_call_function_name_blank", callIndex, valueType: "string" };
     }
   }
   return undefined;
