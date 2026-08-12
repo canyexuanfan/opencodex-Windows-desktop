@@ -37,7 +37,7 @@ export {
 const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
 const DEFAULT_REASONING: VisionReasoningEffort = "low";
-const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
+export const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;
 export const VISION_DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024;
 const descriptionEncoder = new TextEncoder();

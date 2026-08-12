@@ -6,11 +6,7 @@ import { en } from "../src/i18n/en";
 import { LanguageProvider } from "../src/i18n/provider";
 import { DashboardSidecarPanels } from "../src/pages/dashboard-overview-sections";
 import type { SidecarData, SidecarPatch } from "../src/pages/dashboard-shared";
-import {
-  mergeSidecarSetting,
-  VISION_MAX_DESCRIPTIONS_DEFAULT,
-  VISION_TIMEOUT_MS_DEFAULT,
-} from "../src/pages/dashboard-shared";
+import { mergeSidecarSetting } from "../src/pages/dashboard-shared";
 import type { useDashboardData } from "../src/pages/use-dashboard-data";
 
 const globals = ["document", "window", "navigator", "IS_REACT_ACT_ENVIRONMENT"] as const;
@@ -28,8 +24,8 @@ const initialSidecar: SidecarData = {
     backend: "openai",
     reasoning: "medium",
     enabled: true,
-    maxDescriptionsPerTurn: 8,
-    timeoutMs: 45_000,
+    maxDescriptionsPerTurn: 12,
+    timeoutMs: 30_000,
   },
   visionModels: [
     { value: "gpt-5.6-luna", label: "gpt-5.6-luna", backend: "openai", baseline: true },
@@ -137,8 +133,8 @@ test("Dashboard hydrates enabled, max descriptions, and timeout from the server"
   const maxInput = card.querySelector<HTMLInputElement>('input[aria-label="' + en["dash.visionMaxDescriptions"] + '"]');
   const timeoutInput = card.querySelector<HTMLInputElement>('input[aria-label="' + en["dash.visionTimeout"] + '"]');
   expect(toggle?.getAttribute("aria-pressed")).toBe("true");
-  expect(maxInput?.value).toBe(String(VISION_MAX_DESCRIPTIONS_DEFAULT));
-  expect(timeoutInput?.value).toBe(String(VISION_TIMEOUT_MS_DEFAULT));
+  expect(maxInput?.value).toBe("12");
+  expect(timeoutInput?.value).toBe("30000");
 });
 
 test("disable then re-enable sends only enabled and keeps the other Vision fields", async () => {
@@ -153,8 +149,8 @@ test("disable then re-enable sends only enabled and keeps the other Vision field
     model: "gpt-5.6-luna",
     backend: "openai",
     reasoning: "medium",
-    maxDescriptionsPerTurn: 8,
-    timeoutMs: 45_000,
+    maxDescriptionsPerTurn: 12,
+    timeoutMs: 30_000,
   });
 
   await act(async () => {
@@ -168,8 +164,8 @@ test("disable then re-enable sends only enabled and keeps the other Vision field
     model: "gpt-5.6-luna",
     backend: "openai",
     reasoning: "medium",
-    maxDescriptionsPerTurn: 8,
-    timeoutMs: 45_000,
+    maxDescriptionsPerTurn: 12,
+    timeoutMs: 30_000,
   });
 });
 
@@ -181,10 +177,10 @@ test("editing the limit or timeout saves only that field", async () => {
   const timeoutInc = card.querySelector<HTMLButtonElement>(`button[aria-label="${en["dash.visionTimeoutInc"]}"]`)!;
 
   await act(async () => { maxDec.click(); });
-  expect(patches).toEqual([{ vision: { maxDescriptionsPerTurn: 7 } }]);
+  expect(patches).toEqual([{ vision: { maxDescriptionsPerTurn: 11 } }]);
 
   await act(async () => { timeoutInc.click(); });
-  expect(patches[1]).toEqual({ vision: { timeoutMs: 46_000 } });
+  expect(patches[1]).toEqual({ vision: { timeoutMs: 31_000 } });
 });
 
 test("an unrelated web-search save does not include Vision fields", async () => {

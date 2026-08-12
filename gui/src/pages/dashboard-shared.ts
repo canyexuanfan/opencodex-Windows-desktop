@@ -217,6 +217,7 @@ export function visionTimeoutPatch(timeoutMs: number): SidecarPatch {
 export const VISION_TIMEOUT_MS_DEFAULT = DEFAULT_VISION_TIMEOUT_MS;
 export const VISION_TIMEOUT_MS_MAX = MAX_VISION_TIMEOUT_MS;
 export const VISION_TIMEOUT_MS_MIN = MIN_VISION_TIMEOUT_MS;
+/** Mirrors `DEFAULT_MAX_DESCRIPTIONS_PER_TURN` and is pinned by the timeout-bounds contract test. */
 export const VISION_MAX_DESCRIPTIONS_DEFAULT = 8;
 
 export function parsePositiveInteger(raw: string): number | undefined {
