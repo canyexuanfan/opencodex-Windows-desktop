@@ -617,6 +617,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     }
     if (path === "/v1/responses/compact") return req.method === "POST";
     if (path === "/v1/models") return req.method === "GET";
+    // Standalone realtime voice sessions (codex-rs thread/realtime/start, WebSocket
+    // transport) — a directly-spawned `codex app-server` needs these for desktop
+    // voice the same way it needs /v1/responses. WebSocket upgrades only; plain
+    // HTTP on these paths stays rejected.
+    if (path === "/v1/realtime" || path === "/v1/live") {
+      return req.headers.get("upgrade")?.toLowerCase() === "websocket";
+    }
     return false;
   }
 
@@ -1320,10 +1327,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         });
       }
 
-      // Voice / Realtime sideband WebSocket: Frameless joins /v1/live/{callId}; Realtime v1 joins
-      // /v1/realtime?call_id= (or /v1/realtime/calls/{callId}). Transparent bidirectional relay.
+      // Voice / Realtime WebSocket relay. Sideband joins: Frameless /v1/live/{callId};
+      // Realtime v1 /v1/realtime?call_id= (or /v1/realtime/calls/{callId}). Standalone
+      // sessions (codex-rs thread/realtime/start, WebSocket transport — the desktop voice
+      // path): /v1/realtime?intent=quicksilver&model= and /v1/live?model=.
+      // Transparent bidirectional relay.
       const liveSidebandTarget = req.headers.get("upgrade")?.toLowerCase() === "websocket"
-        ? parseLiveSidebandTarget(url.pathname, url.searchParams)
+        ? parseLiveSidebandTarget(url.pathname, url.searchParams, url.search.replace(/^\?/, ""))
         : null;
       if (liveSidebandTarget) {
         if (isDraining()) {
