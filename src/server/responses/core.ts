@@ -1627,6 +1627,7 @@ async function handleResponsesInner(
   };
   let selectedForwardHeaders = req.headers;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
+  let subagentFallbackPreviewAccountId: string | null | undefined;
   let subagentQuotaFailureModel = parsed.modelId;
   const parentThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() ?? null;
 
@@ -1652,6 +1653,7 @@ async function handleResponsesInner(
       undefined,
       previewSelectionOptions,
     );
+    subagentFallbackPreviewAccountId = previewAccountId;
     subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
     const fallback = applySubagentModelFallback(
       parsed,
@@ -1737,6 +1739,46 @@ async function handleResponsesInner(
           // text. Bar it from the continuation cache before any recording path can reach it —
           // that cache is persisted to disk, which would defeat the recovery cache's TTL.
           markBodyNonPersistable(parsed._rawBody);
+
+          // The ciphertext-only pass intentionally excludes routed candidates. Once recovery
+          // makes the assignment readable, run selection again with the full configured chain
+          // and keep the route in sync with any newly selected fallback.
+          const fallback = applySubagentModelFallback(
+            parsed,
+            req.headers,
+            config,
+            subagentFallbackPreviewAccountId,
+            Date.now(),
+            false,
+            previewSelectionOptions,
+          );
+          if (fallback) {
+            (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
+            (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
+            if (isInjectionDebugEnabled()) {
+              injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
+            }
+          }
+          subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
+
+          if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
+            try {
+              route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
+              logCtx.routeDecision = route.routeDecision;
+            } catch (err) {
+              if (err instanceof NoAvailableComboTargetsError) {
+                return comboUnavailableResponse(err.message);
+              }
+              if (err instanceof NoEligiblePolicyCandidateError) {
+                logCtx.routeDecision = err.trace;
+              }
+              return formatErrorResponse(
+                404,
+                "invalid_request_error",
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+          }
           toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
         } catch {
           unreadableEncryptedAgentTask = true;
