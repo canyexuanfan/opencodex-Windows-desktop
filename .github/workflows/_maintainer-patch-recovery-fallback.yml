@@ -1,0 +1,112 @@
+name: Maintainer recovery fallback patch
+
+on:
+  push:
+    branches:
+      - fix/recovery-routed-fallback
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor == 'Wibias' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: fix/recovery-routed-fallback
+          fetch-depth: 0
+      - name: Apply focused fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/server/responses/core.ts')
+          text = path.read_text()
+
+          old = '''  let selectedForwardHeaders = req.headers;
+          let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
+          let subagentQuotaFailureModel = parsed.modelId;
+          '''
+          new = '''  let selectedForwardHeaders = req.headers;
+          let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
+          let subagentFallbackPreviewAccountId: string | null | undefined;
+          let subagentQuotaFailureModel = parsed.modelId;
+          '''
+          if old not in text:
+              raise SystemExit('fallback state anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
+              const fallback = applySubagentModelFallback(
+          '''
+          new = '''    subagentFallbackPreviewAccountId = previewAccountId;
+              subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
+              const fallback = applySubagentModelFallback(
+          '''
+          if old not in text:
+              raise SystemExit('preview account anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''          markBodyNonPersistable(parsed._rawBody);
+              toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
+          '''
+          new = '''          markBodyNonPersistable(parsed._rawBody);
+
+              // The ciphertext-only pass intentionally excludes routed candidates. Once recovery
+              // makes the assignment readable, run selection again with the full configured chain
+              // and keep the route in sync with any newly selected fallback.
+              const fallback = applySubagentModelFallback(
+                parsed,
+                req.headers,
+                config,
+                subagentFallbackPreviewAccountId,
+                Date.now(),
+                false,
+                previewSelectionOptions,
+              );
+              if (fallback) {
+                (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
+                (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
+                if (isInjectionDebugEnabled()) {
+                  injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
+                }
+              }
+              subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
+
+              if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
+                try {
+                  route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
+                  logCtx.routeDecision = route.routeDecision;
+                } catch (err) {
+                  if (err instanceof NoAvailableComboTargetsError) {
+                    return comboUnavailableResponse(err.message);
+                  }
+                  if (err instanceof NoEligiblePolicyCandidateError) {
+                    logCtx.routeDecision = err.trace;
+                  }
+                  return formatErrorResponse(
+                    404,
+                    "invalid_request_error",
+                    err instanceof Error ? err.message : String(err),
+                  );
+                }
+              }
+              toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
+          '''
+          if old not in text:
+              raise SystemExit('recovery reparse anchor not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          rm .github/workflows/_maintainer-patch-recovery-fallback.yml
+          git config user.name "Wibias"
+          git config user.email "37517432+Wibias@users.noreply.github.com"
+          git add src/server/responses/core.ts .github/workflows/_maintainer-patch-recovery-fallback.yml
+          git commit -m "fix(agents): reroute recovered tasks through fallback"
+          git push origin HEAD:fix/recovery-routed-fallback
