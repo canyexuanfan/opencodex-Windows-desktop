@@ -200,6 +200,8 @@ const MAX_RECENT_COMMIT_LENGTH = 512;
 const MAX_GIT_STATUS_LENGTH = 2048;
 /** Keep collected workspace/git metadata fresh for this long (ms) so repeated requests reuse it. */
 const WORKSPACE_METADATA_TTL_MS = 30_000;
+/** Hard cap on cached workspace metadata entries to prevent unbounded growth across distinct cwds. */
+export const MAX_WORKSPACE_METADATA_ENTRIES = 128;
 
 /** Derive a bounded project slug from the working directory for the `x-project-slug` header. */
 function projectSlug(cwd: string): string {
@@ -214,7 +216,32 @@ interface GitWorkspaceInfo {
   recentCommits: string[];
 }
 
-const workspaceMetadataCache = new Map<string, { collectedAt: number; value: GitWorkspaceInfo }>();
+export const workspaceMetadataCache = new Map<string, { collectedAt: number; value: GitWorkspaceInfo }>();
+
+/**
+ * Evict expired entries first, then the oldest live entry if at capacity.
+ * Called before inserting a new key so the cache never exceeds the cap.
+ */
+export function pruneWorkspaceMetadataCache(now: number): void {
+  // Pass 1: remove expired entries.
+  for (const [key, entry] of workspaceMetadataCache) {
+    if (now - entry.collectedAt >= WORKSPACE_METADATA_TTL_MS) {
+      workspaceMetadataCache.delete(key);
+    }
+  }
+  // Pass 2: if still at capacity, evict the oldest live entry.
+  if (workspaceMetadataCache.size >= MAX_WORKSPACE_METADATA_ENTRIES) {
+    let oldestKey: string | null = null;
+    let oldestAt = Infinity;
+    for (const [key, entry] of workspaceMetadataCache) {
+      if (entry.collectedAt < oldestAt) {
+        oldestAt = entry.collectedAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey !== null) workspaceMetadataCache.delete(oldestKey);
+  }
+}
 
 const execFile = promisify(execFileCallback);
 
@@ -246,7 +273,9 @@ async function gitWorkspaceInfo(cwd: string | undefined): Promise<GitWorkspaceIn
           .map(commit => commit.slice(0, MAX_RECENT_COMMIT_LENGTH)),
       }
     : fallback;
-  workspaceMetadataCache.set(cwd, { collectedAt: Date.now(), value });
+  const now = Date.now();
+  if (!workspaceMetadataCache.has(cwd)) pruneWorkspaceMetadataCache(now);
+  workspaceMetadataCache.set(cwd, { collectedAt: now, value });
   return value;
 }
 
