@@ -502,6 +502,24 @@ describe("multi_agent_mode_hint_text reader/writer", () => {
     expect(getMultiAgentModeHintText(path)).toBe("hello\n[bracketed]\nworld\n");
   });
 
+
+  test("reader consumes surplus quotes in multiline closing delimiters", () => {
+    // TOML permits up to two quotes immediately inside the closing delimiter
+    // of a multiline string. The scanner must include them in the value
+    // rather than stopping at the first triple-quote run.
+    const basic1 = fixtureConfig('[features.multi_agent_v2]\nmulti_agent_mode_hint_text = """hello""""\nenabled = true\n');
+    expect(getMultiAgentModeHintText(basic1)).toBe('hello"');
+    const basic2 = fixtureConfig('[features.multi_agent_v2]\nmulti_agent_mode_hint_text = """hello"""""\nenabled = true\n');
+    expect(getMultiAgentModeHintText(basic2)).toBe('hello""');
+    const lit1 = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = '''hello''''\nenabled = true\n");
+    expect(getMultiAgentModeHintText(lit1)).toBe("hello'");
+    const lit2 = fixtureConfig("[features.multi_agent_v2]\nmulti_agent_mode_hint_text = '''hello'''''\nenabled = true\n");
+    expect(getMultiAgentModeHintText(lit2)).toBe("hello''");
+    // Normal 3-quote closing still works.
+    const normal = fixtureConfig('[features.multi_agent_v2]\nmulti_agent_mode_hint_text = """hello"""\nenabled = true\n');
+    expect(getMultiAgentModeHintText(normal)).toBe("hello");
+  });
+
   test("writer updates and clears quoted dedicated-table keys without duplicates", () => {
     for (const quoted of ['"multi_agent_mode_hint_text"', "'multi_agent_mode_hint_text'"]) {
       const path = fixtureConfig(`[features.multi_agent_v2]\n${quoted} = "old"\nenabled = true\n`);

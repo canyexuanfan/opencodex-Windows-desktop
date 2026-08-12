@@ -538,7 +538,16 @@ function scanTomlValueEnd(text: string, start: number): number {
       while (i < text.length) {
         if (text[i] === "\\") { i += 2; continue; }
         if (text[i] === '"' && text[i + 1] === '"' && text[i + 2] === '"') {
-          return i + 3;
+          // TOML permits up to two quotes immediately inside the closing
+          // delimiter, so a 4- or 5-quote run means the extra one or two
+          // quotes are part of the value. Consume the full valid run and
+          // keep the surplus quotes in the body.
+          let end = i + 3;
+          if (text[end] === '"') {
+            end++;
+            if (text[end] === '"') end++;
+          }
+          return end;
         }
         i++;
       }
@@ -556,8 +565,20 @@ function scanTomlValueEnd(text: string, start: number): number {
     // Multi-line literal string: `'''...'''`.
     if (text[i + 1] === "'" && text[i + 2] === "'") {
       i += 3;
-      const close = text.indexOf("'''", i);
-      return close === -1 ? text.length : close + 3;
+      while (i < text.length) {
+        if (text[i] === "'" && text[i + 1] === "'" && text[i + 2] === "'") {
+          // Same as multi-line basic: up to two surplus single quotes can
+          // precede the closing delimiter and remain part of the value.
+          let end = i + 3;
+          if (text[end] === "'") {
+            end++;
+            if (text[end] === "'") end++;
+          }
+          return end;
+        }
+        i++;
+      }
+      return text.length;
     }
     const close = text.indexOf("'", i + 1);
     return close === -1 ? text.length : close + 1;
