@@ -1,6 +1,12 @@
 import net, { type Socket } from "node:net";
 
 const DIRECT_LOCAL_HTTP_MAX_BYTES = 8 * 1024 * 1024;
+const DIRECT_LOCAL_HTTP_TIMEOUT_MS = 10_000;
+
+type DirectLocalHttpIo = {
+  timeoutMs?: number;
+  connect?: (hostname: string, port: number) => Socket;
+};
 
 function abortReason(signal: AbortSignal): Error {
   if (signal.reason instanceof Error) return signal.reason;
@@ -11,6 +17,15 @@ function abortReason(signal: AbortSignal): Error {
 
 function headerBoundary(bytes: Buffer): number {
   return bytes.indexOf("\r\n\r\n");
+}
+
+function validateTrailerLines(bytes: Buffer, start: number, end: number): void {
+  if (end === start) return;
+  for (const line of bytes.subarray(start, end).toString("latin1").split("\r\n")) {
+    if (line.indexOf(":") <= 0) {
+      throw new Error("direct local HTTP response has an invalid chunk trailer");
+    }
+  }
 }
 
 function decodeChunkedBody(body: Buffer): Buffer {
@@ -26,9 +41,16 @@ function decodeChunkedBody(body: Buffer): Buffer {
     if (size === 0) {
       if (body.length < offset + 2) throw new Error("direct local HTTP response has a truncated chunk trailer");
       if (body[offset] !== 13 || body[offset + 1] !== 10) {
-        if (body.indexOf("\r\n\r\n", offset) < 0) {
+        const trailerEnd = body.indexOf("\r\n\r\n", offset);
+        if (trailerEnd < 0) {
           throw new Error("direct local HTTP response has a truncated chunk trailer");
         }
+        validateTrailerLines(body, offset, trailerEnd);
+        if (trailerEnd + 4 !== body.length) {
+          throw new Error("direct local HTTP response has trailing bytes");
+        }
+      } else if (offset + 2 !== body.length) {
+        throw new Error("direct local HTTP response has trailing bytes");
       }
       return Buffer.concat(chunks);
     }
@@ -85,7 +107,12 @@ function advanceResponseFraming(bytes: Buffer, initial: ResponseFraming): Respon
       }
       const { status, headers } = parseResponseHead(bytes, boundary);
       const bodyStart = boundary + 4;
-      if (status === 204 || status === 205 || status === 304) return { kind: "complete" };
+      if (status === 204 || status === 205 || status === 304) {
+        if (bytes.length > bodyStart) {
+          throw new Error("direct local HTTP response has a body for a bodyless status");
+        }
+        return { kind: "complete" };
+      }
       if (/\bchunked\b/i.test(headers.get("transfer-encoding") ?? "")) {
         framing = { kind: "chunk-size", offset: bodyStart, searchFrom: bodyStart };
         continue;
@@ -102,7 +129,10 @@ function advanceResponseFraming(bytes: Buffer, initial: ResponseFraming): Respon
       continue;
     }
     if (framing.kind === "content-length") {
-      return bytes.length >= framing.totalBytes ? { kind: "complete" } : framing;
+      if (bytes.length > framing.totalBytes) {
+        throw new Error("direct local HTTP response has trailing bytes");
+      }
+      return bytes.length === framing.totalBytes ? { kind: "complete" } : framing;
     }
     if (framing.kind === "chunk-size") {
       const lineEnd = bytes.indexOf("\r\n", framing.searchFrom);
@@ -137,9 +167,20 @@ function advanceResponseFraming(bytes: Buffer, initial: ResponseFraming): Respon
       continue;
     }
     if (bytes.length < framing.offset + 2) return framing;
-    if (bytes[framing.offset] === 13 && bytes[framing.offset + 1] === 10) return { kind: "complete" };
+    if (bytes[framing.offset] === 13 && bytes[framing.offset + 1] === 10) {
+      if (bytes.length > framing.offset + 2) {
+        throw new Error("direct local HTTP response has trailing bytes");
+      }
+      return { kind: "complete" };
+    }
     const trailerEnd = bytes.indexOf("\r\n\r\n", framing.searchFrom);
-    if (trailerEnd >= 0) return { kind: "complete" };
+    if (trailerEnd >= 0) {
+      validateTrailerLines(bytes, framing.offset, trailerEnd);
+      if (bytes.length > trailerEnd + 4) {
+        throw new Error("direct local HTTP response has trailing bytes");
+      }
+      return { kind: "complete" };
+    }
     if (bytes.length - framing.offset > 64 * 1024) {
       throw new Error("direct local HTTP response trailers exceed the byte cap");
     }
@@ -150,19 +191,7 @@ function advanceResponseFraming(bytes: Buffer, initial: ResponseFraming): Respon
 function parseResponse(bytes: Buffer): Response {
   const boundary = headerBoundary(bytes);
   if (boundary < 0) throw new Error("direct local HTTP response has no header boundary");
-  const lines = bytes.subarray(0, boundary).toString("latin1").split("\r\n");
-  const statusLine = lines.shift() ?? "";
-  const match = /^HTTP\/1\.[01] ([0-9]{3})(?: (.*))?$/.exec(statusLine);
-  if (!match) throw new Error("direct local HTTP response has an invalid status line");
-  const status = Number(match[1]);
-  if (status < 200 || status > 599) throw new Error("direct local HTTP response has an unsupported status");
-
-  const headers = new Headers();
-  for (const line of lines) {
-    const colon = line.indexOf(":");
-    if (colon <= 0) throw new Error("direct local HTTP response has an invalid header");
-    headers.append(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
-  }
+  const { status, statusText, headers } = parseResponseHead(bytes, boundary);
 
   let body = bytes.subarray(boundary + 4);
   if (/\bchunked\b/i.test(headers.get("transfer-encoding") ?? "")) {
@@ -184,7 +213,7 @@ function parseResponse(bytes: Buffer): Response {
   const bodyless = status === 204 || status === 205 || status === 304;
   return new Response(bodyless ? null : new Uint8Array(body), {
     status,
-    statusText: match[2] ?? "",
+    statusText,
     headers,
   });
 }
@@ -198,10 +227,11 @@ function parseResponse(bytes: Buffer): Response {
  * the selected listener without consulting proxy environment variables. Each
  * caller retains an injected fetch seam for deterministic unit tests.
  */
-export const directLocalHttpFetch = (async (
+export async function directLocalHttpFetch(
   input: string | URL | Request,
   init: RequestInit = {},
-): Promise<Response> => {
+  io: DirectLocalHttpIo = {},
+): Promise<Response> {
   const url = new URL(input instanceof Request ? input.url : String(input));
   const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
   const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
@@ -226,8 +256,12 @@ export const directLocalHttpFetch = (async (
   const parsedHostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
     ? url.hostname.slice(1, -1)
     : url.hostname;
-  const hostname = parsedHostname.toLowerCase() === "localhost" ? "127.0.0.1" : parsedHostname;
+  const hostname = parsedHostname;
   const port = url.port ? Number(url.port) : 80;
+  const timeoutMs = io.timeoutMs ?? DIRECT_LOCAL_HTTP_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("direct local HTTP timeout must be positive");
+  }
 
   return await new Promise<Response>((resolve, reject) => {
     let socket: Socket | undefined;
@@ -235,7 +269,10 @@ export const directLocalHttpFetch = (async (
     let receivedBytes = 0;
     let responseBytes = Buffer.allocUnsafe(4 * 1024);
     let framing: ResponseFraming = { kind: "head", searchFrom: 0 };
-    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+      socket?.setTimeout(0);
+    };
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
@@ -253,11 +290,19 @@ export const directLocalHttpFetch = (async (
     };
     const onAbort = () => {
       const error = signal ? abortReason(signal) : new Error("direct local HTTP request aborted");
-      try { socket?.destroy(error); } catch { /* ignore */ }
       finish(error);
     };
 
-    socket = net.createConnection({ host: hostname, port });
+    socket = (io.connect ?? ((host, selectedPort) => net.createConnection({
+      host,
+      port: selectedPort,
+      autoSelectFamily: true,
+    })))(hostname, port);
+    socket.setTimeout(timeoutMs, () => {
+      const error = new Error("direct local HTTP request timed out");
+      error.name = "TimeoutError";
+      finish(error);
+    });
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) {
       onAbort();
@@ -295,4 +340,4 @@ export const directLocalHttpFetch = (async (
     socket.once("error", error => finish(error));
     socket.once("close", () => finish());
   });
-}) as typeof fetch;
+}

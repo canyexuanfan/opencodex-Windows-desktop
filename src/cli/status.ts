@@ -111,6 +111,12 @@ export function resolveStatusPid(
   return live ? live.pid : pidFile;
 }
 
+export function proxyHealthFailureReason(error: unknown, signal: AbortSignal): "timed out" | "unreachable" {
+  return signal.aborted || (error instanceof Error && error.name === "AbortError")
+    ? "timed out"
+    : "unreachable";
+}
+
 async function checkProxyHealth(target: ListenTarget): Promise<HealthCheck> {
   const url = target.healthUrl;
   const controller = new AbortController();
@@ -131,9 +137,7 @@ async function checkProxyHealth(target: ListenTarget): Promise<HealthCheck> {
     const message = `ok${version}${uptime}`;
     return { ok: true, url, message, label: `${url} ${message}` };
   } catch (error) {
-    const reason = controller.signal.aborted || (error instanceof Error && error.name === "AbortError")
-      ? "timed out"
-      : "unreachable";
+    const reason = proxyHealthFailureReason(error, controller.signal);
     return { ok: false, url, message: reason, label: `${url} ${reason}` };
   } finally {
     clearTimeout(timer);

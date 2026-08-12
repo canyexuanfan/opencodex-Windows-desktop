@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { lookup } from "node:dns/promises";
 import { createServer } from "node:http";
-import { createServer as createTcpServer, type Server, type Socket } from "node:net";
+import { createConnection, createServer as createTcpServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { directLocalHttpFetch } from "../src/server/direct-local-http";
@@ -8,10 +9,10 @@ import { directLocalHttpFetch } from "../src/server/direct-local-http";
 const PID = 4242;
 const SECRET = "A".repeat(43);
 
-async function listen(server: Server): Promise<number> {
+async function listen(server: Server, hostname = "127.0.0.1"): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, hostname, () => {
       server.removeListener("error", reject);
       const address = server.address();
       if (!address || typeof address === "string") {
@@ -36,6 +37,115 @@ describe("local management direct transport", () => {
     await expect(directLocalHttpFetch("http://127.0.0.1:9/healthz", {
       signal: controller.signal,
     })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test("passes localhost unchanged to the direct connector", async () => {
+    const server = createTcpServer(socket => {
+      socket.once("data", () => {
+        socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+      });
+    });
+    let port = 0;
+    try {
+      port = await listen(server, "127.0.0.1");
+      let connectedHostname: string | undefined;
+      const response = await directLocalHttpFetch(`http://localhost:${port}/healthz`, {
+        signal: AbortSignal.timeout(500),
+      }, {
+        connect(hostname, selectedPort) {
+          connectedHostname = hostname;
+          return createConnection({ host: "127.0.0.1", port: selectedPort });
+        },
+      });
+      expect(connectedHostname).toBe("localhost");
+      expect(await response.text()).toBe("ok");
+    } finally {
+      if (port !== 0) await close(server);
+    }
+  });
+
+  test("preserves localhost DNS resolution for an IPv6 listener when available", async () => {
+    const addresses = await lookup("localhost", { all: true });
+    if (!addresses.some(address => address.family === 6)) return;
+    const server = createTcpServer(socket => {
+      socket.once("data", () => {
+        socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+      });
+    });
+    let port = 0;
+    try {
+      try {
+        port = await listen(server, "::1");
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (code === "EADDRNOTAVAIL" || code === "EAFNOSUPPORT") return;
+        throw error;
+      }
+      const response = await directLocalHttpFetch(`http://localhost:${port}/healthz`, {
+        signal: AbortSignal.timeout(500),
+      });
+      expect(await response.text()).toBe("ok");
+    } finally {
+      if (port !== 0) await close(server);
+    }
+  });
+
+  test("preserves AbortError after a socket connects but never replies", async () => {
+    let accept!: () => void;
+    const accepted = new Promise<void>(resolve => { accept = resolve; });
+    const sockets = new Set<Socket>();
+    const server = createTcpServer(socket => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      accept();
+    });
+    const controller = new AbortController();
+    let port = 0;
+    try {
+      port = await listen(server);
+      const pending = directLocalHttpFetch(`http://127.0.0.1:${port}/healthz`, {
+        signal: controller.signal,
+      }, { timeoutMs: 1_000 });
+      await Promise.race([
+        accepted,
+        pending.then(
+          () => { throw new Error("direct request completed before the server accepted it"); },
+          error => { throw error; },
+        ),
+      ]);
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      if (port !== 0) await close(server);
+    }
+  });
+
+  test("times out an accepted silent socket without an AbortSignal", async () => {
+    let accept!: () => void;
+    const accepted = new Promise<void>(resolve => { accept = resolve; });
+    const sockets = new Set<Socket>();
+    const server = createTcpServer(socket => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      accept();
+    });
+    let port = 0;
+    try {
+      port = await listen(server);
+      const pending = directLocalHttpFetch(`http://127.0.0.1:${port}/healthz`, {}, { timeoutMs: 250 });
+      await Promise.race([
+        accepted,
+        pending.then(
+          () => { throw new Error("direct request completed before the server accepted it"); },
+          error => { throw error; },
+        ),
+      ]);
+      await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      if (port !== 0) await close(server);
+    }
   });
 
   test.each([
@@ -64,10 +174,41 @@ describe("local management direct transport", () => {
     }
   });
 
+  test.each([
+    ["invalid status", "NOT-HTTP\r\nContent-Length: 0\r\n\r\n"],
+    ["invalid header", "HTTP/1.1 200 OK\r\nBroken-Header\r\n\r\n"],
+    ["invalid content length", "HTTP/1.1 200 OK\r\nContent-Length: nope\r\n\r\n"],
+    ["oversized content length", `HTTP/1.1 200 OK\r\nContent-Length: ${8 * 1024 * 1024 + 1}\r\n\r\n`],
+    ["truncated body", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab"],
+    ["invalid chunk size", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"],
+    ["invalid chunk terminator", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\naXX"],
+    ["invalid chunk trailer", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nbad\r\n\r\n"],
+    ["content-length trailing bytes", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokextra"],
+    ["bodyless status with a body", "HTTP/1.1 204 No Content\r\n\r\nunexpected"],
+  ])("rejects a malformed response with %s", async (_name, frame) => {
+    const sockets = new Set<Socket>();
+    const server = createTcpServer(socket => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.once("data", () => socket.end(frame));
+    });
+    let port = 0;
+    try {
+      port = await listen(server);
+      await expect(directLocalHttpFetch(`http://127.0.0.1:${port}/healthz`, {
+        signal: AbortSignal.timeout(500),
+      })).rejects.toThrow(/direct local HTTP response/);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      if (port !== 0) await close(server);
+    }
+  });
+
   test("bypasses configured environment proxies for liveness, readiness, and capability reads", async () => {
     const targetPaths: string[] = [];
     const targetCapabilities: string[] = [];
     const proxyPaths: string[] = [];
+    const proxyCapabilities: string[] = [];
     let targetPort = 0;
 
     const reply = (
@@ -109,6 +250,8 @@ describe("local management direct transport", () => {
     const proxy = createServer((request, response) => {
       const rawPath = request.url ?? "/";
       proxyPaths.push(rawPath);
+      const capability = request.headers["x-opencodex-local-capability"];
+      if (typeof capability === "string") proxyCapabilities.push(capability);
       const pathname = new URL(rawPath, "http://127.0.0.1").pathname;
       if (pathname === "/__proxy-control") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -194,6 +337,7 @@ describe("local management direct transport", () => {
       });
       expect(proxyPaths).toHaveLength(1);
       expect(proxyPaths[0]).toEndWith("/__proxy-control");
+      expect(proxyCapabilities).toEqual([]);
       expect(targetPaths).toEqual(["/healthz", "/readyz", "/api/system/memory"]);
       expect(targetCapabilities).toHaveLength(1);
       expect(targetCapabilities[0]).toHaveLength(43);

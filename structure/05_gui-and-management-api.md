@@ -12,7 +12,7 @@ unsupported; deployments that previously relied on such embedding must open it a
 
 ## Authentication boundaries
 
-OpenCodex uses three mutually exclusive admission credential classes:
+OpenCodex uses three mutually exclusive reusable admission credential classes:
 
 | Credential class | Sources | Allowed surface |
 | --- | --- | --- |
@@ -24,7 +24,9 @@ The service token file remains a delivery mechanism for the data-plane environme
 a fourth credential class. A management credential that equals any configured data-plane credential
 does not enable management access. The data plane may continue to start, but `/api/*` remains closed.
 CLI health collection follows the same boundary without transporting the reusable management
-credential. `ocx status` and `ocx doctor` derive process-scoped HMAC capabilities from the protected
+credential. Its local-read HMAC capability is an additional single-use, route-scoped admission
+mechanism, not a reusable credential class. `ocx status` and `ocx doctor` derive these capabilities
+from the protected
 `runtime-port.json` secret for exactly two read-only GETs: `/api/codex-auth/accounts` and
 `/api/system/memory`. Each capability is bound to its method, path, nonce, proxy PID, and port. A
 short expiry is part of the HMAC, and the server consumes each capability once. A capability cannot
