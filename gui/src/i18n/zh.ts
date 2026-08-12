@@ -752,6 +752,7 @@ export const zh: Record<TKey, string> = {
   "usage.range.all": "全部",
   "usage.range.available": "可用历史",
   "usage.historyTruncated": "由于未加载较早的使用记录，合计仅涵盖可用历史。",
+  "usage.historyTruncatedWindow": "已加载记录的请求开始时间介于 {start} 到 {end} 之间。受读取上限限制，文件较前的条目已被省略，所选时间范围可能不完整。",
   "usage.range.30d": "30 天",
   "usage.range.7d": "7 天",
   "usage.card.requests": "请求数",
