@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "../src/config";
 import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
 import { ManagementRequest as Request } from "./helpers/management-auth";
@@ -29,10 +30,12 @@ async function putSidecarSettings(config: OcxConfig, webSearch: Record<string, u
 }
 
 function emptyConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
+  // A schema-valid provider setup: loadConfig() discards invalid files wholesale
+  // (backup + defaults), which would silently void the reload assertions below.
   return {
     port: 10100,
-    defaultProvider: "none",
-    providers: {},
+    defaultProvider: "dummy",
+    providers: { dummy: { adapter: "openai-chat", baseUrl: "https://example.test/v1" } },
     ...overrides,
   } as OcxConfig;
 }
@@ -74,6 +77,8 @@ describe("sidecar-settings webSearch.streamRoutedModelOutput", () => {
     expect(((await enable.json()) as { webSearch: { streamRoutedModelOutput: boolean } })
       .webSearch.streamRoutedModelOutput).toBe(true);
     expect(config.webSearchSidecar?.streamRoutedModelOutput).toBe(true);
+    // Durable persistence: the flag must survive a config reload from disk.
+    expect(loadConfig().webSearchSidecar?.streamRoutedModelOutput).toBe(true);
 
     const disable = await putSidecarSettings(config, { streamRoutedModelOutput: false });
     expect(disable.status).toBe(200);
@@ -81,6 +86,7 @@ describe("sidecar-settings webSearch.streamRoutedModelOutput", () => {
       .webSearch.streamRoutedModelOutput).toBe(false);
     // false is the default — the key is dropped so config files stay minimal.
     expect("streamRoutedModelOutput" in (config.webSearchSidecar ?? {})).toBe(false);
+    expect("streamRoutedModelOutput" in (loadConfig().webSearchSidecar ?? {})).toBe(false);
   });
 
   test("PUT rejects a non-boolean value and leaves other fields untouched", async () => {

@@ -270,7 +270,7 @@ export const de: Record<TKey, string> = {
   "dash.webSearchSidecar": "Websuche-Sidecar",
   "dash.webSearchSidecarHint": "Backend und Modell für die Websuche gerouteter Modelle auswählen.",
   "dash.webSearchStream": "Antworten live streamen",
-  "dash.webSearchStreamHint": "Ausgabe gerouteter Modelle sofort anzeigen statt bis zum Turn-Ende zu puffern. Text vor einer Suche kann sich teilweise wiederholen.",
+  "dash.webSearchStreamHint": "Führenden Text und Reasoning live streamen, bis das Modell über einen Tool-Aufruf entscheidet; der Rest bleibt für das Abfangen der Suche gepuffert. Text vor einer Suche kann sich teilweise wiederholen.",
   "dash.visionSidecar": "Vision-Sidecar",
   "dash.visionSidecarHint": "Backend und Modell zur Bildbeschreibung für reine Textmodelle auswählen.",
   "dash.shadowCallIntercept": "Shadow-Call-Abfangen",
