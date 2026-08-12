@@ -1779,7 +1779,6 @@ async function handleResponsesInner(
               );
             }
           }
-          toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
         } catch {
           unreadableEncryptedAgentTask = true;
         }

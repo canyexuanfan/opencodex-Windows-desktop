@@ -485,7 +485,7 @@ export function warnAgentTaskRecoveryStartup(config: {
   if (config.agentTaskRecovery?.enabled !== true) return;
   console.warn("⚠️  Experimental encrypted V2 task recovery is enabled.");
   console.warn("   A scoped cache miss may send an additional authenticated request to ChatGPT and may consume quota or add latency; concurrent misses can share one request.");
-  console.warn("   Recovered model output is retained only in a bounded in-memory cache; exact fidelity is not guaranteed and the path depends on undocumented backend behavior.");
+  console.warn("   Recovered plaintext assignment data is retained only in a bounded, process-local in-memory cache; exact fidelity is not guaranteed and the path depends on undocumented backend behavior.");
 }
 
 export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
