@@ -1361,6 +1361,69 @@ test("generated agent effort directive restores exact xhigh and max after Claude
   }
 });
 
+test("generated agent effort directive preserves routed Anthropic structured output", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      captured.push(await req.json() as Record<string, unknown>);
+      return new Response([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\\"answer\\":\\"ok\\"}"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  saveConfig({
+    port: 0,
+    defaultProvider: "mock-anthropic",
+    providers: {
+      "mock-anthropic": {
+        adapter: "anthropic",
+        baseUrl: upstream.url.toString().replace(/\/$/, ""),
+        apiKey: "test-key",
+        allowPrivateNetwork: true,
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  try {
+    const response = await postMessages(server.url.toString(), {
+      model: "claude-haiku-4-5",
+      max_tokens: 32000,
+      stream: true,
+      system: [
+        { type: "text", text: "<!-- ocx-route: claude-ocx-mock-anthropic--claude-sonnet-5 -->" },
+        { type: "text", text: "<!-- ocx-effort: max -->" },
+      ],
+      thinking: { type: "enabled", budget_tokens: 31999 },
+      output_config: {
+        format: { type: "json_schema", schema },
+      },
+      messages: [{ role: "user", content: "Return JSON" }],
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.output_config).toEqual({
+      effort: "max",
+      format: { type: "json_schema", schema },
+    });
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
 test("unknown-ladder routes keep the requested effort (no false stripping)", async () => {
   const { server: upstream, captured } = mockChatUpstreamCapturing();
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));

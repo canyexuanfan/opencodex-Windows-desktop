@@ -10,6 +10,7 @@
  *  - top_k is accepted and silently dropped (no Responses equivalent, CCR parity).
  */
 import type { OcxClaudeCodeConfig } from "../types";
+import { isAnthropicOutputSchema } from "../adapters/anthropic-output-schema";
 import { resolveAlias } from "./alias";
 import { stripOneMillionMarker } from "./context-windows";
 import { resolveDesktop3pAlias } from "./desktop-3p";
@@ -67,6 +68,17 @@ export function effortFromOutputConfig(outputConfig: unknown): string | undefine
   if (!isRec(outputConfig)) return undefined;
   const effort = outputConfig.effort;
   return typeof effort === "string" && OUTPUT_CONFIG_EFFORTS.has(effort) ? effort : undefined;
+}
+
+function formatFromOutputConfig(outputConfig: unknown): Rec | undefined {
+  if (!isRec(outputConfig) || !isRec(outputConfig.format)) return undefined;
+  const format = outputConfig.format;
+  if (
+    format.type !== "json_schema"
+    || !isRec(format.schema)
+    || !isAnthropicOutputSchema(format.schema)
+  ) return undefined;
+  return { type: "json_schema", name: "response", schema: format.schema };
 }
 
 function systemToInstructions(system: unknown): string | undefined {
@@ -467,6 +479,8 @@ export function anthropicToResponsesTranslation(raw: unknown, cc?: OcxClaudeCode
   if (Array.isArray(raw.stop_sequences) && raw.stop_sequences.length > 0) {
     body.stop = raw.stop_sequences.filter((s): s is string => typeof s === "string");
   }
+  const outputConfigFormat = formatFromOutputConfig(raw.output_config);
+  if (outputConfigFormat) body.text = { format: outputConfigFormat };
   let cacheKeySource: ClaudeCacheKeySource = null;
   if (isRec(raw.metadata) && typeof raw.metadata.user_id === "string") {
     body.user = raw.metadata.user_id;

@@ -18,6 +18,7 @@ import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPr
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
 import { normalizeAnthropicImages } from "./anthropic-image-normalize";
+import { normalizeAnthropicOutputSchema } from "./anthropic-output-schema";
 import { identifyRoutedModel } from "./identity";
 import { redactSecretString } from "../lib/redact";
 import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
@@ -896,6 +897,20 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
         // Extended thinking disallows temperature != 1 and top_p — drop both or the API 400s.
         delete body.temperature;
         delete body.top_p;
+      }
+
+      const textFormat = parsed.options.textFormat;
+      if (textFormat?.type === "json_schema" && textFormat.schema) {
+        const outputConfig = body.output_config;
+        body.output_config = {
+          ...(outputConfig && typeof outputConfig === "object" && !Array.isArray(outputConfig)
+            ? outputConfig
+            : {}),
+          format: {
+            type: "json_schema",
+            schema: normalizeAnthropicOutputSchema(textFormat.schema),
+          },
+        };
       }
 
       if (parsed.options.toolChoice && (tools || parsed.options.toolChoice === "none")) {

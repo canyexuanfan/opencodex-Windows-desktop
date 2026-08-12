@@ -605,7 +605,10 @@ async function handleClaudeMessagesWithBudget(
       return await anthropicNativePassthrough(req, config, logCtx, logIds, anthropicBody, "/v1/messages");
     }
     if (isRec(anthropicBody) && effortOverride) {
-      anthropicBody.output_config = { effort: effortOverride };
+      anthropicBody.output_config = {
+        ...(isRec(anthropicBody.output_config) ? anthropicBody.output_config : {}),
+        effort: effortOverride,
+      };
       delete anthropicBody.thinking;
     }
     const translation = anthropicToResponsesTranslation(anthropicBody, config.claudeCode);
