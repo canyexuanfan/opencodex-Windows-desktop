@@ -12,7 +12,7 @@ unsupported; deployments that previously relied on such embedding must open it a
 
 ## Authentication boundaries
 
-OpenCodex uses three mutually exclusive admission credential classes:
+OpenCodex uses three mutually exclusive reusable admission credential classes:
 
 | Credential class | Sources | Allowed surface |
 | --- | --- | --- |
@@ -23,22 +23,26 @@ OpenCodex uses three mutually exclusive admission credential classes:
 The service token file remains a delivery mechanism for the data-plane environment token; it is not
 a fourth credential class. A management credential that equals any configured data-plane credential
 does not enable management access. The data plane may continue to start, but `/api/*` remains closed.
-CLI health collection follows the same boundary: `ocx status` and `ocx doctor` use the configured
-management credential for `/api/codex-auth/accounts`, never the service/data-plane token. Their
-output distinguishes a missing proxy, rejected management authentication, and an unexpected
-management response so a reachable `401` cannot be reported as "proxy not running."
-
-Before either CLI command attaches the management bearer, it challenges the listener and verifies
-an HMAC proof bound to the proxy PID and port. The per-process proof key lives only in the protected
-`runtime-port.json`; the public `/healthz` identity marker alone is never sufficient to receive a
-management credential. Legacy or configured-port-only listeners still satisfy ordinary liveness,
-but their account-health detail remains unavailable until an attested runtime record exists.
+CLI health collection follows the same boundary without transporting the reusable management
+credential. Its local-read HMAC capability is an additional single-use, route-scoped admission
+mechanism, not a reusable credential class. `ocx status` and `ocx doctor` derive these capabilities
+from the protected
+`runtime-port.json` secret for exactly two read-only GETs: `/api/codex-auth/accounts` and
+`/api/system/memory`. Each capability is bound to its method, path, nonce, proxy PID, and port. A
+short expiry is part of the HMAC, and the server consumes each capability once. A capability cannot
+authorize another management route or survive process replacement. These probes connect directly
+to the selected listener instead of delegating local identity to an environment HTTP proxy. Their
+output distinguishes
+a missing proxy, rejected local capability, and an unexpected management response so a reachable
+`401` cannot be reported as "proxy not running." Legacy or configured-port-only listeners still
+satisfy ordinary liveness, but their detailed CLI health remains unavailable until restarted with
+an attested runtime record and capability-aware server.
 
 [Decision Log]
 - 목적과 의도: Keep a lower-privileged local process from collecting the management bearer by impersonating `/healthz` on an unused port.
 - 기존 구현 및 제약 조건: Liveness must remain public and backward-compatible, but its service string and reported PID are assertions made by the listener itself.
 - 검토한 주요 대안: Require only a runtime source and non-null PID; stop showing account health; authenticate the listener with a protected per-process challenge secret.
-- 선택한 방식: Store a random secret in the mode-protected runtime record and require a challenge/PID/port HMAC before the CLI sends Authorization.
+- 선택한 방식: Store a random secret in the mode-protected runtime record and use method/path/PID/port-bound HMAC capabilities for the two CLI health reads, so the CLI sends no reusable Authorization value.
 - 다른 대안 대신 이 방식을 선택한 이유: PID and command-line checks are not cryptographic listener identity, while removing live account health would regress diagnostics unnecessarily.
 - 장점, 단점 및 영향: The long-lived token never reaches a listener without the runtime secret; an old running proxy remains visible but cannot provide detailed CLI account health until restarted on the new version.
 
@@ -92,7 +96,7 @@ this document owns is which module holds which area and what invariant that area
 | V2 / Multi-agent mode | `GET/PUT /api/v2` — reports/sets the codex `multi_agent_v2` feature flag, the 3-state `multiAgentMode` override (`v1`/`default`/`v2`), and the logical maximum thread count. Selecting `v2` enables the native flag and migrates `[agents] max_threads` to the v2 key; selecting `v1` disables it and migrates the same value back. `default` leaves the native flag unchanged. PUT accepts `enabled`, `multiAgentMode`, and/or the compatibility-named `maxConcurrentThreadsPerSession`; contradictory mode/flag pairs are rejected before writes. Every transition is rollback-safe and resyncs the catalog. |
 | Logs & Debug | One sidebar entry (`/#logs`) with two tabs. Logs tab: request/runtime logs for local diagnosis. Debug tab (`/#logs/debug`; legacy `/#debug` deep links redirect there): provider + usage toggles, refresh/follow log viewer. `GET/PUT /api/debug`; `GET /api/debug/logs` and `GET /api/debug/usage-logs` (monotonic `after` cursor, legacy `since` accepted). CLI: `ocx debug provider|usage …` (both streams via running proxy API). |
 | Usage | `GET /api/usage` aggregate read-only summary derived from `~/.opencodex/usage.jsonl`; measured / reported / unreported / unsupported / estimated counts, daily zero-filled grid, model and provider breakdowns. Never exposes prompts. |
-| System | `POST /api/system/restart` restarts the proxy in place. Local CLI/tray callers first attest the exact runtime PID and port, then send a process-scoped HMAC capability bound to that method, path, PID, and port; the capability authorizes no other management route and is invalid after replacement. The caller observes one absolute deadline and accepts success only after a different runtime PID is healthy on the same port. `GET /api/system/memory` — service-process runtime/memory identity (pid, Bun version/revision, optional `bunRuntimeSource` provenance, platform, RSS/heap/external/ArrayBuffers scalars, observed memory = max(RSS, external, ArrayBuffers), `bun:jsc` heap context, streamMode + eager-relay gate decision, watchdog snapshot sliced to the last 60 samples) plus privacy-safe `appOwnedBytes` retained-store totals/counters under static store ids. Scalar-only payload; rides the standard management auth gate and must never move to unauthenticated `/healthz`. Consumed by `ocx doctor`'s Memory/runtime section and the dashboard Memory observability card. |
+| System | `POST /api/system/restart` restarts the proxy in place. Local CLI/tray callers first attest the exact runtime PID and port, then send a process-scoped HMAC capability bound to that method, path, PID, and port; the capability authorizes no other management route and is invalid after replacement. The caller observes one absolute deadline and accepts success only after a different runtime PID is healthy on the same port. `GET /api/system/memory` — service-process runtime/memory identity (pid, Bun version/revision, optional `bunRuntimeSource` provenance, platform, RSS/heap/external/ArrayBuffers scalars, observed memory = max(RSS, external, ArrayBuffers), `bun:jsc` heap context, streamMode + eager-relay gate decision, watchdog snapshot sliced to the last 60 samples) plus privacy-safe `appOwnedBytes` retained-store totals/counters under static store ids. Scalar-only payload; dashboard/admin callers use the standard management gate, while `ocx doctor` may use only the exact process-scoped local-read capability. It must never move to unauthenticated `/healthz`. |
 | Stop | `POST /api/stop` — restore native Codex, stop any installed service, and exit the proxy. |
 | Diagnostics/sync | `src/server/management/config-routes.ts` — `GET /api/diagnostics/project-config` reports project-level Codex config that bypasses managed routing; `POST /api/sync` re-runs catalog/config sync. The diagnostic reports the bypass; it does not rewrite the project file. |
 | Sidecar/shadow-call settings | `src/server/management/config-routes.ts` — `GET/PUT /api/sidecar-settings` and `GET/PUT /api/shadow-call-settings`. PUT accepts model and backend plus optional `webSearch.reasoning` and `vision.maxDescriptionsPerTurn`; the read and PUT-response payload reports model, backend, and the vision per-turn limit. Credentials live in the provider and OAuth stores instead. Both shadow-call responses also report the resolved `sourceModels` — the prefixes the runtime actually intercepts (`src/lib/shadow-call.ts`, default `gpt-5.4-mini` + `gpt-5.6-luna`), so no client hard-codes a helper slug that a Codex release can invalidate. |
