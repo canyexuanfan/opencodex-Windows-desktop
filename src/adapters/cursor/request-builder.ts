@@ -129,7 +129,7 @@ function catalogLimitNote(kept: readonly OcxTool[], omitted: readonly OcxTool[])
 
 /**
  * Resolve a `cursor/<model>` selection + Codex reasoning effort to Cursor's requested model shape.
- * Most models encode effort in a flat id (`claude-4.6-opus-high`). Grok 4.5 Fast is parameterized
+ * Most models encode effort in a flat id (`claude-4.6-opus-high`). Grok Fast is parameterized
  * instead: current Cursor clients send the `grok-4.5` base id plus `effort` and `fast` parameters.
  * A fully-qualified id (one that is not a known effort base) passes through unchanged.
  */
@@ -141,10 +141,10 @@ function normalizeCursorModelId(modelId: string, reasoning?: string): {
   const selection = cursorWireModelSelection(modelId);
   const id = selection.modelId;
   const suffix = cursorEffortSuffix(id, reasoning);
-  if (id === "grok-4.5-fast" && suffix) {
+  if ((id === "grok-4.5-fast" || id === "grok-4.6-fast") && suffix) {
     return {
       ...selection,
-      modelId: "grok-4.5",
+      modelId: id.slice(0, -"-fast".length),
       requestedModelParameters: [
         { id: "effort", value: suffix },
         { id: "fast", value: "true" },
