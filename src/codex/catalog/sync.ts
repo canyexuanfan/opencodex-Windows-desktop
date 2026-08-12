@@ -30,11 +30,12 @@ import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../account-namespaces";
 
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawCatalog, RawEntry } from "./parsing";
-import { applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
+import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
 import {
   bundledCatalogCacheState,
   loadBundledCodexCatalog,
@@ -346,6 +347,10 @@ export interface ObservedCatalogEntryBuildInput {
   readonly disabledNativeAccountSlugs: ReadonlySet<string>;
   readonly multiAgentV2Enabled: boolean;
   readonly openaiContextCap?: number;
+  /** Additional native ids to clone under account selectors, without creating bare rows. */
+  readonly accountNativeSlugs?: readonly string[];
+  /** Per-selector account ids; unknown observations must not be copied to unrelated accounts. */
+  readonly accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** Build entries with the process-observed Codex feature state. */
@@ -361,6 +366,8 @@ export function buildCatalogEntries(
   suppressedBareNativeSlugs: ReadonlySet<string> = new Set(),
   disabledNativeAccountSlugs: ReadonlySet<string> = new Set(),
   contextCap?: number,
+  accountNativeSlugs?: readonly string[],
+  accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>,
 ): RawEntry[] {
   return buildCatalogEntriesFromObservedState({
     template,
@@ -375,6 +382,8 @@ export function buildCatalogEntries(
     disabledNativeAccountSlugs,
     multiAgentV2Enabled: isMultiAgentV2Enabled(),
     openaiContextCap: contextCap,
+    accountNativeSlugs,
+    accountNativeSlugsBySelector,
   });
 }
 
@@ -392,6 +401,8 @@ export function buildCatalogEntriesFromObservedState({
   disabledNativeAccountSlugs,
   multiAgentV2Enabled,
   openaiContextCap,
+  accountNativeSlugs,
+  accountNativeSlugsBySelector,
 }: ObservedCatalogEntryBuildInput): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
@@ -450,8 +461,16 @@ export function buildCatalogEntriesFromObservedState({
     emittedNativeAliases.add(nativeAlias);
     emittedNativeAliasSlugs.add(slug);
   }
+  const nativeEntriesBySlug = new Map(nativeEntries.map(entry => [String(entry.slug), entry] as const));
   for (const [selectorIndex, selector] of accountSelectors.entries()) {
-    for (const [nativeIndex, native] of nativeEntries.entries()) {
+    const selectorNativeSlugs = accountNativeSlugsBySelector?.get(selector)
+      ?? accountNativeSlugs
+      ?? gptSlugs;
+    const accountNativeEntries = selectorNativeSlugs.map(slug => (
+      nativeEntriesBySlug.get(slug)
+        ?? deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9, undefined, new Set(), openaiContextCap)
+    ));
+    for (const [nativeIndex, native] of accountNativeEntries.entries()) {
       const nativeSlug = String(native.slug);
       if (disabledNativeAccountSlugs.has(nativeSlug)) continue;
       const e = JSON.parse(JSON.stringify(native)) as RawEntry;
@@ -785,6 +804,7 @@ export function mergeCatalogEntriesFromObservedState({
       && !(m.slug as string).includes("/")
       && m.owned_by !== COMBO_NAMESPACE
       && (policy.unsupportedNativeEntries === "preserve"
+        || policy.nativeBackfillSlugs.includes(m.slug as string)
         || !isUnsupportedOpenAiNativeSlug(m.slug as string)))
     .map(m => {
       const slug = m.slug as string;
@@ -936,6 +956,11 @@ export function mergeCatalogEntriesFromObservedState({
   }
 
   const managedEntries = [...finalRoutedEntries, ...alignedAccountBoundEntries];
+  const observedNativeSlugs = new Set(alignedAccountBoundEntries.flatMap(entry => {
+    const slug = trustedAccountBoundNativeCatalogSlug(entry);
+    return slug === undefined ? [] : [slug];
+  }));
+  for (const slug of policy.nativeBackfillSlugs) observedNativeSlugs.add(slug);
   const mergedEntries = [...native, ...managedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
     if (!isNativeAliasCatalogEntry(normalized)) applyNativeOpenAiContextOverride(normalized, openaiContextCap);
@@ -969,7 +994,7 @@ export function mergeCatalogEntriesFromObservedState({
   // clobber a hide flag back to list. Bare ids disable every account clone; qualified ids disable
   // only their generated account row.
   const versionedEntries = applyMultiAgentMode(
-    applyNativeVisibility(mergedEntries, disabledModels, alignedAccountBoundEntries.length > 0),
+    applyNativeVisibility(mergedEntries, disabledModels, alignedAccountBoundEntries.length > 0, observedNativeSlugs),
     multiAgentMode,
     multiAgentV2Enabled,
   );
@@ -1055,6 +1080,7 @@ interface RetainedCatalogSyncRead {
   readonly catalogPath: string;
   readonly catalog: RawCatalog;
   readonly onDiskCatalog: RawCatalog | null;
+  readonly modelsCache: RawCatalog | null;
   readonly evidence: string;
   /**
    * Process-local epochs, baselined AFTER our own gather rather than with the
@@ -1163,9 +1189,10 @@ function readRetainedCatalogSync(config: OcxConfig): RetainedCatalogSyncRead | n
   // merge source. Preservation must inspect the file that this sync is about to overwrite;
   // otherwise an empty/partial provider gather cannot see routed or user-native rows on disk.
   const onDiskCatalog = readCatalog(catalogPath);
+  const modelsCache = readCatalog(activeCodexModelsCachePath());
   const evidence = retainedCatalogSyncEvidence(config, catalogPath, catalog);
   // `processEvidence` is filled in after the provider await, not here.
-  return { catalogPath, catalog, onDiskCatalog, evidence, processEvidence: "" };
+  return { catalogPath, catalog, onDiskCatalog, modelsCache, evidence, processEvidence: "" };
 }
 
 function revalidateRetainedCatalogSync(
@@ -1181,6 +1208,7 @@ function revalidateRetainedCatalogSync(
     catalogPath,
     catalog: JSON.parse(JSON.stringify(prepared.catalog)) as RawCatalog,
     onDiskCatalog: readCatalog(catalogPath),
+    modelsCache: readCatalog(activeCodexModelsCachePath()),
     evidence,
     processEvidence: prepared.processEvidence,
   };
@@ -1283,6 +1311,20 @@ function writeRetainedCatalogSync({
   const accountSelectors = includeAccountBoundNativeOpenAi
     ? visibleCodexAccountSelectors(config)
     : [];
+  const observedAccountNativeEntries = [
+    ...(read.modelsCache?.models ?? []),
+    ...(onDiskCatalog?.models ?? []).filter(entry =>
+      trustedAccountBoundNativeCatalogSlug(entry) !== undefined),
+  ];
+  const accountNativeSlugs = accountSelectors.length > 0
+    ? accountBoundNativeOpenAiSlugs(observedAccountNativeEntries)
+    : [];
+  const accountNativeSlugsBySelector = accountSelectors.length > 0
+    ? accountBoundNativeOpenAiSlugsBySelector(config, observedAccountNativeEntries)
+    : new Map<string, readonly string[]>();
+  // Unknown account-native ids have no safe bare/global identity. They are only projected through
+  // the selector map above; the no-selector catalog remains the static native/API-key surface.
+  const observedNativeSlugs: string[] = [];
   const wsEnabled = websocketsEnabled(config);
   const multiAgentV2Enabled = isMultiAgentV2Enabled();
   const goEntries = buildCatalogEntriesFromObservedState({
@@ -1343,6 +1385,8 @@ function writeRetainedCatalogSync({
       disabledNativeAccountSlugs: new Set([...disabledNativeSlugs(config)].filter(slug => suppressedBareNativeSlugs.has(slug))),
       multiAgentV2Enabled,
       openaiContextCap,
+      accountNativeSlugs,
+      accountNativeSlugsBySelector,
     }).filter(entry => trustedAccountBoundNativeCatalogSlug(entry) !== undefined)
     : [];
   catalog.models = mergeCatalogEntriesFromObservedState({
@@ -1368,6 +1412,7 @@ function writeRetainedCatalogSync({
     openaiContextCap,
     policy: {
       ...CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
+      nativeBackfillSlugs: [...NATIVE_OPENAI_MODELS, ...observedNativeSlugs],
       warningPolicy: "emit",
     },
   });
@@ -1591,10 +1636,32 @@ export function invalidateCodexModelsCacheWithPermit(
     if (!existsSync(catalogPath)) return false;
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
     const models = catalog.models ?? catalog;
+    const currentCache = readCatalog(activeCodexModelsCachePath());
+    const existingSlugs = new Set(models.flatMap((entry: RawEntry) =>
+      typeof entry.slug === "string" ? [entry.slug] : []));
+    const currentConfig = loadConfig();
+    const mainSelectors = visibleCodexAccountSelectors(currentConfig).filter(selector => {
+      const target = new Map(codexAccountNamespaceEntries(currentConfig)).get(selector);
+      return isMainCodexAccountTarget(target ?? "");
+    });
+    const observedAccountModels = observedAccountBoundNativeEntries(currentCache?.models ?? [])
+      .filter(entry => {
+        const slug = typeof entry.slug === "string" ? entry.slug : "";
+        return !existingSlugs.has(slug);
+      })
+      .map(entry => ({
+        ...entry,
+        // Keep the observation in Codex's cache without advertising a new bare picker row. The
+        // next OpenCodex catalog sync consumes this marker and creates only selector-qualified
+        // rows for the currently configured public account selectors.
+        visibility: "hide",
+        opencodex_account_observed_native: true,
+        opencodex_account_observed_selectors: mainSelectors,
+      }));
     const wrapper = {
       fetched_at: "2000-01-01T00:00:00Z",
       client_version: "0.0.0",
-      models,
+      models: [...models, ...observedAccountModels],
     };
     replaceCodexModelsCache(permit, owningCodexHome, {
       path: activeCodexModelsCachePath(),

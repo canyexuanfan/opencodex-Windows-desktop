@@ -51,6 +51,9 @@ function nativeEntry(slug: string, priority: number): Record<string, unknown> {
     description: "native",
     priority,
     visibility: "list",
+    shell_type: "shell_command",
+    comp_hash: "native-comp-hash",
+    model_messages: { instructions_template: "You are Codex." },
     base_instructions: "You are Codex, a coding agent based on GPT-5.",
     supported_reasoning_levels: [{ effort: "medium", description: "m" }],
   };
@@ -369,6 +372,41 @@ describe("Codex catalog sync hardening", () => {
     expect(JSON.stringify(rows)).not.toContain("stored-team-account");
     expect(JSON.stringify(rows)).not.toContain("private@example.test");
     expect(JSON.stringify(rows)).not.toContain("Private Display Name");
+  });
+
+  test("account sync preserves an observed account-only native id without creating a bare row", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [nativeEntry("gpt-5.5", 0)],
+    }, null, 2) + "\n");
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({
+      models: [{
+        ...nativeEntry("gpt-daybreak-blue-latest", 1),
+        supported_in_api: true,
+        visibility: "hide",
+        opencodex_account_observed_native: true,
+      }],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            liveModels: false
+          }
+        },
+        codexAccountNamespaces: { team: "@main" }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{ slug: string }>;
+    expect(rows.some(row => row.slug === "team/gpt-daybreak-blue-latest")).toBe(true);
+    expect(rows.some(row => row.slug === "gpt-daybreak-blue-latest")).toBe(false);
   });
 
   test("a live provider row shadowed by an account selector warns once per runtime generation", () => {

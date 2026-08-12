@@ -67,6 +67,9 @@ function nativeEntry(visibility = "list"): RawEntry {
     description: "Native",
     priority: 1,
     visibility,
+    shell_type: "shell_command",
+    comp_hash: "native-comp-hash",
+    model_messages: { instructions_template: "You are Codex." },
     base_instructions: "You are Codex.",
     supported_reasoning_levels: [{ effort: "medium", description: "Medium" }],
   };
@@ -350,6 +353,32 @@ test("convergence drops unsupported bare native rows and never qualifies them", 
     .every(entry => (
       typeof entry.slug === "string" && !entry.slug.endsWith("/gpt-legacy-unsupported")
     ))).toBe(true);
+});
+
+test("convergence preserves an observed account-only native id without creating a bare row", async () => {
+  writeCatalog([nativeEntry()]);
+  writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({
+    models: [{
+      slug: "gpt-daybreak-blue-latest",
+      visibility: "hide",
+      supported_in_api: true,
+      shell_type: "shell_command",
+      comp_hash: "native-comp-hash",
+      model_messages: { instructions_template: "You are Codex." },
+      base_instructions: "You are Codex.",
+      supported_reasoning_levels: [{ effort: "medium", description: "Medium" }],
+      opencodex_account_observed_native: true,
+    }],
+  }, null, 2) + "\n");
+
+  const catalog = await convergeCatalog(config(true));
+  const models = catalog.models ?? [];
+  expect(models.find(entry => entry.slug === "desktop/gpt-daybreak-blue-latest")).toMatchObject({
+    visibility: "list",
+    opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+  });
+  expect(models.some(entry => entry.slug === "team/gpt-daybreak-blue-latest")).toBe(false);
+  expect(models.some(entry => entry.slug === "gpt-daybreak-blue-latest")).toBe(false);
 });
 
 test("convergence preserves unrelated foreign rows alongside fresh configured provider rows", async () => {
