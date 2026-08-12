@@ -405,7 +405,7 @@ jobs:
           bun install --frozen-lockfile
 
       - name: Typecheck
-        run: bun x tsc --noEmit
+        run: bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json
 
       - name: GUI tests
         run: cd gui && bun test tests
