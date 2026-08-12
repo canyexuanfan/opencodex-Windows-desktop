@@ -241,10 +241,12 @@ describe("Anthropic vision planning and management config", () => {
       );
       expect(put.status).toBe(200);
       expect((await put.json()).vision).toEqual({
+        enabled: true,
         model: "claude-sonnet-5",
         backend: "anthropic",
         reasoning: "low",
         maxDescriptionsPerTurn: 4,
+        timeoutMs: 45_000,
       });
       expect(config.webSearchSidecar).toEqual({ model: "claude-search", backend: "anthropic", reasoning: "high" });
 
@@ -256,10 +258,12 @@ describe("Anthropic vision planning and management config", () => {
       const getBody = await get!.json() as Record<string, any>;
       expect(getBody.webSearch).toEqual({ model: "claude-search", backend: "anthropic", streamRoutedModelOutput: false });
       expect(getBody.vision).toEqual({
+        enabled: true,
         model: "claude-sonnet-5",
         backend: "anthropic",
         reasoning: "low",
         maxDescriptionsPerTurn: 4,
+        timeoutMs: 45_000,
       });
 
       const clear = await handleManagementAPI(
@@ -277,7 +281,13 @@ describe("Anthropic vision planning and management config", () => {
       expect(clear.status).toBe(200);
       const clearBody = await clear.json() as Record<string, any>;
       expect(clearBody.webSearch).toEqual({ model: "gpt-5.6-luna", streamRoutedModelOutput: false });
-      expect(clearBody.vision).toEqual({ model: "gpt-5.4-mini", reasoning: "low", maxDescriptionsPerTurn: 4 });
+      expect(clearBody.vision).toEqual({
+        enabled: true,
+        model: "gpt-5.4-mini",
+        reasoning: "low",
+        maxDescriptionsPerTurn: 4,
+        timeoutMs: 45_000,
+      });
       expect(config.webSearchSidecar).toEqual({ reasoning: "high" });
       expect(config.visionSidecar).toEqual({ maxDescriptionsPerTurn: 4 });
 

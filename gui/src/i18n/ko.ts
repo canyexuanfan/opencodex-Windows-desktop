@@ -2028,4 +2028,13 @@ export const ko: Record<TKey, string> = {
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
 
+  "dash.visionAdvanced": "고급",
+  "dash.visionMaxDescriptions": "턴당 최대 설명 수",
+  "dash.visionMaxDescriptionsInc": "턴당 최대 설명 수 늘리기",
+  "dash.visionMaxDescriptionsDec": "턴당 최대 설명 수 줄이기",
+  "dash.visionMaxDescriptionsInvalid": "양의 정수를 입력하세요.",
+  "dash.visionTimeout": "제한 시간",
+  "dash.visionTimeoutInc": "비전 사이드카 제한 시간 늘리기",
+  "dash.visionTimeoutDec": "비전 사이드카 제한 시간 줄이기",
+  "dash.visionTimeoutInvalid": "{min}에서 {max} 밀리초 사이의 정수를 입력하세요.",
 };

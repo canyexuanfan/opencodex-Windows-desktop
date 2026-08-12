@@ -2006,4 +2006,13 @@ export const de: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protokollkonformität",
   "lab.layer.live_route_compatibility": "Live-Route-Kompatibilität",
   "lab.layer.task_effectiveness": "Aufgabenwirksamkeit",
+  "dash.visionAdvanced": "Erweitert",
+  "dash.visionMaxDescriptions": "Maximale Beschreibungen pro Turn",
+  "dash.visionMaxDescriptionsInc": "Maximale Beschreibungen pro Turn erhöhen",
+  "dash.visionMaxDescriptionsDec": "Maximale Beschreibungen pro Turn verringern",
+  "dash.visionMaxDescriptionsInvalid": "Geben Sie eine positive ganze Zahl ein.",
+  "dash.visionTimeout": "Timeout",
+  "dash.visionTimeoutInc": "Vision-Sidecar-Timeout erhöhen",
+  "dash.visionTimeoutDec": "Vision-Sidecar-Timeout verringern",
+  "dash.visionTimeoutInvalid": "Geben Sie eine ganze Zahl von {min} bis {max} Millisekunden ein.",
 };

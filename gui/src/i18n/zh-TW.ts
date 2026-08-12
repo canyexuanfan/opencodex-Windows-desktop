@@ -1992,4 +1992,13 @@ export const zhTW: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "協定符合度",
   "lab.layer.live_route_compatibility": "即時路由相容性",
   "lab.layer.task_effectiveness": "任務效能",
+  "dash.visionAdvanced": "進階",
+  "dash.visionMaxDescriptions": "每回合最大描述次數",
+  "dash.visionMaxDescriptionsInc": "增加每回合最大描述次數",
+  "dash.visionMaxDescriptionsDec": "減少每回合最大描述次數",
+  "dash.visionMaxDescriptionsInvalid": "請輸入正整數。",
+  "dash.visionTimeout": "逾時",
+  "dash.visionTimeoutInc": "增加視覺附屬服務逾時",
+  "dash.visionTimeoutDec": "減少視覺附屬服務逾時",
+  "dash.visionTimeoutInvalid": "請輸入 {min} 到 {max} 毫秒之間的整數。",
 };

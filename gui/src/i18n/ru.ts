@@ -2029,4 +2029,13 @@ export const ru: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protocol conformance",
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
+  "dash.visionAdvanced": "Дополнительно",
+  "dash.visionMaxDescriptions": "Максимум описаний за ход",
+  "dash.visionMaxDescriptionsInc": "Увеличить максимум описаний за ход",
+  "dash.visionMaxDescriptionsDec": "Уменьшить максимум описаний за ход",
+  "dash.visionMaxDescriptionsInvalid": "Введите положительное целое число.",
+  "dash.visionTimeout": "Таймаут",
+  "dash.visionTimeoutInc": "Увеличить таймаут сайдкара для изображений",
+  "dash.visionTimeoutDec": "Уменьшить таймаут сайдкара для изображений",
+  "dash.visionTimeoutInvalid": "Введите целое число от {min} до {max} миллисекунд.",
 };

@@ -185,7 +185,7 @@ OpenAI backend 需要 ChatGPT 登入與啟用的 ChatGPT `forward` 供應商。C
 | `backend?` | `"openai" \| "anthropic"` | 自動 | 與網頁搜尋相同的明確優先、Anthropic 憑證感知選擇。 |
 | `model?` | `string` | 視 backend 而定 | OpenAI 為 `gpt-5.4-mini` 或 Anthropic 為 `claude-sonnet-5`。 |
 | `maxDescriptionsPerTurn?` | `number` | `8` | 每個主回合允許的新描述快取未命中。`0` 停用呼叫；無效值使用預設。 |
-| `timeoutMs?` | `number` | `45000` | Sidecar 擷取逾時。 |
+| `timeoutMs?` | `number` | `45000` | Sidecar 擷取逾時。整數 1–2147483647。 |
 
 視覺僅對發送到其供應商 `noVisionModels` 中模型的圖片啟用。OpenAI 的登入／forward 需求與搜尋相同；明確選擇的 Anthropic 在無可用憑證時 fail closed。成功的 `data:` 描述使用以 backend、模型、細節、圖片位元組與正規化訊息 context 為 key 的有界快取。命中與同回合重複不消耗限制。遠端 `https:` 圖片與失敗或空的描述不被快取。
 

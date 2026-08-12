@@ -26,7 +26,14 @@ export type { VisionCandidateModel, VisionModelOption, VisionSidecarBackend } fr
 
 const DEFAULT_VISION_MODEL = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_VISION_MODEL = "claude-sonnet-5";
-const DEFAULT_TIMEOUT_MS = 45_000;
+/** Default sidecar fetch timeout when `visionSidecar.timeoutMs` is unset. */
+export const DEFAULT_VISION_TIMEOUT_MS = 45_000;
+/**
+ * Inclusive integer bounds for `visionSidecar.timeoutMs`.
+ * The ceiling is the 32-bit timer delay used by `signalWithTimeout` / `setTimeout`.
+ */
+export const MIN_VISION_TIMEOUT_MS = 1;
+export const MAX_VISION_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_REASONING: VisionReasoningEffort = "low";
 const DEFAULT_MAX_DESCRIPTIONS_PER_TURN = 8;
 const DESCRIPTION_CACHE_MAX_ENTRIES = 256;
@@ -154,6 +161,18 @@ export function resolveMaxDescriptionsPerTurn(value: unknown): number {
     : DEFAULT_MAX_DESCRIPTIONS_PER_TURN;
 }
 
+export function isValidVisionTimeoutMs(value: unknown): value is number {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= MIN_VISION_TIMEOUT_MS
+    && value <= MAX_VISION_TIMEOUT_MS;
+}
+
+/** Runtime config is permissive: malformed or out-of-range values fall back to the default. */
+export function resolveVisionTimeoutMs(value: unknown): number {
+  return isValidVisionTimeoutMs(value) ? value : DEFAULT_VISION_TIMEOUT_MS;
+}
+
 /** Run `worker` over `items` with bounded concurrency, preserving input order in the result array. */
 async function runBounded<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
@@ -271,7 +290,7 @@ export function planVisionSidecar(
       settings: {
         model,
         reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
-        timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeoutMs: resolveVisionTimeoutMs(cfg.timeoutMs),
       },
       maxDescriptionsPerTurn,
     };
@@ -284,7 +303,7 @@ export function planVisionSidecar(
     settings: {
       model,
       reasoning: normalizeVisionReasoningForModel(model, cfg.reasoning) ?? DEFAULT_REASONING,
-      timeoutMs: cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeoutMs: resolveVisionTimeoutMs(cfg.timeoutMs),
     },
     maxDescriptionsPerTurn,
   };

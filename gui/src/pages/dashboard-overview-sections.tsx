@@ -2,9 +2,31 @@ import { useEffect, useRef, useState } from "react";
 import { IconAlert, IconCheck, IconInfo, IconRefresh, IconX } from "../icons";
 import { Trans } from "../i18n/provider";
 import { Select } from "../ui";
+import { NumberStepper } from "../components/NumberStepper";
+import { clampNumberDraft } from "../clamp-draft";
 import { formatNamespacedModelId } from "../provider-icons";
 import { navigateHash } from "../hash-routing";
-import { clampVisionReasoningToLadder, EFFORT_CAP_LEVELS, requireJson, shadowCallModelOptions, sidecarBackendForModel, updateJobLabel, visionReasoningLadder, visionReasoningOptionsFor, visionReasoningPatch, visionSidecarBackendForModel } from "./dashboard-shared";
+import {
+  clampVisionReasoningToLadder,
+  EFFORT_CAP_LEVELS,
+  parsePositiveInteger,
+  parseVisionTimeoutMs,
+  requireJson,
+  shadowCallModelOptions,
+  sidecarBackendForModel,
+  updateJobLabel,
+  visionEnabledPatch,
+  visionMaxDescriptionsPatch,
+  visionReasoningLadder,
+  visionReasoningOptionsFor,
+  visionReasoningPatch,
+  visionSidecarBackendForModel,
+  visionTimeoutPatch,
+  VISION_MAX_DESCRIPTIONS_DEFAULT,
+  VISION_TIMEOUT_MS_DEFAULT,
+  VISION_TIMEOUT_MS_MAX,
+  VISION_TIMEOUT_MS_MIN,
+} from "./dashboard-shared";
 import { shadowSourceModelBadge } from "./shadow-call-source";
 import type { useDashboardData } from "./use-dashboard-data";
 
@@ -246,6 +268,41 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
   const persistedVisionReasoning = sidecar?.vision.reasoning ?? "low";
   const visionLadder = visionReasoningLadder(models, visionModel);
   const visionReasoning = clampVisionReasoningToLadder(visionLadder, persistedVisionReasoning);
+  const visionEnabled = sidecar?.vision.enabled !== false;
+  const serverMaxDescriptions = String(sidecar?.vision.maxDescriptionsPerTurn ?? VISION_MAX_DESCRIPTIONS_DEFAULT);
+  const serverTimeoutMs = String(sidecar?.vision.timeoutMs ?? VISION_TIMEOUT_MS_DEFAULT);
+  const [maxDraft, setMaxDraft] = useState<string | null>(null);
+  const [timeoutDraft, setTimeoutDraft] = useState<string | null>(null);
+  const [maxInvalid, setMaxInvalid] = useState(false);
+  const [timeoutInvalid, setTimeoutInvalid] = useState(false);
+  const maxValue = maxDraft ?? serverMaxDescriptions;
+  const timeoutValue = timeoutDraft ?? serverTimeoutMs;
+
+  const commitMaxDescriptions = (raw = maxValue) => {
+    const parsed = parsePositiveInteger(raw);
+    if (parsed === undefined) {
+      setMaxDraft(raw);
+      setMaxInvalid(true);
+      return;
+    }
+    setMaxInvalid(false);
+    setMaxDraft(null);
+    if (parsed === (sidecar?.vision.maxDescriptionsPerTurn ?? VISION_MAX_DESCRIPTIONS_DEFAULT)) return;
+    void saveSidecar(visionMaxDescriptionsPatch(parsed));
+  };
+
+  const commitTimeout = (raw = timeoutValue) => {
+    const parsed = parseVisionTimeoutMs(raw);
+    if (parsed === undefined) {
+      setTimeoutDraft(raw);
+      setTimeoutInvalid(true);
+      return;
+    }
+    setTimeoutInvalid(false);
+    setTimeoutDraft(null);
+    if (parsed === (sidecar?.vision.timeoutMs ?? VISION_TIMEOUT_MS_DEFAULT)) return;
+    void saveSidecar(visionTimeoutPatch(parsed));
+  };
 
   return (
     <>
@@ -302,10 +359,24 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
           </div>
         </div>
 
-        <div className="panel dash-delegation-summary dash-sidecar-row-card" aria-busy={!sidecar || undefined}>
+        <div className="panel dash-delegation-summary dash-sidecar-row-card dash-vision-sidecar-card" aria-busy={!sidecar || undefined}>
           <div className="dash-sidecar-copy">
-            <div className="font-semibold">{t("dash.visionSidecar")}</div>
-            <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
+            <div className="dash-vision-sidecar-head">
+              <div>
+                <div className="font-semibold">{t("dash.visionSidecar")}</div>
+                <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
+              </div>
+              <button
+                type="button"
+                className={`switch ${visionEnabled ? "on" : ""}`}
+                onClick={() => { void saveSidecar(visionEnabledPatch(!visionEnabled)); }}
+                disabled={!sidecar || sidecarSaving}
+                aria-label={t("dash.visionSidecar")}
+                aria-pressed={visionEnabled}
+              >
+                <span className="knob" />
+              </button>
+            </div>
           </div>
           <div className="dash-delegation-controls">
             <Select
@@ -331,6 +402,108 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               align="right"
               label={`${t("dash.visionSidecar")} — ${t("dash.injectionEffortLabel")}`}
             />
+          </div>
+          <div className="dash-vision-advanced" role="group" aria-label={t("dash.visionAdvanced")}>
+            <label className="dash-vision-number">
+              <span className="muted setting-hint" id="dash-vision-max-label">{t("dash.visionMaxDescriptions")}</span>
+              <span className="codex-auto-switch-input-wrap">
+                <input
+                  className="input mono codex-auto-switch-input"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={maxValue}
+                  disabled={!sidecar || sidecarSaving}
+                  aria-invalid={maxInvalid || undefined}
+                  aria-label={t("dash.visionMaxDescriptions")}
+                  aria-describedby={maxInvalid ? "dash-vision-max-error dash-vision-max-label" : "dash-vision-max-label"}
+                  onChange={event => {
+                    setMaxInvalid(false);
+                    setMaxDraft(event.target.value);
+                  }}
+                  onBlur={event => commitMaxDescriptions(event.currentTarget.value)}
+                  onKeyDown={event => {
+                    if (event.nativeEvent.isComposing || !sidecar || sidecarSaving) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitMaxDescriptions(event.currentTarget.value);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setMaxDraft(null);
+                      setMaxInvalid(false);
+                    }
+                  }}
+                />
+                <NumberStepper
+                  disabled={!sidecar || sidecarSaving}
+                  incrementLabel={t("dash.visionMaxDescriptionsInc")}
+                  decrementLabel={t("dash.visionMaxDescriptionsDec")}
+                  onIncrement={() => {
+                    commitMaxDescriptions(clampNumberDraft(maxValue, 1, 1, Number.MAX_SAFE_INTEGER));
+                  }}
+                  onDecrement={() => {
+                    commitMaxDescriptions(clampNumberDraft(maxValue, -1, 1, Number.MAX_SAFE_INTEGER));
+                  }}
+                />
+              </span>
+              {maxInvalid && (
+                <span id="dash-vision-max-error" className="muted setting-hint" role="alert">
+                  {t("dash.visionMaxDescriptionsInvalid")}
+                </span>
+              )}
+            </label>
+            <label className="dash-vision-number">
+              <span className="muted setting-hint" id="dash-vision-timeout-label">{t("dash.visionTimeout")}</span>
+              <span className="codex-auto-switch-input-wrap">
+                <input
+                  className="input mono codex-auto-switch-input"
+                  type="number"
+                  min={VISION_TIMEOUT_MS_MIN}
+                  max={VISION_TIMEOUT_MS_MAX}
+                  step={1000}
+                  inputMode="numeric"
+                  value={timeoutValue}
+                  disabled={!sidecar || sidecarSaving}
+                  aria-invalid={timeoutInvalid || undefined}
+                  aria-label={t("dash.visionTimeout")}
+                  aria-describedby={timeoutInvalid ? "dash-vision-timeout-error dash-vision-timeout-label" : "dash-vision-timeout-label"}
+                  onChange={event => {
+                    setTimeoutInvalid(false);
+                    setTimeoutDraft(event.target.value);
+                  }}
+                  onBlur={event => commitTimeout(event.currentTarget.value)}
+                  onKeyDown={event => {
+                    if (event.nativeEvent.isComposing || !sidecar || sidecarSaving) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitTimeout(event.currentTarget.value);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTimeoutDraft(null);
+                      setTimeoutInvalid(false);
+                    }
+                  }}
+                />
+                <span className="codex-auto-switch-unit" aria-hidden="true">ms</span>
+                <NumberStepper
+                  disabled={!sidecar || sidecarSaving}
+                  incrementLabel={t("dash.visionTimeoutInc")}
+                  decrementLabel={t("dash.visionTimeoutDec")}
+                  onIncrement={() => {
+                    commitTimeout(clampNumberDraft(timeoutValue, 1000, VISION_TIMEOUT_MS_MIN, VISION_TIMEOUT_MS_MAX));
+                  }}
+                  onDecrement={() => {
+                    commitTimeout(clampNumberDraft(timeoutValue, -1000, VISION_TIMEOUT_MS_MIN, VISION_TIMEOUT_MS_MAX));
+                  }}
+                />
+              </span>
+              {timeoutInvalid && (
+                <span id="dash-vision-timeout-error" className="muted setting-hint" role="alert">
+                  {t("dash.visionTimeoutInvalid", { min: VISION_TIMEOUT_MS_MIN, max: VISION_TIMEOUT_MS_MAX })}
+                </span>
+              )}
+            </label>
           </div>
         </div>
       </div>

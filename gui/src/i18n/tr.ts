@@ -2029,4 +2029,13 @@ export const tr: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protocol conformance",
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
+  "dash.visionAdvanced": "Gelişmiş",
+  "dash.visionMaxDescriptions": "Tur başına en fazla açıklama",
+  "dash.visionMaxDescriptionsInc": "Tur başına en fazla açıklamayı artır",
+  "dash.visionMaxDescriptionsDec": "Tur başına en fazla açıklamayı azalt",
+  "dash.visionMaxDescriptionsInvalid": "Pozitif bir tam sayı girin.",
+  "dash.visionTimeout": "Zaman aşımı",
+  "dash.visionTimeoutInc": "Görsel yan araç zaman aşımını artır",
+  "dash.visionTimeoutDec": "Görsel yan araç zaman aşımını azalt",
+  "dash.visionTimeoutInvalid": "{min} ile {max} milisaniye arasında bir tam sayı girin.",
 };

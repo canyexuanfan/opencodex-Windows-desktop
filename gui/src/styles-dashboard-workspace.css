@@ -143,6 +143,42 @@
   min-width: 0;
 }
 
+.dash-vision-sidecar-card {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.dash-vision-sidecar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dash-vision-advanced {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px 16px;
+  padding-top: 4px;
+}
+
+.dash-vision-number {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dash-vision-number .codex-auto-switch-input-wrap {
+  width: 11.5rem;
+}
+
+.dash-vision-number .codex-auto-switch-input {
+  min-width: 0;
+}
+
 /* Below the width where a row can hold copy + two selects, stack instead of
    overflowing. Measured: the row is clean down to ~320px viewport; under that the
    controls would push past the panel edge. */

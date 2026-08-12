@@ -2027,4 +2027,13 @@ export const zh: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protocol conformance",
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
+  "dash.visionAdvanced": "高级",
+  "dash.visionMaxDescriptions": "每回合最大描述次数",
+  "dash.visionMaxDescriptionsInc": "增加每回合最大描述次数",
+  "dash.visionMaxDescriptionsDec": "减少每回合最大描述次数",
+  "dash.visionMaxDescriptionsInvalid": "请输入正整数。",
+  "dash.visionTimeout": "超时",
+  "dash.visionTimeoutInc": "增加视觉附属服务超时",
+  "dash.visionTimeoutDec": "减少视觉附属服务超时",
+  "dash.visionTimeoutInvalid": "请输入 {min} 到 {max} 毫秒之间的整数。",
 };

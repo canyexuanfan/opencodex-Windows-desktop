@@ -2027,4 +2027,13 @@ export const ja: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protocol conformance",
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
+  "dash.visionAdvanced": "詳細",
+  "dash.visionMaxDescriptions": "1 ターンあたりの最大説明数",
+  "dash.visionMaxDescriptionsInc": "1 ターンあたりの最大説明数を増やす",
+  "dash.visionMaxDescriptionsDec": "1 ターンあたりの最大説明数を減らす",
+  "dash.visionMaxDescriptionsInvalid": "正の整数を入力してください。",
+  "dash.visionTimeout": "タイムアウト",
+  "dash.visionTimeoutInc": "ビジョンサイドカーのタイムアウトを増やす",
+  "dash.visionTimeoutDec": "ビジョンサイドカーのタイムアウトを減らす",
+  "dash.visionTimeoutInvalid": "{min} から {max} ミリ秒の整数を入力してください。",
 };
