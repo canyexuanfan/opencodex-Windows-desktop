@@ -26,7 +26,7 @@ describe("agent task recovery fallback routing", () => {
     resetSubagentModelFallbackStateForTests();
   });
 
-  test("reapplies routed fallback after encrypted task recovery", async () => {
+  test("routes a recovered task through the healthy routed fallback", async () => {
     const config = routedConfig();
     config.subagentModelFallback = ["xai/grok-4.6"];
     noteSubagentModelFailure("xai/grok-4.5", "429", config);
