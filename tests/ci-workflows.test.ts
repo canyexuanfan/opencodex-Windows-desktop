@@ -598,11 +598,23 @@ describe("GitHub Actions hardening", () => {
     expect(ciLookup).toContain('--branch "${GITHUB_REF#refs/heads/}"');
     expect(ciLookup).toContain('--commit "$GITHUB_SHA"');
     expect(ciLookup).toContain("--event push");
-    expect(ciLookup).toContain("--status success");
-    expect(ciLookup).toContain("--json url");
-    expect(ciLookup).toContain("--jq '.[0].url // \"\"'");
+    expect(ciLookup).not.toContain("--status success");
+    expect(ciLookup).toContain("--json conclusion,url");
+    expect(ciLookup).toContain("select(.conclusion == \"success\")");
+    expect(ciLookup).toContain("[0].url // \"\"");
     expect(ciLookup).not.toContain("--arg");
     expect(ciLookup).not.toContain("$branch");
+
+    const serviceLookup = workflow
+      .split('service_url="$(')[1]?.split('\n            )"')[0];
+    expect(serviceLookup).toBeDefined();
+    expect(serviceLookup).toContain("--workflow service-lifecycle.yml");
+    expect(serviceLookup).toContain('--commit "$GITHUB_SHA"');
+    expect(serviceLookup).not.toContain("--status success");
+    expect(serviceLookup).toContain("--json conclusion,headSha,url,workflowName");
+    expect(serviceLookup).toContain("select(.conclusion == \"success\")");
+    expect(serviceLookup).toContain("[0].url // \"\"");
+    expect(serviceLookup).not.toContain("--arg");
 
     // Dry-run first by default; tokenless trusted publishing only.
     expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);
