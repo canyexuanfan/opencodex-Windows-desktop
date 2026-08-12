@@ -2,7 +2,6 @@
  * Persistence seam: transform CL-01 conformance results into valid observation events.
  * Deterministic harness execution stays separate from ledger persistence.
  */
-import { createHash } from "node:crypto";
 import { createArtifactStore, type ArtifactStore } from "../artifacts/store";
 import { sanitizeDiagnostic, truncateUtf8 } from "../artifacts/sanitize";
 import {
@@ -12,12 +11,11 @@ import {
   type ObservationOutcome,
 } from "../constants";
 import {
-  jcsStringify,
   scenarioManifestDigest,
   subjectIdForSubject,
   suiteManifestDigest,
 } from "../digest";
-import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
+import type { ObservationEvent } from "../events/types";
 import { assignEventId } from "../events/validate";
 import { appendLabEvent } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
@@ -31,8 +29,10 @@ import { expandScenario } from "../conformance/manifest";
 import { suiteManifestObjectForCase } from "../conformance/suite-manifest";
 import { fixtureDigest } from "../conformance/digest";
 import { resolveProtocolExecutionContext } from "../conformance/executor";
-
-const COMPAT_VERSION = "protocol-v1";
+import {
+  buildProtocolSubjectV1,
+  protocolBehaviorFingerprintV1,
+} from "../subject/protocol-subject";
 
 export interface PersistConformanceOptions {
   configDir?: string;
@@ -75,71 +75,24 @@ function behaviorFingerprintForCase(
     caseRecord,
     executionContext ?? resolveProtocolExecutionContext(caseRecord),
   );
-  const adapter = upstreamAdapter(ctx.upstreamProtocol);
-  const values = {
-    schemaVersion: 1,
-    resolverVersion: 1,
-    values: {
-      "wire.adapter": {
-        source: "lab_forced",
-        value: adapter,
-      },
-      "wire.upstreamProtocol": {
-        source: "lab_forced",
-        value: ctx.upstreamProtocol,
-      },
-      "runtime.arch": {
-        source: "lab_forced",
-        value: process.arch,
-      },
-      "runtime.bunVersion": {
-        source: "lab_forced",
-        value: process.versions.bun ?? Bun.version,
-      },
-      "runtime.platform": {
-        source: "lab_forced",
-        value: process.platform,
-      },
-    },
-  };
-  return createHash("sha256").update(jcsStringify(values)).digest("hex");
+  return protocolBehaviorFingerprintV1(ctx);
 }
 
-function protocolSubject(caseRecord: CaseRecord, result: ScenarioRunResult): ProtocolSubjectV1 {
+function protocolSubject(caseRecord: CaseRecord, result: ScenarioRunResult) {
   const ctx = validateExecutionContext(
     caseRecord,
     result.executionContext ?? resolveProtocolExecutionContext(caseRecord),
   );
-  return {
-    subjectSchemaVersion: 1,
-    subjectKind: "protocol",
-    opencodexCompatibilityVersion: COMPAT_VERSION,
-    effectiveAdapter: upstreamAdapter(ctx.upstreamProtocol),
-    inboundProtocol: ctx.inboundProtocol,
-    upstreamProtocol: ctx.upstreamProtocol,
-    surface: ctx.surface,
-    behaviorFingerprint: behaviorFingerprintForCase(caseRecord, ctx),
-  };
-}
-
-function upstreamAdapter(protocol: string): string {
-  switch (protocol) {
-    case "openai-responses":
-      return "openai-responses";
-    case "anthropic-messages":
-      return "anthropic";
-    case "openai-chat":
-      return "openai-chat";
-    default:
-      throw new Error(`unsupported protocol identity: ${protocol}`);
-  }
+  return buildProtocolSubjectV1(ctx);
 }
 
 function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
   if (result.passed) return "pass";
   switch (result.classification) {
     case "timeout":
+    case "inactivity_timeout":
     case "budget_exhausted":
+    case "sandbox_violation":
     case "authentication_blocked":
     case "quota_blocked":
     case "region_blocked":
@@ -148,6 +101,8 @@ function outcomeFromResult(result: ScenarioRunResult): ObservationOutcome {
       return "blocked";
     case "inconclusive":
     case "harness_failure":
+    case "malformed_producer_outcome":
+    case "layer_subject_mismatch":
       return "inconclusive";
     case "protocol_failure":
     case "capability_failure":

@@ -68,9 +68,10 @@ any risk acceptance must name that.
 
 ## What round 2 confirmed as correct
 
-- **SEC-03 is pre-existing.** `src/oauth/store.ts` resolves to the same blob at
+- **SEC-03 is pre-existing.** The file carrying it resolves to the same blob at
   the v2.11.1 tag and the RC; `git diff --exit-code` succeeds; the path log is
-  empty. #1369 narrows malformed local imports and does not worsen it.
+  empty. #1369 narrows malformed local imports and does not worsen it. The path
+  is withheld because SEC-03 is still unfixed.
 - **SEC-01's artifact bound holds.** `.npmignore:6` excludes `.github/` and
   `prepare-package.ts` copies nothing from it.
 - **The omission risk acceptance is sound.** No open issue names #1398, #1396,

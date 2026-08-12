@@ -180,6 +180,11 @@ not fabricate official-client metadata. Doctor never mutates credentials or appl
 Fetch the live model list from every configured provider and re-inject the merged catalog into Codex.
 Run it after adding a provider or to refresh available models.
 
+Before provider discovery or catalog/cache replacement, `ocx sync` validates that the managed
+Codex configuration can be injected. If that validation refuses the config, the command exits
+nonzero, prints the concrete reason on stderr, and leaves the existing catalog and cache unchanged.
+`ocx restore back` uses the same no-write preflight before it re-enables routing.
+
 If long-lived Codex `app-server` processes are still running, `ocx sync` warns that they may keep
 serving the previous in-memory model list even though `opencodex-catalog.json` / `models_cache.json`
 were updated. Pass `--restart-codex` to send `SIGTERM` only to matching `codex … app-server` and
@@ -282,10 +287,27 @@ automatically. If that fallback cannot determine the token state, it retains the
 error. Foreign tasks and operations can never emit the automatic-elevation marker. Approve the
 dashboard UAC prompt or rerun `ocx service install` in an elevated PowerShell window.
 
+For a fresh install where the OpenCodex scheduler task is confirmed absent, UAC approval now
+happens before the installer stops any existing proxy. The task is registered without being run;
+only after registration succeeds does OpenCodex stop the old listener, publish the service assets,
+and start the scheduled task. Cancelling or denying UAC therefore leaves the working proxy and its
+Codex routing in place. Existing or conflicting scheduler registrations continue to fail closed
+rather than being deleted as an unsafe best-effort rollback.
+
 ### `ocx codex-shim <install|status|uninstall|remove>`
 
 Wrap a script-based `codex` launcher on PATH with a lightweight autostart script. Real `codex.exe`
 targets are left untouched to avoid breaking exact executable invocations.
+
+Before an install or repair is committed, OpenCodex runs the saved launcher with `--version` while
+service startup is bypassed. It refuses the change and rolls back when the launcher resolves
+`codex` back to the shim, exits nonzero, exceeds five seconds, leaves descendants running, or
+cannot be validated and cleaned up safely. Therefore `codex-shim install` is not unconditional. If
+it is refused, reinstall Codex so the PATH entry is a concrete executable or launcher and retry;
+use `ocx service install` instead when a dynamic command-manager launcher cannot meet these checks.
+During upgrades, an installed Unix shim that lacks the current validation guard is regenerated and
+probed. If its saved launcher is unsafe, OpenCodex removes the obsolete shim and restores the
+original launcher instead of leaving the unsafe wrapper installed.
 
 Launcher installation alone does not prove that Codex requests will use OpenCodex. After a healthy
 install, the command checks the current Codex routing and reports a warning instead of a green result

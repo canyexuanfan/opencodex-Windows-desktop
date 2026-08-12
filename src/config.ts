@@ -629,6 +629,9 @@ const providerConfigSchema = z.object({
   supportsServiceTier: z.boolean().optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  noStructuredOutputModels: z.array(z.string().min(1))
+    .transform(normalizeNonBlankStringArray)
+    .optional(),
   retryOn429: retryOn429PolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   responsesItemIdRepair: z.object({
@@ -818,6 +821,26 @@ export function positiveIntegerConfigError(value: unknown, field: string): strin
     return `${field} must be a positive finite integer`;
   }
   return null;
+}
+
+export function nonBlankStringArrayConfigError(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return `${field} must be an array`;
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== "string" || !entry.trim()) {
+      return `${field}.${index} must be a nonblank model id`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Keep hand-edited config and management writes on one canonical model-id list.
+ * Validation happens separately so an all-whitespace value is rejected rather than
+ * normalized into a model id that can never match at runtime.
+ */
+export function normalizeNonBlankStringArray(value: readonly string[]): string[] {
+  return [...new Set(value.map(entry => entry.trim()))];
 }
 
 export function booleanRecordConfigError(value: unknown, field: string): string | null {
@@ -1406,6 +1429,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", redactSecretString(name), "modelMaxOutputTokens"],
         message: maxOutputError,
+      });
+    }
+    const structuredOutputOptOutError = nonBlankStringArrayConfigError(
+      (provider as { noStructuredOutputModels?: unknown }).noStructuredOutputModels,
+      "noStructuredOutputModels",
+    );
+    if (structuredOutputOptOutError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", redactSecretString(name), "noStructuredOutputModels"],
+        message: structuredOutputOptOutError,
       });
     }
     if (Object.hasOwn(provider, "codexAccountMode") && provider.codexAccountMode !== undefined) {
@@ -2683,6 +2717,12 @@ export function websocketsEnabled(config: Pick<OcxConfig, "websockets">): boolea
  * against, or a later stale save would masquerade as "our own change".
  */
 const claudeCodeBaseline = new WeakMap<OcxConfig, unknown>();
+/**
+ * Full live-config baseline used to rebase unrelated cooperating writes. The
+ * Claude subtree and the bound listener fields remain on their dedicated
+ * reconciliation paths below.
+ */
+const liveConfigBaseline = new WeakMap<OcxConfig, OcxConfig>();
 
 /**
  * The live config retains the address of the socket Bun actually opened, while
@@ -2700,6 +2740,7 @@ const persistedLiveServerBinding = new WeakMap<OcxConfig, PersistedServerBinding
  * save, which is the case the guard exists for.
  */
 export function armClaudeCodeBaseline(config: OcxConfig): void {
+  liveConfigBaseline.set(config, structuredClone(config));
   claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
 }
 
@@ -2747,20 +2788,80 @@ function cloneConfigValue(value: ConfigMergeValue): ConfigMergeValue {
   return value === MISSING_CONFIG_VALUE ? value : structuredClone(value);
 }
 
+type IndexedCustomModels = {
+  order: string[];
+  byId: Map<string, Record<string, unknown>>;
+};
+
+function indexCustomModels(value: ConfigMergeValue): IndexedCustomModels | null {
+  if (!Array.isArray(value)) return null;
+  const order: string[] = [];
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const item of value) {
+    if (!isPlainConfigRecord(item) || typeof item.id !== "string" || item.id.length === 0 || byId.has(item.id)) {
+      return null;
+    }
+    order.push(item.id);
+    byId.set(item.id, item);
+  }
+  return { order, byId };
+}
+
+/**
+ * Merge custom-model rows by their stable id instead of treating the array as
+ * one opaque value. A row changed only on disk is adopted, a row changed only
+ * in the live config is retained, and disjoint edits to the same row recurse
+ * through the normal three-way object merge. A newer persisted row deletion
+ * wins over a stale live edit to that row.
+ */
+function reconcileCustomModels(
+  baseline: ConfigMergeValue,
+  live: ConfigMergeValue,
+  persisted: ConfigMergeValue,
+): ConfigMergeValue | null {
+  const baselineRows = indexCustomModels(baseline);
+  const liveRows = indexCustomModels(live);
+  const persistedRows = indexCustomModels(persisted);
+  if (!baselineRows || !liveRows || !persistedRows) return null;
+
+  const order = [...liveRows.order, ...persistedRows.order.filter(id => !liveRows.byId.has(id))];
+  const merged: Array<Record<string, unknown>> = [];
+  for (const id of order) {
+    const baselineRow = baselineRows.byId.get(id) ?? MISSING_CONFIG_VALUE;
+    const persistedRow = persistedRows.byId.get(id) ?? MISSING_CONFIG_VALUE;
+    const row = baselineRow !== MISSING_CONFIG_VALUE && persistedRow === MISSING_CONFIG_VALUE
+      ? MISSING_CONFIG_VALUE
+      : reconcileConfigValue(
+          baselineRow,
+          liveRows.byId.get(id) ?? MISSING_CONFIG_VALUE,
+          persistedRow,
+        );
+    if (row !== MISSING_CONFIG_VALUE) merged.push(row as Record<string, unknown>);
+  }
+  return merged;
+}
+
 function reconcileConfigRecord(
   live: Record<string, unknown>,
   baseline: Record<string, unknown>,
   persisted: Record<string, unknown>,
   skippedKeys?: ReadonlySet<string>,
+  persistedDeletionsWin = false,
 ): void {
   const keys = new Set([...Object.keys(baseline), ...Object.keys(live), ...Object.keys(persisted)]);
   for (const key of keys) {
     if (skippedKeys?.has(key)) continue;
-    const merged = reconcileConfigValue(
-      ownConfigValue(baseline, key),
-      ownConfigValue(live, key),
-      ownConfigValue(persisted, key),
-    );
+    const baselineValue = ownConfigValue(baseline, key);
+    const liveValue = ownConfigValue(live, key);
+    const persistedValue = ownConfigValue(persisted, key);
+    const merged = persistedDeletionsWin
+        && baselineValue !== MISSING_CONFIG_VALUE
+        && persistedValue === MISSING_CONFIG_VALUE
+      ? MISSING_CONFIG_VALUE
+      : key === "customModels"
+        ? reconcileCustomModels(baselineValue, liveValue, persistedValue)
+          ?? reconcileConfigValue(baselineValue, liveValue, persistedValue)
+        : reconcileConfigValue(baselineValue, liveValue, persistedValue, key === "providers");
     if (merged === MISSING_CONFIG_VALUE) delete live[key];
     else live[key] = merged;
   }
@@ -2770,6 +2871,7 @@ function reconcileConfigValue(
   baseline: ConfigMergeValue,
   live: ConfigMergeValue,
   persisted: ConfigMergeValue,
+  persistedChildDeletionsWin = false,
 ): ConfigMergeValue {
   const liveChanged = !deepEqual(live, baseline);
   const persistedChanged = !deepEqual(persisted, baseline);
@@ -2799,6 +2901,8 @@ function reconcileConfigValue(
       live,
       isPlainConfigRecord(baseline) ? baseline : {},
       persisted,
+      undefined,
+      persistedChildDeletionsWin,
     );
   }
   // Same-leaf conflicts prefer the pending live management mutation.
@@ -2886,13 +2990,14 @@ function readPersistedServerBinding(
  *
  * Conflict policy, chosen deliberately:
  * - disk changed, we did not → their hand edit wins;
- * - disk changed AND we changed → our change wins and the baseline rebases, so the
- *   user's next edit starts from the new value (a three-way merge is out of scope);
+ * - disk changed AND we changed → disjoint fields are merged, while a same-leaf
+ *   conflict keeps the live value;
+ * - a provider or custom-model row deleted on disk stays deleted even if stale
+ *   live state edited that same row;
  * - file missing/unreadable → save what we have, no throw.
  *
- * Scope residual: only `claudeCode` is reconciled. A hand edit to `providers` is still
- * clobbered — recorded and asserted in tests so it cannot drift into an assumed
- * guarantee.
+ * Custom-model rows are merged by their stable `id`, preserving independent
+ * edits and deletions across stale whole-config saves.
  */
 export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
   withConfigMutationLockSync(() => {
@@ -2900,6 +3005,36 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
     // One authoritative pre-write read feeds both the live-config reconciliation and
     // custom-model deletion migration. A second read could observe different bytes.
     const onDisk = readRawConfigJson();
+    const baseline = liveConfigBaseline.get(config);
+    if (baseline && onDisk !== undefined) {
+      const persistedDiagnostics = configDiagnosticsFromRaw(JSON.stringify(onDisk));
+      if (persistedDiagnostics.source === "file") {
+        // Only keys this live config is actually known to have diverged on may be
+        // rebased. The baseline is captured once when the server arms it, so any key
+        // that appeared on disk afterwards — through saveConfig(), a hand edit, or
+        // another process — is absent from the baseline as well as from the live
+        // config. Reconciling those keys reads "live never changed this" and adopts
+        // the disk value, which resurrects a field the live writer had deliberately
+        // deleted (#1462 regression: PUT /api/grok/selection with an empty list).
+        // Restrict the merge to keys the baseline knew about, plus keys the live
+        // config still carries; a key that exists only on disk is left to the
+        // ordinary whole-config write below.
+        const rebaseableKeys = new Set([
+          ...Object.keys(baseline as unknown as Record<string, unknown>),
+          ...Object.keys(config as unknown as Record<string, unknown>),
+        ]);
+        const skipped = new Set(["hostname", "port", "claudeCode"]);
+        for (const key of Object.keys(persistedDiagnostics.config as unknown as Record<string, unknown>)) {
+          if (!rebaseableKeys.has(key)) skipped.add(key);
+        }
+        reconcileConfigRecord(
+          config as unknown as Record<string, unknown>,
+          baseline as unknown as Record<string, unknown>,
+          persistedDiagnostics.config as unknown as Record<string, unknown>,
+          skipped,
+        );
+      }
+    }
     if (claudeCodeBaseline.has(config)) {
       if (onDisk !== undefined) {
         const baseline = claudeCodeBaseline.get(config);
@@ -2930,6 +3065,9 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
     adoptCustomModelCatalogMigration(config, projectedConfig);
     if (claudeCodeBaseline.has(config)) {
       claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
+    }
+    if (liveConfigBaseline.has(config)) {
+      liveConfigBaseline.set(config, structuredClone(config));
     }
   });
 }

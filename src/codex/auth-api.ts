@@ -5,7 +5,7 @@ import {
   saveConfigPreservingClaudeCode,
   withConfigMutationLockSync,
 } from "../config";
-import { withCodexAccountLogLabel } from "./account-label";
+import { codexAccountLogLabel, withCodexAccountLogLabel } from "./account-label";
 import {
   getCodexAccountCredential,
   getValidCodexToken,
@@ -239,7 +239,7 @@ function poolAccountDto(
     email: maskEmail(account.email) ?? account.email,
     ...(account.alias !== undefined ? { alias: account.alias } : {}),
     ...(plan !== undefined ? { plan } : {}),
-    ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
+    logLabel: codexAccountLogLabel(account),
     isMain: false,
     paused,
     priority,
@@ -1228,6 +1228,7 @@ export async function listCodexAuthAccountsSnapshot(
     id: MAIN_CODEX_ACCOUNT_ID,
     email: maskEmail(mainInfo.email) ?? "Codex App login",
     plan: mainInfo.plan,
+    logLabel: "main",
     isMain: true,
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     priority: getCodexAccountPriority(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),

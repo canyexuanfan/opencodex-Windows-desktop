@@ -7,8 +7,13 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { clearableDeadline } from "../src/lib/abort";
-import type { RequestLogContext } from "../src/server/request-log";
+import {
+  clearRequestLogsForTests,
+  getRequestLogEntries,
+  type RequestLogContext,
+} from "../src/server/request-log";
 import { startServer } from "../src/server";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import {
   estimateClaudeRequestTokens,
   fetchWithHeaderDeadline,
@@ -686,6 +691,66 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
   }
 });
 
+test("native openai-responses Claude route logs cyber terminals as 400 cyber_policy", async () => {
+  clearRequestLogsForTests();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response([
+        "event: response.failed",
+        `data: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+          },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  saveConfig({
+    port: 0,
+    defaultProvider: "native",
+    providers: {
+      native: {
+        adapter: "openai-responses",
+        baseUrl: `${upstream.url.toString().replace(/\/$/, "")}/v1`,
+        authMode: "forward",
+        allowPrivateNetwork: true,
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "native/gpt-test",
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("blocked");
+    const entry = getRequestLogEntries().findLast(e => e.surface === "claude");
+    expect(entry).toMatchObject({
+      status: 400,
+      errorCode: "cyber_policy",
+      terminalStatus: "failed",
+      closeReason: "terminal",
+      upstreamError: "blocked",
+    });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+    clearRequestLogsForTests();
+  }
+});
+
 test("custom forward openai-responses route never receives the main ChatGPT credential", async () => {
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: "main-secret-must-not-leave", account_id: "main-account-must-not-leave" },
@@ -801,6 +866,12 @@ test("shadow-call rerouting cannot carry the main ChatGPT credential to a custom
   }
 });
 
+/**
+ * This case sandboxes CODEX_HOME, so the service installed on the developer's
+ * machine is not evidence about it. See tests/helpers/owned-service-home.ts.
+ */
+const inspectNativeCodexOwnership = ownedServiceHomeInspection("claude replay main-enrichment test");
+
 test("Claude replay owns optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
@@ -834,7 +905,7 @@ test("Claude replay owns optional main enrichment while routed work survives dra
     },
   });
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
-  let server = startServer(0);
+  let server = startServer(0, { inspectNativeCodexOwnership });
   await waitForNativeMainStartupGate();
   let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
   let recoveryHomeId: string | null = null;
@@ -898,7 +969,7 @@ test("Claude replay owns optional main enrichment while routed work survives dra
       activeCodexAccountId: "__main__",
       autoSwitchThreshold: 0,
     } as OcxConfig);
-    server = startServer(0);
+    server = startServer(0, { inspectNativeCodexOwnership });
     await waitForNativeMainStartupGate();
     recoveryHomeId = nativeMainStartupGateSnapshot().homeId ?? "claude-main-recovery-home";
     expect(blockNativeMainRecovery(recoveryHomeId, "manual")).toBe(true);
@@ -1355,6 +1426,69 @@ test("generated agent effort directive restores exact xhigh and max after Claude
       { model: "test-model", effort: "xhigh" },
       { model: "test-model", effort: "max" },
     ]);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("generated agent effort directive preserves routed Anthropic structured output", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      captured.push(await req.json() as Record<string, unknown>);
+      return new Response([
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"{\\"answer\\":\\"ok\\"}"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  saveConfig({
+    port: 0,
+    defaultProvider: "mock-anthropic",
+    providers: {
+      "mock-anthropic": {
+        adapter: "anthropic",
+        baseUrl: upstream.url.toString().replace(/\/$/, ""),
+        apiKey: "test-key",
+        allowPrivateNetwork: true,
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  try {
+    const response = await postMessages(server.url.toString(), {
+      model: "claude-haiku-4-5",
+      max_tokens: 32000,
+      stream: true,
+      system: [
+        { type: "text", text: "<!-- ocx-route: claude-ocx-mock-anthropic--claude-sonnet-5 -->" },
+        { type: "text", text: "<!-- ocx-effort: max -->" },
+      ],
+      thinking: { type: "enabled", budget_tokens: 31999 },
+      output_config: {
+        format: { type: "json_schema", schema },
+      },
+      messages: [{ role: "user", content: "Return JSON" }],
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.output_config).toEqual({
+      effort: "max",
+      format: { type: "json_schema", schema },
+    });
   } finally {
     await server.stop(true);
     upstream.stop(true);

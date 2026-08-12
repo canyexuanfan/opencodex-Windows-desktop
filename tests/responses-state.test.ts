@@ -423,7 +423,7 @@ describe("Responses previous_response_id state", () => {
     const parsed2 = parseRequest(request2);
     expect(parsed2._replayPrefixLen).toBe(3);
     const request2Input = (request2 as { input: Array<Record<string, unknown>> }).input;
-    expect(request2Input[1]).toMatchObject({ role: "developer" });
+    expect(request2Input[0]).toMatchObject({ role: "developer" });
     expect(request2Input[2]).toMatchObject({ type: "function_call" });
     injectDeveloperMessage(parsed2, guidance);
     expect(countRawGuidance(request2)).toBe(1);

@@ -447,6 +447,45 @@ describe("Codex catalog sync hardening", () => {
     expect(rows.some(row => row.slug === "desktop/gpt-5.5")).toBe(false);
   });
 
+  test("catalog sync persists routed code mode without changing native account rows", () => {
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [{ ...nativeEntry("gpt-5.5", 0), tool_mode: "code" }],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      syncCatalogModels({
+        providers: {
+          openai: {
+            adapter: "openai-responses",
+            baseUrl: "https://chatgpt.com/backend-api/codex",
+            liveModels: false
+          },
+          deepseek: {
+            adapter: "openai-responses",
+            baseUrl: "https://api.example.test/v1",
+            liveModels: false,
+            models: ["deepseek-v4-flash"]
+          }
+        },
+        codexAccounts: [{ id: "stored-team-account", isMain: false }],
+        codexAccountNamespaces: { team: "stored-team-account" }
+      }).then(res => console.log(JSON.stringify(res)));
+    `);
+    expect(r.status).toBe(0);
+
+    const rows = JSON.parse(readFileSync(catalogPath, "utf8")).models as Array<{
+      slug: string;
+      tool_mode?: string | null;
+    }>;
+    expect(rows.find(row => row.slug === "deepseek/deepseek-v4-flash")?.tool_mode)
+      .toBe("code_mode_only");
+    expect(rows.find(row => row.slug === "gpt-5.5")?.tool_mode).toBe("code");
+    expect(rows.find(row => row.slug === "team/gpt-5.5")?.tool_mode).toBe("code");
+  });
+
   test("disabled canonical OpenAI keeps bare bootstrap rows but omits unrouteable account rows", () => {
     const catalogPath = join(codexHome, "catalog.json");
     writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
@@ -927,6 +966,161 @@ describe("Codex catalog sync hardening", () => {
     expect(slugs).toContain("cursor/composer-2.5");
     expect(slugs).toContain("xai/grok-5-code");
     expect(slugs).not.toContain("cursor/stale-model");
+  });
+
+  test("an identical resync leaves the catalog file untouched, a real change still writes", () => {
+    // The app-server staleness classifier (#857) compares this file's mtime against
+    // each running Codex's start time, so a no-op rewrite would report every
+    // already-running Codex as holding an outdated catalog — and since #1407 that
+    // verdict withholds opencodex's model guidance for the rest of that Codex's
+    // lifetime, even though the advertised model set never changed.
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [
+        nativeEntry("gpt-5.5", 0),
+        nativeEntry("gpt-5.2", 104), // legacy -> dropped by the first sync
+      ],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { statSync, writeFileSync, readFileSync } = require("node:fs");
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      const path = ${JSON.stringify(catalogPath)};
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+      (async () => {
+        const first = await syncCatalogModels({ providers: {} });
+        const afterFirst = statSync(path).mtimeMs;
+        await sleep(1100);
+        const second = await syncCatalogModels({ providers: {} });
+        const afterSecond = statSync(path).mtimeMs;
+        // Not vacuous: a catalog that really differs must still be rewritten.
+        const catalog = JSON.parse(readFileSync(path, "utf8"));
+        catalog.models = catalog.models.filter(model => model.slug !== "gpt-5.5");
+        writeFileSync(path, JSON.stringify(catalog, null, 2) + "\\n");
+        const changedAt = statSync(path).mtimeMs;
+        await sleep(1100);
+        const third = await syncCatalogModels({ providers: {} });
+        console.log(JSON.stringify({
+          firstWritten: first.catalogWritten,
+          secondWritten: second.catalogWritten,
+          secondAdded: second.added,
+          identicalResyncKeptMtime: afterFirst === afterSecond,
+          thirdWritten: third.catalogWritten,
+          realChangeBumpedMtime: statSync(path).mtimeMs > changedAt,
+        }));
+      })();
+    `);
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout) as {
+      firstWritten: boolean;
+      secondWritten: boolean;
+      secondAdded: number;
+      identicalResyncKeptMtime: boolean;
+      thirdWritten: boolean;
+      realChangeBumpedMtime: boolean;
+    };
+    expect(out.firstWritten).toBe(true);
+    expect(out.secondWritten).toBe(false);
+    expect(out.identicalResyncKeptMtime).toBe(true);
+    expect(out.thirdWritten).toBe(true);
+    expect(out.realChangeBumpedMtime).toBe(true);
+  });
+
+  test("the no-op guard compares bytes, so a malformed byte decoding to U+FFFD is still repaired", () => {
+    // The guard above must not preserve corruption. `readFileSync(path, "utf8")`
+    // substitutes U+FFFD for every invalid byte, so a catalog holding a bare 0x80
+    // decodes equal to prepared content holding a real U+FFFD. A decoded-string
+    // comparison calls that pair identical, skips the atomic repair write, and
+    // reports catalogWritten:false while the bytes on disk differ from the bytes we
+    // prepared — leaving malformed UTF-8 in the file Codex reads.
+    const catalogPath = join(codexHome, "catalog.json");
+    writeFileSync(join(codexHome, "config.toml"), 'model_catalog_json = "catalog.json"\n', "utf8");
+    writeFileSync(catalogPath, JSON.stringify({
+      models: [{ ...nativeEntry("gpt-5.5", 0), description: "native \uFFFD tail" }],
+    }, null, 2) + "\n");
+
+    const r = runScript(codexHome, opencodexHome, `
+      const { readFileSync, writeFileSync } = require("node:fs");
+      const { syncCatalogModels } = require("./src/codex/catalog");
+      const path = ${JSON.stringify(catalogPath)};
+      (async () => {
+        // Converge first: the U+FFFD in the retained description survives into the
+        // prepared content, so the following sync is a genuine byte-identical no-op.
+        await syncCatalogModels({ providers: {} });
+        const converged = readFileSync(path);
+        const idempotent = await syncCatalogModels({ providers: {} });
+
+        // Now corrupt exactly that replacement character into a bare 0x80. The
+        // decoded strings stay equal; the bytes do not.
+        const replacement = Buffer.from([0xef, 0xbf, 0xbd]);
+        const at = converged.indexOf(replacement);
+        const corrupted = Buffer.concat([
+          converged.subarray(0, at),
+          Buffer.from([0x80]),
+          converged.subarray(at + replacement.length),
+        ]);
+        writeFileSync(path, corrupted);
+
+        const repair = await syncCatalogModels({ providers: {} });
+        const after = readFileSync(path);
+        // A bare 0x80 is only malformed as a *leading* byte; the converged catalog
+        // legitimately contains 0x80 as a continuation byte of multi-byte
+        // characters, so count decode failures instead of raw byte occurrences.
+        const malformedRuns = (buffer) => {
+          let count = 0;
+          for (let i = 0; i < buffer.length; i += 1) {
+            const byte = buffer[i];
+            if (byte < 0x80) continue;
+            const width = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 0;
+            if (width === 0) { count += 1; continue; }
+            let ok = true;
+            for (let k = 1; k < width; k += 1) {
+              const next = buffer[i + k];
+              if (next === undefined || next < 0x80 || next > 0xbf) { ok = false; break; }
+            }
+            if (!ok) { count += 1; continue; }
+            i += width - 1;
+          }
+          return count;
+        };
+        console.log(JSON.stringify({
+          foundReplacementByte: at >= 0,
+          decodedEqual: corrupted.toString("utf8") === converged.toString("utf8"),
+          bytesEqual: corrupted.equals(converged),
+          identicalResyncSkipped: idempotent.catalogWritten === false,
+          corruptedRewritten: repair.catalogWritten,
+          bytesRepaired: after.equals(converged),
+          malformedInCorrupted: malformedRuns(corrupted),
+          malformedAfterRepair: malformedRuns(after),
+        }));
+      })();
+    `);
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout) as {
+      foundReplacementByte: boolean;
+      decodedEqual: boolean;
+      bytesEqual: boolean;
+      identicalResyncSkipped: boolean;
+      corruptedRewritten: boolean;
+      bytesRepaired: boolean;
+      malformedInCorrupted: number;
+      malformedAfterRepair: number;
+    };
+    // The premise: these two buffers decode the same and differ in bytes.
+    expect(out.foundReplacementByte).toBe(true);
+    expect(out.decodedEqual).toBe(true);
+    expect(out.bytesEqual).toBe(false);
+    expect(out.malformedInCorrupted).toBe(1);
+    // Not vacuous: a truly byte-identical resync is still skipped, so this test
+    // fails if the no-op guard is deleted rather than corrected.
+    expect(out.identicalResyncSkipped).toBe(true);
+    // The correction: differing bytes are rewritten and the malformed byte is gone.
+    expect(out.corruptedRewritten).toBe(true);
+    expect(out.bytesRepaired).toBe(true);
+    expect(out.malformedAfterRepair).toBe(0);
   });
 
   test("readCodexCatalogPath honors CODEX_HOME at call time", () => {

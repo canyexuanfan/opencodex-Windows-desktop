@@ -93,6 +93,40 @@ describe("DeepSeek Responses endpoint contract", () => {
       .toBe("https://api.cerebras.ai/v1/responses");
   });
 
+  test("key-auth routed Responses converts exec custom tools while native forward preserves them", () => {
+    const rawBody = {
+      model: "deepseek-v4-flash",
+      input: "ping",
+      tools: [
+        { type: "custom", name: "exec", description: "Run JavaScript", format: { type: "grammar", syntax: "lark" } },
+        { type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "grammar", syntax: "lark" } },
+      ],
+    };
+    const parsed = {
+      modelId: "deepseek-v4-flash",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+    };
+    const keyed = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.deepseek.com",
+      responsesPath: "/responses",
+      authMode: "key" as const,
+      apiKey: "sk-test",
+    });
+    const keyedBody = JSON.parse(keyed.buildRequest(parsed, { headers: new Headers() }).body) as typeof rawBody;
+    expect(keyedBody.tools[0]).toMatchObject({ type: "function", name: "exec" });
+    expect(keyedBody.tools[1]).toMatchObject({ type: "custom", name: "apply_patch" });
+
+    const nativeBody = JSON.parse(createResponsesPassthroughAdapter(provider).buildRequest(
+      { ...parsed, modelId: "gpt-5.6-sol" },
+      { headers: new Headers({ authorization: "Bearer token" }) },
+    ).body) as typeof rawBody;
+    expect(nativeBody.tools).toEqual(rawBody.tools);
+  });
+
   test("a config saved before the fix is backfilled, and a hand-set path is preserved", () => {
     const saved = { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", apiKey: "sk-test" } as Parameters<typeof enrichProviderFromRegistry>[1];
     enrichProviderFromRegistry("deepseek", saved);
@@ -1451,14 +1485,14 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
 
     expect(body.tools).toEqual([
       { type: "image_generation" },
-      { type: "custom", name: "exec_command" },
+      { type: "function", name: "exec_command", parameters: { type: "object" } },
     ]);
     expect(body.tool_choice).toEqual({
       type: "allowed_tools",
       mode: "required",
       tools: [
         { type: "image_generation" },
-        { type: "custom", name: "exec_command" },
+        { type: "function", name: "exec_command" },
       ],
     });
   });

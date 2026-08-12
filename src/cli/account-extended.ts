@@ -1,4 +1,5 @@
 import { loadConfig } from "../config";
+import { closeSync, openSync, readSync } from "node:fs";
 import {
   MAX_ACCOUNT_PRIORITY,
   MIN_ACCOUNT_PRIORITY,
@@ -21,6 +22,16 @@ import {
   codexCatalogRefreshPending,
   warnIfCodexCatalogRefreshPending,
 } from "./account-catalog-refresh";
+import {
+  ACCOUNT_IMPORT_DEADLINE_MS,
+  ACCOUNT_IMPORT_FORMAT,
+  ACCOUNT_IMPORT_MAX_BYTES,
+  ACCOUNT_IMPORT_PROVIDER,
+  type AccountImportCode,
+  type AccountImportRecordResult,
+  type AccountImportResult,
+  type AccountImportStatus,
+} from "../oauth/account-import";
 
 const MAIN_ID = "__main__";
 const AUTO_NOTE = "auto (no pin — lowest-usage account is selected per request)";
@@ -31,10 +42,12 @@ const EXTENDED_USAGE = `Usage:
   ocx account priority <provider> <id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]
   ocx account remove <provider> <id|main> --yes [--json]
   ocx account clear-cooldown <provider> <id|main> [--json]
-  ocx account add-key <provider> [--label <label>] [--json]`;
+  ocx account add-key <provider> [--label <label>] [--json]
+  ocx account import <provider> --format <format> (--file <path>|--stdin) [--json]`;
 const PIPE_GUIDANCE = `Pipe the API key on stdin, for example:
   ocx account add-key <provider> <<< "$MY_KEY"
   security find-generic-password -w <item> | ocx account add-key <provider>`;
+const ACCOUNT_IMPORT_TIMEOUT_MS = ACCOUNT_IMPORT_DEADLINE_MS;
 
 function flag(args: string[], value: string): boolean {
   const index = args.indexOf(value);
@@ -50,6 +63,162 @@ function flagValue(args: string[], value: string): { found: boolean; value?: str
   const result = args[index + 1];
   args.splice(index, 2);
   return { found: true, value: result };
+}
+
+function boundedUtf8(bytes: Uint8Array): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("invalid_document");
+  }
+}
+
+function readBoundedImportFile(path: string): string {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, "r");
+    const buffer = Buffer.allocUnsafe(ACCOUNT_IMPORT_MAX_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const read = readSync(descriptor, buffer, offset, buffer.length - offset, null);
+      if (read === 0) break;
+      offset += read;
+    }
+    if (offset > ACCOUNT_IMPORT_MAX_BYTES) throw new Error("invalid_document");
+    return boundedUtf8(buffer.subarray(0, offset));
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid_document") throw error;
+    throw new Error("source_read_failed");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+async function readBoundedImportStdin(deps: AccountDeps): Promise<string> {
+  const input: AccountStdin = deps.stdinImpl ?? process.stdin;
+  if (input.isTTY) throw new Error("stdin_required");
+  const timeoutMs = deps.stdinTimeoutMs ?? 15_000;
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      input.removeListener("data", onData);
+      input.removeListener("end", onEnd);
+      input.removeListener("error", onError);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const onData = (chunk: unknown) => {
+      const encoded = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      bytes += encoded.byteLength;
+      if (bytes > ACCOUNT_IMPORT_MAX_BYTES) {
+        finish(() => reject(new Error("invalid_document")));
+        return;
+      }
+      chunks.push(encoded);
+    };
+    const onEnd = () => finish(() => {
+      try { resolve(boundedUtf8(Buffer.concat(chunks, bytes))); }
+      catch (error) { reject(error); }
+    });
+    const onError = () => finish(() => reject(new Error("source_read_failed")));
+    const timer = setTimeout(() => finish(() => reject(new Error("stdin_timeout"))), timeoutMs);
+    input.on("data", onData);
+    input.on("end", onEnd);
+    input.on("error", onError);
+  });
+}
+
+const IMPORT_STATUSES = new Set<AccountImportStatus>(["imported", "updated", "failed", "unsupported"]);
+const IMPORT_CODES = new Set<AccountImportCode>([
+  "imported", "updated", "import_cancelled", "unsupported_provider", "unsupported_format", "invalid_document",
+  "invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed",
+]);
+const IMPORT_RESULT_FIELDS = new Set([
+  "totalCount", "importedCount", "updatedCount", "failedCount", "unsupportedCount", "results",
+]);
+const IMPORT_RECORD_FIELDS = new Set(["index", "status", "code"]);
+const IMPORT_STATUS_CODES: Record<AccountImportStatus, ReadonlySet<AccountImportCode>> = {
+  imported: new Set(["imported"]),
+  updated: new Set(["updated"]),
+  failed: new Set(["invalid_record", "credential_rejected", "identity_mismatch", "missing_project", "persist_failed"]),
+  unsupported: new Set(["unsupported_provider", "unsupported_format"]),
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasExactFields(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  const fields = Object.keys(value);
+  return fields.length === allowed.size && fields.every(field => allowed.has(field));
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isSafeInteger(value) && value >= 0;
+}
+
+function safeImportResult(json: unknown): AccountImportResult | null {
+  if (!isPlainObject(json) || !hasExactFields(json, IMPORT_RESULT_FIELDS)) return null;
+  if (
+    !isNonNegativeSafeInteger(json.totalCount)
+    || !isNonNegativeSafeInteger(json.importedCount)
+    || !isNonNegativeSafeInteger(json.updatedCount)
+    || !isNonNegativeSafeInteger(json.failedCount)
+    || !isNonNegativeSafeInteger(json.unsupportedCount)
+  ) return null;
+  if (!Array.isArray(json.results)) return null;
+  if (json.results.length !== json.totalCount) return null;
+
+  const results: AccountImportRecordResult[] = [];
+  const indices = new Set<number>();
+  const aggregate: Record<AccountImportStatus, number> = {
+    imported: 0,
+    updated: 0,
+    failed: 0,
+    unsupported: 0,
+  };
+  for (const raw of json.results) {
+    if (!isPlainObject(raw) || !hasExactFields(raw, IMPORT_RECORD_FIELDS)) return null;
+    const item = raw;
+    if (!isNonNegativeSafeInteger(item.index) || item.index >= json.totalCount || indices.has(item.index)) return null;
+    if (!IMPORT_STATUSES.has(item.status as AccountImportStatus)) return null;
+    if (!IMPORT_CODES.has(item.code as AccountImportCode)) return null;
+    const status = item.status as AccountImportStatus;
+    const code = item.code as AccountImportCode;
+    if (!IMPORT_STATUS_CODES[status].has(code)) return null;
+    indices.add(item.index);
+    aggregate[status] += 1;
+    results.push({
+      index: item.index,
+      status,
+      code,
+    });
+  }
+  if (
+    indices.size !== json.totalCount
+    || aggregate.imported !== json.importedCount
+    || aggregate.updated !== json.updatedCount
+    || aggregate.failed !== json.failedCount
+    || aggregate.unsupported !== json.unsupportedCount
+  ) return null;
+
+  return {
+    totalCount: json.totalCount,
+    importedCount: json.importedCount,
+    updatedCount: json.updatedCount,
+    failedCount: json.failedCount,
+    unsupportedCount: json.unsupportedCount,
+    results,
+  };
 }
 
 function usage(message?: string): number {
@@ -302,6 +471,98 @@ export async function cmdAddKey(args: string[], deps: AccountDeps): Promise<numb
     : `${name}: added API key ${id ?? ""}${safeLabel ? ` (${safeLabel})` : ""}`.trim();
   console.log(output.replaceAll(key, "[redacted]"));
   return 0;
+}
+
+export async function cmdImport(args: string[], deps: AccountDeps): Promise<number> {
+  const wantsJson = flag(args, "--json");
+  const formatArg = flagValue(args, "--format");
+  const fileArg = flagValue(args, "--file");
+  const fromStdin = flag(args, "--stdin");
+  const provider = args.shift();
+
+  // Admission happens before source I/O. In particular, an inline JSON positional argument is
+  // rejected without inspecting or echoing it, keeping secrets out of any subsequent surface.
+  if (
+    provider !== ACCOUNT_IMPORT_PROVIDER
+    || formatArg.value !== ACCOUNT_IMPORT_FORMAT
+    || formatArg.found !== true
+  ) {
+    const code = provider === ACCOUNT_IMPORT_PROVIDER ? "unsupported_format" : "unsupported_provider";
+    console.error(`Error: ${code}`);
+    return 1;
+  }
+  const hasFile = fileArg.found && typeof fileArg.value === "string" && fileArg.value.length > 0;
+  if (args.length > 0 || hasFile === fromStdin || (fileArg.found && !hasFile)) {
+    return usage("Error: choose exactly one bounded source: --file <path> or --stdin");
+  }
+
+  let source: string;
+  try {
+    source = hasFile ? readBoundedImportFile(fileArg.value!) : await readBoundedImportStdin(deps);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "source_read_failed";
+    console.error(`Error: ${["invalid_document", "source_read_failed", "stdin_required", "stdin_timeout"].includes(code) ? code : "source_read_failed"}`);
+    return 1;
+  }
+
+  let document: unknown;
+  try {
+    document = JSON.parse(source) as unknown;
+  } catch {
+    console.error("Error: invalid_document");
+    return 1;
+  }
+
+  const baseUrl = await resolveBaseUrl(deps);
+  if (!baseUrl) return proxyUnreachable();
+  const configuredImportTimeout = deps.importTimeoutMs;
+  const importTimeoutMs = typeof configuredImportTimeout === "number" && Number.isFinite(configuredImportTimeout)
+    ? Math.min(ACCOUNT_IMPORT_TIMEOUT_MS, Math.max(1, Math.floor(configuredImportTimeout)))
+    : ACCOUNT_IMPORT_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, importTimeoutMs);
+  let response;
+  try {
+    response = await apiJson(deps, baseUrl, "POST", "/api/oauth/accounts/import", {
+      provider,
+      format: formatArg.value,
+      document,
+    }, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (response.status === 0) {
+    if (!timedOut) return proxyUnreachable();
+    console.error(`Error: import_timeout after ${importTimeoutMs}ms`);
+    return 1;
+  }
+  if (response.status !== 200) {
+    if (IMPORT_CODES.has(response.json.code as AccountImportCode)) {
+      console.error(`Error: ${response.json.code as AccountImportCode}`);
+    } else {
+      console.error(`Error: import_request_failed (status ${response.status})`);
+    }
+    return 1;
+  }
+  const result = safeImportResult(response.json);
+  if (!result) {
+    console.error("Error: invalid_response");
+    return 1;
+  }
+
+  if (wantsJson) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(
+      `${provider}: ${result.importedCount} imported, ${result.updatedCount} updated, ${result.failedCount} failed, ${result.unsupportedCount} unsupported`,
+    );
+    for (const item of result.results) console.log(`  #${item.index + 1} ${item.status} (${item.code})`);
+  }
+  return result.failedCount > 0 || result.unsupportedCount > 0 ? 1 : 0;
 }
 
 /**

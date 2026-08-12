@@ -263,7 +263,7 @@ describe("request log metadata", () => {
     noteAttemptSend(a, 100);
     noteAttemptSend(a, 120, "transient-5xx");
     noteAttemptSend(a, 120, "transient-5xx");
-    sealRequestAttemptIdentity(a, "chatgpt-pabcdef", "openai-responses");
+    sealRequestAttemptIdentity(a, "chatgpt-pabcdef", "openai-responses", "pabcdef");
     finishRequestAttempt(a, 503, 12);
 
     const b = beginRequestAttempt(2, "prov-b", "model-b", "openai-chat");
@@ -278,6 +278,7 @@ describe("request log metadata", () => {
     expect(a).toMatchObject({
       ordinal: 1,
       provider: "chatgpt-pabcdef",
+      accountLogLabel: "pabcdef",
       adapter: "openai-responses",
       status: 503,
       sendCount: 3,
@@ -550,6 +551,11 @@ describe("request log metadata", () => {
     expect(requestLogErrorCode(429)).toBe("rate_limit_exceeded");
     expect(requestLogErrorCode(499)).toBe("client_closed_request");
     expect(requestLogErrorCode(502, "client closed request during web-search")).toBe("client_closed_request");
+    expect(requestLogErrorCode(400, "blocked", "cyber_policy")).toBe("cyber_policy");
+    expect(requestLogErrorCode(
+      502,
+      "This content was flagged for possible cybersecurity risk. To get authorized for security work, join the Trusted Access for Cyber program.",
+    )).toBe("cyber_policy");
     expect(requestLogErrorCode(503)).toBe("server_is_overloaded");
     expect(requestLogErrorCode(502)).toBe("upstream_server_error");
     expect(requestLogErrorCode(404)).toBe("http_404");
@@ -846,6 +852,39 @@ describe("request log metadata", () => {
       upstreamError: cursorMessage,
       status: 429,
       errorCode: "rate_limit_exceeded",
+    });
+  });
+
+  test("deferred SSE logging preserves structured cyber_policy status and code", async () => {
+    const entries: RequestLogEntry[] = [];
+    const failedPayload = JSON.stringify({
+      type: "response.failed",
+      response: {
+        status: "failed",
+        error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${failedPayload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-cyber-policy",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      upstreamError: "blocked",
+      status: 400,
+      errorCode: "cyber_policy",
+      closeReason: "terminal",
     });
   });
 

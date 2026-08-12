@@ -266,14 +266,16 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 51 keys, including Opus 5 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(51);
+  test("16. shipped overlay membership: 53 keys, including Opus 5 and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(53);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
       "anthropic/claude-opus-5",
       "cursor/claude-opus-5",
       "kiro/claude-opus-5",
+      "openai-apikey/daybreak-red-latest",
+      "openai-apikey/daybreak-blue-latest",
       "minimax/MiniMax-M2.1-highspeed",
       "minimax-cn/MiniMax-M2.1-highspeed",
       "deepseek/deepseek-chat",
@@ -590,6 +592,35 @@ describe("long-context pricing tiers (#908)", () => {
     expect(est!.cost.total).toBeCloseTo(3.9, 9);
     const short = 300_000 / 1e6 * 5 + 20_000 / 1e6 * 30;
     expect(short).toBeCloseTo(2.1, 9);
+  });
+
+  test("L2b. Daybreak aliases: Blue carries the sol tier, Red carries none", () => {
+    // An alias is priced as its current snapshot, so the shipped rows are the real check.
+    const red = resolveMatchedPrice("openai-apikey", "daybreak-red-latest");
+    const blue = resolveMatchedPrice("openai-apikey", "daybreak-blue-latest");
+    expect(red?.cost4).toEqual({ input: 12.5, output: 75, cacheRead: 1.25, cacheWrite: 15.625 });
+    expect(blue?.cost4).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 });
+    // verified-derived, never verified: the pricing page has no daybreak-* rows, only the
+    // snapshots'. This status is also what keeps `estimated` on downstream, and an alias is
+    // more drift-prone than a normal row because OpenAI can repoint it.
+    expect(red?.status).toBe("verified-derived");
+    expect(blue?.status).toBe("verified-derived");
+
+    const alias = (model: string, usage: Record<string, number>) =>
+      estimateRequestCost({ provider: "openai-apikey", model, usageStatus: "reported", usage });
+    // Blue aliases gpt-5.6-sol, which publishes a long-context row: same exclusive boundary.
+    expect(alias("daybreak-blue-latest", { inputTokens: 272_000, outputTokens: 10_000 })!.contextTier).toBeUndefined();
+    expect(alias("daybreak-blue-latest", { inputTokens: 272_001, outputTokens: 10_000 })!.contextTier).toBe("long");
+    // Red aliases gpt-5.6-cyber, whose four long-context cells are all "-" — no tier at all,
+    // so a large prompt must stay on the standard rate rather than inheriting the family rule.
+    const redOver = alias("daybreak-red-latest", { inputTokens: 272_001, outputTokens: 10_000 })!;
+    expect(redOver.contextTier).toBeUndefined();
+    expect(redOver.cost.input / (272_001 / 1e6)).toBeCloseTo(12.5, 9);
+
+    // The Blue tier is scoped to openai-apikey: Daybreak is not routable on Codex login, so
+    // it must not drift back into the shared two-provider expansion.
+    expect(CONTEXT_TIERS.filter(t => t.modelId === "daybreak-blue-latest").map(t => t.provider)).toEqual(["openai-apikey"]);
+    expect(CONTEXT_TIERS.some(t => t.modelId === "daybreak-red-latest")).toBe(false);
   });
 
   test("L3. threshold reads RAW input, not cache-normalized billable input", () => {

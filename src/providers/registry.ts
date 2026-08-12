@@ -32,6 +32,11 @@ export type InboundWire = "responses" | "chat" | "anthropic";
  */
 export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
 
+export interface ResponsesTerminalRepairPolicy {
+  /** Quiet time after a structurally complete output graph before synthesizing completion. */
+  graceMs: number;
+}
+
 export type ProviderModelDiscoveryScalar = string | number | boolean;
 
 export type ProviderModelDiscoveryPredicate =
@@ -162,6 +167,8 @@ export interface ProviderRegistryEntry {
    * can omit or indefinitely delay the terminal event.
    */
   modelResponsesUpstreamStreaming?: Record<string, boolean>;
+  /** Registry-only repair for a model whose native Responses stream may omit its terminal. */
+  modelResponsesTerminalRepair?: Record<string, ResponsesTerminalRepairPolicy>;
   /**
    * Registry-only client-facing item-id repair policy (#938), filled onto the
    * runtime provider only when the user has no explicit policy (derive.ts);
@@ -187,8 +194,8 @@ export interface ProviderRegistryEntry {
    */
   statelessResponses?: boolean;
   /**
-   * Responses parser requires a matched tool result directly after its call. This is
-   * seeded/backfilled like other fixed upstream wire-contract capabilities.
+   * Responses parser requires an unambiguous call batch and its matched result batch
+   * to stay contiguous. This is seeded/backfilled like other fixed wire capabilities.
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
@@ -293,12 +300,6 @@ const MINIMAX_M3_REASONING_EFFORT_MAP: Record<string, string> = {
 const OPENAI_GPT56_MODELS = ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const OPENAI_GPT56_PRO_MODELS = ["gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"];
 const OPENAI_API_GPT56_CONTEXT_WINDOW = 1_050_000;
-const OPENAI_CODEX_GPT56_CONTEXT_WINDOW = 372_000;
-const OPENAI_GPT56_CONTEXT_WINDOWS = {
-  "gpt-5.6-sol": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
-  "gpt-5.6-terra": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
-  "gpt-5.6-luna": OPENAI_CODEX_GPT56_CONTEXT_WINDOW,
-};
 const OPENAI_API_GPT56_CONTEXT_WINDOWS: Record<string, number> = {
   ...Object.fromEntries([...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_CONTEXT_WINDOW])),
   "gpt-5.5": OPENAI_API_GPT56_CONTEXT_WINDOW,
@@ -313,6 +314,37 @@ const OPENAI_API_GPT56_VIRTUAL_MODELS: Record<string, { wireModelId: string; rea
   "gpt-5.6-luna-pro": { wireModelId: "gpt-5.6-luna", reasoningMode: "pro" },
 };
 const OPENAI_API_GPT56_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * Daybreak program aliases. These `-latest` ids are the stable contract: OpenAI repoints
+ * them at newer snapshots over time (red -> gpt-5.6-cyber, blue -> gpt-5.6-sol as of
+ * 2026-08-11), so registering the ALIAS inherits future model swaps while a pinned
+ * snapshot id would silently go stale. Snapshot ids are deliberately absent here.
+ * Responses-only per both published endpoint tables (`v1/chat/completions` is marked
+ * Not supported) — never add these to a chat-completions provider. Access needs separate
+ * Daybreak approval and provisioning, so neither is ever a default.
+ * Verified 2026-08-11: developers.openai.com/api/docs/models/daybreak-red-latest.md
+ * and .../daybreak-blue-latest.md
+ */
+const OPENAI_DAYBREAK_MODELS = ["daybreak-red-latest", "daybreak-blue-latest"];
+const OPENAI_DAYBREAK_CONTEXT_WINDOWS: Record<string, number> = {
+  "daybreak-red-latest": 400_000,
+  "daybreak-blue-latest": 1_050_000,
+};
+const OPENAI_DAYBREAK_MAX_INPUT_TOKENS: Record<string, number> = {
+  "daybreak-red-latest": 272_000,
+  "daybreak-blue-latest": 922_000,
+};
+/**
+ * Neither Daybreak page publishes a reasoning-effort ladder. An explicit empty array means
+ * "expose no effort control"; OMITTING the key would instead fall back to the full routed
+ * ladder (`configuredReasoningEfforts` returns undefined -> `applyReasoningLevels` uses
+ * ROUTED_REASONING_LEVELS), which would advertise efforts the models never documented.
+ * `noReasoningModels` is wrong here: both pages document reasoning-token support, so these
+ * are reasoning models with no *selectable* ladder.
+ */
+const OPENAI_DAYBREAK_REASONING_EFFORTS: Record<string, string[]> = Object.fromEntries(
+  OPENAI_DAYBREAK_MODELS.map(id => [id, [] as string[]]),
+);
 const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
 // OpenRouter's live /endpoints routes report 1,050,000; keep this separate from the
 // unverified OpenAI API-key seed. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
@@ -1053,6 +1085,45 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
   },
   {
+    // Nous Portal — Nous Research subscription gateway (same backend Hermes Agent
+    // uses). OAuth is a device grant (src/oauth/nous.ts): the access token IS the
+    // per-request inference JWT (scope inference:invoke), refresh tokens are
+    // single-use and rotated on every refresh. Catalog is a mix of paid models
+    // (billed against the Portal subscription) and `:free` slugs (e.g.
+    // tencent/hy3:free, stepfun/step-3.7-flash:free, inclusionai/ling-3.0-flash:free);
+    // free-tier gating is decided live by the Portal per account, so discovery
+    // from the signed-in account is authoritative; the static seed below is the
+    // logged-out fallback and only lists free models verified on a real account
+    // (2026-08-10): the Portal free list is authoritative and currently has
+    // exactly 4 :free models: tencent/hy3:free, poolside/laguna-s-2.1:free,
+    // stepfun/step-3.7-flash:free, poolside/laguna-xs-2.1:free.
+    // inclusionai/ling-3.0-flash:free was removed from the Portal free list
+    // (404 on the inference API since 2026-08-07) and must not be seeded.
+    id: "nous",
+    label: "Nous Portal",
+    adapter: "openai-chat",
+    baseUrl: "https://inference-api.nousresearch.com/v1",
+    authKind: "oauth",
+    oauthId: "nous",
+    featured: true,
+    // Mixed free + paid provider: the free tier is per-model (the `:free`
+    // slugs), not a property of the whole provider, so freeTier stays false to
+    // avoid implying every model is free.
+    freeTier: false,
+    dashboardUrl: "https://portal.nousresearch.com",
+    defaultModel: "tencent/hy3:free",
+    liveModels: true,
+    models: ["tencent/hy3:free", "poolside/laguna-s-2.1:free", "stepfun/step-3.7-flash:free", "poolside/laguna-xs-2.1:free"],
+    modelDiscovery: {
+      // Resolves against effectiveBaseUrl (registry baseUrl .../v1) to the same
+      // canonical endpoint https://inference-api.nousresearch.com/v1/models.
+      path: "models",
+      maxResponseBytes: 262_144,
+      maxModels: 512,
+    },
+    note: "Nous Research subscription gateway. OAuth device login with your own Portal account; mixed paid + :free models discovered live (fallback seed 2026-08-10: tencent/hy3:free, poolside/laguna-s-2.1:free, stepfun/step-3.7-flash:free, poolside/laguna-xs-2.1:free).",
+  },
+  {
     id: "openai-apikey",
     label: "OpenAI API",
     adapter: "openai-responses",
@@ -1062,16 +1133,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: true,
     dashboardUrl: "https://platform.openai.com/api-keys",
     defaultModel: "gpt-5.5",
-    models: ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS],
+    models: ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS, ...OPENAI_DAYBREAK_MODELS],
     liveModels: true,
-    modelContextWindows: OPENAI_API_GPT56_CONTEXT_WINDOWS,
-    modelMaxInputTokens: OPENAI_API_GPT56_MAX_INPUT_TOKENS,
+    modelContextWindows: { ...OPENAI_API_GPT56_CONTEXT_WINDOWS, ...OPENAI_DAYBREAK_CONTEXT_WINDOWS },
+    modelMaxInputTokens: { ...OPENAI_API_GPT56_MAX_INPUT_TOKENS, ...OPENAI_DAYBREAK_MAX_INPUT_TOKENS },
     modelInputModalities: Object.fromEntries(
-      ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, ["text", "image"]]),
+      ["gpt-5.5", ...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS, ...OPENAI_DAYBREAK_MODELS]
+        .map(id => [id, ["text", "image"]]),
     ),
-    modelReasoningEfforts: Object.fromEntries(
-      [...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_REASONING_EFFORTS]),
-    ),
+    modelReasoningEfforts: {
+      ...Object.fromEntries(
+        [...OPENAI_GPT56_MODELS, ...OPENAI_GPT56_PRO_MODELS].map(id => [id, OPENAI_API_GPT56_REASONING_EFFORTS]),
+      ),
+      ...OPENAI_DAYBREAK_REASONING_EFFORTS,
+    },
     virtualModels: OPENAI_API_GPT56_VIRTUAL_MODELS,
   },
   {
@@ -1102,6 +1177,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "opencode-go", label: "opencode go", adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1",
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
+    /* [Decision Log]
+    - 목적과 의도: Route GPT 5.6 Luna to the Responses endpoint that OpenCode Go documents for that exact model.
+    - 기존 구현 및 제약 조건: The provider is mixed-wire but its provider-wide `openai-chat` adapter sent Luna to `/chat/completions`; explicit user `modelAdapters` entries must remain authoritative.
+    - 검토한 주요 대안: Change the whole provider to Responses; infer the wire from model-family names; add one registry-only exact-model default.
+    - 선택한 방식: Declare only `gpt-5.6-luna` as `openai-responses` through the existing registry default mechanism.
+    - 다른 대안 대신 이 방식을 선택한 이유: OpenCode Go documents sibling models on Chat or Anthropic endpoints, and an exact registry default preserves both those routes and explicit opt-out precedence.
+    - 장점, 단점 및 영향: Luna reaches `/responses` from every inbound surface without changing siblings; a future upstream endpoint change requires an evidence-backed registry update.
+    */
+    modelWireDefaults: { "gpt-5.6-luna": "openai-responses" },
     modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
     modelInputModalities: { "kimi-k3": ["text", "image"] },
     modelReasoningEfforts: {
@@ -1352,6 +1436,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // for providers that need it — re-adding one line here restores the old policy.
     // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
     // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
+    // Current official streams normally carry a real terminal; retain a narrow grace
+    // repair for the historical shape that closes after a complete graph without one.
+    modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 } },
     // DeepSeek's Responses route emits bare UUID item ids, which leave Codex
     // clients stuck on an uncommitted turn (#938). Client-facing only — raw
     // continuation snapshots keep the upstream ids.
@@ -1375,7 +1462,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // server." https://api-docs.deepseek.com/api/create-response/
     statelessResponses: true,
     // DeepSeek rejects a valid Codex continuation when hook-provided developer
-    // context is persisted between a call and its matching result (#1292).
+    // context splits a call from its result (#1292); parallel calls remain one
+    // reasoning-bearing assistant batch rather than being split per pair (#1477).
     requiresAdjacentResponsesToolResults: true,
     /* [Decision Log]
     - 목적: DeepSeek V4 thinking mode multi-turn/tool-call requests must replay prior assistant reasoning_content.
@@ -1719,6 +1807,49 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       },
     },
     note: "Authenticated first page of popular chat models only; live discovery admits at most 100 plan-available, ungated rows whose metadata explicitly reports tool use.",
+  },
+  {
+    // Primary sources checked 2026-08-08:
+    // - https://novita.ai/docs/api-reference/model-apis-llm-create-chat-completion and
+    //   https://novita.ai/docs/api-reference/model-apis-llm-list-models document the fixed
+    //   OpenAI-compatible Chat Completions and model-list endpoints.
+    // - https://novita.ai/docs/api-reference/basic-authentication documents Bearer API keys.
+    // - https://novita.ai/legal/terms-of-service (updated 2026-08-05) expressly covers AI
+    //   inference APIs, third-party Model Providers, and customer Input/Output processing.
+    // - https://huggingface.co/docs/inference-providers/main/providers/novita lists Novita as an
+    //   Inference Providers partner for chat/VLM traffic, independently supporting routing use.
+    // - https://tsdr.uspto.gov/statusview/sn99255805 is the official use-in-commerce record
+    //   connecting the NOVITA AI mark to Hivemind Labs, Inc., a Delaware corporation. The mark
+    //   application is now abandoned; it is cited only as the public operator-identity record.
+    // Maintainer: @olddonkey; no affiliation with Novita AI or Hivemind Labs, Inc.
+    id: "novita",
+    label: "Novita AI",
+    baseUrl: "https://api.novita.ai/openai/v1",
+    adapter: "openai-chat",
+    authKind: "key",
+    dashboardUrl: "https://novita.ai/settings/key-management",
+    liveModels: true,
+    preserveCustomDestination: true,
+    // The live catalog is public even though the reference shows an Authorization header, so a
+    // successful model fetch cannot prove that a supplied key is valid.
+    apiKeyValidation: "unknown",
+    // The request reference documents tools but not a provider-wide parallel-tool contract.
+    parallelToolCalls: false,
+    // Novita exposes model-specific thinking flags, not an OpenAI reasoning_effort contract.
+    reasoningEfforts: [],
+    modelDiscovery: {
+      path: "models",
+      maxResponseBytes: 512 * 1024,
+      maxModels: 256,
+      filter: {
+        // Require both Novita's chat classification and the exact configured wire endpoint.
+        allOf: [
+          { path: ["model_type"], equalsAny: ["chat"] },
+          { path: ["endpoints"], containsAny: ["chat/completions"] },
+        ],
+      },
+    },
+    note: "Public live catalog filtered to rows that explicitly report chat type and Chat Completions support; key validity remains unknown until an authenticated inference request.",
   },
   // FREEZE 2026-07-10: exact serverless ids remain auth-gated/unverified. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://api.together.xyz/settings/api-keys" },
@@ -2378,6 +2509,20 @@ export function providerModelResponsesUpstreamStreaming(
   const entry = getProviderRegistryEntry(id);
   if (!entry?.modelResponsesUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
   return entry.modelResponsesUpstreamStreaming[modelId.trim().toLowerCase()];
+}
+
+/** Resolve a registry-only terminal-repair policy for native Responses streams. */
+export function providerModelResponsesTerminalRepair(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+  modelId: string,
+): ResponsesTerminalRepairPolicy | undefined {
+  const entry = getProviderRegistryEntry(id);
+  if (!entry?.modelResponsesTerminalRepair || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  const policy = entry.modelResponsesTerminalRepair[modelId.trim().toLowerCase()];
+  const graceMs = Math.floor(policy?.graceMs ?? 0);
+  if (!Number.isFinite(graceMs) || graceMs <= 0) return undefined;
+  return { graceMs };
 }
 
 /**

@@ -117,6 +117,19 @@ describe("openai-chat non-stream response hardening", () => {
     expect(events).toEqual([{ type: "error", message: "upstream response contained invalid choices" }]);
   });
 
+  test("treats null tool calls as absent", async () => {
+    const adapter = createOpenAIChatAdapter(provider());
+    const events = await adapter.parseResponse!(new Response(JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "ok", tool_calls: null } }],
+      usage: { prompt_tokens: 7, completion_tokens: 2 },
+    })));
+
+    expect(events).toEqual([
+      { type: "text_delta", text: "ok" },
+      { type: "done", usage: { inputTokens: 7, outputTokens: 2 } },
+    ]);
+  });
+
   test("rejects malformed nested tool calls without throwing", async () => {
     const adapter = createOpenAIChatAdapter(provider());
     for (const toolCalls of [
@@ -178,6 +191,21 @@ describe("openai-chat stream response hardening", () => {
 
     expect(events.at(-1)).toEqual({ type: "error", message: "malformed upstream SSE data frame" });
     expect(events.some(event => event.type === "done")).toBe(false);
+  });
+
+  test("treats null streaming tool calls as padding", async () => {
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      'data: {"choices":[{"delta":{"content":"ok","tool_calls":null}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":2}}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    const events = await collect(adapter.parseStream(response));
+    expect(events).toEqual([
+      { type: "text_delta", text: "ok" },
+      { type: "done", usage: { inputTokens: 7, outputTokens: 2 } },
+    ]);
   });
 
   test("malformed nested streaming tool calls are terminal errors", async () => {
@@ -434,6 +462,29 @@ describe("openai-chat response_format emission", () => {
     expect(bodyOf(schemaless).response_format).toEqual({
       type: "json_schema",
       json_schema: { name: "answer" },
+    });
+  });
+
+  test("omits response_format only for an explicitly opted-out model", () => {
+    const adapter = createOpenAIChatAdapter(provider({
+      noStructuredOutputModels: ["test-model"],
+    }));
+    const options: OcxParsedRequest["options"] = {
+      textFormat: { type: "json_schema", name: "answer", schema: { type: "object" }, strict: true },
+    };
+
+    const optedOut = adapter.buildRequest({ ...parsed(), options });
+    const supportedSibling = adapter.buildRequest({ ...parsed(), modelId: "supported-model", options });
+    const colonVariant = adapter.buildRequest({ ...parsed(), modelId: "test-model:structured", options });
+
+    expect(bodyOf(optedOut).response_format).toBeUndefined();
+    expect(bodyOf(supportedSibling).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer", schema: { type: "object" }, strict: true },
+    });
+    expect(bodyOf(colonVariant).response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "answer", schema: { type: "object" }, strict: true },
     });
   });
 });

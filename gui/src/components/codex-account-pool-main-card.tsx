@@ -7,6 +7,7 @@ import type { CodexAccountEntry } from "./codex-account-pool-types";
 import type { CodexAccountModeState } from "../codex-multi-state";
 import type { TFn } from "../i18n/shared";
 import type { NoticeTone } from "../ui";
+import { useI18n } from "../i18n/shared";
 import {
   doctorCopyButtonLabel,
   formatOAuthHealthLabel,
@@ -16,6 +17,7 @@ import {
   oauthHealthShowsDoctor,
   oauthHealthShowsReauth,
 } from "../oauth-health-display";
+import { formatCostUsd, formatTokenCount } from "../provider-workspace/usage";
 
 export function CodexAccountPoolMainCard({
   t,
@@ -60,6 +62,7 @@ export function CodexAccountPoolMainCard({
   onCopyDoctor?: (accountId: string) => void;
   doctorCopyOutcomeFor?: (accountId: string) => "copied" | "unavailable" | null;
 }) {
+  const { locale } = useI18n();
   const mainFallbackLabel = t("codexAuth.codexApp");
   const mainId = main?.id ?? "__main__";
   const mainSwitchEntry: CodexAccountEntry = {
@@ -135,6 +138,12 @@ export function CodexAccountPoolMainCard({
         <span className="card-right"><IconLock width={14} /> {t("codexAuth.appLogin")}</span>
       </div>
       <div className="card-sub">{main?.email || t("codexAuth.appLogin")}{main?.plan ? ` · ${main.plan}` : ""}</div>
+      <div className="card-sub faint">{t("codexAuth.logLabel")}: <code>{main?.logLabel ?? "main"}</code></div>
+      {main?.usage30d && (
+        <div className="card-sub faint" title={t("logs.metric.estimatedCostTitle")}>
+          {t("usage.card.totalTokens")}: {formatTokenCount(main.usage30d.totalTokens, locale)} · {t("pws.estimatedCost")}: {formatCostUsd(main.usage30d.estimatedCostUsd, locale)} · {t("usage.coverage.measured")}: {Math.round(main.usage30d.usageCoverageRatio * 100)}%
+        </div>
+      )}
       {healthSummary && (
         <div className="card-sub faint">{healthSummary}</div>
       )}

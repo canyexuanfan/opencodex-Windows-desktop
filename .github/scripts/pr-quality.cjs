@@ -33,11 +33,12 @@ const REVIEW_READINESS_ITEMS = [
 
 /**
  * Which checklist box each bot-verifiable claim maps to. The order must stay
- * in sync with REVIEW_READINESS_ITEMS: index 0 is the CI claim, index 1 is
- * the latest-dev claim, and index 2 is the Codex/CodeRabbit findings claim.
+ * in sync with REVIEW_READINESS_ITEMS: index 1 is the latest-dev claim and
+ * index 2 is the Codex/CodeRabbit findings claim. Index 0 (local CI) is an
+ * author attestation only — fork contributors cannot start repository CI — so
+ * the gate never disproves it; head-drift still resets every box.
  */
 const REVIEW_READINESS_CLAIM_INDEX = {
-  ci_green: 0,
   latest_dev: 1,
   review_findings: 2
 };

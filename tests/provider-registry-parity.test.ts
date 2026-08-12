@@ -31,7 +31,7 @@ function nativeTemplate(): Record<string, unknown> {
 
 const EXPECTED_KEY_PROVIDER_IDS = [
   "anthropic-apikey", "openai-apikey", "umans", "opencode-go", "neuralwatt", "openrouter", "cline-pass", "cline", "orcarouter", "bizrouter", "groq", "google", "google-vertex", "azure-openai",
-  "deepseek", "cerebras", "chutes", "deepinfra", "hyperbolic", "nscale", "vultr", "baseten", "commandcode", "sambanova", "nebius", "digitalocean", "scaleway", "featherless", "together", "fireworks", "firepass", "moonshot",
+  "deepseek", "cerebras", "chutes", "deepinfra", "hyperbolic", "nscale", "vultr", "baseten", "commandcode", "sambanova", "nebius", "digitalocean", "scaleway", "featherless", "novita", "together", "fireworks", "firepass", "moonshot",
   "huggingface", "nvidia", "venice", "zai", "zhipu-bigmodel", "zhipu-bigmodel-coding", "nanogpt", "synthetic", "siliconflow", "qwen-cloud", "tencent-coding-plan",
   "volcengine", "volcengine-coding-plan", "volcengine-agent-plan", "qianfan", "alibaba", "alibaba-token-plan", "alibaba-token-plan-intl", "parallel", "zenmux", "litellm", "ollama-cloud", "mistral",
   "minimax", "minimax-cn", "kimi-code", "opencode-zen", "vercel-ai-gateway",
@@ -83,7 +83,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-glm-5.2"]).toEqual(["text"]);
-    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro"]);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].models).toEqual(["gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro", "daybreak-red-latest", "daybreak-blue-latest"]);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-sol"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-terra"]).toBe(1_050_000);
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["gpt-5.6-luna"]).toBe(1_050_000);
@@ -92,11 +92,26 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelInputModalities?.["gpt-5.5"]).toEqual(["text", "image"]);
     expect((KEY_LOGIN_PROVIDERS["openai-apikey"] as unknown as { virtualModels?: unknown }).virtualModels).toBeUndefined();
     const apiRegistry = PROVIDER_REGISTRY.find(entry => entry.id === "openai-apikey")!;
-    expect(apiRegistry.models).toHaveLength(8);
+    expect(apiRegistry.models).toHaveLength(10);
     expect(Object.keys(apiRegistry.virtualModels ?? {}).sort()).toEqual([
       "gpt-5.6-luna-pro", "gpt-5.6-sol-pro", "gpt-5.6-terra-pro",
     ]);
     expect(apiRegistry.models).not.toContain("gpt-5.6-pro");
+    // Daybreak aliases: the `-latest` alias is the stable id OpenAI repoints, so the
+    // snapshot ids must NOT appear. Red tracks gpt-5.6-cyber (400k/272k), Blue tracks
+    // gpt-5.6-sol (1.05M/922k). Verified 2026-08-11 against the official model pages.
+    expect(apiRegistry.models).not.toContain("gpt-5.6-cyber");
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["daybreak-red-latest"]).toBe(400_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelMaxInputTokens?.["daybreak-red-latest"]).toBe(272_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelContextWindows?.["daybreak-blue-latest"]).toBe(1_050_000);
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelMaxInputTokens?.["daybreak-blue-latest"]).toBe(922_000);
+    for (const alias of ["daybreak-red-latest", "daybreak-blue-latest"]) {
+      expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelInputModalities?.[alias]).toEqual(["text", "image"]);
+      // Explicit [] means "expose no effort control". An UNDEFINED entry would instead fall
+      // back to the full routed ladder, advertising efforts neither page documents.
+      expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelReasoningEfforts?.[alias]).toEqual([]);
+    }
+    expect(KEY_LOGIN_PROVIDERS["openai-apikey"].modelReasoningEfforts?.["gpt-5.6-sol"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
     const derived = deriveKeyLoginMap()["openai-apikey"];
     expect(derived.modelMaxInputTokens).not.toBe(apiRegistry.modelMaxInputTokens);
     expect(KEY_LOGIN_PROVIDERS.openrouter.models).toContain("anthropic/claude-sonnet-5");
@@ -476,7 +491,22 @@ describe("provider registry parity", () => {
     expect(nvidia?.freeTier).toBe(true);
     expect(nvidia?.authKind).toBe("key");
     expect(nvidia?.keyOptional).toBeUndefined();
+    // nous is a MIXED free/paid provider: the free tier is per-model (the
+    // `:free` slugs), not a property of the whole provider, so it is not in
+    // the provider-level freeTier list (see review feedback on PR #1397).
     expect(freeTierProviders).toEqual(["scaleway", "nvidia", "cloudflare-workers-ai"]);
+  });
+
+  test("nous exposes free models at model level, not provider level", () => {
+    const nous = PROVIDER_REGISTRY.find(entry => entry.id === "nous");
+    expect(nous?.freeTier).toBe(false);
+    const freeSlugs = (nous?.models ?? []).filter(m => m.endsWith(":free"));
+    expect(freeSlugs).toEqual([
+      "tencent/hy3:free",
+      "poolside/laguna-s-2.1:free",
+      "stepfun/step-3.7-flash:free",
+      "poolside/laguna-xs-2.1:free",
+    ]);
   });
 
   test("freeTier propagates through config seed, enrich backfill, and presets without overwriting user config", async () => {
@@ -687,7 +717,7 @@ describe("provider registry parity", () => {
   test("GUI preset projection preserves current featured set plus key catalog and custom", () => {
     const featured = deriveFeaturedProviderIds();
     expect(featured).toEqual([
-      "openai", "xai", "command-code", "anthropic", "anthropic-apikey", "kimi", "openai-apikey", "umans", "opencode-go", "openrouter",
+      "openai", "xai", "command-code", "anthropic", "anthropic-apikey", "kimi", "nous", "openai-apikey", "umans", "opencode-go", "openrouter",
       "groq", "google", "azure-openai", "ollama", "vllm", "lm-studio", "opencode-free",
       "mimo-free",
     ]);

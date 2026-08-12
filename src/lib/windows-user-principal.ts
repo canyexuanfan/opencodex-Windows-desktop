@@ -20,11 +20,71 @@
  * would mean passing an absolute deadline through the runner interface.
  */
 
-import { resolveTrustedWindowsPowerShellExe } from "./windows-elevation";
+import { existsSync } from "node:fs";
+import { win32 as windowsPath } from "node:path";
+
+import {
+  resolveTrustedWindowsPowerShellExe,
+  WindowsSystemDirectoryFfiUnavailableError,
+} from "./windows-elevation";
 
 const SID_PATTERN = /^S-1-(?:\d+-)+\d+$/i;
 const SID_EXPRESSION =
   "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value";
+const DEFAULT_WINDOWS_ARM64_POWERSHELL = windowsPath.join(
+  "C:\\Windows\\System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
+
+type PrincipalExecutableResolution = Readonly<{
+  platform: NodeJS.Platform;
+  arch: string;
+  resolveTrusted: () => string;
+  pathExists: (path: string) => boolean;
+}>;
+
+/**
+ * Bun's Windows ARM64 build cannot currently execute the `bun:ffi` call used
+ * by the general System32 resolver. The ACL identity lookup has a narrower
+ * authority than the elevation helpers: it starts one non-elevated PowerShell
+ * command and accepts only a SID-shaped result. Keep its fallback equally
+ * narrow by using the fixed, OS-protected default installation path only.
+ *
+ * Environment and PATH lookup are deliberately absent. A Windows installation
+ * outside C:\\Windows keeps failing closed rather than executing a binary chosen
+ * by caller-controlled `SystemRoot`, `WINDIR`, or `PATH` values.
+ */
+function resolveWindowsPrincipalPowerShellExecutable(
+  resolution: PrincipalExecutableResolution = {
+    platform: process.platform,
+    arch: process.arch,
+    resolveTrusted: resolveTrustedWindowsPowerShellExe,
+    pathExists: existsSync,
+  },
+): string {
+  try {
+    return resolution.resolveTrusted();
+  } catch (error) {
+    if (
+      !(error instanceof WindowsSystemDirectoryFfiUnavailableError) ||
+      resolution.platform !== "win32" ||
+      resolution.arch !== "arm64" ||
+      !resolution.pathExists(DEFAULT_WINDOWS_ARM64_POWERSHELL)
+    ) {
+      throw error;
+    }
+    return DEFAULT_WINDOWS_ARM64_POWERSHELL;
+  }
+}
+
+/** Test-only dependency-injected view of the Windows ARM64 executable boundary. */
+export function resolveWindowsPrincipalPowerShellExecutableForTests(
+  resolution: PrincipalExecutableResolution,
+): string {
+  return resolveWindowsPrincipalPowerShellExecutable(resolution);
+}
 
 export interface WindowsPrincipalLookupResult {
   success: boolean;
@@ -52,7 +112,7 @@ const POWERSHELL_ARGS = [
 ] as const;
 
 function windowsPrincipalPowerShellCommand(): string[] {
-  return [resolveTrustedWindowsPowerShellExe(), ...POWERSHELL_ARGS];
+  return [resolveWindowsPrincipalPowerShellExecutable(), ...POWERSHELL_ARGS];
 }
 
 /** Test-only readback of the exact trusted executable and static arguments. */

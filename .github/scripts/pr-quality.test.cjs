@@ -586,16 +586,16 @@ describe("uncheckReviewReadinessBoxes", () => {
 
   it("unchecks only the requested boxes", () => {
     const body = uncheckReviewReadinessBoxes(checkedBody, [
-      REVIEW_READINESS_CLAIM_INDEX.ci_green,
+      REVIEW_READINESS_CLAIM_INDEX.latest_dev,
     ]);
-    assert.ok(body.includes("- [ ] All CI tests are green on my local testing."));
-    assert.ok(body.includes("- [x] I pushed my PR to the latest dev commit."));
+    assert.ok(body.includes("- [x] All CI tests are green on my local testing."));
+    assert.ok(body.includes("- [ ] I pushed my PR to the latest dev commit."));
     assert.ok(body.includes("- [x] My PR is ready for review."));
   });
 
   it("can uncheck several boxes at once", () => {
     const body = uncheckReviewReadinessBoxes(checkedBody, [
-      REVIEW_READINESS_CLAIM_INDEX.ci_green,
+      0,
       REVIEW_READINESS_CLAIM_INDEX.latest_dev,
     ]);
     assert.ok(body.includes("- [ ] All CI tests are green on my local testing."));

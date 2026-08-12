@@ -15,6 +15,10 @@ import {
   drainStorageWorkers,
 } from "../storage/worker-lifecycle";
 import {
+  acquireServerResourceOwner,
+  type ServerResourceOwnerLease,
+} from "../lib/server-resource-ownership";
+import {
   startMemoryWatchdog,
   type MemoryWatchdog,
 } from "./memory-watchdog";
@@ -29,6 +33,7 @@ type ProcessLoops = {
 type LeaseOwner = {
   token: symbol;
   applyPolicy: PolicyApply;
+  resources: ServerResourceOwnerLease;
 };
 
 export type ServerBackgroundLifecycleLease = {
@@ -103,6 +108,7 @@ function removeOwner(owner: LeaseOwner): boolean {
 
 function releaseOwnerSynchronously(owner: LeaseOwner): "inactive" | "shared" | "last" {
   if (!removeOwner(owner)) return "inactive";
+  owner.resources.release();
   const nextOwner = owners.at(-1);
   if (nextOwner) {
     setLivePolicyOwner(nextOwner.applyPolicy);
@@ -117,7 +123,8 @@ function releaseOwnerSynchronously(owner: LeaseOwner): "inactive" | "shared" | "
  *
  * The first live server starts the loops. Later servers only add a reference and
  * become the current policy sink; out-of-order release restores the newest
- * remaining sink. The final release owns timer and Worker teardown.
+ * remaining sink. The final release owns timer and Worker teardown. Resources
+ * registered while this server starts are released with this exact lease.
  */
 export function acquireServerBackgroundLifecycle(
   applyPolicy: PolicyApply,
@@ -129,13 +136,19 @@ export function acquireServerBackgroundLifecycle(
   const owner: LeaseOwner = {
     token: Symbol("server-background-lifecycle"),
     applyPolicy,
+    resources: acquireServerResourceOwner(),
   };
-  if (!processLoops) {
-    processLoops = startProcessLoops(applyPolicy);
-  } else {
-    setLivePolicyOwner(applyPolicy);
+  try {
+    if (!processLoops) {
+      processLoops = startProcessLoops(applyPolicy);
+    } else {
+      setLivePolicyOwner(applyPolicy);
+    }
+    owners.push(owner);
+  } catch (error) {
+    owner.resources.release();
+    throw error;
   }
-  owners.push(owner);
 
   let releaseFlight: Promise<void> | null = null;
   return {

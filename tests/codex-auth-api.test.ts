@@ -8,7 +8,7 @@ import {
   getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
 } from "../src/server/lifecycle";
-import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../src/codex/account-label";
+import { CODEX_ACCOUNT_LOG_LABEL_RE, fallbackCodexAccountLogLabel } from "../src/codex/account-label";
 import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
@@ -978,13 +978,28 @@ describe("codex-auth API", () => {
       id: "pool-safe",
       email: "p***n@example.test",
       plan: "Plus",
-      logLabel: "work",
+      logLabel: fallbackCodexAccountLogLabel("pool-safe"),
       isMain: false,
       hasCredential: true,
     });
     expect(pool).not.toHaveProperty("chatgptAccountId");
     expect(JSON.stringify(pool)).not.toContain("acct-config-secret");
     expect(JSON.stringify(pool)).not.toContain("acct-credential-secret");
+  });
+
+  test("GET /api/codex-auth/accounts exposes the effective label for legacy pool and main accounts", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, { id: "legacy-pool", email: "legacy@example.test" });
+    updateAccountQuota("legacy-pool", 10);
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: CodexAuthAccountDto[] };
+
+    expect(data.accounts.find(account => account.id === "legacy-pool")?.logLabel)
+      .toBe(fallbackCodexAccountLogLabel("legacy-pool"));
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.logLabel).toBe("main");
+    expect(config.codexAccounts?.[0]?.logLabel).toBeUndefined();
   });
 
   test("POST /api/codex-auth/accounts disables manual import by default before writing credentials", async () => {

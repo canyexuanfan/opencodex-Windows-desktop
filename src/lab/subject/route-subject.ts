@@ -34,6 +34,7 @@ export function buildRouteSubjectV1(
   routeContext: LabRouteContext,
   destination: LabDestinationV1,
   configDir?: string,
+  installationSalt?: Uint8Array | string,
 ): RouteSubjectV1 {
   if (!routeContext.providerInstanceKey) throw new Error("harness_failure: provider instance identity is required");
   if (!/^[0-9a-f]{64}$/.test(routeContext.opencodexCompatibilityVersion)) {
@@ -44,7 +45,7 @@ export function buildRouteSubjectV1(
   if (adapterValue !== routeContext.effectiveAdapter || protocolValue !== routeContext.upstreamProtocol) {
     throw new Error("harness_failure: behavior resolver output does not match exact route");
   }
-  const salt = readInstallationSalt(configDir);
+  const salt = installationSalt ?? readInstallationSalt(configDir);
   const providerInstanceFingerprint = localFingerprint("providerInstance", routeContext.providerInstanceKey, salt);
   const dependencies = canonicalDependencies(routeContext.dependencies);
   const subject: RouteSubjectV1 = {

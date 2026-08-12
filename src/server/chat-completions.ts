@@ -25,7 +25,7 @@ import type { OcxConfig } from "../types";
 import { readJsonRequestBody } from "./request-decompress";
 import {
   addFinalRequestLog,
-  httpStatusForTerminalStatus,
+  httpStatusForRequestLogTerminal,
   recordFirstOutput,
   type RequestLogContext,
   type RequestLogEntry,
@@ -216,7 +216,7 @@ async function handleChatCompletionsWithBudget(
     inboundWire: "chat",
     translatorBudget,
     ...(logIds ? { onFirstOutput: () => recordFirstOutput(logCtx, logIds.start) } : {}),
-    onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForTerminalStatus(status), { terminalStatus: status, closeReason: "terminal" }),
+    onNativePassthroughTerminal: status => finalizeNativeLog(httpStatusForRequestLogTerminal(status, logCtx), { terminalStatus: status, closeReason: "terminal" }),
     onNativePassthroughCancel: () => finalizeNativeLog(499, { closeReason: "client_cancel" }),
   });
 

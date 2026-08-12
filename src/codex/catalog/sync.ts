@@ -29,9 +29,10 @@ import type { NormalizedComboConfig } from "../../combos/types";
 import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
+import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 
 
-import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
+import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawCatalog, RawEntry } from "./parsing";
 import { applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
 import {
@@ -190,9 +191,9 @@ export function effectiveSubagentRoster(
   return { candidates, advertised, excluded };
 }
 
-export function finishUpstreamNativeEntry(clone: RawEntry, priority: number): RawEntry {
+export function finishUpstreamNativeEntry(clone: RawEntry, priority: number, contextCap?: number): RawEntry {
   if (priority !== 9) clone.priority = priority;
-  applyNativeOpenAiContextOverride(clone);
+  applyNativeOpenAiContextOverride(clone, contextCap);
   // GPT-5.6 natives keep their exact upstream ladders (e.g. luna has max but no ultra).
   // Older natives (gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex-spark) get mock max + ultra
   // (wire-clamped to xhigh). Ultra is always advertised regardless of v2 toggle.
@@ -243,6 +244,7 @@ export function deriveEntry(
   priority: number,
   model?: CatalogModel,
   exactComboSlugs: ReadonlySet<string> = new Set(),
+  contextCap?: number,
 ): RawEntry {
   const preserveExact = isExactComboCatalogModel(model, exactComboSlugs);
   const isRouted = model !== undefined;
@@ -251,7 +253,7 @@ export function deriveEntry(
     // reasoning ladder — e.g. luna has no ultra — default effort, identity, model_messages)
     // instead of cloning an older template.
     const upstream = upstreamNativeEntry(slug);
-    if (upstream) return finishUpstreamNativeEntry(upstream, priority);
+    if (upstream) return finishUpstreamNativeEntry(upstream, priority, contextCap);
   }
   if (template) {
     const e = JSON.parse(JSON.stringify(template)) as RawEntry;
@@ -286,7 +288,7 @@ export function deriveEntry(
       applyCatalogModelMetadata(e, model);
       if (model?.catalogKind) e.opencodex_catalog_kind = model.catalogKind;
     } else {
-      applyNativeOpenAiContextOverride(e);
+      applyNativeOpenAiContextOverride(e, contextCap);
       if (isGpt56NativeSlug(slug)) ensureGpt56ReasoningLevels(e);
       else ensureUltraReasoningLevel(e);
      // Non-5.6 natives (5.5, 5.4, 5.4-mini, spark) do not support responses-lite;
@@ -314,6 +316,7 @@ export function deriveEntry(
     ...(isRouted ? { web_search_tool_type: "text_and_image", supports_search_tool: true } : {}),
   };
   if (isRouted) {
+    applyRoutedCodexToolMode(entry);
     applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
   }
   else {
@@ -323,7 +326,7 @@ export function deriveEntry(
   if (model && isRouted) applyCatalogMetadata(entry, model.provider, model.id, model.contextCap);
   applyCatalogModelMetadata(entry, model);
   if (model?.catalogKind) entry.opencodex_catalog_kind = model.catalogKind;
-  if (!isRouted) applyNativeOpenAiContextOverride(entry);
+  if (!isRouted) applyNativeOpenAiContextOverride(entry, contextCap);
   return ensureStrictCatalogFields(normalizeServiceTiers(entry), {
     preserveExactInputModalities: preserveExact,
     isRouted,
@@ -342,6 +345,7 @@ export interface ObservedCatalogEntryBuildInput {
   readonly suppressedBareNativeSlugs: ReadonlySet<string>;
   readonly disabledNativeAccountSlugs: ReadonlySet<string>;
   readonly multiAgentV2Enabled: boolean;
+  readonly openaiContextCap?: number;
 }
 
 /** Build entries with the process-observed Codex feature state. */
@@ -356,6 +360,7 @@ export function buildCatalogEntries(
   accountSelectors: readonly string[] = [],
   suppressedBareNativeSlugs: ReadonlySet<string> = new Set(),
   disabledNativeAccountSlugs: ReadonlySet<string> = new Set(),
+  contextCap?: number,
 ): RawEntry[] {
   return buildCatalogEntriesFromObservedState({
     template,
@@ -369,6 +374,7 @@ export function buildCatalogEntries(
     suppressedBareNativeSlugs,
     disabledNativeAccountSlugs,
     multiAgentV2Enabled: isMultiAgentV2Enabled(),
+    openaiContextCap: contextCap,
   });
 }
 
@@ -385,6 +391,7 @@ export function buildCatalogEntriesFromObservedState({
   suppressedBareNativeSlugs,
   disabledNativeAccountSlugs,
   multiAgentV2Enabled,
+  openaiContextCap,
 }: ObservedCatalogEntryBuildInput): RawEntry[] {
   // Codex's models-manager sorts by `priority` ASC and advertises the first 5 picker-visible
   // models to spawn_agent (sort_by_key(priority) + MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT=5). Catalog
@@ -419,7 +426,7 @@ export function buildCatalogEntriesFromObservedState({
     .filter(model => model.provider === COMBO_NAMESPACE)
     .map(catalogModelSlug));
   for (const slug of gptSlugs) {
-    const native = deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9);
+    const native = deriveEntry(template, slug, "OpenAI native model (Codex OAuth passthrough).", 9, undefined, new Set(), openaiContextCap);
     if (rank.has(slug)) native.priority = rank.get(slug)!;
     nativeEntries.push(native);
     const nativeAlias = nativeAliasesBySlug.get(slug);
@@ -622,6 +629,7 @@ export interface ObservedCatalogMergeInput {
   readonly accountBoundEntries: readonly RawEntry[];
   readonly suppressedBareNativeSlugs?: ReadonlySet<string>;
   readonly policy: ObservedCatalogMergePolicy;
+  readonly openaiContextCap?: number;
 }
 
 /**
@@ -651,6 +659,7 @@ export function mergeCatalogEntriesFromObservedState({
   accountBoundEntries,
   suppressedBareNativeSlugs = new Set(),
   policy,
+  openaiContextCap,
 }: ObservedCatalogMergeInput): RawEntry[] {
   // Raw catalog rows contain nested arrays/objects that normalization mutates. Detach every row at
   // the observed-core boundary so callers can safely retain evidence objects or repeat the merge.
@@ -785,7 +794,7 @@ export function mergeCatalogEntriesFromObservedState({
       // genuine catalog entry (real display name) is preserved untouched.
       if (shouldUpgradeToUpstreamEntry(m)) {
         const upstream = upstreamNativeEntry(slug)!;
-        const finished = finishUpstreamNativeEntry(upstream, 9);
+        const finished = finishUpstreamNativeEntry(upstream, 9, openaiContextCap);
         finished.priority = nativePriority(slug, upstream.priority);
         return finished;
       }
@@ -814,6 +823,9 @@ export function mergeCatalogEntriesFromObservedState({
         slug,
         "OpenAI native model (Codex OAuth passthrough).",
         nativePriority(slug, upstreamNativeEntry(slug)?.priority),
+        undefined,
+        new Set(),
+        openaiContextCap,
       );
       entry.priority = nativePriority(slug, upstreamNativeEntry(slug)?.priority);
       native.push(entry);
@@ -926,7 +938,7 @@ export function mergeCatalogEntriesFromObservedState({
   const managedEntries = [...finalRoutedEntries, ...alignedAccountBoundEntries];
   const mergedEntries = [...native, ...managedEntries].map(m => {
     const normalized = normalizeServiceTiers(m);
-    if (!isNativeAliasCatalogEntry(normalized)) applyNativeOpenAiContextOverride(normalized);
+    if (!isNativeAliasCatalogEntry(normalized)) applyNativeOpenAiContextOverride(normalized, openaiContextCap);
     const exactCombo = isExactComboCatalogEntry(m, exactComboSlugs);
     const e = ensureStrictCatalogFields(normalized, {
       preserveExactInputModalities: exactCombo,
@@ -996,6 +1008,7 @@ export function mergeCatalogEntriesForSync(
       isNativeAliasCatalogEntry(entry) && typeof entry.slug === "string" ? [entry.slug] : []
     )),
   ),
+  openaiContextCap?: number,
 ): RawEntry[] {
   // Retained for source compatibility with the original helper contract. Raw provider ids must
   // not suppress same-named native rows; actual admitted combo entries own that decision now.
@@ -1030,6 +1043,7 @@ export function mergeCatalogEntriesForSync(
     includeNativeOpenAi,
     accountBoundEntries,
     suppressedBareNativeSlugs,
+    openaiContextCap,
     policy: {
       ...CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
       warningPolicy: "emit",
@@ -1172,6 +1186,24 @@ function revalidateRetainedCatalogSync(
   };
 }
 
+/**
+ * Exact bytes currently on disk at `path`, or null when unreadable/absent.
+ *
+ * Deliberately a Buffer rather than a decoded string: `readFileSync(path, "utf8")`
+ * substitutes U+FFFD for every invalid byte, so a file holding a raw 0x80 decodes
+ * equal to prepared content holding a legitimately encoded U+FFFD. Comparing the
+ * decoded strings would then classify a malformed catalog as identical, skip the
+ * atomic repair write, and leave the corruption on disk while reporting
+ * `catalogWritten: false`.
+ */
+function currentCatalogFileContent(path: string): Buffer | null {
+  try {
+    return readFileSync(path);
+  } catch {
+    return null;
+  }
+}
+
 function pristineCatalogBytes(read: RetainedCatalogSyncRead): string | null {
   if (read.onDiskCatalog && !catalogHasRoutedEntries(read.onDiskCatalog)) {
     try {
@@ -1247,6 +1279,7 @@ function writeRetainedCatalogSync({
   const hasPhysicalComboProvider = Object.hasOwn(config.providers, COMBO_NAMESPACE);
   const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
   const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
+  const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
   const accountSelectors = includeAccountBoundNativeOpenAi
     ? visibleCodexAccountSelectors(config)
     : [];
@@ -1264,6 +1297,7 @@ function writeRetainedCatalogSync({
     suppressedBareNativeSlugs,
     disabledNativeAccountSlugs: new Set(),
     multiAgentV2Enabled,
+    openaiContextCap,
   });
   // Keep genuine native entries (gpt-*, codex-*) with their real per-model fields and append
   // routed providers as namespaced slugs. Cursor and other adopted providers can expose model ids
@@ -1308,6 +1342,7 @@ function writeRetainedCatalogSync({
       suppressedBareNativeSlugs,
       disabledNativeAccountSlugs: new Set([...disabledNativeSlugs(config)].filter(slug => suppressedBareNativeSlugs.has(slug))),
       multiAgentV2Enabled,
+      openaiContextCap,
     }).filter(entry => trustedAccountBoundNativeCatalogSlug(entry) !== undefined)
     : [];
   catalog.models = mergeCatalogEntriesFromObservedState({
@@ -1330,6 +1365,7 @@ function writeRetainedCatalogSync({
     includeNativeOpenAi,
     accountBoundEntries,
     suppressedBareNativeSlugs,
+    openaiContextCap,
     policy: {
       ...CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
       warningPolicy: "emit",
@@ -1337,12 +1373,30 @@ function writeRetainedCatalogSync({
   });
   clampCatalogModelsToCodexSupport(catalog.models);
 
+  const added = goEntries.length + accountBoundEntries.length;
+  const content = `${JSON.stringify(catalog, null, 2)}\n`;
+  // A byte-identical rewrite is not a catalog change, but every mtime-keyed reader
+  // has to treat it as one. The app-server staleness classifier (#857) is the one
+  // that matters: it compares this file's mtime against each running Codex's start
+  // time, so an ordinary `ocx start` — or any dashboard action that re-syncs an
+  // unchanged model set — marked every already-running Codex as holding an outdated
+  // in-memory catalog. Since #1407 that verdict silences opencodex's own model
+  // guidance entirely (no preferred model, no roster) for the rest of that Codex's
+  // lifetime, so a configured injectionModel stops reaching the session even though
+  // nothing about the catalog changed. Skipping the no-op write keeps both the mtime
+  // and `catalogWritten` honest; `added` still reports the routed rows the catalog
+  // carries, because they are on disk either way.
+  const onDiskBytes = currentCatalogFileContent(catalogPath);
+  if (onDiskBytes !== null && onDiskBytes.equals(Buffer.from(content, "utf8"))) {
+    return { added, path: catalogPath, catalogWritten: false, comboOmissions };
+  }
+
   replaceActiveCodexCatalog(permit, owningCodexHome, {
     path: catalogPath,
-    content: `${JSON.stringify(catalog, null, 2)}\n`,
+    content,
   });
   return {
-    added: goEntries.length + accountBoundEntries.length,
+    added,
     path: catalogPath,
     catalogWritten: true,
     comboOmissions,

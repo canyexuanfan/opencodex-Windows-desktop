@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyNativeVisibility, augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, CODEX_NATIVE_ALIAS_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, resolveComboCatalogMember, shouldExposeRoutedModel } from "../src/codex/catalog";
+import { applyNativeVisibility, augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, CODEX_NATIVE_ALIAS_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_OPENAI_MODELS, nativeOpenAiContextWindow, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, resolveComboCatalogMember, shouldExposeRoutedModel } from "../src/codex/catalog";
 import {
   CODEX_CUSTOM_MODEL_CATALOG_KIND,
   CODEX_PROVIDER_MODEL_CATALOG_KIND,
@@ -323,7 +323,7 @@ describe("combo catalog capability intersection", () => {
       expect(row.owned_by).toBe("combo");
       expect(row.base_instructions).toContain("mixed");
       expect(row).not.toHaveProperty("model_messages");
-      expect(row).not.toHaveProperty("tool_mode");
+      expect(row.tool_mode).toBe("code_mode_only");
       expect(row.web_search_tool_type).toBe("text_and_image");
       expect(row.supports_search_tool).toBe(true);
     }
@@ -2231,13 +2231,13 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
-  test("normalizeRoutedCatalogEntry strips native-only routed selectors", () => {
+  test("normalizeRoutedCatalogEntry strips native-only selectors and applies routed tool mode", () => {
     const entry = nativeTemplate();
 
     normalizeRoutedCatalogEntry(entry);
 
     expect(entry).not.toHaveProperty("model_messages");
-    expect(entry).not.toHaveProperty("tool_mode");
+    expect(entry.tool_mode).toBe("code_mode_only");
     expect(entry).not.toHaveProperty("multi_agent_version");
     expect(entry).not.toHaveProperty("use_responses_lite");
     expect(entry).not.toHaveProperty("supports_websockets");
@@ -2257,7 +2257,7 @@ describe("Codex catalog routed normalization", () => {
 
     expect(routed).toBeDefined();
     expect(routed).not.toHaveProperty("model_messages");
-    expect(routed).not.toHaveProperty("tool_mode");
+    expect(routed?.tool_mode).toBe("code_mode_only");
     // Routed entries do not inherit a native template's surface pin; the global
     // Codex v2 flag can choose the surface freely unless upstream pins the model.
     expect(routed).not.toHaveProperty("multi_agent_version");
@@ -2402,6 +2402,123 @@ describe("Codex catalog routed normalization", () => {
     expect(sol?.supports_websockets).toBe(true);
   });
 
+  test("providerContextCaps.openai ceilings native GPT-5.6 catalog rows (#1430)", () => {
+    const cap = 272_000;
+    const entries = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      [],
+      undefined,
+      false,
+      "default",
+      new Set(),
+      [],
+      new Set(),
+      new Set(),
+      cap,
+    );
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      const entry = entries.find(e => e.slug === slug);
+      expect(entry?.context_window).toBe(cap);
+      expect(entry?.max_context_window).toBe(cap);
+      expect(entry?.auto_compact_token_limit).toBe(244_800);
+    }
+  });
+
+  test("mergeCatalogEntriesForSync re-applies the openai cap to preserved and upgraded native rows (#1430)", () => {
+    const cap = 272_000;
+    const template = nativeTemplate();
+    // A preserved genuine row and a fallback-quality row (display_name stamped with
+    // the bare slug) both pass through the final native-override pass on merge.
+    const genuineSol = {
+      ...template,
+      slug: "gpt-5.6-sol",
+      display_name: "GPT-5.6-Sol",
+      context_window: 372_000,
+      max_context_window: 372_000,
+      auto_compact_token_limit: 334_800,
+      supported_reasoning_levels: [
+        { effort: "low", description: "l" }, { effort: "high", description: "h" },
+        { effort: "max", description: "m" }, { effort: "ultra", description: "u" },
+      ],
+    };
+    const merged = mergeCatalogEntriesForSync(
+      [genuineSol],
+      [],
+      new Map(),
+      [],
+      false,
+      new Set(),
+      template,
+      new Set(),
+      new Set(),
+      "default",
+      new Set(),
+      false,
+      true,
+      [],
+      new Set(),
+      new Set(),
+      cap,
+    );
+    const sol = merged.find(e => e.slug === "gpt-5.6-sol");
+    expect(sol?.context_window).toBe(cap);
+    expect(sol?.max_context_window).toBe(cap);
+    expect(sol?.auto_compact_token_limit).toBe(244_800);
+    // The backfilled luna row (upstream snapshot) is capped the same way.
+    const luna = merged.find(e => e.slug === "gpt-5.6-luna");
+    expect(luna?.context_window).toBe(cap);
+    expect(luna?.max_context_window).toBe(cap);
+    expect(luna?.auto_compact_token_limit).toBe(244_800);
+  });
+
+  test("preserved gpt-5.4-mini rows get the openai cap without a hardcoded override (#1430)", () => {
+    const cap = 200_000;
+    const template = nativeTemplate();
+    // gpt-5.4-mini has no NATIVE_OPENAI_CONTEXT_OVERRIDES entry; its windows come
+    // from the preserved disk row and must still be capped on merge.
+    const genuine54Mini = {
+      ...template,
+      slug: "gpt-5.4-mini",
+      display_name: "GPT-5.4-Mini",
+      context_window: 272_000,
+      max_context_window: 272_000,
+      auto_compact_token_limit: 244_800,
+    };
+    const merged = mergeCatalogEntriesForSync(
+      [genuine54Mini],
+      [],
+      new Map(),
+      [],
+      false,
+      new Set(),
+      template,
+      new Set(),
+      new Set(),
+      "default",
+      new Set(),
+      false,
+      true,
+      [],
+      new Set(),
+      new Set(),
+      cap,
+    );
+    const mini = merged.find(e => e.slug === "gpt-5.4-mini");
+    expect(mini?.context_window).toBe(cap);
+    expect(mini?.max_context_window).toBe(cap);
+    expect(mini?.auto_compact_token_limit).toBe(180_000);
+  });
+
+  test("nativeOpenAiContextWindow applies the openai cap as a ceiling only when provided", () => {
+    expect(nativeOpenAiContextWindow("gpt-5.6-sol")).toBe(372_000);
+    expect(nativeOpenAiContextWindow("gpt-5.6-sol", 272_000)).toBe(272_000);
+    // A cap above the native value is a ceiling, not a floor.
+    expect(nativeOpenAiContextWindow("gpt-5.6-sol", 500_000)).toBe(372_000);
+    // Non-5.6 natives are capped the same way.
+    expect(nativeOpenAiContextWindow("gpt-5.4", 272_000)).toBe(272_000);
+  });
+
   test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {
     // Fallback-quality: display_name stamped with the bare slug (ocx synthesis signature),
     // wrong ladder (ultra on luna) left by an older ocx version.
@@ -2520,6 +2637,31 @@ describe("Codex catalog routed normalization", () => {
     expect(native?.supports_search_tool).toBe(true);
     expect(native?.service_tier).toBe("priority");
     expect(native?.service_tiers).toEqual([{ id: "priority" }]);
+  });
+
+  test("buildCatalogEntries assigns code-only tools to routed fallback rows", () => {
+    const rows = buildCatalogEntries(null, [], [
+      { provider: "deepseek", id: "deepseek-v4-flash", owned_by: "deepseek" },
+    ]);
+
+    const routed = rows.find(row => row.slug === "deepseek/deepseek-v4-flash");
+    expect(routed?.tool_mode).toBe("code_mode_only");
+  });
+
+  test("buildCatalogEntries preserves native tool mode on account-qualified rows", () => {
+    const rows = buildCatalogEntries(
+      nativeTemplate(),
+      ["gpt-5.5"],
+      [],
+      undefined,
+      false,
+      "default",
+      new Set(),
+      ["team"],
+    );
+
+    expect(rows.find(row => row.slug === "gpt-5.5")?.tool_mode).toBe("code");
+    expect(rows.find(row => row.slug === "team/gpt-5.5")?.tool_mode).toBe("code");
   });
 
   test("catalog sync keeps native OpenAI rows when adopted providers expose matching ids", () => {
@@ -4412,6 +4554,7 @@ describe("OpenAI API trusted catalog augmentation", () => {
   const exactIds = [
     "gpt-5.5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     "gpt-5.6-sol-pro", "gpt-5.6-terra-pro", "gpt-5.6-luna-pro",
+    "daybreak-red-latest", "daybreak-blue-latest",
   ];
 
   test("rebuilds the exact eight rows after partial/conflicting successful discovery", () => {
@@ -4462,6 +4605,21 @@ describe("OpenAI API trusted catalog augmentation", () => {
           reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
         });
       }
+      // Daybreak aliases carry their own metadata and, deliberately, NO effort ladder.
+      // They fall outside the gpt-5.6 loop above because the alias id is the registered
+      // name — the snapshot id is never registered.
+      expect(apiRows.find(row => row.id === "daybreak-red-latest")).toMatchObject({
+        contextWindow: 400_000,
+        maxInputTokens: 272_000,
+        inputModalities: ["text", "image"],
+        reasoningEfforts: [],
+      });
+      expect(apiRows.find(row => row.id === "daybreak-blue-latest")).toMatchObject({
+        contextWindow: 1_050_000,
+        maxInputTokens: 922_000,
+        inputModalities: ["text", "image"],
+        reasoningEfforts: [],
+      });
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   modelOptionsForProvider,
   newRoutingProfileDraft,
+  normalizeCompatibilityDto,
+  normalizeCompatibilitySuites,
   routingProfileDraftFromDto,
   routingProfilePutBody,
   routingProfileResponseError,
@@ -114,5 +116,99 @@ describe("routing profile editor data", () => {
       { provider: "openai", id: "gpt-5.6" },
       { provider: "anthropic", id: "claude-sonnet-5" },
     ], "anthropic")).toEqual([{ provider: "anthropic", id: "claude-sonnet-5" }]);
+  });
+
+  test("round-trips compatibility controls into a PUT payload", () => {
+    const withCompatibility: RoutingProfileDto = {
+      ...profile,
+      compatibility: {
+        requiredSuites: [
+          { suiteId: "responses-core", evidenceLayer: "live_route_compatibility" },
+        ],
+        minStatus: "VERIFIED",
+        maxEvidenceAgeMs: 86_400_000,
+        unknownEvidence: "penalize",
+        degradedEvidence: "exclude",
+      },
+    };
+    const draft = routingProfileDraftFromDto(withCompatibility);
+    expect(draft.compatibility.enabled).toBe(true);
+    expect(draft.compatibility.requiredSuites).toEqual(withCompatibility.compatibility!.requiredSuites);
+    expect(routingProfilePutBody(draft, "update", profile.revision)).toMatchObject({
+      profile: {
+        compatibility: {
+          requiredSuites: withCompatibility.compatibility!.requiredSuites,
+          minStatus: "VERIFIED",
+          maxEvidenceAgeMs: 86_400_000,
+          unknownEvidence: "penalize",
+          degradedEvidence: "exclude",
+        },
+      },
+    });
+  });
+
+  test("omits compatibility from PUT payload when editor compatibility is disabled", () => {
+    const withCompatibility: RoutingProfileDto = {
+      ...profile,
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        minStatus: "PROBED",
+      },
+    };
+    const draft = routingProfileDraftFromDto(withCompatibility);
+    draft.compatibility.enabled = false;
+    const body = routingProfilePutBody(draft, "create");
+    expect(body.profile).not.toHaveProperty("compatibility");
+  });
+
+  test("hydrates maxEvidenceAgeMs zero without dropping or blanking the field", () => {
+    expect(normalizeCompatibilityDto({
+      requiredSuites: [],
+      maxEvidenceAgeMs: 0,
+    })).toEqual({ requiredSuites: [], maxEvidenceAgeMs: 0 });
+
+    const draft = routingProfileDraftFromDto({
+      ...profile,
+      compatibility: {
+        requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+        maxEvidenceAgeMs: 0,
+      },
+    });
+    expect(draft.compatibility.maxEvidenceAgeMs).toBe("0");
+    expect(routingProfilePutBody(draft, "update", profile.revision)).toMatchObject({
+      profile: {
+        compatibility: {
+          requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+          maxEvidenceAgeMs: 0,
+        },
+      },
+    });
+  });
+
+  test("normalizes malformed compatibility suites instead of crashing the editor draft", () => {
+    expect(normalizeCompatibilitySuites("not-an-array")).toEqual([]);
+    expect(normalizeCompatibilitySuites([
+      { suiteId: "ok", evidenceLayer: "protocol_conformance" },
+      { suiteId: "bad", evidenceLayer: "other" },
+      { suiteId: "  ", evidenceLayer: "live_route_compatibility" },
+      null,
+      "skip",
+    ])).toEqual([{ suiteId: "ok", evidenceLayer: "protocol_conformance" }]);
+
+    expect(normalizeCompatibilityDto("broken")).toBeUndefined();
+    expect(normalizeCompatibilityDto({
+      requiredSuites: { suiteId: "object-not-array" },
+      minStatus: "CLAIMED",
+      unknownEvidence: "explode",
+    })).toEqual({ requiredSuites: [] });
+
+    const draft = routingProfileDraftFromDto({
+      ...profile,
+      compatibility: {
+        requiredSuites: "responses-core",
+      } as RoutingProfileDto["compatibility"],
+    });
+    expect(draft.compatibility.enabled).toBe(true);
+    expect(draft.compatibility.requiredSuites).toEqual([]);
   });
 });
