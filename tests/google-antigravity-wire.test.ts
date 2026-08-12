@@ -505,6 +505,39 @@ describe("antigravity parseResponse unwraps response (non-streaming)", () => {
     applyAntigravityReplay("gemini-3-pro", antigravitySessionId(followup), contents);
     expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-nonstream0000000");
   });
+
+  // Guard for #1503: routing `thought: true` text to the reasoning channel must not disturb
+  // signature observation. Gemini 3 rejects a follow-up turn whose first function-call part
+  // lost its signature, so a classification change that also dropped replay would trade a
+  // visible-text bug for a hard 400. Asserting the signature survives a payload that mixes a
+  // thought part with a signed function call is the direct proof, rather than inferring it
+  // from unrelated fixtures that happen to still pass.
+  test("a thought part alongside a signed function call does not disturb replay", async () => {
+    const { __resetAntigravityReplayCache, applyAntigravityReplay } = await import("../src/adapters/google-antigravity-replay");
+    __resetAntigravityReplayCache();
+    const adapter = createGoogleAdapter(provider);
+    await adapter.buildRequest(parsed("hello world"));
+    const body = JSON.stringify({
+      response: {
+        candidates: [{
+          content: {
+            parts: [
+              { thought: true, text: "deciding which tool to call" },
+              { functionCall: { name: "do_x", args: { a: 1 } }, thoughtSignature: "sig-withthought00000" },
+            ],
+          },
+        }],
+      },
+    });
+    const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
+
+    expect(events).not.toContainEqual({ type: "text_delta", text: "deciding which tool to call" });
+
+    const followup = parsed("hello world");
+    const contents = [{ role: "model", parts: [{ functionCall: { name: "do_x", args: { a: 1 } } }] }];
+    applyAntigravityReplay("gemini-3-pro", antigravitySessionId(followup), contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-withthought00000");
+  });
 });
 
 describe("antigravity history preserves tool-call thoughtSignature", () => {
