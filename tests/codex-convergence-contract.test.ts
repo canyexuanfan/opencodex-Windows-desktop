@@ -324,9 +324,9 @@ test("the total lazy adapter preserves a persisted-success route when factory co
   });
 });
 
-test("the route inventory contains exactly the specified 6 + 6 + 2 + 2 convergence calls", () => {
+test("the route inventory contains exactly the specified 7 + 6 + 2 + 2 convergence calls", () => {
   const counts = Object.fromEntries([
-    ["provider-routes.ts", 6],
+    ["provider-routes.ts", 7],
     ["model-routes.ts", 6],
     ["combo-routes.ts", 2],
     ["agent-settings-routes.ts", 2],
@@ -338,7 +338,7 @@ test("the route inventory contains exactly the specified 6 + 6 + 2 + 2 convergen
     return [file, count];
   }));
   expect(counts).toEqual({
-    "provider-routes.ts": 6,
+    "provider-routes.ts": 7,
     "model-routes.ts": 6,
     "combo-routes.ts": 2,
     "agent-settings-routes.ts": 2,
