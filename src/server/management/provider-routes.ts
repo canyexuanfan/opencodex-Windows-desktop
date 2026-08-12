@@ -71,6 +71,7 @@ import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from ".
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
+import { providerServiceTierConfigError } from "./provider-capability-config";
 import { applySystemEnvToggle } from "../system-env";
 import {
   LOCAL_PROVIDER_RELOAD_NAME_HEADER,
@@ -429,6 +430,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const providerError = providerManagementConfigError(name, body.provider);
     if (providerError) return jsonResponse({ error: providerError }, 400);
+    const serviceTierError = providerServiceTierConfigError(name, body.provider);
+    if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
     const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider as OcxProviderConfig) : undefined;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
@@ -575,6 +578,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     if (applied.editorTouched) {
       const providerError = providerManagementConfigError(name, next);
       if (providerError) return jsonResponse({ error: providerError }, 400);
+      const serviceTierError = providerServiceTierConfigError(name, next);
+      if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
       const resolvedError = await providerDestinationResolvedError(name, next);
       if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
     } else if (applied.enablingOpenAi) {
@@ -603,6 +608,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         const syncError = providerManagementConfigError(name, replay.next);
         if (syncError) {
           replayError = syncError;
+          return;
+        }
+        const serviceTierError = providerServiceTierConfigError(name, replay.next);
+        if (serviceTierError) {
+          replayError = serviceTierError;
           return;
         }
       } else if (replay.enablingOpenAi && !isCanonicalOpenAiForwardProvider(replay.next)) {
