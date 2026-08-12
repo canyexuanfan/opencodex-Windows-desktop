@@ -147,6 +147,28 @@ describe("GitHub Actions hardening", () => {
     expect([...(gate?.needs ?? [])].sort())
       .toEqual(Object.keys(ci.jobs ?? {}).filter(name => name !== "ci").sort());
 
+    // The focused doctor contract config is ADDITIVE evidence. It must never
+    // replace the repository-wide strict typecheck: doing so made the aggregate
+    // CI check green while most of src/ was no longer typechecked by Actions.
+    const gatesSteps = (ci.jobs?.gates as { steps?: { name?: string; run?: string }[] })?.steps ?? [];
+    const gatesTypecheck = gatesSteps.find(step => step.name === "Typecheck")?.run ?? "";
+    const rootTypecheck = "bun x tsc --noEmit";
+    const doctorContractTypecheck =
+      "bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json";
+    expect(hasExactShellCommand(gatesTypecheck, rootTypecheck)).toBe(true);
+    expect(hasExactShellCommand(gatesTypecheck, doctorContractTypecheck)).toBe(true);
+    expect(gatesTypecheck.indexOf(rootTypecheck)).toBeLessThan(
+      gatesTypecheck.indexOf(doctorContractTypecheck),
+    );
+
+    // GUI tests mutate process globals (fetch, DOM, timers and React work).
+    // Hosted runners exposed order-dependent cross-file leaks when the 138
+    // files shared one realm. Pin isolation to the GATES job specifically — a
+    // broad workflow search would pass because macOS already uses --isolate.
+    const gatesGuiRun = gatesSteps.find(step => step.name === "GUI tests")?.run ?? "";
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test --isolate tests")).toBe(true);
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test tests")).toBe(false);
+
     // macOS is the unsharded control for every CI-relevant change. It may skip
     // only when the shared path filter says the entire expensive suite is out of
     // scope (for example a docs-site-only PR).
