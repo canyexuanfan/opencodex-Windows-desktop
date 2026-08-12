@@ -6,6 +6,7 @@ import {
 	readBoundedResponseBody,
 } from "../src/lib/bounded-body";
 import { UPSTREAM_JSON_BODY_READ_OPTIONS } from "../src/server/responses/core";
+import { readBoundedJsonRequestBody } from "../src/server/request-decompress";
 
 const encoder = new TextEncoder();
 
@@ -452,5 +453,29 @@ describe("readBoundedResponseBody", () => {
 		} finally {
 			process.off("unhandledRejection", listener);
 		}
+	});
+});
+
+describe("readBoundedJsonRequestBody", () => {
+	test("an explicit deadline signal bounds request ingestion independently of req.signal", async () => {
+		let cancelled = false;
+		const request = new Request("http://localhost/import", {
+			method: "POST",
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode('{"partial":'));
+				},
+				cancel() { cancelled = true; },
+			}),
+			duplex: "half",
+		} as RequestInit & { duplex: "half" });
+		const deadline = new AbortController();
+		const reading = readBoundedJsonRequestBody(request, 1024, undefined, { signal: deadline.signal });
+
+		deadline.abort(new DOMException("deadline", "TimeoutError"));
+
+		await expect(reading).rejects.toMatchObject({ name: "TimeoutError" });
+		expect(request.signal.aborted).toBe(false);
+		expect(cancelled).toBe(true);
 	});
 });

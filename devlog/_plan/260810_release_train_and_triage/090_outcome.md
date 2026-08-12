@@ -1,6 +1,16 @@
 # 090 — unit outcome
 
-**Terminal outcome: `BLOCKED` (release) + `NOOP` (closure sweep).**
+> **SUPERSEDED. The outcome below was written while the security gate held the
+> train. The owner chose fix first; WP4/WP5 remediated SEC-01 and SEC-02, WP6
+> obtained a `READY TO SHIP` re-review, and WP7/WP8 completed the train.**
+>
+> **Current terminal outcome: `DONE`.** v2.12.0 and v2.12.0-preview.20260810
+> are published from RC `9c051342d`; 2 issues closed with cited evidence.
+> The record of what actually shipped is `013_release_record.md`, and the
+> closure sweep is `014_post_release_closure.md`. Everything below is kept as
+> the state of the unit at the moment it was blocked.
+
+**Terminal outcome at time of writing: `BLOCKED` (release) + `NOOP` (closure sweep).**
 
 The block is an authorization boundary, not a mechanical failure. Every gate
 that a machine can decide is green.

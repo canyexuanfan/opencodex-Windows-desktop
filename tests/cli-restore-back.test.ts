@@ -132,6 +132,12 @@ describe("ocx restore back", () => {
         defaultProvider: "fixture",
         checkForUpdates: false,
       }), "utf8");
+      const catalogPath = join(codexHome, "opencodex-catalog.json");
+      const cachePath = join(codexHome, "models_cache.json");
+      const catalogBefore = '{"models":[{"slug":"fixture/keep-me"}]}\n';
+      const cacheBefore = '{"models":[{"slug":"fixture/cached-keep-me"}],"fetched_at":1}\n';
+      writeFileSync(catalogPath, catalogBefore, "utf8");
+      writeFileSync(cachePath, cacheBefore, "utf8");
 
       const result = runCli(["sync"], {
         ...ownedEnvironment(codexHome, ocxHome),
@@ -141,8 +147,10 @@ describe("ocx restore back", () => {
       });
 
       expect(result.status).toBe(1);
-      expect(`${result.stdout}\n${result.stderr}`).toContain("Codex config injection refused");
+      expect(result.stderr).toContain("Codex config injection refused");
       expect(result.stderr).toContain("Codex sync did not complete");
+      expect(readFileSync(catalogPath, "utf8")).toBe(catalogBefore);
+      expect(readFileSync(cachePath, "utf8")).toBe(cacheBefore);
     } finally {
       rmSync(codexHome, { recursive: true, force: true });
       rmSync(ocxHome, { recursive: true, force: true });

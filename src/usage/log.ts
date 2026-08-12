@@ -5,8 +5,14 @@ import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { usageDisplayTotalTokens } from "./totals";
 import type { OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
+import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
+export type CodexUsageAccountLogLabel = "main" | `p${string}`;
+
+export function isCodexUsageAccountLogLabel(value: unknown): value is CodexUsageAccountLogLabel {
+  return value === "main" || (typeof value === "string" && CODEX_ACCOUNT_LOG_LABEL_RE.test(value));
+}
 
 /**
  * Recovery kinds recorded per attempt in the usage log; the GUI renders localized labels
@@ -33,10 +39,14 @@ export interface PersistedUsageAttempt {
   sendCount: number;
   recoveryKinds: AttemptRecoveryKind[];
   usageStatus: UsageStatus;
+  /** Stable non-PII identity for the Codex pool account that served this attempt. */
+  accountLogLabel?: CodexUsageAccountLogLabel;
   inputTokenEstimate?: number;
   usage?: OcxUsage;
   totalTokens?: number;
   errorCode?: string;
+  /** Installation-local exact Compatibility Lab route-subject digest for this attempt. */
+  labRouteSubjectId?: string;
   /** Target-specific reasoning intent and exact adapter-normalized wire parameter. */
   requestedEffort?: string;
   effectiveEffort?: string;
@@ -56,6 +66,8 @@ export interface PersistedUsageEntry {
   admissionKind?: "configured" | "environment" | "loopback";
   /** The inbound wire, not the client product — see `surface`. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  /** Stable non-PII identity for Codex Pool usage; absent for Direct/non-Codex traffic. */
+  accountLogLabel?: CodexUsageAccountLogLabel;
   /** Best-effort chat/session correlation for Logs grouping (#330). */
   conversationId?: string;
   resolvedModel?: string;
@@ -130,8 +142,8 @@ export function isKnownInboundProtocol(value: unknown): value is NonNullable<Per
   return typeof value === "string" && KNOWN_INBOUND_PROTOCOLS.has(value as NonNullable<PersistedUsageEntry["inboundProtocol"]>);
 }
 
-export function usageLogPath(): string {
-  return join(getConfigDir(), "usage.jsonl");
+export function usageLogPath(configDir?: string): string {
+  return join(configDir ?? getConfigDir(), "usage.jsonl");
 }
 
 export function usageTotalTokens(usage: OcxUsage | undefined): number | undefined {
@@ -195,6 +207,11 @@ const USAGE_STATUSES = new Set<UsageStatus>([
   "unsupported",
   "estimated",
 ]);
+const LAB_ROUTE_SUBJECT_ID_RE = /^[0-9a-f]{64}$/;
+
+export function isLabRouteSubjectId(value: unknown): value is string {
+  return typeof value === "string" && LAB_ROUTE_SUBJECT_ID_RE.test(value);
+}
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -264,6 +281,9 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
     sendCount: attempt.sendCount as number,
     recoveryKinds,
     usageStatus: attempt.usageStatus as UsageStatus,
+    ...(isCodexUsageAccountLogLabel(attempt.accountLogLabel)
+      ? { accountLogLabel: attempt.accountLogLabel }
+      : {}),
     ...(isNonNegativeFiniteNumber(attempt.inputTokenEstimate)
       ? { inputTokenEstimate: attempt.inputTokenEstimate }
       : {}),
@@ -272,6 +292,9 @@ function normalizeUsageAttempt(raw: unknown): PersistedUsageAttempt | null {
       ? { totalTokens: attempt.totalTokens }
       : {}),
     ...(typeof attempt.errorCode === "string" ? { errorCode: attempt.errorCode } : {}),
+    ...(isLabRouteSubjectId(attempt.labRouteSubjectId)
+      ? { labRouteSubjectId: attempt.labRouteSubjectId }
+      : {}),
     ...(typeof attempt.requestedEffort === "string" && attempt.requestedEffort
       ? { requestedEffort: capMetadataString(attempt.requestedEffort) }
       : {}),
@@ -340,6 +363,9 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
       : {}),
     ...(isKnownAdmissionKind(entry.admissionKind) ? { admissionKind: entry.admissionKind } : {}),
     ...(isKnownInboundProtocol(entry.inboundProtocol) ? { inboundProtocol: entry.inboundProtocol } : {}),
+    ...(isCodexUsageAccountLogLabel(entry.accountLogLabel)
+      ? { accountLogLabel: entry.accountLogLabel }
+      : {}),
     ...(typeof entry.conversationId === "string" && entry.conversationId.trim()
       ? { conversationId: entry.conversationId.trim().slice(0, 128) }
       : {}),
@@ -647,9 +673,9 @@ function parseUsageLines(lines: string[]): PersistedUsageEntry[] {
  * Read only the newest `limit` usage.jsonl rows without loading the whole append-only
  * file into memory. Used by request-log hydration on `ocx start`.
  */
-export function readRecentUsageEntries(limit: number): PersistedUsageEntry[] {
+export function readRecentUsageEntries(limit: number, configDir?: string): PersistedUsageEntry[] {
   if (!Number.isFinite(limit) || limit <= 0) return [];
-  const path = usageLogPath();
+  const path = usageLogPath(configDir);
   if (!existsSync(path)) return [];
   let fd: number | undefined;
   try {

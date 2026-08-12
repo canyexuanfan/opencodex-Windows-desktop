@@ -229,8 +229,12 @@ export default function AddProviderModal({
 
   return (
     <>
-    <div role="dialog" aria-modal="true" aria-label={t("modal.add")} className="modal-overlay" onClick={onClose}>
-      <div ref={dialogRef} className="modal-card" onClick={e => e.stopPropagation()}>
+    {/* The backdrop must not dismiss this modal: a stray click — or a text
+        selection drag that is released outside the card — would wipe every
+        field the user already filled in. Close only via the × button,
+        Escape, or a successful add. */}
+    <div role="dialog" aria-modal="true" aria-label={t("modal.add")} className="modal-overlay">
+      <div ref={dialogRef} className="modal-card">
         <div className="modal-head">
           <h3>{preset ? t("modal.addNamed", { label: preset.label }) : t("modal.add")}</h3>
           <button type="button" className="btn btn-ghost btn-icon" aria-label={t("common.close")} onClick={onClose}><IconX /></button>

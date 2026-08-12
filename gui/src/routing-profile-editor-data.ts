@@ -1,4 +1,9 @@
 export type UnknownEvidenceMode = "allow" | "penalize" | "exclude";
+
+export type CompatibilitySuiteDraft = {
+  suiteId: string;
+  evidenceLayer: "protocol_conformance" | "live_route_compatibility";
+};
 export type UnknownCostCapMode = "allow" | "exclude";
 export type OptionalBoolean = "" | "true" | "false";
 
@@ -56,7 +61,15 @@ export type RoutingProfileDto = {
     onUnknownCost?: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
+  compatibility?: {
+    requiredSuites: CompatibilitySuiteDraft[];
+    minStatus?: "PROBED" | "VERIFIED";
+    maxEvidenceAgeMs?: number;
+    unknownEvidence?: UnknownEvidenceMode;
+    degradedEvidence?: UnknownEvidenceMode;
+  };
 };
+
 
 export type RoutingProfileDraft = {
   id: string;
@@ -85,12 +98,69 @@ export type RoutingProfileDraft = {
     onUnknownCost: UnknownCostCapMode;
   };
   unknownEvidence: Record<"capability" | "health" | "quota" | "cost", UnknownEvidenceMode>;
+  compatibility: {
+    enabled: boolean;
+    requiredSuites: CompatibilitySuiteDraft[];
+    minStatus: "" | "PROBED" | "VERIFIED";
+    maxEvidenceAgeMs: string;
+    unknownEvidence: UnknownEvidenceMode;
+    degradedEvidence: UnknownEvidenceMode;
+  };
 };
 
 export type ModelOption = {
   provider: string;
   id: string;
 };
+
+/** Keep only well-formed suite rows so editor list helpers never call `.some` on garbage. */
+export function normalizeCompatibilitySuites(raw: unknown): CompatibilitySuiteDraft[] {
+  if (!Array.isArray(raw)) return [];
+  const suites: CompatibilitySuiteDraft[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const suiteId = typeof (row as { suiteId?: unknown }).suiteId === "string"
+      ? (row as { suiteId: string }).suiteId.trim()
+      : "";
+    const evidenceLayer = (row as { evidenceLayer?: unknown }).evidenceLayer;
+    if (
+      !suiteId
+      || (evidenceLayer !== "protocol_conformance" && evidenceLayer !== "live_route_compatibility")
+    ) {
+      continue;
+    }
+    suites.push({ suiteId, evidenceLayer });
+  }
+  return suites;
+}
+
+/**
+ * Normalize an optional compatibility DTO. Malformed blocks become `undefined`
+ * (treated as no compatibility policy) rather than crashing the editor.
+ */
+export function normalizeCompatibilityDto(
+  raw: unknown,
+): RoutingProfileDto["compatibility"] | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const compatibility: NonNullable<RoutingProfileDto["compatibility"]> = {
+    requiredSuites: normalizeCompatibilitySuites(obj.requiredSuites),
+  };
+  if (obj.minStatus === "PROBED" || obj.minStatus === "VERIFIED") {
+    compatibility.minStatus = obj.minStatus;
+  }
+  if (typeof obj.maxEvidenceAgeMs === "number" && Number.isFinite(obj.maxEvidenceAgeMs) && obj.maxEvidenceAgeMs >= 0) {
+    compatibility.maxEvidenceAgeMs = obj.maxEvidenceAgeMs;
+  }
+  if (obj.unknownEvidence === "allow" || obj.unknownEvidence === "penalize" || obj.unknownEvidence === "exclude") {
+    compatibility.unknownEvidence = obj.unknownEvidence;
+  }
+  if (obj.degradedEvidence === "allow" || obj.degradedEvidence === "penalize" || obj.degradedEvidence === "exclude") {
+    compatibility.degradedEvidence = obj.degradedEvidence;
+  }
+  return compatibility;
+}
 
 const DEFAULT_OPTIMIZE = {
   latency: "0.55",
@@ -139,10 +209,19 @@ export function newRoutingProfileDraft(
     optimize: { ...DEFAULT_OPTIMIZE },
     limits: { maxEstimatedCostUsd: "", onUnknownCost: "allow" },
     unknownEvidence: { ...DEFAULT_UNKNOWN_EVIDENCE },
+    compatibility: {
+      enabled: false,
+      requiredSuites: [],
+      minStatus: "",
+      maxEvidenceAgeMs: "",
+      unknownEvidence: "exclude",
+      degradedEvidence: "penalize",
+    },
   };
 }
 
 export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingProfileDraft {
+  const compatibility = normalizeCompatibilityDto(profile.compatibility);
   return {
     id: profile.id,
     alias: profile.alias ?? "",
@@ -170,6 +249,14 @@ export function routingProfileDraftFromDto(profile: RoutingProfileDto): RoutingP
       onUnknownCost: profile.limits.onUnknownCost === "exclude" ? "exclude" : "allow",
     },
     unknownEvidence: { ...profile.unknownEvidence },
+    compatibility: {
+      enabled: Boolean(compatibility),
+      requiredSuites: compatibility?.requiredSuites ?? [],
+      minStatus: compatibility?.minStatus ?? "",
+      maxEvidenceAgeMs: numberInput(compatibility?.maxEvidenceAgeMs),
+      unknownEvidence: compatibility?.unknownEvidence ?? "exclude",
+      degradedEvidence: compatibility?.degradedEvidence ?? "penalize",
+    },
   };
 }
 
@@ -213,6 +300,15 @@ export function routingProfilePutBody(
     encryptedCodexTasks: draftBoolean(draft.require.encryptedCodexTasks),
   });
   const maxEstimatedCostUsd = optionalNumber(draft.limits.maxEstimatedCostUsd);
+  const compatibility = draft.compatibility.enabled
+    ? compactRecord({
+      requiredSuites: draft.compatibility.requiredSuites,
+      minStatus: draft.compatibility.minStatus || undefined,
+      maxEvidenceAgeMs: optionalNumber(draft.compatibility.maxEvidenceAgeMs),
+      unknownEvidence: draft.compatibility.unknownEvidence,
+      degradedEvidence: draft.compatibility.degradedEvidence,
+    })
+    : undefined;
   const onUnknownCost = draft.limits.onUnknownCost === "exclude" ? "exclude" as const : undefined;
   const limits = compactRecord({
     maxEstimatedCostUsd,
@@ -238,6 +334,7 @@ export function routingProfilePutBody(
       },
       ...(Object.keys(limits).length > 0 ? { limits } : {}),
       unknownEvidence: { ...draft.unknownEvidence },
+      ...(compatibility && Object.keys(compatibility).length > 0 ? { compatibility } : {}),
     },
   };
 }

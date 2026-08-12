@@ -148,10 +148,9 @@ jobs:
               --branch "${GITHUB_REF#refs/heads/}" \
               --commit "$GITHUB_SHA" \
               --event push \
-              --status success \
               --limit 10 \
-              --json url \
-              --jq '.[0].url // ""'
+              --json conclusion,url \
+              --jq '[.[] | select(.conclusion == "success")][0].url // ""'
           )"
 
           if [ -z "$ci_url" ]; then
@@ -194,10 +193,9 @@ jobs:
               gh run list \
                 --workflow service-lifecycle.yml \
                 --commit "$GITHUB_SHA" \
-                --status success \
                 --limit 10 \
                 --json conclusion,headSha,url,workflowName \
-                --jq '.[0].url // ""'
+                --jq '[.[] | select(.conclusion == "success")][0].url // ""'
             )"
             if [ -z "$service_url" ]; then
               echo "::error::Service-related files changed since ${previous_tag:-initial commit}, but no successful Service lifecycle run was found for ${GITHUB_SHA}."

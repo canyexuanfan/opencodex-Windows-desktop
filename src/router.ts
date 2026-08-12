@@ -31,10 +31,7 @@ import {
 } from "./routing/trace";
 import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
 import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
-import { candidateCapabilityEvidence } from "./routing/capability";
-import { policyCandidateHealthEvidence } from "./routing/health";
-import { quotaEvidenceForCandidate } from "./routing/quota";
-import { costEvidenceForCandidate } from "./routing/cost";
+import { assemblePolicyCandidateEvidence } from "./routing/compatibility/assemble";
 
 export class NoEligiblePolicyCandidateError extends Error {
   /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
@@ -250,7 +247,7 @@ function usableResolvedApiKey(apiKey: string | undefined): string | undefined {
   return typeof resolved === "string" && resolved.trim().length > 0 ? resolved : undefined;
 }
 
-function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
+export function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
   if (!registryEntry || !providerMatchesRegistryTransport(providerName, provider)) {
     assertProviderDestinationAllowed(providerName, provider);
@@ -512,21 +509,9 @@ function routeModelInternal(
     // One clock read per decision keeps candidate evidence, exclusions, and
     // scores mutually consistent and reproducible.
     const now = Date.now();
-    const candidateEvidence = profile.candidates.map(candidate => ({
-      provider: candidate.provider,
-      model: candidate.model,
-      capability: candidateCapabilityEvidence(config, candidate.provider, candidate.model),
-      health: policyCandidateHealthEvidence(config, candidate, now),
-      quota: quotaEvidenceForCandidate({
-        provider: candidate.provider,
-        model: candidate.model,
-      }),
-      cost: costEvidenceForCandidate({
-        provider: candidate.provider,
-        model: candidate.model,
-        limitUsd: profile.limits.maxEstimatedCostUsd,
-      }),
-    }));
+    const candidateEvidence = assemblePolicyCandidateEvidence(config, profile, now, {
+      routedProviderConfig,
+    });
     const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence, now);
     if (evaluation.selectedIndex === null) {
       throw new NoEligiblePolicyCandidateError(policyId, evaluation.trace);

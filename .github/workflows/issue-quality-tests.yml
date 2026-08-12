@@ -11,6 +11,8 @@ on:
       - ".github/scripts/pr-quality.test.cjs"
       - ".github/scripts/pr-quality-messages.cjs"
       - ".github/scripts/pr-quality-messages.test.cjs"
+      - ".github/scripts/pr-quality-state.cjs"
+      - ".github/scripts/pr-quality-state.test.cjs"
       - ".github/scripts/pr-labeler.cjs"
       - ".github/scripts/pr-labeler.test.cjs"
       - ".github/scripts/enforce-pr-target.test.cjs"
@@ -41,6 +43,8 @@ on:
       - ".github/scripts/pr-quality.test.cjs"
       - ".github/scripts/pr-quality-messages.cjs"
       - ".github/scripts/pr-quality-messages.test.cjs"
+      - ".github/scripts/pr-quality-state.cjs"
+      - ".github/scripts/pr-quality-state.test.cjs"
       - ".github/scripts/pr-labeler.cjs"
       - ".github/scripts/pr-labeler.test.cjs"
       - ".github/scripts/enforce-pr-target.test.cjs"
@@ -79,6 +83,8 @@ jobs:
         run: |
           node --test .github/scripts/issue-quality*.test.cjs
           node --test .github/scripts/pr-quality.test.cjs
+          node --test .github/scripts/pr-quality-messages.test.cjs
+          node --test .github/scripts/pr-quality-state.test.cjs
           node --test .github/scripts/pr-labeler.test.cjs
           node --test .github/scripts/enforce-pr-target.test.cjs
           node --test .github/scripts/pr-hygiene.test.cjs

@@ -226,7 +226,7 @@ function toolResultImageChatParts(content: string | OcxContentPart[]): unknown[]
 function messagesToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] {
   const out: unknown[] = [];
   const { context, options } = parsed;
-  const replayCacheScope = parsed._clientThreadId ?? "global";
+  const replayCacheScope = parsed._reasoningReplayScope;
 
   interface PendingToolCall { id: string; name: string }
   let pendingToolCalls: PendingToolCall[] = [];
@@ -813,19 +813,25 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (provider.promptCacheKey && parsed.options.promptCacheKey !== undefined) {
         body.prompt_cache_key = parsed.options.promptCacheKey;
       }
-      const textFormat = parsed.options.textFormat;
-      if (textFormat?.type === "json_object") {
-        body.response_format = { type: "json_object" };
-      } else if (textFormat?.type === "json_schema") {
-        body.response_format = {
-          type: "json_schema",
-          json_schema: {
-            name: textFormat.name ?? "response",
-            ...(textFormat.description !== undefined ? { description: textFormat.description } : {}),
-            ...(textFormat.schema !== undefined ? { schema: textFormat.schema } : {}),
-            ...(textFormat.strict !== undefined ? { strict: textFormat.strict } : {}),
-          },
-        };
+      // Structured-output support varies by the physical upstream model even when one
+      // gateway exposes a uniform OpenAI-compatible endpoint. Keep the #1137 translation
+      // as the default, but let an exact model opt out instead of forcing a provider-wide
+      // rollback that would silently return prose for siblings that support JSON Schema.
+      if (!provider.noStructuredOutputModels?.includes(parsed.modelId)) {
+        const textFormat = parsed.options.textFormat;
+        if (textFormat?.type === "json_object") {
+          body.response_format = { type: "json_object" };
+        } else if (textFormat?.type === "json_schema") {
+          body.response_format = {
+            type: "json_schema",
+            json_schema: {
+              name: textFormat.name ?? "response",
+              ...(textFormat.description !== undefined ? { description: textFormat.description } : {}),
+              ...(textFormat.schema !== undefined ? { schema: textFormat.schema } : {}),
+              ...(textFormat.strict !== undefined ? { strict: textFormat.strict } : {}),
+            },
+          };
+        }
       }
 
       if (tools) {
@@ -969,10 +975,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
           }
 
           const rawToolCalls = delta.tool_calls;
-          if (rawToolCalls !== undefined) {
-            // A claimed tool-call payload is not benign padding. Dropping it can leave the
+          if (rawToolCalls !== undefined && rawToolCalls !== null) {
+            // A non-null claimed tool-call payload is not benign padding. Dropping it can leave the
             // matching result permanently orphaned, so malformed nested shapes fail closed
-            // through the adapter error channel instead of escaping as TypeError (#1325).
+            // through the adapter error channel instead of escaping as TypeError (#1325). Null is
+            // tolerated as absent because OpenAI-compatible providers may emit it as stream padding.
             if (!Array.isArray(rawToolCalls)) {
               return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
             }
@@ -1140,7 +1147,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (reasoningText !== undefined) events.push({ type: "reasoning_raw_delta", text: reasoningText });
         if (typeof msg.content === "string") events.push({ type: "text_delta", text: msg.content });
         const rawToolCalls = msg.tool_calls;
-        if (rawToolCalls !== undefined) {
+        if (rawToolCalls !== undefined && rawToolCalls !== null) {
           if (!Array.isArray(rawToolCalls)) return [invalidToolCallsEvent(usage)];
           for (const rawToolCall of rawToolCalls) {
             if (!isRecord(rawToolCall) || !isRecord(rawToolCall.function)) {

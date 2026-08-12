@@ -16,6 +16,7 @@ import {
   armClaudeCodeBaseline,
   loadConfig,
   saveConfig,
+  getConfigDir,
   websocketsEnabled,
 } from "../config";
 import { reconcileOAuthProviders } from "../oauth";
@@ -23,7 +24,10 @@ import { withCatalogWriteSerialization } from "../codex/catalog-write-serializat
 import { invalidateCodexModelsCacheWithPermit } from "../codex/catalog/sync";
 import { getCodexHome } from "../codex/paths";
 import { shouldSyncCodexOnStart } from "../codex/desired-state";
-import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
+import {
+  inspectNativeCodexOwnership,
+  type OwnershipInspection,
+} from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
 import {
   reconcileLiveStateStores,
@@ -41,9 +45,16 @@ import {
   registerDefaultAppOwnedObservedBuffers,
 } from "../lib/app-owned-memory-stores";
 import { acquireServerBackgroundLifecycle } from "./background-lifecycle";
+import {
+  setLabAutomationDispatchDeps,
+  startLabAutomationScheduler,
+} from "../lab/automation/orchestrator";
+import { loadLabAutomationPolicy } from "../lab/automation/persistence";
+import { createProductionLabRouteExecutor } from "../lib/lab-live-route-production";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
-import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
+import { providerContextCap } from "../providers/context-cap";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { StorageCleanupPolicy } from "../types";
 import {
@@ -89,7 +100,6 @@ import {
   addFinalRequestLog,
   hydrateRequestLogsFromDisk,
   httpStatusForRequestLogTerminal,
-  httpStatusForTerminalStatus,
   inspectResponseLogSsePayload,
   nextRequestLogId,
   recordFirstOutput,
@@ -161,6 +171,7 @@ import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
 import {
   bindNativeMainStartupLifecycle,
+  blockNativeMainStartupForUnownedServiceHome,
   releaseNativeMainStartupLifecycle,
   startNativeMainStartupLifecycle,
   type NativeMainStartupGateDeps,
@@ -425,12 +436,25 @@ export interface StartServerDeps {
   managementApi?: ManagementApiDeps;
   /** Test-only native-main recovery dependencies; production constructs the normal manager. */
   nativeMainStartup?: NativeMainStartupGateDeps;
+  /** Test-only ownership evidence; production inspects the installed service state. */
+  inspectNativeCodexOwnership?: typeof inspectNativeCodexOwnership;
   /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
   /** Test-only seam; production derives a fresh local-attestation secret per process. */
   localAttestationSecret?: string;
   /** Optional readiness gate; a fresh pending gate is created when omitted. */
   readinessGate?: ReadinessGate;
+}
+
+function inspectStartupOwnership(deps: StartServerDeps): OwnershipInspection {
+  try {
+    return (deps.inspectNativeCodexOwnership ?? inspectNativeCodexOwnership)();
+  } catch {
+    return {
+      ownership: "unknown",
+      reason: "service-home ownership inspection failed",
+    };
+  }
 }
 
 /*
@@ -497,21 +521,28 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (migrated) saveConfig(config);
     }
   }
+  // Resolve unattended service-home authority before any Codex lock, cache, owner,
+  // journal, or credential path. Both positive foreign evidence and an unprovable
+  // ownership state are non-authority.
+  startupCacheInvalidationWrote = false;
+  const startupCacheOwnership = inspectStartupOwnership(deps);
   // Startup cache invalidation is best-effort and must never block the server from
   // serving. It now takes K so it cannot race a convergence commit, but both the
   // home resolution and the acquisition can fail on a machine with no Codex home —
   // `getCodexHome()` THROWS when CODEX_HOME names a missing directory, which would
   // otherwise turn "no Codex installed" into "proxy will not start".
-  try {
-    const startupCodexHome = getCodexHome();
-    // #1046: record whether this actually rewrote the cache. `handleStart` ORs this
-    // with the later startup sync and warns ONCE about stale app-servers; warning
-    // here instead would read a catalog mtime the sync is about to move.
-    const outcome = withCatalogWriteSerialization(startupCodexHome, permit =>
-      invalidateCodexModelsCacheWithPermit(permit, startupCodexHome));
-    // A refused permit is not a write; only a completed run that returned true is.
-    startupCacheInvalidationWrote = outcome.kind === "completed" && outcome.value === true;
-  } catch { /* no readable Codex home: nothing to invalidate */ }
+  if (startupCacheOwnership.ownership === "owned") {
+    try {
+      const startupCodexHome = getCodexHome();
+      // #1046: record whether this actually rewrote the cache. `handleStart` ORs this
+      // with the later startup sync and warns ONCE about stale app-servers; warning
+      // here instead would read a catalog mtime the sync is about to move.
+      const outcome = withCatalogWriteSerialization(startupCodexHome, permit =>
+        invalidateCodexModelsCacheWithPermit(permit, startupCodexHome));
+      // A refused permit is not a write; only a completed run that returned true is.
+      startupCacheInvalidationWrote = outcome.kind === "completed" && outcome.value === true;
+    } catch { /* no readable Codex home: nothing to invalidate */ }
+  }
   // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
   // the server can serve a request, and AFTER the startup migrations above — those run
   // against a config nobody else holds and are the documented exception to the save
@@ -650,10 +681,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // CODEX_HOME. When the user has disabled the Codex integration, starting the
   // proxy must not manufacture those Codex artifacts merely to serve other
   // clients; no Codex request can use this lifecycle in that state.
-  const nativeOwnership = inspectNativeCodexOwnership();
+  // Re-probe here instead of trusting the earlier cache decision: startup work
+  // between the two sites must not widen the service-install race.
+  const nativeOwnership = inspectStartupOwnership(deps);
   const nativeMainLifecycle: NativeMainStartupLifecycle = shouldSyncCodexOnStart(config)
-    && nativeOwnership.ownership !== "foreign"
-    ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
+    ? nativeOwnership.ownership === "owned"
+      ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
+      : blockNativeMainStartupForUnownedServiceHome(
+        nativeOwnership.ownership === "foreign" ? "foreign-ownership" : "ownership-unknown",
+      )
     : {
       homeId: null,
       settled: Promise.resolve({ status: "ready", homeId: null }),
@@ -911,7 +947,19 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           const catalogNativeSlugs = accountSelectors.length > 0
             ? NATIVE_OPENAI_MODELS
             : nativeSlugs;
-          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors, suppressedBareNativeSlugs);
+          const entries = buildCatalogEntries(
+            loadCatalogTemplate(),
+            catalogNativeSlugs,
+            goOrdered,
+            config.subagentModels,
+            websocketsEnabled(config),
+            maMode as "v1" | "default" | "v2",
+            exactComboCatalogSlugs(config),
+            accountSelectors,
+            suppressedBareNativeSlugs,
+            new Set(),
+            providerContextCap(config, OPENAI_CODEX_PROVIDER_ID),
+          );
           return jsonResponse({
             models: applyNativeVisibility(
               entries,
@@ -1136,7 +1184,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
             onNativePassthroughTerminal: status => {
-              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+              finalizeNativePassthroughLog(httpStatusForRequestLogTerminal(status, logCtx), {
                 terminalStatus: status,
                 closeReason: "terminal",
               });
@@ -1645,6 +1693,20 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
 
   // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
   backgroundLifecycle.scheduleStartupRun();
+
+  const labConfigDir = getConfigDir();
+  const productionLabRouteExecutor = createProductionLabRouteExecutor({
+    configDir: labConfigDir,
+    loadConfig: () => config,
+  });
+  setLabAutomationDispatchDeps({
+    configDir: labConfigDir,
+    loadConfig: () => config,
+    routeExecutor: productionLabRouteExecutor,
+  });
+  if (loadLabAutomationPolicy(labConfigDir).enabled) {
+    startLabAutomationScheduler(labConfigDir);
+  }
 
   return server;
 }

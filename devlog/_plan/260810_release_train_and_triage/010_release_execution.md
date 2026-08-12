@@ -92,7 +92,11 @@ dirty tree, and this checkout is untracked-dirty with `.dirfd-probe-29692.ok`
 run from dedicated clean checkouts:
 
 - `preview`: `/Users/jun/.codex/worktrees/260728-preview/opencodex`
-- `main`: a separate clean worktree created for this train
+- `main`: `/tmp/ocx-main-release-p8K6ss` — created for this train with
+  `git worktree add`, checked out at `main` (`121f1ad92`), `git status
+  --porcelain` empty. An earlier revision of this file claimed a main worktree
+  existed while step 3 still read `<clean main worktree>`; the audit caught the
+  gap and the path above is the real one.
 
 Nothing in the primary checkout is stashed, reset, or deleted.
 
@@ -180,10 +184,10 @@ The **same RC**, not the preview release commit:
 
 ```bash
 git ls-remote origin refs/heads/main                      # re-pin
-cd <clean main worktree>
+cd /tmp/ocx-main-release-p8K6ss                            # the clean main worktree
 git status --porcelain                                     # must be empty
 git pull --ff-only origin main
-git merge --no-ff <RC> -m "Merge dev RC <short> into main: promote the v2.12.0 line"
+git merge --no-ff 9c051342d -m "Merge dev RC 9c051342d into main: promote the v2.12.0 line"
 ```
 
 The 2026-08-09 train needed a `commit-tree` merge because `main`'s tree had
@@ -224,5 +228,9 @@ normal merge commit and no history is rewritten.
 
 ## Out of scope
 
-Fixing #1302, resolving the Bun macOS segfault, merging #1398 into this train,
-and touching any contributor PR.
+Fixing #1302, resolving the Bun macOS segfault, and touching any contributor PR.
+
+"Merging #1398 into this train" was listed here while the RC was `dc4dd45b0`.
+It is stale: the re-picked RC `9c051342d` already contains #1398, #1396, and
+#1010 (see `011` §"Re-pick after remediation"). Nothing is deferred out of this
+train on RC grounds.

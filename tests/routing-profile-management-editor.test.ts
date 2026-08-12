@@ -119,6 +119,68 @@ describe("routing profile management editor API", () => {
     expect(refreshes).toBe(1);
   });
 
+  test("PUT round-trips compatibility controls through management API", async () => {
+    const config = baseConfig();
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "compat",
+        mode: "create",
+        profile: {
+          candidates: [{ provider: "a", model: "m1" }],
+          compatibility: {
+            requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+            minStatus: "VERIFIED",
+            maxEvidenceAgeMs: 3_600_000,
+            unknownEvidence: "penalize",
+            degradedEvidence: "exclude",
+          },
+        },
+      }),
+    });
+    const response = await handleManagementAPI(req, new URL(req.url), config, deps());
+    expect(response?.status).toBe(200);
+    const body = await response!.json() as { profile?: { compatibility?: Record<string, unknown> } };
+    expect(body.profile?.compatibility).toMatchObject({
+      requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "live_route_compatibility" }],
+      minStatus: "VERIFIED",
+      maxEvidenceAgeMs: 3_600_000,
+      unknownEvidence: "penalize",
+      degradedEvidence: "exclude",
+    });
+    expect(config.routingProfiles?.compat?.compatibility).toMatchObject({
+      minStatus: "VERIFIED",
+    });
+  });
+
+  test("GET /api/lab/catalog remains read-only after routing profile writes", async () => {
+    const config = baseConfig();
+    const putReq = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "compat-readonly",
+        mode: "create",
+        profile: {
+          candidates: [{ provider: "a", model: "m1" }],
+          compatibility: {
+            requiredSuites: [{ suiteId: "responses-core", evidenceLayer: "protocol_conformance" }],
+            minStatus: "PROBED",
+          },
+        },
+      }),
+    });
+    const putRes = await handleManagementAPI(putReq, new URL(putReq.url), config, deps());
+    expect(putRes?.status).toBe(200);
+
+    const catalogReq = new ManagementRequest("http://localhost/api/lab/catalog", { method: "GET" });
+    const catalogRes = await handleManagementAPI(catalogReq, new URL(catalogReq.url), config, deps());
+    expect(catalogRes?.status).toBe(200);
+    const catalogBody = await catalogRes!.json() as { scenarios?: unknown[] };
+    expect(Array.isArray(catalogBody.scenarios)).toBe(true);
+  });
+
   test("PUT rejects invalid candidates without mutating or persisting", async () => {
     const config = baseConfig();
     let saves = 0;

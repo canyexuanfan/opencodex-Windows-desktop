@@ -120,6 +120,7 @@ import {
 } from "../relay";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
+import { codexAuthContextLogLabel } from "../../codex/account-label";
 
 import {
   decodeRequestErrorResponse,
@@ -362,6 +363,7 @@ export async function handleResponsesCompact(
           modelId: selectedModelId,
           beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
         });
+        logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
         const selected = headersForCodexAuthContext(req.headers, authCtx);
         compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
         for (const name of FORWARD_HEADERS) {
@@ -590,6 +592,7 @@ export async function handleResponsesCompact(
         });
         await upstream.body?.cancel().catch(() => undefined);
         outcomeCtx = alternate.authCtx;
+        logCtx.accountLogLabel = codexAuthContextLogLabel(alternate.authCtx, config);
         try {
           upstream = await sendCompactAttempt(alternate.provider, alternate.headers, "single");
         } catch (err) {

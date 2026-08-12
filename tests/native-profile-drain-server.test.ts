@@ -22,6 +22,10 @@ import {
 } from "../src/server/lifecycle";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
+
+/** These cases sandbox CODEX_HOME/OPENCODEX_HOME, so the installed service is not their evidence. */
+const inspectNativeCodexOwnership = ownedServiceHomeInspection("native-profile drain server test");
 
 const originalFetch = globalThis.fetch;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
@@ -104,7 +108,7 @@ describe("native main profile scoped server admission", () => {
     });
 
     saveMode("direct");
-    let server: ReturnType<typeof startServer> | undefined = startServer(0);
+    let server: ReturnType<typeof startServer> | undefined = startServer(0, { inspectNativeCodexOwnership });
     const drain = acquireNativeMainProfileDrain("test-switch");
     expect(drain).not.toBeNull();
     try {
@@ -132,7 +136,7 @@ describe("native main profile scoped server admission", () => {
 
       saveMode("pool");
       updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
-      server = startServer(0);
+      server = startServer(0, { inspectNativeCodexOwnership });
       await waitForNativeMainStartupGate();
       const mainHttp = await fetch(new URL("/v1/responses", server.url), {
         method: "POST",
@@ -274,7 +278,7 @@ describe("native main profile scoped server admission", () => {
     try {
       saveMode("pool", MAIN_CODEX_ACCOUNT_ID);
       updateAccountQuota(MAIN_CODEX_ACCOUNT_ID, 1, 1);
-      server = startServer(0);
+      server = startServer(0, { inspectNativeCodexOwnership });
       await waitForNativeMainStartupGate();
       client = await connectEcho(server, "/v1/live/main-pre-fence");
       expect(getNativeMainProfileRequestCount()).toBe(1);
@@ -311,7 +315,7 @@ describe("native main profile scoped server admission", () => {
       server = undefined;
 
       saveMode("direct", MAIN_CODEX_ACCOUNT_ID);
-      server = startServer(0);
+      server = startServer(0, { inspectNativeCodexOwnership });
       const directDrain = acquireNativeMainProfileDrain("direct-sideband");
       const directToken = fakeChatGptJwt({ chatgpt_account_id: "direct-account" });
       client = await connectEcho(server, "/v1/live/direct", {
@@ -333,7 +337,7 @@ describe("native main profile scoped server admission", () => {
       });
       updateAccountQuota("pool-a", 1, 1);
       saveMode("pool", "pool-a");
-      server = startServer(0);
+      server = startServer(0, { inspectNativeCodexOwnership });
       const poolDrain = acquireNativeMainProfileDrain("pool-sideband");
       client = await connectEcho(server, "/v1/realtime/calls/pool");
       expect(getNativeMainProfileRequestCount()).toBe(0);
@@ -399,6 +403,7 @@ describe("native main profile scoped server admission", () => {
       },
     } as unknown as NativeProfileManager;
     const server = startServer(0, {
+      inspectNativeCodexOwnership,
       liveSidebandWebSocketFactory: () => {
         upstream = new UncooperativeUpstream();
         queueMicrotask(() => upstream?.open());
