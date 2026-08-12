@@ -24,82 +24,74 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('src/server/responses/core.ts')
+          path = Path("src/server/responses/core.ts")
           text = path.read_text()
 
-          old = '''  let selectedForwardHeaders = req.headers;
-          let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
-          let subagentQuotaFailureModel = parsed.modelId;
-          '''
-          new = '''  let selectedForwardHeaders = req.headers;
-          let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
-          let subagentFallbackPreviewAccountId: string | null | undefined;
-          let subagentQuotaFailureModel = parsed.modelId;
-          '''
-          if old not in text:
-              raise SystemExit('fallback state anchor not found')
-          text = text.replace(old, new, 1)
+          state_anchor = "  let subagentFallbackAccountId = config.activeCodexAccountId ?? null;"
+          if text.count(state_anchor) != 1:
+              raise SystemExit("fallback state anchor not unique")
+          text = text.replace(
+              state_anchor,
+              state_anchor + "\n  let subagentFallbackPreviewAccountId: string | null | undefined;",
+              1,
+          )
 
-          old = '''    subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
-              const fallback = applySubagentModelFallback(
-          '''
-          new = '''    subagentFallbackPreviewAccountId = previewAccountId;
-              subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
-              const fallback = applySubagentModelFallback(
-          '''
-          if old not in text:
-              raise SystemExit('preview account anchor not found')
-          text = text.replace(old, new, 1)
+          preview_anchor = "    subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;"
+          if text.count(preview_anchor) != 1:
+              raise SystemExit("preview account anchor not unique")
+          text = text.replace(
+              preview_anchor,
+              "    subagentFallbackPreviewAccountId = previewAccountId;\n" + preview_anchor,
+              1,
+          )
 
-          old = '''          markBodyNonPersistable(parsed._rawBody);
-              toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
-          '''
-          new = '''          markBodyNonPersistable(parsed._rawBody);
-
-              // The ciphertext-only pass intentionally excludes routed candidates. Once recovery
-              // makes the assignment readable, run selection again with the full configured chain
-              // and keep the route in sync with any newly selected fallback.
-              const fallback = applySubagentModelFallback(
-                parsed,
-                req.headers,
-                config,
-                subagentFallbackPreviewAccountId,
-                Date.now(),
-                false,
-                previewSelectionOptions,
-              );
-              if (fallback) {
-                (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
-                (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
-                if (isInjectionDebugEnabled()) {
-                  injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);
-                }
-              }
-              subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;
-
-              if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {
-                try {
-                  route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));
-                  logCtx.routeDecision = route.routeDecision;
-                } catch (err) {
-                  if (err instanceof NoAvailableComboTargetsError) {
-                    return comboUnavailableResponse(err.message);
-                  }
-                  if (err instanceof NoEligiblePolicyCandidateError) {
-                    logCtx.routeDecision = err.trace;
-                  }
-                  return formatErrorResponse(
-                    404,
-                    "invalid_request_error",
-                    err instanceof Error ? err.message : String(err),
-                  );
-                }
-              }
-              toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
-          '''
-          if old not in text:
-              raise SystemExit('recovery reparse anchor not found')
-          text = text.replace(old, new, 1)
+          recovery_anchor = "          markBodyNonPersistable(parsed._rawBody);"
+          if text.count(recovery_anchor) != 1:
+              raise SystemExit("recovery reparse anchor not unique")
+          recovery_lines = [
+              recovery_anchor,
+              "",
+              "          // The ciphertext-only pass intentionally excludes routed candidates. Once recovery",
+              "          // makes the assignment readable, run selection again with the full configured chain",
+              "          // and keep the route in sync with any newly selected fallback.",
+              "          const fallback = applySubagentModelFallback(",
+              "            parsed,",
+              "            req.headers,",
+              "            config,",
+              "            subagentFallbackPreviewAccountId,",
+              "            Date.now(),",
+              "            false,",
+              "            previewSelectionOptions,",
+              "          );",
+              "          if (fallback) {",
+              "            (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;",
+              "            (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;",
+              "            if (isInjectionDebugEnabled()) {",
+              "              injectionDebugLog(`[opencodex] subagent model fallback ${fallback.from} -> ${fallback.to}`);",
+              "            }",
+              "          }",
+              "          subagentQuotaFailureModel = fallback?.to ?? parsed.modelId;",
+              "",
+              "          if (fallback?.to && !slugsEquivalent(fallback.to, route.modelId)) {",
+              "            try {",
+              "              route = routeModel(config, fallback.to, evidenceFromBody(parsed._rawBody));",
+              "              logCtx.routeDecision = route.routeDecision;",
+              "            } catch (err) {",
+              "              if (err instanceof NoAvailableComboTargetsError) {",
+              "                return comboUnavailableResponse(err.message);",
+              "              }",
+              "              if (err instanceof NoEligiblePolicyCandidateError) {",
+              "                logCtx.routeDecision = err.trace;",
+              "              }",
+              "              return formatErrorResponse(",
+              "                404,",
+              "                \"invalid_request_error\",",
+              "                err instanceof Error ? err.message : String(err),",
+              "              );",
+              "            }",
+              "          }",
+          ]
+          text = text.replace(recovery_anchor, "\n".join(recovery_lines), 1)
 
           path.write_text(text)
           PY
