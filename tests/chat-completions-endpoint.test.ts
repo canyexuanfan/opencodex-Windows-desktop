@@ -887,6 +887,80 @@ test("POST /v1/chat/completions finalizes native passthrough request logs", asyn
   }
 });
 
+test("POST /v1/chat/completions logs native cyber terminals as 400 cyber_policy", async () => {
+  const { clearRequestLogsForTests, getRequestLogEntries } = await import("../src/server/request-log");
+  clearRequestLogsForTests();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response([
+        "event: response.failed",
+        `data: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+          },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(requestUrl);
+    const prefix = "/backend-api/codex";
+    if (url.hostname === "chatgpt.com" && url.pathname.startsWith(prefix)) {
+      return originalFetch(new URL(`${url.pathname.slice(prefix.length)}${url.search}`, upstream.url), init);
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+  saveConfig({
+    port: 0,
+    defaultProvider: "openai",
+    providers: {
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: ["Bear" + "er", "caller-direct-token"].join(" "),
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("blocked");
+    const entry = getRequestLogEntries().findLast(e => e.inboundProtocol === "chat");
+    expect(entry).toMatchObject({
+      status: 400,
+      errorCode: "cyber_policy",
+      terminalStatus: "failed",
+      closeReason: "terminal",
+      upstreamError: "blocked",
+    });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+    globalThis.fetch = originalFetch;
+    clearRequestLogsForTests();
+  }
+});
+
 
 test("responsesSseToChatCompletionsSse reconciles done-frame final arguments (last-write-wins)", async () => {
   const { responsesSseToChatCompletionsSse, collectChatCompletion } = budgetedChatOutbound(await import("../src/chat/outbound"));

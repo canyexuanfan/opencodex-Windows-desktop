@@ -7,7 +7,11 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { createAnthropicAdapter } from "../src/adapters/anthropic";
 import { clearableDeadline } from "../src/lib/abort";
-import type { RequestLogContext } from "../src/server/request-log";
+import {
+  clearRequestLogsForTests,
+  getRequestLogEntries,
+  type RequestLogContext,
+} from "../src/server/request-log";
 import { startServer } from "../src/server";
 import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import {
@@ -684,6 +688,66 @@ test("native openai-responses route carries prompt_cache_key + synthesized sessi
   } finally {
     await server.stop(true);
     upstream.stop(true);
+  }
+});
+
+test("native openai-responses Claude route logs cyber terminals as 400 cyber_policy", async () => {
+  clearRequestLogsForTests();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response([
+        "event: response.failed",
+        `data: ${JSON.stringify({
+          type: "response.failed",
+          response: {
+            status: "failed",
+            error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+          },
+        })}`,
+        "",
+        "",
+      ].join("\n"), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  saveConfig({
+    port: 0,
+    defaultProvider: "native",
+    providers: {
+      native: {
+        adapter: "openai-responses",
+        baseUrl: `${upstream.url.toString().replace(/\/$/, "")}/v1`,
+        authMode: "forward",
+        allowPrivateNetwork: true,
+      },
+    },
+  } as OcxConfig);
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/messages", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "native/gpt-test",
+        max_tokens: 128,
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("blocked");
+    const entry = getRequestLogEntries().findLast(e => e.surface === "claude");
+    expect(entry).toMatchObject({
+      status: 400,
+      errorCode: "cyber_policy",
+      terminalStatus: "failed",
+      closeReason: "terminal",
+      upstreamError: "blocked",
+    });
+  } finally {
+    await server.stop(true);
+    await upstream.stop(true);
+    clearRequestLogsForTests();
   }
 });
 

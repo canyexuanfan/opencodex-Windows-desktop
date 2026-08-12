@@ -88,6 +88,10 @@ Translated response request-log tracking and the heartbeat relay also reuse
 `createSseInspector`. This keeps every client-facing SSE observation path on
 the same byte-bounded, discard-and-resynchronize frame policy and ensures the
 request-log, first-output, and terminal observers share one payload parse.
+The inspector records a structured `response.failed` status before invoking the
+terminal observer. Native Responses, Chat Completions, Claude Messages, and WebSocket
+request logs must therefore finalize through the context-aware terminal mapper; recognized
+`cyber_policy` terminals stay `400 / cyber_policy` rather than collapsing to a generic 502.
 
 ## Standalone Search and exact account selectors
 

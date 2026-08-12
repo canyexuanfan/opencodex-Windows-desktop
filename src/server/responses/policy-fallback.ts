@@ -96,6 +96,7 @@ function finishFailedPolicyAttempt(logCtx: RequestLogContext, status: number): v
   delete logCtx.usageFromBridge;
   delete logCtx.upstreamError;
   delete logCtx.terminalHttpStatus;
+  delete logCtx.terminalErrorCode;
   delete logCtx.terminalIncompleteReason;
 }
 
