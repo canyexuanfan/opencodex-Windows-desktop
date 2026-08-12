@@ -1,4 +1,5 @@
 import { handleResponses } from "../../src/server/responses";
+import type { TranslatorBudget } from "../../src/lib/translator-budget";
 import type { OcxConfig } from "../../src/types";
 
 export const originalFetch = globalThis.fetch;
@@ -146,6 +147,7 @@ export async function post(
   input: unknown[],
   headers: HeadersInit = {},
   abortSignal?: AbortSignal,
+  options: { tools?: unknown[]; translatorBudget?: TranslatorBudget } = {},
 ): Promise<Response> {
   return handleResponses(new Request("http://localhost/v1/responses", {
     method: "POST",
@@ -153,8 +155,8 @@ export async function post(
       "content-type": "application/json",
       ...Object.fromEntries(new Headers(headers)),
     },
-    body: JSON.stringify({ model, input, stream: false }),
-  }), config, { model: "", provider: "" }, { abortSignal });
+    body: JSON.stringify({ model, input, stream: false, ...(options.tools ? { tools: options.tools } : {}) }),
+  }), config, { model: "", provider: "" }, { abortSignal, translatorBudget: options.translatorBudget });
 }
 
 export function encryptedInput(options: {
