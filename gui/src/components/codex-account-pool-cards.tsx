@@ -1,4 +1,4 @@
-import { useT } from "../i18n/shared";
+import { useI18n, useT } from "../i18n/shared";
 import { IconAlert, IconPause, IconPlay, IconX } from "../icons";
 import { displayAccountId } from "../lib/privacy";
 import AccountPriorityControl, { AccountPriorityBadge } from "./AccountPriorityControl";
@@ -15,6 +15,7 @@ import {
   oauthHealthShowsDoctor,
   oauthHealthShowsReauth,
 } from "../oauth-health-display";
+import { formatCostUsd, formatTokenCount } from "../provider-workspace/usage";
 
 export function CodexAccountPoolCards({
   pool,
@@ -65,6 +66,7 @@ export function CodexAccountPoolCards({
   doctorCopyOutcomeFor?: (accountId: string) => "copied" | "unavailable" | null;
 }) {
   const t = useT();
+  const { locale } = useI18n();
   const isNext = (account: CodexAccountEntry) => !account.paused && activeId === account.id;
 
   return (
@@ -144,6 +146,14 @@ export function CodexAccountPoolCards({
             </button>
           </div>
           <div className="card-sub">{a.email}{a.plan ? ` · ${a.plan}` : ""} · {t("prov.accountId")}: {displayAccountId(a.id)}</div>
+          {a.logLabel && (
+            <div className="card-sub faint">{t("codexAuth.logLabel")}: <code>{a.logLabel}</code></div>
+          )}
+          {a.usage30d && (
+            <div className="card-sub faint" title={t("logs.metric.estimatedCostTitle")}>
+              {t("usage.card.totalTokens")}: {formatTokenCount(a.usage30d.totalTokens, locale)} · {t("pws.estimatedCost")}: {formatCostUsd(a.usage30d.estimatedCostUsd, locale)} · {t("usage.coverage.measured")}: {Math.round(a.usage30d.usageCoverageRatio * 100)}%
+            </div>
+          )}
           {healthSummary && (
             <div className="card-sub faint">{healthSummary}</div>
           )}

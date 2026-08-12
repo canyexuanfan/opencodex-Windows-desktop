@@ -261,6 +261,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         days: [],
         models: [],
         providers: [],
+        accounts: [],
         historyTruncated: false,
         truncatedPrefixBytes: 0,
         entriesTruncated: false,

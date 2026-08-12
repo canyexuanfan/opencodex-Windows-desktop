@@ -919,6 +919,7 @@ export const de: Record<TKey, string> = {
   "integrations.semantics.kimi": "Zum Anwenden neu starten oder /reload ausführen (v2 überwacht die Datei).",
   "integrations.semantics.gajae": "Gilt für eine neue Sitzung oder beim Öffnen von /model.",
   "codexAuth.mainAccount": "Hauptkonto",
+  "codexAuth.logLabel": "Log-Kennung",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "App-Login",
   "codexAuth.accountPool": "Kontopool",

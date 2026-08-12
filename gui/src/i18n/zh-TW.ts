@@ -1032,6 +1032,7 @@ export const zhTW: Record<TKey, string> = {
   "nav.closeMenu": "關閉選單",
   "codexAuth.mainAccount": "主帳號",
   "codexAuth.codexApp": "Codex App",
+  "codexAuth.logLabel": "日誌標籤",
   "codexAuth.appLogin": "應用登入",
   "codexAuth.accountPool": "帳號池",
   "codexAuth.accountModeTitle": "OpenAI 帳號模式",

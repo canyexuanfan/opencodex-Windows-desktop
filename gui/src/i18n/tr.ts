@@ -1378,6 +1378,7 @@ export const tr: Record<TKey, string> = {
   "integrations.semantics.gajae": "Yeni oturuma uygulanır.",
   "integrations.semantics.omp": "Kataloğu yüklemek için OMP'yi yeniden başlatın.",
   "codexAuth.mainAccount": "Ana Hesap",
+  "codexAuth.logLabel": "Günlük etiketi",
   "codexAuth.codexApp": "Codex Uygulaması",
   "codexAuth.appLogin": "Uygulama girişi",
   "codexAuth.accountPool": "Hesap Havuzu",

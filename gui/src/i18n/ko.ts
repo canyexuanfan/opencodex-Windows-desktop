@@ -943,6 +943,7 @@ export const ko: Record<TKey, string> = {
   "integrations.semantics.kimi": "재시작 또는 /reload 시 적용됩니다 (v2는 파일 변경을 감지합니다).",
   "integrations.semantics.gajae": "새 세션 또는 /model을 열 때 적용됩니다.",
   "codexAuth.mainAccount": "메인 계정",
+  "codexAuth.logLabel": "로그 라벨",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "앱 로그인",
   "codexAuth.accountPool": "계정 풀",

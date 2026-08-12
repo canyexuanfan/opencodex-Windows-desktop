@@ -936,6 +936,7 @@ export const zh: Record<TKey, string> = {
   "integrations.semantics.kimi": "重启或运行 /reload 以应用（v2 会监视该文件）。",
   "integrations.semantics.gajae": "在新会话中或打开 /model 时生效。",
   "codexAuth.mainAccount": "主账号",
+  "codexAuth.logLabel": "日志标签",
   "codexAuth.codexApp": "Codex App",
   "codexAuth.appLogin": "应用登录",
   "codexAuth.accountPool": "账号池",

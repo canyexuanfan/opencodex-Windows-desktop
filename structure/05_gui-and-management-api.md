@@ -293,6 +293,10 @@ keeps the saved state and renders fixed `ocx sync` guidance without server/accou
 `src/usage/log.ts` writes append-only JSONL to `~/.opencodex/usage.jsonl` with file mode `0o600`.
 `src/usage/summary.ts` turns that file into the `/api/usage` shape — totals, daily zero-filled
 grid, model and provider breakdowns, and `measured / reported / unreported / unsupported / estimated` counts.
+A Codex-surface response also includes an `accounts` breakdown keyed by the stable non-PII
+`accountLogLabel`; current cards join those rows to the management account DTO and show the 30-day
+token total, API-equivalent cost estimate, and measurement coverage. New main-pool rows use `main`,
+while legacy bare `openai` rows stay ambiguous rather than being reassigned from current config.
 A missing `usage.jsonl` returns a zeroed summary with 200, not an error: a fresh install has no
 usage and must not render as a failure. What the shape must never do is present an unmeasured
 request as a measured zero — that is what the `measured / reported / unreported / unsupported /
