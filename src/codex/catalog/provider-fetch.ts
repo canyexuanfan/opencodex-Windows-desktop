@@ -32,6 +32,7 @@ import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
 import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
+import { canForwardServiceTierForModel, supportsServiceTierForModel } from "../../providers/service-tier";
 import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
 import { parseAntigravityAvailableModels } from "../../providers/antigravity-models";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
@@ -561,6 +562,7 @@ function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Reco
     defRe: prov.modelDefaultReasoningEfforts ?? null,
     rsSum: prov.modelSupportsReasoningSummaries ?? null,
     rsDel: prov.modelReasoningSummaryDelivery ?? null,
+    serviceTier: prov.modelSupportsServiceTier ?? null,
     noVis: [...(prov.noVisionModels ?? [])].sort(),
     ptc: prov.parallelToolCalls ?? null,
     gMode: prov.googleMode ?? null,
@@ -632,8 +634,13 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
   const reasoningEfforts = configuredReasoningEfforts(prov, model.id);
   const defaultReasoningEffort = modelRecordValue(prov.modelDefaultReasoningEfforts, model.id) ?? model.defaultReasoningEffort;
   const supportsReasoningSummaries = configuredReasoningSummarySupport(prov, model.id);
+  const supportsServiceTier = supportsServiceTierForModel(prov, model.id);
+  const serviceTierSupported = typeof supportsServiceTier === "boolean"
+    ? canForwardServiceTierForModel(prov, model.id, name)
+    : undefined;
+  const { supportsServiceTier: _staleServiceTier, ...modelWithoutServiceTier } = model;
   const hinted = {
-    ...model,
+    ...modelWithoutServiceTier,
     ...(configuredCap !== undefined
       ? {
         contextWindow: typeof model.contextWindow === "number" && model.contextWindow > 0
@@ -652,6 +659,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
       : {}),
     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
+    ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier: serviceTierSupported } : {}),
     ...(prov.adapter === "kiro" ? { supportsVerbosity: false } : {}),
     // Default-on for openai-chat providers (explicit false opts out); other adapters
     // advertise only on explicit opt-in.
@@ -1740,6 +1748,7 @@ async function gatherRoutedModelsUncached(
   const replacedByRoutedSlug = new Map(all.map(model => [routedSlug(model.provider, model.id), model]));
   const customModels = (config.customModels ?? []).map(cm => {
     const rawProvider = config.providers[cm.provider];
+    const effectiveProvider = enrichedByName.get(cm.provider) ?? rawProvider;
     // Registry routing backfills an omitted authMode on the built-in OpenAI provider to
     // forward. Keep the catalog projection on the same contract while still failing closed
     // for every explicit non-forward mode and every non-canonical endpoint.
@@ -1795,6 +1804,11 @@ async function gatherRoutedModelsUncached(
       // verbatim instead of being replaced by the replaced row's metadata.
       ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
       ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
+      ...(effectiveProvider && typeof supportsServiceTierForModel(effectiveProvider, cm.modelId) === "boolean"
+        ? {
+          supportsServiceTier: canForwardServiceTierForModel(effectiveProvider, cm.modelId, cm.provider),
+        }
+        : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,

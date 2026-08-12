@@ -703,6 +703,7 @@ const providerConfigSchema = z.object({
   statelessResponses: z.boolean().optional(),
   requiresAdjacentResponsesToolResults: z.boolean().optional(),
   supportsServiceTier: z.boolean().optional(),
+  modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
   noStructuredOutputModels: z.array(z.string().min(1))
@@ -1481,6 +1482,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", redactSecretString(name), "modelSupportsReasoningSummaries"],
         message: reasoningSummariesError,
+      });
+    }
+    const serviceTierModelsError = booleanRecordConfigError(
+      (provider as { modelSupportsServiceTier?: unknown }).modelSupportsServiceTier,
+      "modelSupportsServiceTier",
+    );
+    if (serviceTierModelsError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", redactSecretString(name), "modelSupportsServiceTier"],
+        message: serviceTierModelsError,
       });
     }
     const reasoningSummaryDeliveryError = reasoningSummaryDeliveryRecordConfigError(

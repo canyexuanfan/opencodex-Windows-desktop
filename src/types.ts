@@ -1318,6 +1318,8 @@ export interface OcxProviderConfig {
    * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
+  /** Exact upstream model ids that override the provider-level service-tier capability. */
+  modelSupportsServiceTier?: Record<string, boolean>;
   /**
    * Responses upstream whose native contract accepts plaintext reasoning replay
    * (DeepSeek documents reasoning items with plaintext content). When set, the
