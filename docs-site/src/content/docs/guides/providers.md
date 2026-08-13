@@ -216,7 +216,6 @@ also needs the local CLI binary: opencodex first uses `PATH`, then falls back to
 
 After a successful import, opencodex persists the imported credential to
 `~/.opencodex/auth.json`.
-
 Keep these variables and the selected database private. Do not attach database files or raw login
 diagnostics to bug reports.
 
@@ -243,8 +242,9 @@ and [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions), op
 [Cline's terms](https://cline.bot/tos). A routed id such as `cline-pass/cline-pass/kimi-k3` is
 intentional: the first segment selects the opencodex provider, while `cline-pass/kimi-k3` is the
 full model slug sent upstream. ClinePass quota is shared by the account across rolling 5-hour,
-weekly, and monthly limits. opencodex currently advertises the live-verified `low` reasoning tier;
-higher requested tiers clamp to `low` until the gateway publishes or verifies a wider ladder.
+weekly, and monthly limits. A 2026-08-13 live probe verified that every static ClinePass model
+accepts `low`, `medium`, `high`, `xhigh`, and `max` at the gateway input boundary. opencodex
+preserves those requested tiers; any backend-specific normalization remains ClinePass's responsibility.
 
 **Cline** is the same API key and endpoint on pay-as-you-go usage billing across 100+ models
 (OpenRouter-style ids like `anthropic/claude-sonnet-4-6`). Cline's promotional free models are only

@@ -158,8 +158,8 @@ ChatGPT 转发预设。仪表盘的 **Add provider** 选择器会打开密钥提
 [Cline 条款](https://cline.bot/tos)所列的 Cline Bot Inc.。
 `cline-pass/cline-pass/kimi-k3` 这样的路由 ID 是预期格式：第一段选择 opencodex 提供商，
 其余的 `cline-pass/kimi-k3` 是发送到上游的完整模型 slug。用量由账户的滚动 5 小时、每周和
-每月限额共同管理。当前 opencodex 仅公开经过实测的 `low` reasoning 档位；在网关公布或验证更宽
-档位之前，更高请求会被限制为 `low`。
+每月限额共同管理。2026-08-13 的实测确认，所有静态 ClinePass 模型在网关输入端都接受
+`low`、`medium`、`high`、`xhigh` 和 `max`。opencodex 会保留请求的档位；后端特定的规范化由 ClinePass 负责。
 
 **Cline** 使用相同的 API 密钥和端点，按用量计费，可访问 100 多个模型
 (OpenRouter 风格 ID，如 `anthropic/claude-sonnet-4-6`)。Cline 的促销免费模型仅在
