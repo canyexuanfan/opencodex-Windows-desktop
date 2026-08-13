@@ -2669,7 +2669,10 @@ describe("Codex catalog routed normalization", () => {
       .find(entry => entry.slug === `openai/${NATIVE_DAYBREAK_BLUE_MODEL}`);
     expect(row?.context_window).toBe(128_000);
     expect(row?.use_responses_lite).toBeUndefined();
-    expect(row?.supports_search_tool).toBe(false);
+    // Not a Daybreak-inheritance signal: `supports_search_tool` is the ordinary routed default for
+    // every non-Cursor row since fcbef381e restored deferred tool discovery. The inheritance
+    // rejection is proven by the native-only fields above and below.
+    expect(row?.supports_search_tool).toBe(true);
     expect(row?.multi_agent_version).toBeUndefined();
   });
 
