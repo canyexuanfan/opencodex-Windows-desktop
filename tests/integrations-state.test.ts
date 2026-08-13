@@ -417,6 +417,49 @@ describe("classifier unit behavior", () => {
     expect(parseConfig("9007199254740993", "json")).toBe(PARSE_FAILED);
     expect(parseConfig("[1, 9007199254740993]", "json")).toBe(PARSE_FAILED);
     expect(parseConfig("{\"a\": \"x\\\\\", \"b\": 9007199254740993}", "json")).toBe(PARSE_FAILED);
+    // Underflow: a nonzero value the parse already flattened to +0, so a
+    // rewrite would write 0. The sign is irrelevant here.
+    expect(parseConfig("{\"a\": 1e-9999}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": -1e-9999}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": 0.00001e-9999}", "json")).toBe(PARSE_FAILED);
+  });
+
+  test("parseConfig refuses duplicate json members a rewrite would delete", () => {
+    // JSON.parse keeps only the last member, so serializing the parsed
+    // document drops the earlier one — content loss, not normalization.
+    expect(parseConfig("{\"a\": 1, \"a\": 2}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"providers\": {\"mine\": 1}, \"providers\": {\"ocx\": 2}}", "json"))
+      .toBe(PARSE_FAILED);
+    // Two spellings of ONE member name: the comparison is on decoded names.
+    expect(parseConfig("{\"a\": 1, \"\\u0061\": 2}", "json")).toBe(PARSE_FAILED);
+    // Nested, and after a closed container (the frame must pop, not leak).
+    expect(parseConfig("{\"x\": {\"a\": 1, \"a\": 2}}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": {\"b\": 1}, \"a\": 2}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": [1], \"a\": 2}", "json")).toBe(PARSE_FAILED);
+  });
+
+  test("parseConfig keeps repeated names that are separate json members", () => {
+    // Same name in sibling objects, in array elements, and as string data —
+    // none of these lose anything in a rewrite.
+    expect(parseConfig("{\"a\": {\"b\": 1}, \"c\": {\"b\": 2}}", "json"))
+      .toEqual({ a: { b: 1 }, c: { b: 2 } });
+    expect(parseConfig("[{\"a\": 1}, {\"a\": 2}]", "json")).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(parseConfig("{\"a\": \"x:y\", \"b\": \"a\"}", "json"))
+      .toEqual({ a: "x:y", b: "a" });
+    // A colon and a brace inside a string must not be read as structure.
+    expect(parseConfig("{\"a\": \"{\\\"a\\\": 1, \\\"a\\\": 2}\"}", "json"))
+      .toEqual({ a: "{\"a\": 1, \"a\": 2}" });
+  });
+
+  test("parseConfig keeps json numbers that underflow to a genuine zero", () => {
+    // Exact-zero spellings: the value never changes, only the spelling may.
+    expect(parseConfig("{\"a\": 0e10}", "json")).toEqual({ a: 0 });
+    expect(parseConfig("{\"a\": 0.0}", "json")).toEqual({ a: 0 });
+    // A subnormal is a representable nonzero double — it survives a rewrite.
+    expect(parseConfig("{\"a\": 1e-320}", "json")).toEqual({ a: 1e-320 });
+  });
+
+  test("parseConfig refuses json nested deeper than the rewrite can carry", () => {
     // Nesting past the ceiling: parse would succeed, but the downstream
     // rewrite machinery recurses — refuse at the trust boundary.
     expect(parseConfig(`${"[".repeat(1001)}1${"]".repeat(1001)}`, "json")).toBe(PARSE_FAILED);

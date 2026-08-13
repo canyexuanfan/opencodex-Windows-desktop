@@ -214,7 +214,7 @@ function preflight(input: IntegrationWriteInput) {
   const parsed = parseConfig(before, exportSpec.format);
   if (parsed === PARSE_FAILED) {
     return { failed: refuse(clientId, "unsafe", "unsafe",
-      `${configPath} could not be parsed, or holds a value opencodex cannot rewrite without changing it (a non-finite number, an integer past 2^53, or -0)`) } as const;
+      `${configPath} could not be parsed, or holds something opencodex cannot rewrite without changing it (a non-finite number, a large integer or a tiny one a rewrite would round, -0, a duplicate member, or nesting deeper than 1000 levels)`) } as const;
   }
   const contribution = exportSpec.buildContribution(exportContextOf(input));
   // A record proves ownership of the file it was written FOR. Matching only by
