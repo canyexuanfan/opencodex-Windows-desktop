@@ -218,3 +218,35 @@ row, identical `truncatedPrefixBytes`. The regression test asserts `tailReads` r
 only output, because the consistency check makes the output correct either way — without
 skipped-line accounting it simply degrades to a full read per poll (tailReads 0), which
 the test now catches.
+
+## Fourth round: three more, on a state nobody had reviewed
+
+Rounds 1-3 all returned DEFECT FOUND, so the shipped head had never actually been
+reviewed. A fourth pass on it found three more.
+
+**Entry cap desynchronized the accounting.** Rows removed by `MANAGEMENT_USAGE_MAX_ENTRIES`
+left the result without their bytes being accounted for, so the self-check failed and the
+incremental path shut off permanently once the cap was reached — correct output, but the
+optimization silently gone (13 full reads / 0 tail reads over 12 appends).
+
+Fixing this exposed a design error of mine. My first attempt folded capped bytes into
+`truncatedPrefixBytes`, which broke an existing test asserting that byte-window truncation
+and entry-count truncation are INDEPENDENT API signals. That test was right: they are
+different facts and consumers see both. The accounting offset is now a separate internal
+field, `rowsBeginAtBytes`; `truncatedPrefixBytes` keeps its API meaning. The digest is
+anchored to `rowsBeginAtBytes` at both write and verify — anchoring it to one and checking
+the other is what made the cap case miss.
+
+**Malformed-only appends were unbounded.** If every retained row is trimmed away and only
+an unparseable remainder remains, nothing is left to advance the offset, so the retained
+span kept growing past `maxReadBytes` while the accounting still balanced. Now re-anchors
+with a full read.
+
+**CRLF ledgers never used the incremental path.** `split(/\r?\n/)` consumes two bytes but
+leaves no trace of it, so recorded lengths were one byte short per line and the self-check
+rejected every reuse. Splitting on `"\n"` keeps the `\r` inside the line where its byte is
+counted; `JSON.parse` tolerates the trailing `\r`. Before: 2 full reads / 0 tail. After:
+1 full / 1 tail.
+
+All three regression tests were driven red against the defective implementation. Cost
+remains flat: 0.07x at 245 MB, 1 GB and 2 GB.
