@@ -200,7 +200,12 @@ export function patchOmpYamlSource(
 
   let patched = `${text.slice(0, startOffset)}${text.slice(endOffset)}`;
   if (mutation.removeEmptyProviders) {
-    const remaining = Bun.YAML.parse(patched) as { providers?: unknown } | null;
+    let remaining: { providers?: unknown } | null;
+    try {
+      remaining = Bun.YAML.parse(patched) as { providers?: unknown } | null;
+    } catch {
+      return null;
+    }
     if (remaining && Object.hasOwn(remaining, "providers")) {
       const provider = remaining.providers;
       const empty = provider === null || (
