@@ -732,4 +732,46 @@ describe("GET /api/usage", () => {
       await server.stop(true);
     }
   });
+
+  test("an over-window ledger reports a stable window instead of sawtoothing", async () => {
+    const now = Date.now();
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    // Start above the window so every append slides it forward.
+    const seed = Array.from({ length: 60 }, (_, index) => row(`seed${String(index).padStart(6, "0")}`));
+    writeFileSync(join(testDir, "usage.jsonl"), seed.join(""));
+    saveConfig({ ...baseConfig(), managementUsageMaxReadBytes: 4096 });
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      const counts: number[] = [];
+      for (let round = 1; round <= 40; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), row(`add${String(round).padStart(7, "0")}`));
+        clock.mockReturnValue(now + round * 60_001);
+        const body = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+        counts.push(body.summary.requests);
+      }
+      // Retaining a window wider than maxReadBytes and then re-anchoring made visible
+      // history collapse by roughly half on a single poll of an append-only file, so
+      // dashboard totals swung between refreshes. The window is now trimmed on every
+      // read, so the visible count stays flat.
+      const min = Math.min(...counts);
+      const max = Math.max(...counts);
+      expect(max - min).toBeLessThanOrEqual(1);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
 });
