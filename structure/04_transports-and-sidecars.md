@@ -595,6 +595,22 @@ adapters advertise the catalog bit only on explicit `true`; cursor keeps its own
 Providers with flaky parallel streaming can be opted out individually. Evidence and provider
 ledger: `devlog/_fin/260709_parallel_tool_calls/`.
 
+## Volcengine Ark assistant continuation shapes
+
+The `openai-chat` adapter keeps Volcengine's pay-as-you-go Chat endpoint and Coding Plan endpoint
+on separate empty-assistant contracts. The pay-as-you-go `/api/v3` route retains the structured
+`[{ "type": "text", "text": "" }]` placeholder inferred for #796, while `/api/coding/v3` uses the
+ordinary empty string accepted by its live tool-call continuation contract (#1571). Matching only
+the shared Ark hostname is too broad because the two endpoint families reject opposite shapes.
+
+[Decision Log]
+- 목적과 의도: Preserve multi-turn tool-call continuations across both Ark Chat endpoint families.
+- 기존 구현 및 제약 조건: The #796 workaround was host-wide and unverified; live Coding Plan evidence shows its structured placeholder returns HTTP 400 while an empty string succeeds.
+- 검토한 주요 대안: Remove the workaround globally, select by model ID, or scope it by endpoint path.
+- 선택한 방식: Apply the structured placeholder only to recognized Ark hosts whose normalized base path is exactly `/api/v3`.
+- 다른 대안 대신 이 방식을 선택한 이유: Global removal would reopen #796, while model IDs can appear behind multiple Ark products and therefore do not identify the wire contract.
+- 장점, 단점 및 영향: Coding Plan regains its accepted continuation shape without changing generic providers; any future Ark endpoint family must provide evidence before inheriting the pay-as-you-go quirk.
+
 ## Chat structured-output compatibility
 
 The `openai-chat` adapter translates Responses `text.format` and Chat Completions
