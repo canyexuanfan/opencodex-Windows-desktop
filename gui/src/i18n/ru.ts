@@ -1463,6 +1463,8 @@ export const ru: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "Не удалось обновить выбор целевого аккаунта. Показана последняя подтверждённая настройка.",
   "codexAuth.accountPickerLoadFailed": "Не удалось загрузить настройку выбора аккаунта.",
   "codexAuth.accountPickerRefreshFailed": "Не удалось обновить эту настройку. По-прежнему показано последнее подтверждённое значение.",
+  "codexAuth.advancedSettings": "Дополнительные настройки",
+  "codexAuth.advancedSettingsAria": "Показать или скрыть дополнительные настройки Codex Auth",
   "codexAuth.catalogRefreshPending": "Изменение сохранено, но обновление каталога моделей Codex ещё не завершено. Выполните ocx sync, чтобы повторить попытку.",
   "anthropicPool.title": "Пул аккаунтов Claude (экспериментально)",
   "anthropicPool.enabledDesc": "При 429 аккаунт охлаждается и выполняется переключение. Новые сессии предпочитают использование ниже {threshold}% (полоса 5 часов).",

@@ -1911,6 +1911,8 @@ export const zhTW: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "無法更新帳號指定設定。目前顯示的是最後一次確認的設定。",
   "codexAuth.accountPickerLoadFailed": "無法載入帳號指定設定。",
   "codexAuth.accountPickerRefreshFailed": "無法重新整理此設定。目前仍顯示最後一次確認的值。",
+  "codexAuth.advancedSettings": "進階設定",
+  "codexAuth.advancedSettingsAria": "顯示或隱藏進階 Codex 認證設定",
   "codexAuth.catalogRefreshPending": "變更已儲存，但 Codex 模型目錄仍在等待重新整理。請執行 ocx sync 重試。",
   "accountPool.priority": "選擇順序",
   "accountPool.priorityAria": "此帳號的選擇順序",

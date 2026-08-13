@@ -458,6 +458,10 @@ describe("provider registry parity", () => {
     expect(kimiEntry?.default_reasoning_level).toBe("max");
 
     const moonshot = PROVIDER_REGISTRY.find(provider => provider.id === "moonshot");
+    expect(moonshot?.baseUrl).toBe("https://api.moonshot.ai/v1");
+    expect(moonshot?.allowBaseUrlOverride).toBe(true);
+    expect(moonshot?.baseUrlChoices?.map(c => c.id)).toEqual(["international", "china", "custom"]);
+    expect(moonshot?.baseUrlChoices?.find(c => c.id === "china")?.baseUrl).toBe("https://api.moonshot.cn/v1");
     expect(moonshot?.models).toContain("kimi-k3");
     expect(moonshot?.models).not.toContain("k3");
     expect(moonshot?.models).not.toContain("kimi-for-coding");
@@ -539,7 +543,7 @@ describe("provider registry parity", () => {
   test("base URL override permission is registry-only and limited to opted-in providers", () => {
     const optedIn = PROVIDER_REGISTRY.filter(entry => entry.allowBaseUrlOverride);
 
-    expect(optedIn.map(entry => entry.id)).toEqual(["ollama", "vllm", "lm-studio", "qwen-cloud", "alibaba", "alibaba-token-plan-intl", "litellm"]);
+    expect(optedIn.map(entry => entry.id)).toEqual(["ollama", "vllm", "lm-studio", "moonshot", "qwen-cloud", "alibaba", "alibaba-token-plan-intl", "litellm"]);
     for (const entry of optedIn) {
       expect(providerConfigSeed(entry)).not.toHaveProperty("allowBaseUrlOverride");
     }
@@ -670,9 +674,14 @@ describe("provider registry parity", () => {
     }
     expect(OAUTH_PROVIDERS.xai.providerConfig.defaultModel).toBe("grok-4.5");
     expect(OAUTH_PROVIDERS.xai.providerConfig.liveModels).toBe(true);
+    expect(OAUTH_PROVIDERS.xai.providerConfig.models).toContain("grok-4.6");
     expect(OAUTH_PROVIDERS.xai.providerConfig.models).toContain("grok-4.5");
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelContextWindows?.["grok-4.6"]).toBe(500_000);
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelContextWindows?.["grok-4.5"]).toBe(500_000);
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEfforts?.["grok-4.6"]).toEqual(["low", "medium", "high", "xhigh"]);
     expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEfforts?.["grok-4.5"]).toEqual(["low", "medium", "high"]);
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelDefaultReasoningEfforts).toEqual({ "grok-4.6": "high" });
+    expect(OAUTH_PROVIDERS.xai.providerConfig.modelReasoningEffortMap).toBeUndefined();
     expect(OAUTH_PROVIDERS.xai.providerConfig.noVisionModels).toContain("grok-build-0.1");
     const antigravityRegistry = PROVIDER_REGISTRY.find(entry => entry.id === "google-antigravity");
     expect(antigravityRegistry?.liveModels).toBe(true);
@@ -845,6 +854,22 @@ describe("provider registry parity", () => {
     expect(entry?.context_window).toBe(500_000);
     expect((entry?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
       .toEqual(["low", "medium", "high", "max", "ultra"]);
+  });
+
+  test("grok-4.6 advertises the documented xhigh rung from the xai registry seed", () => {
+    const xai = PROVIDER_REGISTRY.find(entry => entry.id === "xai");
+    const seed = providerConfigSeed(xai!);
+    const model = applyProviderConfigHints("xai", seed, { id: "grok-4.6", provider: "xai" });
+    expect(model.contextWindow).toBe(500_000);
+    expect(model.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+
+    const entries = buildCatalogEntries(nativeTemplate() as never, [], [model]);
+    const entry = entries.find(e => e.slug === "xai/grok-4.6");
+    expect(entry).toBeTruthy();
+    expect(entry?.context_window).toBe(500_000);
+    expect((entry?.supported_reasoning_levels as { effort: string }[]).map(l => l.effort))
+      .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(entry?.default_reasoning_level).toBe("high");
   });
 
   // The id-list assertion above only proves the preset exists. Pin the contract a user actually

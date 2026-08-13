@@ -44,6 +44,7 @@ import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provider-reload-contract";
 
+import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalGlobalFetch = globalThis.fetch;
@@ -1207,7 +1208,7 @@ describe("server local API auth", () => {
       url.protocol = "ws:";
       const ws = new WebSocket(url, { headers: { "x-opencodex-api-key": "local-secret", ...(headers ?? {}) } } as unknown as string[]);
       return new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), 5_000);
+        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), watchdogMs(5_000));
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model, input: "hello" }));
         }, { once: true });
@@ -1441,7 +1442,7 @@ describe("server local API auth", () => {
       const sendFrame = async (model: string) => {
         const before = seen.length;
         const message = new Promise<string>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), 5_000);
+          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), watchdogMs(5_000));
           const onMessage = (event: MessageEvent) => {
             const value = typeof event.data === "string" ? event.data : "";
             if (!value.includes('"type":"response.completed"')) return;
@@ -1711,7 +1712,7 @@ describe("server local API auth", () => {
         },
       } as unknown as string[]);
       const wsFailure = new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket affinity timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket affinity timeout")), watchdogMs(1000));
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model: "gpt-test", input: "hello" }));
         }, { once: true });
@@ -1799,7 +1800,7 @@ describe("server local API auth", () => {
         ws.addEventListener("error", () => reject(new Error("websocket failed to open")), { once: true });
       });
       const waitForTerminal = () => new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), watchdogMs(1000));
         const onMessage = (event: MessageEvent) => {
           const text = typeof event.data === "string" ? event.data : "";
           if (text.includes('"type":"response.completed"')) {
@@ -1875,7 +1876,7 @@ describe("server local API auth", () => {
         ws.addEventListener("error", () => reject(new Error("websocket failed to open")), { once: true });
       });
       const waitForTerminal = () => new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), watchdogMs(1000));
         const onMessage = (event: MessageEvent) => {
           const text = typeof event.data === "string" ? event.data : "";
           if (text.includes('"type":"response.completed"')) {

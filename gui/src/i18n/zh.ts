@@ -1028,6 +1028,8 @@ export const zh: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "无法更新账号指定设置。当前显示的是最后一次确认的设置。",
   "codexAuth.accountPickerLoadFailed": "无法加载账号指定设置。",
   "codexAuth.accountPickerRefreshFailed": "无法刷新此设置。当前仍显示最后一次确认的值。",
+  "codexAuth.advancedSettings": "高级设置",
+  "codexAuth.advancedSettingsAria": "显示或隐藏高级 Codex 认证设置",
   "codexAuth.catalogRefreshPending": "更改已保存，但 Codex 模型目录仍待刷新。请运行 ocx sync 重试。",
   "anthropicPool.title": "Claude 账户池（实验性）",
   "anthropicPool.enabledDesc": "遇到 429 时冷却该账户并故障转移。新会话优先使用 5 小时用量低于 {threshold}% 的账户。",

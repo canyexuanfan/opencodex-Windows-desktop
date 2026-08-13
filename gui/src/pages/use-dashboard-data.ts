@@ -23,6 +23,7 @@ import {
   normalizeInjectionSelection,
   type DashboardEpochRefs,
 } from "./dashboard-core-poll";
+import { usageSummary30dResourceKey } from "../usage-summary-resource";
 import {
   type DashboardSection,
   type HealthData,
@@ -263,10 +264,10 @@ export function useDashboardData(apiBase: string) {
   );
 
   const usagePoll = useKeyedClientResource(
-    `dashboard-usage:${apiBase}`,
+    usageSummary30dResourceKey(apiBase),
     [apiBase],
     (signal) => fetchDashboardUsage(apiBase, signal),
-    { pollMs: 60_000, enabled: overviewReady },
+    { enabled: overviewReady },
   );
 
   const diagnosticsPoll = useKeyedClientResource(

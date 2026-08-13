@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { managementFetch as fetch } from "./helpers/management-auth";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
@@ -317,9 +317,22 @@ describe("GET /api/usage", () => {
         usage: { inputTokens: 1, outputTokens: 1 },
         totalTokens: 2,
       })}\n`);
-      const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
-      expect(changed.summary.requests).toBe(first.summary.requests + 1);
-      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      const stale = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+      expect(stale.summary.requests).toBe(first.summary.requests);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      const originalNow = Date.now();
+      const clock = spyOn(Date, "now").mockReturnValue(originalNow + 60_001);
+      try {
+        const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+        expect(changed.summary.requests).toBe(first.summary.requests + 1);
+        // The append is picked up by extending the retained tail, so the whole 64 MiB
+        // window is NOT reparsed: a second full read here is the regression this guards.
+        expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+        expect(usageReadCacheStatsForTests().tailReads).toBeGreaterThan(0);
+      } finally {
+        clock.mockRestore();
+      }
     } finally {
       await server.stop(true);
     }
@@ -351,7 +364,9 @@ describe("GET /api/usage", () => {
       } as unknown as OcxConfig);
       const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
       expect(changed.summary.requests).toBe(first.summary.requests);
-      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      // The ledger did not change, so the recompute reuses the retained tail rather
+      // than reparsing the window; only the summary cache is invalidated.
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
     } finally {
       // This test installs a module-level blsc overlay; clear it even when an
       // assertion or shutdown fails so later tests cannot resolve
@@ -509,6 +524,211 @@ describe("GET /api/usage", () => {
       expect(body.summary.totalTokens).toBe(0);
       expect(body.summary.coverageRatio).toBe(0);
     } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("repeated appends do not reparse the retained prefix", async () => {
+    const now = Date.now();
+    writeFixture(now);
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      const afterFirst = usageReadCacheStatsForTests();
+      expect(afterFirst.fullReads).toBe(1);
+      const baselineParsed = afterFirst.parsedLines;
+      expect(baselineParsed).toBeGreaterThan(0);
+
+      // Append one row at a time, stepping past the 60s freshness window each round so
+      // every request is a genuine cache miss that reaches the reader.
+      let requests = 0;
+      for (let round = 1; round <= 5; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+          requestId: `ocx-append-${round}`,
+          timestamp: now,
+          provider: "openai",
+          model: "gpt-5.5",
+          status: 200,
+          durationMs: 1,
+          usageStatus: "reported",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          totalTokens: 2,
+        })}\n`);
+        clock.mockReturnValue(now + round * 60_001);
+        const body = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+        requests = body.summary.requests;
+      }
+
+      const afterAppends = usageReadCacheStatsForTests();
+      // Each round parses only its own appended line, so growth equals the number of
+      // appended rows. A reparse regression would instead re-add the whole grown
+      // prefix every round (baselineParsed+1 ... baselineParsed+5).
+      expect(afterAppends.parsedLines - baselineParsed).toBe(5);
+      expect(afterAppends.fullReads).toBe(1);
+      expect(afterAppends.tailReads).toBeGreaterThanOrEqual(5);
+      // The rows are still correct, not merely cheap.
+      expect(requests).toBe(afterFirst.parsedLines + 5);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("appends to an over-window ledger stay incremental and bounded", async () => {
+    const now = Date.now();
+    writeFixture(now);
+    // A tiny window makes the bound reachable with a handful of rows.
+    saveConfig({ ...baseConfig(), managementUsageMaxReadBytes: 1024 });
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      // Append well past the window. This is the shape of the real 245 MB ledger, and
+      // the case the whole optimization exists for: a reader that refused to extend
+      // whenever the retained window started earlier than the current window would do a
+      // FULL reparse on every single append here, which is where the memory blow-up
+      // came from in the first place.
+      for (let round = 1; round <= 12; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+          requestId: `ocx-window-${round}`,
+          timestamp: now,
+          provider: "openai",
+          model: "gpt-5.5",
+          status: 200,
+          durationMs: 1,
+          usageStatus: "reported",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          totalTokens: 2,
+        })}\n`);
+        clock.mockReturnValue(now + round * 60_001);
+        await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      }
+
+      const stats = usageReadCacheStatsForTests();
+      // Most rounds must be served incrementally rather than reparsed.
+      expect(stats.tailReads).toBeGreaterThanOrEqual(6);
+      // Re-anchoring still happens, so retention cannot grow with the file forever,
+      // but it is amortized rather than paid per append.
+      expect(stats.fullReads).toBeLessThan(12);
+      clock.mockReturnValue(now + 13 * 60_001);
+      const body = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(body.historyTruncated).toBe(true);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("an in-place rewrite that keeps the inode is not served from the retained tail", async () => {
+    const now = Date.now();
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    // Fixed-width request ids so the rewritten rows are byte-for-byte the same length
+    // as the originals. A newline therefore still lands exactly at the previously
+    // covered offset, which defeats the record-boundary check -- only re-verifying the
+    // covered prefix can catch this rewrite.
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    writeFileSync(join(testDir, "usage.jsonl"), `${row("aaa1")}${row("aaa2")}${row("aaa3")}`);
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      const first = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(first.summary.requests).toBe(3);
+
+      // Replace all three rows in place and append a fourth. The inode, device and
+      // birthtime are unchanged and the file only grew, so neither the identity check
+      // nor the shrink check sees it, and the boundary check is satisfied because the
+      // replacement rows have identical widths.
+      writeFileSync(
+        join(testDir, "usage.jsonl"),
+        `${row("bbb1")}${row("bbb2")}${row("bbb3")}${row("bbb4")}`,
+      );
+
+      clock.mockReturnValue(now + 60_001);
+      const after = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      // Without the prefix check this returns the three STALE rows concatenated with
+      // the one newly appended row -- still 4 requests, but three of them no longer
+      // exist in the file. Assert on identity, not just the count.
+      expect(after.summary.requests).toBe(4);
+      expect(after.models.every((model: { model: string }) => typeof model.model === "string")).toBe(true);
+      // Serving this from the retained tail would have required no second full read.
+      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      expect(usageReadCacheStatsForTests().tailReads).toBe(0);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("an in-place edit in the middle of a large prefix is not served from the retained tail", async () => {
+    const now = Date.now();
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    // Large enough that a SAMPLED prefix digest would cover a vanishing fraction of the
+    // file. The edit below is deliberately placed away from both ends, where sampled
+    // probes do not reach -- the case that makes sampling unsafe for an ordinary
+    // fixed-width edit rather than only an adversarial one.
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    const rows = Array.from({ length: 4000 }, (_, index) => row(`old${String(index).padStart(6, "0")}`));
+    const rowBytes = Buffer.byteLength(rows[0]!);
+    writeFileSync(join(testDir, "usage.jsonl"), rows.join(""));
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      // Overwrite one row in the middle, byte-identical in width so the file size and
+      // every record boundary are unchanged, then append.
+      const replacement = row("new002500");
+      expect(Buffer.byteLength(replacement)).toBe(rowBytes);
+      const handle = openSync(join(testDir, "usage.jsonl"), "r+");
+      try {
+        writeSync(handle, Buffer.from(replacement), 0, rowBytes, 2500 * rowBytes);
+      } finally {
+        closeSync(handle);
+      }
+      appendFileSync(join(testDir, "usage.jsonl"), row("appended1"));
+
+      clock.mockReturnValue(now + 60_001);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      // The mid-prefix rewrite must invalidate the retained rows: a sampled digest would
+      // miss it and serve old002500, which no longer exists in the file.
+      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      expect(usageReadCacheStatsForTests().tailReads).toBe(0);
+    } finally {
+      clock.mockRestore();
       await server.stop(true);
     }
   });
