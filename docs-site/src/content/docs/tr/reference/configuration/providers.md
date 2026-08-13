@@ -3,7 +3,8 @@ title: Sağlayıcı Yapılandırması
 description: Sağlayıcı girdileri, kimlik doğrulama, uç noktalar, model katalogları, kotalar, bağlam sınırları ve sağlayıcıya özgü seçenekler.
 ---
 
-Bir sağlayıcı, opencodex'e bir modelin nerede yaşadığını, hangi hat adaptörünü konuştuğunu ve isteklerin nasıl doğrulandığını söyler.
+Bir sağlayıcı, opencodex'e bir modelin nerede yaşadığını, hangi hat adaptörünü
+konuştuğunu ve isteklerin nasıl doğrulandığını söyler.
 
 ## Sağlayıcı ile ilgili üst düzey alanlar
 
@@ -30,15 +31,44 @@ Bir sağlayıcı, opencodex'e bir modelin nerede yaşadığını, hangi hat adap
 | `cacheRetention?` | `"none" \| "short" \| "long"` | `"short"` | Anthropic istem önbelleği politikası: devre dışı, 5 dakikalık kısa ömürlü veya 1 saatlik uzatılmış. |
 | `tokenGuardian?` | `OcxTokenGuardianConfig` | kapalı | İsteğe bağlı proaktif OAuth yenileme ve Codex hesabı ısınma politikası. |
 
-Seçici adları kullanıcı tarafından seçilen genel etiketlerdir; opencodex bunlara hiçbir hesap rolü anlambilimi atamaz. `codexAccountNamespaces` anahtarları 1–64 karakterdir, başında ve sonunda bir ASCII harf veya rakam bulunur, içinde harfler, rakamlar, `.`, `_` veya `-` yer alır. Ayrılmış JavaScript nesne adları reddedilir. Her değer geçerli bir havuz hesabı kimliği (asla dahili `__main__` değil) veya Codex Desktop hesabı için `"@main"` değeridir. Sağlayıcı ve ayrılmış `openai` / `combo` / `policy` çakışmaları büyük/küçük harfe duyarsız olarak denetlenir; ad alanlı bir kombo veya yönlendirme profili takma adı, bir seçiciyi ad alanı öneki olarak yeniden kullanamaz ve yapılandırılmış havuz kimlikleri veya seçici hedefleri de bir seçiciyi yeniden kullanamaz. Ham hesap kimliklerini ve e-postalarını gizli tutun; seçici genel addır. Tam seçim davranışı ve önceliği için [Yönlendirme Yapılandırması](/tr/reference/configuration/routing/) sayfasına bakın.
+Seçici adları kullanıcı tarafından seçilen genel etiketlerdir; opencodex bunlara
+hiçbir hesap rolü anlambilimi atamaz. `codexAccountNamespaces` anahtarları 1–64
+karakterdir, başında ve sonunda bir ASCII harf veya rakam bulunur, içinde
+harfler, rakamlar, `.`, `_` veya `-` yer alır. Ayrılmış JavaScript nesne adları
+reddedilir. Her değer geçerli bir havuz hesabı kimliği (asla dahili `__main__`
+değil) veya Codex Desktop hesabı için `"@main"` değeridir. Sağlayıcı ve ayrılmış
+`openai` / `combo` / `policy` çakışmaları büyük/küçük harfe duyarsız olarak
+denetlenir; ad alanlı bir kombo veya yönlendirme profili takma adı, bir seçiciyi
+ad alanı öneki olarak yeniden kullanamaz ve yapılandırılmış havuz kimlikleri
+veya seçici hedefleri de bir seçiciyi yeniden kullanamaz. Ham hesap kimliklerini
+ve e-postalarını gizli tutun; seçici genel addır. Tam seçim davranışı ve
+önceliği için [Yönlendirme Yapılandırması](/tr/reference/configuration/routing/)
+sayfasına bakın.
 
-Codex Auth kontrol paneli kontrolü, açık bir `codexAccountPickerEnabled` alanına sahip haritalara sahiptir. Boş bir yönetilen haritayı etkinleştirmek gizlilik açısından güvenli seçiciler oluşturur; daha sonraki hesap eklemeleri, seçici satırları gizliyken bile mevcut seçicileri yeniden adlandırmadan bu haritayı genişletir. Bayrağı atlayan elle yazılmış bir harita manuel kalır ve asla otomatik olarak genişletilmez. Bir hesabı silmek eşlemesini korur, böylece eksikken tam rotalar kapalı olarak başarısız olur; aynı hesap kimliğini tekrar eklemek yeni bir tane ayırmak yerine mevcut genel seçiciyi geri yükler.
+Codex Auth kontrol paneli kontrolü, açık bir `codexAccountPickerEnabled` alanına
+sahip haritalara sahiptir. Boş bir yönetilen haritayı etkinleştirmek gizlilik
+açısından güvenli seçiciler oluşturur; daha sonraki hesap eklemeleri, seçici
+satırları gizliyken bile mevcut seçicileri yeniden adlandırmadan bu haritayı
+genişletir. Bayrağı atlayan elle yazılmış bir harita manuel kalır ve asla
+otomatik olarak genişletilmez. Bir hesabı silmek eşlemesini korur, böylece
+eksikken tam rotalar kapalı olarak başarısız olur; aynı hesap kimliğini tekrar
+eklemek yeni bir tane ayırmak yerine mevcut genel seçiciyi geri yükler.
 
 ## Ayrılmış OpenAI sağlayıcıları
 
-`openai` ve `openai-apikey` sabit ayrılmış kimliklerdir. `openai.codexAccountMode` varsayılan olarak `"pool"` değerindedir ve ana hesap artı eklenen hesaplar arasında seçim yapar; `"direct"` yalnızca geçerli arayan/ana girişi kullanır. API yalnızca yapılandırılmış API anahtarını veya anahtar havuzunu kullanır. Yalın bir model veya `openai-apikey/<model>` kullanın; rotalar arası kimlik bilgisi geri dönüşü yoktur. API GPT-5.6 satırları 1.050.000 bağlam / 922.000 maksimum girdi meta verisi taşır ve Pro sanal kimlikleri `reasoning.mode: "pro"` ile temel hat modeline yeniden yazılır.
+`openai` ve `openai-apikey` sabit ayrılmış kimliklerdir.
+`openai.codexAccountMode` varsayılan olarak `"pool"` değerindedir ve ana hesap
+artı eklenen hesaplar arasında seçim yapar; `"direct"` yalnızca geçerli
+arayan/ana girişi kullanır. API yalnızca yapılandırılmış API anahtarını veya
+anahtar havuzunu kullanır. Yalın bir model veya `openai-apikey/<model>`
+kullanın; rotalar arası kimlik bilgisi geri dönüşü yoktur. API GPT-5.6 satırları
+1.050.000 bağlam / 922.000 maksimum girdi meta verisi taşır ve Pro sanal
+kimlikleri `reasoning.mode: "pro"` ile temel hat modeline yeniden yazılır.
 
-`openaiProviderTierVersion: 2`, geçerli tek sağlayıcılı projeksiyonu işaretler. opencodex, sevk edilen bir v1 yapılandırmasını geçirmeden önce farklı bir yedeği değiştirmeden `config.json.pre-openai-tiers-v2.bak` oluşturur ve bilinen eski ad alanlı seçilmiş kimlikleri yalın kimliklere yeniden yazar.
+`openaiProviderTierVersion: 2`, geçerli tek sağlayıcılı projeksiyonu işaretler.
+opencodex, sevk edilen bir v1 yapılandırmasını geçirmeden önce farklı bir yedeği
+değiştirmeden `config.json.pre-openai-tiers-v2.bak` oluşturur ve bilinen eski ad
+alanlı seçilmiş kimlikleri yalın kimliklere yeniden yazar.
 
 ## Sağlayıcı girdileri (`OcxProviderConfig`)
 
@@ -104,23 +134,69 @@ Codex Auth kontrol paneli kontrolü, açık bir `codexAccountPickerEnabled` alan
 | `unsafeAllowNativeLocalExec?` | `boolean` | Cursor eski boolean değeri, yalnızca daha yeni alan ayarlanmadığında `nativeLocalExec: "on"` değerine eşdeğerdir. |
 | `nativeLocalExec?` | `"off" \| "codex-sandbox" \| "on"` | Cursor yerel yürütme politikası. `off` varsayılandır; `codex-sandbox` şu anda `off` gibi kapalı olarak başarısız olur. |
 
-API anahtarı sağlayıcıları değişmez bir anahtar veya bir ortam referansı tutabilir. OAuth sağlayıcıları `ocx login` tarafından doldurulan kimlik bilgisi deposunu kullanır; abonelik destekli Claude Code başlatma davranışı [`claudeCode.authMode`](/tr/reference/configuration/server/#claude-code) altında yapılandırılır.
+API anahtarı sağlayıcıları değişmez bir anahtar veya bir ortam referansı
+tutabilir. OAuth sağlayıcıları `ocx login` tarafından doldurulan kimlik bilgisi
+deposunu kullanır; abonelik destekli Claude Code başlatma davranışı
+[`claudeCode.authMode`](/tr/reference/configuration/server/#claude-code) altında
+yapılandırılır.
 
 ## Sağlayıcı teşhis giden güvenliği
 
-Kontrol paneli bağlantı testleri ve canlı model keşfi sınırlı bir yalnızca GET aktarımı kullanır. Giden bir proxy olmadan opencodex ana bilgisayar adını bir kez çözer ve yalnızca bu doğrulanmış adrese bağlanır. HTTPS orijinal Host, SNI ve sertifika doğrulamasını korur; sağlayıcı yapılandırması sertifika denetimlerini devre dışı bırakamaz.
+Kontrol paneli bağlantı testleri ve canlı model keşfi sınırlı bir yalnızca GET
+aktarımı kullanır. Giden bir proxy olmadan opencodex ana bilgisayar adını bir
+kez çözer ve yalnızca bu doğrulanmış adrese bağlanır. HTTPS orijinal Host, SNI
+ve sertifika doğrulamasını korur; sağlayıcı yapılandırması sertifika
+denetimlerini devre dışı bırakamaz.
 
-`HTTP_PROXY`, `HTTPS_PROXY` veya `ALL_PROXY` geçerli olduğunda bu işlemler Bun'ın yerel getirmesini korur. URL ve değişmez adres denetimleri hala çalışır, ancak proxy son rotayı, DNS yanıtını ve eşi seçer, bu nedenle opencodex bu eşi sabitleyemez veya doğrulayamaz. Bu açık bir güvenlik sınırlamasıdır.
+`HTTP_PROXY`, `HTTPS_PROXY` veya `ALL_PROXY` geçerli olduğunda bu işlemler
+Bun'ın yerel getirmesini korur. URL ve değişmez adres denetimleri hala çalışır,
+ancak proxy son rotayı, DNS yanıtını ve eşi seçer, bu nedenle opencodex bu eşi
+sabitleyemez veya doğrulayamaz. Bu açık bir güvenlik sınırlamasıdır.
 
-Özel/yerel hedefler `allowPrivateNetwork: true` ve giden bir proxy etkin olduğunda eşleşen bir `NO_PROXY` girdisi gerektirir. Geri döngü otomatik olarak eklenir; her LAN ana bilgisayarını açıkça listeleyin çünkü CIDR girdileri yorumlanmaz. Eşleştirici tam ana bilgisayarları, etki alanı soneklerini, isteğe bağlı bağlantı noktalarını, köşeli ayraçlı IPv6'yı ve `*` işaretini destekler; örneğin `192.168.1.50`'yi açıkça listeleyin. Meta veriler ve bağlantı yerel hedefleri engellenmiş olarak kalır. Teşhis istekleri yönlendirmeleri reddeder ve kimlik bilgisi kaldırılmış bir hedef bildirir. Sıradan sağlayıcı isteği yeniden yönlendirme incelemesi bu teşhis korumasından ayrı kalır.
+Özel/yerel hedefler `allowPrivateNetwork: true` ve giden bir proxy etkin
+olduğunda eşleşen bir `NO_PROXY` girdisi gerektirir. Geri döngü otomatik olarak
+eklenir; her LAN ana bilgisayarını açıkça listeleyin çünkü CIDR girdileri
+yorumlanmaz. Eşleştirici tam ana bilgisayarları, etki alanı soneklerini, isteğe
+bağlı bağlantı noktalarını, köşeli ayraçlı IPv6'yı ve `*` işaretini destekler;
+örneğin `192.168.1.50`'yi açıkça listeleyin. Meta veriler ve bağlantı yerel
+hedefleri engellenmiş olarak kalır. Teşhis istekleri yönlendirmeleri reddeder ve
+kimlik bilgisi kaldırılmış bir hedef bildirir. Sıradan sağlayıcı isteği yeniden
+yönlendirme incelemesi bu teşhis korumasından ayrı kalır.
 
 ## Codex hesap havuzu
 
-Havuz hesapları eklemek ve kotaları yenilemek için kontrol panelinde **Codex Auth** kullanın. `config.json` gizli olmayan meta verileri saklar; erişim ve yenileme belirteçleri güçlendirilmiş kimlik bilgisi deposunu kullanır. Havuz yönlendirmesi yeni/bağımsız atamayı, kullanıma dayalı proaktif geçişi ve arıza kurtarmayı ayırır. Bağlı bir görev normalde bağlılığı korur, ancak `quota`, kullanım eşiği aşıldıktan sonraki bir sonraki isteğinde onu yeniden bağlayabilir; duraklatma, soğuma, yeniden kimlik doğrulama ve arıza işleme ise yönlendirmeyi bağımsız olarak temizleyebilir veya taşıyabilir. Bağımsız bir isteğin canlı hesap bağlaması yoktur; bu, proxy yeniden başlatmasından veya bağlılık sıfırlamasından sonra mevcut görünür bir görevi içerebilir. Akış öncesi bir 429 veya 402, kullanıma dayalı proaktif geçiş kapalı olsa bile aynı istekte uygun alternatif bir hesapta bir kez yeniden dener. Hesap değişiklikleri görüşme bağlamını korur ve yeniden oynatır, ancak hesaplar arasında sağlayıcı tarafı istem önbelleği yeniden kullanımı garanti edilmez ve önbelleğin tekrar ısınması gerekebilir.
+Havuz hesapları eklemek ve kotaları yenilemek için kontrol panelinde **Codex
+Auth** kullanın. `config.json` gizli olmayan meta verileri saklar; erişim ve
+yenileme belirteçleri güçlendirilmiş kimlik bilgisi deposunu kullanır. Havuz
+yönlendirmesi yeni/bağımsız atamayı, kullanıma dayalı proaktif geçişi ve arıza
+kurtarmayı ayırır. Bağlı bir görev normalde bağlılığı korur, ancak `quota`,
+kullanım eşiği aşıldıktan sonraki bir sonraki isteğinde onu yeniden
+bağlayabilir; duraklatma, soğuma, yeniden kimlik doğrulama ve arıza işleme ise
+yönlendirmeyi bağımsız olarak temizleyebilir veya taşıyabilir. Bağımsız bir
+isteğin canlı hesap bağlaması yoktur; bu, proxy yeniden başlatmasından veya
+bağlılık sıfırlamasından sonra mevcut görünür bir görevi içerebilir. Akış öncesi
+bir 429 veya 402, kullanıma dayalı proaktif geçiş kapalı olsa bile aynı istekte
+uygun alternatif bir hesapta bir kez yeniden dener. Hesap değişiklikleri görüşme
+bağlamını korur ve yeniden oynatır, ancak hesaplar arasında sağlayıcı tarafı
+istem önbelleği yeniden kullanımı garanti edilmez ve önbelleğin tekrar ısınması
+gerekebilir.
 
-Bir **401/403** durumunda App girişi bu hesabın işleme özel bağlılığını temizler ve yeniden kimlik doğrulama gerektirir. Bir **429** durumunda opencodex `Retry-After`'ı dikkate alır, hesap soğuma süresini başlatır, bağlılığı temizler ve isteği başka bir uygun Havuz hesabına döndürebilir. Bu arıza geçişleri `autoSwitchThreshold: 0` ile etkin kalır; bu ayar yalnızca kullanıma dayalı proaktif geçişi devre dışı bırakır.
+Bir **401/403** durumunda App girişi bu hesabın işleme özel bağlılığını temizler
+ve yeniden kimlik doğrulama gerektirir. Bir **429** durumunda opencodex
+`Retry-After`'ı dikkate alır, hesap soğuma süresini başlatır, bağlılığı temizler
+ve isteği başka bir uygun Havuz hesabına döndürebilir. Bu arıza geçişleri
+`autoSwitchThreshold: 0` ile etkin kalır; bu ayar yalnızca kullanıma dayalı
+proaktif geçişi devre dışı bırakır.
 
-Bir hesabı duraklatmak kota meta verilerini korur ancak onu geçişten, yük devretmeden, kurtarma problarından ve manuel etkinleştirmeden hariç tutar. Ayrıca o hesabın iş parçacığı bağlılıklarını da temizler. Devam eden istekler yakalanan kimlik bilgilerini korur; daha sonraki turlar yeniden yönlendirilir. Her hesap duraklatılırsa, Havuz yönlendirmesi sessizce birini seçmek yerine başarısız olur. **Tükenenleri duraklat (Pause exhausted)**, kullanılabilir kimlik bilgilerine sahip uygun hesapları yeniler ve yalnızca %100 olduğu yeni onaylanan hesapları duraklatır; bilinmeyen veya başarısız yenilemeler değişmeden kalır.
+Bir hesabı duraklatmak kota meta verilerini korur ancak onu geçişten, yük
+devretmeden, kurtarma problarından ve manuel etkinleştirmeden hariç tutar.
+Ayrıca o hesabın iş parçacığı bağlılıklarını da temizler. Devam eden istekler
+yakalanan kimlik bilgilerini korur; daha sonraki turlar yeniden yönlendirilir.
+Her hesap duraklatılırsa, Havuz yönlendirmesi sessizce birini seçmek yerine
+başarısız olur. **Tükenenleri duraklat (Pause exhausted)**, kullanılabilir
+kimlik bilgilerine sahip uygun hesapları yeniler ve yalnızca %100 olduğu yeni
+onaylanan hesapları duraklatır; bilinmeyen veya başarısız yenilemeler değişmeden
+kalır.
 
 | Strateji | Davranış |
 | --- | --- |
@@ -128,11 +204,15 @@ Bir hesabı duraklatmak kota meta verilerini korur ancak onu geçişten, yük de
 | `round-robin` | Bağımsız istekleri uygun hesaplar arasında eşit olarak atayın. `autoSwitchThreshold` normal round-robin seçimini değiştirmez. `accountPoolStickyLimit` (1–100), başarılı yukarı akış yanıtlarını değil, bir seçimdeki atamaları sayar. |
 | `fill-first` | Bağımsız istekleri soğuma, yeniden kimlik doğrulama veya yapılandırılmış tükenme eşiğine kadar aktif hesaba atayın; bilinmeyen kullanım geçişe zorlamaz. Sağlıklı bağlı görevler bağlılığı korur. |
 
-Rotasyon, sağlayıcı yaptırımlarına karşı koruma sağlamaz; çoklu hesap kullanımı sağlayıcı şartlarını ihlal edebilir.
+Rotasyon, sağlayıcı yaptırımlarına karşı koruma sağlamaz; çoklu hesap kullanımı
+sağlayıcı şartlarını ihlal edebilir.
 
 ### `anthropicAccountPool` (deneysel)
 
-Bu isteğe bağlı özellik, `auth.json` içinde zaten saklanan birden fazla Anthropic OAuth hesabını havuzlar. Varsayılan olarak kapalıdır ve sahada kapsamlı olarak test edilmemiştir. Aynı kuruluştaki hesaplar kotayı paylaşabilir ve otomatik rotasyon sağlayıcı kısıtlamalarını tetikleyebilir.
+Bu isteğe bağlı özellik, `auth.json` içinde zaten saklanan birden fazla
+Anthropic OAuth hesabını havuzlar. Varsayılan olarak kapalıdır ve sahada
+kapsamlı olarak test edilmemiştir. Aynı kuruluştaki hesaplar kotayı paylaşabilir
+ve otomatik rotasyon sağlayıcı kısıtlamalarını tetikleyebilir.
 
 | Anahtar | Tip | Varsayılan | Açıklama |
 | --- | --- | --- | --- |
@@ -141,15 +221,24 @@ Bu isteğe bağlı özellik, `auth.json` içinde zaten saklanan birden fazla Ant
 | `anthropicAccountPool.strategy?` | `"quota" \| "round-robin" \| "fill-first"` | `"quota"` | Yeni oturum stratejisi; kota yalnızca 5 saatlik çubukları kullanır. |
 | `anthropicAccountPool.stickyLimit?` | `number` | `1` | Bir round-robin seçiminde tutulan başarılı yeni oturum bağlamaları. Aralık 1–100. |
 
-Etkinleştirildiğinde 429, `Retry-After`'dan veya varsayılan bir geri çekilmeden sınırlı soğuma kaydeder ve istek içinde dönebilir. Bağlılık işleme özeldir ve boyut sınırlıdır. Kimlik bilgisi 401/403, hesabı yeniden kimlik doğrulama gerektiriyor olarak işaretler. Uygun tüm hesaplar soğuyorsa istemciler bir kimlik doğrulama hatası değil, bilindiğinde `Retry-After` ile 429 alır.
+Etkinleştirildiğinde 429, `Retry-After`'dan veya varsayılan bir geri çekilmeden
+sınırlı soğuma kaydeder ve istek içinde dönebilir. Bağlılık işleme özeldir ve
+boyut sınırlıdır. Kimlik bilgisi 401/403, hesabı yeniden kimlik doğrulama
+gerektiriyor olarak işaretler. Uygun tüm hesaplar soğuyorsa istemciler bir
+kimlik doğrulama hatası değil, bilindiğinde `Retry-After` ile 429 alır.
 
 :::caution[Deneysel]
-Anthropic hesap politikası riskini anlamadığınız sürece bunu devre dışı bırakın. Emin olmadığınızda manuel `ocx account use anthropic <id>` geçişini tercih edin.
+Anthropic hesap politikası riskini anlamadığınız sürece bunu devre dışı bırakın.
+Emin olmadığınızda manuel `ocx account use anthropic <id>` geçişini tercih edin.
 :::
 
 ### Yönetilen kayıt biçimleri
 
-`apiKeys[]` girdileri `id`, `name`, oluşturulan `key` ve ISO `createdAt` dizelerini içerir. `codexAccounts[]` girdileri isteğe bağlı `plan`, `chatgptAccountId` ve gizlilik açısından güvenli `logLabel` ile birlikte `id`, `email` ve `isMain` gerektirir. Bu kayıtlar normalde kontrol paneli tarafından yönetilir.
+`apiKeys[]` girdileri `id`, `name`, oluşturulan `key` ve ISO `createdAt`
+dizelerini içerir. `codexAccounts[]` girdileri isteğe bağlı `plan`,
+`chatgptAccountId` ve gizlilik açısından güvenli `logLabel` ile birlikte `id`,
+`email` ve `isMain` gerektirir. Bu kayıtlar normalde kontrol paneli tarafından
+yönetilir.
 
 ### `tokenGuardian` (`OcxTokenGuardianConfig`)
 
@@ -168,16 +257,28 @@ Anthropic hesap politikası riskini anlamadığınız sürece bunu devre dışı
 
 ## Sabit sağlayıcı uç noktaları
 
-Yönlendirme, adaptörden önce bir sağlayıcı uç noktasını çözer. Çoğu yerleşik için kayıt defteri uç noktası yapılandırılmış `baseUrl`'i yener. Dört girdi türü yapılandırılmış URL'yi korur:
+Yönlendirme, adaptörden önce bir sağlayıcı uç noktasını çözer. Çoğu yerleşik
+için kayıt defteri uç noktası yapılandırılmış `baseUrl`'i yener. Dört girdi türü
+yapılandırılmış URL'yi korur:
 
-- geçersiz kılma etkin sağlayıcılar: `ollama`, `vllm`, `lm-studio`, `litellm`, `qwen-cloud` ve `alibaba-token-plan-intl`;
-- `azure-openai` ve `cloudflare-ai-gateway` gibi kullanıcı tarafından doldurulan kayıt defteri şablonları;
-- aynı adlı daha eski bir özel hedefi koruyan yükseltilmiş sabit API anahtarı önayarları; ve
+- geçersiz kılma etkin sağlayıcılar: `ollama`, `vllm`, `lm-studio`, `litellm`,
+  `qwen-cloud` ve `alibaba-token-plan-intl`;
+- `azure-openai` ve `cloudflare-ai-gateway` gibi kullanıcı tarafından doldurulan
+  kayıt defteri şablonları;
+- aynı adlı daha eski bir özel hedefi koruyan yükseltilmiş sabit API anahtarı
+  önayarları; ve
 - kayıt defterinde bulunmayan sağlayıcılar.
 
-Adaptörler çözümlenen URL'yi daha sonra ayarlayabilir. Örneğin Kiro, kurallı `runtime.{region}.kiro.dev` için içe aktarılan kimlik bilgisinin API bölgesini takip eder. Bkz. [Adaptörler](/tr/reference/adapters/).
+Adaptörler çözümlenen URL'yi daha sonra ayarlayabilir. Örneğin Kiro, kurallı
+`runtime.{region}.kiro.dev` için içe aktarılan kimlik bilgisinin API bölgesini
+takip eder. Bkz. [Adaptörler](/tr/reference/adapters/).
 
-Yönlendirme `baseUrl`'i attığında opencodex kayıt defteri uç noktasını ve yalnızca yapılandırılmış kaynağı günlüğe kaydeder; yapılandırılmış bir yolun kendisi bir kimlik bilgisi içerebilir. Kullanılmayan URL'yi kaldırın veya hedeflenen bölgeyle eşleşen sağlayıcı girdisini seçin. `alibaba-token-plan` Pekin'e sabitlenirken, `alibaba-token-plan-intl` uluslararası uç noktaları kapsar.
+Yönlendirme `baseUrl`'i attığında opencodex kayıt defteri uç noktasını ve
+yalnızca yapılandırılmış kaynağı günlüğe kaydeder; yapılandırılmış bir yolun
+kendisi bir kimlik bilgisi içerebilir. Kullanılmayan URL'yi kaldırın veya
+hedeflenen bölgeyle eşleşen sağlayıcı girdisini seçin. `alibaba-token-plan`
+Pekin'e sabitlenirken, `alibaba-token-plan-intl` uluslararası uç noktaları
+kapsar.
 
 Bozuk bir `openai-responses` ağ geçidi için onarım sağlayıcı nesnesine aittir:
 
@@ -198,11 +299,16 @@ Bozuk bir `openai-responses` ağ geçidi için onarım sağlayıcı nesnesine ai
 }
 ```
 
-Yer tutucu listeleri tam eşleşmelerdir. Normal/durum bilgili Responses sağlayıcıları için alanı ayarlanmamış bırakın, böylece doğrudan geçiş bayt bayt aynı kalır.
+Yer tutucu listeleri tam eşleşmelerdir. Normal/durum bilgili Responses
+sağlayıcıları için alanı ayarlanmamış bırakın, böylece doğrudan geçiş bayt bayt
+aynı kalır.
 
 ## Cursor sağlayıcısı (`adapter: "cursor"`)
 
-Cursor köprüsü deneyseldir. `ocx login cursor` komutundan sonra `providers.cursor`'ı ekleyin veya düzenleyin. Cursor Router'ın optimizasyon merdiveni ayrı Codex kimlikleri olarak sunulur çünkü seçici Cursor'a özgü model parametrelerini işleyemez:
+Cursor köprüsü deneyseldir. `ocx login cursor` komutundan sonra
+`providers.cursor`'ı ekleyin veya düzenleyin. Cursor Router'ın optimizasyon
+merdiveni ayrı Codex kimlikleri olarak sunulur çünkü seçici Cursor'a özgü model
+parametrelerini işleyemez:
 
 | Codex modeli | Cursor Router modu |
 | --- | --- |
@@ -211,13 +317,20 @@ Cursor köprüsü deneyseldir. `ocx login cursor` komutundan sonra `providers.cu
 | `cursor/auto-balance` | Denge |
 | `cursor/auto-intelligence` | Zeka |
 
-Açık varyantlar, Cursor'ın `default` modelini `optimization` parametresiyle göndererek her istekte seçimi korur. Canlı keşif `default`'u atladığında kullanılabilir kalırlar.
+Açık varyantlar, Cursor'ın `default` modelini `optimization` parametresiyle
+göndererek her istekte seçimi korur. Canlı keşif `default`'u atladığında
+kullanılabilir kalırlar.
 
-Cursor sunucu güdümlü yerel araçlar varsayılan olarak devre dışıdır. Codex kendi onayı ve sanal alan politikasıyla `apply_patch` ve `exec_command` gibi kendi araçlarını kullanmaya devam eder:
+Cursor sunucu güdümlü yerel araçlar varsayılan olarak devre dışıdır. Codex kendi
+onayı ve sanal alan politikasıyla `apply_patch` ve `exec_command` gibi kendi
+araçlarını kullanmaya devam eder:
 
-- `"off"` (varsayılan), Cursor yerel `read`, `write`, `delete`, `ls`, `grep`, `shell` ve `fetch` yürütmesini reddeder.
-- `"on"`, güvenilen yerel yürütmeyi seçer ve Codex onay/sanal alan anlambilimini atlar.
-- `"codex-sandbox"` uyumluluk için tutulur ancak `"off"` gibi kapalı olarak başarısız olur; istek düzyazısı güvenilir sanal alan kanıtı değildir.
+- `"off"` (varsayılan), Cursor yerel `read`, `write`, `delete`, `ls`, `grep`,
+  `shell` ve `fetch` yürütmesini reddeder.
+- `"on"`, güvenilen yerel yürütmeyi seçer ve Codex onay/sanal alan anlambilimini
+  atlar.
+- `"codex-sandbox"` uyumluluk için tutulur ancak `"off"` gibi kapalı olarak
+  başarısız olur; istek düzyazısı güvenilir sanal alan kanıtı değildir.
 
 ```json
 {
@@ -233,19 +346,39 @@ Cursor sunucu güdümlü yerel araçlar varsayılan olarak devre dışıdır. Co
 }
 ```
 
-Alanı üst düzeyde değil `providers.cursor` üzerinde ayarlayın. Kontrol panelinde **Sağlayıcılar → Cursor → JSON Düzenle**'yi kullanın, kaydedin ve yeniden başlatın. Eski `unsafeAllowNativeLocalExec: true`, yalnızca `nativeLocalExec` ayarlanmadığında `nativeLocalExec: "on"` değerine eşittir. MCP, ekran kaydı ve bilgisayar kullanımı `mcpServers` ve `desktopExecutor` tarafından ayrı ayrı denetlenir.
+Alanı üst düzeyde değil `providers.cursor` üzerinde ayarlayın. Kontrol panelinde
+**Sağlayıcılar → Cursor → JSON Düzenle**'yi kullanın, kaydedin ve yeniden
+başlatın. Eski `unsafeAllowNativeLocalExec: true`, yalnızca `nativeLocalExec`
+ayarlanmadığında `nativeLocalExec: "on"` değerine eşittir. MCP, ekran kaydı ve
+bilgisayar kullanımı `mcpServers` ve `desktopExecutor` tarafından ayrı ayrı
+denetlenir.
 
-Her `mcpServers.<ad>`, `command` (stdio) veya `url` (Akışlanabilir HTTP) kabul eder. Stdio ayrıca `args`, `env` ve `cwd` kabul eder; HTTP `headers` kabul eder. Her ikisi de `enabled` (varsayılan true) ve `toolPrefix` destekler. `desktopExecutor`, `computerUseCommand`, `recordScreenCommand`, `cwd`, `env` ve `timeoutMs` (varsayılan `30000`) kabul eder. Komutlar `sh -c` aracılığıyla çalışır, stdin'den bir JSON isteği okur ve stdout'a bir JSON sonucu yazmalıdır.
+Her `mcpServers.<ad>`, `command` (stdio) veya `url` (Akışlanabilir HTTP) kabul
+eder. Stdio ayrıca `args`, `env` ve `cwd` kabul eder; HTTP `headers` kabul eder.
+Her ikisi de `enabled` (varsayılan true) ve `toolPrefix` destekler.
+`desktopExecutor`, `computerUseCommand`, `recordScreenCommand`, `cwd`, `env` ve
+`timeoutMs` (varsayılan `30000`) kabul eder. Komutlar `sh -c` aracılığıyla
+çalışır, stdin'den bir JSON isteği okur ve stdout'a bir JSON sonucu yazmalıdır.
 
 :::caution[Güvenlik]
-Varsayılan geri döngü bağlantısı, çok kullanıcılı bir ana bilgisayardaki diğer kullanıcılar da dahil olmak üzere herhangi bir yerel süreci kimlik doğrulama olmadan kabul eder. Tüm veri düzlemi arayanlarına güvenilmedikçe ve Codex onay ve sanal alan anlambilimini kasıtlı olarak atlamayı kabul etmedikçe yerel yürütmeyi kapalı bırakın.
+Varsayılan geri döngü bağlantısı, çok kullanıcılı bir ana bilgisayardaki diğer
+kullanıcılar da dahil olmak üzere herhangi bir yerel süreci kimlik doğrulama
+olmadan kabul eder. Tüm veri düzlemi arayanlarına güvenilmedikçe ve Codex onay
+ve sanal alan anlambilimini kasıtlı olarak atlamayı kabul etmedikçe yerel
+yürütmeyi kapalı bırakın.
 :::
 
 ## OpenRouter sağlayıcı yönlendirmesi
 
-OpenRouter bir modeli birkaç çıkarım sağlayıcısı aracılığıyla sunabilir. `openRouterRouting` istekleri tercih edilen sağlayıcılarda tutar; `modelOpenRouterRouting` tam model kimlikleri için onun yerini alır. Bu, istem önbelleği bağlılığı için yararlıdır çünkü önbellek desteği, saklama, isabet oranları ve fiyatlandırma çıkarım sağlayıcısına göre değişir.
+OpenRouter bir modeli birkaç çıkarım sağlayıcısı aracılığıyla sunabilir.
+`openRouterRouting` istekleri tercih edilen sağlayıcılarda tutar;
+`modelOpenRouterRouting` tam model kimlikleri için onun yerini alır. Bu, istem
+önbelleği bağlılığı için yararlıdır çünkü önbellek desteği, saklama, isabet
+oranları ve fiyatlandırma çıkarım sağlayıcısına göre değişir.
 
-Sağlayıcı adları OpenRouter slug'larıdır. `allowFallbacks: false` kapalı olarak başarısız olur; `true`, sıralı listeden sonra başka bir uygun sağlayıcıya izin verir. `only` her zaman bir izin listesidir.
+Sağlayıcı adları OpenRouter slug'larıdır. `allowFallbacks: false` kapalı olarak
+başarısız olur; `true`, sıralı listeden sonra başka bir uygun sağlayıcıya izin
+verir. `only` her zaman bir izin listesidir.
 
 ```json
 {
@@ -269,15 +402,30 @@ Sağlayıcı adları OpenRouter slug'larıdır. `allowFallbacks: false` kapalı 
 }
 ```
 
-Model anahtarları, dış opencodex sağlayıcı öneki olmadan tam yerel OpenRouter kimlikleridir. `openrouter/anthropic-claude-sonnet-5` seçimi model kuralını uygulamadan önce yerel `anthropic/claude-sonnet-5`'i geri yükler.
+Model anahtarları, dış opencodex sağlayıcı öneki olmadan tam yerel OpenRouter
+kimlikleridir. `openrouter/anthropic-claude-sonnet-5` seçimi model kuralını
+uygulamadan önce yerel `anthropic/claude-sonnet-5`'i geri yükler.
 
 ## Statik model izin listeleri
 
-Yalnızca `models`'ı göstermek için `liveModels: false` ayarlayın. `models` boşsa veya atlanırsa sağlayıcı yönlendirilen hiçbir modeli göstermez. Canlı keşif, önbelleğe almadan önce 4 MiB'den veya 2.000 ham model satırından fazlasını reddeder; yerleşik önayarlar daha düşük sınırlar kullanabilir ve sohbete uygun satırlara filtre uygulayabilir. Büyük boyutlu veya hatalı biçimlendirilmiş sonuçlar eski/yapılandırılmış geri dönüşü takip eder. Geçerli bir sıfır uygun sonuç yetkili kalır ve sessizce değiştirilmez veya kesilmez.
+Yalnızca `models`'ı göstermek için `liveModels: false` ayarlayın. `models` boşsa
+veya atlanırsa sağlayıcı yönlendirilen hiçbir modeli göstermez. Canlı keşif,
+önbelleğe almadan önce 4 MiB'den veya 2.000 ham model satırından fazlasını
+reddeder; yerleşik önayarlar daha düşük sınırlar kullanabilir ve sohbete uygun
+satırlara filtre uygulayabilir. Büyük boyutlu veya hatalı biçimlendirilmiş
+sonuçlar eski/yapılandırılmış geri dönüşü takip eder. Geçerli bir sıfır uygun
+sonuç yetkili kalır ve sessizce değiştirilmez veya kesilmez.
 
-Keşfin hala çalışması gerektiğinde ancak Codex ve `/v1/models` içinde yalnızca seçilen kimliklerin görünmesi gerektiğinde `selectedModels` kullanın. Kontrol paneli daha sonraki izin listesi değişiklikleri için keşfedilen tam listeyi korur.
+Keşfin hala çalışması gerektiğinde ancak Codex ve `/v1/models` içinde yalnızca
+seçilen kimliklerin görünmesi gerektiğinde `selectedModels` kullanın. Kontrol
+paneli daha sonraki izin listesi değişiklikleri için keşfedilen tam listeyi
+korur.
 
-Önizleme GPT-5.6 geri dönüş girdileri aynı mekanizmayı kullanır. OpenAI API anahtarı önayarı temel ve Pro kimliklerini `1050000` bağlam ve `922000` maksimum girdi ile tohumlar; OpenRouter `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra` ve `openai/gpt-5.6-luna`'yı `1050000` bağlam ile tohumlar. Pool/Direct `372000` bildirir; senkronize edilen katalog `xhigh`'ı ayrı tutarken `max` bildirir.
+Önizleme GPT-5.6 geri dönüş girdileri aynı mekanizmayı kullanır. OpenAI API
+anahtarı önayarı temel ve Pro kimliklerini `1050000` bağlam ve `922000` maksimum
+girdi ile tohumlar; OpenRouter `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra` ve
+`openai/gpt-5.6-luna`'yı `1050000` bağlam ile tohumlar. Pool/Direct `372000`
+bildirir; senkronize edilen katalog `xhigh`'ı ayrı tutarken `max` bildirir.
 
 ```json
 {
@@ -330,3 +478,5 @@ Keşfin hala çalışması gerektiğinde ancak Codex ve `/v1/models` içinde yal
   "visionSidecar": { "enabled": true }
 }
 ```
+
+

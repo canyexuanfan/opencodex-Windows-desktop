@@ -3,13 +3,18 @@ title: CLI Ajanlar, Yönlendirme ve Entegrasyonlar
 description: Çoklu ajan, kombo, gözlemlenebilirlik, erişim, entegrasyon, sistem ve yapılandırma komutları.
 ---
 
-Bu komutlar ajan politikasını ve yönlendirmesini denetler, canlı proxy'yi inceler ve desteklenen istemcileri opencodex'e bağlar.
+Bu komutlar ajan politikasını ve yönlendirmesini denetler, canlı proxy'yi
+inceler ve desteklenen istemcileri opencodex'e bağlar.
 
 ## Ajan politikası
 
 ### `ocx agent <status|injection|effort|subagents|fallback|sidecar> ...`
 
-Başsız (headless) çoklu ajan kadrosunu, çaba sınırlarını, istem enjeksiyonunu, geri dönüşü ve sidecar ayarlarını yönetin. Geçerli politika için `status` kullanın. Yüzey modlarının, delegasyonun, çabanın ve geri dönüş davranışının birbirine nasıl uyduğunu görmek için [Alt ajan yüzeyleri](/tr/guides/sub-agent-surface/) sayfasına bakın.
+Başsız (headless) çoklu ajan kadrosunu, çaba sınırlarını, istem enjeksiyonunu,
+geri dönüşü ve sidecar ayarlarını yönetin. Geçerli politika için `status`
+kullanın. Yüzey modlarının, delegasyonun, çabanın ve geri dönüş davranışının
+birbirine nasıl uyduğunu görmek için [Alt ajan
+yüzeyleri](/tr/guides/sub-agent-surface/) sayfasına bakın.
 
 ```bash
 ocx agent subagents set ark/model-a,openai/gpt-5.5
@@ -17,7 +22,8 @@ ocx agent subagents set ark/model-a,openai/gpt-5.5
 
 ### `ocx v2 <status|on|off|mode <v1|default|v2>|threads <n>|mode-hint <text|--clear>>`
 
-Codex `multi_agent_v2` özellik bayrağını ve üç durumlu çoklu ajan yüzey modunu yönetin.
+Codex `multi_agent_v2` özellik bayrağını ve üç durumlu çoklu ajan yüzey modunu
+yönetin.
 
 | Alt komut | Eylem |
 | --- | --- |
@@ -41,30 +47,58 @@ ocx v2 mode-hint "Proactive multi-agent delegation is active."
 ocx v2 mode-hint --clear
 ```
 
-`mode` alt komutu, opencodex yapılandırmasına `multiAgentMode` yazar ve Codex kataloğunu yeniden senkronize eder. Mod ve bayrak geçişleri geçerli sayısal iş parçacığı sınırını geçerli v1/v2 Codex anahtarları arasında taşır; başarısız bir geçiş orijinal `config.toml`'u geri yükler. Değişiklikler yeni Codex oturumlarına uygulanırken çalışan oturumlar sabitlenmiş yüzeylerini korur.
+`mode` alt komutu, opencodex yapılandırmasına `multiAgentMode` yazar ve Codex
+kataloğunu yeniden senkronize eder. Mod ve bayrak geçişleri geçerli sayısal iş
+parçacığı sınırını geçerli v1/v2 Codex anahtarları arasında taşır; başarısız bir
+geçiş orijinal `config.toml`'u geri yükler. Değişiklikler yeni Codex
+oturumlarına uygulanırken çalışan oturumlar sabitlenmiş yüzeylerini korur.
 
-`mode-hint`, `multi_agent_v2` şu anda devre dışı bırakılmış olsa bile Codex'in `$CODEX_HOME/config.toml` dosyasına `features.multi_agent_v2.multi_agent_mode_hint_text` yazar. Komut yalnızca geçersiz kılmayı kalıcı hale getirir; özelliği etkinleştirmez veya devre dışı bırakmaz, bu nedenle ipucu eşleşen bir Codex yüzeyi etkinken yürürlüğe girer. İpucu, codex-rs'nin çabadan türetilen çoklu ajan politikasını geçersiz kılar, böylece herhangi bir model ve herhangi bir akıl yürütme çabası Proaktif yetkilendirme istemini alır. Akıl yürütme çabasının kendisini **değiştirmez**. Eksik bir argüman veya yalnızca boşluk içeren bir değer reddedilir; yalnızca `--clear` ipucunu kaldırır. Alt Ajanlar kontrol panelinin Ultra modu **açık** anahtarının daha katı bir kapısı vardır: yerel özelliğin açık bir v2 yüzeyiyle (`ocx v2 mode v2`) etkinleştirilmesini gerektirir; tek başına `ocx v2 on` bu kontrol paneli kapısını karşılamaz.
+`mode-hint`, `multi_agent_v2` şu anda devre dışı bırakılmış olsa bile Codex'in
+`$CODEX_HOME/config.toml` dosyasına
+`features.multi_agent_v2.multi_agent_mode_hint_text` yazar. Komut yalnızca
+geçersiz kılmayı kalıcı hale getirir; özelliği etkinleştirmez veya devre dışı
+bırakmaz, bu nedenle ipucu eşleşen bir Codex yüzeyi etkinken yürürlüğe girer.
+İpucu, codex-rs'nin çabadan türetilen çoklu ajan politikasını geçersiz kılar,
+böylece herhangi bir model ve herhangi bir akıl yürütme çabası Proaktif
+yetkilendirme istemini alır. Akıl yürütme çabasının kendisini **değiştirmez**.
+Eksik bir argüman veya yalnızca boşluk içeren bir değer reddedilir; yalnızca
+`--clear` ipucunu kaldırır. Alt Ajanlar kontrol panelinin Ultra modu **açık**
+anahtarının daha katı bir kapısı vardır: yerel özelliğin açık bir v2 yüzeyiyle
+(`ocx v2 mode v2`) etkinleştirilmesini gerektirir; tek başına `ocx v2 on` bu
+kontrol paneli kapısını karşılamaz.
 
 ## Kombo yönlendirme
 
 ### `ocx combo <list|show|set|remove> ...` · `ocx route combo ...`
 
-Kombo yük devretme ve round-robin sanal modellerini yönetin. `ocx route combo` hiyerarşik takma addır; combo şu anda desteklenen yönlendirme kaynağıdır. Hedefler `saglayici/model[:agirlik],saglayici/model[:agirlik]` kullanır.
+Kombo yük devretme ve round-robin sanal modellerini yönetin. `ocx route combo`
+hiyerarşik takma addır; combo şu anda desteklenen yönlendirme kaynağıdır.
+Hedefler `saglayici/model[:agirlik],saglayici/model[:agirlik]` kullanır.
 
 ```bash
 ocx combo list
 ocx route combo set reliable --targets ark/model-a:2,openai/gpt-5.5
 ```
 
-`set`, `--strategy`, `--sticky`, `--effort`, `--alias`, `--rename-from`, `--native-alias` ve `--display-name <etiket|->` (`-` etiketi temizler) kabul eder. Yerel bir takma ad yalnızca şu anda desteklenen, niteliksiz tek bir yalın OpenAI model kimliğini yakalar. Yalın `gpt-5.6-*` yerel takma adları Codex Pool/Direct kimlik bilgilerini kullanır. Hesap nitelikli OpenAI rotaları ayrı kalırken, `openai-apikey/gpt-5.6-*` gibi sağlayıcı nitelikli rotalar yapılandırılmış API anahtarlarını kullanır ve asla yerel takma ada düşmez. Uyumluluk çiftini etkinleştirmeden önce kılavuzdaki güvenlik ve görünürlük sözleşmesini okuyun.
+`set`, `--strategy`, `--sticky`, `--effort`, `--alias`, `--rename-from`,
+`--native-alias` ve `--display-name <etiket|->` (`-` etiketi temizler) kabul
+eder. Yerel bir takma ad yalnızca şu anda desteklenen, niteliksiz tek bir yalın
+OpenAI model kimliğini yakalar. Yalın `gpt-5.6-*` yerel takma adları Codex
+Pool/Direct kimlik bilgilerini kullanır. Hesap nitelikli OpenAI rotaları ayrı
+kalırken, `openai-apikey/gpt-5.6-*` gibi sağlayıcı nitelikli rotalar
+yapılandırılmış API anahtarlarını kullanır ve asla yerel takma ada düşmez.
+Uyumluluk çiftini etkinleştirmeden önce kılavuzdaki güvenlik ve görünürlük
+sözleşmesini okuyun.
 
-Yönlendirme davranışı ve yapılandırma rehberliği için [Kombolar](/tr/guides/combos/) sayfasına bakın.
+Yönlendirme davranışı ve yapılandırma rehberliği için
+[Kombolar](/tr/guides/combos/) sayfasına bakın.
 
 ## Gözlemlenebilirlik ve hata ayıklama
 
 ### `ocx observe <logs|usage|storage|memory|debug|claude-inbound|injection> ...`
 
-Proxy isteklerini, kullanımını, depolamasını, belleğini ve hata ayıklama verilerini inceleyin. Doğrudan takma adlar şunlardır:
+Proxy isteklerini, kullanımını, depolamasını, belleğini ve hata ayıklama
+verilerini inceleyin. Doğrudan takma adlar şunlardır:
 
 | Takma ad | Eşdeğer kaynak |
 | --- | --- |
@@ -79,7 +113,8 @@ ocx observe usage --range 30d --json
 
 ### `ocx debug <provider|usage|injection|claude> <on|off|status|reset|logs [-f]>`
 
-Çalışan proxy'nin yönetim API'si aracılığıyla çalışma zamanı hata ayıklama geçersiz kılmalarını okuyun veya değiştirin.
+Çalışan proxy'nin yönetim API'si aracılığıyla çalışma zamanı hata ayıklama
+geçersiz kılmalarını okuyun veya değiştirin.
 
 ```bash
 ocx debug provider on|off|status|reset
@@ -88,13 +123,19 @@ ocx debug usage on|off|status|reset
 ocx debug usage logs [-f|--follow]
 ```
 
-Kapsam belirtilmediğinde `ocx debug` kullanımı ve proxy durdurulduğunda bir sonraki başlangıç ortamı varsayılanlarını yazdırır. Sağlayıcı hata ayıklaması varsayılan olarak `OCX_DEBUG=1`'den gelir (eski `OCX_DEBUG_FRAMES=1` de çalışır); kullanım hata ayıklaması varsayılan olarak `OPENCODEX_USAGE_DEBUG=1`'den gelir.
+Kapsam belirtilmediğinde `ocx debug` kullanımı ve proxy durdurulduğunda bir
+sonraki başlangıç ortamı varsayılanlarını yazdırır. Sağlayıcı hata ayıklaması
+varsayılan olarak `OCX_DEBUG=1`'den gelir (eski `OCX_DEBUG_FRAMES=1` de
+çalışır); kullanım hata ayıklaması varsayılan olarak
+`OPENCODEX_USAGE_DEBUG=1`'den gelir.
 
 ## API erişimi
 
 ### `ocx access <key|endpoints|models|test> ...`
 
-OpenCodex kabul API anahtarlarını yönetin ve harici uç noktaları ile modelleri inceleyin. `ocx api-key <list|create|remove> ...`, `ocx access key`'in bir takma adıdır.
+OpenCodex kabul API anahtarlarını yönetin ve harici uç noktaları ile modelleri
+inceleyin. `ocx api-key <list|create|remove> ...`, `ocx access key`'in bir takma
+adıdır.
 
 ```bash
 ocx access key create deployment
@@ -104,11 +145,18 @@ ocx access key create deployment
 
 ### `ocx integration <claude|grok> ...`
 
-Desteklenen Claude ve Grok entegrasyonlarını yönetin. Aşağıdaki doğrudan komut aileleri istemciye özgü denetimlerini ortaya çıkarır.
+Desteklenen Claude ve Grok entegrasyonlarını yönetin. Aşağıdaki doğrudan komut
+aileleri istemciye özgü denetimlerini ortaya çıkarır.
 
 ### `ocx claude [claude argumanlari...]`
 
-Proxy'nin çalıştığından emin olun, ardından `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` ve `config.claudeCode` model yuvalarıyla Claude Code'u başlatın. Yönlendirilen modeller, Claude Code 2.1.129 veya daha yenisi ile kararlı yuva takma adları aracılığıyla yerel `/model` seçicisinde görünür. Daha eski sürümlerde `ANTHROPIC_MODEL` veya `/model <id>` ile seçin. Kullanıcı tarafından dışa aktarılan `ANTHROPIC_*` değişkenleri her zaman önceliklidir.
+Proxy'nin çalıştığından emin olun, ardından `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` ve
+`config.claudeCode` model yuvalarıyla Claude Code'u başlatın. Yönlendirilen
+modeller, Claude Code 2.1.129 veya daha yenisi ile kararlı yuva takma adları
+aracılığıyla yerel `/model` seçicisinde görünür. Daha eski sürümlerde
+`ANTHROPIC_MODEL` veya `/model <id>` ile seçin. Kullanıcı tarafından dışa
+aktarılan `ANTHROPIC_*` değişkenleri her zaman önceliklidir.
 
 Claude Desktop profil komutları şunlardır:
 
@@ -121,11 +169,21 @@ ocx claude desktop export <path|->                 Sürümlenmiş JSON dışa ak
 ocx claude desktop import <path> [--apply]         JSON doğrulayın ve içe aktarın
 ```
 
-Aileler `opus`, `fable`, `sonnet` ve `haiku`'dur; yeni rotalar `opus` ile başlar. `none` yalnızca o aile boş olduğunda geçerlidir. Eski uygulama bayrakları `--static`, `--hybrid` ve `--discovery-only` desteklenmeye devam eder. Claude Code ayarları için `ocx claude config <status|set> ...` kullanın.
+Aileler `opus`, `fable`, `sonnet` ve `haiku`'dur; yeni rotalar `opus` ile
+başlar. `none` yalnızca o aile boş olduğunda geçerlidir. Eski uygulama
+bayrakları `--static`, `--hybrid` ve `--discovery-only` desteklenmeye devam
+eder. Claude Code ayarları için `ocx claude config <status|set> ...` kullanın.
 
 ### `ocx opencode [opencode argumanlari...]`
 
-Proxy'nin çalıştığından emin olun, ardından OpenCode'un satır içi çalışma zamanı katmanında (`OPENCODE_CONFIG_CONTENT`) üretilen bir `provider.opencodex` bloğuyla opencode'u başlatın. Mevcut satır içi yapılandırma korunur ve bu başlatma için yalnızca `provider.opencodex` değiştirilir. Mevcut bir geçersiz kılma hakkında uyarmak için genel veya proje `opencode.json` dosyaları okunabilir, ancak diskteki dosyalar asla değiştirilmez. Yönlendirilen modeller `opencodex/<saglayici>/<model>` olarak görünür. Daha sonra düz `opencode` başlatmak tam olarak eskisi gibi davranır.
+Proxy'nin çalıştığından emin olun, ardından OpenCode'un satır içi çalışma zamanı
+katmanında (`OPENCODE_CONFIG_CONTENT`) üretilen bir `provider.opencodex`
+bloğuyla opencode'u başlatın. Mevcut satır içi yapılandırma korunur ve bu
+başlatma için yalnızca `provider.opencodex` değiştirilir. Mevcut bir geçersiz
+kılma hakkında uyarmak için genel veya proje `opencode.json` dosyaları
+okunabilir, ancak diskteki dosyalar asla değiştirilmez. Yönlendirilen modeller
+`opencodex/<saglayici>/<model>` olarak görünür. Daha sonra düz `opencode`
+başlatmak tam olarak eskisi gibi davranır.
 
 ### `ocx grok <status|exclude|include|set|clear|apply> ...`
 
@@ -135,9 +193,13 @@ Grok Build model çitini yönetin ve uygulayın.
 
 ### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae>`
 
-Çalışan proxy'ye bağlı bir istemci yapılandırmasını yazdırın. Komut, `opencodex` sağlayıcı bloğunu — temel URL, model listesi ve istemcinin kimlik bilgisi referansı veya geri döngü yer tutucusu — seçilen istemcinin yerel formatında serileştirir.
+Çalışan proxy'ye bağlı bir istemci yapılandırmasını yazdırın. Komut, `opencodex`
+sağlayıcı bloğunu — temel URL, model listesi ve istemcinin kimlik bilgisi
+referansı veya geri döngü yer tutucusu — seçilen istemcinin yerel formatında
+serileştirir.
 
-Proxy çalışıyor olmalıdır; komut canlı portunu çözer, `/api/models` okur ve yalnızca Codex'in şu anda görebildiği modelleri yayınlar.
+Proxy çalışıyor olmalıdır; komut canlı portunu çözer, `/api/models` okur ve
+yalnızca Codex'in şu anda görebildiği modelleri yayınlar.
 
 | Bayrak | Eylem |
 | --- | --- |
@@ -153,7 +215,10 @@ ocx export --client omp --out ./omp-models.yml    # yerel OMP YAML
 ocx export --client opencode --out ~/opencodex-opencode.json
 ```
 
-`--json` olmadan önce oluşturulan yapılandırma, ardından kurallı hedef yolu, birleştirme uyarısı, istemcinin sahip olduğu ortam dışa aktarma satırı ve kaç satırın bağlam sınırlarını atladığını içeren bir model sayısı (istemci bunlar için kendi varsayılanlarını uygular) gelir.
+`--json` olmadan önce oluşturulan yapılandırma, ardından kurallı hedef yolu,
+birleştirme uyarısı, istemcinin sahip olduğu ortam dışa aktarma satırı ve kaç
+satırın bağlam sınırlarını atladığını içeren bir model sayısı (istemci bunlar
+için kendi varsayılanlarını uygular) gelir.
 
 | İstemci | Kurallı hedef | İndirme dosya adı | Ortam değişkeni |
 | --- | --- | --- | --- |
@@ -165,21 +230,40 @@ ocx export --client opencode --out ~/opencodex-opencode.json
 | `kimi` | `~/.kimi-code/config.toml` | `kimi-config.toml` | yok — geri döngü yer tutucusu |
 | `gajae` | `~/.gjc/agent/models.yml` | `gajae-models.yaml` | `OPENCODEX_GAJAE_API_KEY` |
 
-opencode `{env:OPENCODEX_OPENCODE_API_KEY}` değerini enterpole eder. Üretilen Pi ve OMP dışa aktarımları bir ortam değişkeni gerektirmez: her biri değişmez `opencodex-loopback` yer tutucusunu taşır. Bu önemlidir çünkü her iki istemci de model listelerini oluştururken `apiKey`'i çözer ve mevcut bir yapılandırma ayarlanmamış bir ortam referansı içerdiğinde tüm sağlayıcıyı gizler. Proxy geri döngüde üretilen yer tutucuyu asla kontrol etmez. OMP sağlayıcı düzeyinde başlıkları destekler, ancak bu ilk entegrasyon kasıtlı olarak yalnızca geri döngü olarak kalır; uzaktan `x-opencodex-api-key` bağlantısı ertelenmiştir.
+opencode `{env:OPENCODEX_OPENCODE_API_KEY}` değerini enterpole eder. Üretilen Pi
+ve OMP dışa aktarımları bir ortam değişkeni gerektirmez: her biri değişmez
+`opencodex-loopback` yer tutucusunu taşır. Bu önemlidir çünkü her iki istemci de
+model listelerini oluştururken `apiKey`'i çözer ve mevcut bir yapılandırma
+ayarlanmamış bir ortam referansı içerdiğinde tüm sağlayıcıyı gizler. Proxy geri
+döngüde üretilen yer tutucuyu asla kontrol etmez. OMP sağlayıcı düzeyinde
+başlıkları destekler, ancak bu ilk entegrasyon kasıtlı olarak yalnızca geri
+döngü olarak kalır; uzaktan `x-opencodex-api-key` bağlantısı ertelenmiştir.
 
 :::caution[Birleştirin, asla üzerine yazmayın]
-`ocx export` asla gerçek istemci yapılandırmanızı yazmaz. Hedef elle birleştirmeniz için yazdırılır ve `--out`, `--force` olmadan mevcut bir dosyanın üzerine yazmayı reddeder; çünkü bir yapılandırmanın üzerine yazmak içindeki diğer sağlayıcıları, ajanları ve MCP girdilerini yok eder.
+`ocx export` asla gerçek istemci yapılandırmanızı yazmaz. Hedef elle
+birleştirmeniz için yazdırılır ve `--out`, `--force` olmadan mevcut bir dosyanın
+üzerine yazmayı reddeder; çünkü bir yapılandırmanın üzerine yazmak içindeki
+diğer sağlayıcıları, ajanları ve MCP girdilerini yok eder.
 :::
 
-Hiçbir anahtar asla serileştirilmez. Yapılandırmalar belgelenmiş bir ortam referansı veya gizli olmayan bir geri döngü yer tutucusu taşır. Bir geri döngü proxy'si (`127.0.0.1`, varsayılan) hiçbir kabul anahtarı gerektirmez. Referans verilen bir değişkeni yalnızca istemci şeması desteklediğinde ve proxy geri döngünün ötesine bağlandığında ayarlayın; kabul anahtarlarının nasıl verildiğini görmek için [Uzaktan erişim](/tr/reference/configuration/#remote-access) bölümüne bakın. Yukarı akış sağlayıcılarının kendi anahtarları tamamen ayrı bir şeydir ve [Sağlayıcılar](/tr/guides/providers/) bölümüne göre yapılandırılır.
+Hiçbir anahtar asla serileştirilmez. Yapılandırmalar belgelenmiş bir ortam
+referansı veya gizli olmayan bir geri döngü yer tutucusu taşır. Bir geri döngü
+proxy'si (`127.0.0.1`, varsayılan) hiçbir kabul anahtarı gerektirmez. Referans
+verilen bir değişkeni yalnızca istemci şeması desteklediğinde ve proxy geri
+döngünün ötesine bağlandığında ayarlayın; kabul anahtarlarının nasıl verildiğini
+görmek için [Uzaktan erişim](/tr/reference/configuration/#remote-access)
+bölümüne bakın. Yukarı akış sağlayıcılarının kendi anahtarları tamamen ayrı bir
+şeydir ve [Sağlayıcılar](/tr/guides/providers/) bölümüne göre yapılandırılır.
 
-Aynı yük `GET /api/client-config` tarafından sunulur ve kontrol panelinin API sekmesinde işlenir; böylece CLI, API ve GUI aynı baytları kullanır.
+Aynı yük `GET /api/client-config` tarafından sunulur ve kontrol panelinin API
+sekmesinde işlenir; böylece CLI, API ve GUI aynı baytları kullanır.
 
 ## Çalışma zamanı ve yapılandırma
 
 ### `ocx system <status|settings|startup|diagnostics|sync|update> ...`
 
-Başsız çalışma zamanı ayarlarını, başlatmayı, senkronizasyonu, tanılamayı ve güncellemeleri yönetin.
+Başsız çalışma zamanı ayarlarını, başlatmayı, senkronizasyonu, tanılamayı ve
+güncellemeleri yönetin.
 
 ```bash
 ocx system settings --stream-mode eager-relay
@@ -187,4 +271,8 @@ ocx system settings --stream-mode eager-relay
 
 ### `ocx config <show|get|set|unset|validate|export|import> ...`
 
-Doğrulanmış OpenCodex yapılandırmasını inceleyin ve güvenle değiştirin. `show` ve `get` sırları maskeler. İçe aktarma yazmadan önce doğrular ve `--yes` gerektirir.
+Doğrulanmış OpenCodex yapılandırmasını inceleyin ve güvenle değiştirin. `show`
+ve `get` sırları maskeler. İçe aktarma yazmadan önce doğrular ve `--yes`
+gerektirir.
+
+

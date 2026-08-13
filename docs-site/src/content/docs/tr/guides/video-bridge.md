@@ -5,13 +5,22 @@ description: OpenAI harici bir model üzerinden Grok Imagine Video ile videolar 
 
 ## Genel Bakış
 
-Video Köprüsü, opencodex tarafından yönlendirilen herhangi bir OpenAI harici model aracılığıyla xAI'ın Grok Imagine Video üretimini kullanmanızı sağlar. Etkinleştirildiğinde sohbete sentetik bir `video_gen` aracı enjekte edilir. Model bunu herhangi bir fonksiyon aracı gibi çağırır; opencodex çağrıyı yakalar, xAI'a bir video üretim görevi gönderir, tamamlanana kadar yoklar ve sonucu indirir.
+Video Köprüsü, opencodex tarafından yönlendirilen herhangi bir OpenAI harici
+model aracılığıyla xAI'ın Grok Imagine Video üretimini kullanmanızı sağlar.
+Etkinleştirildiğinde sohbete sentetik bir `video_gen` aracı enjekte edilir.
+Model bunu herhangi bir fonksiyon aracı gibi çağırır; opencodex çağrıyı yakalar,
+xAI'a bir video üretim görevi gönderir, tamamlanana kadar yoklar ve sonucu
+indirir.
 
 ## Ön Koşullar
 
-- Bir **API anahtarına** sahip bir `xai` sağlayıcı kaydı (`ocx login xai` tek başına yeterli değildir — video köprüsü OAuth değil, anahtar kimlik doğrulaması gerektirir)
-- Yönlendirilen sağlayıcınız olarak OpenAI harici bir model (örn. Anthropic Claude, Google Gemini)
-- opencodex'in OpenAI harici sağlayıcı üzerinden yönlendirilecek şekilde yapılandırılmış olması
+- Bir **API anahtarına** sahip bir `xai` sağlayıcı kaydı (`ocx login xai` tek
+  başına yeterli değildir — video köprüsü OAuth değil, anahtar kimlik
+  doğrulaması gerektirir)
+- Yönlendirilen sağlayıcınız olarak OpenAI harici bir model (örn. Anthropic
+  Claude, Google Gemini)
+- opencodex'in OpenAI harici sağlayıcı üzerinden yönlendirilecek şekilde
+  yapılandırılmış olması
 
 > **⚠ Sağlayıcı anahtarı gereklidir:** Video köprüsü yalnızca `xai` sağlayıcısı API anahtarı kimlik doğrulaması kullandığında devreye girer. Yapılandırmanıza şunu ekleyin:
 >
@@ -50,10 +59,13 @@ Video Köprüsü, opencodex tarafından yönlendirilen herhangi bir OpenAI haric
 
 ## Nasıl Çalışır?
 
-1. opencodex, `videoBridgeEnabled: true` etkinken OpenAI harici yönlendirilen bir modeli algılar
+1. opencodex, `videoBridgeEnabled: true` etkinken OpenAI harici yönlendirilen
+   bir modeli algılar
 2. Sohbete sentetik bir `video_gen` fonksiyon aracı enjekte edilir
-3. Model `video_gen`'i çağırdığında opencodex xAI'ın `/videos/generations` uç noktasına bir görev gönderir
-4. Köprü akışı canlı tutmak için kalp atışı mesajları göndererek her 5-15 saniyede bir görev durumunu yoklar
+3. Model `video_gen`'i çağırdığında opencodex xAI'ın `/videos/generations` uç
+   noktasına bir görev gönderir
+4. Köprü akışı canlı tutmak için kalp atışı mesajları göndererek her 5-15
+   saniyede bir görev durumunu yoklar
 5. Video hazır olduğunda yapılar (artifacts) dizinine indirilir
 6. Yerel dosya yolu modele bir araç sonucu olarak döndürülür
 
@@ -70,10 +82,20 @@ Video Köprüsü, opencodex tarafından yönlendirilen herhangi bir OpenAI haric
 
 ## Sınırlamalar
 
-- **Yalnızca xAI**: Video üretimi yalnızca xAI'ın Grok Imagine Video API'si aracılığıyla kullanılabilir
+- **Yalnızca xAI**: Video üretimi yalnızca xAI'ın Grok Imagine Video API'si
+  aracılığıyla kullanılabilir
 - **Zaman uyumsuz (Asynchronous)**: Video üretimi 30-120 saniye sürer
-- **Maliyet**: Video üretimi ücretli bir xAI özelliğidir (~$0.05/sn @480p, ~$0.07/sn @720p)
+- **Maliyet**: Video üretimi ücretli bir xAI özelliğidir (~$0.05/sn @480p,
+  ~$0.07/sn @720p)
 - **Çağrı başına bir video**: Her `video_gen` çağrısı bir video üretir
-- **Görsel Köprüsü (Image Bridge) ile birlikte var olur**: Her iki köprü aynı anda etkinleştirilebilir
-- **Web arama önceliği**: Bir tur için bir web arama sidecar'ı etkinken (`runTurn` olmayan adaptör), video köprüsü atlanır — ikisi eşzamanlı olarak çalışamaz. Bunu günlüklerde algılayabilmeniz için bir `console.warn` yayınlanır.
-- **Zaman aşımı gönderme + yoklamayı kapsar**: `videoTimeoutMs` bütçesi iş gönderilmeden önce başlar, bu nedenle gönderme çağrısı (60 sn) ve sonraki yoklama aynı son tarihi paylaşır.
+- **Görsel Köprüsü (Image Bridge) ile birlikte var olur**: Her iki köprü aynı
+  anda etkinleştirilebilir
+- **Web arama önceliği**: Bir tur için bir web arama sidecar'ı etkinken
+  (`runTurn` olmayan adaptör), video köprüsü atlanır — ikisi eşzamanlı olarak
+  çalışamaz. Bunu günlüklerde algılayabilmeniz için bir `console.warn`
+  yayınlanır.
+- **Zaman aşımı gönderme + yoklamayı kapsar**: `videoTimeoutMs` bütçesi iş
+  gönderilmeden önce başlar, bu nedenle gönderme çağrısı (60 sn) ve sonraki
+  yoklama aynı son tarihi paylaşır.
+
+

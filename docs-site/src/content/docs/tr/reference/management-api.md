@@ -3,18 +3,27 @@ title: Yönetim API'si
 description: opencodex kontrol düzlemi için kimlik doğrulama, hatalar ve uç nokta referansı.
 ---
 
-Yönetim API'si, opencodex'in kontrol düzlemidir. `http://localhost:10100` adresindeki kontrol paneli onun bir istemcisidir; başsız `ocx` sağlayıcı, model, kombo, hesap, ayarlar, tanılama ve yaşam döngüsü komutları da istemcilerdir. API yalnızca proxy çalışırken kullanılabilir.
+Yönetim API'si, opencodex'in kontrol düzlemidir. `http://localhost:10100`
+adresindeki kontrol paneli onun bir istemcisidir; başsız `ocx` sağlayıcı, model,
+kombo, hesap, ayarlar, tanılama ve yaşam döngüsü komutları da istemcilerdir. API
+yalnızca proxy çalışırken kullanılabilir.
 
-Etkileşimli bir istemci için [Web Kontrol Panelini](/tr/guides/web-dashboard/) veya otomasyon oluştururken bu referansı kullanın. Kalıcı değerler nihai olarak [Yapılandırma](/tr/reference/configuration/) bölümünü takip eder.
+Etkileşimli bir istemci için [Web Kontrol Panelini](/tr/guides/web-dashboard/)
+veya otomasyon oluştururken bu referansı kullanın. Kalıcı değerler nihai olarak
+[Yapılandırma](/tr/reference/configuration/) bölümünü takip eder.
 
 ## Kimlik doğrulama modeli
 
-Yönetim API'sinin, veri düzlemi API anahtarlarından bağımsız kendi yönetici kimlik bilgisi vardır. Başlangıçta opencodex bunu şu sırayla çözer:
+Yönetim API'sinin, veri düzlemi API anahtarlarından bağımsız kendi yönetici
+kimlik bilgisi vardır. Başlangıçta opencodex bunu şu sırayla çözer:
 
 1. Ayarlandığında `OPENCODEX_ADMIN_AUTH_TOKEN`.
 2. Güçlendirilmiş bir gizli dosyada oluşturulan bir `ocx_admin_*` belirteci.
 
-Dosya destekli belirteç, yalnızca dizini ve dosya izinleri veya ACL'leri güçlendirildikten sonra kabul edilir. Bu garanti edilemezse, yönetim kimlik doğrulaması kapalı olarak başarısız olur ve bir ortam belirteci sağlanana veya dosya durumu onarılana kadar API 503 döndürür.
+Dosya destekli belirteç, yalnızca dizini ve dosya izinleri veya ACL'leri
+güçlendirildikten sonra kabul edilir. Bu garanti edilemezse, yönetim kimlik
+doğrulaması kapalı olarak başarısız olur ve bir ortam belirteci sağlanana veya
+dosya durumu onarılana kadar API 503 döndürür.
 
 Yönetici belirtecini şu iki biçimden biriyle gönderin:
 
@@ -27,18 +36,28 @@ Authorization: Bearer <yonetici-belirteci>
 ```
 
 :::caution
-Yönetici belirteci her veri düzlemi kimlik bilgisinden farklı olmalıdır. Başlangıç, bir proxy kabul anahtarıyla çakışan bir yönetim kimlik bilgisini reddeder. Yönetici belirtecini Codex, Claude Code veya başka bir model istemcisine koymayın; kontrol düzlemi değişikliklerini yetkilendirir.
+Yönetici belirteci her veri düzlemi kimlik bilgisinden farklı olmalıdır.
+Başlangıç, bir proxy kabul anahtarıyla çakışan bir yönetim kimlik bilgisini
+reddeder. Yönetici belirtecini Codex, Claude Code veya başka bir model
+istemcisine koymayın; kontrol düzlemi değişikliklerini yetkilendirir.
 :::
 
 ### Geri döngü kontrol paneli oturumları
 
-Bir geri döngü bağlantısında, kontrol paneli önyüklemesi kısa ömürlü bir `ocx_session_*` kimlik bilgisi alabilir. Her oturum beş dakika sürer ve tam kontrol paneli kaynağına bağlanır. Güvenli istekler bu kaynakla eşleşmelidir. Güvenli olmayan yöntemler ayrıca tarayıcı `Origin`'ini ve oturumun CSRF belirtecini gerektirir.
+Bir geri döngü bağlantısında, kontrol paneli önyüklemesi kısa ömürlü bir
+`ocx_session_*` kimlik bilgisi alabilir. Her oturum beş dakika sürer ve tam
+kontrol paneli kaynağına bağlanır. Güvenli istekler bu kaynakla eşleşmelidir.
+Güvenli olmayan yöntemler ayrıca tarayıcı `Origin`'ini ve oturumun CSRF
+belirtecini gerektirir.
 
-Uzak bağlantıları da içeren veri düzlemi kimlik doğrulaması gerektiğinde oturum verilmesi devre dışı bırakılır. Uzak bir operatör ham yönetici belirteci ile kimlik doğrulaması yapmalıdır; geri döngü tarzı bir GUI oturumu basılmaz.
+Uzak bağlantıları da içeren veri düzlemi kimlik doğrulaması gerektiğinde oturum
+verilmesi devre dışı bırakılır. Uzak bir operatör ham yönetici belirteci ile
+kimlik doğrulaması yapmalıdır; geri döngü tarzı bir GUI oturumu basılmaz.
 
 ## Yaygın hatalar
 
-Aşağıdaki tüm uç nokta satırları bu sınır hatalarını devralır. "Dikkate değer hatalar" sütunu bu tabloyu tekrarlamak yerine rotaya özgü ek sonuçları listeler.
+Aşağıdaki tüm uç nokta satırları bu sınır hatalarını devralır. "Dikkate değer
+hatalar" sütunu bu tabloyu tekrarlamak yerine rotaya özgü ek sonuçları listeler.
 
 | Durum | Tip veya kod | Anlamı |
 | --- | --- | --- |
@@ -69,7 +88,9 @@ Aşağıdaki tüm uç nokta satırları bu sınır hatalarını devralır. "Dikk
 | `GET /api/claude-desktop/status` | Kaydedilen ve uygulanan profili ve Desktop sağlığını inceleyin | 400 durum okuma hatası |
 | `GET, PUT /api/claude-code` | Claude Code ağ geçidi, kimlik doğrulama modu, model haritası, bağlam, ajan ve sidecar ayarlarını okuyun veya güncelleyin | 400 geçersiz alan veya şekil |
 
-Model kadrosunun ve şifrelenmiş çalışan görevi davranışının arkasındaki kavramlar için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
+Model kadrosunun ve şifrelenmiş çalışan görevi davranışının arkasındaki
+kavramlar için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına
+bakın.
 
 ### Kombolar
 
@@ -79,7 +100,8 @@ Model kadrosunun ve şifrelenmiş çalışan görevi davranışının arkasında
 | `PUT /api/combos` | Bir komboyu oluşturun, değiştirin veya yeniden adlandırın | 400 geçersiz kimlik, hedef, yapılandırma, yeniden adlandırma veya sıradan çakışma; 409 Codex hesabı ad alanı çakışması |
 | `DELETE /api/combos?id=...` | Bir komboyu silin ve seçim/soğuma durumunu temizleyin | 400 eksik kimlik; 404 bilinmeyen kombo |
 
-Hedef stratejileri, soğuma süreleri, takma adlar ve yönlendirme hataları için [Kombolar](/tr/guides/combos/) sayfasına bakın.
+Hedef stratejileri, soğuma süreleri, takma adlar ve yönlendirme hataları için
+[Kombolar](/tr/guides/combos/) sayfasına bakın.
 
 ### Yapılandırma, başlangıç, senkronizasyon ve güncellemeler
 
@@ -120,10 +142,21 @@ Hedef stratejileri, soğuma süreleri, takma adlar ve yönlendirme hataları iç
 | `POST /api/storage/cleanup-policy/run` | Manuel bir temizleme politikası çalıştırması başlatın | 409 `already_running`; 500 `cleanup_failed` |
 | `GET /api/storage/cleanup-policy/test-stream` | Yalnızca test amaçlı politika akış kancası | Kullanılamadığında 404 `not_found` |
 
-`GET /api/usage?range=30d&surface=codex` için `accounts`, gözlemlenen her Codex havuz etiketi için bir satır içerir. Her satır `accountLogLabel`, belirteç toplamları, `usageCoverageRatio` ve geçerli olarak yapılandırılmış görüntüleme fiyatlandırmasına dayalı isteğe bağlı bir `estimatedCostUsd` bildirir. Aktif kullanıcı `modelCosts` katmanları paketlenmiş doğrulanmış katalog ve fiyat geri dönüşlerine göre önceliklidir ve geçmiş kullanım özet okunduğunda aktif olan fiyatlandırmadan yeniden tahmin edilir. Bu bir API eşdeğeri tahmindir, bir abonelik ücreti değildir. Yeni ana havuz istekleri ayrılmış `main` etiketini kullanır; eski yalın `openai` satırları geçerli yapılandırmadan yeniden atanmak yerine belirsiz bir sepette kalır.
+`GET /api/usage?range=30d&surface=codex` için `accounts`, gözlemlenen her Codex
+havuz etiketi için bir satır içerir. Her satır `accountLogLabel`, belirteç
+toplamları, `usageCoverageRatio` ve geçerli olarak yapılandırılmış görüntüleme
+fiyatlandırmasına dayalı isteğe bağlı bir `estimatedCostUsd` bildirir. Aktif
+kullanıcı `modelCosts` katmanları paketlenmiş doğrulanmış katalog ve fiyat geri
+dönüşlerine göre önceliklidir ve geçmiş kullanım özet okunduğunda aktif olan
+fiyatlandırmadan yeniden tahmin edilir. Bu bir API eşdeğeri tahmindir, bir
+abonelik ücreti değildir. Yeni ana havuz istekleri ayrılmış `main` etiketini
+kullanır; eski yalın `openai` satırları geçerli yapılandırmadan yeniden atanmak
+yerine belirsiz bir sepette kalır.
 
 :::caution
-Depolama temizleme uç noktaları arşivlenmiş oturum verilerini taşıyabilir veya kalıcı olarak kaldırabilir. Her zaman önce önizleyin ve döndürülen özeti gönderin. Kurtarma gerekebileceğinde karantinayı tercih edin.
+Depolama temizleme uç noktaları arşivlenmiş oturum verilerini taşıyabilir veya
+kalıcı olarak kaldırabilir. Her zaman önce önizleyin ve döndürülen özeti
+gönderin. Kurtarma gerekebileceğinde karantinayı tercih edin.
 :::
 
 ### Modeller ve katalog
@@ -160,7 +193,9 @@ Depolama temizleme uç noktaları arşivlenmiş oturum verilerini taşıyabilir 
 | `PUT /api/providers/keys/alias` | Bir sağlayıcı anahtarı takma adını ayarlayın veya temizleyin | 400 geçersiz girdi; 404 sağlayıcı/anahtar eksik |
 | `GET, POST, PATCH, DELETE /api/keys` | Veri düzlemi kabul anahtarlarını listeleyin, oluşturun, düzenleyin veya silin | 400 geçersiz gövde/kimlik; 404 anahtar eksik |
 
-Kimlik bilgisi listesi yanıtları kasıtlı olarak maskelenir. OAuth erişim belirteçleri ve eksiksiz sağlayıcı API anahtarları kontrol paneli istemcilerine döndürülmez.
+Kimlik bilgisi listesi yanıtları kasıtlı olarak maskelenir. OAuth erişim
+belirteçleri ve eksiksiz sağlayıcı API anahtarları kontrol paneli istemcilerine
+döndürülmez.
 
 ### Sağlayıcılar
 
@@ -175,7 +210,8 @@ Kimlik bilgisi listesi yanıtları kasıtlı olarak maskelenir. OAuth erişim be
 | `GET, PUT /api/provider-context-caps` | Küresel, tüm sağlayıcılar veya tek sağlayıcı bağlam sınırlarını okuyun veya güncelleyin | 400 geçersiz istek; 404 bilinmeyen sağlayıcı |
 | `GET /api/provider-presets` | Çalışma zamanı kayıt defterinden türetilen GUI sağlayıcı önayarlarını döndürün | — |
 
-`provider_has_dependent_combos` bir güvenlik engelidir: sağlayıcılarını silmeden önce bağımlı komboları kaldırın veya düzenleyin.
+`provider_has_dependent_combos` bir güvenlik engelidir: sağlayıcılarını silmeden
+önce bağımlı komboları kaldırın veya düzenleyin.
 
 ### Kenar çubuğu ve rızaya bağlı eylemler
 
@@ -186,7 +222,9 @@ Kimlik bilgisi listesi yanıtları kasıtlı olarak maskelenir. OAuth erişim be
 | `GET /api/update/badge` | Ucuz kenar çubuğu güncelleme rozeti durumunu okuyun | — |
 
 :::caution
-Yönetim kimlik doğrulaması proxy'ye erişimi kanıtlar; kullanıcının kimliğini harcama rızasını kanıtlamaz. Bir ajan `agent_consent_required` etrafından dolaşmamalıdır. Depoya yıldız verip vermeyeceğini kullanıcı seçmelidir.
+Yönetim kimlik doğrulaması proxy'ye erişimi kanıtlar; kullanıcının kimliğini
+harcama rızasını kanıtlamaz. Bir ajan `agent_consent_required` etrafından
+dolaşmamalıdır. Depoya yıldız verip vermeyeceğini kullanıcı seçmelidir.
 :::
 
 ### Sistem yaşam döngüsü
@@ -199,9 +237,20 @@ Yönetim kimlik doğrulaması proxy'ye erişimi kanıtlar; kullanıcının kimli
 
 ### Codex kimlik doğrulama yetkilendirmesi
 
-`GET /api/settings`, geçerli `codexAccountPickerEnabled` boolean değerini bildirir. Bu katı boolean'ı içeren bir `PUT`, boş bir haritayı etkinleştirirken gizlilik açısından güvenli hesap seçicilerini başlatır, devre dışı bırakırken veya yeniden etkinleştirirken mevcut seçici etiketlerini korur, önce kalıcı hale getirir ve ardından yalnızca geçerli seçici görünürlüğü değiştiğinde sınırlı bir katalog yakınsaması talep eder. Başarılı yanıt `catalogRefreshPending` içerir: `false`, katalog işleminin tamamlandığı (veya yenilemeye gerek olmadığı) anlamına gelir; `true`, ayarın kaydedildiği ancak katalog yenilemesini yeniden denemek için `POST /api/sync` kullanılması gerektiği anlamına gelir. Kalıcılık veya seçici tahsis arızası bellek içi ayarları geri alır ve yakınsamayı çalıştırmaz.
+`GET /api/settings`, geçerli `codexAccountPickerEnabled` boolean değerini
+bildirir. Bu katı boolean'ı içeren bir `PUT`, boş bir haritayı etkinleştirirken
+gizlilik açısından güvenli hesap seçicilerini başlatır, devre dışı bırakırken
+veya yeniden etkinleştirirken mevcut seçici etiketlerini korur, önce kalıcı hale
+getirir ve ardından yalnızca geçerli seçici görünürlüğü değiştiğinde sınırlı bir
+katalog yakınsaması talep eder. Başarılı yanıt `catalogRefreshPending` içerir:
+`false`, katalog işleminin tamamlandığı (veya yenilemeye gerek olmadığı)
+anlamına gelir; `true`, ayarın kaydedildiği ancak katalog yenilemesini yeniden
+denemek için `POST /api/sync` kullanılması gerektiği anlamına gelir. Kalıcılık
+veya seçici tahsis arızası bellek içi ayarları geri alır ve yakınsamayı
+çalıştırmaz.
 
-Kök yönetim dağıtıcısı her `/api/codex-auth/*` isteğini Codex hesap yöneticisine devreder. Rotaları şunlardır:
+Kök yönetim dağıtıcısı her `/api/codex-auth/*` isteğini Codex hesap yöneticisine
+devreder. Rotaları şunlardır:
 
 | Yöntem ve yol | Amaç | Dikkate değer hatalar |
 | --- | --- | --- |
@@ -222,12 +271,34 @@ Kök yönetim dağıtıcısı her `/api/codex-auth/*` isteğini Codex hesap yön
 | `POST /api/codex-auth/login/cancel` | Bir Codex giriş akışını iptal edin | — |
 | `GET /api/codex-auth/login-status` | Bir akışı veya hesap giriş durumunu yoklayın. Tamamlanan yeni hesap akışı yalnızca kurtarma gerektiğinde `catalogRefreshPending: true` içerir. | Bilinmeyen akışlar `expired` bildirir; aktif olmayan akış `idle` bildirir |
 
-Yeni bir hesap yapılandırma satırı kaydedilirse ancak kimlik bilgisi kurulumu tamamlanamazsa, OAuth `login-status`, `code: "codex_credential_persistence_failed"`, `accountId`, `needsReauth: true` ve isteğe bağlı `catalogRefreshPending: true` ile `status: "error"` bildirir; depolama hatası ayrıntıları açığa çıkarılmaz. Hesap satırı kaydedilmiş olarak kalır: hesap oluşturmayı yeniden denemeden önce yeniden kimlik doğrulaması yapın veya silin.
+Yeni bir hesap yapılandırma satırı kaydedilirse ancak kimlik bilgisi kurulumu
+tamamlanamazsa, OAuth `login-status`, `code:
+"codex_credential_persistence_failed"`, `accountId`, `needsReauth: true` ve
+isteğe bağlı `catalogRefreshPending: true` ile `status: "error"` bildirir;
+depolama hatası ayrıntıları açığa çıkarılmaz. Hesap satırı kaydedilmiş olarak
+kalır: hesap oluşturmayı yeniden denemeden önce yeniden kimlik doğrulaması yapın
+veya silin.
 
-Bu yetkilendirilmiş aile altındaki yapılandırma yazıcısı veya kimlik bilgisi yenileme kilidi zaman aşımları `CONFIG_MUTATION_LOCK_UNAVAILABLE` koduyla HTTP 503 döndürür. İstemciler bu yanıtı kalıcı bir hesap hatası olarak değerlendirmek yerine kısa süre sonra yeniden denemelidir.
+Bu yetkilendirilmiş aile altındaki yapılandırma yazıcısı veya kimlik bilgisi
+yenileme kilidi zaman aşımları `CONFIG_MUTATION_LOCK_UNAVAILABLE` koduyla HTTP
+503 döndürür. İstemciler bu yanıtı kalıcı bir hesap hatası olarak değerlendirmek
+yerine kısa süre sonra yeniden denemelidir.
 
-Hesap oluşturma ve silme, katalog yakınsamasından önce kimlik bilgilerini/yapılandırmayı işler. Başarısız veya ertelenmiş bir katalog denemesi kalıcı hesap mutasyonunu asla geri almaz ve dahili sağlayıcı, hesap, yol veya kimlik bilgisi ayrıntılarını asla yansıtmaz; istemciler yalnızca tamamlama boolean'ını alır. Bir hesabı silmek seçici bağlamasını korur, böylece hesap yokken tam rotalar kapalı olarak başarısız olur ve bu hesap kimliği tekrar eklenirse aynı seçici geri yüklenir.
+Hesap oluşturma ve silme, katalog yakınsamasından önce kimlik
+bilgilerini/yapılandırmayı işler. Başarısız veya ertelenmiş bir katalog denemesi
+kalıcı hesap mutasyonunu asla geri almaz ve dahili sağlayıcı, hesap, yol veya
+kimlik bilgisi ayrıntılarını asla yansıtmaz; istemciler yalnızca tamamlama
+boolean'ını alır. Bir hesabı silmek seçici bağlamasını korur, böylece hesap
+yokken tam rotalar kapalı olarak başarısız olur ve bu hesap kimliği tekrar
+eklenirse aynı seçici geri yüklenir.
 
 ## Bir istemci seçme
 
-Sıradan yönetim için [Web Kontrol Paneli](/tr/guides/web-dashboard/) en güvenli rehberli iş akışını sağlar. Başsız ana bilgisayarlar ve otomasyon için ilgili `ocx` komutlarını kullanın: aynı canlı API'yi çağırırlar ve proxy erişilemez olduğunda veya işlem başarısız olduğunda sıfır olmayan bir sonuç döndürürler. Doğrudan HTTP, yukarıdaki tam uç nokta sözleşmelerine ihtiyaç duyan entegrasyonlar için en yararlıdır.
+Sıradan yönetim için [Web Kontrol Paneli](/tr/guides/web-dashboard/) en güvenli
+rehberli iş akışını sağlar. Başsız ana bilgisayarlar ve otomasyon için ilgili
+`ocx` komutlarını kullanın: aynı canlı API'yi çağırırlar ve proxy erişilemez
+olduğunda veya işlem başarısız olduğunda sıfır olmayan bir sonuç döndürürler.
+Doğrudan HTTP, yukarıdaki tam uç nokta sözleşmelerine ihtiyaç duyan
+entegrasyonlar için en yararlıdır.
+
+

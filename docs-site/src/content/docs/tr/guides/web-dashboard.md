@@ -3,7 +3,10 @@ title: Web Kontrol Paneli
 description: Proxy sağlığı, sağlayıcılar, modeller, yetkilendirme rehberliği, kimlik doğrulama havuzları, kullanım ve günlükler için opencodex GUI'si.
 ---
 
-opencodex, proxy'den sunulan yerel bir web kontrol paneli (`gui/` altında bir Vite/React uygulaması) ile birlikte gelir. Sağlayıcıları, Codex/ChatGPT hesaplarını, katalog modellerini, sidecar'ları, alt ajan ayarlarını ve istek trafiğini yönetmenin en kısa yoludur.
+opencodex, proxy'den sunulan yerel bir web kontrol paneli (`gui/` altında bir
+Vite/React uygulaması) ile birlikte gelir. Sağlayıcıları, Codex/ChatGPT
+hesaplarını, katalog modellerini, sidecar'ları, alt ajan ayarlarını ve istek
+trafiğini yönetmenin en kısa yoludur.
 
 ## Açma
 
@@ -11,7 +14,9 @@ opencodex, proxy'den sunulan yerel bir web kontrol paneli (`gui/` altında bir V
 ocx gui
 ```
 
-Bu, gerekirse önce proxy'yi otomatik olarak başlatarak tarayıcınızda `http://localhost:<port>` adresini açar. Geliştirme sırasında GUI geliştirme sunucusunu çalışan bir proxy'ye karşı ayrı olarak çalıştırabilirsiniz:
+Bu, gerekirse önce proxy'yi otomatik olarak başlatarak tarayıcınızda
+`http://localhost:<port>` adresini açar. Geliştirme sırasında GUI geliştirme
+sunucusunu çalışan bir proxy'ye karşı ayrı olarak çalıştırabilirsiniz:
 
 ```bash
 ocx start
@@ -20,9 +25,19 @@ bun run dev:gui
 
 ## Oturum Açma
 
-Varsayılan geri döngü bağlantısında (`localhost` / `127.0.0.1`) kontrol paneli asla bir belirteç istemez: proxy sunulan sayfaya kısa ömürlü GUI oturumları basar ve süreleri dolduğunda veya proxy yeniden başladığında bunları sessizce yeniler. Yalnızca geri döngü olmayan bir ana bilgisayar adına bağlı bir kontrol paneli yönetici belirtecini (`OPENCODEX_ADMIN_AUTH_TOKEN` veya otomatik olarak oluşturulan `~/.opencodex/admin-api-token` dosyası) gerektirir.
+Varsayılan geri döngü bağlantısında (`localhost` / `127.0.0.1`) kontrol paneli
+asla bir belirteç istemez: proxy sunulan sayfaya kısa ömürlü GUI oturumları
+basar ve süreleri dolduğunda veya proxy yeniden başladığında bunları sessizce
+yeniler. Yalnızca geri döngü olmayan bir ana bilgisayar adına bağlı bir kontrol
+paneli yönetici belirtecini (`OPENCODEX_ADMIN_AUTH_TOKEN` veya otomatik olarak
+oluşturulan `~/.opencodex/admin-api-token` dosyası) gerektirir.
 
-Uzak bir kontrol panelinin bu kimlik bilgisine ihtiyacı olduğunda, bir tarayıcı şifre yöneticisinin onu kaydetmeyi ve otomatik doldurmayı teklif edebilmesi için standart bir şifre formu sunar. Kontrol panelinin kendisi belirteci yine de yalnızca bellekte tutar ve `localStorage` veya `sessionStorage`'a yazmaz; kaydedilip kaydedilmeyeceği tamamen tarayıcının veya şifre yöneticisinin kararıdır.
+Uzak bir kontrol panelinin bu kimlik bilgisine ihtiyacı olduğunda, bir tarayıcı
+şifre yöneticisinin onu kaydetmeyi ve otomatik doldurmayı teklif edebilmesi için
+standart bir şifre formu sunar. Kontrol panelinin kendisi belirteci yine de
+yalnızca bellekte tutar ve `localStorage` veya `sessionStorage`'a yazmaz;
+kaydedilip kaydedilmeyeceği tamamen tarayıcının veya şifre yöneticisinin
+kararıdır.
 
 ## Neler yapabilirsiniz
 
@@ -47,61 +62,165 @@ Uzak bir kontrol panelinin bu kimlik bilgisine ihtiyacı olduğunda, bir tarayı
 
 ### Bir bölüme bağlantı verme
 
-Tek bir düzen vardır, bu nedenle yapılandırılacak bir düzen anahtarı yoktur. Bunun yerine kontrol paneli bölümleri adreslenebilirdir: `#dashboard` Genel Bakış'ı açar, `#dashboard/providers` ve `#dashboard/models` diğer ikisini açar. Yeniden Yükle, yer imi ve Geri işlemlerinin tümü bulunduğunuz bölümü korur. **Günlükler** `#logs` ve `#logs/debug` ile aynı şekilde çalışır. Daha eski bir `#providers/workspace` yer imi artık `#providers` üzerine iner.
+Tek bir düzen vardır, bu nedenle yapılandırılacak bir düzen anahtarı yoktur.
+Bunun yerine kontrol paneli bölümleri adreslenebilirdir: `#dashboard` Genel
+Bakış'ı açar, `#dashboard/providers` ve `#dashboard/models` diğer ikisini açar.
+Yeniden Yükle, yer imi ve Geri işlemlerinin tümü bulunduğunuz bölümü korur.
+**Günlükler** `#logs` ve `#logs/debug` ile aynı şekilde çalışır. Daha eski bir
+`#providers/workspace` yer imi artık `#providers` üzerine iner.
 
-**Günlükler** ve **Kullanım**'daki maliyet değerleri bildirilen belirteçlerden hesaplanan API liste fiyatı eşdeğerleridir. Bunlar fatura makbuzları veya gerçek bir ücret kanıtı değildir; bunun yerine abonelik kullanımı veya sağlayıcı kredileri geçerli olabilir.
+**Günlükler** ve **Kullanım**'daki maliyet değerleri bildirilen belirteçlerden
+hesaplanan API liste fiyatı eşdeğerleridir. Bunlar fatura makbuzları veya gerçek
+bir ücret kanıtı değildir; bunun yerine abonelik kullanımı veya sağlayıcı
+kredileri geçerli olabilir.
 
 ## Model görünürlüğü
 
-**Modeller** anahtarları nihai Codex görünürlüğünü gösterir: yönlendirilen bir model yalnızca sağlayıcı izin listesi onu içerdiğinde (veya hiçbir izin listesi ayarlanmadığında) ve devre dışı bırakılmadığında açıktır. Bir modeli açmak her iki filtreyi de atomik olarak uzlaştırır; **Tümünü aç (All on)** sağlayıcı izin listesini temizler, böylece yeni keşfedilen modeller de açık olur.
+**Modeller** anahtarları nihai Codex görünürlüğünü gösterir: yönlendirilen bir
+model yalnızca sağlayıcı izin listesi onu içerdiğinde (veya hiçbir izin listesi
+ayarlanmadığında) ve devre dışı bırakılmadığında açıktır. Bir modeli açmak her
+iki filtreyi de atomik olarak uzlaştırır; **Tümünü aç (All on)** sağlayıcı izin
+listesini temizler, böylece yeni keşfedilen modeller de açık olur.
 
 ## Yetkilendirme seçicisi ve spawn yönlendirmesi
 
-Kontrol Panelinin **Alt ajan yetkilendirmesi** seçicisi `injectionModel`'i ve isteğe bağlı olarak `injectionEffort`'ı saklar. **OpenCodex çoklu ajan rehberliği**, bu değerleri kullanan yetkilendirme talimatlarını bağımsız olarak denetler. Uygun v2 turlarında bu rehberlik ana ajana `spawn_agent`'a hangi tam modeli ve akıl yürütme çabasını ileteceğini söyler; modeli temizlemek saklanan çabayı da temizler.
+Kontrol Panelinin **Alt ajan yetkilendirmesi** seçicisi `injectionModel`'i ve
+isteğe bağlı olarak `injectionEffort`'ı saklar. **OpenCodex çoklu ajan
+rehberliği**, bu değerleri kullanan yetkilendirme talimatlarını bağımsız olarak
+denetler. Uygun v2 turlarında bu rehberlik ana ajana `spawn_agent`'a hangi tam
+modeli ve akıl yürütme çabasını ileteceğini söyler; modeli temizlemek saklanan
+çabayı da temizler.
 
-Varsayılan olarak kapalı olan **Yerel Codex alt ajan varsayılanları olarak kullan (Use as native Codex subagent defaults)** anahtarı, OpenCodex aktif Codex yönlendirmesini yönettiğinde bir sonraki senkronizasyonda/yeniden başlatmada aynı seçimi Codex'in yerel `[agents]` varsayılanlarına uygular. Harici kullanıcı tarafından yönetilen sağlayıcı yapılandırmaları dokunulmadan kalır. Bu varsayılanlar yeni oluşturulan Codex görevlerini etkiler ve kendileri yetkilendirmeye neden olmaz. Kullanıcıya ait mevcut `[agents]` varsayılanları üzerine yazılmak yerine korunur, bu nedenle talep edilen varsayılanları geçersiz kılmaya devam edebilirler.
+Varsayılan olarak kapalı olan **Yerel Codex alt ajan varsayılanları olarak
+kullan (Use as native Codex subagent defaults)** anahtarı, OpenCodex aktif Codex
+yönlendirmesini yönettiğinde bir sonraki senkronizasyonda/yeniden başlatmada
+aynı seçimi Codex'in yerel `[agents]` varsayılanlarına uygular. Harici kullanıcı
+tarafından yönetilen sağlayıcı yapılandırmaları dokunulmadan kalır. Bu
+varsayılanlar yeni oluşturulan Codex görevlerini etkiler ve kendileri
+yetkilendirmeye neden olmaz. Kullanıcıya ait mevcut `[agents]` varsayılanları
+üzerine yazılmak yerine korunur, bu nedenle talep edilen varsayılanları geçersiz
+kılmaya devam edebilirler.
 
 :::caution
-Hiçbir kontrol proxy tarafında modeller arası bir spawn yönlendiricisi değildir. OpenCodex rehberliği Codex'ten `spawn_agent`'a geçersiz kılmalar iletmesini ister; yerel `[agents]` varsayılanları yalnızca Codex senkronize edildikten sonra yeni bir görev oluşturduğunda geçerlidir. Kurallı v1/base/v2 davranışı için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
+Hiçbir kontrol proxy tarafında modeller arası bir spawn yönlendiricisi değildir.
+OpenCodex rehberliği Codex'ten `spawn_agent`'a geçersiz kılmalar iletmesini
+ister; yerel `[agents]` varsayılanları yalnızca Codex senkronize edildikten
+sonra yeni bir görev oluşturduğunda geçerlidir. Kurallı v1/base/v2 davranışı
+için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına bakın.
 :::
 
-Spawn geçersiz kılma garantisi **yerleşik** v2 rehberlik metni için geçerlidir. Özel bir `injectionPrompt` bu metnin yerini tamamen alır ve `{{model}}` ve `{{effort}}` yer tutucularını (ve isteğe bağlı olarak `{{roster}}`) içermelidir, aksi takdirde bu değerler enjekte edilen rehberlikte görünmez.
+Spawn geçersiz kılma garantisi **yerleşik** v2 rehberlik metni için geçerlidir.
+Özel bir `injectionPrompt` bu metnin yerini tamamen alır ve `{{model}}` ve
+`{{effort}}` yer tutucularını (ve isteğe bağlı olarak `{{roster}}`) içermelidir,
+aksi takdirde bu değerler enjekte edilen rehberlikte görünmez.
 
-Seçici, etkinleştirilmiş yerel ve yönlendirilen modellerin yanı sıra küresel Codex çaba merdivenini sunar. API seçilen çabayı küresel olarak doğrular; Codex yine de hedef katalog girdisine karşı bir spawn çabasını doğrular.
+Seçici, etkinleştirilmiş yerel ve yönlendirilen modellerin yanı sıra küresel
+Codex çaba merdivenini sunar. API seçilen çabayı küresel olarak doğrular; Codex
+yine de hedef katalog girdisine karşı bir spawn çabasını doğrular.
 
 ## Codex Auth ve hesap havuzları
 
 **Codex Auth** sayfası yerel ChatGPT/Codex rotasını yönetir:
 
-Pool modu ana ve eklenen Codex hesapları arasında seçim yapar; Direct yalnızca arayan/ana girişi kullanır. Devam eden istekler yakalanan kimlik bilgilerini korur ve bir 401/403 yeniden kimlik doğrulaması veya 429 soğuma süresi bağlılığı temizleyebilir ve başka bir uygun Pool hesabına dönebilir. Bu, `openai-apikey` ve diğer sağlayıcılardan ayrıdır.
+Pool modu ana ve eklenen Codex hesapları arasında seçim yapar; Direct yalnızca
+arayan/ana girişi kullanır. Devam eden istekler yakalanan kimlik bilgilerini
+korur ve bir 401/403 yeniden kimlik doğrulaması veya 429 soğuma süresi bağlılığı
+temizleyebilir ve başka bir uygun Pool hesabına dönebilir. Bu, `openai-apikey`
+ve diğer sağlayıcılardan ayrıdır.
 
-- Manuel olarak bir hesap seçmek hemen uygulanır: zaten bağlı olan bir iş parçacığı bir sonraki isteğinde ona geçer ve yalnızca devam eden istekler yakaladıkları hesabı tutar. Manuel bir seçim de sabitlenir: kart bir **PINNED** rozeti gösterir ve boşaltılana, başka bir hesap seçene kadar veya herhangi bir hesabın seçim sırasını değiştirene kadar daha yüksek bir seçim sırası bu hesabı öncelikleyemez.
-- Her hesap kartı bir **Seçim sırası (Selection order)** kontrolü taşır (İlk, Daha Önce, Normal, Daha Sonra, Son). Daha yüksek sıra önce kullanılır ve havuz ancak üzerindeki her hesap boşaldığında veya kullanılamaz olduğunda daha düşük bir sıraya düşer. Değişen bir sıra bir sonraki bağımsız istekten itibaren geçerlidir ve zaten bağlı olan bir iş parçacığını asla taşımaz. Codex Desktop (ana) hesabı diğerleri gibi sıralanır, böylece **Son** olarak ayarlanabilir ve yedek olarak tutulabilir. Bu beş önayarın dışındaki `ocx account priority`'den ayarlanan bir sıra kartta görünür ve seçilebilir kalır.
-- İş parçacığı bağlılığı istek başına dalgalanmayı önler. Kota otomatik geçişi etkinken uzun süredir çalışan bir iş parçacığı düzenli olarak yeniden değerlendirilir ve ilgili kullanımı eşiğe ulaştıktan ve kesinlikle daha düşük kullanımlı uygun bir hesap mevcut olduğunda yeniden bağlanabilir.
-- Yeni oturumlar en düşük kullanımlı uygun hesabı seçebilir. Ücretli planlar bilinen en sıcak 5 saatlik, haftalık veya 30 günlük pencereyi puanlar; Go/Ücretsiz planlar yalnızca 30 günlük pencereyi kullanır.
-- WHAM `limit_window_seconds` sağladığında Codex Auth, her birincil pencerenin haftalık olduğunu varsaymak yerine en az 28 günlük birincil pencereyi 30 gün olarak sınıflandırır. Süresi olmayan yanıtlar eski haftalık yorumu korur.
-- **Kotaları yenile (Refresh quotas)**, yönlendirmenin ve hesap kartlarının aynı değerleri kullanması için hesap kullanımını hemen yeniden okur.
-- Havuz isteği günlükleri `p3fa91c` gibi donuk etiketler kullanır, asla hesap e-postalarını kullanmaz.
-- Her hesap kartı ayrıca bu kararlı günlük etiketini, gözlemlenen 30 günlük belirteç toplamını, geçerli olarak yapılandırılmış görüntüleme fiyatlandırmasını kullanan yaklaşık bir API eşdeğeri maliyeti ve ölçülen kullanıma sahip denemelerin oranını gösterir. Aktif kullanıcı `modelCosts` katmanları paketlenmiş doğrulanmış katalog ve fiyat geri dönüşlerine göre önceliklidir ve geçmiş kullanım özet okunduğunda aktif olan fiyatlandırmadan yeniden tahmin edilir. Maliyet mutabakat için bir tahmindir, bir ChatGPT Plus/Pro abonelik faturası değildir. Açık atıftan önceki geçmiş yalın `openai` satırları geçerli ana hesaba atanmak yerine belirsiz kalır.
-- **Model seçicisinden belirli bir Codex hesabını hedefleme** açık bir katılımdır. Etkinleştirildiğinde sıradan desteklenen GPT seçici satırları genel hesap seçicisi başına bir girdiyle değiştirilir. Birini seçmek o görüşmeyi eşlenen hesaba kilitler: dönmez, geri dönmez veya aktif Havuz hesabını değiştirmez. Yerleşik Codex App girişinin kendi seçicisi vardır; oluşturulan haritalar normalde `main` kullanır, gerektiğinde `main-2` gibi çakışma güvenli bir sonek kullanır. Eklenen hesaplar kararlı, gizlilik açısından güvenli etiketler alır ve mevcut özel seçici etiketleri korunur. Mevcut görüşmeler ve kaydedilen model seçimleri yönlendirmeye devam eder. Ayarı kapatmak hesapları, seçicileri veya tam rotaları silmeden oluşturulan seçici girdilerini gizler. Düz GPT model kimlikleri yapılandırılmış Havuz veya Direct davranışını kullanmaya devam eder.
-- Hesap ekleme, kaldırma ve seçici ayarı değişiklikleri model kataloğu yenilenmeden önce kaydedilir. Bu sınırlı yenileme tamamlanamazsa kontrol paneli sarı renkli bir kurtarma ile başarı bildirimi gösterir; yeniden denemek için `ocx sync` çalıştırın. Hesabın veya ayarın kendisi kaydedilmiş olarak kalır.
+- Manuel olarak bir hesap seçmek hemen uygulanır: zaten bağlı olan bir iş
+  parçacığı bir sonraki isteğinde ona geçer ve yalnızca devam eden istekler
+  yakaladıkları hesabı tutar. Manuel bir seçim de sabitlenir: kart bir
+  **PINNED** rozeti gösterir ve boşaltılana, başka bir hesap seçene kadar veya
+  herhangi bir hesabın seçim sırasını değiştirene kadar daha yüksek bir seçim
+  sırası bu hesabı öncelikleyemez.
+- Her hesap kartı bir **Seçim sırası (Selection order)** kontrolü taşır (İlk,
+  Daha Önce, Normal, Daha Sonra, Son). Daha yüksek sıra önce kullanılır ve havuz
+  ancak üzerindeki her hesap boşaldığında veya kullanılamaz olduğunda daha düşük
+  bir sıraya düşer. Değişen bir sıra bir sonraki bağımsız istekten itibaren
+  geçerlidir ve zaten bağlı olan bir iş parçacığını asla taşımaz. Codex Desktop
+  (ana) hesabı diğerleri gibi sıralanır, böylece **Son** olarak ayarlanabilir ve
+  yedek olarak tutulabilir. Bu beş önayarın dışındaki `ocx account priority`'den
+  ayarlanan bir sıra kartta görünür ve seçilebilir kalır.
+- İş parçacığı bağlılığı istek başına dalgalanmayı önler. Kota otomatik geçişi
+  etkinken uzun süredir çalışan bir iş parçacığı düzenli olarak yeniden
+  değerlendirilir ve ilgili kullanımı eşiğe ulaştıktan ve kesinlikle daha düşük
+  kullanımlı uygun bir hesap mevcut olduğunda yeniden bağlanabilir.
+- Yeni oturumlar en düşük kullanımlı uygun hesabı seçebilir. Ücretli planlar
+  bilinen en sıcak 5 saatlik, haftalık veya 30 günlük pencereyi puanlar;
+  Go/Ücretsiz planlar yalnızca 30 günlük pencereyi kullanır.
+- WHAM `limit_window_seconds` sağladığında Codex Auth, her birincil pencerenin
+  haftalık olduğunu varsaymak yerine en az 28 günlük birincil pencereyi 30 gün
+  olarak sınıflandırır. Süresi olmayan yanıtlar eski haftalık yorumu korur.
+- **Kotaları yenile (Refresh quotas)**, yönlendirmenin ve hesap kartlarının aynı
+  değerleri kullanması için hesap kullanımını hemen yeniden okur.
+- Havuz isteği günlükleri `p3fa91c` gibi donuk etiketler kullanır, asla hesap
+  e-postalarını kullanmaz.
+- Her hesap kartı ayrıca bu kararlı günlük etiketini, gözlemlenen 30 günlük
+  belirteç toplamını, geçerli olarak yapılandırılmış görüntüleme
+  fiyatlandırmasını kullanan yaklaşık bir API eşdeğeri maliyeti ve ölçülen
+  kullanıma sahip denemelerin oranını gösterir. Aktif kullanıcı `modelCosts`
+  katmanları paketlenmiş doğrulanmış katalog ve fiyat geri dönüşlerine göre
+  önceliklidir ve geçmiş kullanım özet okunduğunda aktif olan fiyatlandırmadan
+  yeniden tahmin edilir. Maliyet mutabakat için bir tahmindir, bir ChatGPT
+  Plus/Pro abonelik faturası değildir. Açık atıftan önceki geçmiş yalın `openai`
+  satırları geçerli ana hesaba atanmak yerine belirsiz kalır.
+- **Model seçicisinden belirli bir Codex hesabını hedefleme** açık bir
+  katılımdır. Etkinleştirildiğinde sıradan desteklenen GPT seçici satırları
+  genel hesap seçicisi başına bir girdiyle değiştirilir. Birini seçmek o
+  görüşmeyi eşlenen hesaba kilitler: dönmez, geri dönmez veya aktif Havuz
+  hesabını değiştirmez. Yerleşik Codex App girişinin kendi seçicisi vardır;
+  oluşturulan haritalar normalde `main` kullanır, gerektiğinde `main-2` gibi
+  çakışma güvenli bir sonek kullanır. Eklenen hesaplar kararlı, gizlilik
+  açısından güvenli etiketler alır ve mevcut özel seçici etiketleri korunur.
+  Mevcut görüşmeler ve kaydedilen model seçimleri yönlendirmeye devam eder.
+  Ayarı kapatmak hesapları, seçicileri veya tam rotaları silmeden oluşturulan
+  seçici girdilerini gizler. Düz GPT model kimlikleri yapılandırılmış Havuz veya
+  Direct davranışını kullanmaya devam eder.
+- Hesap ekleme, kaldırma ve seçici ayarı değişiklikleri model kataloğu
+  yenilenmeden önce kaydedilir. Bu sınırlı yenileme tamamlanamazsa kontrol
+  paneli sarı renkli bir kurtarma ile başarı bildirimi gösterir; yeniden denemek
+  için `ocx sync` çalıştırın. Hesabın veya ayarın kendisi kaydedilmiş olarak
+  kalır.
 
-Sağlayıcılar genel bakışı, etkin hesabın ham kotası ve bir sonraki kapasite kurtarmasının yanı sıra Havuz modu kullanımını salt görüntüleme amaçlı ağırlıklı bir kapasite tahmini olarak ayrı ayrı özetler. Görünür alanlar, eksik kapsam anlamı ve yönlendirme sınırı için [Sağlayıcılar genel bakış havuz kapasitesi](/tr/guides/providers/#saglayicilar-genel-bakis-havuz-kapasitesi) bölümüne bakın.
+Sağlayıcılar genel bakışı, etkin hesabın ham kotası ve bir sonraki kapasite
+kurtarmasının yanı sıra Havuz modu kullanımını salt görüntüleme amaçlı ağırlıklı
+bir kapasite tahmini olarak ayrı ayrı özetler. Görünür alanlar, eksik kapsam
+anlamı ve yönlendirme sınırı için [Sağlayıcılar genel bakış havuz
+kapasitesi](/tr/guides/providers/#saglayicilar-genel-bakis-havuz-kapasitesi)
+bölümüne bakın.
 
 ## Yıldız vermek ajanın değil sizin kararınızdır
 
-Kenar çubuğunun yıldız düğmesi — ve etkileşimli bir terminalde `ocx start`'ın sorduğu tek seferlik soru — **kendi `gh` girişinizden** geçer. opencodex hiçbir GitHub belirteci tutmaz ve öğrendiği tek şey evet veya hayır cevabınızdır.
+Kenar çubuğunun yıldız düğmesi — ve etkileşimli bir terminalde `ocx start`'ın
+sorduğu tek seferlik soru — **kendi `gh` girişinizden** geçer. opencodex hiçbir
+GitHub belirteci tutmaz ve öğrendiği tek şey evet veya hayır cevabınızdır.
 
-Bu GitHub hesabınıza yazdığından, ajan odaklı arayanların sizin adınıza yanıt vermesine izin verilmek yerine reddedilir:
+Bu GitHub hesabınıza yazdığından, ajan odaklı arayanların sizin adınıza yanıt
+vermesine izin verilmek yerine reddedilir:
 
-- `ocx start` ve `ocx service install`, bir ajan veya CI donanımı onları çalıştırdığında (`CLAUDECODE`, `CODEX_THREAD_ID`, `CURSOR_TRACE_ID`, `CI` ve benzeri) **istemi tamamen atlar**. Tek seferlik işaretçi yazılmadan kalır, bu nedenle gerçek istem bir sonraki elle yazılan çalıştırmanızda yine de görünür. Ajanın bunun yerine size sorması söylenir — ve geçiştirebileceği yumuşak bir kenar notu olarak değil, yanıtlamanız gereken düz bir Evet/Hayır seçeneği olarak sorması söylenir. Yanıtlamaya hiç fırsat bulamazsanız ajana sessizliğinizi hayır olarak değerlendirmek yerine tekrar sorması söylenir.
-- Proxy bir ajan oturumu altında çalıştığında ve isteğin kontrol paneli tarayıcı oturumu olmadığında `POST /api/github/star` `code: "agent_consent_required"` ile `403` yanıtı verir. Yönetici belirtecine sahip olmak rıza değildir: makinenizdeki bir ajan bu dosyayı okuyabilir.
-- Kontrol paneli düğmesi normal şekilde çalışmaya devam eder. Gerçek bir tıklama aynı kaynaktan oturum kanıtı taşır, bu nedenle proxy'yi bir ajan başlatmış olsa bile siz olarak tanınır.
-- Hayır demek onu sonlandırır. Hiçbir şey kalıcı hale getirilmez ve daha sonra sizi dürtmek için hiçbir model istemine hiçbir şey eklenmez.
+- `ocx start` ve `ocx service install`, bir ajan veya CI donanımı onları
+  çalıştırdığında (`CLAUDECODE`, `CODEX_THREAD_ID`, `CURSOR_TRACE_ID`, `CI` ve
+  benzeri) **istemi tamamen atlar**. Tek seferlik işaretçi yazılmadan kalır, bu
+  nedenle gerçek istem bir sonraki elle yazılan çalıştırmanızda yine de görünür.
+  Ajanın bunun yerine size sorması söylenir — ve geçiştirebileceği yumuşak bir
+  kenar notu olarak değil, yanıtlamanız gereken düz bir Evet/Hayır seçeneği
+  olarak sorması söylenir. Yanıtlamaya hiç fırsat bulamazsanız ajana
+  sessizliğinizi hayır olarak değerlendirmek yerine tekrar sorması söylenir.
+- Proxy bir ajan oturumu altında çalıştığında ve isteğin kontrol paneli tarayıcı
+  oturumu olmadığında `POST /api/github/star` `code: "agent_consent_required"`
+  ile `403` yanıtı verir. Yönetici belirtecine sahip olmak rıza değildir:
+  makinenizdeki bir ajan bu dosyayı okuyabilir.
+- Kontrol paneli düğmesi normal şekilde çalışmaya devam eder. Gerçek bir tıklama
+  aynı kaynaktan oturum kanıtı taşır, bu nedenle proxy'yi bir ajan başlatmış
+  olsa bile siz olarak tanınır.
+- Hayır demek onu sonlandırır. Hiçbir şey kalıcı hale getirilmez ve daha sonra
+  sizi dürtmek için hiçbir model istemine hiçbir şey eklenmez.
 
 ## Kontrol paneli proxy ile nasıl konuşur
 
-GUI, proxy'nin JSON yönetim API'si üzerinde ince bir istemcidir. Yararlı uç noktalar şunları içerir:
+GUI, proxy'nin JSON yönetim API'si üzerinde ince bir istemcidir. Yararlı uç
+noktalar şunları içerir:
 
 | Uç nokta | Amaç |
 | --- | --- |
@@ -129,5 +248,10 @@ GUI, proxy'nin JSON yönetim API'si üzerinde ince bir istemcidir. Yararlı uç 
 | `POST /api/stop` | Proxy'yi/servisi durdurun, yerel Codex'i geri yükleyin ve çıkın. |
 
 :::tip
-Kontrol panelinden **Ollama Cloud** veya başka bir katalog sağlayıcısı eklemek, metin ve vizyon sınıflandırmasını kaydedilen sağlayıcı yapılandırmasına kopyalar, böylece [vizyon sidecar'ı](/tr/guides/sidecars/) manuel sınıflandırma olmadan doğru şekilde geçişlenir.
+Kontrol panelinden **Ollama Cloud** veya başka bir katalog sağlayıcısı eklemek,
+metin ve vizyon sınıflandırmasını kaydedilen sağlayıcı yapılandırmasına
+kopyalar, böylece [vizyon sidecar'ı](/tr/guides/sidecars/) manuel sınıflandırma
+olmadan doğru şekilde geçişlenir.
 :::
+
+
