@@ -832,7 +832,7 @@ describe("GET /api/usage", () => {
     }
   });
 
-  test("the entry cap does not desynchronize the retained window", async () => {
+  test("the entry cap re-anchors instead of reporting a window a cold read disagrees with", async () => {
     const now = Date.now();
     const row = (id: string): string => `${JSON.stringify({
       requestId: id,
@@ -866,10 +866,12 @@ describe("GET /api/usage", () => {
         await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
       }
       const cached = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
-      // Capped rows must move into the skipped prefix. If they do not, the byte
-      // accounting no longer sums to the span, the consistency check rejects every
-      // reuse, and the reader silently degrades to a full read on every poll.
-      expect(usageReadCacheStatsForTests().tailReads).toBeGreaterThanOrEqual(6);
+      // A cold read applies the entry cap across the whole window and reports byte
+      // truncation for the window boundary alone; an incremental read cannot reconstruct
+      // that ordering, so it must re-anchor rather than report a disagreeing window.
+      // This is reachable in production: real rows average ~118 bytes, so 500,000 of them
+      // fit inside the 64 MiB window and both truncations can apply at once.
+      expect(usageReadCacheStatsForTests().fullReads).toBeGreaterThan(1);
 
       resetUsageReadCacheForTests();
       resetUsageSummaryCacheForTests();
