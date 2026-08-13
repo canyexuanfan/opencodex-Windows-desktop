@@ -145,3 +145,45 @@ real 245 MB ledger: cold 67 ms / 117 MB, then 5 reads in 8 ms and +1 MB
 Both regression tests were driven red against the defective implementation before being
 accepted — the rewrite test against a disabled guard, the mid-prefix test against a
 reinstated sampled digest.
+
+## Second review round: two more defects, and a corrected measurement
+
+A re-review of the landed state found two further defects, and also caught that one of my
+numbers was measured wrong.
+
+**Corrected measurement.** The "real 245 MB ledger: 5 reads in 8 ms" figure in the earlier
+section is wrong. It was taken AFTER a reviewer agent had truncated `usage.jsonl` to 4 MB,
+so it measured a 4 MB file. Rebuilt at true scale, the honest figures are below.
+
+**Defect 1 — the caller received rows outside its window.** Keeping a retained window that
+starts earlier than `size - maxReadBytes` returns rows a fresh bounded read would exclude,
+which makes `maxReadBytes` advisory instead of binding and lets `snapshotWindow` describe a
+superset. Worse in practice: when the oversized window finally re-anchored, visible history
+halved in a single poll on an append-only file, so dashboard totals swung ~2x between
+refreshes. Measured before the fix: rows oscillated 688..1376.
+
+Fixed by trimming in place. Rows that fall outside the window are dropped using recorded
+per-row byte lengths (`entryLengths`), so the result equals a fresh bounded read exactly,
+at O(dropped) instead of a reparse. Verified against a fresh read on every one of 60
+rounds: 0 mismatches. Row count across 900 polls: flat at 1330, min == max.
+
+**Defect 2 — the digest was O(file), not O(window).** Digesting `0..coveredThroughBytes`
+twice per call is unbounded work while the read it replaces is capped at `maxReadBytes`,
+so the ratio degrades as the ledger grows and the optimization becomes a PESSIMIZATION
+past roughly 1-2 GB (measured 1.26x slower than a full read at 2 GB).
+
+Fixed by digesting only `truncatedPrefixBytes..coveredThroughBytes` — exactly the span the
+retained rows were parsed from, never wider than the window. Bytes before the retained
+start are not described by any retained row, so reading them proved nothing.
+
+Cost is now flat in ledger size:
+
+| ledger | full read | incremental | ratio |
+|---|---|---|---|
+| 245 MB | 828 ms | 54 ms | 0.07 |
+| 1029 MB | 813 ms | 53 ms | 0.07 |
+| 2051 MB | 846 ms | 56 ms | 0.07 |
+
+900 appends on an over-window ledger: 1 full read, 900 tail reads, span always within the
+window. The sawtooth regression test was driven red (spread 20) against a deliberately
+widened window before being accepted.
