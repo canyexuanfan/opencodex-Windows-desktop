@@ -19,8 +19,8 @@ const prefix = locale ? `${base}${locale}/` : base;
 type NavLink = { label: string; href: string };
 type NavGroup = { label: string; links: NavLink[] };
 
-const t = (en: string, ko: string, zh: string, ru: string, ja: string, zhTW?: string, tr?: string) =>
-	locale === 'ko' ? ko : locale === 'zh-cn' ? zh : locale === 'zh-tw' ? (zhTW ?? zh) : locale === 'ru' ? ru : locale === 'ja' ? ja : locale === 'tr' ? (tr ?? en) : en;
+const t = (en: string, ko: string, zh: string, ru: string, ja: string, zhTW: string, tr: string) =>
+	locale === 'ko' ? ko : locale === 'zh-cn' ? zh : locale === 'zh-tw' ? zhTW : locale === 'ru' ? ru : locale === 'ja' ? ja : locale === 'tr' ? tr : en;
 
 type LanguageOption = { code: 'root' | 'ko' | 'zh-cn' | 'zh-tw' | 'ru' | 'ja' | 'tr'; label: string };
 const languages: LanguageOption[] = [

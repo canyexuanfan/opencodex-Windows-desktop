@@ -27,8 +27,8 @@ const { locale } = Astro.props;
 const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
 const prefix = locale ? `${base}${locale}/` : base;
 
-const t = (en: string, ko: string, zh: string, ru: string, ja: string, zhTW?: string, tr?: string) =>
-	locale === 'ko' ? ko : locale === 'zh-cn' ? zh : locale === 'zh-tw' ? (zhTW ?? zh) : locale === 'ru' ? ru : locale === 'ja' ? ja : locale === 'tr' ? (tr ?? en) : en;
+const t = (en: string, ko: string, zh: string, ru: string, ja: string, zhTW: string, tr: string) =>
+	locale === 'ko' ? ko : locale === 'zh-cn' ? zh : locale === 'zh-tw' ? zhTW : locale === 'ru' ? ru : locale === 'ja' ? ja : locale === 'tr' ? tr : en;
 
 const icons: Record<string, string> = {
 	// Lucide outline paths (24x24, stroke)

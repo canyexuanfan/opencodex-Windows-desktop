@@ -19,7 +19,7 @@ interface Props {
 
 const { locale = "en", boards: boardsProp, intro = false } = Astro.props;
 const include = boardsProp ? new Set(boardsProp.split(",").map(s => s.trim()).filter(Boolean)) : null;
-const strings = (FRONTIER_STRINGS[locale] ?? FRONTIER_STRINGS.en) as Record<string, string>;
+const strings = FRONTIER_STRINGS[locale] as Record<string, string>;
 const fallback = FRONTIER_STRINGS.en as Record<string, string>;
 const t = (key: string): string => strings[key] ?? fallback[key] ?? key;
 const fill = (key: string, vars: Record<string, string>): string =>
