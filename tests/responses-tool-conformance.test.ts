@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import type { AdapterEvent } from "../src/types";
-import { jsonToolItems, streamedEventNames, streamedToolItems } from "./helpers/responses-conformance";
+import { jsonItemTypes, jsonToolItems, streamedView } from "./helpers/responses-conformance";
 
 /**
  * Responses tool round-trip conformance
@@ -84,10 +84,15 @@ describe("Responses Lite additional_tools declaration merge", () => {
     // devlog 031 asks for explicit failure here. Today the item is skipped silently, so a
     // typo in the tool surface degrades to "model has no tools" with no diagnostic. Pinned
     // so that changing it to a hard error is a visible, deliberate decision.
+    //
+    // A WELL-FORMED sibling group rides along deliberately: without it this case would also
+    // pass if additional_tools support were deleted outright, and "ignored one bad item"
+    // would be indistinguishable from "lost the whole feature".
     const parsed = parseRequest(request([
       { type: "additional_tools", role: "developer", tools: "not-an-array" },
+      { type: "additional_tools", role: "developer", tools: [fnTool] },
     ]));
-    expect(parsed.context.tools ?? []).toEqual([]);
+    expect(toolNames(parsed)).toEqual(["read_file"]);
   });
 });
 
@@ -100,6 +105,9 @@ describe("Responses tool-kind discrimination", () => {
       { type: "namespace", name: "ns", tools: [{ type: "function", name: "child", parameters: { type: "object", properties: {} } }] },
     ]));
     const byName = new Map((parsed.context.tools ?? []).map(tool => [tool.name, tool]));
+    // Presence first: `byName.get("fn")?.freeform` is also undefined when "fn" is MISSING,
+    // so the marker assertion alone would survive deleting the function branch.
+    expect([...byName.keys()].sort()).toEqual(["child", "fn", "freeform", "tool_search"]);
     expect(byName.get("fn")?.freeform).toBeUndefined();
     expect(byName.get("freeform")?.freeform).toBe(true);
     expect(byName.get("tool_search")?.toolSearch).toBe(true);
@@ -241,19 +249,55 @@ describe("streaming and non-streaming tool parity", () => {
   ];
 
   for (const { label, events } of cases) {
-    it(`agrees between transports for a ${label}`, async () => {
-      const streamed = await streamedToolItems(events, MODEL, nsMap, freeform, toolSearch);
+    it(`agrees across snapshot, incremental frames and JSON for a ${label}`, async () => {
+      const view = await streamedView(events, MODEL, nsMap, freeform, toolSearch);
       const json = jsonToolItems(events, MODEL, { toolNsMap: nsMap, freeformToolNames: freeform, toolSearchToolNames: toolSearch });
-      // Same restored item TYPE, name, call id and payload on both transports. A divergence
-      // here is the "restored as the wrong event" failure class from devlog 034.
-      expect(streamed).toEqual(json);
+
+      // Three surfaces, not two. `response.completed` is what a reconnecting client sees;
+      // `output_item.done` is what a client consuming normal incremental frames sees. The
+      // bridge builds them separately, so comparing only the snapshot hides an item that is
+      // correct at the end and wrong on the wire (devlog 034).
+      expect(view.incremental).toEqual(view.snapshot);
+      expect(view.snapshot).toEqual(json);
     });
   }
 
+  it("preserves assistant text alongside the call on both transports", async () => {
+    // The tool-item filter hides non-call output, so without this the "text before a call"
+    // fixture would be just another function-call parity case.
+    const textCase = cases.find(entry => entry.label.startsWith("text"))!;
+    const view = await streamedView(textCase.events, MODEL, nsMap, freeform, toolSearch);
+    const jsonTypes = jsonItemTypes(textCase.events, MODEL, { toolNsMap: nsMap, freeformToolNames: freeform, toolSearchToolNames: toolSearch });
+    expect(view.snapshotItemTypes).toContain("message");
+    expect(jsonTypes).toContain("message");
+    expect(view.snapshotItemTypes).toEqual(jsonTypes);
+  });
+
+  it("restores namespace identity identically on both transports", async () => {
+    // NormalizedToolItem carries `namespace`, so dropping namespace restoration from either
+    // bridge fails here. An earlier revision omitted the field and could not see it at all.
+    const nsCase = cases.find(entry => entry.label.startsWith("namespaced"))!;
+    const view = await streamedView(nsCase.events, MODEL, nsMap, freeform, toolSearch);
+    const json = jsonToolItems(nsCase.events, MODEL, { toolNsMap: nsMap, freeformToolNames: freeform, toolSearchToolNames: toolSearch });
+    expect(view.snapshot[0]?.name).toBe("child");
+    expect(json[0]?.name).toBe("child");
+    expect(view.snapshot).toEqual(json);
+  });
+
+  it("carries the tool_search payload rather than an empty object", async () => {
+    // tool_search arguments may be an object rather than a string; the normalizer keeps the
+    // value verbatim so replacing it with {} on both paths cannot pass silently.
+    const tsCase = cases.find(entry => entry.label.startsWith("tool_search"))!;
+    const view = await streamedView(tsCase.events, MODEL, nsMap, freeform, toolSearch);
+    const json = jsonToolItems(tsCase.events, MODEL, { toolNsMap: nsMap, freeformToolNames: freeform, toolSearchToolNames: toolSearch });
+    expect(JSON.stringify(view.snapshot[0]?.payload)).toContain("repl");
+    expect(view.snapshot).toEqual(json);
+  });
+
   it("restores each kind as its own item type rather than collapsing to function_call", async () => {
     const kinds = await Promise.all(cases.map(async ({ events }) => {
-      const [item] = await streamedToolItems(events, MODEL, nsMap, freeform, toolSearch);
-      return item?.type;
+      const view = await streamedView(events, MODEL, nsMap, freeform, toolSearch);
+      return view.snapshot[0]?.type;
     }));
     expect(kinds).toEqual([
       "function_call",
@@ -264,42 +308,51 @@ describe("streaming and non-streaming tool parity", () => {
     ]);
   });
 
-  it("emits custom input deltas on the streamed path only", async () => {
+  it("emits the exact custom input fragments on the streamed path only", async () => {
     const custom = cases.find(entry => entry.label.startsWith("custom"))!;
-    const names = await streamedEventNames(custom.events, MODEL, nsMap, freeform, toolSearch);
-    expect(names).toContain("response.custom_tool_call_input.delta");
-    expect(names).not.toContain("response.function_call_arguments.delta");
+    const view = await streamedView(custom.events, MODEL, nsMap, freeform, toolSearch);
+    expect(view.eventNames).toContain("response.custom_tool_call_input.delta");
+    expect(view.eventNames).not.toContain("response.function_call_arguments.delta");
+    // Exact ordered fragments, not just the event name: a corrupted, duplicated or reordered
+    // delta stream would otherwise pass.
+    expect(view.deltas.join("")).toBe(String(view.snapshot[0]?.payload ?? ""));
+    // Exactly one terminal item event for the one call.
+    expect(view.eventNames.filter(name => name === "response.output_item.done")).toHaveLength(1);
   });
 });
 
 describe("parallel tool-call capability", () => {
   it("CURRENT LIMITATION: interleaved calls cannot be represented by AdapterEvent", async () => {
     // `tool_call_start` carries an id, but `tool_call_delta` and `tool_call_end` do not
-    // (src/types.ts). The bridge therefore tracks ONE call at a time, so a provider that
+    // (src/types.ts:323). Both bridges therefore track ONE current call, so a provider that
     // interleaves two calls has no way to say which fragment belongs to which.
     //
-    // This test pins the consequence rather than pretending it works: the second start
-    // closes the first call, and the interleaved fragments are NOT reunited with their
-    // owners. Fixing the event contract should make this assertion fail.
+    // A genuine A/B/A/B interleaving: call A is fragmented, B starts mid-flight, then A's
+    // continuation arrives. This pins the consequence rather than pretending it works —
+    // A's later fragment is misattributed to B, because fragments are routed by ARRIVAL
+    // ORDER, not by call id. Giving delta/end a call id should make this fail.
     const interleaved: AdapterEvent[] = [
       { type: "tool_call_start", id: "call_a", name: "read_file" },
       { type: "tool_call_delta", arguments: "{\"path\":\"a" },
-      { type: "tool_call_start", id: "call_b", name: "read_file" },
-      { type: "tool_call_delta", arguments: "{\"path\":\"b.txt\"}" },
+      { type: "tool_call_start", id: "call_b", name: "write_file" },
+      { type: "tool_call_delta", arguments: "{\"path\":\"b" },
+      { type: "tool_call_delta", arguments: ".txt\"}" },
       { type: "tool_call_end" },
       { type: "done" },
     ];
 
-    const streamed = await streamedToolItems(interleaved, MODEL);
+    const view = await streamedView(interleaved, MODEL);
     const json = jsonToolItems(interleaved, MODEL);
-    // Both transports agree with each other, which is what makes this a contract limitation
-    // rather than a transport bug.
-    expect(streamed).toEqual(json);
+    // Both transports agree with each other AND with the incremental frames, which is what
+    // makes this a contract limitation rather than a transport bug.
+    expect(view.incremental).toEqual(view.snapshot);
+    expect(view.snapshot).toEqual(json);
 
-    const payloads = streamed.map(item => item.payload);
-    // call_a's fragment did not receive call_b's continuation: the arguments are split by
-    // ARRIVAL ORDER, not by call id.
-    expect(payloads[0]).toBe("{\"path\":\"a");
-    expect(streamed.map(item => item.call_id)).toEqual(["call_a", "call_b"]);
+    expect(view.snapshot.map(item => item.call_id)).toEqual(["call_a", "call_b"]);
+    expect(view.snapshot.map(item => item.name)).toEqual(["read_file", "write_file"]);
+    // A keeps only what arrived before B started; B absorbs A's continuation. Neither
+    // payload is the JSON its provider actually sent.
+    expect(view.snapshot[0]?.payload).toBe("{\"path\":\"a");
+    expect(view.snapshot[1]?.payload).toBe("{\"path\":\"b.txt\"}");
   });
 });
