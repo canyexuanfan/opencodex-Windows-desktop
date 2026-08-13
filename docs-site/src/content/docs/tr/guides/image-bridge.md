@@ -1,23 +1,16 @@
 ---
-title: "Görsel Köprüsü (Image Bridge)"
-description: "Yerel görsel desteği olmayan modellere dinamik görsel anlama yeteneği kazandırın."
+title: Görsel Köprüsü (Image Bridge)
+description: OpenAI harici bir sağlayıcı kullanırken image_generation araç çağrılarını xAI Grok Imagine'a yönlendirin.
 ---
 
-## Overview
+## Genel Bakış
 
-When you route Codex through a non-OpenAI model (Claude, Gemini, Grok, etc.), the
-`image_generation` **hosted tool** normally doesn't work — it requires OpenAI's server-side
-execution environment. The Image Bridge detects these calls and transparently reroutes them to
-xAI Grok Imagine, so the model you're actually chatting with can still generate images.
+Codex'i OpenAI harici bir model (Claude, Gemini, Grok vb.) üzerinden yönlendirdiğinizde, `image_generation` **barındırılan aracı (hosted tool)** normal şartlarda çalışmaz — çünkü OpenAI'ın sunucu tarafı yürütme ortamına ihtiyaç duyar. Görsel Köprüsü (Image Bridge), bu çağrıları tespit eder ve şeffaf bir şekilde xAI Grok Imagine'a yönlendirir; böylece sohbet ettiğiniz model sorunsuz bir şekilde görsel üretmeye devam edebilir.
 
-## Prerequisites
+## Ön Koşullar
 
-- **Enable the bridge** by setting `images.bridgeEnabled: true` in your config (it is off by
-  default to avoid unexpected xAI charges — see [Configuration](#configuration) below).
-- An `xai` provider entry with an **API key**. The bridge pins fulfillment to the registry xAI
-  Images endpoint (`https://api.x.ai/v1`); any configured `baseUrl` override is ignored for image
-  calls. OAuth / `ocx login xai` alone does **not** arm the bridge (the Grok CLI OAuth transport is
-  chat-oriented and is not used for `/images/*`).
+- Yapılandırmanızda `images.bridgeEnabled: true` olarak ayarlayarak **köprüyü etkinleştirin** (beklenmeyen xAI ücretlerini önlemek için varsayılan olarak kapalıdır — aşağıdaki [Yapılandırma](#yapılandırma) bölümüne bakın).
+- **API anahtarına** sahip bir `xai` sağlayıcı kaydı. Köprü, istekleri doğrudan xAI Images uç noktasına (`https://api.x.ai/v1`) gönderir; yapılandırılmış herhangi bir `baseUrl` geçersiz kılma ayarı görsel çağrıları için yok sayılır. Yalnızca OAuth / `ocx login xai` köprüyü **etkinleştirmez** (Grok CLI OAuth aktarımı sohbet odaklıdır ve `/images/*` için kullanılmaz).
 
   ```json
   {
@@ -27,13 +20,11 @@ xAI Grok Imagine, so the model you're actually chatting with can still generate 
   }
   ```
 
-- A non-OpenAI model selected as your active provider. (When the active provider is OpenAI,
-  the native hosted tool is used directly and the bridge is bypassed.)
+- Aktif sağlayıcınız olarak OpenAI harici bir model seçilmiş olmalıdır. (Aktif sağlayıcı OpenAI olduğunda, yerel barındırılan araç doğrudan kullanılır ve köprü devre dışı kalır.)
 
-## Configuration
+## Yapılandırma
 
-Image Bridge options live under `images` in `~/.opencodex/config.json`. Bridging is
-**opt-in** — you must set `bridgeEnabled: true` to enable paid xAI Grok Imagine generation:
+Görsel Köprüsü seçenekleri `~/.opencodex/config.json` dosyasındaki `images` altında bulunur. Köprü **isteğe bağlıdır (opt-in)** — ücretli xAI Grok Imagine görsel üretimini etkinleştirmek için `bridgeEnabled: true` ayarlamalısınız:
 
 ```json
 {
@@ -46,50 +37,33 @@ Image Bridge options live under `images` in `~/.opencodex/config.json`. Bridging
 }
 ```
 
-| Option | Default | Description |
+| Seçenek | Varsayılan | Açıklama |
 | --- | --- | --- |
-| `bridgeEnabled` | `false` | Master switch. Set `true` to enable bridging. Off by default to avoid unexpected xAI charges. |
-| `bridgeModel` | `grok-imagine-image-quality` | The xAI image model id to send prompts to. |
-| `maxRounds` | `3` | Maximum image-generation loop iterations per turn. Floored to an integer and clamped to `[0, 10]`; non-finite values fall back to `3`. |
-| `timeoutMs` | `60000` | Per-call xAI deadline in milliseconds. Finite positive values are floored and passed to the xAI request. |
-| `artifactsKeepCount` | `200` | Maximum number of files retained under `artifacts/`. When exceeded, the oldest files are deleted after each fulfilled call. Set to `0` or a negative value to disable pruning. |
+| `bridgeEnabled` | `false` | Ana anahtar. Köprüyü etkinleştirmek için `true` yapın. Beklenmeyen xAI maliyetlerini önlemek için varsayılan olarak kapalıdır. |
+| `bridgeModel` | `grok-imagine-image-quality` | İsteklerin gönderileceği xAI görsel model kimliği. |
+| `maxRounds` | `3` | Tur başına maksimum görsel üretim döngüsü sayısı. Tam sayıya yuvarlanır ve `[0, 10]` aralığına sınırlandırılır; geçersiz değerler `3`'e döner. |
+| `timeoutMs` | `60000` | Milisaniye cinsinden çağrı başına xAI zaman aşımı süresi. |
+| `artifactsKeepCount` | `200` | `artifacts/` dizininde saklanacak maksimum dosya sayısı. Aşıldığında, tamamlanan her çağrıdan sonra en eski dosyalar otomatik temizlenir. |
 
-## Artifact Retention
+## Çıktıların Saklanması (Artifact Retention)
 
-Generated images are written to `~/.opencodex/artifacts/`. To prevent unbounded disk
-growth in long-running sessions, the directory is pruned automatically after each fulfilled
-image call (once the full batch for that call is on disk) — the oldest files (by modification
-time) are deleted when the count exceeds the configured maximum (default 200, configurable via
-`images.artifactsKeepCount`). Only paths that survive pruning are returned to the model.
+Üretilen görseller `~/.opencodex/artifacts/` dizinine kaydedilir. Uzun oturumlarda sınırsız disk büyümesini önlemek için, tamamlanan her görsel çağrısından sonra dizin otomatik olarak temizlenir — dosya sayısı yapılandırılan maksimum değeri aştığında en eski dosyalar silinir (varsayılan 200, `images.artifactsKeepCount` ile ayarlanabilir). Yalnızca temizleme işleminden sonra kalan yollar modele iletilir.
 
-## How It Works
+## Nasıl Çalışır?
 
-The Image Bridge activates only on **Responses** turns that include the hosted
-`image_generation` tool in the `/v1/responses` tools array while a **non-OpenAI**
-model is selected. It does **not** intercept Codex's built-in `image_gen` tool,
-which POSTs directly to `/v1/images/generations` (or `/images/edits`) — that path
-is covered separately in [Codex Integration](/guides/codex-integration/#built-in-image-generation-image_gen).
+Görsel Köprüsü, yalnızca **OpenAI harici** bir model seçiliyken `/v1/responses` araçlar dizisinde `image_generation` aracını içeren **Responses** turlarında devreye girer. Codex'in doğrudan `/v1/images/generations` uç noktasına istek atan yerleşik `image_gen` aracına müdahale **etmez** — bu yol [Codex Entegrasyonu](/tr/guides/codex-integration/#dahili-görsel-üretimi-image_gen) kılavuzunda ayrı olarak ele alınmıştır.
 
-1. When a Responses request lists `image_generation` in `tools`, OpenCodex detects it
-   during request preprocessing.
-2. The hosted tool is replaced with a **synthetic function tool** that the routed model can call
-   normally — the model sees a callable tool rather than an opaque hosted tool it can't execute.
-3. When the model invokes that tool, OpenCodex intercepts the call and sends the prompt to xAI's
-   image generation API.
-4. Generated images are saved to `~/.opencodex/artifacts/` and the **local file path** is returned
-   to the model as the tool result.
-5. The model continues the conversation with knowledge of the generated image and its location.
+1. Bir Responses isteği `tools` içinde `image_generation` içerdiğinde, OpenCodex bunu istek ön işleme sırasında tespit eder.
+2. Barındırılan araç, yönlendirilen modelin normal şekilde çağırabileceği **sentetik bir fonksiyon aracı (synthetic function tool)** ile değiştirilir.
+3. Model bu aracı çağırdığında, OpenCodex çağrıyı yakalar ve prompt'u xAI'ın görsel üretim API'sine iletir.
+4. Üretilen görseller `~/.opencodex/artifacts/` dizinine kaydedilir ve **yerel dosya yolu** araç sonucu olarak modele döndürülür.
+5. Model, üretilen görsel ve konumu hakkında bilgi sahibi olarak sohbete devam eder.
 
-From the model's perspective nothing changed — it called a tool and got a result. From the user's
-perspective, image generation works with any routed provider instead of silently failing.
+Model açısından hiçbir şey değişmemiştir — bir araç çağırmış ve sonuç almıştır. Kullanıcı açısından ise görsel üretimi, hata vermek yerine yönlendirilen herhangi bir sağlayıcıyla sorunsuz çalışır.
 
-## Limitations
+## Sınırlamalar
 
-- **Only xAI Grok Imagine is supported.** DALL-E and other image providers may be added later.
-- **Web search takes priority** on adapters that support the web-search sidecar loop. If both web
-  search and image generation are requested in the same turn, web-search runs and image
-  generation is skipped. Cursor/`runTurn` adapters cannot use that sidecar today, so the image
-  bridge may still run for those dual-tool turns.
-- **xAI costs apply.** Image generation via xAI requires an active xAI subscription or API credits.
-- **Streaming only.** The bridge works by intercepting the SSE response stream; requests with
-  `stream: false` are rejected with a 400 error.
+- **Yalnızca xAI Grok Imagine desteklenir.** DALL-E ve diğer görsel sağlayıcıları daha sonra eklenebilir.
+- Web arama sidecar döngüsünü destekleyen adaptörlerde **web araması önceliklidir**. Aynı turda hem web araması hem görsel üretimi istenirse, web araması çalıştırılır ve görsel üretimi atlanır.
+- **xAI maliyetleri geçerlidir.** xAI üzerinden görsel üretimi aktif bir xAI aboneliği veya API kredisi gerektirir.
+- **Yalnızca akış (streaming) modu.** Köprü, SSE yanıt akışını yakalayarak çalışır; `stream: false` olan istekler 400 hatasıyla reddedilir.
