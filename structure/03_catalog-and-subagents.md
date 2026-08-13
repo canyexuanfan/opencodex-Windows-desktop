@@ -7,6 +7,10 @@
 - preserves native OpenAI entries from the live catalog or static fallback, and emits
   gpt-5.6 natives from the pinned upstream models.json snapshot
   (`src/codex/data/upstream-models.json` — exact per-slug ladders: luna has no ultra);
+- upgrades either an observed selector-qualified `*/gpt-daybreak-blue-latest` account row or an
+  explicitly configured canonical `openai/gpt-daybreak-blue-latest` Codex-forward row from the
+  pinned Sol capability metadata while preserving its selector and Daybreak wire identity;
+  this never expands the bare/API-key model lists or rewrites the wire model to `gpt-5.6-sol`;
 - clones a native template for routed `provider/model` entries;
 - forces strict Codex catalog fields required by the current parser;
 - hides `disabledModels` without blocking direct routing (routed provider ids are excluded;
@@ -149,21 +153,24 @@ the flag and thread count decide what the native runtime allows.
 
 ## Routed tool discovery and hosted search
 
-Routed catalog rows advertise `supports_search_tool: false` by default. That field selects Codex's
-deferred tool-discovery surface; it does not describe the hosted web-search sidecar. OpenCodex still
-round-trips an explicit `tool_search` request, but it does not claim that every routed provider/model
-can discover Codex App plugins through that surface. The conservative catalog value keeps direct MCP
-tools visible in Codex App. Non-Cursor routed rows independently keep
-`web_search_tool_type: "text_and_image"` for the OpenCodex search sidecar; Cursor advertises neither
-because its transport bypasses that sidecar.
+Non-Cursor routed catalog rows advertise `supports_search_tool: true` together with
+`tool_mode: "code_mode_only"` — the pair is load-bearing. The field selects Codex's deferred
+tool-discovery surface; it does not describe the hosted web-search sidecar. Under code mode,
+deferred MCP tools remain callable through exec's `tools` global / `ALL_TOOLS` without a
+`tool_search` round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
+kimi/k3 executed `tools.mcp__node_repl__js`, devlog `260813_tool_catalog_deferral/010+020`).
+Stamping `false` instead forces every MCP declaration into `exec.description` — a measured 2.7x
+turn-1 payload regression (96,699 → 258,929 chars). Non-Cursor routed rows independently keep
+`web_search_tool_type: "text_and_image"` for the OpenCodex search sidecar; Cursor advertises
+neither flag because its runTurn transport bypasses that sidecar and has no proven deferred path.
 
 [Decision Log]
-- 목적과 의도: routed models must not hide direct Codex App plugin tools behind an unverified deferred discovery capability.
-- 기존 구현 및 제약 조건: every non-Cursor row advertised `supports_search_tool: true`; the parser and bridge can still relay explicit `tool_search` calls.
-- 검토한 주요 대안: keep the blanket flag, disable both deferred discovery and hosted search, or add a future evidence-backed provider/model opt-in.
-- 선택한 방식: default routed deferred discovery to false while preserving the independent non-Cursor hosted-search metadata.
-- 다른 대안 대신 이 방식을 선택한 이유: it fixes plugin availability without removing the existing web-search sidecar or deleting runtime protocol support.
-- 장점, 단점 및 영향: direct MCP tools remain available; a routed model cannot use Codex's deferred discovery solely from generated catalog metadata until a verified opt-in exists.
+- 목적과 의도: keep routed plugin/MCP tools reachable without paying the full-catalog turn-1 payload tax.
+- 기존 구현 및 제약 조건: #1529 stamped `supports_search_tool: false` on all routed rows to fix #1522-era plugin invisibility; routed rows already carry `tool_mode: code_mode_only` (f60dd981d), and codex-rs keeps Deferred-exposure tools callable inside the exec isolate.
+- 검토한 주요 대안: keep the blanket false (2.7x payload regression), per-provider opt-in flags, or hybrid `direct_only_tool_namespaces` allowlists.
+- 선택한 방식: non-Cursor routed rows advertise deferred discovery again, paired with code-mode-only; Cursor stays opted out; a dual-seam regression test pins the pair on both the template and the template-less fallback paths.
+- 다른 대안 대신 이 방식을 선택한 이유: WP2 measurement (devlog `260813_tool_catalog_deferral/010`) showed the search=true code-mode profile is the cheapest shape (~97K vs ~259K chars turn-1), and the live canary showed reachability rides the code-mode isolate, not the tool_search round-trip — so the fail-closed flag paid the tax without buying the safety.
+- 장점, 단점 및 영향: turn-1 payload stays at the measured minimum and deferred tools stay reachable; residual risk is model compliance (a weak routed model may not use `exec` well) — the mechanism itself is client-side and model-independent. #1522's exact DeepSeek-compatible pairing remains unverified on this machine and is documented in the PR.
 
 ## Ultra reasoning level
 

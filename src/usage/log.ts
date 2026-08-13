@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { usageDisplayTotalTokens } from "./totals";
 import type { OcxUsage } from "../types";
@@ -456,13 +458,124 @@ export interface ManagementUsageSnapshot {
   truncatedPrefixBytes: number;
   entriesTruncated: boolean;
   entriesDropped: number;
+  /** Digest of the covered prefix, used to detect an in-place rewrite before reuse. */
+  prefixDigest: string;
 }
 let managementUsageReadInflight: {
   key: string;
+  openedSize: number;
   promise: Promise<ManagementUsageSnapshot>;
   startedAt: number;
   abort: AbortController;
 } | null = null;
+
+/**
+ * Append-tolerant snapshot of the last management read.
+ *
+ * The management reader parses a 64 MiB tail into ~53k objects, which costs roughly
+ * 640 MB of transient RSS per cold call. The JS objects are collected promptly, but
+ * the allocator does not return those pages, so every cold miss ratchets process RSS
+ * upward and never comes back down (observed: 7.9 GiB RSS against a 130 MB JS heap).
+ *
+ * Reparsing an unchanged prefix is what makes that transient recur. `usage.jsonl` is
+ * append-only under a stable identity, so when the file has only grown we keep the
+ * previously parsed rows and parse just the appended bytes. This is retained state, so
+ * it is registered with the app-owned memory budget and is evictable under pressure.
+ */
+interface RetainedUsageSnapshot {
+  identityKey: string;
+  maxReadBytes: number;
+  /** Absolute end offset in the file that `entries` already covers. */
+  coveredThroughBytes: number;
+  /**
+   * Digest of the last bytes of the covered prefix, re-verified before extending.
+   *
+   * Identity (path/dev/ino/birthtime) intentionally ignores size and mtime so appends
+   * can share work, which also means an in-place rewrite that keeps the inode is
+   * invisible to it. A hand-edit or external compaction can therefore replace history
+   * under a stable identity without shrinking the file. Re-reading this trailing window
+   * catches that: if the bytes behind `coveredThroughBytes` changed, the retained rows
+   * no longer describe the file and must not be extended.
+   */
+  prefixDigest: string;
+  /** Bytes of the file skipped ahead of the retained window. */
+  truncatedPrefixBytes: number;
+  entries: PersistedUsageEntry[];
+  entriesTruncated: boolean;
+  entriesDropped: number;
+  revision: UsageLogRevision;
+  retainedAt: number;
+  approxBytes: number;
+}
+let retainedUsageSnapshot: RetainedUsageSnapshot | null = null;
+
+/** Rough per-row retained cost; exact sizing would cost another full serialization pass. */
+const RETAINED_USAGE_ENTRY_BYTES = 512;
+
+/** Chunk size used when digesting the covered prefix. */
+const RETAINED_USAGE_DIGEST_CHUNK_BYTES = 1024 * 1024;
+
+/**
+ * How far the retained span may exceed the read window before a full re-anchor.
+ *
+ * The retained window may start earlier than the current window (the file grows, the
+ * window slides), which makes it a superset containing every row the window needs. That
+ * superset must still be bounded, so a full read re-anchors it once it reaches this
+ * multiple of maxReadBytes -- roughly one full read per maxReadBytes of appended data,
+ * rather than one per append.
+ */
+const RETAINED_USAGE_SPAN_FACTOR = 2;
+
+/**
+ * Digest of the ENTIRE prefix ending at `end`; null when it cannot be read.
+ *
+ * Deliberately not sampled. A sampled digest covers a vanishing fraction of a large
+ * prefix (32 KiB of 64 MiB is 0.05%), so an ordinary fixed-width in-place edit -- a
+ * redaction script fixing one field, a compaction rewriting a middle region -- lands in
+ * a gap by default and the stale rows are served. This reads every covered byte, which
+ * is a sequential scan of pages the OS has already cached, with no JSON parsing and no
+ * object allocation.
+ */
+function usagePrefixDigest(fd: number, end: number): string | null {
+  if (end <= 0) return "empty";
+  const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(Math.min(RETAINED_USAGE_DIGEST_CHUNK_BYTES, end));
+  for (let position = 0; position < end;) {
+    const length = Math.min(buffer.byteLength, end - position);
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, buffer, offset, length - offset, position + offset);
+      if (read === 0) return null;
+      offset += read;
+    }
+    hash.update(buffer.subarray(0, length));
+    position += length;
+  }
+  return `${end}:${hash.digest("hex")}`;
+}
+
+function retainedUsageSnapshotBytes(entries: PersistedUsageEntry[]): number {
+  return entries.length * RETAINED_USAGE_ENTRY_BYTES;
+}
+
+export function discardRetainedUsageSnapshot(): number {
+  const released = retainedUsageSnapshot?.approxBytes ?? 0;
+  retainedUsageSnapshot = null;
+  return released;
+}
+
+export function retainedUsageSnapshotStats(): {
+  count: number;
+  bytes: number;
+  oldestAt: number | null;
+} {
+  if (!retainedUsageSnapshot) return { count: 0, bytes: 0, oldestAt: null };
+  return {
+    count: 1,
+    bytes: retainedUsageSnapshot.approxBytes,
+    oldestAt: retainedUsageSnapshot.retainedAt,
+  };
+}
 
 /** Test-only observability for proving that unchanged prefixes are not reparsed. */
 export function usageReadCacheStatsForTests(): Readonly<typeof usageReadCacheStats> {
@@ -473,6 +586,7 @@ export function resetUsageReadCacheForTests(): void {
   usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
   managementUsageReadInflight?.abort.abort();
   managementUsageReadInflight = null;
+  retainedUsageSnapshot = null;
 }
 
 function readExactly(fd: number, length: number, position: number): Buffer | null {
@@ -510,6 +624,12 @@ export function usageLogRevisionKey(revision: UsageLogRevision | null): string {
     revision.mtimeMs,
     revision.ctimeMs,
   ].join("\0");
+}
+
+/** Identity of the usage ledger file, excluding size/mtime/ctime so appends can share work. */
+export function usageLogIdentityKey(revision: UsageLogRevision | null): string {
+  if (!revision) return "missing";
+  return [revision.path, revision.dev, revision.ino, revision.birthtimeMs].join("\0");
 }
 
 export function currentUsageLogRevision(): UsageLogRevision | null {
@@ -584,12 +704,110 @@ async function readUsageEntriesFullCooperatively(
     }
     const parsed = await parseUsageTextCooperatively(bytes.toString("utf-8"), signal);
     usageReadCacheStats.fullReads += 1;
+    // Digest the exact prefix these rows describe, so a later incremental read can
+    // prove the file was appended to rather than rewritten under the same inode.
+    const prefixDigest = usagePrefixDigest(fd, Number(stat.size));
+    if (prefixDigest === null) throw new Error("usage log changed while it was being read");
     return {
       entries: parsed.entries,
       revision: usageLogRevision(path, stat),
       truncatedPrefixBytes,
       entriesTruncated: parsed.entriesDropped > 0,
       entriesDropped: parsed.entriesDropped,
+      prefixDigest,
+    };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Parse only the bytes appended since the retained snapshot's covered offset.
+ *
+ * Returns null when the retained snapshot cannot be extended safely — a different
+ * identity or read window, a file that shrank (replacement/truncation), or a covered
+ * offset that no longer sits on a record boundary. Callers then fall back to a full
+ * bounded read.
+ */
+async function readUsageEntriesIncrementally(
+  path: string,
+  signal: AbortSignal,
+  maxReadBytes: number,
+  retained: RetainedUsageSnapshot,
+): Promise<ManagementUsageSnapshot | null> {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const revision = usageLogRevision(path, stat);
+    if (usageLogIdentityKey(revision) !== retained.identityKey) return null;
+    const size = Number(stat.size);
+    // A shrink means truncation or replacement-in-place; the retained rows may no
+    // longer correspond to file contents, so refuse to extend them.
+    if (size < retained.coveredThroughBytes) return null;
+    // Once the file is larger than the read window, every append advances the window
+    // start. Refusing whenever the retained window begins earlier would make the
+    // incremental path dead code on exactly the large ledgers it exists for, so a
+    // retained window that starts EARLIER is kept and trimmed below: it is a superset
+    // of the current window and already contains every row the window needs.
+    // Keeping an earlier-starting window would grow without bound as the ledger grows,
+    // so re-anchor with a full bounded read once the retained span reaches a small
+    // multiple of the window. That caps retention at RETAINED_USAGE_SPAN_FACTOR x
+    // maxReadBytes while amortizing the full read over that much growth instead of
+    // paying it on every append.
+    if (size - retained.truncatedPrefixBytes > maxReadBytes * RETAINED_USAGE_SPAN_FACTOR) return null;
+    // Identity plus a non-shrinking size does not prove the covered prefix is intact:
+    // an in-place rewrite keeps dev/ino/birthtime, and both an append and a rewrite move
+    // mtime/ctime forward, so timestamps cannot separate them either. Re-digest the whole
+    // covered prefix. That is a sequential read of already-cached pages with no JSON
+    // parsing and no object allocation -- roughly two orders of magnitude cheaper than
+    // the reparse it protects, and unlike a sampled digest it has no gap for an
+    // ordinary fixed-width edit to land in.
+    if (usagePrefixDigest(fd, retained.coveredThroughBytes) !== retained.prefixDigest) return null;
+    if (size === retained.coveredThroughBytes) {
+      usageReadCacheStats.tailReads += 1;
+      return {
+        entries: retained.entries,
+        revision,
+        truncatedPrefixBytes: retained.truncatedPrefixBytes,
+        entriesTruncated: retained.entriesTruncated,
+        entriesDropped: retained.entriesDropped,
+        prefixDigest: retained.prefixDigest,
+      };
+    }
+    // The covered offset must land immediately after a newline, or the retained rows
+    // and the appended text do not join on a record boundary.
+    if (retained.coveredThroughBytes > 0) {
+      const preceding = readExactly(fd, 1, retained.coveredThroughBytes - 1);
+      if (preceding === null || preceding[0] !== 0x0a) return null;
+    }
+    const nextPrefixDigest = usagePrefixDigest(fd, size);
+    if (nextPrefixDigest === null) return null;
+    const chunks: Buffer[] = [];
+    for (let position = retained.coveredThroughBytes; position < size;) {
+      if (signal.aborted) throw signal.reason;
+      const length = Math.min(MANAGEMENT_USAGE_READ_CHUNK_BYTES, size - position);
+      const chunk = readExactly(fd, length, position);
+      if (chunk === null) throw new Error("usage log changed while it was being read");
+      chunks.push(chunk);
+      position += length;
+    }
+    const appended = await parseUsageTextCooperatively(Buffer.concat(chunks).toString("utf-8"), signal);
+    usageReadCacheStats.tailReads += 1;
+    const combined = retained.entries.concat(appended.entries);
+    let entries = combined;
+    let entriesDropped = retained.entriesDropped + appended.entriesDropped;
+    if (combined.length > MANAGEMENT_USAGE_MAX_ENTRIES) {
+      entriesDropped += combined.length - MANAGEMENT_USAGE_MAX_ENTRIES;
+      entries = combined.slice(-MANAGEMENT_USAGE_MAX_ENTRIES);
+    }
+    return {
+      entries,
+      revision,
+      truncatedPrefixBytes: retained.truncatedPrefixBytes,
+      entriesTruncated: retained.entriesTruncated || entriesDropped > 0,
+      entriesDropped,
+      prefixDigest: nextPrefixDigest,
     };
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -598,8 +816,10 @@ async function readUsageEntriesFullCooperatively(
 
 /**
  * Management API reader: full parses yield between bounded batches and concurrent
- * callers share work only when they observed the same exact file revision. Parsed rows
- * are returned to the request and never retained in module state.
+ * callers share work when they observe the same ledger identity and byte window.
+ * Appends keep that identity; replacements (inode/birthtime change) start a new flight.
+ * The parsed tail is retained under the app-owned memory budget so an append reparses
+ * only the appended bytes; the retained rows are evictable and are copied per caller.
  */
 export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_USAGE_MAX_READ_BYTES): Promise<{
   entries: PersistedUsageEntry[];
@@ -612,18 +832,54 @@ export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_U
   const path = usageLogPath();
   if (!existsSync(path)) return { entries: [], revision: null, truncatedPrefixBytes: 0, entriesTruncated: false, entriesDropped: 0 };
   const observed = currentUsageLogRevision();
-  const key = `${usageLogRevisionKey(observed)}\0${maxReadBytes}`;
+  const key = `${usageLogIdentityKey(observed)}\0${maxReadBytes}`;
+  const observedSize = observed?.size ?? 0;
   const existing = managementUsageReadInflight;
-  if (existing?.key === key && Date.now() - existing.startedAt <= MANAGEMENT_USAGE_FLIGHT_STALE_MS) {
+  const replacement = Boolean(existing && observedSize < existing.openedSize);
+  if (!replacement && existing?.key === key && Date.now() - existing.startedAt <= MANAGEMENT_USAGE_FLIGHT_STALE_MS) {
     const shared = await existing.promise;
     return { ...shared, entries: shared.entries.slice() };
   }
-  existing?.abort.abort(new Error("management usage read superseded"));
+  if (existing && (existing.key !== key || replacement || Date.now() - existing.startedAt > MANAGEMENT_USAGE_FLIGHT_STALE_MS)) {
+    existing.abort.abort(new Error("management usage read superseded"));
+  } else if (existing) {
+    const shared = await existing.promise;
+    return { ...shared, entries: shared.entries.slice() };
+  }
   const abort = new AbortController();
-  const promise = readUsageEntriesFullCooperatively(path, abort.signal, maxReadBytes);
-  managementUsageReadInflight = { key, promise, startedAt: Date.now(), abort };
+  const retained = retainedUsageSnapshot;
+  const reusable = retained
+    && retained.identityKey === usageLogIdentityKey(observed)
+    && retained.maxReadBytes === maxReadBytes
+      ? retained
+      : null;
+  const promise = (async (): Promise<ManagementUsageSnapshot> => {
+    if (reusable) {
+      const incremental = await readUsageEntriesIncrementally(path, abort.signal, maxReadBytes, reusable);
+      if (incremental) return incremental;
+      // The retained rows could not be extended safely; drop them before the full read
+      // so a stale window is never combined with freshly parsed bytes.
+      discardRetainedUsageSnapshot();
+    }
+    return readUsageEntriesFullCooperatively(path, abort.signal, maxReadBytes);
+  })();
+  managementUsageReadInflight = { key, openedSize: observedSize, promise, startedAt: Date.now(), abort };
   try {
     const snapshot = await promise;
+    retainedUsageSnapshot = {
+      identityKey: usageLogIdentityKey(snapshot.revision),
+      maxReadBytes,
+      coveredThroughBytes: snapshot.revision.size,
+      prefixDigest: snapshot.prefixDigest,
+      truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
+      entries: snapshot.entries,
+      entriesTruncated: snapshot.entriesTruncated,
+      entriesDropped: snapshot.entriesDropped,
+      revision: snapshot.revision,
+      retainedAt: Date.now(),
+      approxBytes: retainedUsageSnapshotBytes(snapshot.entries),
+    };
+    enforceAppOwnedMemoryBudget();
     return { ...snapshot, entries: snapshot.entries.slice() };
   } finally {
     if (managementUsageReadInflight?.promise === promise) managementUsageReadInflight = null;

@@ -277,6 +277,7 @@ export const ko: Record<TKey, string> = {
   "dash.webSearchStreamHint": "모델이 도구 호출을 결정할 때까지 앞부분 텍스트와 추론을 실시간 스트리밍합니다. 이후는 검색 가로채기를 위해 버퍼링됩니다. 검색 전 텍스트가 일부 반복될 수 있습니다.",
   "dash.visionSidecar": "비전 사이드카",
   "dash.visionSidecarHint": "텍스트 전용 라우팅 모델이 이미지를 읽을 때 쓸 백엔드와 모델을 고릅니다.",
+  "dash.visionOff": "끔",
   "dash.shadowCallIntercept": "쉐도우 호출 가로채기",
   "dash.shadowCallInterceptHint": "Codex 앱이 제목·커밋 메시지 생성에 쓰는 백그라운드 호출({models})을 가로채 선택한 모델로 바꿉니다. effort는 low로 고정됩니다.",
   "dash.shadowCallWarning": "⚠ 활성화하면 {models} 요청이 모두 선택한 모델로 대체됩니다.",
@@ -1034,6 +1035,8 @@ export const ko: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "계정 지정 설정을 업데이트하지 못했습니다. 마지막으로 확인된 설정을 표시합니다.",
   "codexAuth.accountPickerLoadFailed": "계정 지정 설정을 불러오지 못했습니다.",
   "codexAuth.accountPickerRefreshFailed": "이 설정을 새로 고치지 못했습니다. 마지막으로 확인된 값을 계속 표시합니다.",
+  "codexAuth.advancedSettings": "고급 설정",
+  "codexAuth.advancedSettingsAria": "고급 Codex 인증 설정 표시 또는 숨기기",
   "codexAuth.catalogRefreshPending": "변경 사항은 저장되었지만 Codex 모델 카탈로그 새로 고침이 보류 중입니다. ocx sync를 실행해 다시 시도하세요.",
   "anthropicPool.title": "Claude 계정 풀(실험적)",
   "anthropicPool.enabledDesc": "429 시 계정을 쿨다운하고 장애 조치합니다. 새 세션은 5시간 사용량이 {threshold}% 미만인 계정을 우선합니다.",
@@ -2028,4 +2031,10 @@ export const ko: Record<TKey, string> = {
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
 
+  "dash.visionAdvanced": "고급 설정",
+  "dash.visionMaxDescriptions": "턴당 최대 설명 수",
+  "dash.visionMaxDescriptionsInvalid": "양의 정수를 입력하세요.",
+  "dash.visionTimeout": "제한 시간",
+  "dash.visionTimeoutInvalid": "{min}에서 {max} 밀리초 사이의 정수를 입력하세요.",
+  "dash.visionAdvancedPopover": "고급 비전 설정",
 };

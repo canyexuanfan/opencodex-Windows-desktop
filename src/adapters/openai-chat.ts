@@ -12,6 +12,7 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
+import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import {
   isTranslatorBudgetExceededError,
   retainTranslatedEventBatch,
@@ -672,16 +673,18 @@ const VOLCENGINE_ARK_HOSTNAMES = new Set([
   "ark.ap-southeast.volces.com",
 ]);
 
-function isVolcengineArkTarget(provider: OcxProviderConfig): boolean {
+function isVolcengineArkPaygChatTarget(provider: OcxProviderConfig): boolean {
   try {
-    return VOLCENGINE_ARK_HOSTNAMES.has(new URL(provider.baseUrl).hostname);
+    const url = new URL(provider.baseUrl);
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return VOLCENGINE_ARK_HOSTNAMES.has(url.hostname) && pathname === "/api/v3";
   } catch {
     return false;
   }
 }
 
 function emptyAssistantContent(provider: OcxProviderConfig): string | { type: "text"; text: string }[] {
-  return isVolcengineArkTarget(provider) ? [{ type: "text", text: "" }] : "";
+  return isVolcengineArkPaygChatTarget(provider) ? [{ type: "text", text: "" }] : "";
 }
 
 function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
@@ -975,7 +978,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
       if (parsed.stream) body.stream_options = { include_usage: true };
 
-      const url = `${provider.baseUrl}/chat/completions`;
+      const url = openaiChatCompletionsUrl(provider.baseUrl);
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);

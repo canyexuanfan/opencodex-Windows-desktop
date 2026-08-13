@@ -170,8 +170,8 @@ opencodex には組み込みプリセットが 79 個含まれています。キ
 [Cline の利用規約](https://cline.bot/tos)に記載された Cline Bot Inc. です。`cline-pass/cline-pass/kimi-k3` のようなルーティング ID は
 意図した形式です。先頭は opencodex のプロバイダー、残りの `cline-pass/kimi-k3` は upstream に送信する
 完全なモデル slug です。使用量はアカウントのローリング 5 時間、週次、月次の各上限で共有されます。
-現在 opencodex が公開する reasoning tier は実機検証済みの `low` のみで、より高い要求は公式範囲が
-公開または検証されるまで `low` にクランプされます。
+2026-08-13 の実機検証で、すべての静的 ClinePass モデルが gateway input で `low`、`medium`、`high`、`xhigh`、`max` を受け付けることを確認しました。
+opencodex は要求された tier をそのまま保持し、バックエンド固有の正規化は ClinePass 側に委ねます。
 
 **Cline** は同じ API キー・エンドポイントを従量課金で使い、100 以上のモデルにアクセスできます
 (OpenRouter 形式の ID、例: `anthropic/claude-sonnet-4-6`)。Cline の期間限定無料モデルは

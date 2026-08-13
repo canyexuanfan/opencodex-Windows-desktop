@@ -6,6 +6,7 @@ import {
   QWEN_CLOUD_BASE_URL_CHOICES, QWEN_CLOUD_TOKEN_PLAN_BASE_URL,
   ALIBABA_INTL_BASE_URL_CHOICES, ALIBABA_INTL_TOKEN_PLAN_BASE_URL,
   ALIBABA_CODING_BASE_URL_CHOICES, ALIBABA_CODING_INTL_BASE_URL,
+  MOONSHOT_BASE_URL_CHOICES, MOONSHOT_INTL_BASE_URL,
 } from "./base-url-choices";
 import {
   CURSOR_STATIC_MODELS,
@@ -950,8 +951,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // devlog/model_update/260709_model_refresh/001_xai_lineup.md.
     // grok-4.20-multi-agent-0309 is intentionally absent: the OAuth chat-completions
     // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
-    // 260813: grok-4.6 added per the new docs.x.ai/developers/grok-4-6 page; specs mirrored
-    // from grok-4.5 until the official capability/pricing tables settle.
+    // 260813: grok-4.6 added per docs.x.ai/developers/grok-4-6. Context/vision still match
+    // grok-4.5; the reasoning ladder does not — 4.6 adds the documented xhigh rung.
     models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
     // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
@@ -973,8 +974,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // (docs.x.ai prompt-caching/multi-turn, verified 2026-07-13 — devlog/_plan/260713_grok_caching).
     // Models that never emit reasoning simply have no thinking parts to replay (no-op).
     preserveReasoningContentModels: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
-    // grok-4.5 reasoning is always-on with low/medium/high control (no off tier upstream).
-    modelReasoningEfforts: { "grok-4.6": ["low", "medium", "high"], "grok-4.5": ["low", "medium", "high"] },
+    // grok-4.5 reasoning is always-on with low/medium/high (no off tier, no xhigh).
+    // grok-4.6 adds xhigh per docs.x.ai/developers/model-capabilities/text/reasoning;
+    // xAI documents high as the upstream default.
+    modelReasoningEfforts: { "grok-4.6": ["low", "medium", "high", "xhigh"], "grok-4.5": ["low", "medium", "high"] },
+    modelDefaultReasoningEfforts: { "grok-4.6": "high" },
     modelContextWindows: {
       "grok-4.6": 500_000,
       "grok-4.5": 500_000,
@@ -1300,10 +1304,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: CLINE_PASS_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: CLINE_PASS_MODEL_INPUT_MODALITIES,
     noVisionModels: CLINE_PASS_TEXT_ONLY_MODELS,
-    // Only low and the `reasoning: { enabled, effort }` request shape have been accepted by a live
-    // ClinePass request. Neither wire detail is currently documented, so clamp higher Codex
-    // requests to the verified tier until the gateway documents or is live-probed more broadly.
-    reasoningEfforts: ["low"],
+    // Live-probed 2026-08-13 across every static ClinePass model: the gateway accepts and
+    // validates low/medium/high/xhigh/max, and rejects an invalid sentinel. Preserve the
+    // caller's requested tier and let ClinePass own any backend-specific normalization.
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     reasoningWireFormat: "gateway-object",
     preserveCustomDestination: true,
     note: "ClinePass subscription API. Uses a Cline API key and the full cline-pass/<model> upstream slug; quota is shared across the account's rolling 5-hour, weekly, and monthly limits.",
@@ -1789,7 +1793,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     liveModels: true,
     preserveCustomDestination: true,
     // /v1/models is documented as callable authenticated or unauthenticated, so a 2xx catalog
-    // response cannot prove the supplied Bearer key is valid.
+    // response cannot prove that the supplied Bearer key is valid.
     apiKeyValidation: "unknown",
     // Featherless documents tool calling, but not a provider-wide parallel tool-call contract.
     parallelToolCalls: false,
@@ -1870,7 +1874,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "Model data frozen pending Tier-2 entitlement proof",
   },
   {
-    id: "moonshot", label: "Moonshot (Kimi API)", baseUrl: "https://api.moonshot.ai/v1", adapter: "openai-chat", authKind: "key",
+    id: "moonshot", label: "Moonshot (Kimi API)", baseUrl: MOONSHOT_INTL_BASE_URL, adapter: "openai-chat", authKind: "key",
+    allowBaseUrlOverride: true,
+    baseUrlChoices: MOONSHOT_BASE_URL_CHOICES,
     dashboardUrl: "https://platform.moonshot.ai/console/api-keys", defaultModel: "kimi-k2.7-code", jawcodeBundle: "moonshot",
     models: KIMI_API_MODELS,
     modelContextWindows: KIMI_API_MODEL_CONTEXT_WINDOWS,
@@ -1882,6 +1888,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noPenaltyModels: KIMI_API_MODELS,
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     preserveReasoningContentModels: KIMI_API_MODELS,
+    note: "International default (api.moonshot.ai). China accounts: choose China (.cn) or Custom for api.moonshot.cn.",
   },
   { id: "huggingface", label: "Hugging Face", baseUrl: "https://router.huggingface.co/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://huggingface.co/settings/tokens" },
   // 260715 NIM hardening (issue #126, devlog/_plan/260715_issue126_nim_kimi):

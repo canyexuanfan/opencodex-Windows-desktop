@@ -150,10 +150,19 @@ A model is marked text-only per provider:
 
 ## Dashboard controls and disabling
 
-<!-- TODO(WP5 GUI): Add the sidecar settings-screen walkthrough after the GUI controls ship. -->
+The Dashboard Vision sidecar card can enable or disable the sidecar, set
+`maxDescriptionsPerTurn`, and set `timeoutMs`, along with the existing model,
+backend, and reasoning controls. Disabling the sidecar does not delete those
+settings; turning it back on keeps the previous model, backend, reasoning,
+timeout, and limit.
 
-The config-file keys are available now. Set `enabled: false` on either sidecar in `config.json` to
-disable it. Anthropic-OAuth search and image description reuse the existing Claude Code OAuth
-fingerprint precedent, but should be soak-tested with the intended account and workload.
+`PUT /api/sidecar-settings` accepts the same fields. Partial updates leave
+omitted keys unchanged. `timeoutMs` uses the runtime integer bounds
+(1–2147483647 ms).
+
+You can still set `enabled: false` in `config.json` if you prefer to edit the
+file directly. Anthropic-OAuth search and image description reuse the existing
+Claude Code OAuth fingerprint precedent, but should be soak-tested with the
+intended account and workload.
 
 See the [Configuration reference](/reference/configuration/#sidecars) for every field.

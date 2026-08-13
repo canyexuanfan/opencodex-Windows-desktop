@@ -187,7 +187,7 @@ routed-model и hosted-search timeout. Эффективный watchdog мост�
 | `model?` | `string` | backend-dependent | `gpt-5.4-mini` для OpenAI или `claude-sonnet-5` для Anthropic. |
 | `reasoning?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"low"` | Уровень рассуждений OpenAI Responses. Anthropic его игнорирует. |
 | `maxDescriptionsPerTurn?` | `number` | `8` | Максимум новых промахов description-cache за один main turn. `0` отключает вызовы; некорректные значения возвращают дефолт. |
-| `timeoutMs?` | `number` | `45000` | Таймаут запроса sidecar'а. |
+| `timeoutMs?` | `number` | `45000` | Таймаут запроса sidecar'а. Целое число 1–2147483647. |
 
 Поддерживаемые уровни зависят от возможностей вышестоящего провайдера и заявленной лестницы
 рассуждений выбранной модели. Vision включается только для изображений, отправленных в модель, входящую в `noVisionModels` её
