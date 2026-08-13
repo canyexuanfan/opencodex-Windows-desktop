@@ -213,23 +213,21 @@ describe("buildStaleNotice", () => {
 });
 
 describe("buildClaimCheckNotice", () => {
-  it("names each violated claim and the reset action", () => {
+  it("names the latest-dev violation and the reset action", () => {
     const notice = buildClaimCheckNotice(
-      ["ci_green", "latest_dev"],
+      ["latest_dev"],
       "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b",
     );
-    assert.match(notice[0], /CI is not green on the current head `3f1c0de`/);
-    assert.match(notice[0], /\*\*CI green\*\* box has been unticked/);
-    assert.match(notice[1], /more than 10 commits behind `dev`/);
-    assert.match(notice[1], /\*\*latest dev\*\* box has been unticked/);
-    assert.match(notice[2], /reset: re-test against the latest code/);
+    assert.match(notice[0], /more than 10 commits behind `dev`/);
+    assert.match(notice[0], /\*\*latest dev\*\* box has been unticked/);
+    assert.match(notice[1], /reset: re-test against the latest code/);
   });
 
-  it("handles a single violation", () => {
+  it("ignores a stale ci_green code without inventing GitHub-CI copy", () => {
     const notice = buildClaimCheckNotice(["ci_green"], "a".repeat(40));
-    assert.equal(notice.length, 2);
-    assert.match(notice[0], /CI is not green/);
-    assert.match(notice[1], /has been reset/);
+    assert.equal(notice.length, 1);
+    assert.match(notice[0], /has been reset/);
+    assert.doesNotMatch(notice[0], /CI is not green/);
   });
 
   it("returns only the reset line for an empty violation list", () => {

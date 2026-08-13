@@ -1038,6 +1038,9 @@ describe("native main profile transactions", () => {
     expect(readFileSync(f.manager.context.authPath, "utf8")).toBe(refreshed);
   });
 
+  // The manager can spend up to 5 s acquiring its SQLite transaction lock.
+  // Keep Bun's harness budget above that internal deadline so CI load cannot
+  // pre-empt the manager's own timeout handling.
   test("preserves exact auth bytes, encrypts inactive profiles, and leaves task/history files untouched", async () => {
     const f = await enrolledFixture();
     const taskPath = join(f.codexHome, "sessions", "task.jsonl");
@@ -1064,8 +1067,12 @@ describe("native main profile transactions", () => {
       "account-source->account-target",
       "account-target->account-source",
     ]);
-  });
+  }, 10_000);
 
+  // This rollback case uses the same encrypted-vault and SQLite setup as the
+  // transaction test above. Hosted macOS can complete the product recovery
+  // successfully after Bun's 5 s default, so the harness must not become the
+  // shorter deadline.
   test("a read-back mismatch restores the exact source and removes the journal", async () => {
     const f = await enrolledFixture();
     const authPath = f.manager.context.authPath;
@@ -1084,7 +1091,7 @@ describe("native main profile transactions", () => {
     expect(readFileSync(join(f.codexHome, "auth.json"), "utf8")).toBe(f.source);
     expect((await failing.doctor()).recoveryPending).toBe(false);
     expect((await failing.list()).activeProfileId).toBe(f.sourceProfile.id);
-  });
+  }, 10_000);
 
   test("rollback verification failure retains the encrypted recovery journal and never claims success", async () => {
     const f = await enrolledFixture();
@@ -1110,6 +1117,10 @@ describe("native main profile transactions", () => {
     expect(journal).not.toContain("opaque-refresh-target");
   });
 
+  // The rejection is immediate once the injected process probe runs, but the
+  // shared enrollment fixture still performs encrypted-vault and SQLite setup.
+  // Hosted macOS can push that setup past Bun's 5 s default under full-suite
+  // load, so keep the harness budget above the manager's own lock deadline.
   test("normal switch rejects a busy native Codex process before publishing any transaction file", async () => {
     const f = await enrolledFixture();
     const blocked = new NativeProfileManager({
@@ -1123,7 +1134,7 @@ describe("native main profile transactions", () => {
     expect(readFileSync(blocked.context.authPath, "utf8")).toBe(f.source);
     expect(existsSync(blocked.context.journalPath)).toBe(false);
     expect((await blocked.list()).activeProfileId).toBe(f.sourceProfile.id);
-  });
+  }, 10_000);
 
   test("vault-write failure after auth replacement restores exact source and removes the journal", async () => {
     const f = await enrolledFixture();

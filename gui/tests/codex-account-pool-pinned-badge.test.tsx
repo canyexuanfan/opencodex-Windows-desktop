@@ -27,11 +27,17 @@ let originalFetch: typeof globalThis.fetch;
 const account: CodexAccountEntry = {
   id: "pool-1",
   email: "pool@example.test",
+  logLabel: "pabc123",
   isMain: false,
   paused: false,
   priority: 0,
   hasCredential: true,
   quota: null,
+  usage30d: {
+    totalTokens: 1_500,
+    estimatedCostUsd: 0.125,
+    usageCoverageRatio: 0.75,
+  },
 };
 
 const mainAccount: CodexAccountEntry = {
@@ -140,7 +146,7 @@ test("a pinned pool account says so, and only on its own card", async () => {
 
   const pooled = cardFor("pool@example.test");
   expect(hasPinnedBadge(pooled)).toBe(true);
-  expect(hasPinnedHint(pooled)).toBe(true);
+  expect(hasPinnedHint(pooled)).toBe(false);
 
   const main = cardFor("main@example.test");
   expect(hasPinnedBadge(main)).toBe(false);
@@ -152,7 +158,7 @@ test("a pinned app login says so, and only on its own card", async () => {
 
   const main = cardFor("main@example.test");
   expect(hasPinnedBadge(main)).toBe(true);
-  expect(hasPinnedHint(main)).toBe(true);
+  expect(hasPinnedHint(main)).toBe(false);
 
   const pooled = cardFor("pool@example.test");
   expect(hasPinnedBadge(pooled)).toBe(false);
@@ -173,7 +179,7 @@ test("the badge stays on the pinned account when rotation moves off it", async (
 
   const pinned = cardFor("pool@example.test");
   expect(hasPinnedBadge(pinned)).toBe(true);
-  expect(hasPinnedHint(pinned)).toBe(true);
+  expect(hasPinnedHint(pinned)).toBe(false);
 
   const active = cardFor("sibling@example.test");
   expect(hasPinnedBadge(active)).toBe(false);
@@ -198,4 +204,18 @@ test("a paused account is never shown as pinned", async () => {
 
   expect(hasPinnedBadge(host)).toBe(false);
   expect(hasPinnedHint(host)).toBe(false);
+});
+
+test("healthy account cards omit log-label and 30-day usage copy", async () => {
+  await mountPool(makeController());
+
+  const pooled = cardFor("pool@example.test");
+  expect(pooled.textContent).not.toContain("Log label: pabc123");
+  expect(pooled.textContent).not.toContain("Total tokens: 1.5k");
+  expect(pooled.textContent).not.toContain("Estimated cost: ~$0.1250");
+  expect(pooled.textContent).not.toContain("Measured: 75%");
+
+  const main = cardFor("main@example.test");
+  expect(main.textContent).not.toContain("Log label: main");
+  expect(hasPinnedHint(main)).toBe(false);
 });

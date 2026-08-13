@@ -37,10 +37,13 @@ tells you exactly what to change:
 
 - **PR quality (`enforce-target`).** Pull requests must target `dev` and carry
   a real description: a **Summary** of what changed and why, plus a **Test
-  plan** (or equivalent substance). When the title or description mentions
-  `gui`, the description must include a screenshot of the UI change; the check
-  keeps the PR a draft and comments until the screenshot is present. A
-  maintainer can waive a false-positive GUI cue by adding the
+  plan** (or equivalent substance). When the diff changes files under `gui/`, or
+  when GitHub returns an incomplete changed-file list for a large diff, the
+  description must include a screenshot of the UI change; the check keeps
+  the PR a draft and comments until the screenshot is present. Incomplete file
+  lists are treated conservatively as a GUI change. A maintainer can waive the
+  screenshot requirement for a `gui/` change, for a false-positive GUI-path
+  classification, or for an incomplete-file-list false positive, by adding the
   `gui-screenshot-waived` label; adding or removing that label immediately
   re-evaluates the gate. Legacy maintainer comments such as "no gui changes"
   are still recognised on the next PR event for compatibility, but comments
@@ -61,10 +64,12 @@ tells you exactly what to change:
   `dev` clears the wrong-branch message automatically and is remembered by the
   gate; the draft stays until the checklist is complete.
   Before a completion is accepted, the gate verifies the checklist claims it
-  can check itself: the head's `ci` check must be green, the branch must be on
-  the latest `dev` commit or at most 10 commits behind it, and every Codex and
-  CodeRabbit review thread authored by a review bot on the current head must be
-  resolved (unresolved threads from other authors do not block). CodeRabbit
+  can check itself: the branch must be on the latest `dev` commit or at most
+  10 commits behind it, and every Codex and CodeRabbit review thread authored
+  by a review bot on the current head must be resolved (unresolved threads
+  from other authors do not block). The local-CI box is an author attestation
+  only — fork contributors cannot start repository CI; a maintainer has to —
+  so the gate never disproves it; a new push still resets every box. CodeRabbit
   findings that fall outside the diff range and are reported only in a review
   body on the current head add to the unresolved count while a bot review
   thread is open; resolving every bot thread clears the box. A disproved claim

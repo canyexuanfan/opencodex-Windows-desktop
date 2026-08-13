@@ -181,6 +181,11 @@ describe("codex routing", () => {
     expect(computeCodexUsageScore({ weeklyPercent: 1 }, "go")).toBe(CODEX_UNKNOWN_USAGE_SCORE);
   });
 
+  test("usage score treats non-string plans as unknown weekly plans", () => {
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, { tier: "go" })).toBe(27);
+    expect(computeCodexUsageScore({ weeklyPercent: 27, monthlyPercent: 12 }, 1)).toBe(27);
+  });
+
   test("usage score treats unknown quota conservatively", () => {
     expect(computeCodexUsageScore(null)).toBe(CODEX_UNKNOWN_USAGE_SCORE);
     expect(computeCodexUsageScore({})).toBe(CODEX_UNKNOWN_USAGE_SCORE);
@@ -248,6 +253,59 @@ describe("codex routing", () => {
     expect(config.activeCodexAccountId).toBe("a");
     recordCodexUpstreamOutcome(config, "a", 200);
     expect(resolveCodexAccountForThread("after-success", config)).toBe("a");
+  });
+
+  test("routes account-scoped Daybreak Blue through the exact main account without rewriting its wire id", () => {
+    const config = makeConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      codexAccountNamespaces: { main: "@main" },
+    });
+
+    expect(routeModel(config, "main/gpt-daybreak-blue-latest")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-daybreak-blue-latest",
+      routeKind: "explicit-account",
+      routeReason: "account-namespace",
+      codexAccountMode: "pool",
+      codexAccountNamespace: "main",
+      codexAccountId: MAIN_CODEX_ACCOUNT_ID,
+      routeDecision: {
+        requestedModel: "main/gpt-daybreak-blue-latest",
+        selected: { model: "gpt-daybreak-blue-latest", accountRef: "main" },
+      },
+    });
+  });
+
+  test("routes the configured Codex-forward Daybreak selector without API alias rewriting", () => {
+    const config = makeConfig({
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+        },
+      },
+      defaultProvider: "openai",
+      customModels: [{
+        id: "daybreak-codex-forward",
+        provider: "openai",
+        modelId: "gpt-daybreak-blue-latest",
+      }],
+    });
+
+    expect(routeModel(config, "openai/gpt-daybreak-blue-latest")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-daybreak-blue-latest",
+      routeKind: "explicit-provider",
+      routeReason: "explicit-provider-namespace",
+    });
   });
 
   test("paused main account is excluded even when it is the active and lowest-usage candidate", () => {

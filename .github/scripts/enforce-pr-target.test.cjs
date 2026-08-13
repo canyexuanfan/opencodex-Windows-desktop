@@ -143,14 +143,87 @@ describe("enforce-pr-target workflow", () => {
       .split("- name: Checkout trusted PR-quality scripts")[1]
       .split(/\n {6}- name:/)[0];
     assert.match(checkoutStep, /actions\/checkout@[0-9a-f]{40}/);
-    // `pull_request_target` pins the PR base SHA. Trusted `status`
-    // revalidation has no pull_request payload, so it sources scripts from the
-    // repository default branch that supplied the privileged workflow itself.
-    assert.match(
-      checkoutStep,
-      /ref:\s*\$\{\{\s*github\.event_name\s*==\s*'status'\s*&&\s*github\.event\.repository\.default_branch\s*\|\|\s*github\.event\.pull_request\.base\.sha\s*\}\}/,
+    // The trusted ref comes from a fixed set of integration branches, never
+    // from the PR's own base commit: a stacked child's base is another open
+    // PR's head, and `base.sha` would let that unpromoted commit choose the
+    // code that runs with this job's write-capable token.
+    //
+    // `status` has no pull_request payload and sources from the default branch
+    // that supplied the privileged workflow. A `main`-targeting PR sources
+    // from `main` so the workflow definition and the scripts match. Everything
+    // else resolves to `dev`.
+    //
+    // Exact equality, not fragment matching: separate checks for `status`,
+    // `main`, and `dev` would all pass with the operator grouping wrong or a
+    // surviving `base.sha` fallback.
+    const ref = checkoutStep.match(/^\s*ref:\s*(.+)$/m)?.[1];
+    assert.ok(ref, "trusted checkout must declare ref");
+    assert.equal(
+      ref.replace(/\s+/g, " ").trim(),
+      "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
     );
-    assert.doesNotMatch(checkoutStep, /\|\|\s*'dev'/);
+    assert.doesNotMatch(ref, /base\.sha|head\.(?:sha|ref)/);
+    // Pinning the checkout ref only gates one step. A later `run:` or
+    // `github-script` step interpolating a head ref would execute
+    // PR-controlled content with this workflow's write-capable token, so the
+    // whole file is gated. (`pr.head.sha` read back from the API is an
+    // identity for comparison, not an interpolated ref, and is unaffected.)
+    assert.doesNotMatch(
+      workflow,
+      /github\.event\.pull_request\.head\.(?:sha|ref|repo)/,
+      "no step in a pull_request_target workflow may interpolate a PR head ref",
+    );
+    // `refs/pull/<n>/head` reaches the same PR-controlled tree without ever
+    // naming `head`, so ban the merge-ref form too.
+    assert.doesNotMatch(
+      workflow,
+      /refs\/pull\//,
+      "no step may check out a refs/pull/* ref",
+    );
+    // Banning literal text is not enough: `format('refs/{0}/{1}/{2}', ...)`
+    // builds the same PR-controlled ref without ever spelling it. Every
+    // checkout in a pull_request_target workflow must therefore declare a ref
+    // drawn from the trusted allowlist, and no other step may name the PR
+    // number in a ref-shaped expression.
+    // An ALLOWLIST, not a denylist: every checkout in this workflow must use
+    // exactly the trusted expression. Banning known-bad shapes lost twice —
+    // first to `refs/pull/<n>/head`, then to `format('refs/{0}/...')` — and a
+    // `repository:` override pointing at the fork head is a third shape no
+    // denylist would have caught.
+    const checkouts = workflow.match(/uses:\s*actions\/checkout@[\s\S]*?(?=\n {6}- name:|$)/g) ?? [];
+    for (const step of checkouts) {
+      const stepRef = (step.match(/^\s*ref:\s*(.+)$/m)?.[1] ?? "").replace(/\s+/g, " ").trim();
+      assert.equal(stepRef, "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}", "every checkout must use the trusted ref");
+      assert.doesNotMatch(step, /repository:/, "a checkout must not retarget its repository");
+    }
+    // Checkout is not the only way to obtain PR-controlled code. A `run:` step
+    // can fetch it directly, and that is a realistic future edit rather than a
+    // synthetic one, so executable steps are gated on the acquisition verbs
+    // themselves.
+    // Stop enumerating command shapes. A denylist lost four times here
+    // (`refs/pull`, `format()`, `repository:`, `gh pr checkout`), and
+    // `git clone https://github.com/<fork>` would have been the fifth. The
+    // invariant is simpler than the attack surface: under
+    // `pull_request_target`, nothing executable may name the PR head or the
+    // fork repository at all.
+    // Comments may discuss the head ref; only executable content may not use
+    // it, so YAML comment lines are stripped before this check.
+    const executable = workflow
+      .split("\n")
+      .filter(line => !/^\s*#/.test(line) && !/^\s*\/\//.test(line.replace(/^\s*/, "")))
+      .join("\n");
+    assert.doesNotMatch(
+      executable.replace(/^\s*\/\/.*$/gm, ""),
+      /github\.head_ref|pull_request(?:\[['"]head['"]\]|\.head)\s*(?:\[|\.)?\s*['"]?repo/,
+      "no executable step may reference the PR head repository",
+    );
+    // Belt and braces for the acquisition verbs, which have no legitimate use
+    // in either gate: both only read PR metadata through the API.
+    assert.doesNotMatch(
+      workflow,
+      /gh\s+pr\s+checkout|git\s+(?:fetch|checkout|clone|switch)|refs\/pull/,
+      "no step may acquire pull-request code",
+    );
     // The readiness ping reads MAINTAINERS.md from the same trusted checkout.
     assert.match(checkoutStep, /sparse-checkout:\s*\|\s*\n\s*\.github\/scripts\n\s*MAINTAINERS\.md/);
     assert.match(checkoutStep, /persist-credentials:\s*false/);
@@ -197,6 +270,9 @@ describe("enforce-pr-target workflow", () => {
     );
     assert.ok(qualityCall, "must call collectPrQualityFailures");
     assert.match(qualityCall[1], /stackedBase/);
+    assert.match(qualityCall[1], /changedFilePaths/);
+    assert.match(qualityCall[1], /filesTruncated/);
+    assert.match(workflow, /isChangedFileListTruncated/);
   });
 
   it("strips stale WRONG BRANCH prefix on failure when base is corrected", () => {

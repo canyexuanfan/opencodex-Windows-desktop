@@ -99,6 +99,63 @@ describe("provider-specific reasoning effort mapping", () => {
     });
   });
 
+  test("xAI grok-4.6 forwards xhigh while grok-4.5 still clamps it to high", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          apiKey: "key",
+        },
+      },
+    };
+    const grok46 = routeModel(config, "xai/grok-4.6");
+    const grok45 = routeModel(config, "xai/grok-4.5");
+
+    expect(configuredReasoningEfforts(grok46.provider, grok46.modelId)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(grok45.provider, grok45.modelId)).toEqual(["low", "medium", "high"]);
+
+    const grok46Xhigh = buildChatRequest(grok46.provider, grok46.modelId, { reasoning: "xhigh" });
+    const grok46Max = buildChatRequest(grok46.provider, grok46.modelId, { reasoning: "max" });
+    const grok45Xhigh = buildChatRequest(grok45.provider, grok45.modelId, { reasoning: "xhigh" });
+
+    expect(JSON.parse(grok46Xhigh.body).reasoning_effort).toBe("xhigh");
+    expect(JSON.parse(grok46Max.body).reasoning_effort).toBe("xhigh");
+    expect(JSON.parse(grok45Xhigh.body).reasoning_effort).toBe("high");
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(grok45.provider, grok45.modelId, "xhigh")).toBe("high");
+  });
+
+  test("xAI grok-4.6 preserves an explicit narrower ladder and provider-wide downgrade map", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key",
+          apiKey: "key",
+          modelReasoningEfforts: {
+            "grok-4.6": ["low", "medium", "high"],
+            "grok-4.5": ["low", "medium", "high"],
+          },
+          reasoningEffortMap: { xhigh: "high", max: "high" },
+        },
+      },
+    };
+    const grok46 = routeModel(config, "xai/grok-4.6");
+    const grok45 = routeModel(config, "xai/grok-4.5");
+
+    expect(configuredReasoningEfforts(grok46.provider, grok46.modelId)).toEqual(["low", "medium", "high"]);
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "xhigh")).toBe("high");
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "max")).toBe("high");
+    expect(configuredReasoningEfforts(grok45.provider, grok45.modelId)).toEqual(["low", "medium", "high"]);
+    expect(mapReasoningEffort(grok45.provider, grok45.modelId, "xhigh")).toBe("high");
+  });
+
   test("Neuralwatt GLM-5.2 sends direct max and preserves reasoning history", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
@@ -167,7 +224,9 @@ describe("provider-specific reasoning effort mapping", () => {
     });
     const body = JSON.parse(req.body as string) as { reasoning_effort?: string; messages: Record<string, unknown>[] };
 
-    expect(body.reasoning_effort).toBe("max");
+    // V4 Pro GA (DeepSeek-V4-Pro-0813): the vendor thinking-mode table is now
+    // identical to Flash, so xhigh resolves to high on Pro too.
+    expect(body.reasoning_effort).toBe("high");
     expect(body.messages[1].reasoning_content).toBe("I need to inspect files before answering.");
     expect(body.messages[1]).toMatchObject({
       role: "assistant",
@@ -329,7 +388,28 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(body).not.toHaveProperty("tool_choice");
   });
 
-  test("OpenAI-compatible chat keeps tool_choice when tools are present", () => {
+  test("OpenAI-compatible chat omits tools and tool_choice when tool_choice is none", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.neuralwatt.com/v1",
+    };
+
+    const req = createOpenAIChatAdapter(provider).buildRequest({
+      modelId: "glm-5.2",
+      context: {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        tools: [{ name: "read_secret", description: "Read", parameters: { type: "object" } }],
+      },
+      stream: false,
+      options: { toolChoice: "none" },
+    });
+    const body = JSON.parse(req.body as string) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  test("OpenAI-compatible chat advertises only the named tool when the provider downgrades the selector", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://api.moonshot.ai/v1",
@@ -340,14 +420,20 @@ describe("provider-specific reasoning effort mapping", () => {
       modelId: "kimi-k2.7-code",
       context: {
         messages: [{ role: "user", content: "hello", timestamp: 0 }],
-        tools: [{ name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } }],
+        tools: [
+          { name: "run_tests", description: "Run tests", parameters: { type: "object", properties: {} } },
+          { name: "read_secret", description: "Read", parameters: { type: "object", properties: {} } },
+        ],
       },
       stream: false,
       options: { toolChoice: { name: "run_tests" } },
     });
-    const body = JSON.parse(req.body as string) as Record<string, unknown>;
+    const body = JSON.parse(req.body as string) as {
+      tools: Array<{ function: { name: string } }>;
+      tool_choice: string;
+    };
 
-    expect(body).toHaveProperty("tools");
+    expect(body.tools.map(tool => tool.function.name)).toEqual(["run_tests"]);
     expect(body.tool_choice).toBe("auto");
   });
 
@@ -411,18 +497,30 @@ describe("provider-specific reasoning effort mapping", () => {
       modelId: "umans-kimi-k2.7",
       context: {
         messages: [{ role: "user", content: "run it", timestamp: 0 }],
-        tools: [{
-          namespace: "functions",
-          name: "exec_command",
-          description: "Run a command",
-          parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
-        }],
+        tools: [
+          {
+            namespace: "functions",
+            name: "exec_command",
+            description: "Run a command",
+            parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] },
+          },
+          {
+            namespace: "mcp__secrets",
+            name: "read_secret",
+            description: "Read",
+            parameters: { type: "object" },
+          },
+        ],
       },
       stream: false,
       options: { toolChoice: { name: "functions.exec_command" } },
     });
-    const body = JSON.parse(req.body as string) as { tool_choice: { function: { name: string } } };
+    const body = JSON.parse(req.body as string) as {
+      tools: Array<{ function: { name: string } }>;
+      tool_choice: { function: { name: string } };
+    };
 
+    expect(body.tools.map(tool => tool.function.name)).toEqual(["functions__exec_command"]);
     expect(body.tool_choice.function.name).toBe("functions__exec_command");
   });
 

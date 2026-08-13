@@ -54,11 +54,17 @@ x-opencodex-api-key: your-secret-token
 | `/v1/responses` | not accepted | **required** | not accepted |
 | `/v1/chat/completions` | not accepted | **required** | not accepted |
 | `/v1/messages` | accepted | accepted | accepted |
+| `/v1/messages/count_tokens` | accepted | accepted | accepted |
 | `/v1/models` | accepted | accepted | accepted |
 
 Responses and Chat Completions reserve `Authorization` for possible Codex Direct passthrough, so only
 the dedicated admission header is accepted there. Dashboard-generated `apiKeys` may replace the
 environment token after startup; candidates are compared in constant time.
+
+Messages and `count_tokens` keep accepting all three admission forms for routed-client compatibility. Native
+Anthropic passthrough is stricter on a non-loopback bind: proxy admission must use
+`x-opencodex-api-key`, while `Authorization` and `x-api-key` are reserved for Anthropic credentials.
+Any proxy admission secret placed in those provider headers is removed before forwarding.
 
 :::caution[LAN exposure]
 A `0.0.0.0` bind exposes the proxy and configured provider access to the LAN. Use it only on trusted
@@ -122,6 +128,12 @@ port too:
 ssh -L 20100:localhost:10100 -L 1455:localhost:1455 you@remote
 ```
 
+If a registered callback port is already in use and the login surface offers manual input, OpenCodex
+keeps the registered redirect URI and still returns the provider authorization URL. Complete the
+provider login, then paste the final redirect URL from the browser address bar or the authorization
+code into OpenCodex. The pending flow preserves state and PKCE validation. Callers without manual
+input still fail closed.
+
 :::caution[Forwarded loopback is unauthenticated]
 Plain `ssh -L` listens on your local loopback and is safe for the default unauthenticated bind. Do not
 use `ssh -g -L`, broad container publishing, or forwarding modes that expose the client side on
@@ -139,7 +151,7 @@ with `POST /api/storage/cleanup-policy/run`.
 
 ## Claude Code (`claudeCode`)
 
-These settings govern `/v1/messages`, the `ocx claude` launcher, and the Claude dashboard page.
+These settings govern `/v1/messages`, `/v1/messages/count_tokens`, the `ocx claude` launcher, and the Claude dashboard page.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -215,7 +227,7 @@ an inactivity guard, not a total generation deadline.
 | `backend?` | `"openai" \| "anthropic"` | auto | Same explicit-first, Anthropic-credential-aware selection as web search. |
 | `model?` | `string` | backend-dependent | `gpt-5.4-mini` for OpenAI or `claude-sonnet-5` for Anthropic. |
 | `maxDescriptionsPerTurn?` | `number` | `8` | New description cache misses admitted per main turn. `0` disables calls; invalid values use default. |
-| `timeoutMs?` | `number` | `45000` | Sidecar fetch timeout. |
+| `timeoutMs?` | `number` | `45000` | Sidecar fetch timeout. Integer 1–2147483647. |
 
 Vision activates only for images sent to a model in its provider's `noVisionModels`. OpenAI has the
 same login/forward requirements as search; explicitly selected Anthropic fails closed without a usable

@@ -50,6 +50,7 @@ import {
 import {
   currentUsageLogRevision,
   readUsageSnapshotForManagement,
+  usageLogIdentityKey,
   usageLogRevisionKey,
   type PersistedUsageEntry,
 } from "../../usage/log";
@@ -70,6 +71,7 @@ import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig 
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, filteredRequestLogCount, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
+import { userCostOverlayVersion } from "../../usage/user-cost-overlays";
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
@@ -83,6 +85,7 @@ import {
   getUsageSummaryCacheEntry,
   setUsageSummaryCacheEntry,
 } from "./usage-summary-cache";
+import { cacheApiKeyUsageFromSnapshot } from "./api-key-usage";
 
 const USAGE_DAY_MS = 86_400_000;
 function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
@@ -118,6 +121,29 @@ function usageSummaryExpiresAt(
 function refreshedUsageSummary<T extends UsageSummary & { historyTruncated: boolean }>(summary: T, range: UsageRange, now: number): T {
   const since = range === "7d" ? now - 7 * USAGE_DAY_MS : range === "30d" ? now - 30 * USAGE_DAY_MS : null;
   return { ...summary, since, generatedAt: now };
+}
+
+/**
+ * Timestamp bounds of the rows the bounded reader actually loaded.
+ *
+ * Deliberately computed over the whole snapshot, BEFORE `summarizeUsage` applies the range
+ * and surface predicates: truncation is a property of the read, not of the query, so the
+ * window that matters to a client is the one the reader could see. It is not a completeness
+ * claim and must never be presented as one. `usage.jsonl` is appended when a request
+ * COMPLETES while each row carries the request START time, so a long-running request can be
+ * appended after shorter ones that started later — meaning the oldest loaded timestamp does
+ * not bound what the dropped prefix contains (#1497).
+ */
+function snapshotWindow(entries: PersistedUsageEntry[]): { start: number | null; end: number | null } {
+  let start: number | null = null;
+  let end: number | null = null;
+  for (const entry of entries) {
+    const at = entry.timestamp;
+    if (typeof at !== "number" || !Number.isFinite(at)) continue;
+    if (start === null || at < start) start = at;
+    if (end === null || at > end) end = at;
+  }
+  return { start, end };
 }
 
 export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Response | null> {
@@ -191,27 +217,83 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     try {
       const cacheKey = `${range}:${surface}`;
       const effectiveReadLimit = config.managementUsageMaxReadBytes ?? 64 * 1024 * 1024;
-      const observedRevisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}\0${effectiveReadLimit}`;
+      const observed = currentUsageLogRevision();
+      const identityKey = `${usageLogIdentityKey(observed)}\0${effectiveReadLimit}`;
+      const observedSize = observed?.size ?? 0;
       const cached = getUsageSummaryCacheEntry(cacheKey);
-      if (cached && cached.revisionKey === observedRevisionKey && now < cached.expiresAt) {
+      if (cached
+        && cached.identityKey === identityKey
+        && cached.maxReadBytes === effectiveReadLimit
+        && cached.overlayVersion === userCostOverlayVersion()
+        && now < cached.freshUntil
+        && observedSize >= cached.lastSeenSize) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
       if (cached) discardUsageSummaryCacheEntry(cacheKey);
+      // Capture the overlay version BEFORE reading/computing: the cache entry
+      // must be stamped with the version the summary was priced under. Reading
+      // it again at stamp time could cache an old-price summary as current,
+      // and the next request would then accept stale pricing for the whole
+      // cache lifetime.
+      const overlayVersion = userCostOverlayVersion();
       const snapshot = await readUsageSnapshotForManagement(effectiveReadLimit);
       const revisionReadAt = Date.now();
+      const window = snapshotWindow(snapshot.entries);
       const summary = {
         ...summarizeUsage(snapshot.entries, range, now, surface),
         historyTruncated: snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
         truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
         entriesTruncated: snapshot.entriesTruncated,
         entriesDropped: snapshot.entriesDropped,
+        snapshotWindowStart: window.start,
+        snapshotWindowEnd: window.end,
       };
-      setUsageSummaryCacheEntry(cacheKey, {
-        revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
-        expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
-        revisionReadAt,
-        summary,
-      });
+      if (userCostOverlayVersion() !== overlayVersion) {
+        // The overlay changed while the summary was being computed, so this
+        // summary may mix old and new prices. Serve it uncached: the next
+        // request recomputes against the settled overlay instead of caching a
+        // mixed-price entry under either version.
+        return jsonResponse(summary);
+      }
+      const freshUntil = now + 60_000;
+      const snapshotIdentity = `${usageLogIdentityKey(snapshot.revision)}\0${effectiveReadLimit}`;
+      const revisionKey = `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`;
+      const lastSeenSize = snapshot.revision?.size ?? 0;
+      const ranges: UsageRange[] = ["7d", "30d", "all"];
+      const surfaces: UsageSurface[] = ["all", "codex", "claude", "grok"];
+      for (const nextRange of ranges) {
+        for (const nextSurface of surfaces) {
+          const nextSummary = nextRange === range && nextSurface === surface ? summary : {
+            ...summarizeUsage(snapshot.entries, nextRange, now, nextSurface),
+            historyTruncated: summary.historyTruncated,
+            truncatedPrefixBytes: summary.truncatedPrefixBytes,
+            entriesTruncated: summary.entriesTruncated,
+            entriesDropped: summary.entriesDropped,
+            snapshotWindowStart: summary.snapshotWindowStart,
+            snapshotWindowEnd: summary.snapshotWindowEnd,
+          };
+          setUsageSummaryCacheEntry(`${nextRange}:${nextSurface}`, {
+            revisionKey,
+            identityKey: snapshotIdentity,
+            maxReadBytes: effectiveReadLimit,
+            overlayVersion,
+            expiresAt: usageSummaryExpiresAt(snapshot.entries, nextRange, nextSurface, now),
+            freshUntil,
+            lastSeenSize,
+            revisionReadAt,
+            summary: nextSummary,
+          });
+        }
+      }
+      cacheApiKeyUsageFromSnapshot(
+        snapshot.entries,
+        (config.apiKeys ?? []).map(key => key.id),
+        usageLogIdentityKey(snapshot.revision),
+        snapshot.revision?.size ?? 0,
+        snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
+        effectiveReadLimit,
+        now,
+      );
       return jsonResponse(summary);
     } catch {
       return jsonResponse({
@@ -243,10 +325,13 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         days: [],
         models: [],
         providers: [],
+        accounts: [],
         historyTruncated: false,
         truncatedPrefixBytes: 0,
         entriesTruncated: false,
         entriesDropped: 0,
+        snapshotWindowStart: null,
+        snapshotWindowEnd: null,
         error: "read_failed",
       });
     }

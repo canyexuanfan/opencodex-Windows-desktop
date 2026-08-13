@@ -216,6 +216,23 @@ test("explicit enable re-reads desired state after catalog fetch and skips a con
   expect(writes).toBe(0);
 });
 
+test("explicit enable honors the Claude Desktop native-model opt-out", async () => {
+  const persisted = { ...config(), claudeCode: { desktopNativeModels: false } };
+  writeFileSync(join(root, "config.json"), JSON.stringify(persisted));
+  let nativeSlugs: string[] | undefined;
+
+  const result = await toggle(true, {
+    fetchAllModels: async () => [],
+    writeDesktop3pConfig: (_port, slugs) => {
+      nativeSlugs = slugs;
+      return { written: true, path: join(library, "new.json"), fingerprint: "fingerprint" };
+    },
+  });
+
+  expect(result.status).toBe(200);
+  expect(nativeSlugs).toEqual([]);
+});
+
 test("POST /apply enables from a stale OFF server snapshot instead of cancelling itself", async () => {
   // The regression: /apply persisted ON, then saved the WHOLE long-lived server
   // config — whose snapshot still said OFF — over that write, so its own

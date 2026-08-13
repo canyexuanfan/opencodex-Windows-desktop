@@ -264,11 +264,89 @@ describe("pr-hygiene workflow trust boundary", () => {
     "utf8",
   );
 
-  it("checks out the PR base SHA, not the repository default branch", () => {
-    assert.match(workflow, /ref:\s*\$\{\{\s*github\.event\.pull_request\.base\.sha\s*\}\}/);
+  it("checks out trusted scripts from an integration branch, never a PR-controlled ref", () => {
+    // Scope to the checkout step so a stray `ref:` elsewhere cannot satisfy
+    // this, and compare the whole expression rather than matching fragments:
+    // independent substring checks would pass even with the operator grouping
+    // wrong or a `base.sha` fallback still present.
+    const checkoutStep = workflow
+      .split("- name: Checkout trusted hygiene script")[1]
+      .split(/\n {6}- name:/)[0];
+    const ref = checkoutStep.match(/^\s*ref:\s*(.+)$/m)?.[1];
+    assert.ok(ref, "trusted checkout must declare ref");
+    assert.equal(
+      ref.replace(/\s+/g, " ").trim(),
+      "${{ github.event.pull_request.base.ref == 'main' && 'main' || 'dev' }}",
+    );
+    // A stacked child PR's base is another open PR's head; neither a base nor
+    // a head ref may select the code that runs with the write-capable token.
+    assert.doesNotMatch(ref, /base\.sha|head\.(?:sha|ref)/);
+    assert.match(checkoutStep, /persist-credentials:\s*false/);
+  });
+
+  it("never lets a PR-controlled ref reach an executable step", () => {
+    // Pinning the checkout ref is not enough on its own: a later `run:` or
+    // `github-script` step could fetch and execute PR head content and a
+    // checkout-scoped assertion would still pass. This gates the whole file.
+    //
+    // `pull_request_target` grants a write-capable token, so no executable
+    // surface here may interpolate a head ref, and nothing may reference the
+    // head repository at all.
     assert.doesNotMatch(
       workflow,
-      /Checkout trusted hygiene script[\s\S]*?ref:\s*\$\{\{\s*github\.event\.repository\.default_branch/,
+      /pull_request\.head\.(?:sha|ref|repo)/,
+      "no step in a pull_request_target workflow may consume a PR head ref",
+    );
+    // `refs/pull/<n>/head` reaches the same PR-controlled tree without ever
+    // naming `head`, so ban the merge-ref form too.
+    assert.doesNotMatch(
+      workflow,
+      /refs\/pull\//,
+      "no step may check out a refs/pull/* ref",
+    );
+    // Banning literal text is not enough: `format('refs/{0}/{1}/{2}', ...)`
+    // builds the same PR-controlled ref without ever spelling it. Every
+    // checkout in a pull_request_target workflow must therefore declare a ref
+    // drawn from the trusted allowlist, and no other step may name the PR
+    // number in a ref-shaped expression.
+    // An ALLOWLIST, not a denylist: every checkout in this workflow must use
+    // exactly the trusted expression. Banning known-bad shapes lost twice —
+    // first to `refs/pull/<n>/head`, then to `format('refs/{0}/...')` — and a
+    // `repository:` override pointing at the fork head is a third shape no
+    // denylist would have caught.
+    const checkouts = workflow.match(/uses:\s*actions\/checkout@[\s\S]*?(?=\n {6}- name:|$)/g) ?? [];
+    for (const step of checkouts) {
+      const stepRef = (step.match(/^\s*ref:\s*(.+)$/m)?.[1] ?? "").replace(/\s+/g, " ").trim();
+      assert.equal(stepRef, "${{ github.event.pull_request.base.ref == 'main' && 'main' || 'dev' }}", "every checkout must use the trusted ref");
+      assert.doesNotMatch(step, /repository:/, "a checkout must not retarget its repository");
+    }
+    // Checkout is not the only way to obtain PR-controlled code. A `run:` step
+    // can fetch it directly, and that is a realistic future edit rather than a
+    // synthetic one, so executable steps are gated on the acquisition verbs
+    // themselves.
+    // Stop enumerating command shapes. A denylist lost four times here
+    // (`refs/pull`, `format()`, `repository:`, `gh pr checkout`), and
+    // `git clone https://github.com/<fork>` would have been the fifth. The
+    // invariant is simpler than the attack surface: under
+    // `pull_request_target`, nothing executable may name the PR head or the
+    // fork repository at all.
+    // Comments may discuss the head ref; only executable content may not use
+    // it, so YAML comment lines are stripped before this check.
+    const executable = workflow
+      .split("\n")
+      .filter(line => !/^\s*#/.test(line) && !/^\s*\/\//.test(line.replace(/^\s*/, "")))
+      .join("\n");
+    assert.doesNotMatch(
+      executable.replace(/^\s*\/\/.*$/gm, ""),
+      /github\.head_ref|pull_request(?:\[['"]head['"]\]|\.head)\s*(?:\[|\.)?\s*['"]?repo/,
+      "no executable step may reference the PR head repository",
+    );
+    // Belt and braces for the acquisition verbs, which have no legitimate use
+    // in either gate: both only read PR metadata through the API.
+    assert.doesNotMatch(
+      workflow,
+      /gh\s+pr\s+checkout|git\s+(?:fetch|checkout|clone|switch)|refs\/pull/,
+      "no step may acquire pull-request code",
     );
   });
 

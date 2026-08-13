@@ -263,7 +263,10 @@ function defaultRedactionPolicy(artifactClass: ArtifactClass): string {
     case "claim_source_manifest":
       return "contract_canonical_v1";
     default:
-      return "sanitized_evidence_v1";
+      // v2 marks the sanitizer that also redacts network and account
+      // identifiers. The field records which algorithm produced the bytes, so
+      // it moves whenever those semantics change.
+      return "sanitized_evidence_v2";
   }
 }
 

@@ -131,6 +131,13 @@ and other providers.
 - **Refresh quotas** re-reads account usage immediately so routing and the account cards use the same
   values.
 - Pool request logs use opaque labels such as `p3fa91c`, never account emails.
+- Each account card also shows that stable log label, the observed 30-day token total, an approximate
+  API-equivalent cost using currently configured display pricing, and the fraction of attempts with
+  measured usage. Active user `modelCosts` overlays take priority over bundled verified catalog and
+  price fallbacks, and historical usage is re-estimated from the pricing active when the summary is
+  read. The cost is an estimate for reconciliation, not a ChatGPT Plus/Pro subscription invoice.
+  Historical bare `openai` rows that predate explicit attribution remain ambiguous rather than being
+  assigned to the current main account.
 - **Target a specific Codex account from the model picker** is an explicit opt-in. When enabled,
   ordinary supported GPT picker rows are replaced by one entry per public account selector.
   Choosing one locks that conversation to the mapped account: it does not rotate, fall back, or

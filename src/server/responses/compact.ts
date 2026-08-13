@@ -82,7 +82,7 @@ import {
 } from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
-import { isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
+import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
 import { slugsEquivalent } from "../../providers/slug-codec";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
@@ -120,6 +120,7 @@ import {
 } from "../relay";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
+import { codexAuthContextLogLabel } from "../../codex/account-label";
 
 import {
   decodeRequestErrorResponse,
@@ -362,6 +363,7 @@ export async function handleResponsesCompact(
           modelId: selectedModelId,
           beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
         });
+        logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
         const selected = headersForCodexAuthContext(req.headers, authCtx);
         compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
         for (const name of FORWARD_HEADERS) {
@@ -390,7 +392,9 @@ export async function handleResponsesCompact(
       }
       throw err;
     }
-    const base = (compactProvider.baseUrl ?? "").replace(/\/$/, "");
+    const base = isCanonicalOpenAiForwardProvider(compactProvider)
+      ? CODEX_FORWARD_BASE_URL
+      : (compactProvider.baseUrl ?? "").replace(/\/+$/, "");
     if (compactProvider.authMode !== "forward" && compactProvider.apiKey) {
       headers.set("authorization", `Bearer ${resolveEnvValue(compactProvider.apiKey)}`);
     }
@@ -590,6 +594,7 @@ export async function handleResponsesCompact(
         });
         await upstream.body?.cancel().catch(() => undefined);
         outcomeCtx = alternate.authCtx;
+        logCtx.accountLogLabel = codexAuthContextLogLabel(alternate.authCtx, config);
         try {
           upstream = await sendCompactAttempt(alternate.provider, alternate.headers, "single");
         } catch (err) {

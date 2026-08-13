@@ -69,7 +69,7 @@ import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } fr
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
-import { disabledNativeSlugs, hasComboTargets, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
+import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
@@ -207,6 +207,15 @@ interface GatherInflightEntry {
    */
   readonly providerGraphIdentity: string;
   readonly promise: Promise<GatherFlightResult>;
+}
+
+function withCanonicalOpenAiForwardAuthDefault(
+  name: string,
+  provider: OcxProviderConfig,
+): OcxProviderConfig {
+  if (name !== OPENAI_CODEX_PROVIDER_ID || provider.authMode !== undefined) return provider;
+  const candidate = { ...provider, authMode: "forward" as const };
+  return isCanonicalOpenAiForwardProvider(candidate) ? candidate : provider;
 }
 
 const gatherInflight = new Map<string, GatherInflightEntry[]>();
@@ -390,7 +399,7 @@ function captureProviderGather(
   authResolver: ModelsAuthResolver,
   retainConfiguredModelIds?: ReadonlySet<string>,
 ): CapturedProviderGather {
-  const enriched = detachedClone(configured);
+  const enriched = detachedClone(withCanonicalOpenAiForwardAuthDefault(name, configured));
   enrichProviderFromRegistry(name, enriched);
   const provider = recursivelyFreeze(enriched);
   const observedAuth = authResolver.kind === "observed"
@@ -886,7 +895,9 @@ function normalizedStringList(value: unknown, maxItems = 32, maxLength = 64): st
 function modelCapabilities(item: ProviderModelsApiItem): string[] | undefined {
   const metadata = plainRecord(item.metadata);
   const metadataCapabilities = metadata?.capabilities;
-  const capabilityRecord = plainRecord(metadataCapabilities) ?? plainRecord(item.capabilities);
+  const capabilityRecord = plainRecord(metadataCapabilities)
+    ?? plainRecord(item.capabilities)
+    ?? plainRecord(item.features);
   const out = new Set<string>();
   for (const list of [item.capabilities, item.features, item.supported_features, metadataCapabilities]) {
     for (const capability of normalizedStringList(list) ?? []) out.add(capability);
@@ -916,7 +927,9 @@ function modelInputModalities(
   capabilities: readonly string[] | undefined,
 ): string[] | undefined {
   const metadata = plainRecord(item.metadata);
-  const capabilityRecord = plainRecord(metadata?.capabilities) ?? plainRecord(item.capabilities);
+  const capabilityRecord = plainRecord(metadata?.capabilities)
+    ?? plainRecord(item.capabilities)
+    ?? plainRecord(item.features);
   const explicit = normalizedStringList(
     item.input_modalities
       ?? item.modalities
@@ -943,7 +956,9 @@ function modelInputModalities(
     if (inferred.length > 0) return [...new Set(inferred)];
   }
   if (capabilityRecord?.vision === false) return ["text"];
-  if (capabilityRecord?.vision === true || capabilities?.some(value => value === "vision" || value === "image-input")) {
+  if (capabilityRecord?.vision === true || capabilities?.some(value => (
+    value === "vision" || value === "image-input" || value === "image_input"
+  ))) {
     return ["text", "image"];
   }
   return undefined;
@@ -1633,6 +1648,7 @@ async function gatherRoutedModelsUncached(
     // configs that will never need it.
   } else {
     const disabled = disabledNativeSlugs(config);
+    const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
     const requiredNativeComboTargets = new Set(listComboIds(config).flatMap(id => {
       const combo = getCombo(config, id);
       return combo?.targets.flatMap(target => (
@@ -1643,7 +1659,7 @@ async function gatherRoutedModelsUncached(
       // A bare native disable key hides the native row, not a combo that targets it.
       // Keep synthetic native metadata available to those combos.
       if (disabled.has(slug) && !requiredNativeComboTargets.has(slug)) continue;
-      const contextWindow = nativeOpenAiContextWindow(slug);
+      const contextWindow = nativeOpenAiContextWindow(slug, openaiContextCap);
       if (contextWindow === undefined) continue;
       const synthetic: CatalogModel = {
         provider: "openai",
@@ -1707,16 +1723,49 @@ async function gatherRoutedModelsUncached(
   const replacedByRoutedSlug = new Map(all.map(model => [routedSlug(model.provider, model.id), model]));
   const customModels = (config.customModels ?? []).map(cm => {
     const rawProvider = config.providers[cm.provider];
+    // Registry routing backfills an omitted authMode on the built-in OpenAI provider to
+    // forward. Keep the catalog projection on the same contract while still failing closed
+    // for every explicit non-forward mode and every non-canonical endpoint.
+    const providerForCanonicalCheck = rawProvider
+      ? withCanonicalOpenAiForwardAuthDefault(cm.provider, rawProvider)
+      : undefined;
+    const codexForwardNativeCapabilityAlias = cm.provider === OPENAI_CODEX_PROVIDER_ID
+      && providerForCanonicalCheck !== undefined
+      && isCanonicalOpenAiForwardProvider(providerForCanonicalCheck)
+      && isNativeOpenAiCapabilityAliasModel(cm.modelId);
+    const nativeAliasContextWindow = codexForwardNativeCapabilityAlias
+      ? nativeOpenAiContextWindow(cm.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      : undefined;
+    const customContextWindow = cm.contextWindow
+      ? nativeAliasContextWindow !== undefined
+        ? Math.min(cm.contextWindow, nativeAliasContextWindow)
+        : cm.contextWindow
+      : nativeAliasContextWindow;
+    const nativeAliasDefaultEffort = codexForwardNativeCapabilityAlias
+      ? nativeDefaultReasoningEffort(cm.modelId)
+      : undefined;
     const supportsReasoningSummaries = configuredReasoningSummarySupport(rawProvider, cm.modelId);
     const base: CatalogModel = {
       id: cm.modelId,
       provider: cm.provider,
       catalogKind: CODEX_CUSTOM_MODEL_CATALOG_KIND,
       // Display-only label: never feeds routing (customModels are keyed by routedSlug below).
-      ...(cm.displayName ? { displayName: cm.displayName } : {}),
-      ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
-      ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
+      ...(cm.displayName
+        ? { displayName: cm.displayName }
+        : codexForwardNativeCapabilityAlias ? { displayName: "Daybreak Blue" } : {}),
+      ...(customContextWindow !== undefined ? { contextWindow: customContextWindow } : {}),
+      ...(cm.inputModalities
+        ? { inputModalities: cm.inputModalities }
+        : codexForwardNativeCapabilityAlias ? { inputModalities: nativeInputModalities(cm.modelId) } : {}),
       ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
+      ...(codexForwardNativeCapabilityAlias
+        ? {
+          codexForwardNativeCapabilityAlias: true,
+          reasoningEfforts: nativeReasoningEfforts(cm.modelId),
+          parallelToolCalls: nativeParallelToolCalls(cm.modelId),
+          ...(nativeAliasDefaultEffort ? { defaultReasoningEffort: nativeAliasDefaultEffort } : {}),
+        }
+        : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,

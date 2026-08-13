@@ -5,7 +5,7 @@ import {
   saveConfigPreservingClaudeCode,
   withConfigMutationLockSync,
 } from "../config";
-import { withCodexAccountLogLabel } from "./account-label";
+import { codexAccountLogLabel, withCodexAccountLogLabel } from "./account-label";
 import {
   getCodexAccountCredential,
   getValidCodexToken,
@@ -58,6 +58,7 @@ import {
   parseAccountPriority,
 } from "./pool-rotation";
 import { checkAccountIdCollision, getMainChatgptAccountId, readCodexTokens, readCodexTokensResult } from "./auth-collision";
+import { codexPlanValue, isThirtyDayOnlyCodexPlan } from "./plan";
 export { checkAccountIdCollision, getMainChatgptAccountId } from "./auth-collision";
 export { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
 import { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
@@ -81,7 +82,7 @@ export {
   setAccountQuotaFromParsed,
   updateAccountQuota,
 } from "./quota";
-import { extractAccountId, decodeJwtPayload } from "../oauth/chatgpt";
+import { extractAccountId } from "../oauth/chatgpt";
 import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
@@ -103,7 +104,8 @@ import type { CodexAccount, CodexAccountCredentials, OcxConfig } from "../types"
 import type { CatalogDisposition } from "./convergence-types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import { providerCodexAccountMode } from "../providers/registry";
-import { readBoundedResponseBody } from "../lib/bounded-body";
+import { BOUNDED_BODY_MAX_BYTES, readBoundedResponseBody } from "../lib/bounded-body";
+import { cancelBodyOnAbort, signalWithTimeout } from "../lib/abort";
 import {
   oauthAccountHealthFields,
   projectCodexAccountHealth,
@@ -145,7 +147,6 @@ function nativeMainProfileBusyResponse(): Response {
   return response;
 }
 
-const MANUAL_IMPORT_ENV = "OPENCODEX_ENABLE_UNVERIFIED_CODEX_IMPORT";
 const CODEX_CREDENTIAL_PERSISTENCE_ERROR = "Account was saved, but credential setup did not complete. Reauthenticate or remove the account.";
 const CODEX_CREDENTIAL_PERSISTENCE_CODE = "codex_credential_persistence_failed";
 
@@ -208,16 +209,11 @@ function codexAccountPersistenceConflict(
     : undefined;
 }
 
-function isThirtyDayOnlyPlan(plan: string | null | undefined): boolean {
-  const normalized = plan?.trim().toLowerCase();
-  return normalized === "go" || normalized === "free";
-}
-
 function quotaForPlan<T extends Omit<StoredAccountQuota, "updatedAt"> | StoredAccountQuota | null>(
   quota: T,
-  plan: string | null | undefined,
+  plan: unknown,
 ): T {
-  if (!quota || !isThirtyDayOnlyPlan(plan)) return quota;
+  if (!quota || !isThirtyDayOnlyCodexPlan(plan)) return quota;
   return {
     ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
     ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
@@ -233,15 +229,16 @@ function poolAccountDto(
   paused: boolean,
   priority: number,
 ): CodexAuthAccountDto {
-  const quota = quotaForPlan(quotaResult.quota, account.plan);
+  const plan = codexPlanValue(account.plan);
+  const quota = quotaForPlan(quotaResult.quota, plan);
   const needsReauth = !hasCredential || quotaResult.needsReauth || isAccountNeedsReauth(account.id);
   const health = projectCodexAccountHealth({ accountId: account.id, needsReauth });
   return {
     id: account.id,
     email: maskEmail(account.email) ?? account.email,
     ...(account.alias !== undefined ? { alias: account.alias } : {}),
-    ...(account.plan !== undefined ? { plan: account.plan } : {}),
-    ...(account.logLabel !== undefined ? { logLabel: account.logLabel } : {}),
+    ...(plan !== undefined ? { plan } : {}),
+    logLabel: codexAccountLogLabel(account),
     isMain: false,
     paused,
     priority,
@@ -340,8 +337,41 @@ function safeResetCreditConsumeDto(input: unknown): { code: string } {
   return { code: typeof obj.code === "string" ? obj.code : "unknown" };
 }
 
-export function isUnverifiedCodexImportEnabled(): boolean {
-  return process.env[MANUAL_IMPORT_ENV] === "1";
+type ResetCreditJsonRead =
+  | { ok: true; value: unknown }
+  | { ok: false };
+
+function cancelResponseBodyWithoutWaiting(body: ReadableStream<Uint8Array> | null): void {
+  if (!body) return;
+  try {
+    void body.cancel().catch(() => undefined);
+  } catch {
+    // Some stream implementations throw synchronously from cancel().
+  }
+}
+
+async function readResetCreditJson(
+  response: Response,
+  signal: AbortSignal,
+): Promise<ResetCreditJsonRead> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isSafeInteger(declaredLength)
+    && declaredLength >= 0
+    && declaredLength > BOUNDED_BODY_MAX_BYTES) {
+    cancelResponseBodyWithoutWaiting(response.body);
+    return { ok: false };
+  }
+  try {
+    const body = await readBoundedResponseBody(response, {
+      signal,
+      maxBytes: BOUNDED_BODY_MAX_BYTES,
+      fatalUtf8: true,
+    });
+    if (!body.displaySafe || body.truncated || !body.text.trim()) return { ok: false };
+    return { ok: true, value: JSON.parse(body.text) as unknown };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function manualImportDisabledResponse(): Response {
@@ -398,7 +428,7 @@ const POOL_CACHE_TTL = 5 * 60_000;
 const POOL_QUOTA_REFRESH_CONCURRENCY = 4;
 
 function nonEmptyPlan(value: unknown): string | null {
-  return typeof value === "string" && value.trim() !== "" ? value : null;
+  return codexPlanValue(value) ?? null;
 }
 
 function isRuntimeConfig(config: OcxConfig): boolean {
@@ -1193,6 +1223,7 @@ export async function listCodexAuthAccountsSnapshot(
     id: MAIN_CODEX_ACCOUNT_ID,
     email: maskEmail(mainInfo.email) ?? "Codex App login",
     plan: mainInfo.plan,
+    logLabel: "main",
     isMain: true,
     paused: isCodexAccountPaused(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
     priority: getCodexAccountPriority(runtimeConfig, MAIN_CODEX_ACCOUNT_ID),
@@ -1332,68 +1363,7 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "POST") {
-    if (!isUnverifiedCodexImportEnabled()) return manualImportDisabledResponse();
-
-    let body: { id: string; email: string; plan?: string; accessToken: string; refreshToken: string; chatgptAccountId: string };
-    try { body = (await req.json()) as typeof body; } catch { return jsonResponse({ error: "Invalid JSON" }, 400); }
-    if (!body.id || !body.email || !body.accessToken || !body.refreshToken || !body.chatgptAccountId) {
-      return jsonResponse({ error: "Missing required fields" }, 400);
-    }
-    if (!isValidCodexAccountId(body.id)) {
-      return jsonResponse({ error: "Invalid account id format" }, 400);
-    }
-    if (body.accessToken.length > 10_000 || body.refreshToken.length > 10_000) {
-      return jsonResponse({ error: "Input too large" }, 400);
-    }
-    const runtimeConfig = getRuntimeConfig(config);
-    const preflightConflict = codexAccountPersistenceConflict(runtimeConfig, body.id, "create");
-    if (preflightConflict) return jsonResponse({ error: preflightConflict }, 400);
-    // 1.1: Duplicate check is scoped by personal vs workspace plan bucket.
-    const derivedAccountId = extractAccountId(undefined, body.accessToken) ?? body.chatgptAccountId;
-    const collision = checkAccountIdCollision(derivedAccountId, body.email, body.plan);
-    if (collision.collision) {
-      return jsonResponse({ error: collision.reason }, 400);
-    }
-    // 4.2: use JWT exp for expiresAt instead of hardcoded 1 hour
-    const payload = decodeJwtPayload(body.accessToken);
-    const exp = typeof payload?.exp === "number" ? payload.exp * 1000 : Date.now() + 3600_000;
-    const warmup = await verifyCodexAccountWarmup(body.id, body.accessToken, derivedAccountId);
-    if (!warmup.ok) return warmup.response;
-    const latestConfig = getRuntimeConfig(config);
-    const commitConflict = codexAccountPersistenceConflict(latestConfig, body.id, "create");
-    if (commitConflict) return jsonResponse({ error: commitConflict }, 400);
-    const addedAccount = withCodexAccountLogLabel(
-      { id: body.id, email: body.email, plan: body.plan, isMain: false },
-      latestConfig.codexAccounts ?? [],
-    );
-    const persistence = persistNewCodexAccount(
-      config,
-      latestConfig,
-      addedAccount,
-      {
-        credential: {
-          accessToken: body.accessToken,
-          refreshToken: body.refreshToken,
-          expiresAt: exp,
-          chatgptAccountId: derivedAccountId,
-        },
-        validatedAt: warmup.validatedAt,
-      },
-    );
-    reconcileLiveStateStores();
-    if (persistence.status === "publication-failed") markAccountNeedsReauth(body.id);
-    const catalogRefresh = await convergeAccountNamespaceCatalog(
-      latestConfig,
-      persistence.pickerVisibilityChanged,
-      convergeCodexCatalog,
-    );
-    if (persistence.status === "publication-failed") {
-      return jsonResponse({
-        ok: false,
-        ...codexCredentialPersistenceFailure(body.id, catalogRefresh.catalogRefreshPending === true),
-      }, 500);
-    }
-    return jsonResponse({ ok: true, ...catalogRefresh });
+    return manualImportDisabledResponse();
   }
 
   if (url.pathname === "/api/codex-auth/accounts" && req.method === "DELETE") {
@@ -1679,21 +1649,44 @@ export async function handleCodexAuthAPI(
 
     try {
       const result = await withResetCreditAuth(getRuntimeConfig(config), accountId, async auth => {
-        const resp = await fetch(
-          "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
-          {
-            headers: {
-              Authorization: `Bearer ${auth.accessToken}`,
-              "ChatGPT-Account-Id": auth.chatgptAccountId,
-            },
-            signal: AbortSignal.timeout(8000),
-          },
-        );
-        if (!resp.ok) {
-          await resp.body?.cancel().catch(() => {});
-          return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+        const linkedSignal = signalWithTimeout(8000, req.signal);
+        let detachBodyAbort = () => {};
+        try {
+          let resp: Response;
+          try {
+            resp = await fetch(
+              "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+              {
+                headers: {
+                  Authorization: `Bearer ${auth.accessToken}`,
+                  "ChatGPT-Account-Id": auth.chatgptAccountId,
+                },
+                signal: linkedSignal.signal,
+              },
+            );
+          } catch (error) {
+            if (linkedSignal.signal.aborted) {
+              return jsonResponse({ error: "Invalid upstream reset-credit response" }, 502);
+            }
+            throw error;
+          }
+          // Own the response body before the bounded reader attaches. If the client
+          // disconnects in that narrow window, Bun otherwise tears down the native
+          // body off the awaited path and can report an unhandled rejection.
+          detachBodyAbort = cancelBodyOnAbort(resp.body, linkedSignal.signal);
+          if (!resp.ok) {
+            await resp.body?.cancel().catch(() => {});
+            return jsonResponse({ error: `Upstream error ${resp.status}` }, resp.status);
+          }
+          const parsed = await readResetCreditJson(resp, linkedSignal.signal);
+          if (!parsed.ok) {
+            return jsonResponse({ error: "Invalid upstream reset-credit response" }, 502);
+          }
+          return jsonResponse(safeResetCreditsDto(parsed.value));
+        } finally {
+          detachBodyAbort();
+          linkedSignal.cleanup();
         }
-        return jsonResponse(safeResetCreditsDto(await resp.json()));
       });
       return result.ok ? result.value : result.response;
     } catch (e) {

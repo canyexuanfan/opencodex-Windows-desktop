@@ -185,9 +185,9 @@ test("startup and CLI sync-cache cannot write models_cache while another process
     });
     expect(cli.exitCode).toBe(0);
     expect(existsSync(cachePath)).toBe(false);
-    const cliSource = readFileSync(join(repoRoot, "src/cli/index.ts"), "utf8");
-    const cliStart = cliSource.indexOf('case "sync-cache"');
-    const cliRoot = cliSource.slice(cliStart, cliSource.indexOf('case "gui"', cliStart));
+    const cliSource = readFileSync(join(repoRoot, "src/cli/dispatch.ts"), "utf8");
+    const cliStart = cliSource.indexOf('"sync-cache": async');
+    const cliRoot = cliSource.slice(cliStart, cliSource.indexOf('gui: async', cliStart));
     expect(cliRoot).toContain("withCatalogWriteSerialization(owningCodexHome");
     expect(cliRoot).toContain("invalidateCodexModelsCacheWithPermit");
 
@@ -510,9 +510,20 @@ test("two processes at the post-approval management seam serialize instead of in
       return { exitCode, stdout, stderr };
     }));
 
-    if (results.some(result => result.exitCode === 0)) break;
+    // A 2xx `skipped` result reached the total adapter but still proves no
+    // catalog serialization. Keep retrying until one attempt actually commits;
+    // the assertions below continue to fail closed if the deadline expires.
+    const committed = results.some(result => {
+      if (result.exitCode !== 0) return false;
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        catalogRefresh?: { status?: string };
+      };
+      return parsed.catalogRefresh?.status === "committed";
+    });
+    if (committed) break;
 
     for (const result of results) {
+      if (result.exitCode === 0) continue;
       expect({ preApproval: isPreApprovalLoss(result.stderr), stderr: result.stderr })
         .toMatchObject({ preApproval: true });
     }

@@ -147,12 +147,56 @@ describe("GitHub Actions hardening", () => {
     expect([...(gate?.needs ?? [])].sort())
       .toEqual(Object.keys(ci.jobs ?? {}).filter(name => name !== "ci").sort());
 
+    // The focused doctor contract config is ADDITIVE evidence. It must never
+    // replace the repository-wide strict typecheck: doing so made the aggregate
+    // CI check green while most of src/ was no longer typechecked by Actions.
+    const gatesSteps = (ci.jobs?.gates as { steps?: { name?: string; run?: string }[] })?.steps ?? [];
+    const gatesTypecheck = gatesSteps.find(step => step.name === "Typecheck")?.run ?? "";
+    const rootTypecheck = "bun x tsc --noEmit";
+    const doctorContractTypecheck =
+      "bun x tsc --noEmit -p tests/tsconfig.doctor-service-memory-contract.json";
+    expect(hasExactShellCommand(gatesTypecheck, rootTypecheck)).toBe(true);
+    expect(hasExactShellCommand(gatesTypecheck, doctorContractTypecheck)).toBe(true);
+    expect(gatesTypecheck.indexOf(rootTypecheck)).toBeLessThan(
+      gatesTypecheck.indexOf(doctorContractTypecheck),
+    );
+
+    // GUI tests mutate process globals (fetch, DOM, timers and React work).
+    // Hosted runners exposed order-dependent cross-file leaks when the 138
+    // files shared one realm. Pin isolation to the GATES job specifically — a
+    // broad workflow search would pass because macOS already uses --isolate.
+    const gatesGuiRun = gatesSteps.find(step => step.name === "GUI tests")?.run ?? "";
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test --isolate tests")).toBe(true);
+    expect(hasExactShellCommand(gatesGuiRun, "cd gui && bun test tests")).toBe(false);
+
     // macOS is the unsharded control for every CI-relevant change. It may skip
     // only when the shared path filter says the entire expensive suite is out of
     // scope (for example a docs-site-only PR).
     const macosSteps = (ci.jobs?.["platform-macos"] as { steps?: { run?: string }[] })?.steps ?? [];
-    expect(macosSteps.some(step => step.run?.includes("bun test --isolate tests"))).toBe(true);
+    // The 60s per-test ceiling is part of the pinned shape: dropping it silently
+    // restores the timing-flake class this lane kept surfacing.
+    expect(macosSteps.some(step => step.run?.includes("bun test --isolate --timeout 60000 tests"))).toBe(true);
     expect(macosSteps.some(step => step.run?.includes("--shard"))).toBe(false);
+
+    // The macOS leg retries ONLY a Bun runtime crash, and only once. Bun 1.3.14
+    // segfaults reclaiming a Worker at an `--isolate` file boundary with
+    // balanced worker counts, which is a runtime defect rather than a test
+    // result; the Linux shards already absorb that class in
+    // `scripts/ci/run-bun-test-batches.sh`. Two ways to break this silently:
+    // drop the crash-signature guard so an assertion failure gets retried into
+    // green, or let the retry loop swallow a repeated crash. Pin both.
+    const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate --timeout 60000 tests"))?.run ?? "";
+    // Actions invokes multiline `run:` blocks with `bash -e`. The retry loop
+    // must disable errexit before the crash-prone command or exit 133 aborts
+    // the step before PIPESTATUS can be inspected and the retry can run.
+    expect(hasExactShellCommand(macosTestRun, "set +e")).toBe(true);
+    expect(macosTestRun).toContain("Segmentation fault at address");
+    expect(macosTestRun).toContain("oh no: Bun has crashed");
+    expect(macosTestRun).toContain("assertion failures are not retried");
+    expect(macosTestRun).toContain("failing after one retry");
+    // `for attempt in 1 2` — one retry, never an unbounded loop.
+    expect(macosTestRun).toContain("for attempt in 1 2");
+    expect(macosTestRun).not.toContain("while true");
     expect((ci.jobs?.["platform-macos"] as { needs?: string; if?: string })?.needs).toBe("changes");
     expect((ci.jobs?.["platform-macos"] as { if?: string })?.if)
       .toBe("github.event_name != 'pull_request' || needs.changes.outputs.ci == 'true'");
@@ -515,17 +559,36 @@ describe("GitHub Actions hardening", () => {
     const workflow = await readText(".github/workflows/release.yml");
     const release = Bun.YAML.parse(workflow) as {
       permissions?: Record<string, string>;
-      jobs?: { publish?: { "runs-on"?: string } };
+      jobs?: {
+        "validate-dispatch"?: {
+          "runs-on"?: string;
+          permissions?: Record<string, string>;
+        };
+        publish?: {
+          "runs-on"?: string;
+          needs?: string;
+          permissions?: Record<string, string>;
+        };
+      };
     };
-
-    // Least privilege + never cancel a publish mid-flight.
-    expect(release.permissions).toEqual({
+    
+    // Keep the workflow unprivileged by default. Dispatch validation gets only
+    // read access; write + OIDC permissions exist only on the gated publish job.
+    expect(release.permissions).toEqual({});
+    
+    expect(release.jobs?.["validate-dispatch"]?.["runs-on"]).toBe("ubuntu-latest");
+    expect(release.jobs?.["validate-dispatch"]?.permissions).toEqual({
+      contents: "read",
+    });
+    
+    expect(release.jobs?.publish?.needs).toBe("validate-dispatch");
+    expect(release.jobs?.publish?.["runs-on"]).toBe("ubuntu-latest");
+    expect(release.jobs?.publish?.permissions).toEqual({
       contents: "write",
       actions: "read",
       "pull-requests": "read",
       "id-token": "write",
     });
-    expect(release.jobs?.publish?.["runs-on"]).toBe("ubuntu-latest");
     expect(workflow).toContain("actions: read");
     expect(workflow).toContain("pull-requests: read");
     expect(workflow).toContain("id-token: write");
@@ -556,11 +619,23 @@ describe("GitHub Actions hardening", () => {
     expect(ciLookup).toContain('--branch "${GITHUB_REF#refs/heads/}"');
     expect(ciLookup).toContain('--commit "$GITHUB_SHA"');
     expect(ciLookup).toContain("--event push");
-    expect(ciLookup).toContain("--status success");
-    expect(ciLookup).toContain("--json url");
-    expect(ciLookup).toContain("--jq '.[0].url // \"\"'");
+    expect(ciLookup).not.toContain("--status success");
+    expect(ciLookup).toContain("--json conclusion,url");
+    expect(ciLookup).toContain("select(.conclusion == \"success\")");
+    expect(ciLookup).toContain("[0].url // \"\"");
     expect(ciLookup).not.toContain("--arg");
     expect(ciLookup).not.toContain("$branch");
+
+    const serviceLookup = workflow
+      .split('service_url="$(')[1]?.split('\n            )"')[0];
+    expect(serviceLookup).toBeDefined();
+    expect(serviceLookup).toContain("--workflow service-lifecycle.yml");
+    expect(serviceLookup).toContain('--commit "$GITHUB_SHA"');
+    expect(serviceLookup).not.toContain("--status success");
+    expect(serviceLookup).toContain("--json conclusion,headSha,url,workflowName");
+    expect(serviceLookup).toContain("select(.conclusion == \"success\")");
+    expect(serviceLookup).toContain("[0].url // \"\"");
+    expect(serviceLookup).not.toContain("--arg");
 
     // Dry-run first by default; tokenless trusted publishing only.
     expect(workflow).toMatch(/dry-run:[\s\S]*?default: true/);
@@ -788,7 +863,9 @@ describe("GitHub Actions hardening", () => {
       "repos.getCollaboratorPermissionLevel",
       "repos.compareCommitsWithBasehead",
       "repos.compareCommitsWithBasehead",
+      "pulls.get",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -801,7 +878,9 @@ describe("GitHub Actions hardening", () => {
       "issues.listComments",
       "repos.getCollaboratorPermissionLevel",
       "pulls.list",
+      "pulls.get",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -818,8 +897,10 @@ describe("GitHub Actions hardening", () => {
       "repos.compareCommitsWithBasehead",
       // The harness walks every paginate call across the same page count, so
       // listFiles appears once per comment page even when the file list is empty.
+      "pulls.get",
       "pulls.listFiles",
       "pulls.listFiles",
+      "pulls.get",
       ...tail,
     ];
   }
@@ -927,8 +1008,7 @@ describe("GitHub Actions hardening", () => {
     expect(Object.keys(workflow.on?.pull_request_target ?? {})).toEqual(["types"]);
     expect(Object.prototype.hasOwnProperty.call(workflow.on ?? {}, "status")).toBe(true);
 
-    // Exactly the scopes this gate needs. `checks: read` covers the live
-    // current-head CI evidence lookup. `pull-requests: write` covers title and
+    // Exactly the scopes this gate needs. `pull-requests: write` covers title and
     // comment updates. `contents: write` is required for the draft GraphQL
     // mutations with GITHUB_TOKEN (#626: "Resource not accessible by integration"
     // when contents was unset). Asserting the whole object pins both presence
@@ -988,7 +1068,6 @@ describe("GitHub Actions hardening", () => {
     ]);
     expect(job?.["runs-on"]).toBe("ubuntu-latest");
     expect(job?.permissions).toEqual({
-      checks: "read",
       contents: "write",
       "pull-requests": "write",
     });
@@ -1013,11 +1092,16 @@ describe("GitHub Actions hardening", () => {
       "sparse-checkout",
     ]);
     expect(checkout.with).toEqual({
-      // Normal PR events pin scripts to the event's base SHA. A trusted
-      // `status` event has no pull_request payload, so it loads scripts from
-      // the same default-branch trust boundary that owns the event.
+      // The trusted ref comes from a fixed set of integration branches, never
+      // from the pull request: a stacked child's base is another open PR's
+      // head, so an unpromoted commit must not select the code that runs with
+      // this workflow's write-capable token. A `status` event has no
+      // pull_request payload and loads scripts from the default-branch trust
+      // boundary that owns the event; a `main`-targeting PR loads from `main`
+      // so the scripts match the workflow definition `pull_request_target`
+      // itself loaded; everything else resolves to `dev`.
       ref:
-        "${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}",
+        "${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}",
       "persist-credentials": false,
       // MAINTAINERS.md rides along so the completion ping reads the canonical
       // maintainer list from the same trusted base revision as the scripts.
@@ -1090,8 +1174,11 @@ describe("GitHub Actions hardening", () => {
     expect(script).toContain("collectPrQualityFailures");
     expect(script).toContain("collectDeterministicHygieneFailures");
     expect(script).toContain("github.rest.pulls.listFiles");
-    // The GUI screenshot gate reads the title as well as the body.
-    expect(script).toContain("title: pr.title");
+    // The GUI screenshot gate reads changed file paths under gui/.
+    expect(script).toContain("changedFilePaths");
+    expect(script).toContain("filesTruncated");
+    expect(script).toContain("isChangedFileListTruncated");
+    expect(script).toContain("PR head moved while listing changed files");
     expect(script).toContain("github.rest.repos.getCollaboratorPermissionLevel");
     expect(script).toContain("github.rest.repos.compareCommitsWithBasehead");
     // The allow-list is the gate's whole policy, so it is pinned by value and
@@ -1206,8 +1293,6 @@ describe("GitHub Actions hardening", () => {
           name !== "github.rest.repos.compareCommitsWithBasehead" &&
           name !== "github.rest.repos.listPullRequestsAssociatedWithCommit" &&
           name !== "github.rest.issues.listEvents" &&
-          // The claim check reads check-runs; it must never count as a write.
-          name !== "github.rest.checks.listForRef" &&
           // Hygiene reassessment reads the changed-file list; not a write.
           name !== "github.rest.pulls.listFiles",
       );
@@ -1244,6 +1329,29 @@ describe("GitHub Actions hardening", () => {
     async function run(options: Parameters<typeof runEnforcePrTarget>[1]) {
       const { script } = await readEnforcePrTarget();
       return runEnforcePrTarget(script, options);
+    }
+
+    /**
+     * Run the read-only `resolve-pr` job's SHA-to-PR resolver in the same
+     * harness scope the write gate gets. The resolver is a separate inline
+     * script from `enforce-target`; compiling it on its own lets a test pin
+     * what `pull-number` it publishes for a given associated-PR / open-PR
+     * state. This is the exact surface where the stale-commit-index bug
+     * (PR #1441) lived, so the head-SHA fallback is asserted here.
+     */
+    async function runResolver(options: Parameters<typeof runEnforcePrTarget>[1]) {
+      const text = await readText(".github/workflows/enforce-pr-target.yml");
+      const workflow = Bun.YAML.parse(text) as {
+        jobs?: Record<string, { steps?: Array<{ name?: string; with?: { script?: string } }> }>;
+      };
+      const step = workflow.jobs?.["resolve-pr"]?.steps?.find(
+        s => s.name === "Resolve trusted gate event to PR",
+      );
+      const resolverScript = step?.with?.script;
+      if (typeof resolverScript !== "string") {
+        throw new Error("resolve-pr step has no inline script");
+      }
+      return runEnforcePrTarget(stripComments(resolverScript), options);
     }
 
     /**
@@ -1300,6 +1408,11 @@ describe("GitHub Actions hardening", () => {
       "",
       "- [@Wibias](https://github.com/Wibias) was added as a maintainer.",
     ].join("\n");
+
+    const GUI_CHANGED_FILES = [
+      { filename: "gui/src/App.tsx" },
+      { filename: "tests/smoke.test.ts" },
+    ];
 
     /** A PR body whose readiness checklist has exactly `checked` boxes ticked. */
     function readinessChecklistBody(checked: number, base = CONTRIBUTOR_BODY): string {
@@ -1446,7 +1559,6 @@ describe("GitHub Actions hardening", () => {
       // No prior enforcer history: the checklist completion alone lifts the
       // draft and notifies the maintainers from MAINTAINERS.md.
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -1548,7 +1660,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -1641,7 +1752,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -1778,14 +1888,14 @@ describe("GitHub Actions hardening", () => {
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
-    test("a complete checklist with red CI unchecks the CI box and re-drafts", async () => {
-      // The author ticked every box, but the head's `ci` check is red. The
-      // gate checks the CI claim itself and unticked the CI box instead of
-      // letting a false attestation lift the draft.
+    test("red GitHub CI does not untick the local-CI attestation", async () => {
+      // Fork contributors attest local green; repository CI is
+      // maintainer-started. A red or missing GitHub `ci` check must not
+      // disprove the local box or block ready-for-review.
       const result = await run({
         pr: {
           base: { ref: "dev" },
-          draft: false,
+          draft: true,
           body: readinessChecklistBody(4),
         },
         maintainersFile: MAINTAINERS_FIXTURE,
@@ -1793,40 +1903,28 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
-        "issues.createComment",
+        "issues.addLabels",
         "graphql",
+        "issues.createComment",
       ]));
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      // Only the CI box is unticked; the other three stay checked.
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(bodyUpdate.body).toContain("- [x] I pushed my PR to the latest dev commit.");
-      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
-      const drafts = callsTo(result, "graphql") as [{ query: string }];
-      expect(drafts).toHaveLength(2);
+      expect(callsTo(result, "checks.listForRef")).toEqual([]);
+      expect(callsTo(result, "pulls.update")).toEqual([]);
+      const drafts = callsTo(result, "graphql") as [{ query: string }, { query: string }];
       expect(drafts[0]!.query).toContain("reviewThreads");
-      expect(drafts[1]!.query).toContain("convertPullRequestToDraft");
-      expect(drafts[1]!.query).not.toContain("markPullRequestReadyForReview");
-      const readinessBody = lastReadinessCommentBody(result);
-      expect(readinessBody).toContain(
-        "GitHub CI is not green on the current head `3f1c0de`; the **CI green** box has been unticked.",
-      );
-      expect(readinessBody).toContain("**3/4** boxes ticked");
-      expect(readinessBody).toContain('"completedAtHeadSha":null');
-      expect(readinessBody).toContain('"maintainersPinged":false');
+      expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
+      expect(lastReadinessCommentBody(result)).toContain("**4/4** boxes ticked");
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
     test("a revalidation reset preserves bot ownership of the title prefix", async () => {
       // A wrong-base PR that the bot prefixed and later had retargeted to dev
-      // with a complete checklist hits a revalidation failure (red CI unchecks
-      // a box). The reset must preserve `titlePrefixedByBot` long enough for
-      // the mustDraft strip to fire — otherwise the stale `[WRONG BRANCH] `
-      // prefix stays on the title forever because ownership was forgotten.
+      // with a complete checklist hits a revalidation failure (stale vs `dev`
+      // unchecks a box). The reset must preserve `titlePrefixedByBot` long
+      // enough for the mustDraft strip to fire — otherwise the stale
+      // `[WRONG BRANCH] ` prefix stays on the title forever because ownership
+      // was forgotten.
       const result = await run({
         pr: {
           base: { ref: "dev" },
@@ -1835,7 +1933,9 @@ describe("GitHub Actions hardening", () => {
           body: readinessChecklistBody(4),
         },
         maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{ name: "ci", status: "completed", conclusion: "failure" }],
+        compareByBasehead: {
+          "dev...3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b": { ahead_by: 0, behind_by: 11 },
+        },
         comments: [botComment({
           version: 1,
           active: true,
@@ -1851,7 +1951,7 @@ describe("GitHub Actions hardening", () => {
       const readinessBody = lastReadinessCommentBody(result);
       expect(readinessBody).toContain('"titlePrefixedByBot":false');
       expect(readinessBody).toContain('"autoDraftedByBot":true');
-      expect(readinessBody).toContain("GitHub CI is not green");
+      expect(readinessBody).toContain("more than 10 commits behind `dev`");
     });
 
     test("a complete checklist more than 10 commits behind dev unchecks the latest-dev box and re-drafts", async () => {
@@ -1868,7 +1968,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "pulls.get",
@@ -1877,7 +1976,7 @@ describe("GitHub Actions hardening", () => {
         "graphql",
       ]));
       const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      // Only the latest-dev box is unticked; CI stays checked.
+      // Only the latest-dev box is unticked; local CI stays checked.
       expect(bodyUpdate.body).toContain("- [x] All CI tests are green on my local testing.");
       expect(bodyUpdate.body).toContain("- [ ] I pushed my PR to the latest dev commit.");
       expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
@@ -1890,71 +1989,6 @@ describe("GitHub Actions hardening", () => {
         "The PR is more than 10 commits behind `dev`; the **latest dev** box has been unticked.",
       );
       expect(readinessBody).toContain("**3/4** boxes ticked");
-      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
-    });
-
-    test("a complete checklist with red CI and a stale dev base unchecks both boxes", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: false,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{ name: "ci", status: "completed", conclusion: "failure" }],
-        compareByBasehead: {
-          "dev...3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b": { ahead_by: 0, behind_by: 42 },
-        },
-      });
-
-      expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
-        "graphql",
-        "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
-        "issues.createComment",
-        "graphql",
-      ]));
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(bodyUpdate.body).toContain("- [ ] I pushed my PR to the latest dev commit.");
-      expect(bodyUpdate.body).toContain("- [x] My PR is ready for review.");
-      const readinessBody = lastReadinessCommentBody(result);
-      expect(readinessBody).toContain("GitHub CI is not green on the current head");
-      expect(readinessBody).toContain("more than 10 commits behind `dev`");
-      expect(readinessBody).toContain("**2/4** boxes ticked");
-      expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
-    });
-
-    test("a checks lookup failure fails closed for the CI claim", async () => {
-      // Cannot verify CI: the claim is unverifiable, so the box is unticked
-      // and the PR stays a draft rather than riding on missing evidence.
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: false,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        failOn: ["checks.listForRef"],
-      });
-
-      expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
-        "graphql",
-        "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
-        "issues.createComment",
-        "graphql",
-      ]));
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(bodyUpdate.body).toContain("- [x] I pushed my PR to the latest dev commit.");
-      const readinessBody = lastReadinessCommentBody(result);
-      expect(readinessBody).toContain("GitHub CI is not green on the current head");
-      expect(result.warnings.some(w => w.includes("Could not list checks for the readiness claim check"))).toBe(true);
       expect(result.warnings.some(w => w.startsWith("setFailed:"))).toBe(false);
     });
 
@@ -1972,7 +2006,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -1986,178 +2019,33 @@ describe("GitHub Actions hardening", () => {
       expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
     });
 
-    test("a head with no ci check fails closed for the CI claim", async () => {
-      // No CI run means the claim has no positive evidence, so the box is
-      // unticked and the PR stays in draft.
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: true,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [],
-      });
-
-      expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
-        "graphql",
-        "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
-        "issues.createComment",
-      ]));
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      const drafts = callsTo(result, "graphql") as [{ query: string }];
-      expect(drafts).toHaveLength(1);
-      expect(drafts[0]!.query).toContain("reviewThreads");
-      expect(lastReadinessCommentBody(result)).toContain(
-        "GitHub CI is not green on the current head",
-      );
-    });
-
-    test("a pending ci check cannot attest green", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: false,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{ name: "ci", status: "in_progress", conclusion: null }],
-      });
-
-      expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
-        "graphql",
-        "pulls.listReviews",
-        "pulls.get",
-        "pulls.update",
-        "issues.createComment",
-        "graphql",
-      ]));
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      const readinessBody = lastReadinessCommentBody(result);
-      expect(readinessBody).toContain("GitHub CI is not green on the current head");
-    });
-
-    test("a complete filtered trusted ci response attests green", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: true,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{ name: "ci", status: "completed", conclusion: "success" }],
-        checkRunTotalCount: 1,
-      });
-
-      expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
-        "graphql",
-        "pulls.listReviews",
-        "issues.addLabels",
-        "graphql",
-        "issues.createComment",
-      ]));
-      const checkCalls = callsTo(result, "checks.listForRef") as Array<{
-        app_id?: number;
-        check_name?: string;
-        filter?: string;
-      }>;
-      for (const call of checkCalls) {
-        expect(call.app_id).toBe(15368);
-        expect(call.check_name).toBe("ci");
-        expect(call.filter).toBe("latest");
-      }
-      expect(callsTo(result, "pulls.update")).toEqual([]);
-      const drafts = callsTo(result, "graphql") as [{ query: string }, { query: string }];
-      expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
-      expect(lastReadinessCommentBody(result)).toContain("**4/4** boxes ticked");
-    });
-
-    test("a truncated filtered ci response cannot attest green", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: false,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{ name: "ci", status: "completed", conclusion: "success" }],
-        checkRunTotalCount: 2,
-      });
-
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(lastReadinessCommentBody(result)).toContain(
-        "GitHub CI is not green on the current head",
-      );
-    });
-
-    test("a foreign app check named ci cannot attest green", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: false,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [{
+    test("missing or pending GitHub CI does not block a complete local attestation", async () => {
+      for (const checkRuns of [
+        [],
+        [{ name: "ci", status: "in_progress", conclusion: null }],
+        [{
           name: "ci",
           status: "completed",
           conclusion: "success",
           app: { id: 999999 },
         }],
-      });
-
-      const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-      expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-      expect(lastReadinessCommentBody(result)).toContain("GitHub CI is not green on the current head");
-    });
-
-    test("conflicting trusted ci checks fail closed regardless of ordering", async () => {
-      const green = { name: "ci", status: "completed", conclusion: "success" };
-      const pending = { name: "ci", status: "in_progress", conclusion: null };
-      const failed = { name: "ci", status: "completed", conclusion: "failure" };
-
-      for (const checkRuns of [[green, pending], [pending, green], [green, failed], [failed, green]]) {
+      ]) {
         const result = await run({
           pr: {
             base: { ref: "dev" },
-            draft: false,
+            draft: true,
             body: readinessChecklistBody(4),
           },
           maintainersFile: MAINTAINERS_FIXTURE,
           checkRuns,
         });
 
-        const [bodyUpdate] = callsTo(result, "pulls.update") as [{ body: string }];
-        expect(bodyUpdate.body).toContain("- [ ] All CI tests are green on my local testing.");
-        expect(lastReadinessCommentBody(result)).toContain("GitHub CI is not green on the current head");
+        expect(callsTo(result, "checks.listForRef")).toEqual([]);
+        expect(callsTo(result, "pulls.update")).toEqual([]);
+        const drafts = callsTo(result, "graphql") as [{ query: string }, { query: string }];
+        expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
+        expect(lastReadinessCommentBody(result)).toContain("**4/4** boxes ticked");
       }
-    });
-
-    test("multiple latest trusted green ci checks are consistent evidence", async () => {
-      const result = await run({
-        pr: {
-          base: { ref: "dev" },
-          draft: true,
-          body: readinessChecklistBody(4),
-        },
-        maintainersFile: MAINTAINERS_FIXTURE,
-        checkRuns: [
-          { name: "ci", status: "completed", conclusion: "success" },
-          { name: "ci", status: "completed", conclusion: "success" },
-        ],
-      });
-
-      expect(callsTo(result, "pulls.update")).toEqual([]);
-      const drafts = callsTo(result, "graphql") as [{ query: string }, { query: string }];
-      expect(drafts[1]!.query).toContain("markPullRequestReadyForReview");
     });
 
     test("an unresolved Codex thread unchecks the findings box and re-drafts", async () => {
@@ -2174,7 +2062,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "pulls.get",
@@ -2238,7 +2125,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -2280,7 +2166,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -2344,7 +2229,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -2373,7 +2257,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -2458,6 +2341,7 @@ describe("GitHub Actions hardening", () => {
           title: "GUI: fix provider list spacing",
           body: readinessChecklistBody(4),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
@@ -2617,6 +2501,7 @@ describe("GitHub Actions hardening", () => {
         },
         authorPermission: "read",
         maintainersFile: MAINTAINERS_FIXTURE,
+        files: GUI_CHANGED_FILES,
       });
       expect(
         result.warnings.some(
@@ -2727,7 +2612,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -2842,9 +2726,10 @@ describe("GitHub Actions hardening", () => {
       expect(injected.body).toContain(CHECKLIST_START);
     });
 
-    test("gui in the title without a screenshot fails and drafts", async () => {
+    test("gui/ changes without a screenshot fail and draft", async () => {
       const result = await run({
-        pr: { base: { ref: "dev" }, title: "GUI: fix provider list spacing" },
+        pr: { base: { ref: "dev" }, title: "Fix dashboard spacing" },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
@@ -2855,7 +2740,56 @@ describe("GitHub Actions hardening", () => {
       expect(callsTo(result, "graphql")).toHaveLength(1);
     });
 
-    test("gui in the body without a screenshot fails", async () => {
+    test("gui in the title alone does not demand a screenshot", async () => {
+      const result = await run({
+        pr: { base: { ref: "dev" }, title: "GUI: fix provider list spacing" },
+        authorPermission: "write",
+        files: [{ filename: "scripts/foo.ts" }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+    });
+
+    test("no gui changes text without gui/ file changes does not demand a screenshot", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          title: "Fix proxy routing",
+          body: [
+            "## Summary",
+            "",
+            "This change adjusts proxy routing only; there are no gui changes in this PR.",
+            "The handler in scripts/foo.ts keeps the same public surface while fixing retry semantics.",
+            "",
+            "## Test plan",
+            "",
+            "- Ran \`bun test tests/ci-workflows.test.ts\`",
+          ].join("\n"),
+        },
+        authorPermission: "write",
+        files: [{ filename: "scripts/foo.ts" }],
+      });
+
+      expect(methodsOf(result)).toEqual(readsAllowedBase());
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
+    });
+
+    test("malformed changed_files metadata fails closed on the screenshot gate", async () => {
+      const result = await run({
+        pr: {
+          base: { ref: "dev" },
+          changed_files: 2.5,
+        },
+        files: [{ filename: "scripts/foo.ts" }],
+        authorPermission: "write",
+      });
+
+      expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
+      expect(lastEnforcerCommentBody(result)).toContain("UI screenshot required");
+    });
+
+    test("gui in the body without a screenshot fails when gui/ changed", async () => {
       const result = await run({
         pr: {
           base: { ref: "dev" },
@@ -2868,6 +2802,7 @@ describe("GitHub Actions hardening", () => {
             "- Ran bun test tests/ci-workflows.test.ts",
           ].join("\n"),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
@@ -2890,6 +2825,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "lidge-jun" }, author_association: "OWNER", body: "Not touching gui here." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       // The screenshot failure is gone: no setFailed for it, and the comment
@@ -2915,6 +2851,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "wibias" }, author_association: "COLLABORATOR", body: "no gui changes needed" },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2947,6 +2884,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "lidge-jun" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -2975,6 +2913,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "lidge-jun" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(false);
@@ -3008,6 +2947,7 @@ describe("GitHub Actions hardening", () => {
           actor: { login: "unauthorized-contributor" },
           label: { name: "gui-screenshot-waived" },
         }],
+        files: GUI_CHANGED_FILES,
       });
 
       // The screenshot failure must remain because the label was applied by
@@ -3041,9 +2981,132 @@ describe("GitHub Actions hardening", () => {
 
       expect(callsTo(result, "pulls.get")).toEqual([
         { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
+        { owner: "lidge-jun", repo: "opencodex", pull_number: 4242 },
       ]);
       expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toEqual([]);
       expect(methodsOf(result)).toContain("issues.listComments");
+    });
+
+    test("the resolver falls back to the head SHA when the commit-PR index is empty", async () => {
+      const headSha = "6c42d17f213a632fc2def56053f0cd574b13d459";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 4242, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        // GitHub's commit-to-PR index can lag a fresh push (seen on #1441):
+        // the association endpoint returns no PR for a genuine current head.
+        associatedPullRequests: [],
+        openPulls: [
+          { number: 4242, state: "open", head: { sha: headSha } },
+          { number: 9999, state: "open", head: { sha: "other" } },
+          { number: 100, state: "closed", head: { sha: headSha } },
+        ],
+      });
+
+      expect(result.outputs).toEqual([{ name: "pull-number", value: "4242" }]);
+      // The fallback must consult the live open-PR list exactly once.
+      expect(callsTo(result, "repos.listPullRequestsAssociatedWithCommit")).toHaveLength(1);
+      expect(callsTo(result, "pulls.list")).toHaveLength(1);
+      expect(result.logs.join(" ")).toContain("Associated-index fallback");
+      // A closed PR with the same head must not count as a candidate.
+      expect(result.logs.join(" ")).toContain("1 open PR(s) match head");
+    });
+
+    test("the resolver skips when the fallback finds no unique open head match", async () => {
+      const headSha = "6c42d17f213a632fc2def56053f0cd574b13d459";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 4242, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        associatedPullRequests: [],
+        // No open PR carries this head; the stale index is not a match.
+        openPulls: [
+          { number: 9999, state: "open", head: { sha: "other" } },
+        ],
+      });
+
+      expect(result.outputs).toEqual([]);
+      // The fallback must actually have run: the resolver consults the live
+      // open-PR list exactly once. Without this assertion the test would still
+      // pass if the fallback were removed (the empty association index by
+      // itself already skips), silently losing coverage of the head-SHA
+      // reconciliation path.
+      expect(callsTo(result, "pulls.list")).toHaveLength(1);
+      expect(callsTo(result, "pulls.list")[0]).toMatchObject({
+        owner: "lidge-jun",
+        repo: "opencodex",
+        state: "open",
+      });
+      expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
+    });
+
+    test("the resolver fails closed when two open PRs share the head SHA", async () => {
+      const headSha = "6c42d17f213a632fc2def56053f0cd574b13d459";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 4242, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        associatedPullRequests: [],
+        // Two open PRs on the same head: the live lookup is ambiguous, so the
+        // resolver must fail closed rather than guess which PR to revalidate.
+        openPulls: [
+          { number: 4242, state: "open", head: { sha: headSha } },
+          { number: 7777, state: "open", head: { sha: headSha } },
+        ],
+      });
+
+      expect(result.outputs).toEqual([]);
+      // The live fallback must actually have run before the ambiguity is
+      // detected: the resolver consults the open-PR list exactly once and
+      // weighs both same-head candidates before failing closed. Without this
+      // assertion the test would still pass if the fallback were removed (the
+      // empty association index by itself already skips), silently losing
+      // coverage of the head-SHA reconciliation path.
+      expect(callsTo(result, "pulls.list")).toHaveLength(1);
+      expect(callsTo(result, "pulls.list")[0]).toMatchObject({
+        owner: "lidge-jun",
+        repo: "opencodex",
+        state: "open",
+      });
+      expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
+    });
+
+    test("the resolver resolves via the association index when it is already fresh", async () => {
+      const headSha = "3f1c0de0a6a4d0a3f9a1b2c3d4e5f60718293a4b";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 42, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        associatedPullRequests: [
+          { number: 42, state: "open", head: { sha: headSha } },
+        ],
+      });
+
+      expect(result.outputs).toEqual([{ name: "pull-number", value: "42" }]);
+      // A unique index hit must not need the open-PR fallback.
+      expect(callsTo(result, "pulls.list")).toEqual([]);
+    });
+
+    test("the resolver fails closed when both resolution paths error", async () => {
+      const headSha = "6c42d17f213a632fc2def56053f0cd574b13d459";
+      const result = await runResolver({
+        pr: { base: { ref: "dev" }, number: 4242, head: { sha: headSha } },
+        eventName: "status",
+        statusSha: headSha,
+        associatedPullRequests: [],
+        failOn: [
+          "repos.listPullRequestsAssociatedWithCommit",
+          "pulls.list",
+        ],
+      });
+
+      expect(result.outputs).toEqual([]);
+      expect(result.logs.join(" ")).toContain("skipping ambiguous/stale revalidation");
+      expect(result.warnings.join(" ")).toContain(
+        "Could not list PRs associated with commit",
+      );
+      expect(result.warnings.join(" ")).toContain("Could not list open PRs");
     });
 
     test("a non-maintainer issue_comment does not re-run the gate", async () => {
@@ -3199,6 +3262,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "contributor" }, author_association: "CONTRIBUTOR", body: "Not touching gui here." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
@@ -3222,6 +3286,7 @@ describe("GitHub Actions hardening", () => {
         comments: [
           { id: 1, user: { login: "lidge-jun" }, author_association: "OWNER", body: "This is gui related, please add a screenshot." },
         ],
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:") && w.includes("screenshot"))).toBe(true);
@@ -3244,6 +3309,7 @@ describe("GitHub Actions hardening", () => {
           ].join("\n"),
         },
         authorPermission: "write",
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase());
@@ -3268,6 +3334,7 @@ describe("GitHub Actions hardening", () => {
           ].join("\n"),
         },
         authorPermission: "write",
+        files: GUI_CHANGED_FILES,
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase());
@@ -3291,6 +3358,7 @@ describe("GitHub Actions hardening", () => {
             "- Ran bun test tests/ci-workflows.test.ts",
           ].join("\n"),
         },
+        files: GUI_CHANGED_FILES,
       });
 
       expect(result.warnings.some((w) => w.startsWith("setFailed:"))).toBe(true);
@@ -3338,7 +3406,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -3396,7 +3463,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -3697,7 +3763,6 @@ describe("GitHub Actions hardening", () => {
       });
 
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -3847,7 +3912,6 @@ describe("GitHub Actions hardening", () => {
       // created comment is the readiness checklist message, which did not
       // exist on the busy PR yet.
       expect(methodsOf(result)).toEqual(readsAllowedBasePaged([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "pulls.listReviews",
@@ -3970,7 +4034,6 @@ describe("GitHub Actions hardening", () => {
 
       expect(callsTo(result, "pulls.update")).toEqual([]);
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -4063,7 +4126,6 @@ describe("GitHub Actions hardening", () => {
           comments: [botComment(active)],
         });
         expect(methodsOf(restored)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -4122,7 +4184,6 @@ describe("GitHub Actions hardening", () => {
         comments: [botComment({ version: 1, active: "true", autoDraftedByBot: 1, titlePrefixedByBot: "yes" })],
       });
       expect(methodsOf(loose)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -4147,7 +4208,6 @@ describe("GitHub Actions hardening", () => {
         comments: [botComment({ version: 1, active: true, autoDraftedByBot: null, titlePrefixedByBot: 0 })],
       });
       expect(methodsOf(falsy)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",
@@ -4320,7 +4380,6 @@ describe("GitHub Actions hardening", () => {
       // The first comment's state is the one honoured: it says the bot
       // prefixed and drafted, so both are undone.
       expect(methodsOf(result)).toEqual(readsAllowedBase([
-        "checks.listForRef",
         "graphql",
         "pulls.listReviews",
         "issues.addLabels",

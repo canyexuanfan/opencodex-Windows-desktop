@@ -166,6 +166,16 @@ export function resolveClaimStates(
   return { states, corruptions };
 }
 
+function supportedClaimsForSubject(claimStates: Map<string, ClaimState>, subjectId: string): string[] {
+  const supported = new Set<string>();
+  for (const state of claimStates.values()) {
+    const claim = state.current;
+    if (!claim || state.corruption || state.unusable) continue;
+    if (claim.subjectId === subjectId && claim.polarity === "supported") supported.add(claim.capability);
+  }
+  return [...supported].sort();
+}
+
 /**
  * CL-02 verdict projection primitives with frozen CL-00 verification semantics.
  */
@@ -232,6 +242,9 @@ export function projectVerdicts(
       projectObservationGroup(key, ordered, asOf, suiteManifest, {
         loadScenarioManifest: opts.loadScenarioManifest,
         loadScenarioRequirements: opts.loadScenarioRequirements,
+        routeSupportedClaims: key.evidenceLayer === "live_route_compatibility"
+          ? supportedClaimsForSubject(claimStates, key.subjectId)
+          : undefined,
       }),
     );
   }
@@ -288,6 +301,50 @@ function isMatchedCapabilityAbsenceControl(obs: ObservationEvent): boolean {
   );
 }
 
+function evaluateRequiredPassVerdict(input: {
+  suiteManifest: SuiteManifestV1 | null;
+  ordered: ObservationEvent[];
+  executionMode: ObservationEvent["executionMode"];
+  subject?: ObservationEvent["subject"];
+  routeSupportedClaims?: readonly string[];
+  fabricCapability?: {
+    harnessFeatures: readonly string[];
+    platforms: readonly string[];
+    routePreconditions: readonly string[];
+  };
+  loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
+  loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"];
+  asOf: number;
+}): { verdict: CompatibilityVerdict; notes: string[] } {
+  const notes: string[] = [];
+  if (!input.suiteManifest) {
+    return { verdict: "PROBED", notes: ["suite_manifest_unavailable"] };
+  }
+  const evaluation = evaluateAllApplicableRequiredPassV1(
+    input.suiteManifest,
+    input.ordered,
+    input.executionMode,
+    {
+      subject: input.subject,
+      routeSupportedClaims: input.routeSupportedClaims,
+      fabricCapability: input.fabricCapability,
+      loadScenarioManifest: input.loadScenarioManifest,
+      loadScenarioRequirements: input.loadScenarioRequirements,
+      asOf: input.asOf,
+    },
+  );
+  notes.push(...evaluation.notes);
+  if (evaluation.applicableRequiredScenarioIds.length === 0) {
+    return { verdict: "UNKNOWN", notes };
+  }
+  if (evaluation.canVerify) {
+    notes.push("all-applicable-required-pass-v1");
+    return { verdict: "VERIFIED", notes };
+  }
+  notes.push("incomplete_required_coverage");
+  return { verdict: "PROBED", notes };
+}
+
 function projectObservationGroup(
   key: ProjectionKey,
   ordered: ObservationEvent[],
@@ -296,6 +353,12 @@ function projectObservationGroup(
   opts: {
     loadScenarioManifest?: (digest: string) => Record<string, unknown> | null;
     loadScenarioRequirements?: ProjectVerdictsOptions["loadScenarioRequirements"];
+    routeSupportedClaims?: readonly string[];
+    fabricCapability?: {
+      harnessFeatures: readonly string[];
+      platforms: readonly string[];
+      routePreconditions: readonly string[];
+    };
   } = {},
 ): DerivedVerdict {
   const contributing: string[] = [];
@@ -339,32 +402,47 @@ function projectObservationGroup(
       verdict = "PROBED";
       notes.push("mixed_execution_modes");
     } else if (key.evidenceLayer === "protocol_conformance" && newestCurrent?.executionMode === "fixture") {
-      if (!suiteManifest) {
-        verdict = "PROBED";
-        notes.push("suite_manifest_unavailable");
-      } else {
-        const evaluation = evaluateAllApplicableRequiredPassV1(
-          suiteManifest,
-          ordered,
-          newestCurrent.executionMode,
-          {
-            subject: newestCurrent.subject.subjectKind === "protocol" ? newestCurrent.subject : undefined,
-            loadScenarioManifest: opts.loadScenarioManifest,
-            loadScenarioRequirements: opts.loadScenarioRequirements,
-            asOf,
-          },
-        );
-        notes.push(...evaluation.notes);
-        if (evaluation.applicableRequiredScenarioIds.length === 0) {
-          verdict = "UNKNOWN";
-        } else if (evaluation.canVerify) {
-          verdict = "VERIFIED";
-          notes.push("all-applicable-required-pass-v1");
-        } else {
-          verdict = "PROBED";
-          notes.push("incomplete_required_coverage");
-        }
-      }
+      const evaluated = evaluateRequiredPassVerdict({
+        suiteManifest,
+        ordered,
+        executionMode: newestCurrent.executionMode,
+        subject: newestCurrent.subject.subjectKind === "protocol" ? newestCurrent.subject : undefined,
+        loadScenarioManifest: opts.loadScenarioManifest,
+        loadScenarioRequirements: opts.loadScenarioRequirements,
+        asOf,
+      });
+      verdict = evaluated.verdict;
+      notes.push(...evaluated.notes);
+    } else if (key.evidenceLayer === "live_route_compatibility" && newestCurrent?.executionMode === "live") {
+      const evaluated = evaluateRequiredPassVerdict({
+        suiteManifest,
+        ordered,
+        executionMode: newestCurrent.executionMode,
+        subject: newestCurrent.subject.subjectKind === "route" ? newestCurrent.subject : undefined,
+        routeSupportedClaims: opts.routeSupportedClaims,
+        loadScenarioManifest: opts.loadScenarioManifest,
+        loadScenarioRequirements: opts.loadScenarioRequirements,
+        asOf,
+      });
+      verdict = evaluated.verdict;
+      notes.push(...evaluated.notes);
+    } else if (key.evidenceLayer === "task_effectiveness" && newestCurrent?.executionMode === "fabric") {
+      const evaluated = evaluateRequiredPassVerdict({
+        suiteManifest,
+        ordered,
+        executionMode: newestCurrent.executionMode,
+        subject: newestCurrent.subject.subjectKind === "task" ? newestCurrent.subject : undefined,
+        fabricCapability: opts.fabricCapability ?? {
+          harnessFeatures: ["fabric-scratch-v1"],
+          platforms: [process.platform, "*"],
+          routePreconditions: ["exact-route-subject"],
+        },
+        loadScenarioManifest: opts.loadScenarioManifest,
+        loadScenarioRequirements: opts.loadScenarioRequirements,
+        asOf,
+      });
+      verdict = evaluated.verdict;
+      notes.push(...evaluated.notes);
     } else {
       verdict = "PROBED";
     }

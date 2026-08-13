@@ -51,6 +51,13 @@ The dashboard's **Sub-agent delegation** controls three related settings:
 `multiAgentGuidanceEnabled` defaults to on and is the master switch for opencodex-authored guidance
 on both surfaces. Turning it off suppresses both the v2 designation block and v1 proactive text.
 
+For array-form stateless Responses requests, opencodex places generated guidance after leading
+system and developer metadata, including developer `additional_tools`, and before conversational
+input. Stateful `previous_response_id` continuations reuse tagged guidance only when it matches the latest
+tagged item in their trusted replay prefix. Other generated guidance is reused when an exact generated
+developer item exists in that prefix. When guidance changes, leading tool protocol stays first and
+the replacement is inserted before current conversational input.
+
 These are instructions to the main agent, not a proxy-side spawn router. On v2, a full-history fork
 inherits the parent model and rejects model or effort overrides. Guidance therefore tells Codex to
 use `fork_turns: "none"` (or a positive partial turn count such as `"3"`) when passing `model` or
@@ -123,6 +130,22 @@ opencodex fails safely instead of forwarding an empty or unreadable task:
 Recovery options are to select a native ChatGPT child, add a native ChatGPT target to the combo, use
 v1 for heterogeneous-provider delegation, or resend the task as plaintext v2 `agent_message`
 content when you control the caller.
+
+An experimental, disabled-by-default `agentTaskRecovery` option can recover this specific native-
+to-routed shape through a raw Responses passthrough to the fixed ChatGPT `/responses` endpoint using
+the incoming credential shape used by the canonical `openai` provider with `authMode: "forward"`.
+Recovery is available only while the proxy is bound to loopback. It never substitutes API-key
+authentication, another provider credential, or another Codex account. Only `authorization`, matching
+`chatgpt-account-id`, `originator`, and optional `openai-beta`/`user-agent` metadata are forwarded;
+`content-type` and `accept` are generated locally, and no other caller headers cross the boundary.
+It consumes quota, adds latency, briefly retains recovered plaintext in a bounded in-memory cache,
+and depends on undocumented ChatGPT backend behavior. Because a model returns the recovered text,
+byte-for-byte fidelity is not guaranteed. It rejects generic/API-key proxy callers and preserves
+`unreadable_encrypted_agent_task` on any failure. See
+[Agent configuration: Encrypted v2 task recovery](/reference/configuration/agents/#encrypted-v2-task-recovery)
+for the full trust boundary and configuration.
+Combo routing remains unchanged and continues to consider only canonical native ChatGPT targets for
+encrypted tasks.
 
 ## Changing the mode
 
@@ -203,6 +226,37 @@ to v1. A `"v2"`, `null`, or absent surface value is eligible; a real `"v1"` pin 
 
 No. Start a new Codex session after changing the mode. If a long-running App host still shows stale
 catalog state, run `ocx sync` and restart that Codex surface.
+
+### What happens when opencodex cannot trust the catalog?
+
+opencodex compares the on-disk model catalog against the start time of every Codex app-server owned
+by the current user, producing one of four states:
+
+| State | Meaning | v2 guidance |
+|---|---|---|
+| `fresh` | Every app-server started after the catalog was written | Full guidance: preferred model, roster, fallbacks |
+| `not_running` | No app-server detected | Full guidance |
+| `stale` | At least one app-server predates the catalog | **No opencodex-authored model guidance** |
+| `unknown` | The comparison could not be made | **No opencodex-authored model guidance** |
+
+For `stale` and `unknown`, opencodex withholds its own disk-derived claims — preferred model, roster,
+fallback and custom guidance — because the running Codex may not be able to spawn what the disk
+catalog advertises.
+
+It does **not** instruct the model to stop setting `model` or `reasoning_effort`. That observation is
+global across every app-server for the user, while an inbound request carries no sender identity, so
+a stale process cannot be attributed to the request in front of us. Prohibiting overrides on that
+basis would block options the active `spawn_agent` tool legitimately advertises, for a session that
+may well be fresh. The active tool schema stays authoritative.
+
+`unknown` is not a synonym for `stale`. It means the comparison itself failed — an unreadable catalog
+timestamp, an unreadable process start time, or a failed process enumeration — and it is reported
+separately by `ocx doctor`. `stale` clears only after every detected Codex app-server starts after
+the final catalog write; it does not necessarily clear `unknown`.
+
+Only a real change counts. A sync whose result is byte-identical to the catalog already on disk
+leaves the file untouched, so restarting the proxy or re-syncing an unchanged model set does not
+make a running Codex look stale.
 
 ### Reasoning effort
 

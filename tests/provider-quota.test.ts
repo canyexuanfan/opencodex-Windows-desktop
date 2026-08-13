@@ -13,6 +13,8 @@ import {
   clearProviderQuotaCache,
   fetchProviderQuotaReports,
   parseXaiCreditsResponse,
+  QUOTA_RESPONSE_MAX_BYTES,
+  readProviderQuotaJsonForTests,
   setProviderQuotaBeforePublishForTests,
 } from "../src/providers/quota";
 import type { OcxConfig } from "../src/types";
@@ -97,6 +99,21 @@ afterEach(() => {
 });
 
 describe("fetchProviderQuotaReports", () => {
+  test("provider quota probes have no direct Response.json calls", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/providers/quota.ts"), "utf8");
+    expect(source).not.toMatch(/\.\s*json\s*\(/);
+  });
+
+  test("quota JSON reading cancels a body that stalls before its first byte", async () => {
+    let cancelCalls = 0;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      cancel() { cancelCalls += 1; },
+    }));
+
+    expect(await readProviderQuotaJsonForTests(response, 10)).toBeNull();
+    expect(cancelCalls).toBe(1);
+  });
+
   test("returns active provider quota rows without leaking credentials or raw upstream payloads", async () => {
     await saveCredential("xai", { access: "xai-access-secret", refresh: "xai-refresh-secret", expires: Date.now() + 3600_000 });
     await saveCredential("anthropic", { access: "claude-access-secret", refresh: "claude-refresh-secret", expires: Date.now() + 3600_000 });
@@ -499,6 +516,27 @@ describe("fetchProviderQuotaReports", () => {
     const transientFailure = await fetchProviderQuotaReports(config, true);
 
     expect(transientFailure.reports).toEqual(valid.reports);
+  });
+
+  test("A6API quota preserves a last-good row after an oversized successful response", async () => {
+    let oversized = false;
+    let cancelCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const subscription = String(input).includes("subscription");
+      if (oversized && subscription) {
+        return declaredOversizeQuotaResponse(() => { cancelCalls += 1; });
+      }
+      return Response.json(subscription
+        ? { data: { hard_limit_usd: 10 } }
+        : { data: { total_granted: 10_000_000, total_used: 2_000_000, total_available: 8_000_000 } });
+    }) as typeof fetch;
+
+    const valid = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+    oversized = true;
+    const preserved = await fetchProviderQuotaReports(a6apiOnlyConfig(), true);
+
+    expect(preserved.reports).toEqual(valid.reports);
+    expect(cancelCalls).toBe(1);
   });
 
   test("A6API quota treats a throttled 429 refresh as transient and keeps the last-good row", async () => {
@@ -978,7 +1016,7 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports[0]?.source).toBe("moonshot:balance");
     // Balance-only: no fabricated utilization percentage.
     expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({
-      label: "Balance ($8.00 available, $2.00 voucher)",
+      label: "Balance ($8.00 USD available, $2.00 voucher)",
       percent: 0,
     });
     expect(seen).toHaveLength(1);
@@ -1000,6 +1038,11 @@ describe("fetchProviderQuotaReports", () => {
 
     expect(result.reports).toHaveLength(1);
     expect(seen[0]).toBe("https://api.moonshot.cn/v1/users/me/balance");
+    // China platform balance is CNY, not USD — do not mislabel ¥ amounts with $.
+    expect(result.reports[0]?.quota.customWindows?.[0]).toMatchObject({
+      label: "Balance (¥5.00 CNY available, ¥0.00 voucher)",
+      percent: 0,
+    });
   });
 
   test("Moonshot quota never sends the key to a non-canonical base URL", async () => {
@@ -1442,6 +1485,50 @@ describe("fetchProviderQuotaReports", () => {
     expect(JSON.stringify(openai?.aggregation)).not.toMatch(/(?:total|consumed|remaining)Weight|projectedUsedPercent/i);
   });
 
+  test("pool reports tolerate a malformed persisted plan through cache and aggregation", async () => {
+    saveCodexAccountCredential("added", {
+      accessToken: "added-access",
+      refreshToken: "added-refresh",
+      expiresAt: Date.now() + 3600_000,
+      chatgptAccountId: "added-chatgpt-id",
+    });
+    const config = testConfig();
+    config.providers = { openai: config.providers.openai };
+    config.codexAccounts = [{
+      id: "added",
+      email: "a@example.test",
+      plan: { tier: "pro" } as never,
+      isMain: false,
+    }];
+    config.activeCodexAccountId = "added";
+    let calls = 0;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      const added = (init?.headers as Record<string, string> | undefined)?.["ChatGPT-Account-Id"] === "added-chatgpt-id";
+      return new Response(JSON.stringify({
+        plan_type: added ? { tier: "pro" } : "plus",
+        rate_limit: { secondary_window: { used_percent: added ? 77 : 11, reset_at: 1_999_000_000 } },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const refreshed = await fetchProviderQuotaReports(config, true);
+    const openai = refreshed.reports.find(row => row.provider === "openai");
+    expect(openai?.quota.weeklyPercent).toBe(11);
+    expect(openai?.aggregation).toMatchObject({
+      includedAccounts: 1,
+      excludedAccounts: 1,
+      unknownPlanAccounts: 1,
+      incomplete: true,
+      currentAccount: { quota: { weeklyPercent: 77 } },
+    });
+    expect(openai?.aggregation?.currentAccount).not.toHaveProperty("plan");
+    expect(calls).toBe(2);
+
+    const cached = await fetchProviderQuotaReports(config);
+    expect(cached.reports[0]?.aggregation?.unknownPlanAccounts).toBe(1);
+    expect(calls).toBe(2);
+  });
+
   test("one forced Pool refresh probes each account once", async () => {
     saveCodexAccountCredential("added", {
       accessToken: "added-access", refreshToken: "added-refresh",
@@ -1712,6 +1799,149 @@ describe("fetchProviderQuotaReports", () => {
       },
     } as OcxConfig;
   }
+
+  function declaredOversizeQuotaResponse(onCancel: () => void): Response {
+    return new Response(new ReadableStream<Uint8Array>({
+      cancel() { onCancel(); },
+    }), {
+      status: 200,
+      headers: { "content-length": String(QUOTA_RESPONSE_MAX_BYTES + 1) },
+    });
+  }
+
+  function chunkedOversizeQuotaResponse(onCancel: () => void, json = "{}"): Response {
+    const encoded = new TextEncoder().encode(json);
+    if (encoded.byteLength > QUOTA_RESPONSE_MAX_BYTES) throw new Error("test JSON exceeds quota response cap");
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded);
+        controller.enqueue(new Uint8Array(QUOTA_RESPONSE_MAX_BYTES - encoded.byteLength).fill(0x20));
+        controller.enqueue(new Uint8Array([0x20]));
+      },
+      cancel() { onCancel(); },
+    }), { status: 200 });
+  }
+
+  test("cursor bounds a declared-oversize period response before falling back to summary", async () => {
+    await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });
+    let cancelCalls = 0;
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("GetCurrentPeriodUsage")) {
+        return declaredOversizeQuotaResponse(() => { cancelCalls += 1; });
+      }
+      if (url.endsWith("/api/usage/summary")) {
+        return Response.json({ individualUsage: { plan: { totalPercentUsed: 42 } } });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(cursorOnlyConfig(), true);
+    expect(result.reports[0]?.source).toBe("cursor:usage-summary");
+    expect(result.reports[0]?.quota.monthlyPercent).toBe(42);
+    expect(seen.map(url => url.split("/").at(-1))).toEqual([
+      "GetCurrentPeriodUsage",
+      "summary",
+    ]);
+    expect(cancelCalls).toBe(1);
+  });
+
+  test("cursor bounds a chunked summary response after malformed period JSON and falls back to auth usage", async () => {
+    await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });
+    let cancelCalls = 0;
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("GetCurrentPeriodUsage")) return new Response("{", { status: 200 });
+      if (url.endsWith("/api/usage/summary")) {
+        return chunkedOversizeQuotaResponse(
+          () => { cancelCalls += 1; },
+          JSON.stringify({ individualUsage: { plan: { totalPercentUsed: 91 } } }),
+        );
+      }
+      if (url.endsWith("/auth/usage")) {
+        return Response.json({ "gpt-4": { numRequests: 1, maxRequestUsage: 4 } });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(cursorOnlyConfig(), true);
+    expect(result.reports[0]?.source).toBe("cursor:auth-usage");
+    expect(result.reports[0]?.quota.monthlyPercent).toBe(25);
+    expect(seen.map(url => url.split("/").at(-1))).toEqual([
+      "GetCurrentPeriodUsage",
+      "summary",
+      "usage",
+    ]);
+    expect(cancelCalls).toBe(1);
+  });
+
+  test("cursor treats malformed under-cap period and summary JSON as fallback conditions", async () => {
+    await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("GetCurrentPeriodUsage") || url.endsWith("/api/usage/summary")) {
+        return new Response("{", { status: 200 });
+      }
+      if (url.endsWith("/auth/usage")) {
+        return Response.json({ "gpt-4": { numRequests: 3, maxRequestUsage: 10 } });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(cursorOnlyConfig(), true);
+    expect(result.reports[0]?.source).toBe("cursor:auth-usage");
+    expect(result.reports[0]?.quota.monthlyPercent).toBe(30);
+    expect(seen.map(url => url.split("/").at(-1))).toEqual([
+      "GetCurrentPeriodUsage",
+      "summary",
+      "usage",
+    ]);
+  });
+
+  test("cursor preserves its last-good row when the final quota response exceeds the JSON budget", async () => {
+    await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });
+    let mode: "good" | "oversize" = "good";
+    let cancelCalls = 0;
+    let fetchCalls = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalls += 1;
+      const url = String(input);
+      if (mode === "good" && url.endsWith("GetCurrentPeriodUsage")) {
+        return Response.json({ planUsage: { totalPercentUsed: 55 } });
+      }
+      if (url.endsWith("GetCurrentPeriodUsage") || url.endsWith("/api/usage/summary")) {
+        return Response.json({});
+      }
+      if (url.endsWith("/auth/usage")) {
+        return chunkedOversizeQuotaResponse(
+          () => { cancelCalls += 1; },
+          JSON.stringify({ "gpt-4": { numRequests: 91, maxRequestUsage: 100 } }),
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const good = await fetchProviderQuotaReports(cursorOnlyConfig(), true);
+    const goodUpdatedAt = good.reports[0]?.updatedAt;
+    const goodQuotaUpdatedAt = good.reports[0]?.quota.updatedAt;
+    mode = "oversize";
+    const preserved = await fetchProviderQuotaReports(cursorOnlyConfig(), true);
+    const callsAfterRefresh = fetchCalls;
+    const cached = await fetchProviderQuotaReports(cursorOnlyConfig(), false);
+
+    expect(preserved.reports[0]?.quota.monthlyPercent).toBe(55);
+    expect(preserved.reports[0]?.updatedAt).toBe(goodUpdatedAt);
+    expect(preserved.reports[0]?.quota.updatedAt).toBe(goodQuotaUpdatedAt);
+    expect(cached.reports[0]?.quota.monthlyPercent).toBe(55);
+    expect(fetchCalls).toBe(callsAfterRefresh);
+    expect(cancelCalls).toBe(1);
+  });
 
   test("cursor falls back to usage-summary when period-usage fails", async () => {
     await saveCredential("cursor", { access: "cursor-access-secret", refresh: "cursor-refresh-secret", expires: Date.now() + 3600_000 });

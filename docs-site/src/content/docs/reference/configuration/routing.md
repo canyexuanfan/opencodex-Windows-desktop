@@ -39,7 +39,13 @@ more than one provider, so use explicit namespaces when a bare model could be am
 `codexAccountNamespaces` maps a public selector such as `side` to one stored Codex account. A
 request for `side/gpt-5.6-sol` uses only that account, even when the canonical `openai` provider is
 in Direct mode, and sends the bare `gpt-5.6-sol` model id upstream. Only bare native OpenAI-family
-ids are valid after the selector.
+ids are valid after the selector. Account-scoped ids observed in Codex's current model catalog may
+also be preserved exactly when they are not yet part of opencodex's static set; the observation must
+carry the field shape of a real catalog row, stays qualified to its matching account selector, and
+is never promoted into the global bare model list. That shape check filters malformed and minimal
+rows — it is not a trust control, because the models cache is a user-owned file and a complete
+hand-written row is indistinguishable from an upstream observation. Nothing new becomes routable:
+a bare `gpt-*` id under an account selector is accepted by the router regardless of the catalog.
 
 Exact selection bypasses Pool assignment strategy and ordinary thread affinity. If the mapped
 account is missing, paused, cooling down, unusable, or requires reauthentication, the request fails
@@ -114,7 +120,7 @@ namespace, or reserved bare native families (`gpt-*`, `o1-*`, `o3-*`, `o4-*`, `c
 | `alias?` | `string` | — | Optional public model id in place of `policy/<id>`. |
 | `require?` | object | `{}` | Hard capability requirements evaluated before scoring (see below). |
 | `optimize?` | object | latency 0.55, health 0.25, cost 0.10, quota 0.10 | Scoring weights, normalized deterministically. `health`, `quota`, and `cost` have score dimensions; the configured-priority share is `1 - health - quota - cost` (default 0.55), and `latency` folds into that priority share rather than scoring independently. |
-| `limits?` | object | — | Hard limits, e.g. `maxEstimatedCostUsd` (enforced by the dry-run evaluator when candidate cost evidence is known). |
+| `limits?` | object | — | Hard limits. `maxEstimatedCostUsd` excludes a candidate when its estimated cost is known and above the cap. When that cap is set, `onUnknownCost` (`"allow"` default, or `"exclude"`) controls unknown estimates: allow prevents a cap-specific exclusion and records `cost.capOutcome: "unknown-allowed"`; exclude emits `cost-limit-unknown` and `capOutcome: "unknown-excluded"`. `onUnknownCost` alone (no cap) is inert. Separate from `unknownEvidence.cost`, which can still exclude or penalize unknown prices via `unknown-price` / scoring. |
 | `unknownEvidence?` | object | capability `exclude`, health/quota/cost `penalize` | How unknown evidence is treated per dimension: `allow`, `penalize`, or `exclude`. Unknown never becomes zero. |
 
 `require` supports: `minContextWindow` (positive integer), `minQuotaHeadroom` (0..1 fraction),
@@ -145,7 +151,7 @@ candidate evidence is provided through the API (`POST /api/routing-profiles/dry-
       ],
       "require": { "tools": true, "minContextWindow": 128000 },
       "optimize": { "latency": 0.55, "health": 0.25, "cost": 0.10, "quota": 0.10 },
-      "limits": { "maxEstimatedCostUsd": 0.50 },
+      "limits": { "maxEstimatedCostUsd": 0.50, "onUnknownCost": "allow" },
       "unknownEvidence": {
         "capability": "exclude",
         "health": "penalize",
@@ -185,8 +191,12 @@ Both are virtual namespaces with aliases and collision validation; they differ i
 is chosen. Profile scoring combines the configured-priority component with the health (RI-06),
 quota (RI-07), and cost (RI-08) score dimensions where evidence is present; the `latency` weight
 folds into the priority share rather than scoring independently. Cost is also enforced through the
-`limits.maxEstimatedCostUsd` cap (a candidate whose estimated cost exceeds the cap is excluded).
-Per-request route-decision traces are recorded when a policy profile executes.
+`limits.maxEstimatedCostUsd` cap: a candidate whose estimated cost is known and exceeds the cap is
+excluded (`cost-limit`). When a cap is configured and the estimate is unknown, the default `limits.onUnknownCost: "allow"`
+records `cost.capOutcome: "unknown-allowed"` on the route-decision trace without a cap exclusion;
+set `onUnknownCost: "exclude"` for a fail-closed ceiling (`cost-limit-unknown`). Cap outcome is not
+overall eligibility — `unknownEvidence.cost: "exclude"` can still add `unknown-price` and mark the
+candidate ineligible. Per-request route-decision traces are recorded when a policy profile executes.
 
 ### Catalog eligibility
 

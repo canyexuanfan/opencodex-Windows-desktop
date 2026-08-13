@@ -149,8 +149,9 @@ Structured output is part of that translation: `response_format` with `json_obje
 `json_schema` is forwarded to routed `openai-chat` models. On `POST /v1/responses` the
 equivalent request field is `text.format`: native Responses routes preserve it in the raw
 Responses body, and it is translated to `response_format` when the model routes to an
-`openai-chat` provider. A backend without structured-output support returns its own error
-instead of the proxy rejecting the request locally.
+`openai-chat` provider. A model listed in the provider's `noStructuredOutputModels` omits
+`response_format` on that chat wire; sibling models keep the translation. Unclassified backends
+receive the field and return their own error instead of the proxy guessing their capability.
 
 Non-streaming output has `object: "chat.completion"`. Streaming output uses SSE objects with
 `object: "chat.completion.chunk"`, choice deltas, a terminal choice with `finish_reason`, and
@@ -171,12 +172,18 @@ Native Anthropic passthrough is eligible only when all of these are true:
 
 - native passthrough has not been disabled in Claude Code configuration;
 - the requested model begins with `claude` or `anthropic`;
-- the request carries a native Anthropic bearer or `x-api-key` credential; and
+- the request carries a native Anthropic bearer or `x-api-key` credential;
+- on a non-loopback listener, the request also carries valid proxy admission only in
+  `x-opencodex-api-key`; and
 - no configured alias or model map claims that model id for a routed target.
 
 An eligible request is forwarded in the Anthropic dialect so native beta headers, thinking
 signatures, and subscription identity remain end to end. Otherwise it takes the Responses
 round-trip.
+
+The dedicated admission header is never forwarded. Proxy admission secrets found in
+`Authorization` or `x-api-key` are also removed; a separate genuine Anthropic credential is
+preserved. Ambiguous comma-joined credential headers fail closed instead of being forwarded.
 
 `POST /v1/messages/count_tokens` follows the same model resolution and passthrough decision. A
 native-eligible request is forwarded to Anthropic's count endpoint. Other requests use the local

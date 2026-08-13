@@ -16,6 +16,7 @@ import {
   armClaudeCodeBaseline,
   loadConfig,
   saveConfig,
+  getConfigDir,
   websocketsEnabled,
 } from "../config";
 import { reconcileOAuthProviders } from "../oauth";
@@ -23,12 +24,16 @@ import { withCatalogWriteSerialization } from "../codex/catalog-write-serializat
 import { invalidateCodexModelsCacheWithPermit } from "../codex/catalog/sync";
 import { getCodexHome } from "../codex/paths";
 import { shouldSyncCodexOnStart } from "../codex/desired-state";
-import { inspectNativeCodexOwnership } from "../integrations/native/ownership-preflight";
+import {
+  inspectNativeCodexOwnership,
+  type OwnershipInspection,
+} from "../integrations/native/ownership-preflight";
 import { registerCodexCooldownRecoveryProbeWorker } from "../codex/auth-api";
 import {
   reconcileLiveStateStores,
   setLiveStateStoreConfig,
 } from "../lib/state-store-registrations";
+import { startUserCostOverlayReconciler } from "../usage/user-cost-overlay-reconciler";
 import {
   configureAppOwnedMemoryBudget,
   enforceAppOwnedMemoryBudget,
@@ -40,9 +45,17 @@ import {
   registerDefaultAppOwnedObservedBuffers,
 } from "../lib/app-owned-memory-stores";
 import { acquireServerBackgroundLifecycle } from "./background-lifecycle";
+import {
+  setLabAutomationDispatchDeps,
+  startLabAutomationScheduler,
+} from "../lab/automation/orchestrator";
+import { loadLabAutomationPolicy } from "../lab/automation/persistence";
+import { createProductionLabRouteExecutor } from "../lib/lab-live-route-production";
 import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup";
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
-import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { runModelRenameStartupMigration } from "../providers/model-rename-startup";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
+import { providerContextCap } from "../providers/context-cap";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { StorageCleanupPolicy } from "../types";
 import {
@@ -88,7 +101,6 @@ import {
   addFinalRequestLog,
   hydrateRequestLogsFromDisk,
   httpStatusForRequestLogTerminal,
-  httpStatusForTerminalStatus,
   inspectResponseLogSsePayload,
   nextRequestLogId,
   recordFirstOutput,
@@ -160,6 +172,7 @@ import { buildDesktop3pRegistry } from "../claude/desktop-3p";
 import { runClaudeAuthModeMigration } from "../claude/auth-mode-migration";
 import {
   bindNativeMainStartupLifecycle,
+  blockNativeMainStartupForUnownedServiceHome,
   releaseNativeMainStartupLifecycle,
   startNativeMainStartupLifecycle,
   type NativeMainStartupGateDeps,
@@ -183,12 +196,44 @@ import {
   createLocalAttestationSecret,
 } from "../lib/local-management-attestation";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
+import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../lib/local-provider-reload-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
 
-const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
+export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
 const LIVE_SIDEBAND_PENDING_MAX = 32;
+const LIVE_SIDEBAND_PENDING_BYTES_MAX = 1024 * 1024;
 const LIVE_SIDEBAND_CLOSE_FALLBACK_MS = 1_000;
+
+export function exceedsLiveSidebandFrameByteLimit(frameBytes: number): boolean {
+  return frameBytes > MAX_WS_FRAME_BYTES;
+}
+
+export function exceedsLiveSidebandPendingByteLimit(pendingBytes: number, incomingBytes: number): boolean {
+  return incomingBytes > LIVE_SIDEBAND_PENDING_BYTES_MAX - pendingBytes;
+}
+
+function webSocketFrameBytes(frame: string | ArrayBuffer | ArrayBufferView | Blob | Buffer): number {
+  if (typeof frame === "string") return Buffer.byteLength(frame);
+  if (frame instanceof ArrayBuffer || ArrayBuffer.isView(frame)) return frame.byteLength;
+  return frame.size;
+}
+
+export type LiveSidebandPendingEnqueueResult = "queued" | "too-many-frames" | "too-many-bytes";
+
+export function enqueueLiveSidebandPendingFrame(
+  data: Pick<WsData, "livePending" | "livePendingBytes">,
+  frame: string | Buffer,
+  frameBytes = webSocketFrameBytes(frame),
+): LiveSidebandPendingEnqueueResult {
+  const pending = data.livePending ?? (data.livePending = []);
+  if (pending.length >= LIVE_SIDEBAND_PENDING_MAX) return "too-many-frames";
+  const pendingBytes = data.livePendingBytes ?? 0;
+  if (exceedsLiveSidebandPendingByteLimit(pendingBytes, frameBytes)) return "too-many-bytes";
+  pending.push(frame);
+  data.livePendingBytes = pendingBytes + frameBytes;
+  return "queued";
+}
 
 type LiveSidebandWebSocketFactory = (
   url: string,
@@ -224,6 +269,7 @@ function finalizeLiveSideband(ws: ServerWebSocket<WsData>, upstream?: WebSocket)
   }
   ws.data.liveUpstream = undefined;
   ws.data.livePending = undefined;
+  ws.data.livePendingBytes = undefined;
   ws.data.cancel = undefined;
   releaseLiveSidebandAdmission(ws);
 }
@@ -259,6 +305,7 @@ function closeLiveSideband(ws: ServerWebSocket<WsData>, code = 1000, reason = ""
   if (ws.data.liveClosing) return;
   ws.data.liveClosing = true;
   ws.data.livePending = undefined;
+  ws.data.livePendingBytes = undefined;
   ws.data.cancel = undefined;
   const upstream = ws.data.liveUpstream;
   // Bun's `WebSocket` type narrows `readyState` to 0|1|2 even though the DOM
@@ -314,6 +361,7 @@ function attachLiveSidebandUpstream(
     ws.data.liveOpened = true;
     const pending = ws.data.livePending ?? [];
     ws.data.livePending = undefined;
+    ws.data.livePendingBytes = undefined;
     for (const frame of pending) {
       try {
         sendUpstreamFrame(upstream, frame);
@@ -326,6 +374,10 @@ function attachLiveSidebandUpstream(
   upstream.addEventListener("message", (event) => {
     if (ws.data.liveUpstream !== upstream || ws.data.liveClosing) return;
     try {
+      if (exceedsLiveSidebandFrameByteLimit(webSocketFrameBytes(event.data))) {
+        closeLiveSideband(ws, 1009, "message too large");
+        return;
+      }
       logLiveSidebandFrame("u2c", event.data);
       if (typeof event.data === "string") ws.send(event.data);
       else if (event.data instanceof ArrayBuffer) ws.send(event.data);
@@ -386,12 +438,25 @@ export interface StartServerDeps {
   managementApi?: ManagementApiDeps;
   /** Test-only native-main recovery dependencies; production constructs the normal manager. */
   nativeMainStartup?: NativeMainStartupGateDeps;
+  /** Test-only ownership evidence; production inspects the installed service state. */
+  inspectNativeCodexOwnership?: typeof inspectNativeCodexOwnership;
   /** Test-only seam for an upstream that cannot complete its WebSocket close handshake. */
   liveSidebandWebSocketFactory?: LiveSidebandWebSocketFactory;
   /** Test-only seam; production derives a fresh local-attestation secret per process. */
   localAttestationSecret?: string;
   /** Optional readiness gate; a fresh pending gate is created when omitted. */
   readinessGate?: ReadinessGate;
+}
+
+function inspectStartupOwnership(deps: StartServerDeps): OwnershipInspection {
+  try {
+    return (deps.inspectNativeCodexOwnership ?? inspectNativeCodexOwnership)();
+  } catch {
+    return {
+      ownership: "unknown",
+      reason: "service-home ownership inspection failed",
+    };
+  }
 }
 
 /*
@@ -415,13 +480,24 @@ export function consumeStartupCacheInvalidationWrite(): boolean {
   return wrote;
 }
 
+export function warnAgentTaskRecoveryStartup(config: {
+  agentTaskRecovery?: { enabled?: boolean };
+}): void {
+  if (config.agentTaskRecovery?.enabled !== true) return;
+  console.warn("⚠️  Experimental encrypted V2 task recovery is enabled.");
+  console.warn("   A scoped cache miss may send an additional authenticated request to ChatGPT and may consume quota or add latency; concurrent misses can share one request.");
+  console.warn("   Recovered plaintext assignment data is retained only in a bounded, process-local in-memory cache; exact fidelity is not guaranteed and the path depends on undocumented backend behavior.");
+}
+
 export function startServer(port?: number, deps: StartServerDeps = {}): Server<WsData> {
   const localAttestationSecret = deps.localAttestationSecret ?? createLocalAttestationSecret();
-  const config = runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig()));
+  const config = runModelRenameStartupMigration(runAlibabaRegionStartupMigration(runOpenAiTierStartupMigration(loadConfig())));
+  warnAgentTaskRecoveryStartup(config);
   setLiveStateStoreConfig(config);
   applyProxyEnv(config);
   assertServerAuthConfig(config);
   const managementAuth = deps.managementAuthState ?? initializeManagementAuthState(config);
+  let userCostOverlayReconciler: { stop(): void } | null = null;
   // Arm synchronously before listen. A pending journal therefore makes __main__ unusable
   // before any request can resolve its physical credential, while health/management/Pool stay live.
   // Refresh OAuth provider presets (models/noReasoningModels) from the registry so a proxy update
@@ -457,21 +533,28 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       if (migrated) saveConfig(config);
     }
   }
+  // Resolve unattended service-home authority before any Codex lock, cache, owner,
+  // journal, or credential path. Both positive foreign evidence and an unprovable
+  // ownership state are non-authority.
+  startupCacheInvalidationWrote = false;
+  const startupCacheOwnership = inspectStartupOwnership(deps);
   // Startup cache invalidation is best-effort and must never block the server from
   // serving. It now takes K so it cannot race a convergence commit, but both the
   // home resolution and the acquisition can fail on a machine with no Codex home —
   // `getCodexHome()` THROWS when CODEX_HOME names a missing directory, which would
   // otherwise turn "no Codex installed" into "proxy will not start".
-  try {
-    const startupCodexHome = getCodexHome();
-    // #1046: record whether this actually rewrote the cache. `handleStart` ORs this
-    // with the later startup sync and warns ONCE about stale app-servers; warning
-    // here instead would read a catalog mtime the sync is about to move.
-    const outcome = withCatalogWriteSerialization(startupCodexHome, permit =>
-      invalidateCodexModelsCacheWithPermit(permit, startupCodexHome));
-    // A refused permit is not a write; only a completed run that returned true is.
-    startupCacheInvalidationWrote = outcome.kind === "completed" && outcome.value === true;
-  } catch { /* no readable Codex home: nothing to invalidate */ }
+  if (startupCacheOwnership.ownership === "owned") {
+    try {
+      const startupCodexHome = getCodexHome();
+      // #1046: record whether this actually rewrote the cache. `handleStart` ORs this
+      // with the later startup sync and warns ONCE about stale app-servers; warning
+      // here instead would read a catalog mtime the sync is about to move.
+      const outcome = withCatalogWriteSerialization(startupCodexHome, permit =>
+        invalidateCodexModelsCacheWithPermit(permit, startupCodexHome));
+      // A refused permit is not a write; only a completed run that returned true is.
+      startupCacheInvalidationWrote = outcome.kind === "completed" && outcome.value === true;
+    } catch { /* no readable Codex home: nothing to invalidate */ }
+  }
   // Arm the `claudeCode` hand-edit guard (devlog 260726_claude_auth_auto/040 H1) BEFORE
   // the server can serve a request, and AFTER the startup migrations above — those run
   // against a config nobody else holds and are the documented exception to the save
@@ -546,6 +629,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     }
     if (path === "/v1/responses/compact") return req.method === "POST";
     if (path === "/v1/models") return req.method === "GET";
+    // Standalone realtime voice sessions (codex-rs thread/realtime/start, WebSocket
+    // transport) — a directly-spawned `codex app-server` needs these for desktop
+    // voice the same way it needs /v1/responses. WebSocket upgrades only; plain
+    // HTTP on these paths stays rejected.
+    if (path === "/v1/realtime" || path === "/v1/live") {
+      return req.headers.get("upgrade")?.toLowerCase() === "websocket";
+    }
     return false;
   }
 
@@ -610,10 +700,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // CODEX_HOME. When the user has disabled the Codex integration, starting the
   // proxy must not manufacture those Codex artifacts merely to serve other
   // clients; no Codex request can use this lifecycle in that state.
-  const nativeOwnership = inspectNativeCodexOwnership();
+  // Re-probe here instead of trusting the earlier cache decision: startup work
+  // between the two sites must not widen the service-install race.
+  const nativeOwnership = inspectStartupOwnership(deps);
   const nativeMainLifecycle: NativeMainStartupLifecycle = shouldSyncCodexOnStart(config)
-    && nativeOwnership.ownership !== "foreign"
-    ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
+    ? nativeOwnership.ownership === "owned"
+      ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
+      : blockNativeMainStartupForUnownedServiceHome(
+        nativeOwnership.ownership === "foreign" ? "foreign-ownership" : "ownership-unknown",
+      )
     : {
       homeId: null,
       settled: Promise.resolve({ status: "ready", homeId: null }),
@@ -624,6 +719,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   let backgroundLifecycle: ReturnType<typeof acquireServerBackgroundLifecycle> | null = null;
   try {
     backgroundLifecycle = acquireServerBackgroundLifecycle(applyPolicy);
+    // External `ocx config set` / direct config.json edits run in other
+    // processes; poll the file so Logs/Usage display prices follow them live.
+    // Started inside the guarded startup transaction so the catch below can
+    // release the owner-scoped lease on any listener failure.
+    userCostOverlayReconciler = startUserCostOverlayReconciler({ liveConfig: config });
     const serveOptions = {
       idleTimeout: 255,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
@@ -723,6 +823,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           pid: process.pid,
           port: healthPort,
           restartCapability: SYSTEM_RESTART_CAPABILITY_VERSION,
+          providerReloadCapability: LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION,
         }, 200, req, policy);
         const challenge = req.headers.get(LOCAL_ATTESTATION_CHALLENGE_HEADER);
         if (challenge) {
@@ -806,10 +907,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           }
           throw error;
         }
-        const { applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
         const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
-        const nativeSlugs = includeNativeOpenAi ? nativeOpenAiSlugs() : [];
+        const nativeSlugs = includeNativeOpenAi
+          ? nativeOpenAiSlugs()
+          : [];
         const disabledNatives = disabledNativeSlugs(config);
         const disabledModels = new Set(config.disabledModels ?? []);
         const shadowedNativeSlugs = configuredNativeAliasSlugs(config);
@@ -817,6 +920,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         const accountSelectors = includeAccountBoundNativeOpenAi
           ? visibleCodexAccountSelectors(config)
           : [];
+        const accountNativeSlugsBySelector = includeAccountBoundNativeOpenAi
+          ? accountBoundNativeOpenAiSlugsBySelector(config)
+          : new Map<string, readonly string[]>();
+        const accountNativeSlugs = [...new Set(
+          [...accountNativeSlugsBySelector.values()].flatMap(slugs => [...slugs]),
+        )];
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -864,14 +973,29 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           // newly re-enabled native reappear under each selector before the next sync, while the
           // no-selector path keeps nativeOpenAiSlugs()'s existing visibility-sensitive behavior.
           const catalogNativeSlugs = accountSelectors.length > 0
-            ? NATIVE_OPENAI_MODELS
+            ? [...new Set([...NATIVE_OPENAI_MODELS, ...accountNativeSlugs])]
             : nativeSlugs;
-          const entries = buildCatalogEntries(loadCatalogTemplate(), catalogNativeSlugs, goOrdered, config.subagentModels, websocketsEnabled(config), maMode as "v1" | "default" | "v2", exactComboCatalogSlugs(config), accountSelectors, suppressedBareNativeSlugs);
+          const entries = buildCatalogEntries(
+            loadCatalogTemplate(),
+            catalogNativeSlugs,
+            goOrdered,
+            config.subagentModels,
+            websocketsEnabled(config),
+            maMode as "v1" | "default" | "v2",
+            exactComboCatalogSlugs(config),
+            accountSelectors,
+            suppressedBareNativeSlugs,
+            new Set(),
+            providerContextCap(config, OPENAI_CODEX_PROVIDER_ID),
+            accountNativeSlugs,
+            accountNativeSlugsBySelector,
+          );
           return jsonResponse({
             models: applyNativeVisibility(
               entries,
               disabledModels,
               accountSelectors.length > 0,
+              new Set(accountNativeSlugs),
             ),
           }, 200, req, policy);
         }
@@ -917,13 +1041,16 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         const selectorNativeSlugs = accountSelectors.length > 0
           ? NATIVE_OPENAI_MODELS.filter(slug => !disabledNatives.has(slug))
           : [];
+        const bareSelectorNativeSlugs = accountSelectors.length > 0
+          ? selectorNativeSlugs
+          : [];
         const visibleNatives = includeNativeOpenAi
           ? accountSelectors.length > 0
-            ? selectorNativeSlugs.filter(slug => !shadowedNativeSlugs.has(slug))
+            ? bareSelectorNativeSlugs.filter(slug => !shadowedNativeSlugs.has(slug))
             : visibleNativeSlugs(config)
           : [];
         const visibleAccountNatives = accountSelectors.flatMap(selector =>
-          selectorNativeSlugs.flatMap(metadataId => {
+          (accountNativeSlugsBySelector.get(selector) ?? []).filter(metadataId => !disabledNatives.has(metadataId)).flatMap(metadataId => {
             const id = `${selector}/${metadataId}`;
             return disabledModels.has(id) ? [] : [{ id, metadataId }];
           })
@@ -1091,7 +1218,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
             onNativePassthroughTerminal: status => {
-              finalizeNativePassthroughLog(httpStatusForTerminalStatus(status), {
+              finalizeNativePassthroughLog(httpStatusForRequestLogTerminal(status, logCtx), {
                 terminalStatus: status,
                 closeReason: "terminal",
               });
@@ -1117,7 +1244,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         if (!isAllowedRequestOrigin(req, policy)) {
           return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, policy);
         }
-        return runAdmittedHttpTurn(req, policy, async () => withCors(await handleClaudeCountTokens(req, config), req, policy));
+        return runAdmittedHttpTurn(req, policy, async () => withCors(
+          await handleClaudeCountTokens(req, config, policy),
+          req,
+          policy,
+        ));
       }
 
       if (url.pathname === "/v1/messages" && req.method === "POST") {
@@ -1144,9 +1275,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // pre-translation stream + native passthrough callbacks) — do not re-wrap the
         // translated Anthropic stream here.
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
-          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease }),
+          await handleClaudeMessages(req, config, logCtx, { requestId, start, turnAdmissionLease }, policy),
           req,
-          config,
+          policy,
         ));
       }
 
@@ -1213,10 +1344,13 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         });
       }
 
-      // Voice / Realtime sideband WebSocket: Frameless joins /v1/live/{callId}; Realtime v1 joins
-      // /v1/realtime?call_id= (or /v1/realtime/calls/{callId}). Transparent bidirectional relay.
+      // Voice / Realtime WebSocket relay. Sideband joins: Frameless /v1/live/{callId};
+      // Realtime v1 /v1/realtime?call_id= (or /v1/realtime/calls/{callId}). Standalone
+      // sessions (codex-rs thread/realtime/start, WebSocket transport — the desktop voice
+      // path): /v1/realtime?intent=quicksilver&model= and /v1/live?model=.
+      // Transparent bidirectional relay.
       const liveSidebandTarget = req.headers.get("upgrade")?.toLowerCase() === "websocket"
-        ? parseLiveSidebandTarget(url.pathname, url.searchParams)
+        ? parseLiveSidebandTarget(url.pathname, url.searchParams, url.search.replace(/^\?/, ""))
         : null;
       if (liveSidebandTarget) {
         if (isDraining()) {
@@ -1255,6 +1389,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             liveUpstreamUrl: resolved.upstreamWsUrl,
             liveUpstreamHeaders: resolved.headers,
             livePending: [],
+            livePendingBytes: 0,
             liveOpened: false,
             liveTurnAdmissionLease: turnAdmissionLease,
           } satisfies WsData,
@@ -1288,6 +1423,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       return withCors(formatErrorResponse(404, "not_found", `Unknown endpoint: ${req.method} ${url.pathname}`), req, config);
     },
     websocket: {
+      maxPayloadLength: MAX_WS_FRAME_BYTES,
       idleTimeout: WEBSOCKET_IDLE_TIMEOUT_SECONDS,
       // Responses WebSocket data plane (phase 120.2). Re-frames the same SSE pipeline onto the
       // socket: parse response.create → run handleResponses unchanged → pump its SSE body as WS
@@ -1312,15 +1448,23 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         if (ws.data.kind === "live-sideband") {
           if (ws.data.liveClosing) return;
+          const rawBytes = webSocketFrameBytes(raw);
+          if (exceedsLiveSidebandFrameByteLimit(rawBytes)) {
+            closeLiveSideband(ws, 1009, "message too large");
+            return;
+          }
           logLiveSidebandFrame("c2u", raw);
           const upstream = ws.data.liveUpstream;
           if (!upstream || upstream.readyState === WebSocket.CONNECTING || !ws.data.liveOpened) {
-            const pending = ws.data.livePending ?? (ws.data.livePending = []);
-            if (pending.length >= LIVE_SIDEBAND_PENDING_MAX) {
+            const enqueueResult = enqueueLiveSidebandPendingFrame(ws.data, raw, rawBytes);
+            if (enqueueResult === "too-many-frames") {
               closeLiveSideband(ws, 1009, "too many pending frames");
               return;
             }
-            pending.push(raw);
+            if (enqueueResult === "too-many-bytes") {
+              closeLiveSideband(ws, 1009, "too many pending bytes");
+              return;
+            }
             return;
           }
           if (upstream.readyState !== WebSocket.OPEN) {
@@ -1518,6 +1662,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
     }
   } catch (error) {
+    userCostOverlayReconciler?.stop();
     backgroundLifecycle?.releaseAfterFailedStart();
     void nativeMainLifecycle.release();
     throw error;
@@ -1537,6 +1682,9 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...(loopbackListenerRef
             ? [() => loopbackListenerRef.stop(closeActiveConnections)]
             : []),
+          async () => {
+            userCostOverlayReconciler?.stop();
+          },
         ],
         async () => {
           await backgroundLifecycle.release();
@@ -1586,6 +1734,20 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
 
   // Opt-in storage policy (default OFF). Never blocks listen; cancellable on shutdown.
   backgroundLifecycle.scheduleStartupRun();
+
+  const labConfigDir = getConfigDir();
+  const productionLabRouteExecutor = createProductionLabRouteExecutor({
+    configDir: labConfigDir,
+    loadConfig: () => config,
+  });
+  setLabAutomationDispatchDeps({
+    configDir: labConfigDir,
+    loadConfig: () => config,
+    routeExecutor: productionLabRouteExecutor,
+  });
+  if (loadLabAutomationPolicy(labConfigDir).enabled) {
+    startLabAutomationScheduler(labConfigDir);
+  }
 
   return server;
 }

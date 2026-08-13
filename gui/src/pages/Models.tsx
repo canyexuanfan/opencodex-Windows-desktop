@@ -13,6 +13,7 @@ import { DataSurfaceSkeleton } from "../components/data-surface";
 import ErrorBoundary from "../components/ErrorBoundary";
 import Combos from "./Combos";
 import RoutingProfiles from "./RoutingProfiles";
+import CompatibilityMatrix from "./CompatibilityMatrix";
 import { ModelsTabStrip } from "./models-tab-strip";
 import {
   modelsPanelDomId,
@@ -71,6 +72,7 @@ const SUBTITLE_TKEY: Record<ModelsTab, TKey> = {
   catalog: "models.subtitle",
   combos: "models.subtitle.combos",
   routing: "models.subtitle.routing",
+  compatibility: "models.subtitle.compatibility",
 };
 
 /**
@@ -128,6 +130,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
   /** Counts reported up by the panels that own the underlying lists. */
   const [comboCount, setComboCount] = useState<number | null>(null);
   const [routingCount, setRoutingCount] = useState<number | null>(null);
+  const [compatibilityCount, setCompatibilityCount] = useState<number | null>(null);
 
   const t: TFn = useT();
   const cacheKey = `ocx.models.catalog.v1:${apiBase}`;
@@ -505,7 +508,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
     if (groups.length === 0) return;
     needsDefaultCollapseRef.current = false;
     const all = new Set(groups.map(group => group.provider));
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // eslint-disable-next-line react-hooks/set-state-in-effect, react/react-compiler
     setCollapsed(all);
     writeCollapsedProviders(all);
   }, [groups]);
@@ -532,7 +535,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
       : undefined,
     combos: comboCount === null ? undefined : String(comboCount),
     routing: routingCount === null ? undefined : String(routingCount),
-  }), [catalogCountReady, comboCount, effectiveVisibleCount, models.length, routingCount, t]);
+    compatibility: compatibilityCount === null ? undefined : String(compatibilityCount),
+  }), [catalogCountReady, comboCount, compatibilityCount, effectiveVisibleCount, models.length, routingCount, t]);
 
   const applyVisibility = async (
     scope: ModelVisibilityScope,
@@ -1696,7 +1700,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
           {collapseControls}
           <div className="models-provider-list">
             {
-              // eslint-disable-next-line react-hooks/refs -- The hover ref is only read by row event handlers nested in this renderer.
+              // eslint-disable-next-line react-hooks/refs, react/react-compiler -- The hover ref is only read by row event handlers nested in this renderer.
               visibleGroups.map(group => renderGroup(group))
             }
           </div>
@@ -1796,6 +1800,26 @@ export default function Models({ apiBase }: { apiBase: string }) {
             reloadLabel={t("errorBoundary.reload")}
           >
             <RoutingProfiles apiBase={apiBase} active={tab === "routing"} onCountChange={setRoutingCount} />
+          </ErrorBoundary>
+        )}
+      </div>
+
+      <div
+        className="models-tab-panel"
+        role="tabpanel"
+        id={modelsPanelDomId("compatibility")}
+        aria-labelledby={modelsTabDomId("compatibility")}
+        hidden={tab !== "compatibility"}
+      >
+        {mounted.has("compatibility") && (
+          <ErrorBoundary
+            pageName={t("models.tab.compatibility")}
+            title={t("errorBoundary.title")}
+            message={t("errorBoundary.message")}
+            detailsLabel={t("errorBoundary.details")}
+            reloadLabel={t("errorBoundary.reload")}
+          >
+            <CompatibilityMatrix apiBase={apiBase} active={tab === "compatibility"} onCountChange={setCompatibilityCount} />
           </ErrorBoundary>
         )}
       </div>

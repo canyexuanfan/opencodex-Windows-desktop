@@ -35,6 +35,10 @@ const CURSOR_MODEL_EFFORT_TIERS: Record<string, readonly string[]> = {
   // cursor-grok-4.5-{low,medium,high}-fast. The bare Fast id returns not_found.
   "grok-4.5": ["low", "medium", "high"],
   "grok-4.5-fast": ["low", "medium", "high"],
+  // 260813 preemptive: grok-4.6 tiers mirrored from grok-4.5 ahead of Cursor's lineup update,
+  // so the suffix/wire handling is already correct the day the slugs appear.
+  "grok-4.6": ["low", "medium", "high"],
+  "grok-4.6-fast": ["low", "medium", "high"],
   "gpt-5.1": ["low", "high"],
   "gpt-5.1-codex-max": ["low", "medium", "high", "xhigh"],
   "gpt-5.1-codex-mini": ["low", "high"],
@@ -135,5 +139,5 @@ export function cursorWireModelIdWithEffort(baseModelId: string, effortSuffix: s
  */
 export function cursorRequestWireModelIdWithEffort(baseModelId: string, effortSuffix: string): string {
   const flattened = cursorWireModelIdWithEffort(baseModelId, effortSuffix);
-  return baseModelId === "grok-4.5" ? `cursor-${flattened}` : flattened;
+  return baseModelId === "grok-4.5" || baseModelId === "grok-4.6" ? `cursor-${flattened}` : flattened;
 }

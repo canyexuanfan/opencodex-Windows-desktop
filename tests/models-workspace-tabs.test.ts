@@ -1,9 +1,9 @@
 /**
  * Models workspace tabs — routing contract.
  *
- * `#combos` and `#routing` are no longer pages. Both resolve to the Models page and
- * redirect to their nested tab hashes, and `readModelsTab` recognises the pre-redirect
- * form so a cold load lands on the right tab.
+ * Legacy standalone Combos, Routing, and Lab hashes resolve to Models and redirect to
+ * their nested tab hashes. `readModelsTab` also recognizes the pre-redirect form so a
+ * cold load lands on the intended tab without a transient page mismatch.
  */
 import { expect, test, describe } from "bun:test";
 import {
@@ -22,11 +22,10 @@ import {
 } from "../gui/src/pages/models-tab";
 
 describe("nested Models hashes", () => {
-  test("both tab hashes are registered and belong to the models page", () => {
-    expect([...MODELS_TAB_HASHES]).toEqual(["models/combos", "models/routing"]);
+  test("all tab hashes are registered and belong to the models page", () => {
+    expect([...MODELS_TAB_HASHES]).toEqual(["models/combos", "models/routing", "models/compatibility"]);
     for (const hash of MODELS_TAB_HASHES) {
       expect(hashBelongsToPage(hash, "models")).toBe(true);
-      // The first segment already answers the page; the suffix only picks the tab.
       expect(readPageFromHash(hash)).toBe("models");
     }
   });
@@ -53,6 +52,7 @@ describe("readModelsTab", () => {
     expect(readModelsTab("#models")).toBe("catalog");
     expect(readModelsTab("#models/combos")).toBe("combos");
     expect(readModelsTab("#models/routing")).toBe("routing");
+    expect(readModelsTab("#models/compatibility")).toBe("compatibility");
   });
 
   test("accepts the bare and slash-prefixed hash forms", () => {
@@ -60,11 +60,6 @@ describe("readModelsTab", () => {
     expect(readModelsTab("#/models/routing")).toBe("routing");
   });
 
-  /*
-   * The redirect that rewrites `#combos` uses replaceState and emits no `hashchange`,
-   * so tab state is read from the ORIGINAL hash. Recognising only the nested form
-   * would land a cold load on the catalog with the URL claiming Combos.
-   */
   test("resolves legacy top-level hashes so a cold load lands on the right tab", () => {
     expect(readModelsTab("#combos")).toBe("combos");
     expect(readModelsTab("#routing")).toBe("routing");
@@ -78,11 +73,6 @@ describe("readModelsTab", () => {
     expect(readModelsTab("")).toBe("catalog");
   });
 
-  /*
-   * The legacy arms match on a `/` delimiter, not a bare prefix. Without these a
-   * later "simplification" to `startsWith("routing")` would hijack any future page
-   * whose id merely begins with one of these words.
-   */
   test("legacy matching is delimiter-aware, not prefix-aware", () => {
     expect(readModelsTab("#combosomething")).toBe("catalog");
     expect(readModelsTab("#routings")).toBe("catalog");
@@ -90,10 +80,6 @@ describe("readModelsTab", () => {
     expect(readModelsTab("#combos-legacy")).toBe("catalog");
   });
 
-  /*
-   * `models/combos/extra` is not a registered hash: the resolver normalises it away,
-   * so the tab reader must agree rather than treating it as the Combos tab.
-   */
   test("a deeper nested hash is not mistaken for a tab", () => {
     expect(readModelsTab("#models/combos/extra")).toBe("catalog");
     expect(readModelsTab("#models/routing/extra")).toBe("catalog");
@@ -102,15 +88,14 @@ describe("readModelsTab", () => {
 
 describe("modelsTabHash", () => {
   test("round-trips every tab", () => {
-    for (const tab of MODELS_TABS) {
-      expect(readModelsTab(`#${modelsTabHash(tab)}`)).toBe(tab);
-    }
+    for (const tab of MODELS_TABS) expect(readModelsTab(`#${modelsTabHash(tab)}`)).toBe(tab);
   });
 
   test("the catalog owns the bare page hash", () => {
     expect(modelsTabHash("catalog")).toBe("models");
     expect(modelsTabHash("combos")).toBe("models/combos");
     expect(modelsTabHash("routing")).toBe("models/routing");
+    expect(modelsTabHash("compatibility")).toBe("models/compatibility");
   });
 
   test("every non-catalog hash is registered for normalization", () => {
@@ -122,8 +107,6 @@ describe("modelsTabHash", () => {
 test("tab and panel dom ids are distinct per tab, so aria-controls cannot collide", () => {
   const ids = MODELS_TABS.flatMap(tab => [modelsTabDomId(tab), modelsPanelDomId(tab)]);
   expect(new Set(ids).size).toBe(ids.length);
-  // Pin the exact shape: the rendered aria-controls/aria-labelledby pair is asserted
-  // against these ids once the strip exists, so a silent rename would desync them.
   expect(modelsTabDomId("combos")).toBe("models-tab-combos");
   expect(modelsPanelDomId("combos")).toBe("models-panel-combos");
 });
@@ -134,4 +117,25 @@ test("an unregistered deep hash normalises to the bare page, matching readModels
     expect(resolveAppHashChange(stray)).toEqual({ page: "models", replaceTo: "models" });
     expect(readModelsTab(`#${stray}`)).toBe("catalog");
   }
+});
+
+describe("legacy lab hash", () => {
+  test("#lab redirects to models/compatibility and resolves Models immediately", () => {
+    expect(resolveAppHashChange("lab")).toEqual({ page: "models", replaceTo: "models/compatibility" });
+    expect(readModelsTab("#lab")).toBe("compatibility");
+    expect(readPageFromHash("#lab")).toBe("models");
+  });
+
+  test("the nested legacy form keeps its destination", () => {
+    expect(resolveAppHashChange("lab/anything")).toEqual({ page: "models", replaceTo: "models/compatibility" });
+    expect(readModelsTab("#lab/anything")).toBe("compatibility");
+    expect(readPageFromHash("#lab/anything")).toBe("models");
+  });
+
+  test("legacy lab matching is delimiter-aware, not prefix-aware", () => {
+    expect(readModelsTab("#labs")).toBe("catalog");
+    expect(readModelsTab("#label")).toBe("catalog");
+    expect(readModelsTab("#lab-legacy")).toBe("catalog");
+    expect(resolveAppHashChange("labs")).toEqual({ page: "dashboard", replaceTo: "dashboard" });
+  });
 });

@@ -1,3 +1,4 @@
+import { usageSummary30dResourceKey } from "../usage-summary-resource";
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { IconX } from "../icons";
 import { useT } from "../i18n/shared";
@@ -79,22 +80,19 @@ export default function AddProviderModal({
     },
   );
   const usagePoll = useKeyedClientResource(
-    `add-provider-usage:${apiBase}`,
+    usageSummary30dResourceKey(apiBase),
     [apiBase],
     async (signal) => {
       const res = await fetch(`${apiBase}/api/usage?range=30d`, { signal });
-      if (!res.ok) return {} as Record<string, number>;
-      const data = await res.json() as { providers?: Array<{ provider: string; requests: number }> };
-      const rank: Record<string, number> = {};
-      for (const row of data.providers ?? []) rank[row.provider] = row.requests;
-      return rank;
+      if (!res.ok) throw new Error(String(res.status));
+      return await res.json() as { providers?: Array<{ provider: string; requests: number }> };
     },
   );
 
   const oauthSupported = oauthPoll.data ?? [];
   const presets = presetsPoll.data ?? fallbackPresets;
   const presetsLoading = presetsPoll.loading;
-  const usageRank = usagePoll.data ?? {};
+  const usageRank = Object.fromEntries((usagePoll.data?.providers ?? []).map(row => [row.provider, row.requests]));
   const {
     preset, form, saving, error, oauthBusy, oauthMsg, oauthMsgTone, oauthUrl, oauthUrlProvider,
     manualCode, manualCodeBusy, manualCodeMsg, manualCodeOk, endpointChoice, oauthTosPending,
@@ -115,6 +113,7 @@ export default function AddProviderModal({
       aliveRef.current = false;
       previousFocusRef.current?.focus();
     };
+    // oxlint-disable-next-line react/react-compiler -- existing exhaustive-deps exception is intentional
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only open hook
   }, []);
 
@@ -229,8 +228,12 @@ export default function AddProviderModal({
 
   return (
     <>
-    <div role="dialog" aria-modal="true" aria-label={t("modal.add")} className="modal-overlay" onClick={onClose}>
-      <div ref={dialogRef} className="modal-card" onClick={e => e.stopPropagation()}>
+    {/* The backdrop must not dismiss this modal: a stray click — or a text
+        selection drag that is released outside the card — would wipe every
+        field the user already filled in. Close only via the × button,
+        Escape, or a successful add. */}
+    <div role="dialog" aria-modal="true" aria-label={t("modal.add")} className="modal-overlay">
+      <div ref={dialogRef} className="modal-card">
         <div className="modal-head">
           <h3>{preset ? t("modal.addNamed", { label: preset.label }) : t("modal.add")}</h3>
           <button type="button" className="btn btn-ghost btn-icon" aria-label={t("common.close")} onClick={onClose}><IconX /></button>

@@ -196,7 +196,7 @@ test("routing page loads profiles, analytics, and marks the dry-run selection", 
 
     expect(dryRunBodies).toEqual([{ profile: "balanced", evidence: {} }]);
     expect(container.textContent).toContain("selected");
-    expect(container.textContent).toContain("unknown-capability");
+    expect(container.textContent).toContain("unknown capability");
     expect(container.textContent).toContain("0.910");
   } finally {
     await act(async () => { root.unmount(); });

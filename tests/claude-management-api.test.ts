@@ -124,6 +124,27 @@ test("PUT round-trips settings and persists to config", async () => {
   }
 });
 
+test("a rejected PUT does not apply fastMode in memory", async () => {
+  const config = loadConfig();
+  config.fastMode = false;
+  saveConfig(config);
+  const server = startServer(0);
+  try {
+    const put = await fetch(new URL("/api/claude-code", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fastMode: true, modelMap: { invalid: "" } }),
+    });
+    expect(put.status).toBe(400);
+
+    const get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
+    expect(get.fastMode).toBe(false);
+    expect(loadConfig().fastMode).toBe(false);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("PUT round-trips three-state authMode (devlog 260720 + 260726_claude_auth_auto)", async () => {
   const server = startServer(0);
   try {

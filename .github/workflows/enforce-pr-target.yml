@@ -73,15 +73,56 @@ jobs:
               }
 
               const statusSha = context.payload.sha;
-              const associatedPrs = await github.paginate(
-                github.rest.repos.listPullRequestsAssociatedWithCommit,
-                { owner, repo, commit_sha: statusSha, per_page: 100 }
-              );
-              const candidates = associatedPrs.filter(
-                candidate =>
-                  candidate.state === "open" &&
-                  candidate.head?.sha === statusSha
-              );
+              // Primary authority: GitHub's commit-to-PR index. This read can
+              // lag a fresh head push, so a non-match is not proof of absence.
+              let candidates = [];
+              try {
+                const associatedPrs = await github.paginate(
+                  github.rest.repos.listPullRequestsAssociatedWithCommit,
+                  { owner, repo, commit_sha: statusSha, per_page: 100 }
+                );
+                candidates = associatedPrs.filter(
+                  candidate =>
+                    candidate.state === "open" &&
+                    candidate.head?.sha === statusSha
+                );
+              } catch (error) {
+                core.warning(
+                  `Could not list PRs associated with commit ${statusSha}: ${error.message}`
+                );
+              }
+
+              if (candidates.length !== 1) {
+                // Fallback: reconcile directly against the live head SHA. The
+                // association index can be stale or empty for a very recent
+                // head (seen on PR #1441), so an empty/ambiguous index result
+                // must not silently drop the revalidation. Matching on the
+                // head SHA is the same authoritative identity the write gate
+                // uses, and `pulls.list` is a read — compatible with this
+                // job's `pull-requests: read` permission.
+                const priorCount = candidates.length;
+                try {
+                  const openPrs = await github.paginate(github.rest.pulls.list, {
+                    owner,
+                    repo,
+                    state: "open",
+                    per_page: 100
+                  });
+                  candidates = openPrs.filter(
+                    pr =>
+                      pr.state === "open" &&
+                      pr.head?.sha === statusSha
+                  );
+                  core.info(
+                    `Associated-index fallback: ${priorCount} index match(es), ${candidates.length} open PR(s) match head ${statusSha}.`
+                  );
+                } catch (error) {
+                  core.warning(
+                    `Could not list open PRs for head-${statusSha} fallback: ${error.message}`
+                  );
+                }
+              }
+
               if (candidates.length !== 1) {
                 core.info(
                   `CodeRabbit status ${statusSha} maps to ${candidates.length} open current-head PRs; skipping ambiguous/stale revalidation.`
@@ -99,10 +140,8 @@ jobs:
     needs: resolve-pr
     if: needs.resolve-pr.outputs.pull-number != ''
     runs-on: ubuntu-latest
-    # The write job also reads the current head's aggregate check evidence.
     # Job-scoped permissions replace, rather than extend, the workflow default.
     permissions:
-      checks: read
       contents: write
       pull-requests: write
     concurrency:
@@ -115,13 +154,18 @@ jobs:
       - name: Checkout trusted PR-quality scripts
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          # `pull_request_target` runs from the PR base revision, so use that
-          # immutable base SHA for the trusted scripts. `status` runs the
-          # privileged workflow from the repository default branch; source its
-          # scripts and MAINTAINERS.md from that same promoted trust boundary.
-          # This prevents unpromoted `dev` script changes from executing with
-          # the workflow's write-capable token.
-          ref: ${{ github.event_name == 'status' && github.event.repository.default_branch || github.event.pull_request.base.sha }}
+          # Source trusted scripts from an integration branch, never from the
+          # PR's own base commit. A stacked child PR's base is another open
+          # PR's head, so `base.sha` let an unpromoted commit choose which code
+          # runs with this job's contents/pull-requests write token.
+          #
+          # The branch is chosen, not fixed. `status` has no pull_request
+          # payload and runs the privileged workflow from the repository
+          # default branch, so it sources from that same promoted boundary. A
+          # `main`-targeting PR must take its scripts from `main`, or the gate
+          # runs a `main` workflow definition against `dev` scripts. Every
+          # other base, including a stacked child's, resolves to `dev`.
+          ref: ${{ github.event_name == 'status' && github.event.repository.default_branch || (github.event.pull_request.base.ref == 'main' && 'main' || 'dev') }}
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
@@ -139,6 +183,7 @@ jobs:
               collectPrQualityFailures,
               authorHasPushPermission,
               hasGuiOverride,
+              isChangedFileListTruncated,
               extractReviewReadiness,
               appendReviewReadinessSection,
               stripReviewReadinessSection,
@@ -534,6 +579,51 @@ jobs:
               }
             }
 
+            const changedFiles = [];
+            const changedFilePaths = [];
+            let filesTruncated = true;
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              const { data: fileSnapshot } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number
+              });
+              const headShaForFiles = fileSnapshot.head?.sha ?? "";
+              const listedFiles = await github.paginate(
+                github.rest.pulls.listFiles,
+                { owner, repo, pull_number, per_page: 100 }
+              );
+              const { data: fileVerify } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number
+              });
+              const headMatches = fileVerify.head?.sha === headShaForFiles;
+              if (!headMatches && attempt === 0) {
+                core.info(
+                  "PR head moved while listing changed files; retrying once."
+                );
+                continue;
+              }
+              if (!headMatches) {
+                core.warning(
+                  "PR head moved during changed-file snapshot; treating file list as truncated."
+                );
+              }
+              changedFiles.length = 0;
+              changedFiles.push(...listedFiles);
+              changedFilePaths.length = 0;
+              changedFilePaths.push(
+                ...listedFiles.map(file => file.filename).filter(Boolean)
+              );
+              filesTruncated = isChangedFileListTruncated(
+                fileSnapshot.changed_files,
+                listedFiles.length,
+                headMatches
+              );
+              break;
+            }
+
             let failures = collectPrQualityFailures({
               baseRef: pr.base.ref,
               allowedBases: ALLOWED_BASES,
@@ -548,17 +638,15 @@ jobs:
               stackedBase,
               // A maintainer issue comment ("not touching gui") waives the
               // GUI-screenshot gate; the comments are already fetched above.
-              guiOverrideComments: comments
+              guiOverrideComments: comments,
+              changedFilePaths,
+              filesTruncated
             });
 
             // Hygiene is a separate workflow that owns the blocked label and
             // the Hygiene comment section, but Ready / review-ready must not
             // clear while those checks fail. Re-assess here from the same
             // trusted scripts so the gate cannot race ahead of hygiene.
-            const changedFiles = await github.paginate(
-              github.rest.pulls.listFiles,
-              { owner, repo, pull_number, per_page: 100 }
-            );
             const labelNames = (pr.labels ?? []).map(label => label.name);
             failures = [
               ...failures,
@@ -753,14 +841,16 @@ jobs:
               checklistComplete = readiness.present && readiness.complete;
             }
 
-            // The bot verifies the three checklist claims it can check itself.
-            // The CI box only counts when the head's `ci` check (the repo's
-            // documented "CI passed" signal) is green; the latest-dev box only
-            // counts while the head is at most READINESS_LATEST_DEV_BEHIND_MAX
-            // commits behind the base; the findings box only counts while every
-            // Codex/CodeRabbit review thread on the PR is resolved. A disproved
-            // claim unchecks that box and keeps the PR a draft, exactly like a
-            // head-drift reset.
+            // The bot verifies the checklist claims it can check itself. The
+            // local-CI box is an author attestation only — fork contributors
+            // cannot start repository CI (a maintainer has to) — so the gate
+            // never disproves it; head-drift still resets every box after a
+            // new push. The latest-dev box only counts while the head is at
+            // most READINESS_LATEST_DEV_BEHIND_MAX commits behind the base;
+            // the findings box only counts while every Codex/CodeRabbit
+            // review thread on the PR is resolved. A disproved claim unchecks
+            // that box and keeps the PR a draft, exactly like a head-drift
+            // reset.
             let claimViolations = [];
             let claimNotice = [];
             if (
@@ -769,52 +859,7 @@ jobs:
               !headDrifted &&
               failures.length === 0
             ) {
-              let ciGreen = false;
-              try {
-                // GitHub Actions' immutable App ID. Name alone is not evidence:
-                // any installed app can publish a check called `ci`.
-                const githubActionsAppId = 15368;
-                const { data: checksData } =
-                  await github.rest.checks.listForRef({
-                    owner,
-                    repo,
-                    ref: pr.head.sha,
-                    app_id: githubActionsAppId,
-                    check_name: "ci",
-                    filter: "latest",
-                    per_page: 100
-                  });
-                const checkRuns = Array.isArray(checksData.check_runs)
-                  ? checksData.check_runs
-                  : [];
-                const ciChecks = checkRuns.filter(
-                  check =>
-                    check.name === "ci" &&
-                    check.app?.id === githubActionsAppId
-                );
-                // The readiness claim requires positive CI evidence. A missing,
-                // pending, unsuccessful, foreign, or conflicting aggregate
-                // check must fail closed. The exact app/name/latest query should
-                // be tiny; if GitHub reports more rows than this response holds,
-                // treat the truncated evidence as unreadable rather than paging
-                // through an endpoint whose filters already select the latest run.
-                ciGreen =
-                  Number.isSafeInteger(checksData.total_count) &&
-                  checksData.total_count === checkRuns.length &&
-                  ciChecks.length > 0 &&
-                  ciChecks.every(
-                    check =>
-                      check.status === "completed" &&
-                      check.conclusion === "success"
-                  );
-              } catch (error) {
-                core.warning(
-                  `Could not list checks for the readiness claim check: ${error.message}`
-                );
-                ciGreen = false;
-              }
               claimViolations = readinessClaimViolations({
-                ciGreen,
                 behindBase,
                 behindUnknown: ancestryLookupFailed
               });

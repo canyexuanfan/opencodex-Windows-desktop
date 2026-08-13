@@ -224,6 +224,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const {
       isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads,
       getAgentsEnabled, getAgentsMaxDepth, getSubagentDeveloperInstructions,
+      getMultiAgentModeHintText,
     } = await import("../../codex/features");
     const enabled = isMultiAgentV2Enabled();
     return jsonResponse({
@@ -234,6 +235,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       agentsEnabled: getAgentsEnabled(),
       agentsMaxDepth: getAgentsMaxDepth(),
       subagentDeveloperInstructions: getSubagentDeveloperInstructions(),
+      multiAgentModeHintText: getMultiAgentModeHintText(),
       // max_depth is V1-only upstream; this is the global-flag statement, derived
       // server-side so no client can present it as an effective V2 limit.
       agentsMaxDepthAppliesWhenV2Disabled: !enabled,
@@ -247,6 +249,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       agentsEnabled?: unknown;
       agentsMaxDepth?: unknown;
       subagentDeveloperInstructions?: unknown;
+      multiAgentModeHintText?: unknown;
     };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     const wantsFlag = body.enabled !== undefined;
@@ -255,8 +258,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const wantsAgentsEnabled = body.agentsEnabled !== undefined;
     const wantsMaxDepth = body.agentsMaxDepth !== undefined;
     const wantsSubagentInstructions = body.subagentDeveloperInstructions !== undefined;
-    if (!wantsFlag && !wantsThreads && !wantsMode && !wantsAgentsEnabled && !wantsMaxDepth && !wantsSubagentInstructions) {
-      return jsonResponse({ error: "body must set enabled, multiAgentMode, maxConcurrentThreadsPerSession, agentsEnabled, agentsMaxDepth, and/or subagentDeveloperInstructions" }, 400);
+    const wantsModeHintText = body.multiAgentModeHintText !== undefined;
+    if (!wantsFlag && !wantsThreads && !wantsMode && !wantsAgentsEnabled && !wantsMaxDepth && !wantsSubagentInstructions && !wantsModeHintText) {
+      return jsonResponse({ error: "body must set enabled, multiAgentMode, maxConcurrentThreadsPerSession, agentsEnabled, agentsMaxDepth, subagentDeveloperInstructions, and/or multiAgentModeHintText" }, 400);
     }
     if (wantsFlag && typeof body.enabled !== "boolean") return jsonResponse({ error: "body.enabled must be a boolean" }, 400);
     if (wantsMode && body.multiAgentMode !== "v1" && body.multiAgentMode !== "default" && body.multiAgentMode !== "v2") {
@@ -280,6 +284,14 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     if (wantsSubagentInstructions && body.subagentDeveloperInstructions !== null && typeof body.subagentDeveloperInstructions !== "string") {
       return jsonResponse({ error: "body.subagentDeveloperInstructions must be a string or null" }, 400);
     }
+    // null unsets the upstream key (effort-derived policy resumes); an empty/whitespace
+    // string is rejected because codex-rs treats any present hint as an override that
+    // suppresses even the Ultra-derived Proactive message (Option<String>, no blank
+    // special-case in effective_multi_agent_mode).
+    if (wantsModeHintText && body.multiAgentModeHintText !== null
+        && (typeof body.multiAgentModeHintText !== "string" || body.multiAgentModeHintText.trim().length === 0)) {
+      return jsonResponse({ error: "body.multiAgentModeHintText must be a non-empty string or null" }, 400);
+    }
     const mode = wantsMode ? body.multiAgentMode as "v1" | "default" | "v2" : undefined;
     const modeFlag = mode === "v2" ? true : mode === "v1" ? false : undefined;
     if (wantsFlag && modeFlag !== undefined && body.enabled !== modeFlag) {
@@ -288,8 +300,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     const {
       isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads, transitionMultiAgentV2,
       getAgentsEnabled, getAgentsMaxDepth, getSubagentDeveloperInstructions,
-      setAgentsEnabled, setAgentsMaxDepth, setSubagentDeveloperInstructions,
+      getMultiAgentModeHintText, probeCodexSupportsModeHint, setAgentsEnabled, setAgentsMaxDepth,
+      setSubagentDeveloperInstructions, setMultiAgentModeHintText, MODE_HINT_UNSUPPORTED_ERROR,
     } = await import("../../codex/features");
+    // Probe the capability before any combined-request mutation. The scalar writer
+    // repeats this check, but doing it here prevents an earlier flag/mode/agents
+    // write from landing before an unsupported runtime returns 502.
+    if (wantsModeHintText && body.multiAgentModeHintText !== null
+        && probeCodexSupportsModeHint() === false) {
+      return jsonResponse({
+        error: `writing multiAgentModeHintText failed: ${MODE_HINT_UNSUPPORTED_ERROR}`,
+      }, 502);
+    }
     const warnings: string[] = [];
     const requestedFlag = wantsFlag ? body.enabled as boolean : modeFlag;
     if (requestedFlag !== undefined || wantsThreads) {
@@ -322,6 +344,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     if (wantsAgentsEnabled) scalarWrites.push({ field: "agentsEnabled", run: () => setAgentsEnabled(body.agentsEnabled as boolean | null) });
     if (wantsMaxDepth) scalarWrites.push({ field: "agentsMaxDepth", run: () => setAgentsMaxDepth(body.agentsMaxDepth as number | null) });
     if (wantsSubagentInstructions) scalarWrites.push({ field: "subagentDeveloperInstructions", run: () => setSubagentDeveloperInstructions(body.subagentDeveloperInstructions as string | null) });
+    if (wantsModeHintText) scalarWrites.push({ field: "multiAgentModeHintText", run: () => setMultiAgentModeHintText(body.multiAgentModeHintText as string | null) });
     const landed: string[] = [];
     for (const write of scalarWrites) {
       try {
@@ -353,6 +376,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       agentsEnabled: getAgentsEnabled(),
       agentsMaxDepth: getAgentsMaxDepth(),
       subagentDeveloperInstructions: getSubagentDeveloperInstructions(),
+      multiAgentModeHintText: getMultiAgentModeHintText(),
       agentsMaxDepthAppliesWhenV2Disabled: !enabled,
       warnings,
       catalogRefresh,
@@ -1133,11 +1157,12 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         else delete next.tierModels;
       }
     }
+    let nextFastMode = config.fastMode;
     if (body.fastMode !== undefined) {
       if (body.fastMode !== true && body.fastMode !== false && body.fastMode !== null) {
         return jsonResponse({ error: "fastMode must be true, false, or null" }, 400);
       }
-      config.fastMode = body.fastMode === null ? undefined : body.fastMode;
+      nextFastMode = body.fastMode === null ? undefined : body.fastMode;
     }
     for (const field of ["model", "smallFastModel"] as const) {
       const value = body[field];
@@ -1164,6 +1189,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         else delete next.modelMap;
       }
     }
+    if (body.fastMode !== undefined) config.fastMode = nextFastMode;
     config.claudeCode = next;
     // Stamp the migration sentinel on EVERY persist of this block. The migration reads
     // "a claudeCode block with no authMode" as a pre-upgrade subscriber and pins it to

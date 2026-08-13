@@ -10,6 +10,7 @@
  * Lives outside cli.ts (which dispatches argv at module top level) so tests can import it.
  */
 import { loadConfig, readAlivePid, readRuntimePort, verifyPidIdentity } from "../config";
+import { directLocalHttpFetch } from "./direct-local-http";
 
 export interface HealthzIdentity {
   service?: unknown;
@@ -19,6 +20,7 @@ export interface HealthzIdentity {
   pid?: unknown;
   port?: unknown;
   restartCapability?: unknown;
+  providerReloadCapability?: unknown;
 }
 
 export interface LivenessIo {
@@ -97,7 +99,7 @@ export async function proxyIdentityAt(
   opts: { hostname?: string; expectedPid?: number } = {},
   io: LivenessIo = {},
 ): Promise<{ pid: number | null } | null> {
-  const fetchFn = io.fetchFn ?? fetch;
+  const fetchFn = io.fetchFn ?? directLocalHttpFetch;
   const sleepFn = io.sleepFn ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const nowFn = io.nowFn ?? Date.now;
   const baseTimeoutMs = io.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
@@ -307,7 +309,7 @@ export async function probeReadiness(
   opts: { hostname?: string; expectedPid?: number } = {},
   io: ReadinessProbeIo = {},
 ): Promise<ReadinessProbeResult | null> {
-  const fetchFn = io.fetchFn ?? fetch;
+  const fetchFn = io.fetchFn ?? directLocalHttpFetch;
   try {
     const res = await fetchFn(`http://${probeHostname(opts.hostname)}:${port}/readyz`, {
       signal: AbortSignal.timeout(io.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS),

@@ -23,6 +23,13 @@ export type RecordedCall = { method: string; args: unknown };
 export type HarnessResult = {
   calls: RecordedCall[];
   /**
+   * Values the script wrote through `core.setOutput`, in write order. The
+   * write-capable gate consumes `RESOLVED_PULL_NUMBER` from the resolver, and
+   * the client sets it as a step output; exposing it lets a test assert the
+   * SHA-to-PR resolution directly instead of inferring it from later calls.
+   */
+  outputs: Array<{ name: string; value: unknown }>;
+  /**
    * Paths the script read through its `node:fs` stub. Kept separate from
    * `calls` so exact method-sequence assertions stay stable while the fs
    * capability stays recorded (round: the harness must not hand a write-capable
@@ -53,6 +60,8 @@ export type PullRequestState = {
   draft?: boolean;
   base?: { ref: string };
   user?: { login: string };
+  /** `pulls.get` changed_files; omit to default to listed file count in harness. */
+  changed_files?: number;
 };
 
 export type Comment = {
@@ -169,9 +178,10 @@ export type RunOptions = {
   /** Page-keyed open PR fixtures for `pulls.list` (1-based via array index). */
   openPullPages?: unknown[][];
   /**
-   * Check-runs `checks.listForRef` reports for the head. Defaults to a green
-   * `ci` check so completed-checklist scenarios pass the claim check.
-   * Pass a red/pending/missing set to exercise the claim-check reset paths.
+   * Check-runs `checks.listForRef` used to report for readiness claim checks.
+   * Local CI is now an author attestation only, so the gate no longer lists
+   * checks; these fixtures remain so older scenarios that pass `checkRuns`
+   * still construct cleanly without affecting gate behavior.
    */
   checkRuns?: Array<{
     name: string;
@@ -186,7 +196,7 @@ export type RunOptions = {
     conclusion: string | null;
     app?: { id: number } | null;
   }>>;
-  /** Optional filtered total for proving truncated check evidence fails closed. */
+  /** Optional filtered total; unused now that the gate skips check listing. */
   checkRunTotalCount?: number;
   /**
    * Review threads `pullRequestReviewThreads` (via GraphQL) reports for the PR.
@@ -653,6 +663,13 @@ export async function runEnforcePrTarget(
   const filePages: unknown[][] =
     options.filePages ??
     (options.files && options.files.length > 0 ? [options.files] : [[]]);
+  const listedFileCount = filePages.flat().length;
+  const prInput = options.pr as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(prInput, "changed_files")) {
+    (pr as Record<string, unknown>).changed_files = prInput.changed_files;
+  } else {
+    (pr as { changed_files: number }).changed_files = listedFileCount;
+  }
   const checkRunPages = (options.checkRunPages ?? [options.checkRuns ?? DEFAULT_GREEN_CHECKS])
     .map(page => page.map(check => ({
       ...check,
@@ -1187,6 +1204,7 @@ export async function runEnforcePrTarget(
 
   return {
     calls,
+    outputs,
     fsReads,
     logs,
     warnings,

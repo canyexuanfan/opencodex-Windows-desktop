@@ -13,6 +13,7 @@ import {
   CODEX_THREAD_AFFINITY_IDLE_TTL_MS,
   clearCodexUpstreamHealth,
   clearThreadAccountMap,
+  getCodexQuotaHealthSnapshot,
   getCodexUpstreamHealth,
   isCodexAccountSoftAvoided,
   recordCodexUpstreamOutcome,
@@ -38,9 +39,12 @@ import { handleManagementAPI } from "../src/server/management-api";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
+import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provider-reload-contract";
 
+import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
 const previousOpencodexHome = process.env.OPENCODEX_HOME;
 const originalGlobalFetch = globalThis.fetch;
@@ -194,6 +198,7 @@ async function startPoolRetryHarness(
     pausedAccountIds?: string[];
     reauthAccountIds?: string[];
     omitCredentialAccountIds?: string[];
+    combos?: OcxConfig["combos"];
   } = {},
 ): Promise<PoolRetryHarness> {
   await removeTestDirBestEffort(TEST_DIR);
@@ -250,6 +255,7 @@ async function startPoolRetryHarness(
     ...(options.visionSidecarModel ? { visionSidecar: { model: options.visionSidecarModel } } : {}),
     ...(options.websockets ? { websockets: true } : {}),
     ...(options.streamMode ? { streamMode: options.streamMode } : {}),
+    ...(options.combos ? { combos: options.combos } : {}),
   } as OcxConfig;
   saveConfig(config);
   if (!options.omitCredentialAccountIds?.includes("pool-a")) {
@@ -685,6 +691,7 @@ describe("server local API auth", () => {
       expect(Object.keys(healthBody).sort()).toEqual([
         "pid",
         "port",
+        "providerReloadCapability",
         "restartCapability",
         "service",
         "status",
@@ -692,6 +699,7 @@ describe("server local API auth", () => {
         "version",
       ]);
       expect(healthBody.restartCapability).toBe(SYSTEM_RESTART_CAPABILITY_VERSION);
+      expect(healthBody.providerReloadCapability).toBe(LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION);
       expect("rss" in healthBody).toBe(false);
     } finally {
       await server.stop(true);
@@ -1130,6 +1138,13 @@ describe("server local API auth", () => {
   // Windows CI under the full suite can spend >1s opening WS turns and >5s on this
   // multi-server matrix; tight budgets flake as "tier websocket timeout" and cascade
   // into the next test via a late fetch restore (502 instead of the mocked 500).
+  /**
+   * This matrix points OPENCODEX_HOME at its own temp dir, so the service
+   * installed on the developer's machine is not evidence about it.
+   * See tests/helpers/owned-service-home.ts.
+   */
+  const inspectNativeCodexOwnership = ownedServiceHomeInspection("OpenAI option auth matrix test");
+
   test("OpenAI option auth matrix keeps direct, pool, and API credentials independent", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -1193,7 +1208,7 @@ describe("server local API auth", () => {
       url.protocol = "ws:";
       const ws = new WebSocket(url, { headers: { "x-opencodex-api-key": "local-secret", ...(headers ?? {}) } } as unknown as string[]);
       return new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), 5_000);
+        const timer = setTimeout(() => reject(new Error("tier websocket timeout")), watchdogMs(5_000));
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model, input: "hello" }));
         }, { once: true });
@@ -1228,7 +1243,7 @@ describe("server local API auth", () => {
       markAccountNeedsReauth("direct-unusable");
       recordCodexUpstreamOutcome(directConfig, "direct-unusable", 429, { retryAfter: "60" });
       saveConfig(directConfig);
-      const direct = startServer(0);
+      const direct = startServer(0, { inspectNativeCodexOwnership });
       const directBaseline = {
         config: readFileSync(join(TEST_DIR, "config.json"), "utf8"),
         accounts: readFileSync(join(TEST_DIR, "codex-accounts.json"), "utf8"),
@@ -1284,7 +1299,7 @@ describe("server local API auth", () => {
         writeMainToken(state === "expired" ? `header.${expiredPayload}.signature` : "opaque-live-main-token");
         saveConfig(cfg);
         const before = seen.length;
-        const unusableMain = startServer(0);
+        const unusableMain = startServer(0, { inspectNativeCodexOwnership });
         try {
           await waitForNativeMainStartupGate();
           if (state === "reauth") markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
@@ -1313,7 +1328,7 @@ describe("server local API auth", () => {
         autoSwitchThreshold: 0,
       } as OcxConfig);
       const beforeMissingPool = seen.length;
-      const missingPool = startServer(0);
+      const missingPool = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(missingPool)).status).toBe(401);
         expect((await compact(missingPool)).status).toBe(401);
@@ -1338,7 +1353,7 @@ describe("server local API auth", () => {
         providers: cooldownCfg,
       } as OcxConfig, "pool-a", 429, { retryAfter: "60" });
       const beforeCooldown = seen.length;
-      const cooledMulti = startServer(0);
+      const cooledMulti = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await compact(cooledMulti)).status).toBe(429);
         expect(seen).toHaveLength(beforeCooldown);
@@ -1346,7 +1361,7 @@ describe("server local API auth", () => {
         await cooledMulti.stop(true);
       }
       clearCodexUpstreamHealth();
-      const multi = startServer(0);
+      const multi = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
         expect((await compact(multi, { authorization: "Bearer local-secret" })).status).toBe(200);
@@ -1371,7 +1386,7 @@ describe("server local API auth", () => {
           "openai-apikey": { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", apiKey: "sk-platform" },
         },
       } as OcxConfig);
-      const api = startServer(0);
+      const api = startServer(0, { inspectNativeCodexOwnership });
       try {
         expect((await request(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
         expect((await compact(api, { authorization: "Bearer local-secret" }, "openai-apikey/gpt-test")).status).toBe(200);
@@ -1427,7 +1442,7 @@ describe("server local API auth", () => {
       const sendFrame = async (model: string) => {
         const before = seen.length;
         const message = new Promise<string>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), 5_000);
+          const timer = setTimeout(() => reject(new Error(`sequential websocket timeout: ${model}`)), watchdogMs(5_000));
           const onMessage = (event: MessageEvent) => {
             const value = typeof event.data === "string" ? event.data : "";
             if (!value.includes('"type":"response.completed"')) return;
@@ -1697,7 +1712,7 @@ describe("server local API auth", () => {
         },
       } as unknown as string[]);
       const wsFailure = new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket affinity timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket affinity timeout")), watchdogMs(1000));
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model: "gpt-test", input: "hello" }));
         }, { once: true });
@@ -1785,7 +1800,7 @@ describe("server local API auth", () => {
         ws.addEventListener("error", () => reject(new Error("websocket failed to open")), { once: true });
       });
       const waitForTerminal = () => new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), watchdogMs(1000));
         const onMessage = (event: MessageEvent) => {
           const text = typeof event.data === "string" ? event.data : "";
           if (text.includes('"type":"response.completed"')) {
@@ -1861,7 +1876,7 @@ describe("server local API auth", () => {
         ws.addEventListener("error", () => reject(new Error("websocket failed to open")), { once: true });
       });
       const waitForTerminal = () => new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), 1000);
+        const timer = setTimeout(() => reject(new Error("websocket terminal timeout")), watchdogMs(1000));
         const onMessage = (event: MessageEvent) => {
           const text = typeof event.data === "string" ? event.data : "";
           if (text.includes('"type":"response.completed"')) {
@@ -2317,6 +2332,113 @@ describe("server local API auth", () => {
       await stopPoolRetryHarness(harness);
     }
   });
+
+  test("#584: Retry-After cools the first account even when its account retry fails", async () => {
+    const harness = await startPoolRetryHarness(accountId => accountId === "acct-pool-a"
+      ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+      })
+      : new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }));
+    try {
+      const response = await harness.request();
+      expect(response.status).toBe(503);
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      const health = getCodexUpstreamHealth("pool-a");
+      expect(health).toMatchObject({
+        cooldownSource: "retry-after",
+      });
+      expect(health?.cooldownUntil).toBeGreaterThan(Date.now());
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral still cools the first account when its account retry succeeds", async () => {
+    const harness = await startPoolRetryHarness(
+      accountId => accountId === "acct-pool-a"
+        ? new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+          },
+        })
+        : Response.json({ id: "combo-account-retry-success", status: "completed", output: [] }),
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-account-retry-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toMatchObject({
+        cooldownUntil: expect.any(Number),
+        cooldownSource: "reset-derived",
+        quotaScope: "shared",
+      });
+      expect(loadConfig().activeCodexAccountId).toBe("pool-b");
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("combo reset deferral preserves the first account when its account retry also fails", async () => {
+    const harness = await startPoolRetryHarness(
+      async (accountId, request) => {
+        const body = await request.json() as { model?: string };
+        if (body.model === `${POOL_RETRY_MODEL}-fallback`) {
+          return Response.json({ id: "combo-later-model-success", status: "completed", output: [] });
+        }
+        if (accountId === "acct-pool-a") {
+          return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "x-codex-primary-reset-at": String(Math.floor(Date.now() / 1000) + 3600),
+            },
+          });
+        }
+        return new Response(JSON.stringify({ error: { message: "retry later" } }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "60" },
+        });
+      },
+      {
+        combos: {
+          quota: {
+            strategy: "failover",
+            targets: [
+              { provider: "openai", model: POOL_RETRY_MODEL },
+              { provider: "openai", model: `${POOL_RETRY_MODEL}-fallback` },
+            ],
+          },
+        },
+      },
+    );
+    try {
+      const response = await harness.request({ model: "combo/quota" });
+      expect(response.status).toBe(200);
+      expect((await response.json() as { id: string }).id).toBe("combo-later-model-success");
+      expect(harness.dispatches).toEqual(["acct-pool-a", "acct-pool-b", "acct-pool-a"]);
+      expect(getCodexQuotaHealthSnapshot("pool-a", "shared")).toBeNull();
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#584: pre-stream 429 with one eligible account preserves the original 429", async () => {
     const body = JSON.stringify({ error: { message: "rate limited" } });
@@ -2883,6 +3005,78 @@ describe("server local API auth", () => {
     } finally {
       await server.stop(true);
       await upstream.stop(true);
+    }
+  });
+
+  test("passthrough SSE cyber terminal is logged as 400 cyber_policy", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    clearRequestLogsForTests();
+
+    const message = "This content was flagged for possible cybersecurity risk. To get authorized for security work, join the Trusted Access for Cyber program.";
+    const upstream = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response([
+          "event: response.failed",
+          `data: ${JSON.stringify({
+            type: "response.failed",
+            response: {
+              status: "failed",
+              error: { type: "invalid_request_error", code: "cyber_policy", message },
+            },
+          })}`,
+          "",
+          "",
+        ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    redirectCanonicalCodexTo(upstream.url.toString());
+    saveConfig({
+      port: 0,
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: poolProviders(),
+      codexAccounts: [
+        { id: "main", email: "main@example.test", isMain: true },
+        { id: "pool-a", email: "pool@example.test", isMain: false, chatgptAccountId: "acct-pool-a" },
+      ],
+      activeCodexAccountId: "pool-a",
+    } as OcxConfig);
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool-access-token",
+      refreshToken: "pool-refresh-token",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-a",
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/v1/responses", server.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer inbound-main-token",
+        },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream: true }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("response.failed");
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", server.url), { headers: managementHeaders() }).then(r => r.json()));
+      expect(logs.at(-1)).toMatchObject({
+        status: 400,
+        errorCode: "cyber_policy",
+        terminalStatus: "failed",
+        closeReason: "terminal",
+        upstreamError: message,
+        attempts: [expect.objectContaining({ status: 400, errorCode: "cyber_policy" })],
+      });
+    } finally {
+      await server.stop(true);
+      await upstream.stop(true);
+      clearRequestLogsForTests();
     }
   });
 

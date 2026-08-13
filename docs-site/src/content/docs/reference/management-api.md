@@ -124,7 +124,7 @@ See [Combos](/guides/combos/) for target strategies, cooldowns, aliases, and rou
 | `GET /api/debug/usage-logs` | Read bounded usage-debug entries | — |
 | `GET /api/debug/injection-logs` | Read bounded guidance-injection debug entries | — |
 | `GET /api/claude/inbound-debug` | Read Claude inbound debug state and entries | — |
-| `GET /api/usage` | Summarize usage by range and client surface | Returns an `error: "read_failed"` summary if storage cannot be read |
+| `GET /api/usage` | Summarize usage by range and client surface; Codex responses also include an `accounts` breakdown keyed by stable non-PII log labels | Returns an `error: "read_failed"` summary if storage cannot be read |
 | `GET /api/storage` | Scan Codex storage usage by bucket | Returns an `error: "scan_failed"` payload on scan failure |
 | `POST /api/storage/cleanup/preview` | Preview archived-session cleanup and return a binding digest | 400 `invalid_json` or `invalid_percent` |
 | `POST /api/storage/cleanup` | Quarantine or permanently remove the previewed archived set | 400 invalid input; 409 stale/busy/referenced state; 500 filesystem/database failure |
@@ -134,6 +134,14 @@ See [Combos](/guides/combos/) for target strategies, cooldowns, aliases, and rou
 | `GET, PUT /api/storage/cleanup-policy` | Read or update scheduled cleanup policy and job state | 400 invalid policy |
 | `POST /api/storage/cleanup-policy/run` | Start a manual cleanup-policy run | 409 `already_running`; 500 `cleanup_failed` |
 | `GET /api/storage/cleanup-policy/test-stream` | Test-only policy stream hook | 404 `not_found` when unavailable |
+
+For `GET /api/usage?range=30d&surface=codex`, `accounts` contains one row per observed Codex
+pool label. Each row reports `accountLogLabel`, token totals, `usageCoverageRatio`, and an optional
+`estimatedCostUsd` based on the currently configured display pricing. Active user `modelCosts`
+overlays take priority over bundled verified catalog and price fallbacks, and historical usage is
+re-estimated from the pricing active when the summary is read. This is an API-equivalent estimate,
+not a subscription charge. New main-pool requests use the reserved `main` label; legacy bare
+`openai` rows remain in an ambiguous bucket instead of being reassigned from current configuration.
 
 :::caution
 Storage cleanup endpoints can move or permanently remove archived session data. Always preview
@@ -231,7 +239,7 @@ manager. Its routes are:
 
 | Method and path | Purpose | Notable errors |
 | --- | --- | --- |
-| `GET, POST, DELETE /api/codex-auth/accounts` | List/refresh, optionally import, or delete Codex accounts. Successful POST/DELETE responses include `catalogRefreshPending`. | 400 invalid input; manual import can be disabled |
+| `GET, POST, DELETE /api/codex-auth/accounts` | List/refresh or delete Codex accounts. POST is retained as a disabled compatibility endpoint; successful DELETE responses include `catalogRefreshPending`. | POST always returns 403 `manual_import_disabled`; 400 invalid DELETE input |
 | `PUT /api/codex-auth/accounts/alias` | Set or clear an account alias | 400 invalid account/alias |
 | `PUT /api/codex-auth/accounts/pause` | Pause or resume one account | 400 invalid account/state; 404 missing account |
 | `PUT /api/codex-auth/accounts/pause-exhausted` | Pause accounts whose quota is exhausted | Mutation-lock failures become 503 |
@@ -248,8 +256,8 @@ manager. Its routes are:
 | `POST /api/codex-auth/login/cancel` | Cancel a Codex login flow | — |
 | `GET /api/codex-auth/login-status` | Poll a flow or account login state. A completed new-account flow includes `catalogRefreshPending: true` only when recovery is needed. | Unknown flows report `expired`; no active flow reports `idle` |
 
-If a new account config row is saved but credential setup cannot finish, the manual POST returns
-HTTP 500 and OAuth `login-status` reports `status: "error"`. Both use
+If a new account config row is saved but credential setup cannot finish, OAuth `login-status` reports
+`status: "error"` with
 `code: "codex_credential_persistence_failed"`, `accountId`, `needsReauth: true`, and optional
 `catalogRefreshPending: true`; storage-error details are not exposed. The account row remains saved:
 reauthenticate or delete it before retrying account creation.

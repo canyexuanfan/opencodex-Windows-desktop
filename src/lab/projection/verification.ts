@@ -1,4 +1,4 @@
-import type { ObservationEvent, ProtocolSubjectV1 } from "../events/types";
+import type { ObservationEvent, ProtocolSubjectV1, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 import { EVIDENCE_LAYERS, type ExecutionMode } from "../constants";
 import type { SuiteManifestV1 } from "../conformance/suite-manifest";
 import type { VerificationRole } from "../conformance/types";
@@ -18,6 +18,10 @@ export interface ScenarioRequirements {
   inboundProtocols?: string[];
   upstreamProtocols?: string[];
   surfaces?: string[];
+  requiredClaims?: string[];
+  requiredHarnessFeatures?: string[];
+  platforms?: string[];
+  routePreconditions?: string[];
   freshness?: { maxAgeMs: number | null };
 }
 
@@ -37,6 +41,7 @@ export function isScenarioApplicable(
   return true;
 }
 
+/** Match protocol subject fields against scenario requirement lists. */
 function scenarioApplicableToRequirements(
   requirements: ScenarioRequirements,
   subject: ProtocolSubjectV1,
@@ -51,10 +56,51 @@ function scenarioApplicableToRequirements(
   );
 }
 
+/** Applicability for live_route_compatibility using exact RouteSubjectV1 plus validated claim state. */
+export function routeSubjectApplicableToRequirements(
+  requirements: ScenarioRequirements,
+  subject: RouteSubjectV1,
+  supportedClaims: readonly string[],
+): boolean {
+  const inbound = requirements.inboundProtocols ?? [];
+  const upstream = requirements.upstreamProtocols ?? [];
+  const surfaces = requirements.surfaces ?? [];
+  const requiredClaims = requirements.requiredClaims ?? [];
+  const claimsOk = requiredClaims.every((claim) => supportedClaims.includes(claim));
+  return (
+    inbound.includes(subject.inboundProtocol) &&
+    upstream.includes(subject.upstreamProtocol) &&
+    surfaces.includes(subject.surface) &&
+    claimsOk
+  );
+}
+
+/** Task-layer applicability against harness/platform/precondition state. */
+export function taskSubjectApplicableToRequirements(
+  requirements: ScenarioRequirements,
+  capability: {
+    harnessFeatures: readonly string[];
+    platforms: readonly string[];
+    routePreconditions: readonly string[];
+  },
+): boolean {
+  const platforms = requirements.platforms ?? ["*"];
+  const features = requirements.requiredHarnessFeatures ?? [];
+  const preconditions = requirements.routePreconditions ?? [];
+  const platformOk = platforms.includes("*")
+    || capability.platforms.includes("*")
+    || platforms.some((platform) => capability.platforms.includes(platform));
+  const featuresOk = features.every((feature) => capability.harnessFeatures.includes(feature));
+  const preconditionsOk = preconditions.every((item) => capability.routePreconditions.includes(item));
+  return platformOk && featuresOk && preconditionsOk;
+}
+
+/** Return true for non-negative integer values used in freshness parsing. */
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
+/** Parse a freshness object from a scenario manifest fragment. */
 function parseFreshness(value: unknown): { maxAgeMs: number | null } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const maxAgeMs = (value as { maxAgeMs?: unknown }).maxAgeMs;
@@ -63,6 +109,7 @@ function parseFreshness(value: unknown): { maxAgeMs: number | null } | null {
   return { maxAgeMs };
 }
 
+/** Parse a string array requirement field from a manifest fragment. */
 function parseStringArray(value: unknown): string[] | null {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
   return value;
@@ -79,9 +126,30 @@ function scenarioContractFromManifest(
   const upstreamProtocols = parseStringArray(row.upstreamProtocols);
   const surfaces = parseStringArray(row.surfaces);
   if (!inboundProtocols || !upstreamProtocols || !surfaces) return null;
+  const requiredClaims = row.requiredClaims === undefined ? [] : parseStringArray(row.requiredClaims);
+  if (!requiredClaims) return null;
+  const requiredHarnessFeatures = row.requiredHarnessFeatures === undefined
+    ? []
+    : parseStringArray(row.requiredHarnessFeatures);
+  if (!requiredHarnessFeatures) return null;
+  const platforms = row.platforms === undefined ? ["*"] : parseStringArray(row.platforms);
+  if (!platforms) return null;
+  const routePreconditions = row.routePreconditions === undefined
+    ? []
+    : parseStringArray(row.routePreconditions);
+  if (!routePreconditions) return null;
   const freshness = parseFreshness(scenarioManifest.freshness);
   if (!freshness) return null;
-  return { inboundProtocols, upstreamProtocols, surfaces, freshness };
+  return {
+    inboundProtocols,
+    upstreamProtocols,
+    surfaces,
+    requiredClaims,
+    requiredHarnessFeatures,
+    platforms,
+    routePreconditions,
+    freshness,
+  };
 }
 
 function effectiveMaxAgeMs(
@@ -117,7 +185,15 @@ export function evaluateAllApplicableRequiredPassV1(
   observations: ObservationEvent[],
   executionMode: ExecutionMode,
   opts: {
-    subject?: ProtocolSubjectV1;
+    subject?: ProtocolSubjectV1 | RouteSubjectV1 | TaskSubjectV1;
+    /** For live projection this must come from validated current claim snapshots for subjectId. */
+    routeSupportedClaims?: readonly string[];
+    /** Fabric harness/platform/precondition state for task_effectiveness applicability. */
+    fabricCapability?: {
+      harnessFeatures: readonly string[];
+      platforms: readonly string[];
+      routePreconditions: readonly string[];
+    };
     loadScenarioManifest?: LoadScenarioManifest;
     loadScenarioRequirements?: LoadScenarioRequirements;
     asOf?: number;
@@ -132,6 +208,34 @@ export function evaluateAllApplicableRequiredPassV1(
       canVerify: false,
       notes: ["unsupported_verification_rule"],
     };
+  }
+  if (suiteManifest.evidenceLayer === "live_route_compatibility") {
+    if (opts.subject?.subjectKind !== "route") {
+      return { applicableRequiredScenarioIds: [], passingRequiredScenarioIds: [], missingRequiredScenarioIds: [], canVerify: false, notes: ["route_subject_required"] };
+    }
+    if (opts.routeSupportedClaims === undefined) {
+      return { applicableRequiredScenarioIds: [], passingRequiredScenarioIds: [], missingRequiredScenarioIds: [], canVerify: false, notes: ["route_claim_state_required"] };
+    }
+  }
+  if (suiteManifest.evidenceLayer === "task_effectiveness") {
+    if (opts.subject?.subjectKind !== "task") {
+      return {
+        applicableRequiredScenarioIds: [],
+        passingRequiredScenarioIds: [],
+        missingRequiredScenarioIds: [],
+        canVerify: false,
+        notes: ["task_subject_required"],
+      };
+    }
+    if (executionMode !== "fabric") {
+      return {
+        applicableRequiredScenarioIds: [],
+        passingRequiredScenarioIds: [],
+        missingRequiredScenarioIds: [],
+        canVerify: false,
+        notes: ["fabric_execution_mode_required"],
+      };
+    }
   }
 
   const requiredScenarios = suiteManifest.scenarios.filter(
@@ -160,8 +264,19 @@ export function evaluateAllApplicableRequiredPassV1(
       }
     }
 
-    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject) {
+    if (suiteManifest.evidenceLayer === "protocol_conformance" && opts.subject?.subjectKind === "protocol") {
       if (!scenarioApplicableToRequirements(requirements, opts.subject)) continue;
+    }
+    if (suiteManifest.evidenceLayer === "live_route_compatibility" && opts.subject?.subjectKind === "route") {
+      if (!routeSubjectApplicableToRequirements(requirements, opts.subject, opts.routeSupportedClaims!)) continue;
+    }
+    if (suiteManifest.evidenceLayer === "task_effectiveness" && opts.subject?.subjectKind === "task") {
+      const capability = opts.fabricCapability ?? {
+        harnessFeatures: ["fabric-scratch-v1"],
+        platforms: [process.platform, "*"],
+        routePreconditions: ["exact-route-subject"],
+      };
+      if (!taskSubjectApplicableToRequirements(requirements, capability)) continue;
     }
     applicableRequired.push(s.id);
     scenarioMaxAgeById.set(s.id, requirements.freshness?.maxAgeMs ?? null);

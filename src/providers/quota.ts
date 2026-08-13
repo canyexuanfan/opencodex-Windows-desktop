@@ -6,6 +6,7 @@ import {
 } from "../codex/auth-api";
 import { isMainAccountIdentityGenerationLive } from "../codex/main-account-cache";
 import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
+import { codexPlanKey } from "../codex/plan";
 import { resolveEnvValue } from "../config";
 import { getValidAccessToken, getValidAccessTokenForAccount } from "../oauth";
 import { getAccountCredential, getAccountSet, getCredential } from "../oauth/store";
@@ -20,6 +21,7 @@ import {
   sweepExpiredOnWrite,
   type GenerationContext,
 } from "../lib/state-store-sweeper";
+import { readBoundedResponseBody } from "../lib/bounded-body";
 import {
   aggregateCodexPoolCapacity,
   CODEX_CAPACITY_MAX_QUOTA_AGE_MS,
@@ -32,9 +34,13 @@ const ACCOUNT_TOKEN_SKEW_MS = 60_000;
 
 const CACHE_TTL_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 8_000;
+/** Successful provider quota payloads are small; reject oversized or stalled JSON before parsing. */
+export const QUOTA_RESPONSE_MAX_BYTES = 512 * 1024;
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 const A6API_BASE_URL = "https://api.a6api.com";
+const OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
+const OPENCODE_GO_USAGE_URL = `${OPENCODE_GO_BASE_URL}/usage`;
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const CLINE_BASE_URL = "https://api.cline.bot";
@@ -168,7 +174,7 @@ function cacheKeyWithAggregationState(
       const rows = snapshot.accounts.map(account => ({
         isMain: account.isMain,
         active: account.id === activeId,
-        plan: account.plan?.trim().toLowerCase() ?? null,
+        plan: codexPlanKey(account.plan) ?? null,
         paused: account.paused,
         needsReauth: account.needsReauth === true,
         quota: quotaSignatureValue(account.quota as CodexCapacityQuota | null),
@@ -259,6 +265,43 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+const QUOTA_JSON_READ_FAILURE = Symbol("quota-json-read-failure");
+
+async function readQuotaJson(
+  response: Response,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<unknown | typeof QUOTA_JSON_READ_FAILURE> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > QUOTA_RESPONSE_MAX_BYTES) {
+    try {
+      void response.body?.cancel(
+        new DOMException("Provider quota response is too large", "QuotaExceededError"),
+      ).catch(() => undefined);
+    } catch {
+      // Best-effort cancellation only.
+    }
+    return QUOTA_JSON_READ_FAILURE;
+  }
+
+  try {
+    const bounded = await readBoundedResponseBody(response, {
+      maxBytes: QUOTA_RESPONSE_MAX_BYTES,
+      totalTimeoutMs: timeoutMs,
+      inactivityTimeoutMs: timeoutMs,
+    });
+    if (bounded.oversized || bounded.truncated || !bounded.displaySafe) return QUOTA_JSON_READ_FAILURE;
+    return JSON.parse(bounded.text) as unknown;
+  } catch {
+    return QUOTA_JSON_READ_FAILURE;
+  }
+}
+
+/** Test-only access to the quota reader's deadline and cancellation contract. */
+export async function readProviderQuotaJsonForTests(response: Response, timeoutMs: number): Promise<unknown> {
+  const result = await readQuotaJson(response, timeoutMs);
+  return result === QUOTA_JSON_READ_FAILURE ? null : result;
+}
+
 function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConfig): boolean {
   return name === OPENAI_CODEX_PROVIDER_ID && isCanonicalOpenAiForwardProvider(provider);
 }
@@ -266,6 +309,10 @@ function isBuiltInChatGptForwardProvider(name: string, provider: OcxProviderConf
 function isCanonicalA6apiBaseUrl(baseUrl: string): boolean {
   const normalized = normalizedBaseUrl(baseUrl);
   return normalized === A6API_BASE_URL || normalized === `${A6API_BASE_URL}/v1`;
+}
+
+function isCanonicalOpenCodeGoBaseUrl(baseUrl: string): boolean {
+  return normalizedBaseUrl(baseUrl) === OPENCODE_GO_BASE_URL;
 }
 
 function isCanonicalOpenRouterBaseUrl(baseUrl: string): boolean {
@@ -353,8 +400,13 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const subscription = a6apiPayload(await subscriptionResponse.json().catch(() => null));
-  const token = a6apiPayload(await tokenResponse.json().catch(() => null));
+  const [subscriptionBody, tokenBody] = await Promise.all([
+    readQuotaJson(subscriptionResponse),
+    readQuotaJson(tokenResponse),
+  ]);
+  if (subscriptionBody === QUOTA_JSON_READ_FAILURE || tokenBody === QUOTA_JSON_READ_FAILURE) return null;
+  const subscription = a6apiPayload(subscriptionBody);
+  const token = a6apiPayload(tokenBody);
   const unlimited = token?.unlimited_quota === true
     || token?.unlimited_quota === 1
     || token?.unlimited_quota === "true";
@@ -410,6 +462,54 @@ async function fetchA6apiQuota(provider: string, config: OcxProviderConfig): Pro
   });
 }
 
+function parseOpenCodeGoUsageWindow(value: unknown): { percent: number; resetAt?: number } | null {
+  const row = asRecord(value);
+  if (!row) return null;
+  const percent = normalizePercent(row.percent);
+  if (percent === undefined) return null;
+  const resetAt = normalizeResetAt(row.resetsAt);
+  return { percent, ...(resetAt !== undefined ? { resetAt } : {}) };
+}
+
+async function fetchOpenCodeGoQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  // Never send a configured API key when the provider destination is not the built-in Go endpoint.
+  if (!isCanonicalOpenCodeGoBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const response = await fetch(OPENCODE_GO_USAGE_URL, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await readQuotaJson(response));
+  const usage = asRecord(body?.usage);
+  if (!usage) return null;
+  const rolling = parseOpenCodeGoUsageWindow(usage.rolling);
+  const weekly = parseOpenCodeGoUsageWindow(usage.weekly);
+  const monthly = parseOpenCodeGoUsageWindow(usage.monthly);
+  const quota: ProviderQuota = {
+    ...(rolling ? {
+      fiveHourPercent: rolling.percent,
+      ...(rolling.resetAt !== undefined ? { fiveHourResetAt: rolling.resetAt } : {}),
+    } : {}),
+    ...(weekly ? {
+      weeklyPercent: weekly.percent,
+      ...(weekly.resetAt !== undefined ? { weeklyResetAt: weekly.resetAt } : {}),
+    } : {}),
+    ...(monthly ? {
+      monthlyPercent: monthly.percent,
+      ...(monthly.resetAt !== undefined ? { monthlyResetAt: monthly.resetAt } : {}),
+    } : {}),
+    updatedAt: Date.now(),
+  };
+  return report(provider, "opencode-go:usage", quota);
+}
+
 /**
  * OpenRouter `GET /api/v1/key` — the key's own credit balance and optional
  * per-key spending cap. `limit` is the configured cap (absent = uncapped);
@@ -432,7 +532,7 @@ async function fetchOpenRouterQuota(provider: string, config: OcxProviderConfig)
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   if (!data) return null;
   const limit = toFiniteNumber(data.limit);
@@ -479,7 +579,7 @@ async function fetchDeepSeekQuota(provider: string, config: OcxProviderConfig): 
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   // The payload nests balances under `balance_infos` rows keyed by currency;
   // prefer a USD row, then CNY, then the first row that parses.
   const infos = Array.isArray(body?.balance_infos) ? body.balance_infos as unknown[] : null;
@@ -527,7 +627,7 @@ async function fetchClineQuota(provider: string, config: OcxProviderConfig): Pro
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   const limits = Array.isArray(data?.limits) ? data.limits : null;
   if (!limits) return null;
@@ -575,7 +675,7 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   if (!body || body.success === false) return null;
   const data = asRecord(body.data) ?? body;
   // The plugin renders a 5h token window, a weekly window, and a monthly MCP
@@ -631,7 +731,7 @@ async function fetchMinimaxQuota(provider: string, config: OcxProviderConfig): P
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   if (!body || body.success === false) return null;
   const data = asRecord(body.data) ?? body;
   const remainsMs = toFiniteNumber(data.remains_time ?? data.remainsTime);
@@ -674,7 +774,7 @@ async function fetchMoonshotQuota(provider: string, config: OcxProviderConfig): 
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   if (!data) return null;
   const available = toFiniteNumber(data.available_balance);
@@ -683,9 +783,16 @@ async function fetchMoonshotQuota(provider: string, config: OcxProviderConfig): 
   if (available === undefined || available < 0) return null;
   // Moonshot exposes no per-window quota ceiling, only a balance — report it
   // as a balance-only window (percent 0) rather than a fabricated utilization.
+  // Currency is host-scoped: China platform (api.moonshot.cn) bills in CNY;
+  // the international platform (api.moonshot.ai) bills in USD. Do not force
+  // either side into the other unit — the number is correct, only the unit
+  // must match the host.
+  const isChinaHost = host.startsWith("https://api.moonshot.cn");
+  const money = (n: number) => isChinaHost ? `¥${n.toFixed(2)}` : `$${n.toFixed(2)}`;
+  const unit = isChinaHost ? "CNY" : "USD";
   const label = voucher !== undefined && cash !== undefined
-    ? `Balance ($${available.toFixed(2)} available, $${voucher.toFixed(2)} voucher)`
-    : `Balance ($${available.toFixed(2)} available)`;
+    ? `Balance (${money(available)} ${unit} available, ${money(voucher)} voucher)`
+    : `Balance (${money(available)} ${unit} available)`;
   return report(provider, "moonshot:balance", {
     customWindows: [{ label, percent: 0 }],
     updatedAt: Date.now(),
@@ -710,7 +817,7 @@ async function fetchVeniceQuota(provider: string, config: OcxProviderConfig): Pr
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   if (!data) return null;
   const diemBalance = toFiniteNumber(data.balance);
@@ -753,7 +860,7 @@ async function fetchSyntheticQuota(provider: string, config: OcxProviderConfig):
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   const quota: ProviderQuota = { updatedAt: Date.now() };
   let windows = 0;
@@ -801,7 +908,7 @@ async function fetchDeepInfraQuota(provider: string, config: OcxProviderConfig):
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   if (!data) return null;
   const stripeBalance = toFiniteNumber(data.stripe_balance);
@@ -843,7 +950,7 @@ async function fetchNeuralwattQuota(provider: string, config: OcxProviderConfig)
       ? TERMINAL_QUOTA_FAILURE
       : null;
   }
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const data = asRecord(body?.data) ?? body;
   const quota: ProviderQuota = { updatedAt: Date.now() };
   let windows = 0;
@@ -1027,7 +1134,7 @@ async function fetchXaiWeeklyCredits(accessToken: string, userId: string): Promi
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const parsed = parseXaiCreditsResponse(await response.json().catch(() => null));
+    const parsed = parseXaiCreditsResponse(await readQuotaJson(response));
     if (!parsed) return null;
     return {
       weeklyPercent: parsed.percent,
@@ -1061,7 +1168,7 @@ async function fetchXaiQuota(provider: string): Promise<ProviderQuotaReport | nu
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const body = asRecord(await response.json().catch(() => null));
+    const body = asRecord(await readQuotaJson(response));
     const config = asRecord(body?.config);
     if (!config) return null;
     const limitCents = centsValue(config.monthlyLimit);
@@ -1107,7 +1214,7 @@ async function fetchAnthropicUsageQuota(accessToken: string): Promise<ProviderQu
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) return null;
-    const body = asRecord(await response.json().catch(() => null));
+    const body = asRecord(await readQuotaJson(response));
     if (!body) return null;
     const fiveHour = parseClaudeBucket(body.five_hour);
     const sevenDay = parseClaudeBucket(body.seven_day);
@@ -1520,7 +1627,7 @@ async function fetchKimiQuota(provider: string, config: OcxProviderConfig): Prom
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) return null;
-  const quota = parseKimiQuotaPayload(await response.json().catch(() => null));
+  const quota = parseKimiQuotaPayload(await readQuotaJson(response));
   return quota ? report(provider, "kimi:usages", quota) : null;
 }
 
@@ -1553,7 +1660,7 @@ async function fetchCursorQuota(provider: string): Promise<ProviderQuotaReport |
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (periodRes.ok) {
-      const body = asRecord(await periodRes.json().catch(() => null));
+      const body = asRecord(await readQuotaJson(periodRes));
       const planUsage = asRecord(body?.planUsage);
       if (planUsage) {
         const resetAt = normalizeResetAt(body?.billingCycleEnd ?? planUsage.billingCycleEnd ?? body?.periodEnd);
@@ -1615,7 +1722,7 @@ async function fetchCursorQuota(provider: string): Promise<ProviderQuotaReport |
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (summaryRes.ok) {
-      const body = asRecord(await summaryRes.json().catch(() => null));
+      const body = asRecord(await readQuotaJson(summaryRes));
       const individual = asRecord(body?.individualUsage);
       const plan = asRecord(individual?.plan);
       if (plan) {
@@ -1644,7 +1751,7 @@ async function fetchCursorQuota(provider: string): Promise<ProviderQuotaReport |
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) return null;
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   if (!body) return null;
 
   // Prefer the gpt-4 bucket (historical "fast requests"); else first model with used+limit.
@@ -1758,7 +1865,7 @@ async function fetchAntigravityQuota(provider: string, config: OcxProviderConfig
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) return null;
-  const body = asRecord(await response.json().catch(() => null));
+  const body = asRecord(await readQuotaJson(response));
   const models = asRecord(body?.models);
   if (!models) return null;
 
@@ -1811,6 +1918,9 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
     if (provider.authMode === "key" && isCanonicalKimiCodeBaseUrl(provider.baseUrl)) {
       return fetchKimiQuota(name, provider);
+    }
+    if ((provider.authMode ?? "key") === "key" && name === "opencode-go") {
+      return fetchOpenCodeGoQuota(name, provider);
     }
     if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
       return fetchA6apiQuota(name, provider);
