@@ -173,7 +173,9 @@ describe("GitHub Actions hardening", () => {
     // only when the shared path filter says the entire expensive suite is out of
     // scope (for example a docs-site-only PR).
     const macosSteps = (ci.jobs?.["platform-macos"] as { steps?: { run?: string }[] })?.steps ?? [];
-    expect(macosSteps.some(step => step.run?.includes("bun test --isolate tests"))).toBe(true);
+    // The 20s per-test ceiling is part of the pinned shape: dropping it silently
+    // restores the timing-flake class this lane kept surfacing.
+    expect(macosSteps.some(step => step.run?.includes("bun test --isolate --timeout 20000 tests"))).toBe(true);
     expect(macosSteps.some(step => step.run?.includes("--shard"))).toBe(false);
 
     // The macOS leg retries ONLY a Bun runtime crash, and only once. Bun 1.3.14
@@ -183,7 +185,7 @@ describe("GitHub Actions hardening", () => {
     // `scripts/ci/run-bun-test-batches.sh`. Two ways to break this silently:
     // drop the crash-signature guard so an assertion failure gets retried into
     // green, or let the retry loop swallow a repeated crash. Pin both.
-    const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate tests"))?.run ?? "";
+    const macosTestRun = macosSteps.find(step => step.run?.includes("bun test --isolate --timeout 20000 tests"))?.run ?? "";
     // Actions invokes multiline `run:` blocks with `bash -e`. The retry loop
     // must disable errexit before the crash-prone command or exit 133 aborts
     // the step before PIPESTATUS can be inspected and the retry can run.
