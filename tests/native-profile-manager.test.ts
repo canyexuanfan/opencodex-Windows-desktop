@@ -1069,6 +1069,10 @@ describe("native main profile transactions", () => {
     ]);
   }, 10_000);
 
+  // This rollback case uses the same encrypted-vault and SQLite setup as the
+  // transaction test above. Hosted macOS can complete the product recovery
+  // successfully after Bun's 5 s default, so the harness must not become the
+  // shorter deadline.
   test("a read-back mismatch restores the exact source and removes the journal", async () => {
     const f = await enrolledFixture();
     const authPath = f.manager.context.authPath;
@@ -1087,7 +1091,7 @@ describe("native main profile transactions", () => {
     expect(readFileSync(join(f.codexHome, "auth.json"), "utf8")).toBe(f.source);
     expect((await failing.doctor()).recoveryPending).toBe(false);
     expect((await failing.list()).activeProfileId).toBe(f.sourceProfile.id);
-  });
+  }, 10_000);
 
   test("rollback verification failure retains the encrypted recovery journal and never claims success", async () => {
     const f = await enrolledFixture();
