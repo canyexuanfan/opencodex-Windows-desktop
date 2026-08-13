@@ -309,7 +309,7 @@ raw 100 行が上限で、数万件の catalog 全体を download / cache しま
 **Novita の discovery:** キー方式のプリセットは `openai-chat` adapter を使用し、Bearer key は
 Novita の固定 OpenAI 互換 host にだけ送信します。公開 model list から `model_type: chat` と
 `chat/completions` endpoint の両方を報告する row だけを残し、discovery を 512 KiB と raw 256 行に
-制限します。catalog は公開されているため、login は list 成功を key の証拠にせず「検証不能」と報告します。
+制限します。catalog は公開されているため、login は list 成功を key の証明にせず「検証不能」と報告します。
 model ごとに capability が異なるため、provider 全体の parallel tool call と OpenAI
 `reasoning_effort` は宣伝しません。キーは
 [Novita key manager](https://novita.ai/settings/key-management) で作成します。
@@ -431,4 +431,3 @@ opencodex をローカルの OpenAI 互換サーバーに向けてください �
 **Custom** を選ぶか `ocx init` で `custom` を選んだ後ベース URL を入力してください。すべてのプロバイダーフィールド
 (`headers`、`noReasoningModels`、`noVisionModels`、`models`、…)は
 [設定リファレンス](/ja/reference/configuration/)を参照してください。
-
