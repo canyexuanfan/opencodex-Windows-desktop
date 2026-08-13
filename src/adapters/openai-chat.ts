@@ -12,6 +12,7 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
+import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import {
   isTranslatorBudgetExceededError,
   retainTranslatedEventBatch,
@@ -975,7 +976,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
       if (parsed.stream) body.stream_options = { include_usage: true };
 
-      const url = `${provider.baseUrl}/chat/completions`;
+      const url = openaiChatCompletionsUrl(provider.baseUrl);
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
       if (provider.headers) Object.assign(headers, provider.headers);
