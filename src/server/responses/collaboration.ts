@@ -103,11 +103,14 @@ import type { TranslatorBudget } from "../../lib/translator-budget";
 export function buildToolBridgeMaps(parsed: OcxParsedRequest, budget?: TranslatorBudget): {
   toolNsMap: Map<string, { namespace: string; name: string }>;
   declaredToolNames: Set<string>;
+  /** Declared parameter schema per request-visible tool name (#1611 integer repair). */
+  toolParameterSchemas: Map<string, Record<string, unknown>>;
   freeformToolNames: Set<string>;
   toolSearchToolNames: Set<string>;
 } {
   const toolNsMap = new Map<string, { namespace: string; name: string }>();
   const declaredToolNames = new Set<string>();
+  const toolParameterSchemas = new Map<string, Record<string, unknown>>();
   const freeformToolNames = new Set<string>();
   const toolSearchToolNames = new Set<string>();
   const toolAllowed = toolChoiceToolPredicate(parsed.options.toolChoice);
@@ -117,6 +120,9 @@ export function buildToolBridgeMaps(parsed: OcxParsedRequest, budget?: Translato
     const wireName = namespacedToolName(t.namespace, t.name);
     budget?.chargeRetained(new TextEncoder().encode(wireName).byteLength, { kind: "retained_collectors" });
     declaredToolNames.add(wireName);
+    // Retained by reference (the schema is already resident in parsed.context.tools),
+    // so this adds a map entry rather than a copy of every tool's parameters.
+    if (t.parameters && typeof t.parameters === "object") toolParameterSchemas.set(wireName, t.parameters);
     if (t.namespace) {
       budget?.chargeRetained(new TextEncoder().encode(JSON.stringify([wireName, t.namespace, t.name])).byteLength, { kind: "retained_collectors" });
       toolNsMap.set(wireName, { namespace: t.namespace, name: t.name });
@@ -130,7 +136,7 @@ export function buildToolBridgeMaps(parsed: OcxParsedRequest, budget?: Translato
       toolSearchToolNames.add(t.name);
     }
   }
-  return { toolNsMap, declaredToolNames, freeformToolNames, toolSearchToolNames };
+  return { toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, toolSearchToolNames };
 }
 
 
