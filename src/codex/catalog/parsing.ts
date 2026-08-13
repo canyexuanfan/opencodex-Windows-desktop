@@ -394,17 +394,21 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   delete entry.supports_reasoning_summaries;
   const isCursorEntry = typeof entry.slug === "string" && entry.slug.startsWith("cursor/");
   // `supports_search_tool` selects Codex's deferred tool-discovery surface; it is not the hosted
-  // web-search capability. OpenCodex can round-trip tool_search when a client sends it, but routed
-  // providers have no provider/model proof that Codex App plugins work through that deferred
-  // surface. Advertising it unconditionally hides the App's compatible direct MCP tools (#1522),
-  // so routed rows fail closed to direct discovery. The sidecar-backed hosted web-search metadata
-  // remains advertised independently for non-Cursor routes.
+  // web-search capability. Routed rows also carry tool_mode=code_mode_only (below), and under code
+  // mode DEFERRED MCP tools remain callable through exec's `tools` global / ALL_TOOLS without any
+  // tool_search round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
+  // kimi/k3 called tools.mcp__node_repl__js → isError:false). Stamping false here instead forces
+  // every MCP declaration into exec.description — a measured 2.7x turn-1 payload regression
+  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So non-Cursor routed
+  // rows advertise deferred discovery; the #1522 reachability concern is covered by the code-mode
+  // path, not by paying the full-catalog tax. Cursor stays false: its runTurn transport bypasses
+  // the web-search sidecar and has no proven deferred path.
   if (isCursorEntry) {
     delete entry.web_search_tool_type;
   } else {
     entry.web_search_tool_type = "text_and_image";
   }
-  entry.supports_search_tool = false;
+  entry.supports_search_tool = !isCursorEntry;
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
   // Opt-in providers (OcxProviderConfig.parallelToolCalls, e.g. xAI) advertise it too: the
