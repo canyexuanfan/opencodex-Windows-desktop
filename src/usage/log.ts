@@ -512,42 +512,44 @@ let retainedUsageSnapshot: RetainedUsageSnapshot | null = null;
 /** Rough per-row retained cost; exact sizing would cost another full serialization pass. */
 const RETAINED_USAGE_ENTRY_BYTES = 512;
 
-/** Bytes read per sampled probe when digesting the covered prefix. */
-const RETAINED_USAGE_PREFIX_PROBE_BYTES = 4096;
-/**
- * Number of evenly spaced probes taken across the covered prefix, plus one always
- * anchored at the end.
- *
- * Digesting the whole prefix would re-read up to 64 MiB on every incremental call and
- * give back much of what this optimization saves. Digesting only the tail would miss a
- * rewrite that alters earlier rows while leaving the last bytes byte-identical. Evenly
- * spaced probes plus the length bound the plausible in-place rewrite: an edit anywhere
- * changes at least one probe unless it preserves total length AND every sampled span,
- * which no real writer or hand-edit does.
- */
-const RETAINED_USAGE_PREFIX_PROBE_COUNT = 8;
+/** Chunk size used when digesting the covered prefix. */
+const RETAINED_USAGE_DIGEST_CHUNK_BYTES = 1024 * 1024;
 
 /**
- * Sampled digest of the prefix ending at `end`; null when it cannot be read.
+ * How far the retained span may exceed the read window before a full re-anchor.
  *
- * Bounded work: at most PROBE_COUNT * PROBE_BYTES (32 KiB) regardless of prefix size.
+ * The retained window may start earlier than the current window (the file grows, the
+ * window slides), which makes it a superset containing every row the window needs. That
+ * superset must still be bounded, so a full read re-anchors it once it reaches this
+ * multiple of maxReadBytes -- roughly one full read per maxReadBytes of appended data,
+ * rather than one per append.
+ */
+const RETAINED_USAGE_SPAN_FACTOR = 2;
+
+/**
+ * Digest of the ENTIRE prefix ending at `end`; null when it cannot be read.
+ *
+ * Deliberately not sampled. A sampled digest covers a vanishing fraction of a large
+ * prefix (32 KiB of 64 MiB is 0.05%), so an ordinary fixed-width in-place edit -- a
+ * redaction script fixing one field, a compaction rewriting a middle region -- lands in
+ * a gap by default and the stale rows are served. This reads every covered byte, which
+ * is a sequential scan of pages the OS has already cached, with no JSON parsing and no
+ * object allocation.
  */
 function usagePrefixDigest(fd: number, end: number): string | null {
   if (end <= 0) return "empty";
   const hash = createHash("sha256");
-  const probe = Math.min(RETAINED_USAGE_PREFIX_PROBE_BYTES, end);
-  const offsets = new Set<number>();
-  for (let index = 0; index < RETAINED_USAGE_PREFIX_PROBE_COUNT; index++) {
-    // Spread probes across the prefix, and always include the final window so an
-    // append boundary is covered exactly.
-    const at = Math.floor((end - probe) * (index / RETAINED_USAGE_PREFIX_PROBE_COUNT));
-    offsets.add(Math.max(0, at));
-  }
-  offsets.add(end - probe);
-  for (const at of [...offsets].sort((a, b) => a - b)) {
-    const chunk = readExactly(fd, probe, at);
-    if (chunk === null) return null;
-    hash.update(chunk);
+  const buffer = Buffer.allocUnsafe(Math.min(RETAINED_USAGE_DIGEST_CHUNK_BYTES, end));
+  for (let position = 0; position < end;) {
+    const length = Math.min(buffer.byteLength, end - position);
+    let offset = 0;
+    while (offset < length) {
+      const read = readSync(fd, buffer, offset, length - offset, position + offset);
+      if (read === 0) return null;
+      offset += read;
+    }
+    hash.update(buffer.subarray(0, length));
+    position += length;
   }
   return `${end}:${hash.digest("hex")}`;
 }
@@ -743,13 +745,24 @@ async function readUsageEntriesIncrementally(
     // A shrink means truncation or replacement-in-place; the retained rows may no
     // longer correspond to file contents, so refuse to extend them.
     if (size < retained.coveredThroughBytes) return null;
-    // The retained window must still begin at or after the current bounded window,
-    // otherwise honoring maxReadBytes would require dropping rows we cannot locate.
-    const windowStart = Math.max(0, size - maxReadBytes);
-    if (retained.truncatedPrefixBytes < windowStart) return null;
+    // Once the file is larger than the read window, every append advances the window
+    // start. Refusing whenever the retained window begins earlier would make the
+    // incremental path dead code on exactly the large ledgers it exists for, so a
+    // retained window that starts EARLIER is kept and trimmed below: it is a superset
+    // of the current window and already contains every row the window needs.
+    // Keeping an earlier-starting window would grow without bound as the ledger grows,
+    // so re-anchor with a full bounded read once the retained span reaches a small
+    // multiple of the window. That caps retention at RETAINED_USAGE_SPAN_FACTOR x
+    // maxReadBytes while amortizing the full read over that much growth instead of
+    // paying it on every append.
+    if (size - retained.truncatedPrefixBytes > maxReadBytes * RETAINED_USAGE_SPAN_FACTOR) return null;
     // Identity plus a non-shrinking size does not prove the covered prefix is intact:
-    // an in-place rewrite keeps dev/ino/birthtime. Re-verify the prefix before reusing
-    // or extending the retained rows.
+    // an in-place rewrite keeps dev/ino/birthtime, and both an append and a rewrite move
+    // mtime/ctime forward, so timestamps cannot separate them either. Re-digest the whole
+    // covered prefix. That is a sequential read of already-cached pages with no JSON
+    // parsing and no object allocation -- roughly two orders of magnitude cheaper than
+    // the reparse it protects, and unlike a sampled digest it has no gap for an
+    // ordinary fixed-width edit to land in.
     if (usagePrefixDigest(fd, retained.coveredThroughBytes) !== retained.prefixDigest) return null;
     if (size === retained.coveredThroughBytes) {
       usageReadCacheStats.tailReads += 1;

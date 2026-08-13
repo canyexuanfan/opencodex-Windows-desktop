@@ -97,23 +97,51 @@ telemetry for eviction ordering, not a guaranteed byte ceiling.
 The regression test was driven red against the disabled guard before being accepted, so
 it is not vacuous.
 
-## Widening the digest after the Opus follow-up
+## Opus review: the fix did not engage on the file it was written for
 
-A tail-only digest leaves a gap: a rewrite that alters rows early in the covered prefix
-while leaving the final bytes byte-identical would still be reused. Digesting the whole
-prefix would re-read up to 64 MiB per incremental call and give back most of the saving.
+Opus (claude-opus-5) returned VERDICT: DEFECT FOUND and its primary finding was the
+serious one — worse than the digest question.
 
-The guard now takes 8 evenly spaced 4 KiB probes across the prefix plus one anchored at
-the end, and mixes the covered length into the digest — at most 32 KiB of work regardless
-of prefix size. Verified against a 20,000-row prefix with an equal-width rewrite of row 0
-and the last probe window untouched:
+**The incremental path was dead code on any ledger larger than the read window.** The
+original refusal required the retained window to start at or after the current window.
+Once the file exceeds 64 MiB, every append slides the window forward, that check fails
+every time, and the reader falls back to a full reparse. Reproduced on an over-window
+file:
 
 ```
-firstId: idZZZZZZ   fullReads: 2   => caught, fell back to a full read
+6 appends -> fullReads 7, tailReads 0, parsedLines 37,254
 ```
 
-This bounds rather than eliminates the adversarial case: a crafted rewrite that preserves
-total length and every sampled span would still pass. That is acceptable here — the file
-is written only by `appendUsageEntry` (src/usage/log.ts:435), and the guard exists to
-catch hand-edits, external compaction, and restore-from-backup, not a deliberate attack
-on a local ledger.
+So the first two commits fixed nothing on the 245 MB ledger that caused the incident.
+The check was backwards: a retained window that starts EARLIER is a superset of the
+current window and already contains every row the window needs. It is kept, and a full
+read re-anchors only once the retained span reaches `RETAINED_USAGE_SPAN_FACTOR` (2x)
+the window — about one full read per window of appended data instead of one per append.
+
+```
+same 6 appends -> fullReads 1, tailReads 6, parsedLines 6
+400 appends, 256 KiB window -> fullReads 6, tailReads 394, maxSpan 522,050 <= 524,288
+```
+
+## Sampled digest rejected on Opus's evidence
+
+Opus also broke the 8-probe sampled digest: 32 KiB of probes over a 4.8 MB prefix covers
+0.68% (0.05% at 64 MiB), so an ordinary fixed-width in-place edit lands in a gap by
+default. It demonstrated a rewritten row 5038 still being served as `old005038`. Its
+objection to the code comment was fair — length-preserving edits are the normal case for
+a redaction or compaction script, not an adversarial construction.
+
+Timestamps were evaluated as the cheap alternative and rejected: an append and an
+in-place rewrite BOTH move mtime and ctime forward, so they cannot separate the two.
+
+The digest therefore covers the entire covered prefix. That is a sequential read of
+already-cached pages with no JSON parsing and no allocation, and it is cheap in practice:
+
+```
+7.48 MB file: mid-prefix rewrite CAUGHT (served new005038), 5 appends 32 ms
+real 245 MB ledger: cold 67 ms / 117 MB, then 5 reads in 8 ms and +1 MB
+```
+
+Both regression tests were driven red against the defective implementation before being
+accepted — the rewrite test against a disabled guard, the mid-prefix test against a
+reinstated sampled digest.
