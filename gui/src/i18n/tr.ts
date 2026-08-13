@@ -1399,6 +1399,8 @@ export const tr: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "Hesap hedefleme güncellenemedi. Son doğrulanan ayar gösteriliyor.",
   "codexAuth.accountPickerLoadFailed": "Hesap hedefleme ayarı yüklenemedi.",
   "codexAuth.accountPickerRefreshFailed": "Bu ayar yenilenemedi. Son doğrulanan değer hâlâ gösteriliyor.",
+  "codexAuth.advancedSettings": "Gelişmiş ayarlar",
+  "codexAuth.advancedSettingsAria": "Gelişmiş Codex Auth ayarlarını göster veya gizle",
   "codexAuth.catalogRefreshPending": "Değişiklik kaydedildi ancak Codex model kataloğunun yenilenmesi bekleniyor. Yeniden denemek için ocx sync çalıştırın.",
   "codexAuth.openaiMissing": "Yerleşik OpenAI sağlayıcısı yapılandırılmamış.",
   "codexAuth.openaiDisabled": "Yerleşik OpenAI sağlayıcısı devre dışı.",

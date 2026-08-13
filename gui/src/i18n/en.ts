@@ -1478,6 +1478,8 @@ export const en = {
   "codexAuth.accountPickerUpdateFailed": "Could not update account targeting. The last confirmed setting is shown.",
   "codexAuth.accountPickerLoadFailed": "Could not load the account-targeting setting.",
   "codexAuth.accountPickerRefreshFailed": "Could not refresh this setting. The last confirmed value is still shown.",
+  "codexAuth.advancedSettings": "Advanced settings",
+  "codexAuth.advancedSettingsAria": "Show or hide advanced Codex Auth settings",
   "codexAuth.catalogRefreshPending": "The change was saved, but the Codex model catalog refresh is pending. Run ocx sync to retry.",
 
   "anthropicPool.title": "Claude account pool (experimental)",

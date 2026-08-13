@@ -1011,6 +1011,8 @@ export const de: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "Die Kontozielauswahl konnte nicht aktualisiert werden. Die zuletzt bestätigte Einstellung wird angezeigt.",
   "codexAuth.accountPickerLoadFailed": "Die Einstellung für die Kontozielauswahl konnte nicht geladen werden.",
   "codexAuth.accountPickerRefreshFailed": "Diese Einstellung konnte nicht aktualisiert werden. Der zuletzt bestätigte Wert wird weiterhin angezeigt.",
+  "codexAuth.advancedSettings": "Erweiterte Einstellungen",
+  "codexAuth.advancedSettingsAria": "Erweiterte Codex-Auth-Einstellungen ein- oder ausblenden",
   "codexAuth.catalogRefreshPending": "Die Änderung wurde gespeichert, aber die Aktualisierung des Codex-Modellkatalogs steht noch aus. Führe ocx sync aus, um es erneut zu versuchen.",
   "anthropicPool.title": "Claude-Kontenpool (experimentell)",
   "anthropicPool.enabledDesc": "Bei 429 wird das Konto gekühlt und umgeschaltet. Neue Sitzungen bevorzugen Nutzung unter {threshold}% (5-Stunden-Balken).",

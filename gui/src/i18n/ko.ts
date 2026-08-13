@@ -1035,6 +1035,8 @@ export const ko: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "계정 지정 설정을 업데이트하지 못했습니다. 마지막으로 확인된 설정을 표시합니다.",
   "codexAuth.accountPickerLoadFailed": "계정 지정 설정을 불러오지 못했습니다.",
   "codexAuth.accountPickerRefreshFailed": "이 설정을 새로 고치지 못했습니다. 마지막으로 확인된 값을 계속 표시합니다.",
+  "codexAuth.advancedSettings": "고급 설정",
+  "codexAuth.advancedSettingsAria": "고급 Codex 인증 설정 표시 또는 숨기기",
   "codexAuth.catalogRefreshPending": "변경 사항은 저장되었지만 Codex 모델 카탈로그 새로 고침이 보류 중입니다. ocx sync를 실행해 다시 시도하세요.",
   "anthropicPool.title": "Claude 계정 풀(실험적)",
   "anthropicPool.enabledDesc": "429 시 계정을 쿨다운하고 장애 조치합니다. 새 세션은 5시간 사용량이 {threshold}% 미만인 계정을 우선합니다.",

@@ -1482,6 +1482,26 @@ dialog.modal-overlay::backdrop {
 .codex-request-user-input-feedback { flex: 1 0 100%; margin-top: -8px; color: var(--muted); font-size: var(--text-label); line-height: var(--leading-body); text-align: right; }
 .codex-request-user-input-feedback.is-error { color: var(--red); }
 .codex-account-picker-card { gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.codex-auth-advanced { margin-top: 8px; }
+.codex-auth-advanced__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  text-align: left;
+}
+.codex-auth-advanced__toggle:hover { color: var(--text); }
+.codex-auth-advanced__chevron { transition: transform var(--motion-fast, .12s); }
+.codex-auth-advanced__chevron.is-open { transform: rotate(90deg); }
+.codex-auth-advanced__boxes { display: grid; gap: 0; }
+
 .codex-account-picker-copy { flex: 1 1 34rem; min-width: 0; }
 .codex-account-picker-copy .card-sub { padding: 4px 0 0; }
 .codex-account-picker-controls { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; margin-left: auto; }

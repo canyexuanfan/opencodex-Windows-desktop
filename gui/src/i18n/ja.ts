@@ -1421,6 +1421,8 @@ export const ja: Record<TKey, string> = {
   "codexAuth.accountPickerUpdateFailed": "アカウント指定を更新できませんでした。最後に確認された設定を表示しています。",
   "codexAuth.accountPickerLoadFailed": "アカウント指定の設定を読み込めませんでした。",
   "codexAuth.accountPickerRefreshFailed": "この設定を更新できませんでした。最後に確認された値を引き続き表示しています。",
+  "codexAuth.advancedSettings": "詳細設定",
+  "codexAuth.advancedSettingsAria": "高度な Codex 認証設定を表示または非表示",
   "codexAuth.catalogRefreshPending": "変更は保存されましたが、Codex モデルカタログの更新が保留中です。ocx sync を実行して再試行してください。",
   "anthropicPool.title": "Claude アカウントプール（実験的）",
   "anthropicPool.enabledDesc": "429 時にアカウントをクールダウンしてフェイルオーバーします。新規セッションは 5 時間使用率が {threshold}% 未満のアカウントを優先します。",
