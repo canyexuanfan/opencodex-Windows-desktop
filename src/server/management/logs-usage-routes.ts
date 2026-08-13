@@ -85,6 +85,7 @@ import {
   getUsageSummaryCacheEntry,
   setUsageSummaryCacheEntry,
 } from "./usage-summary-cache";
+import { cacheApiKeyUsageFromSnapshot } from "./api-key-usage";
 
 const USAGE_DAY_MS = 86_400_000;
 function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
@@ -284,6 +285,15 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
           });
         }
       }
+      cacheApiKeyUsageFromSnapshot(
+        snapshot.entries,
+        (config.apiKeys ?? []).map(key => key.id),
+        usageLogIdentityKey(snapshot.revision),
+        snapshot.revision?.size ?? 0,
+        snapshot.truncatedPrefixBytes > 0 || snapshot.entriesTruncated,
+        effectiveReadLimit,
+        now,
+      );
       return jsonResponse(summary);
     } catch {
       return jsonResponse({

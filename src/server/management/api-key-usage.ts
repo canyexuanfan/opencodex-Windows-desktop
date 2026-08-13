@@ -136,6 +136,29 @@ export function clearApiKeyUsageCacheForTests(): void {
  * `attributionSince`. Key management working matters more than usage numbers
  * being present, and the GUI already treats an absent field as "no data".
  */
+export function cacheApiKeyUsageFromSnapshot(
+  entries: PersistedUsageEntry[],
+  configuredIds: string[],
+  identityKey: string,
+  lastSeenSize: number,
+  truncated: boolean,
+  maxReadBytes: number | undefined,
+  now: number = Date.now(),
+): ApiKeyUsageSnapshot {
+  const idsKey = JSON.stringify([configuredIds, maxReadBytes]);
+  const rolled = {
+    ...rollupApiKeyUsage(entries, configuredIds, now),
+    ...(truncated ? { historyTruncated: true as const } : {}),
+  };
+  rollupCache = {
+    revisionKey: `${identityKey}|${idsKey}`,
+    expiresAt: now + ROLLUP_CACHE_TTL_MS,
+    lastSeenSize,
+    snapshot: rolled,
+  };
+  return rolled;
+}
+
 export async function readApiKeyUsageRollup(configuredIds: string[], maxReadBytes?: number): Promise<ApiKeyUsageSnapshot> {
   // JSON rather than a joined string: ids are only validated as non-empty
   // strings, so `["a\0b","c"]` and `["a","b\0c"]` join to the same value and one
