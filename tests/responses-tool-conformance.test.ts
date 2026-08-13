@@ -10,9 +10,12 @@ import { jsonItemTypes, jsonToolItems, streamedView } from "./helpers/responses-
  * The plan's premise was that a translator reading only top-level `tools` can silently erase
  * terminal, custom and namespace tools, and that the model then emits ordinary text and
  * completes normally — a failure that looks like model behavior rather than protocol loss.
- * This suite pins where that risk actually lives in THIS codebase, which is not where the
- * plan assumed: `additional_tools` is handled, so the residual exposure is malformed input,
- * unknown tool kinds, and stream/non-stream divergence.
+ * That premise is partly obsolete here: `additional_tools` IS parsed and merged. This suite
+ * covers PART of the residual exposure — malformed input, unknown tool kinds, and
+ * stream/non-stream divergence. It is a STARTING slice of the 030-034 programme, not a
+ * complete conformance layer: the end-to-end declaration/call/result/second-turn execution
+ * loop, compaction and resume with a discovered tool, the full collision matrix, per-adapter
+ * declaration comparison, transport-error parity, and the conformance artifacts are absent.
  *
  * Several cases below deliberately pin CURRENT degradation rather than desired behavior.
  * They are labeled as such, so a future change to that behavior fails here loudly instead of
@@ -99,7 +102,7 @@ describe("Responses Lite additional_tools declaration merge", () => {
 describe("Responses tool-kind discrimination", () => {
   it("maps each known kind onto its internal marker", () => {
     const parsed = parseRequest(request([], [
-      { type: "function", name: "fn", parameters: { type: "object", properties: {} } },
+      { type: "function", name: "fn", parameters: { type: "object", properties: { path: { type: "string" } } } },
       { type: "custom", name: "freeform" },
       { type: "tool_search", execution: "client", description: "search", parameters: { type: "object", properties: {} } },
       { type: "namespace", name: "ns", tools: [{ type: "function", name: "child", parameters: { type: "object", properties: {} } }] },
@@ -109,6 +112,10 @@ describe("Responses tool-kind discrimination", () => {
     // so the marker assertion alone would survive deleting the function branch.
     expect([...byName.keys()].sort()).toEqual(["child", "fn", "freeform", "tool_search"]);
     expect(byName.get("fn")?.freeform).toBeUndefined();
+    // Presence is still not discrimination: the generic named-tool fallback would recreate
+    // `fn` with the same marker state. The declared SCHEMA only survives the real function
+    // branch, so assert it rather than the tool's mere existence.
+    expect(byName.get("fn")?.parameters).toEqual({ type: "object", properties: { path: { type: "string" } } } as never);
     expect(byName.get("freeform")?.freeform).toBe(true);
     expect(byName.get("tool_search")?.toolSearch).toBe(true);
     expect(byName.get("child")?.namespace).toBe("ns");
@@ -169,6 +176,38 @@ describe("tool_search call and output history", () => {
     expect(toolNames(parsed)).toContain("node_repl");
     const loaded = parsed.context.tools?.find(tool => tool.name === "node_repl");
     expect(loaded?.loadedFromToolSearch).toBe(true);
+  });
+
+  it("preserves the search call itself in assistant history, paired with its result", () => {
+    // Loading the discovered DEFINITIONS is not enough: if the tool_search_call disappears
+    // from history, the next upstream request has an orphaned result and providers reject
+    // the turn. Asserts the call survives with its id, and that the paired result carries
+    // the same id so the two can be matched.
+    const parsed = parseRequest(request([
+      { type: "message", role: "user", content: [{ type: "input_text", text: "find it" }] },
+      { type: "tool_search_call", id: "ts_1", call_id: "ts_1", execution: "client", arguments: "{\"query\":\"repl\"}", status: "completed" },
+      {
+        type: "tool_search_output",
+        call_id: "ts_1",
+        status: "completed",
+        execution: "client",
+        tools: [{ type: "function", name: "node_repl", parameters: { type: "object", properties: {} } }],
+      },
+    ], [
+      { type: "tool_search", execution: "client", description: "search", parameters: { type: "object", properties: {} } },
+    ]));
+
+    const messages = parsed.context.messages;
+    const assistant = messages.find(message => message.role === "assistant");
+    const call = Array.isArray(assistant?.content)
+      ? assistant.content.find(part => (part as { type?: string }).type === "toolCall") as { id?: string; name?: string } | undefined
+      : undefined;
+    expect(call?.name).toBe("tool_search");
+    expect(call?.id).toBe("ts_1");
+
+    const result = messages.find(message => message.role === "toolResult") as { toolCallId?: string; toolName?: string } | undefined;
+    expect(result?.toolCallId).toBe("ts_1");
+    expect(result?.toolName).toBe("tool_search");
   });
 
   it("flattens a namespaced tool discovered through tool_search", () => {
@@ -279,8 +318,15 @@ describe("streaming and non-streaming tool parity", () => {
     const nsCase = cases.find(entry => entry.label.startsWith("namespaced"))!;
     const view = await streamedView(nsCase.events, MODEL, nsMap, freeform, toolSearch);
     const json = jsonToolItems(nsCase.events, MODEL, { toolNsMap: nsMap, freeformToolNames: freeform, toolSearchToolNames: toolSearch });
-    expect(view.snapshot[0]?.name).toBe("child");
-    expect(json[0]?.name).toBe("child");
+
+    // ABSOLUTE assertions first. Equality alone is satisfied by EQUAL DEGRADATION: deleting
+    // namespace restoration from BOTH bridges keeps the two sides identical, so a pure
+    // comparison test would stay green while the identity was lost on the wire.
+    for (const item of [view.snapshot[0], view.incremental[0], json[0]]) {
+      expect(item?.name).toBe("child");
+      expect(item?.namespace).toBe("ns");
+    }
+    expect(view.incremental).toEqual(view.snapshot);
     expect(view.snapshot).toEqual(json);
   });
 
