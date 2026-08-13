@@ -22,6 +22,7 @@ import {
   markBodyNonPersistable,
   previousResponseProviderState,
   previousResponseReplayFailure,
+  previousResponseScopeMismatch,
   rememberResponseState,
 } from "../../responses/state";
 import {
@@ -1503,8 +1504,12 @@ async function handleResponsesInner(
   let unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (body as { input?: unknown } | undefined)?.input,
   );
+  const inboundClientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() || undefined;
   const originalBody = body;
-  body = expandPreviousResponseInput(body);
+  body = expandPreviousResponseInput(body, inboundClientThreadId);
+  if (previousResponseScopeMismatch(body)) {
+    console.warn("[opencodex] dropped a previous_response_id with a mismatched client task scope; continuing fresh");
+  }
   if (previousResponseReplayFailure(body)) {
     return formatErrorResponse(
       400,
@@ -1512,7 +1517,8 @@ async function handleResponsesInner(
       "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
     );
   }
-  const previousResponseInputExpanded = body !== originalBody;
+  const previousResponseInputExpanded = body !== originalBody
+    && typeof (body as { previous_response_id?: unknown }).previous_response_id === "string";
 
   // Spawn-message compatibility (both directions): agent_message task payloads ride in
   // encrypted_content slots as plaintext. Rewrite them to input_text on the RAW body BEFORE
@@ -1529,7 +1535,7 @@ async function handleResponsesInner(
       );
   }
 
-  let parsed;
+  let parsed: OcxParsedRequest;
   let toolBridgeMaps: ReturnType<typeof buildToolBridgeMaps>;
   try {
     parsed = parseRequest(body);
@@ -1537,10 +1543,9 @@ async function handleResponsesInner(
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
     parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
     parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
-    const clientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim();
-    if (clientThreadId) {
-      parsed._clientThreadId = clientThreadId;
-      parsed._reasoningReplayScope = { clientThreadId };
+    if (inboundClientThreadId) {
+      parsed._clientThreadId = inboundClientThreadId;
+      parsed._reasoningReplayScope = { clientThreadId: inboundClientThreadId };
     }
   } catch (err) {
     if (isTranslatorBudgetExceededError(err)) {
@@ -1550,6 +1555,10 @@ async function handleResponsesInner(
     }
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
+  const responseStateOptions = (force = false): { force?: boolean; clientThreadId?: string } => ({
+    ...(force ? { force: true } : {}),
+    ...(parsed._clientThreadId ? { clientThreadId: parsed._clientThreadId } : {}),
+  });
   // Prefer a pre-populated id (routed Claude) over Responses headers that may be
   // absent or synthetically injected (session_id from prompt_cache_key).
   if (!logCtx.conversationId) {
@@ -2137,7 +2146,7 @@ async function handleResponsesInner(
       && (!parsed.previousResponseId || parsed._previousResponseInputExpanded === true);
     const rememberPassthroughResponse = passthroughRecordEligible
       ? (response: { id?: unknown; output?: unknown; status?: unknown }) =>
-        rememberResponseState(parsed._rawBody, response, undefined, { force: true })
+        rememberResponseState(parsed._rawBody, response, undefined, responseStateOptions(true))
       : undefined;
     if (parsed.previousResponseId && !parsed._previousResponseInputExpanded) {
       console.warn(
@@ -2962,7 +2971,7 @@ async function handleResponsesInner(
           parsed._rawBody,
           response,
           continuationStateForResponse(providerState),
-          adapterNeedsForcedContinuation(adapter.name) ? { force: true } : undefined,
+          responseStateOptions(adapterNeedsForcedContinuation(adapter.name)),
         ),
     });
     if (imgResponse.body) {
@@ -3118,7 +3127,7 @@ async function handleResponsesInner(
                 parsed._rawBody,
                 response,
                 continuationStateForResponse(providerState),
-                adapterNeedsForcedContinuation(adapter.name) ? { force: true } : undefined,
+                responseStateOptions(adapterNeedsForcedContinuation(adapter.name)),
               ),
           }),
         },
@@ -3164,7 +3173,7 @@ async function handleResponsesInner(
         parsed._rawBody,
         json,
         continuationStateForResponse(providerState),
-        adapterNeedsForcedContinuation(adapter.name) ? { force: true } : undefined,
+        responseStateOptions(adapterNeedsForcedContinuation(adapter.name)),
       );
     }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
@@ -3864,7 +3873,7 @@ async function handleResponsesInner(
               parsed._rawBody,
               response,
               continuationStateForResponse(providerState),
-              activeAdapter.name === "kiro" ? { force: true } : undefined,
+              responseStateOptions(activeAdapter.name === "kiro"),
             ),
         }),
       },
@@ -3920,7 +3929,7 @@ async function handleResponsesInner(
         parsed._rawBody,
         json,
         continuationStateForResponse(providerState),
-        activeAdapter.name === "kiro" ? { force: true } : undefined,
+        responseStateOptions(activeAdapter.name === "kiro"),
       );
     }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
