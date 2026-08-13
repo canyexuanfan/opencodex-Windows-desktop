@@ -468,6 +468,8 @@ export interface ManagementUsageSnapshot {
    * window the caller asked for.
    */
   entryLengths: number[];
+  /** Unparseable bytes after the last returned row; the next read folds them forward. */
+  trailingSkippedBytes: number;
 }
 let managementUsageReadInflight: {
   key: string;
@@ -510,6 +512,8 @@ interface RetainedUsageSnapshot {
   truncatedPrefixBytes: number;
   /** Byte length of each retained row, so out-of-window rows can be trimmed exactly. */
   entryLengths: number[];
+  /** Unparseable bytes after the last retained row; folded into the next row's span. */
+  trailingSkippedBytes: number;
   entries: PersistedUsageEntry[];
   entriesTruncated: boolean;
   entriesDropped: number;
@@ -533,11 +537,12 @@ const RETAINED_USAGE_DIGEST_CHUNK_BYTES = 1024 * 1024;
  * redaction script fixing one field, a compaction rewriting a middle region -- lands in
  * a gap by default and the stale rows are served.
  *
- * Hashing the whole prefix on every call is also wrong: it costs O(file) per append
- * (measured 184 ms per append on a 245 MB ledger, hashing ~128 MB twice). The hash state
- * is therefore carried on the retained snapshot and only EXTENDED over newly appended
- * bytes, so an append costs O(appended) while still proving every covered byte exactly
- * once.
+ * Hashing from byte 0 on every call is also wrong: that is O(file) per poll while the
+ * read it protects is capped at maxReadBytes, so the ratio degrades as the ledger grows
+ * and becomes SLOWER than a full read past roughly 1-2 GB. Only the retained REGION
+ * (truncatedPrefixBytes..coveredThroughBytes) is hashed. It is never wider than the
+ * window, and bytes below the retained start describe no retained row, so reading them
+ * would prove nothing.
  */
 function updateUsageDigest(hash: Hash, fd: number, from: number, to: number): boolean {
   if (to <= from) return true;
@@ -663,6 +668,8 @@ async function parseUsageTextCooperatively(text: string, signal: AbortSignal): P
   entries: PersistedUsageEntry[];
   entriesDropped: number;
   entryLengths: number[];
+  /** Bytes of unparseable lines after the final accepted row. */
+  trailingSkippedBytes: number;
 }> {
   const lines = text.split(/\r?\n/);
   usageReadCacheStats.parsedLines += lines.filter(line => line.trim()).length;
@@ -671,15 +678,29 @@ async function parseUsageTextCooperatively(text: string, signal: AbortSignal): P
   // rows that fall out of the bounded window without re-reading the file.
   const entryLengths: number[] = [];
   const batchSize = 1_000;
+  // Bytes of lines that did not yield an entry (malformed JSON, missing requestId, a
+  // torn final write). They still occupy space in the file, so they are folded into the
+  // next accepted row's recorded length. Dropping them would make the recorded lengths
+  // sum to less than the real byte span, and the window trim -- which walks forward by
+  // summing those lengths -- would consume extra rows to reach the window start,
+  // silently hiding history and desynchronizing truncatedPrefixBytes.
+  let pendingSkippedBytes = 0;
   for (let offset = 0; offset < lines.length; offset += batchSize) {
     if (signal.aborted) throw signal.reason;
     const batch = lines.slice(offset, offset + batchSize);
     for (let index = 0; index < batch.length; index++) {
       const line = batch[index]!;
+      // The split leaves a trailing "" after the final newline; it occupies no bytes.
+      const isLastLine = offset + index === lines.length - 1;
+      const lineBytes = Buffer.byteLength(line, "utf-8") + (isLastLine && line === "" ? 0 : 1);
       const parsed = parseUsageLines([line]);
-      if (parsed.length === 0) continue;
+      if (parsed.length === 0) {
+        pendingSkippedBytes += lineBytes;
+        continue;
+      }
       entries.push(parsed[0]!);
-      entryLengths.push(Buffer.byteLength(line, "utf-8") + 1);
+      entryLengths.push(lineBytes + pendingSkippedBytes);
+      pendingSkippedBytes = 0;
     }
     if (offset + batchSize < lines.length) {
       // JSON parsing dominates large-log startup. Yield between bounded batches so
@@ -687,12 +708,18 @@ async function parseUsageTextCooperatively(text: string, signal: AbortSignal): P
       await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
   }
-  if (entries.length <= MANAGEMENT_USAGE_MAX_ENTRIES) return { entries, entriesDropped: 0, entryLengths };
+  // Skipped bytes AFTER the last accepted row belong to no entry length, so report them
+  // separately; the trim arithmetic adds them back to keep lengths summing to the span.
+  const trailingSkippedBytes = pendingSkippedBytes;
+  if (entries.length <= MANAGEMENT_USAGE_MAX_ENTRIES) {
+    return { entries, entriesDropped: 0, entryLengths, trailingSkippedBytes };
+  }
   const entriesDropped = entries.length - MANAGEMENT_USAGE_MAX_ENTRIES;
   return {
     entries: entries.slice(-MANAGEMENT_USAGE_MAX_ENTRIES),
     entriesDropped,
     entryLengths: entryLengths.slice(-MANAGEMENT_USAGE_MAX_ENTRIES),
+    trailingSkippedBytes,
   };
 }
 
@@ -746,6 +773,7 @@ async function readUsageEntriesFullCooperatively(
       entriesDropped: parsed.entriesDropped,
       prefixDigest,
       entryLengths: parsed.entryLengths,
+      trailingSkippedBytes: parsed.trailingSkippedBytes,
     };
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -793,6 +821,7 @@ async function readUsageEntriesIncrementally(
     let appendedEntries: PersistedUsageEntry[] = [];
     let appendedLengths: number[] = [];
     let appendedDropped = 0;
+    let appendedTrailingSkipped = retained.trailingSkippedBytes;
     if (size > retained.coveredThroughBytes) {
       // The covered offset must land immediately after a newline, or the retained rows
       // and the appended text do not join on a record boundary.
@@ -813,6 +842,12 @@ async function readUsageEntriesIncrementally(
       appendedEntries = appended.entries;
       appendedLengths = appended.entryLengths;
       appendedDropped = appended.entriesDropped;
+      // If the appended chunk produced rows, its own trailing skipped bytes become the
+      // new trailing remainder; otherwise the earlier remainder still stands and the new
+      // skipped bytes add to it.
+      appendedTrailingSkipped = appended.entries.length > 0
+        ? appended.trailingSkippedBytes
+        : retained.trailingSkippedBytes + appended.trailingSkippedBytes;
     }
     // Re-anchor the window in place. Rows that have fallen outside `size - maxReadBytes`
     // are dropped using their recorded byte lengths, so the result is exactly the rows a
@@ -822,16 +857,20 @@ async function readUsageEntriesIncrementally(
     // exists for.
     const windowStart = Math.max(0, size - maxReadBytes);
     let entries = retained.entries.concat(appendedEntries);
-    let lengths = retained.entryLengths.concat(appendedLengths);
+    // Skipped bytes trailing the retained rows sit BETWEEN them and the appended rows, so
+    // they belong to the first appended row's span. Folding them in keeps the recorded
+    // lengths summing to the true byte distance, which is what the trim walk relies on.
+    const joinedLengths = appendedLengths.slice();
+    if (retained.trailingSkippedBytes > 0 && joinedLengths.length > 0) {
+      joinedLengths[0] = joinedLengths[0]! + retained.trailingSkippedBytes;
+    }
+    let lengths = retained.entryLengths.concat(joinedLengths);
     let truncatedPrefixBytes = retained.truncatedPrefixBytes;
     let dropIndex = 0;
     while (dropIndex < lengths.length && truncatedPrefixBytes < windowStart) {
       truncatedPrefixBytes += lengths[dropIndex]!;
       dropIndex += 1;
     }
-    // Dropping must land back on a record boundary; anything else means the recorded
-    // lengths and the file have diverged.
-    if (truncatedPrefixBytes > size) return null;
     if (dropIndex > 0) {
       entries = entries.slice(dropIndex);
       lengths = lengths.slice(dropIndex);
@@ -839,11 +878,16 @@ async function readUsageEntriesIncrementally(
     let entriesDropped = retained.entriesDropped + appendedDropped;
     if (entries.length > MANAGEMENT_USAGE_MAX_ENTRIES) {
       const excess = entries.length - MANAGEMENT_USAGE_MAX_ENTRIES;
-      for (let index = 0; index < excess; index++) truncatedPrefixBytes += lengths[index]!;
       entriesDropped += excess;
       entries = entries.slice(excess);
       lengths = lengths.slice(excess);
     }
+    // The recorded lengths plus the trailing remainder must account for every byte from
+    // truncatedPrefixBytes to EOF; if they do not, the lengths and the file have
+    // diverged and the retained rows cannot be trusted.
+    let accounted = appendedTrailingSkipped;
+    for (const length of lengths) accounted += length;
+    if (truncatedPrefixBytes + accounted !== size) return null;
     usageReadCacheStats.tailReads += 1;
     return {
       entries,
@@ -855,6 +899,7 @@ async function readUsageEntriesIncrementally(
       // is the post-trim window, not the pre-trim one.
       prefixDigest: usageRegionDigest(fd, truncatedPrefixBytes, size) ?? "",
       entryLengths: lengths,
+      trailingSkippedBytes: appendedTrailingSkipped,
     };
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -920,6 +965,7 @@ export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_U
       prefixDigest: snapshot.prefixDigest,
       truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
       entryLengths: snapshot.entryLengths,
+      trailingSkippedBytes: snapshot.trailingSkippedBytes,
       entries: snapshot.entries,
       entriesTruncated: snapshot.entriesTruncated,
       entriesDropped: snapshot.entriesDropped,
