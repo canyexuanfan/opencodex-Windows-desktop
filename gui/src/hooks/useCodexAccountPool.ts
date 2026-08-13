@@ -1,3 +1,4 @@
+import { usageSummary30dResourceKey } from "../usage-summary-resource";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeAccountPriority } from "../account-priority";
 import { useKeyedClientResource } from "../client-resource";
@@ -130,7 +131,7 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const seed = lastGoodByBase.get(apiBase);
   const [accounts, setAccounts] = useState<CodexAccountEntry[]>(() => seed?.accounts ?? []);
   const usage30d = useKeyedClientResource<CodexAccountUsageSummary>(
-    `usage-summary-30d:${apiBase}:codex`,
+    usageSummary30dResourceKey(apiBase, "codex"),
     [apiBase],
     async (signal) => {
       const response = await fetch(`${apiBase}/api/usage?range=30d&surface=codex`, { signal });

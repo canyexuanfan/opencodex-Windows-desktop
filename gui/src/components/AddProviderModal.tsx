@@ -1,3 +1,4 @@
+import { usageSummary30dResourceKey } from "../usage-summary-resource";
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { IconX } from "../icons";
 import { useT } from "../i18n/shared";
@@ -79,7 +80,7 @@ export default function AddProviderModal({
     },
   );
   const usagePoll = useKeyedClientResource(
-    `usage-summary-30d:${apiBase}:all`,
+    usageSummary30dResourceKey(apiBase),
     [apiBase],
     async (signal) => {
       const res = await fetch(`${apiBase}/api/usage?range=30d`, { signal });
