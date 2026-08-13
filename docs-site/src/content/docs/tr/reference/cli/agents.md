@@ -1,20 +1,17 @@
 ---
 title: "CLI Referansı: Ajanlar"
-description: "ocx agent ve alt ajan yönetimi komut satırı referansı."
+description: "ocx agent, combos, gözlemlenebilirlik ve model yönetimi komut satırı referansı."
 ---
 
-## Genel Bakış
-
-`ocx agent` komutları, Codex ve Claude Code için alt ajan modellerini, sabitlemeleri ve çoklu model ortamlarını yönetir.
-
-## Komutlar
+## Ajan ve Model Komutları
 
 ```bash
-ocx agent list
-ocx agent set <name> --model <provider/model>
+ocx models               # Görünür tüm modelleri listeler
+ocx combo list           # Tanımlı tüm komboları görüntüler
+ocx combo set <name> --targets <targets...>
 ```
 
-## Gözlemlenebilirlik ve Hata Ayıklama
+## Gözlemlenebilirlik ve Günlükler
 
 | Takma Ad | Karşılık Gelen Kaynak |
 | --- | --- |
