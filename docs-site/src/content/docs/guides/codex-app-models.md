@@ -105,7 +105,7 @@ metadata instead of an older-template approximation.
 | OpenAI (API key) | Exactly eight namespaced rows: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, and the three `*-pro` virtual ids (1,050,000 context; 922,000 max input for all eight) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` (1,050,000) |
 | Cursor | Static fallback includes `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, and `cursor/gpt-5.6-luna` (1,000,000), plus `cursor/grok-4.5` and `cursor/grok-4.5-fast` (500,000); live account discovery decides which remain visible. |
-| xAI | Live discovery is authoritative; the fallback catalog defaults to `xai/grok-4.5` with a 500,000-token window and `low` / `medium` / `high` reasoning controls. |
+| xAI | Live discovery is authoritative. The fallback catalog includes `xai/grok-4.6` and defaults to `xai/grok-4.5`; both have 500,000-token windows. Grok 4.6 exposes `low` / `medium` / `high` / `xhigh` (upstream default: `high`), while Grok 4.5 stops at `high`. |
 
 The pinned GPT-5.6 entries preserve the exact upstream ladder. Sol and Terra expose `low` through
 `ultra`; Luna stops at `max`. Sol defaults to `low`, while Terra and Luna default to `medium`.

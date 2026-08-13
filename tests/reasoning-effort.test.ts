@@ -128,7 +128,7 @@ describe("provider-specific reasoning effort mapping", () => {
     expect(mapReasoningEffort(grok45.provider, grok45.modelId, "xhigh")).toBe("high");
   });
 
-  test("xAI grok-4.6 heals an old persisted API-key ladder without changing grok-4.5", () => {
+  test("xAI grok-4.6 preserves an explicit narrower ladder and provider-wide downgrade map", () => {
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "xai",
@@ -142,14 +142,16 @@ describe("provider-specific reasoning effort mapping", () => {
             "grok-4.6": ["low", "medium", "high"],
             "grok-4.5": ["low", "medium", "high"],
           },
+          reasoningEffortMap: { xhigh: "high", max: "high" },
         },
       },
     };
     const grok46 = routeModel(config, "xai/grok-4.6");
     const grok45 = routeModel(config, "xai/grok-4.5");
 
-    expect(configuredReasoningEfforts(grok46.provider, grok46.modelId)).toEqual(["low", "medium", "high", "xhigh"]);
-    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "xhigh")).toBe("xhigh");
+    expect(configuredReasoningEfforts(grok46.provider, grok46.modelId)).toEqual(["low", "medium", "high"]);
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "xhigh")).toBe("high");
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "max")).toBe("high");
     expect(configuredReasoningEfforts(grok45.provider, grok45.modelId)).toEqual(["low", "medium", "high"]);
     expect(mapReasoningEffort(grok45.provider, grok45.modelId, "xhigh")).toBe("high");
   });
