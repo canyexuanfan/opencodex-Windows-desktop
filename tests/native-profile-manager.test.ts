@@ -1113,6 +1113,10 @@ describe("native main profile transactions", () => {
     expect(journal).not.toContain("opaque-refresh-target");
   });
 
+  // The rejection is immediate once the injected process probe runs, but the
+  // shared enrollment fixture still performs encrypted-vault and SQLite setup.
+  // Hosted macOS can push that setup past Bun's 5 s default under full-suite
+  // load, so keep the harness budget above the manager's own lock deadline.
   test("normal switch rejects a busy native Codex process before publishing any transaction file", async () => {
     const f = await enrolledFixture();
     const blocked = new NativeProfileManager({
@@ -1126,7 +1130,7 @@ describe("native main profile transactions", () => {
     expect(readFileSync(blocked.context.authPath, "utf8")).toBe(f.source);
     expect(existsSync(blocked.context.journalPath)).toBe(false);
     expect((await blocked.list()).activeProfileId).toBe(f.sourceProfile.id);
-  });
+  }, 10_000);
 
   test("vault-write failure after auth replacement restores exact source and removes the journal", async () => {
     const f = await enrolledFixture();
