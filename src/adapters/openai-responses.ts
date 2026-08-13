@@ -11,6 +11,7 @@ import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 import { modelRecordValue } from "../reasoning-effort";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { rewriteRoutedCustomToolsForUpstream } from "../responses/custom-tool-compat";
+import { openaiResponsesUrl } from "./openai-responses-url";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -1244,8 +1245,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         }
       } else {
         if (provider.responsesPath === undefined) {
-          const base = provider.baseUrl.replace(/\/v1\/?$/, "");
-          url = `${base}/v1/responses`;
+          url = openaiResponsesUrl(provider.baseUrl);
         } else {
           const base = provider.baseUrl.replace(/\/$/, "");
           url = `${base}${provider.responsesPath}`;
