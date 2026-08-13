@@ -151,6 +151,45 @@ describe("apply", () => {
     expect(readFileSync(configPath, "utf8")).toContain("api_mode: user_edited");
   });
 
+  test("json clients re-apply after a sibling edit and keep the user's entry (#1631)", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+
+    // The user adds an unrelated sibling — the routine edit that used to
+    // dead-end the integration in `conflict` with no recovery path.
+    const doc = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    (doc.providers as Record<string, unknown>).mine = { baseUrl: "http://user.invalid/v1" };
+    writeFileSync(configPath, `${JSON.stringify(doc, null, 4)}\n`);
+
+    const second = applyIntegration(input({ clientId: "pi" }));
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.changed).toBe(true);
+
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect((after.providers as Record<string, unknown>).mine).toEqual({ baseUrl: "http://user.invalid/v1" });
+    expect((after.providers as Record<string, unknown>).opencodex).toBeDefined();
+
+    // The re-apply re-owned the file: a third apply is a no-op again.
+    const third = applyIntegration(input({ clientId: "pi" }));
+    expect(third.ok).toBe(true);
+    if (third.ok) expect(third.changed).toBe(false);
+  });
+
+  test("yaml clients still refuse a sibling edit rather than risk user comments", () => {
+    const configPath = installHermes();
+    expect(applyIntegration(input()).ok).toBe(true);
+    writeFileSync(configPath, `${readFileSync(configPath, "utf8")}unknown_top: added-later\n`);
+
+    const result = applyIntegration(input());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("conflict");
+    expect(readFileSync(configPath, "utf8")).toContain("unknown_top: added-later");
+  });
+
   test("refuses an unparseable config rather than overwriting it", () => {
     const configPath = installHermes();
     writeFileSync(configPath, "{{{ not yaml\n");

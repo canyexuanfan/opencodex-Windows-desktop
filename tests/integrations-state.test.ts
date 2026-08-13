@@ -471,7 +471,11 @@ describe("ownership is scoped to recorded fragments", () => {
     expect(result).toEqual({ state: "conflict", reason: "foreign-edit" });
   });
 
-  test("whole-document serializers still conflict on an unrelated source edit", () => {
+  test("json clients report a sibling edit as stale, not conflict", () => {
+    // Strict JSON cannot carry comments — a commented file fails parsing long
+    // before this branch — so rewriting the document cannot destroy anything
+    // but formatting. Refusing forever here dead-ended the integration on the
+    // user's first own config edit (#1631).
     const piContribution = { ...ownedContribution, clientId: "pi" as const };
     const piRecord: OwnershipRecord = {
       ...record,
@@ -483,6 +487,55 @@ describe("ownership is scoped to recorded fragments", () => {
       fileText: textWithExtra,
       fileIsRegular: true,
       parsed: documentWithExtra,
+      record: piRecord,
+      contribution: piContribution,
+    });
+
+    expect(result).toEqual({ state: "stale" });
+  });
+
+  test("comment-capable formats still conflict on an unrelated source edit", () => {
+    // hermes writes YAML: re-serializing the whole document would drop any
+    // comments the user keeps next to our block, so file-level drift stays a
+    // hard conflict there.
+    const hermesContribution = { ...ownedContribution, clientId: "hermes" as const };
+    const hermesRecord: OwnershipRecord = {
+      ...record,
+      clientId: "hermes",
+      configPath: "/tmp/hermes-config.yaml",
+      blockFingerprint: fingerprint(canonicalContribution(hermesContribution)),
+    };
+    const result = classifyIntegration({
+      fileText: textWithExtra,
+      fileIsRegular: true,
+      parsed: documentWithExtra,
+      record: hermesRecord,
+      contribution: hermesContribution,
+    });
+
+    expect(result).toEqual({ state: "conflict", reason: "foreign-edit" });
+  });
+
+  test("a json sibling edit combined with an edit inside our block is still a conflict", () => {
+    // The sibling-edit exemption must never mask tampering with an owned
+    // fragment: the block check runs first.
+    const piContribution = { ...ownedContribution, clientId: "pi" as const };
+    const piRecord: OwnershipRecord = {
+      ...record,
+      clientId: "pi",
+      configPath: "/tmp/pi-models.json",
+      blockFingerprint: fingerprint(canonicalContribution(piContribution)),
+    };
+    const editedDocument = {
+      providers: {
+        opencodex: { ...ownedValue, baseUrl: "http://user-edited.invalid/v1" },
+        freebuff: extraValue,
+      },
+    };
+    const result = classifyIntegration({
+      fileText: `${JSON.stringify(editedDocument, null, 2)}\n`,
+      fileIsRegular: true,
+      parsed: editedDocument,
       record: piRecord,
       contribution: piContribution,
     });

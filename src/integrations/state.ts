@@ -180,11 +180,31 @@ export function classifyIntegration(input: {
     return { state: "conflict", reason: "unowned-key" };
   }
   const clientId = input.clientId ?? input.record.clientId;
-  if (clientId !== "omp" && fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) {
-    return { state: "conflict", reason: "foreign-edit" };
-  }
+  /*
+   * Checked BEFORE file-level drift: an edit INSIDE an owned fragment is a
+   * conflict no matter what the rest of the file looks like, so the sibling-
+   * edit exemption below can never mask it.
+   */
   if (recordedFragmentFingerprint(input.parsed, input.record) !== input.record.blockFingerprint) {
     return { state: "conflict", reason: "foreign-edit" };
+  }
+  if (clientId !== "omp" && fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) {
+    /*
+     * The file changed since we wrote it, but every fragment we own is still
+     * byte-for-byte what we put there — a sibling edit, not tampering. Apply
+     * rewrites the WHOLE document, so for comment-capable formats (yaml,
+     * json5, toml) it would drop comments the user wrote next to us: fail
+     * closed there. Strict JSON cannot carry comments — a commented file
+     * never reaches this branch because parsing already failed — so the only
+     * possible loss is formatting normalization, and refusing forever over
+     * that dead-ends the integration on the user's first own config edit
+     * (#1631). Report drift instead; a re-apply merges into the parsed
+     * document as it stands and re-owns the file.
+     */
+    if (EXPORT_CLIENTS[clientId].format !== "json") {
+      return { state: "conflict", reason: "foreign-edit" };
+    }
+    return { state: "stale" };
   }
   return input.record.blockFingerprint === fingerprint(canonicalContribution(input.contribution))
     ? { state: "current" }
