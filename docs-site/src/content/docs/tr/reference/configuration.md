@@ -21,10 +21,10 @@ Canlı bir işlem yapılandırmayı bellekte tuttuğundan, elle düzenleme yapma
 
 ## Yapılandırma Alanları
 
-- [Sağlayıcılar (Providers)](/tr/reference/configuration/providers/) — Sağlayıcı girdileri, kimlik doğrulama, uç noktalar, kataloglar, izin listeleri, bağlam sınırları ve kotalar.
-- [Yönlendirme (Routing)](/tr/reference/configuration/routing/) — `defaultProvider`, model çözümleme sırası, kombolar ve takma adlar.
-- [Ajanlar (Agents)](/tr/reference/configuration/agents/) — Çoklu ajan modu, yetkilendirme yönlendirmesi, yedek modeller ve akıl yürütme sınırları.
-- [Sunucu ve Çalışma Zamanı (Server & Runtime)](/tr/reference/configuration/server/) — Dinleyici ve uzaktan erişim, erişim anahtarları, zaman aşımları, depolama ve sidecar'lar.
+- [Sağlayıcılar (Providers)](/reference/configuration/providers/) — Sağlayıcı girdileri, kimlik doğrulama, uç noktalar, kataloglar, izin listeleri, bağlam sınırları ve kotalar.
+- [Yönlendirme (Routing)](/reference/configuration/routing/) — `defaultProvider`, model çözümleme sırası, kombolar ve takma adlar.
+- [Ajanlar (Agents)](/reference/configuration/agents/) — Çoklu ajan modu, yetkilendirme yönlendirmesi, yedek modeller ve akıl yürütme sınırları.
+- [Sunucu ve Çalışma Zamanı (Server & Runtime)](/reference/configuration/server/) — Dinleyici ve uzaktan erişim, erişim anahtarları, zaman aşımları, depolama ve sidecar'lar.
 
 ## Gizli Bilgileri Dosyadan Uzak Tutun
 

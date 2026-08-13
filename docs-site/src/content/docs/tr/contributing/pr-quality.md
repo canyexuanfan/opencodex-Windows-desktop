@@ -19,10 +19,10 @@ Yazarların değişen her satırı anlaması, doğrulama iddialarının arkasın
 
 ## Otomatik Denetimler (Automated Gates)
 
-İnsan incelemesinden önce üç belirleyici kontrol çalışır ve her hata mesajı neyi değiştirmeniz gerektiğini açıkça belirtir:
+İnsan incelemesinden önce dört otomatik kontrol çalışır ve her hata mesajı neyi değiştirmeniz gerektiğini açıkça belirtir:
 
 - **PR Kalitesi (`enforce-target`).** Pull Request'ler `dev` dalını hedeflemeli ve gerçek bir açıklama içermelidir: Ne değiştiğini ve nedenini açıklayan bir **Summary** ve bir **Test plan**. Başlık veya açıklama `gui` kelimesini içeriyorsa, açıklamada kullanıcı arayüzü değişikliğini gösteren bir ekran görüntüsü (screenshot) bulunmalıdır; kontrol, ekran görüntüsü eklenene kadar PR'ı taslak (draft) modunda tutar.
-  Repo yetkisi olmayan katkıcı PR'ları taslak olarak açılır ve 4 kutucuklu incelemeye hazırlık kontrol listesi tamamlanana kadar taslakta kalır: Yerel CI yeşil, dal en güncel `dev` commit'i üzerinde, tüm bot tespitleri incelendi ve incelemeye hazır onayı verildi. Tüm kutucuklar işaretlendiğinde bot PR'ı hazır duruma getirir ve bakımcılara bildirim gönderir.
+  Repo yetkisi olmayan katkıcı PR'ları taslak olarak açılır ve 4 kutucuklu incelemeye hazırlık kontrol listesi tamamlanana kadar taslakta kalır: Yerel CI yeşil, dal en güncel `dev` commit'i üzerinde, tüm bot tespitleri incelendi ve incelemeye hazır onayı verildi. Tamamlama durumu PR head commit SHA'sına bağlıdır; sonradan yeni commit push edilirse kontrol listesi sıfırlanır ve PR tekrar taslak durumuna döner. Tüm kutucuklar işaretlendiğinde bot PR'ı incelemeye hazır duruma getirir ve bakımcılara bildirim gönderir.
 - **Hijyen (Hygiene).** Davranış değişiklikleri bir test gerektirir; yeni lint/tip bastırmaları, odaklanmış/atlanmış testler veya boş catch blokları açık bir onay etiketi gerektirir. Yalnızca yorum satırı değişiklikleri test gerektirmez.
 - **Çapraz Platform CI.** Test paketi her PR için Linux ve macOS üzerinde çalışır.
 - **Tip Etiketi (Type Label).** `label` kontrolü PR başlığından `bug` / `enhancement` / `documentation` / `chore` etiketlerini otomatik türetir.

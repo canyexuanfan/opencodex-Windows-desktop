@@ -62,8 +62,8 @@ GitHub Actions iş akışları sade tutulmuştur:
 Sürümler için yardımcı betiği kullanın:
 
 ```bash
-bun run release <sürüm>           # Sürüm artışını commit/push eder; varsayılan olarak dry-run çalışır
-bun run release <sürüm> --publish # CI onaylı dry-run anlaşıldıktan sonra yayınlar
+bun run release VERSION           # Sürüm artışını commit/push eder; varsayılan olarak dry-run çalışır
+bun run release VERSION --publish # CI onaylı dry-run anlaşıldıktan sonra yayınlar
 bun run release:watch             # En güncel Release iş akışını izler
 ```
 
@@ -128,8 +128,8 @@ Kayıt girdisi taahhüt edilen bir sözdür: opencodex, kullanıcının API anah
 
 ## Adaptör Ekleme
 
-`src/adapters/` altında `ProviderAdapter` arayüzünü uygulayın (Bkz: [Adaptörler](/tr/reference/adapters/)), adını `src/server/adapter-resolve.ts` içine kaydedin ve çıktısını dahili `AdapterEvent` olaylarına köprüleyin. Görseller için `image.ts` dosyasını yeniden kullanın ve standart akış/araç çağrıları için `openai-chat.ts` dosyasını takip edin. `tests/` altına odaklanmış testler ekleyin.
+`src/adapters/` altında `ProviderAdapter` arayüzünü uygulayın (Bkz: [Adaptörler](/reference/adapters/)), adını `src/server/adapter-resolve.ts` içine kaydedin ve çıktısını dahili `AdapterEvent` olaylarına köprüleyin. Görseller için `image.ts` dosyasını yeniden kullanın ve standart akış/araç çağrıları için `openai-chat.ts` dosyasını takip edin. `tests/` altına odaklanmış testler ekleyin.
 
 ## Tamamlandığını İddia Etmeden Önce Doğrulayın
 
-Değişikliğinizi kanıtlayan en dar kapsamlı komutu çalıştırın — tipler için `bun run typecheck`, davranış için odaklanmış `bun test tests/<ad>.test.ts`, ardından etkilenen alan için genel kontrolleri yapın. opencodex büyük paketler yerine küçük, doğrulanabilir commit'leri tercih eder.
+Değişikliğinizi kanıtlayan en dar kapsamlı komutu çalıştırın — tipler için `bun run typecheck`, davranış için odaklanmış `bun test tests/NAME.test.ts`, ardından etkilenen alan için genel kontrolleri yapın. opencodex büyük paketler yerine küçük, doğrulanabilir commit'leri tercih eder.

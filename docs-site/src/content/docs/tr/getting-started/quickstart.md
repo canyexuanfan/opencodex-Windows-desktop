@@ -17,7 +17,7 @@ ocx init
 2. **API anahtarı** — bir API anahtarı yapıştırın veya `${ANTHROPIC_API_KEY}` gibi bir ortam değişkenine başvurun.
 3. **Varsayılan model** — anahtar tabanlı, yerel veya özel sağlayıcılar için varsayılan şablonu kabul edin ya da bir model kimliği (id) girin.
 4. **Proxy portu** — varsayılan olarak `10100` kullanılır.
-5. **Codex'e enjekte edilsin mi?** — standart bir loopback kurulumunda, opencodex `$CODEX_HOME/config.toml` (varsayılan: `~/.codex/config.toml`) dosyasına kök düzeyinde `openai_base_url` ekler. Böylece Codex'in yerleşik `openai` sağlayıcısı proxy'yi hedefler. Uzak/LAN bağlantılarında ise API-auth başlıklı özel bir sağlayıcı girdisi kullanılır.
+5. **Codex'e enjekte edilsin mi?** — standart bir loopback kurulumunda, opencodex `$CODEX_HOME/config.toml` (varsayılan: `~/.codex/config.toml`) dosyasına kök düzeyinde `openai_base_url` ekler. Böylece Codex'in yerleşik `openai` sağlayıcısı proxy'yi hedefler. Loopback dışı / uzak bağlantılarda ise `OPENCODEX_API_AUTH_TOKEN` belirtecini `x-opencodex-api-key` başlığıyla gönderen ve `wire_api = "responses"` içeren özel bir sağlayıcı girdisi kullanılır.
 6. **Otomatik başlatma shim'i kurulsun mu?** — etkinleştirildiğinde `codex` komutu çalıştırılmadan önce `ocx ensure` çalışır.
 
 Yapılandırma sonucu `$OPENCODEX_HOME/config.json` (varsayılan: `~/.opencodex/config.json`) dosyasına kaydedilir.
@@ -65,7 +65,7 @@ codex -m "ollama-cloud/glm-5.2"      "Bir SQL migration betiği yaz"
 
 ## Alt Ajan Modellerini Seçin (İsteğe Bağlı)
 
-Yeni bir yapılandırmada Codex'in alt ajan (sub-agent) seçicisinde beş yerel model bulunur: `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` ve `gpt-5.4-mini`. Beş adede kadar yerel veya yönlendirilmiş modeli değiştirmek ya da yeniden sıralamak için `ocx gui` kontrol panelini açın. Kontrol paneli üzerinden tercih edilen bir alt ajan modeli ve akıl yürütme seviyesi de belirlenebilir. Detaylar ve v1/base/v2 seçenekleri için [Alt Ajan Arayüzü](/tr/guides/sub-agent-surface/) sayfasına göz atın.
+Yeni bir yapılandırmada Codex'in alt ajan (sub-agent) seçicisinde beş yerel model bulunur: `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` ve `gpt-5.4-mini`. Beş adede kadar yerel veya yönlendirilmiş modeli değiştirmek ya da yeniden sıralamak için `ocx gui` kontrol panelini açın. Kontrol paneli üzerinden tercih edilen bir alt ajan modeli ve akıl yürütme seviyesi de belirlenebilir. Detaylar ve v1/base/v2 seçenekleri için [Alt Ajan Arayüzü](/guides/sub-agent-surface/) sayfasına göz atın.
 
 ## Anahtar Yapıştırmak Yerine Hesapla Giriş Yapma
 
@@ -76,7 +76,7 @@ ocx login xai          # veya: anthropic, kimi, kiro, google-antigravity, cursor
 ocx logout xai
 ```
 
-OpenAI'ın kendisi için **ekstra anahtara gerek yoktur** — varsayılan sağlayıcı mevcut `codex login` kimlik bilgilerinizi doğrudan iletir (Bkz: [Sağlayıcılar](/tr/guides/providers/)).
+OpenAI ChatGPT/Codex Doğrudan veya Havuz (Direct/Pool) rotası için **ayrı bir API anahtarına gerek yoktur** — mevcut `codex login` kimlik bilgilerinizi doğrudan iletir; OpenAI API anahtarı rotaları (`openai-apikey`) ise kendi yapılandırılmış API anahtarını gerektirir (Bkz: [Sağlayıcılar](/tr/guides/providers/)).
 
 ## Durdurma ve Geri Yükleme
 

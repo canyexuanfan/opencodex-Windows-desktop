@@ -9,9 +9,9 @@ Genel kullanım için `ocx help` (veya `ocx --help` / `ocx -h`) komutunu çalı�
 
 ## Komut Aileleri
 
-- [Yaşam Döngüsü (Lifecycle)](/tr/reference/cli/lifecycle/) — Kurulum, proxy ve servis yaşam döngüsü, sistem sağlığı, tanılama, katalog senkronizasyonu, kontrol paneli ve güncellemeler.
-- [Sağlayıcılar, Hesaplar ve Modeller](/tr/reference/cli/providers-accounts/) — Sağlayıcı yapılandırması, kimlik doğrulama, kimlik havuzları, kotalar, özel modeller, görünürlük ve bağlam sınırları.
-- [Ajanlar, Yönlendirme ve Entegrasyonlar](/tr/reference/cli/agents/) — Çoklu ajan kontrolleri, kombolar, gözlemlenebilirlik, erişim anahtarları ve istemci entegrasyonları.
+- [Yaşam Döngüsü (Lifecycle)](/reference/cli/lifecycle/) — Kurulum, proxy ve servis yaşam döngüsü, sistem sağlığı, tanılama, katalog senkronizasyonu, kontrol paneli ve güncellemeler.
+- [Sağlayıcılar, Hesaplar ve Modeller](/reference/cli/providers-accounts/) — Sağlayıcı yapılandırması, kimlik doğrulama, kimlik havuzları, kotalar, özel modeller, görünürlük ve bağlam sınırları.
+- [Ajanlar, Yönlendirme ve Entegrasyonlar](/reference/cli/agents/) — Çoklu ajan kontrolleri, kombolar, gözlemlenebilirlik, erişim anahtarları ve istemci entegrasyonları.
 
 ## Başsız (Headless) Davranış
 

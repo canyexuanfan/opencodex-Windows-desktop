@@ -48,7 +48,7 @@ ocx health --json
 
 `ocx status`, proxy ve servis durumunu bildirir. `ocx doctor`, yerel ortamı, ağı, Codex çalışma zamanını ve hesap sağlığı sorunlarını teşhis eder. `ocx health`, proxy sağlıklı olduğunda `0`, aksi halde `1` koduyla çıkar; `--json` parametresi yapılandırılmış çıktı döndürür.
 
-`ocx combo set` gibi yönetim API'si tarafından desteklenen komutlar çalışan canlı proxy ile iletişim kurar. Canlı bir proxy bulunamazsa veya API'ye ulaşılamazsa CLI bunu bir `503` hatası olarak değerlendirir ve sıfır dışı bir kodla çıkar. Yeniden denemeden önce ön plandaki proxy'yi veya arka plan servisini başlatın. Komutlar ve uç noktalar için [CLI Referansı](/tr/reference/cli/) ve [Yönetim API'si](/tr/reference/management-api/) sayfalarına bakın.
+`ocx combo set` gibi yönetim API'si tarafından desteklenen komutlar çalışan canlı proxy ile iletişim kurar. Canlı bir proxy bulunamazsa veya API'ye ulaşılamazsa CLI bunu bir `503` hatası olarak değerlendirir ve sıfır dışı bir kodla çıkar. Yeniden denemeden önce ön plandaki proxy'yi veya arka plan servisini başlatın. Komutlar ve uç noktalar için [CLI Referansı](/tr/reference/cli/) ve [Yönetim API'si](/reference/management-api/) sayfalarına bakın.
 
 ## Kontrol Paneli Olmadan Sağlayıcı ve Kombo Ekleme
 
@@ -70,7 +70,7 @@ ocx combo set main \
   --strategy failover
 ```
 
-Hedefler `sağlayıcı/model` sözdizimini kullanır ve virgülle ayrılır. Ortaya çıkan sanal model `combo/main` olur. Stratejiler, ağırlıklar, yapışkan yönlendirme ve hata davranışları için [Kombolar](/tr/guides/combos/) sayfasına bakın.
+Hedefler `sağlayıcı/model` sözdizimini kullanır ve virgülle ayrılır. Ortaya çıkan sanal model `combo/main` olur. Stratejiler, ağırlıklar, yapışkan yönlendirme ve hata davranışları için [Kombolar](/guides/combos/) sayfasına bakın.
 
 ## Uzak ve LAN Bağlantıları
 
@@ -81,4 +81,4 @@ export OPENCODEX_API_AUTH_TOKEN="gizli-belirteciniz"
 ocx service install
 ```
 
-İstemciler daha sonra yönetim ve model isteklerini doğrulamalıdır. opencodex'i yerel makinenin dışına açmadan önce [Yapılandırma](/tr/reference/configuration/) bölümündeki uzaktan erişim kurallarını okuyun.
+İstemciler daha sonra yönetim ve model isteklerini `x-opencodex-api-key` başlığıyla doğrulamalıdır. opencodex'i yerel makinenin dışına açmadan önce [Yapılandırma](/tr/reference/configuration/) bölümündeki uzaktan erişim kurallarını okuyun.

@@ -5,7 +5,7 @@ description: opencodex belirli bir model kimliğini hangi sağlayıcının sunac
 
 Codex bir model talep ettiğinde `router.ts` bu isteği yapılandırılmış tek bir sağlayıcıya çözümler. Kurallar **sırasıyla** kontrol edilir; ilk eşleşen kural kazanır.
 
-OpenAI için yapılandırılmış bir `<seçici>/gpt-*` kimliği, kombo veya sağlayıcı ad alanlarından önce `codexAccountNamespaces` üzerinden tam olarak tek bir kayıtlı Codex hesabına eşlenir. Yalın `gpt-*` kimlikleri ise resmi `openai` sağlayıcısını seçer. Bunun `codexAccountMode` ayarı, model kimliğini değiştirmeden Havuz (Pool - varsayılan, ana hesap artı eklenen hesaplar) veya Doğrudan (Direct - mevcut çağıran/ana bearer) modunu belirler. `openai-apikey/<model>` ise açıkça API anahtarı taşımasını seçer.
+OpenAI için yapılandırılmış bir `<seçici>/gpt-*` kimliği, kombo veya sağlayıcı ad alanlarından önce `codexAccountNamespaces` üzerinden tam olarak tek bir kayıtlı Codex hesabına eşlenir. Yalın `gpt-*` kimlikleri ise resmi `openai` sağlayıcısını seçer. Bunun `codexAccountMode` ayarı, model kimliğini değiştirmeden Havuz (Pool - varsayılan, ana hesap artı eklenen hesaplar) veya Doğrudan (Direct - mevcut çağıran/ana bearer) modunu belirler. `openai-apikey/<model>` ise açıkça API anahtarı taşımasını seçer. Bu kimlik doğrulama rotaları kesinlikle birbirine aktarılmaz veya birbirinin yerine geçmez (these credential routes do not fall through to one another).
 
 ## Öncelik Sırası (Precedence)
 
@@ -15,7 +15,7 @@ OpenAI için yapılandırılmış bir `<seçici>/gpt-*` kimliği, kombo veya sa�
    side/gpt-5.6-sol → sağlayıcı "openai", model "gpt-5.6-sol", hesap seçici "side"
    ```
 
-2. **Kombo Kimliği veya Takma Adı** — En az bir kombo yapılandırılmışsa, `combo/<id>` veya yapılandırılmış bir kombo takma adı, sağlayıcı ad alanları kontrol edilmeden önce somut hedefini seçer. Bkz: [Kombolar](/tr/guides/combos/).
+2. **Kombo Kimliği veya Takma Adı** — En az bir kombo yapılandırılmışsa, `combo/<id>` veya yapılandırılmış bir kombo takma adı, sağlayıcı ad alanları kontrol edilmeden önce somut hedefini seçer. Bkz: [Kombolar](/guides/combos/).
 
 3. **Açık `sağlayıcı/model` Biçimi** — Kimlik `/` içeriyorsa ve bölü işaretinden önceki kısım yapılandırılmış bir sağlayıcının adıysa, o sağlayıcı kullanılır ve kimlik eğik çizgiden sonraki kısma indirgenir.
 

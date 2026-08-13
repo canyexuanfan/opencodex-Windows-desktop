@@ -10,7 +10,9 @@ Bir **sağlayıcı (provider)**, bir üst LLM uç noktası ile ona nasıl ulaş�
 | Sağlayıcı Kimliği | Kullanım | Kimlik Bilgisi / Hesap Kuralı |
 | --- | --- | --- |
 | `openai` | Codex girişi | Havuz (Pool - varsayılan) ana ve ek hesapları seçer; Doğrudan (Direct) yalnızca mevcut çağıran/ana oturumu kullanır. |
-| `openai-apikey` | OpenAI API | Yalnızca yapılandırılmış API anahtarını kullanır; asla Codex hesaplarını okumaz. |
+| `openai-apikey` | OpenAI API | Yalnızca yapılandırılmış API anahtarı veya anahtar havuzunu kullanır; asla Codex hesaplarını okumaz. |
+
+Sağlayıcılar sayfasındaki Havuz/Doğrudan (Pool/Direct) seçeneğiyle yalın `gpt-5.6-sol` modelini, API kullanımı içinse `openai-apikey/gpt-5.6-sol` biçimini kullanın. Bu kimlik doğrulama rotaları kesinlikle birbirine aktarılmaz veya birbirinin yedeği olarak çalışmaz (never fall through).
 
 ## Kimlik Doğrulama Modları (`authMode`)
 
@@ -36,7 +38,7 @@ Sağlayıcı yapılandırmaları üç `authMode` değerini kabul eder (varsayıl
 }
 ```
 
-Bu yol aynı zamanda [web arama ve görme sidecar'larını](/tr/guides/sidecars/) da besler.
+Bu yol aynı zamanda [web arama ve görme sidecar'larını](/guides/sidecars/) da besler.
 
 ## 2. Hesap Girişi (OAuth)
 

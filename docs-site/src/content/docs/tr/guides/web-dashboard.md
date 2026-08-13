@@ -71,5 +71,5 @@ GUI, proxy'nin JSON yönetim API'si üzerinde çalışan ince bir istemcidir. Ö
 | `POST /api/stop` | Proxy'yi durdurma, yerel Codex'i geri yükleme ve çıkış. |
 
 :::tip
-Kontrol panelinden **Ollama Cloud** veya başka bir katalog sağlayıcısı eklemek, metin/görsel sınıflandırmasını kaydedilen sağlayıcı yapılandırmasına otomatik kopyalar; böylece [görme sidecar'ı](/tr/guides/sidecars/) manuel yapılandırma gerekmeden doğru şekilde devreye girer.
+Kontrol panelinden **Ollama Cloud** veya başka bir katalog sağlayıcısı eklemek, metin/görsel sınıflandırmasını kaydedilen sağlayıcı yapılandırmasına otomatik kopyalar; böylece [görme sidecar'ı](/guides/sidecars/) manuel yapılandırma gerekmeden doğru şekilde devreye girer.
 :::
