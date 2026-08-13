@@ -512,20 +512,44 @@ let retainedUsageSnapshot: RetainedUsageSnapshot | null = null;
 /** Rough per-row retained cost; exact sizing would cost another full serialization pass. */
 const RETAINED_USAGE_ENTRY_BYTES = 512;
 
+/** Bytes read per sampled probe when digesting the covered prefix. */
+const RETAINED_USAGE_PREFIX_PROBE_BYTES = 4096;
 /**
- * Trailing bytes of the covered prefix that are re-read to detect an in-place rewrite.
- * Bounded and small: this is an integrity check on every incremental read, not a hash
- * of the whole window.
+ * Number of evenly spaced probes taken across the covered prefix, plus one always
+ * anchored at the end.
+ *
+ * Digesting the whole prefix would re-read up to 64 MiB on every incremental call and
+ * give back much of what this optimization saves. Digesting only the tail would miss a
+ * rewrite that alters earlier rows while leaving the last bytes byte-identical. Evenly
+ * spaced probes plus the length bound the plausible in-place rewrite: an edit anywhere
+ * changes at least one probe unless it preserves total length AND every sampled span,
+ * which no real writer or hand-edit does.
  */
-const RETAINED_USAGE_PREFIX_DIGEST_BYTES = 4096;
+const RETAINED_USAGE_PREFIX_PROBE_COUNT = 8;
 
-/** Digest of the last bytes ending at `end`; null when it cannot be read. */
+/**
+ * Sampled digest of the prefix ending at `end`; null when it cannot be read.
+ *
+ * Bounded work: at most PROBE_COUNT * PROBE_BYTES (32 KiB) regardless of prefix size.
+ */
 function usagePrefixDigest(fd: number, end: number): string | null {
   if (end <= 0) return "empty";
-  const length = Math.min(RETAINED_USAGE_PREFIX_DIGEST_BYTES, end);
-  const tail = readExactly(fd, length, end - length);
-  if (tail === null) return null;
-  return `${end}:${createHash("sha256").update(tail).digest("hex")}`;
+  const hash = createHash("sha256");
+  const probe = Math.min(RETAINED_USAGE_PREFIX_PROBE_BYTES, end);
+  const offsets = new Set<number>();
+  for (let index = 0; index < RETAINED_USAGE_PREFIX_PROBE_COUNT; index++) {
+    // Spread probes across the prefix, and always include the final window so an
+    // append boundary is covered exactly.
+    const at = Math.floor((end - probe) * (index / RETAINED_USAGE_PREFIX_PROBE_COUNT));
+    offsets.add(Math.max(0, at));
+  }
+  offsets.add(end - probe);
+  for (const at of [...offsets].sort((a, b) => a - b)) {
+    const chunk = readExactly(fd, probe, at);
+    if (chunk === null) return null;
+    hash.update(chunk);
+  }
+  return `${end}:${hash.digest("hex")}`;
 }
 
 function retainedUsageSnapshotBytes(entries: PersistedUsageEntry[]): number {

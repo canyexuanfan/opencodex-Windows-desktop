@@ -96,3 +96,24 @@ telemetry for eviction ordering, not a guaranteed byte ceiling.
 
 The regression test was driven red against the disabled guard before being accepted, so
 it is not vacuous.
+
+## Widening the digest after the Opus follow-up
+
+A tail-only digest leaves a gap: a rewrite that alters rows early in the covered prefix
+while leaving the final bytes byte-identical would still be reused. Digesting the whole
+prefix would re-read up to 64 MiB per incremental call and give back most of the saving.
+
+The guard now takes 8 evenly spaced 4 KiB probes across the prefix plus one anchored at
+the end, and mixes the covered length into the digest — at most 32 KiB of work regardless
+of prefix size. Verified against a 20,000-row prefix with an equal-width rewrite of row 0
+and the last probe window untouched:
+
+```
+firstId: idZZZZZZ   fullReads: 2   => caught, fell back to a full read
+```
+
+This bounds rather than eliminates the adversarial case: a crafted rewrite that preserves
+total length and every sampled span would still pass. That is acceptable here — the file
+is written only by `appendUsageEntry` (src/usage/log.ts:435), and the guard exists to
+catch hand-edits, external compaction, and restore-from-backup, not a deliberate attack
+on a local ledger.
