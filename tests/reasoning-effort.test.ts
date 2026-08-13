@@ -99,6 +99,35 @@ describe("provider-specific reasoning effort mapping", () => {
     });
   });
 
+  test("xAI grok-4.6 forwards xhigh while grok-4.5 still clamps it to high", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          apiKey: "key",
+        },
+      },
+    };
+    const grok46 = routeModel(config, "xai/grok-4.6");
+    const grok45 = routeModel(config, "xai/grok-4.5");
+
+    expect(configuredReasoningEfforts(grok46.provider, grok46.modelId)).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(configuredReasoningEfforts(grok45.provider, grok45.modelId)).toEqual(["low", "medium", "high"]);
+
+    const grok46Xhigh = buildChatRequest(grok46.provider, grok46.modelId, { reasoning: "xhigh" });
+    const grok46Max = buildChatRequest(grok46.provider, grok46.modelId, { reasoning: "max" });
+    const grok45Xhigh = buildChatRequest(grok45.provider, grok45.modelId, { reasoning: "xhigh" });
+
+    expect(JSON.parse(grok46Xhigh.body).reasoning_effort).toBe("xhigh");
+    expect(JSON.parse(grok46Max.body).reasoning_effort).toBe("xhigh");
+    expect(JSON.parse(grok45Xhigh.body).reasoning_effort).toBe("high");
+    expect(mapReasoningEffort(grok46.provider, grok46.modelId, "xhigh")).toBe("xhigh");
+    expect(mapReasoningEffort(grok45.provider, grok45.modelId, "xhigh")).toBe("high");
+  });
+
   test("Neuralwatt GLM-5.2 sends direct max and preserves reasoning history", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
