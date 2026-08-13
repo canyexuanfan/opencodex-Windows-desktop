@@ -187,3 +187,34 @@ Cost is now flat in ledger size:
 900 appends on an over-window ledger: 1 full read, 900 tail reads, span always within the
 window. The sawtooth regression test was driven red (spread 20) against a deliberately
 widened window before being accepted.
+
+## Third review round: the trim under-counted skipped bytes
+
+A third pass confirmed the below-window question (a rewrite in bytes no retained row
+describes cannot corrupt output: those bytes appear in no returned row, and the window
+only ever slides forward, with any re-anchor going through a full read) and the flat cost
+curve. It then found a real defect in the trim arithmetic.
+
+`entryLengths` recorded a length only for lines that PARSE. Malformed JSON, rows without a
+string `requestId`, and torn final writes were skipped with `continue`, so their bytes went
+unrecorded. The trim walk advances by summing those lengths, so it under-counted the true
+byte distance and consumed extra rows to reach the window start — the mirror image of the
+sawtooth: instead of showing too much history it silently showed too little, and it never
+self-corrected. Reproduced at one bad line per five, 600 polls:
+
+```
+cached 1313 rows first R000873   |   fresh 1326 rows first R000860
+```
+
+Fixed by folding skipped bytes into the next accepted row's recorded length, carrying a
+trailing remainder across the append boundary, and adding a self-check: the recorded
+lengths plus that remainder must equal `size - truncatedPrefixBytes`, or the retained rows
+are rejected and a full read runs. Two subtleties surfaced while proving it — `split`
+leaves a zero-byte trailing element after the final newline, and deriving the offset from
+the kept span double-counts the remainder; both are handled.
+
+After the fix, at the same malformed-line density: 1326 rows both ways, identical first
+row, identical `truncatedPrefixBytes`. The regression test asserts `tailReads` rather than
+only output, because the consistency check makes the output correct either way — without
+skipped-line accounting it simply degrades to a full read per poll (tailReads 0), which
+the test now catches.
