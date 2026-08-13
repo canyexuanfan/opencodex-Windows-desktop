@@ -3075,7 +3075,7 @@ async function handleResponsesInner(
       }
     };
 
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
+    const { toolNsMap, declaredToolNames, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     if (parsed.stream) {
       void runTurn();
       let eventSource: AsyncIterable<AdapterEvent> = queue.stream();
@@ -3101,6 +3101,7 @@ async function handleResponsesInner(
           ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
           stallTimeoutSec: config.stallTimeoutSec,
           hideThinkingSummary: parsed.options.hideThinkingSummary,
+          declaredToolNames,
           ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
           ...(routedCompaction ? { compaction: true } : {}),
           onUsage: usage => {
@@ -3147,6 +3148,7 @@ async function handleResponsesInner(
       replayCacheScope: parsed._reasoningReplayScope,
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
+      declaredToolNames,
       freeformToolNames,
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
@@ -3835,7 +3837,7 @@ async function handleResponsesInner(
           continuation: fetchTerminalGuardContinuation,
         })
       : initialEventStream;
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
+    const { toolNsMap, declaredToolNames, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     const sseStream = bridgeToResponsesSSE(
       eventStream, parsed._responseModelId ?? parsed.modelId, toolNsMap, freeformToolNames, toolSearchToolNames,
       () => upstream.abort(), 2_000,
@@ -3845,6 +3847,7 @@ async function handleResponsesInner(
         ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
         stallTimeoutSec: config.stallTimeoutSec,
         hideThinkingSummary: parsed.options.hideThinkingSummary,
+        declaredToolNames,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
         ...(routedCompaction ? { compaction: true } : {}),
         onUsage: usage => {
@@ -3895,13 +3898,14 @@ async function handleResponsesInner(
     } finally {
       cleanupUpstreamAbort();
     }
-    const { toolNsMap, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
+    const { toolNsMap, declaredToolNames, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
     let providerState: OcxProviderContinuationState | undefined;
     const json = buildResponseJSON(events, parsed._responseModelId ?? parsed.modelId, {
       translatorBudget,
       replayCacheScope: parsed._reasoningReplayScope,
       hideThinkingSummary: parsed.options.hideThinkingSummary,
       toolNsMap,
+      declaredToolNames,
       freeformToolNames,
       toolSearchToolNames,
       ...(routedCompaction ? { compaction: true } : {}),
