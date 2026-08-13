@@ -170,8 +170,8 @@ opencodex에는 빌트인 프리셋이 79개 들어 있습니다. 키 방식 67�
 같은 라우팅 ID는 정상입니다.
 앞의 `cline-pass`는 opencodex 프로바이더이고, 뒤의 `cline-pass/kimi-k3`는 upstream에 보내는
 전체 모델 slug입니다. ClinePass 사용량은 계정의 5시간 롤링·주간·월간 한도를 함께 사용합니다.
-현재 opencodex는 실측된 `low` reasoning 단계만 광고하며, 더 높은 요청은 공식 지원 범위가
-게시되거나 검증될 때까지 `low`로 제한합니다.
+2026-08-13 실측에서 모든 정적 ClinePass 모델이 게이트웨이 입력에서 `low`, `medium`, `high`, `xhigh`, `max`를 수락하는 것을 확인했습니다.
+opencodex는 요청한 단계를 그대로 보존하며, 백엔드별 정규화는 ClinePass가 담당합니다.
 
 **Cline**은 동일한 API 키·엔드포인트를 종량제로 사용하며 100개 이상의 모델에 접근합니다
 (OpenRouter 형식 ID, 예: `anthropic/claude-sonnet-4-6`). Cline의 프로모션 무료 모델은

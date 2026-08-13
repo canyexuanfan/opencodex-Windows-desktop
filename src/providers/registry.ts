@@ -1300,10 +1300,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: CLINE_PASS_MODEL_CONTEXT_WINDOWS,
     modelInputModalities: CLINE_PASS_MODEL_INPUT_MODALITIES,
     noVisionModels: CLINE_PASS_TEXT_ONLY_MODELS,
-    // Only low and the `reasoning: { enabled, effort }` request shape have been accepted by a live
-    // ClinePass request. Neither wire detail is currently documented, so clamp higher Codex
-    // requests to the verified tier until the gateway documents or is live-probed more broadly.
-    reasoningEfforts: ["low"],
+    // Live-probed 2026-08-13 across every static ClinePass model: the gateway accepts and
+    // validates low/medium/high/xhigh/max, and rejects an invalid sentinel. Preserve the
+    // caller's requested tier and let ClinePass own any backend-specific normalization.
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     reasoningWireFormat: "gateway-object",
     preserveCustomDestination: true,
     note: "ClinePass subscription API. Uses a Cline API key and the full cline-pass/<model> upstream slug; quota is shared across the account's rolling 5-hour, weekly, and monthly limits.",
@@ -1789,7 +1789,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     liveModels: true,
     preserveCustomDestination: true,
     // /v1/models is documented as callable authenticated or unauthenticated, so a 2xx catalog
-    // response cannot prove the supplied Bearer key is valid.
+    // response cannot prove that the supplied Bearer key is valid.
     apiKeyValidation: "unknown",
     // Featherless documents tool calling, but not a provider-wide parallel tool-call contract.
     parallelToolCalls: false,

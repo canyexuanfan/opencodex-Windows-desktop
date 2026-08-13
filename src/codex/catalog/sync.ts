@@ -310,11 +310,20 @@ export function deriveEntry(
     });
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
+  // Cursor fallback rows mirror normalizeRoutedCatalogEntry: no deferred discovery, no hosted
+  // web-search metadata (runTurn transport bypasses the sidecar). Non-Cursor routed fallbacks
+  // advertise deferred discovery — code mode keeps deferred MCP callable (devlog
+  // 260813_tool_catalog_deferral/010+020); search=false costs a measured 2.7x turn-1 payload.
+  const isCursorFallback = isRouted && model?.provider === "cursor";
   const entry: RawEntry = {
     slug, display_name: routedDisplayName(slug), description: desc,
     shell_type: "shell_command", visibility: "list", supported_in_api: true,
     priority, base_instructions: "You are a helpful coding assistant.",
-    ...(isRouted ? { web_search_tool_type: "text_and_image", supports_search_tool: false } : {}),
+    ...(isRouted
+      ? isCursorFallback
+        ? { supports_search_tool: false }
+        : { web_search_tool_type: "text_and_image", supports_search_tool: true }
+      : {}),
   };
   if (isRouted) {
     applyRoutedCodexToolMode(entry);

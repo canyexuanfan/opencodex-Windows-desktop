@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
+import { openaiResponsesUrl } from "../src/adapters/openai-responses-url";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
 import { sanitizeEncryptedContentInPlace } from "../src/server/responses";
@@ -150,6 +151,8 @@ describe("OpenAI Responses key-auth URL construction", () => {
       ["https://api.openai.example", "https://api.openai.example/v1/responses"],
       ["https://api.openai.example/v1", "https://api.openai.example/v1/responses"],
       ["https://api.openai.example/v1/", "https://api.openai.example/v1/responses"],
+      ["https://api.openai.example/v1/responses", "https://api.openai.example/v1/responses"],
+      ["https://api.openai.example/v1/responses/", "https://api.openai.example/v1/responses"],
     ] as const) {
       expect(buildKeyAuthUrl(baseUrl)).toBe(expectedUrl);
     }
@@ -1853,5 +1856,16 @@ describe("OpenAI Responses forward-mode unsupported param stripping", () => {
 
     expect(body.max_output_tokens).toBe(32000);
     expect(body.metadata).toEqual({ user_id: "u-1" });
+  });
+});
+
+describe("openaiResponsesUrl", () => {
+  test("does not strip mid-path /v1 or a non-endpoint responses suffix", () => {
+    expect(openaiResponsesUrl("https://proxy.example.com/v1/relay")).toBe(
+      "https://proxy.example.com/v1/relay/v1/responses",
+    );
+    expect(openaiResponsesUrl("https://api.example.com/somev1")).toBe(
+      "https://api.example.com/somev1/v1/responses",
+    );
   });
 });

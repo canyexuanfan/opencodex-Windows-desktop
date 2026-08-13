@@ -282,6 +282,7 @@ export const ru: Record<TKey, string> = {
   "dash.webSearchStreamHint": "Транслировать начальный текст и рассуждения вживую, пока модель не решит вызвать инструмент; остальное буферизуется для перехвата поиска. Текст до поиска может частично повторяться.",
   "dash.visionSidecar": "Сайдкар для изображений",
   "dash.visionSidecarHint": "Выберите бэкенд и модель, которые описывают изображения для маршрутизируемых моделей, работающих только с текстом.",
+  "dash.visionOff": "Выкл",
   "dash.shadowCallIntercept": "Перехват теневых вызовов",
   "dash.shadowCallInterceptHint": "Перехватывает фоновые служебные вызовы Codex App ({models}: генерация заголовков, сообщений коммитов) и перенаправляет их на выбранную вами модель. Уровень рассуждений жёстко задан как low.",
   "dash.shadowCallWarning": "⚠ Когда функция включена, ВСЕ запросы к {models} будут заменены выбранной моделью.",
@@ -2029,4 +2030,10 @@ export const ru: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protocol conformance",
   "lab.layer.live_route_compatibility": "Live route compatibility",
   "lab.layer.task_effectiveness": "Task effectiveness",
+  "dash.visionAdvanced": "Дополнительные настройки",
+  "dash.visionMaxDescriptions": "Максимум описаний за ход",
+  "dash.visionMaxDescriptionsInvalid": "Введите положительное целое число.",
+  "dash.visionTimeout": "Таймаут",
+  "dash.visionTimeoutInvalid": "Введите целое число от {min} до {max} миллисекунд.",
+  "dash.visionAdvancedPopover": "Дополнительные настройки изображений",
 };
