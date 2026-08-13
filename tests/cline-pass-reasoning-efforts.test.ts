@@ -106,13 +106,14 @@ describe("ClinePass reasoning effort capabilities", () => {
     });
   });
 
-  test("canonical ClinePass repairs the legacy persisted low-only preset", () => {
+  test("canonical ClinePass repairs the historical generated low-only preset", () => {
     const staleConfig: OcxConfig = {
       ...config,
       providers: {
         "cline-pass": {
           ...config.providers!["cline-pass"],
           reasoningEfforts: ["low"],
+          reasoningWireFormat: "gateway-object",
         },
       },
     };
@@ -127,5 +128,25 @@ describe("ClinePass reasoning effort capabilities", () => {
       wireField: "reasoning.effort",
       wireValue: "max",
     });
+  });
+
+  test("does not repair a low-only same-name provider on a custom destination", () => {
+    const customConfig: OcxConfig = {
+      ...config,
+      providers: {
+        "cline-pass": {
+          ...config.providers!["cline-pass"],
+          baseUrl: "https://example.com/v1",
+          reasoningEfforts: ["low"],
+          reasoningWireFormat: "gateway-object",
+        },
+      },
+    };
+    const route = routeModel(customConfig, "cline-pass/cline-pass/deepseek-v4-flash");
+    const request = createOpenAIChatAdapter(route.provider).buildRequest(parsed(route.modelId, "max"));
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(route.provider.reasoningEfforts).toEqual(["low"]);
+    expect(body.reasoning).toEqual({ enabled: true, effort: "low" });
   });
 });
