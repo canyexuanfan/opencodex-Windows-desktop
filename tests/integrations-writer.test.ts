@@ -221,6 +221,26 @@ describe("apply", () => {
     expect(readFileSync(configPath, "utf8")).toContain("1e999");
   });
 
+  test("json apply refuses a duplicate sibling member instead of deleting it", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    // Valid strict JSON, but JSON.parse keeps only the last "notes" — a
+    // rewrite would silently delete the first one while reporting success.
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"notes\": \"keep me\",\n  \"notes\": \"second\",");
+    writeFileSync(configPath, drifted);
+
+    const result = applyIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    // Byte-for-byte untouched: both members survive on disk.
+    expect(readFileSync(configPath, "utf8")).toBe(drifted);
+  });
+
   test("a sibling with an exactly-representable big number stays usable (#1631)", () => {
     // 2^54 round-trips value- and literal-exactly. classify promises 'stale'
     // (recoverable) for this file; apply must honor that promise instead of

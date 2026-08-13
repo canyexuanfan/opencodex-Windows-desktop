@@ -83,12 +83,17 @@ Katı JSON yapılandırmalarında (OpenCode, Pi), bloğumuzun **yanında** yapı
 düzenleme — bir MCP sunucusu eklemek, kendinize ait bir sağlayıcı tanımlamak —
 **Güncelleme gerekli (Update needed)** olarak görünür: yenileme, girdilerinizin
 etrafında birleştirir ve onları korur; yalnızca biçimlendirme
-normalleştirilebilir. İstisna, JSON'un birebir yeniden yazamayacağı bir değerdir
-— `1e999` gibi sonlu olmayan bir sayı, 2^53'ü aşan bir tam sayı sabiti veya `-0`
-— bu durumda anahtar kilitlenir, böylece değer hiçbir zaman sessizce
-değiştirilmez. Yorum taşıyabilen biçimlerde (YAML, JSON5, TOML) veya kendi
-girdilerimiz düzenlenmişse, anahtar kilitlenir ve hangi düzenlemelerin size ait
-olduğunu tahmin etmek yerine devre dışı bırakmayı reddeder.
+normalleştirilebilir. İstisna, JSON'un birebir yeniden yazamayacağı şeylerdir —
+`1e999` gibi sonlu olmayan bir sayı, yeniden yazımın yuvarlayacağı bir sayı (çok
+büyük bir tam sayı ya da sıfıra çökecek kadar küçük bir sayı), `-0` veya aynı
+nesnede iki kez yazılmış bir anahtar — bu durumda anahtar kilitlenir, böylece
+hiçbir şey sessizce değiştirilmez veya düşürülmez. **OMP** de yanındaki
+düzenlemelerden etkilenmez, ama başka bir nedenle: writer'ı yalnızca kendi
+`providers.opencodex` aralığını bayt bayt yamalar, dosyanın geri kalanı hiçbir
+zaman yeniden yazılmaz. Yorum taşıyabilen diğer biçimlerde (Hermes, OpenClaw,
+Kimi Code, Gajae Code — bütün belge olarak yazılan YAML, JSON5 ve TOML) veya
+kendi girdilerimiz düzenlenmişse, anahtar kilitlenir ve hangi düzenlemelerin
+size ait olduğunu tahmin etmek yerine devre dışı bırakmayı reddeder.
 
 ## Dürüstçe ne beklenmeli?
 

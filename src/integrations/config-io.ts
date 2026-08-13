@@ -24,29 +24,67 @@ import type { IntegrationClientId } from "./registry";
 export const PARSE_FAILED = Symbol("parse-failed");
 
 /**
- * Number literals JSON.parse has already damaged: `1e999` overflows to
- * Infinity (a later rewrite would bake in `null` — the merge layer's JSON
- * clone does it even before the serializer could refuse), an integer literal
- * beyond 2^53 may have been rounded (a rewrite then hands consumers that read
- * JSON integers exactly — python, jq, BigInt revivers — a different value),
- * and `-0` re-serializes as `0`. By the time the document is parsed the
- * original literal is gone, which is why this scans the RAW text — same
- * reasoning as the TOML inf/nan guard below — and only literals whose value
- * actually changed: `1e21` or 2^54 round-trip exactly and stay usable.
+ * What `JSON.parse` has already discarded by the time we hold the parsed value,
+ * and a rewrite would therefore silently change. Both classes are invisible in
+ * the parsed object, which is why this scans the RAW text — same reasoning as
+ * the TOML inf/nan guard below.
+ *
+ * Numbers: `1e999` overflows to Infinity (a rewrite bakes in `null` — the merge
+ * layer's JSON clone does it even before the serializer could refuse), `1e-9999`
+ * underflows to `+0`, an integer literal may have been rounded (a rewrite then
+ * hands consumers that read JSON integers exactly — python, jq, BigInt revivers
+ * — a different value), and `-0` re-serializes as `0`. Only literals whose value
+ * actually changed are refused: `1e21`, `1e-320` or 2^54 round-trip exactly and
+ * stay usable.
+ *
+ * Duplicate members: `{"a":1,"a":2}` parses to a single `a`, so rewriting the
+ * document DELETES the earlier member. That is content loss, not the formatting
+ * normalization we promise, and this classifier is what makes the rewrite of a
+ * user-edited file reachable at all — so it fails closed here.
+ *
  * Scanning also avoids recursing over attacker-shaped nesting depth.
  */
-function jsonNumberLiteralsRoundTrip(text: string): boolean {
+function jsonTextSafeToRewrite(text: string): boolean {
+  /** One frame per open container; a Set for objects, null for arrays. */
+  const containers: Array<Set<string> | null> = [];
+  /** The most recent string literal — the member name if a `:` follows. */
+  let lastString: string | null = null;
   let inString = false;
   let escaped = false;
+  let stringStart = 0;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i]!;
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
-      else if (ch === "\"") inString = false;
+      else if (ch === "\"") {
+        inString = false;
+        lastString = text.slice(stringStart, i + 1);
+      }
       continue;
     }
-    if (ch === "\"") { inString = true; continue; }
+    if (ch === "\"") { inString = true; stringStart = i; continue; }
+    if (ch === "{" || ch === "[") {
+      containers.push(ch === "{" ? new Set<string>() : null);
+      lastString = null;
+      continue;
+    }
+    if (ch === "}" || ch === "]") { containers.pop(); lastString = null; continue; }
+    if (ch === ":") {
+      const members = containers[containers.length - 1];
+      if (members && lastString !== null) {
+        /*
+         * Decoded, not raw: `"a"` and `"a"` are spellings of ONE member,
+         * and JSON.parse keeps only the last of them.
+         */
+        let name: string;
+        try { name = JSON.parse(lastString) as string; } catch { return false; }
+        if (members.has(name)) return false;
+        members.add(name);
+      }
+      lastString = null;
+      continue;
+    }
     if (ch !== "-" && (ch < "0" || ch > "9")) continue;
     let end = i + 1;
     while (end < text.length && /[0-9+\-.eE]/.test(text[end]!)) end += 1;
@@ -54,7 +92,14 @@ function jsonNumberLiteralsRoundTrip(text: string): boolean {
     i = end - 1;
     const value = Number(literal);
     if (!Number.isFinite(value)) return false;
-    if (value === 0 && literal.startsWith("-")) return false;
+    if (value === 0) {
+      /*
+       * `-0` (re-serializes as `0`) and underflow: `1e-9999` is a nonzero
+       * value the parse already flattened to `+0`. The significand alone
+       * decides, so genuine zero spellings (`0`, `0.0`, `0e10`) stay usable.
+       */
+      if (literal.startsWith("-") || /[1-9]/.test(literal.split(/[eE]/)[0]!)) return false;
+    }
     /*
      * Deliberately plain digit runs only. They are the one spelling real
      * consumers read with exact integer semantics (python's json yields an
@@ -80,7 +125,7 @@ export function parseConfig(text: string | null, format: ConfigFormat): unknown 
     switch (format) {
       case "json": {
         const parsed = JSON.parse(text);
-        return jsonNumberLiteralsRoundTrip(text) ? parsed : PARSE_FAILED;
+        return jsonTextSafeToRewrite(text) ? parsed : PARSE_FAILED;
       }
       case "json5": return Bun.JSON5.parse(text);
       case "yaml": return Bun.YAML.parse(text);

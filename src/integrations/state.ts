@@ -202,10 +202,11 @@ export function classifyIntegration(input: {
      * json5, toml) it would drop comments the user wrote next to us: fail
      * closed there. Strict JSON cannot carry comments — a commented file
      * never reaches this branch because parsing already failed — so the only
-     * possible loss is formatting normalization: numbers that would not
-     * round-trip (non-finite, integers past 2^53) are PARSE_FAILED in
-     * parseConfig and classify as unsafe long before this branch, exactly
-     * like comments. Refusing forever over formatting
+     * possible loss is formatting normalization: everything a rewrite would
+     * actually change (numbers that would not round-trip, duplicate members
+     * a rewrite would delete) is PARSE_FAILED in parseConfig and classifies
+     * as unsafe long before this branch, exactly like comments. Refusing
+     * forever over formatting
      * dead-ends the integration on the user's first own config edit (#1631).
      * Report drift instead; a re-apply merges into the parsed document as it
      * stands and re-owns the file. This also lets disable proceed on a
