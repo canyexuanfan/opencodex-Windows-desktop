@@ -273,6 +273,7 @@ export const de: Record<TKey, string> = {
   "dash.webSearchStreamHint": "Führenden Text und Reasoning live streamen, bis das Modell über einen Tool-Aufruf entscheidet; der Rest bleibt für das Abfangen der Suche gepuffert. Text vor einer Suche kann sich teilweise wiederholen.",
   "dash.visionSidecar": "Vision-Sidecar",
   "dash.visionSidecarHint": "Backend und Modell zur Bildbeschreibung für reine Textmodelle auswählen.",
+  "dash.visionOff": "Aus",
   "dash.shadowCallIntercept": "Shadow-Call-Abfangen",
   "dash.shadowCallInterceptHint": "Fängt die Hintergrund-Hilfsaufrufe der Codex-App ({models}) ab und leitet sie an das gewählte Modell um. Effort wird auf low fixiert.",
   "dash.shadowCallWarning": "⚠ Bei Aktivierung werden ALLE Anfragen an {models} durch das gewählte Modell ersetzt.",
@@ -2006,4 +2007,10 @@ export const de: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Protokollkonformität",
   "lab.layer.live_route_compatibility": "Live-Route-Kompatibilität",
   "lab.layer.task_effectiveness": "Aufgabenwirksamkeit",
+  "dash.visionAdvanced": "Erweiterte Einstellungen",
+  "dash.visionMaxDescriptions": "Maximale Beschreibungen pro Turn",
+  "dash.visionMaxDescriptionsInvalid": "Geben Sie eine positive ganze Zahl ein.",
+  "dash.visionTimeout": "Timeout",
+  "dash.visionTimeoutInvalid": "Geben Sie eine ganze Zahl von {min} bis {max} Millisekunden ein.",
+  "dash.visionAdvancedPopover": "Erweiterte Vision-Einstellungen",
 };
