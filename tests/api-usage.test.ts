@@ -326,7 +326,10 @@ describe("GET /api/usage", () => {
       try {
         const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
         expect(changed.summary.requests).toBe(first.summary.requests + 1);
-        expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+        // The append is picked up by extending the retained tail, so the whole 64 MiB
+        // window is NOT reparsed: a second full read here is the regression this guards.
+        expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+        expect(usageReadCacheStatsForTests().tailReads).toBeGreaterThan(0);
       } finally {
         clock.mockRestore();
       }
@@ -361,7 +364,9 @@ describe("GET /api/usage", () => {
       } as unknown as OcxConfig);
       const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
       expect(changed.summary.requests).toBe(first.summary.requests);
-      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      // The ledger did not change, so the recompute reuses the retained tail rather
+      // than reparsing the window; only the summary cache is invalidated.
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
     } finally {
       // This test installs a module-level blsc overlay; clear it even when an
       // assertion or shutdown fails so later tests cannot resolve
@@ -519,6 +524,56 @@ describe("GET /api/usage", () => {
       expect(body.summary.totalTokens).toBe(0);
       expect(body.summary.coverageRatio).toBe(0);
     } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("repeated appends do not reparse the retained prefix", async () => {
+    const now = Date.now();
+    writeFixture(now);
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      const afterFirst = usageReadCacheStatsForTests();
+      expect(afterFirst.fullReads).toBe(1);
+      const baselineParsed = afterFirst.parsedLines;
+      expect(baselineParsed).toBeGreaterThan(0);
+
+      // Append one row at a time, stepping past the 60s freshness window each round so
+      // every request is a genuine cache miss that reaches the reader.
+      let requests = 0;
+      for (let round = 1; round <= 5; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+          requestId: `ocx-append-${round}`,
+          timestamp: now,
+          provider: "openai",
+          model: "gpt-5.5",
+          status: 200,
+          durationMs: 1,
+          usageStatus: "reported",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          totalTokens: 2,
+        })}\n`);
+        clock.mockReturnValue(now + round * 60_001);
+        const body = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+        requests = body.summary.requests;
+      }
+
+      const afterAppends = usageReadCacheStatsForTests();
+      // Each round parses only its own appended line, so growth equals the number of
+      // appended rows. A reparse regression would instead re-add the whole grown
+      // prefix every round (baselineParsed+1 ... baselineParsed+5).
+      expect(afterAppends.parsedLines - baselineParsed).toBe(5);
+      expect(afterAppends.fullReads).toBe(1);
+      expect(afterAppends.tailReads).toBeGreaterThanOrEqual(5);
+      // The rows are still correct, not merely cheap.
+      expect(requests).toBe(afterFirst.parsedLines + 5);
+    } finally {
+      clock.mockRestore();
       await server.stop(true);
     }
   });

@@ -1,6 +1,7 @@
 import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
+import { enforceAppOwnedMemoryBudget } from "../lib/app-owned-memory";
 import { recordOwnedConfigPath } from "../lib/config-ownership";
 import { usageDisplayTotalTokens } from "./totals";
 import type { OcxUsage } from "../types";
@@ -465,6 +466,61 @@ let managementUsageReadInflight: {
   abort: AbortController;
 } | null = null;
 
+/**
+ * Append-tolerant snapshot of the last management read.
+ *
+ * The management reader parses a 64 MiB tail into ~53k objects, which costs roughly
+ * 640 MB of transient RSS per cold call. The JS objects are collected promptly, but
+ * the allocator does not return those pages, so every cold miss ratchets process RSS
+ * upward and never comes back down (observed: 7.9 GiB RSS against a 130 MB JS heap).
+ *
+ * Reparsing an unchanged prefix is what makes that transient recur. `usage.jsonl` is
+ * append-only under a stable identity, so when the file has only grown we keep the
+ * previously parsed rows and parse just the appended bytes. This is retained state, so
+ * it is registered with the app-owned memory budget and is evictable under pressure.
+ */
+interface RetainedUsageSnapshot {
+  identityKey: string;
+  maxReadBytes: number;
+  /** Absolute end offset in the file that `entries` already covers. */
+  coveredThroughBytes: number;
+  /** Bytes of the file skipped ahead of the retained window. */
+  truncatedPrefixBytes: number;
+  entries: PersistedUsageEntry[];
+  entriesTruncated: boolean;
+  entriesDropped: number;
+  revision: UsageLogRevision;
+  retainedAt: number;
+  approxBytes: number;
+}
+let retainedUsageSnapshot: RetainedUsageSnapshot | null = null;
+
+/** Rough per-row retained cost; exact sizing would cost another full serialization pass. */
+const RETAINED_USAGE_ENTRY_BYTES = 512;
+
+function retainedUsageSnapshotBytes(entries: PersistedUsageEntry[]): number {
+  return entries.length * RETAINED_USAGE_ENTRY_BYTES;
+}
+
+export function discardRetainedUsageSnapshot(): number {
+  const released = retainedUsageSnapshot?.approxBytes ?? 0;
+  retainedUsageSnapshot = null;
+  return released;
+}
+
+export function retainedUsageSnapshotStats(): {
+  count: number;
+  bytes: number;
+  oldestAt: number | null;
+} {
+  if (!retainedUsageSnapshot) return { count: 0, bytes: 0, oldestAt: null };
+  return {
+    count: 1,
+    bytes: retainedUsageSnapshot.approxBytes,
+    oldestAt: retainedUsageSnapshot.retainedAt,
+  };
+}
+
 /** Test-only observability for proving that unchanged prefixes are not reparsed. */
 export function usageReadCacheStatsForTests(): Readonly<typeof usageReadCacheStats> {
   return { ...usageReadCacheStats };
@@ -474,6 +530,7 @@ export function resetUsageReadCacheForTests(): void {
   usageReadCacheStats = { fullReads: 0, tailReads: 0, parsedLines: 0 };
   managementUsageReadInflight?.abort.abort();
   managementUsageReadInflight = null;
+  retainedUsageSnapshot = null;
 }
 
 function readExactly(fd: number, length: number, position: number): Buffer | null {
@@ -604,10 +661,85 @@ async function readUsageEntriesFullCooperatively(
 }
 
 /**
+ * Parse only the bytes appended since the retained snapshot's covered offset.
+ *
+ * Returns null when the retained snapshot cannot be extended safely — a different
+ * identity or read window, a file that shrank (replacement/truncation), or a covered
+ * offset that no longer sits on a record boundary. Callers then fall back to a full
+ * bounded read.
+ */
+async function readUsageEntriesIncrementally(
+  path: string,
+  signal: AbortSignal,
+  maxReadBytes: number,
+  retained: RetainedUsageSnapshot,
+): Promise<ManagementUsageSnapshot | null> {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const stat = fstatSync(fd);
+    const revision = usageLogRevision(path, stat);
+    if (usageLogIdentityKey(revision) !== retained.identityKey) return null;
+    const size = Number(stat.size);
+    // A shrink means truncation or replacement-in-place; the retained rows may no
+    // longer correspond to file contents, so refuse to extend them.
+    if (size < retained.coveredThroughBytes) return null;
+    // The retained window must still begin at or after the current bounded window,
+    // otherwise honoring maxReadBytes would require dropping rows we cannot locate.
+    const windowStart = Math.max(0, size - maxReadBytes);
+    if (retained.truncatedPrefixBytes < windowStart) return null;
+    if (size === retained.coveredThroughBytes) {
+      usageReadCacheStats.tailReads += 1;
+      return {
+        entries: retained.entries,
+        revision,
+        truncatedPrefixBytes: retained.truncatedPrefixBytes,
+        entriesTruncated: retained.entriesTruncated,
+        entriesDropped: retained.entriesDropped,
+      };
+    }
+    // The covered offset must land immediately after a newline, or the retained rows
+    // and the appended text do not join on a record boundary.
+    if (retained.coveredThroughBytes > 0) {
+      const preceding = readExactly(fd, 1, retained.coveredThroughBytes - 1);
+      if (preceding === null || preceding[0] !== 0x0a) return null;
+    }
+    const chunks: Buffer[] = [];
+    for (let position = retained.coveredThroughBytes; position < size;) {
+      if (signal.aborted) throw signal.reason;
+      const length = Math.min(MANAGEMENT_USAGE_READ_CHUNK_BYTES, size - position);
+      const chunk = readExactly(fd, length, position);
+      if (chunk === null) throw new Error("usage log changed while it was being read");
+      chunks.push(chunk);
+      position += length;
+    }
+    const appended = await parseUsageTextCooperatively(Buffer.concat(chunks).toString("utf-8"), signal);
+    usageReadCacheStats.tailReads += 1;
+    const combined = retained.entries.concat(appended.entries);
+    let entries = combined;
+    let entriesDropped = retained.entriesDropped + appended.entriesDropped;
+    if (combined.length > MANAGEMENT_USAGE_MAX_ENTRIES) {
+      entriesDropped += combined.length - MANAGEMENT_USAGE_MAX_ENTRIES;
+      entries = combined.slice(-MANAGEMENT_USAGE_MAX_ENTRIES);
+    }
+    return {
+      entries,
+      revision,
+      truncatedPrefixBytes: retained.truncatedPrefixBytes,
+      entriesTruncated: retained.entriesTruncated || entriesDropped > 0,
+      entriesDropped,
+    };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
  * Management API reader: full parses yield between bounded batches and concurrent
  * callers share work when they observe the same ledger identity and byte window.
  * Appends keep that identity; replacements (inode/birthtime change) start a new flight.
- * Parsed rows are returned to the request and never retained in module state.
+ * The parsed tail is retained under the app-owned memory budget so an append reparses
+ * only the appended bytes; the retained rows are evictable and are copied per caller.
  */
 export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_USAGE_MAX_READ_BYTES): Promise<{
   entries: PersistedUsageEntry[];
@@ -635,10 +767,38 @@ export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_U
     return { ...shared, entries: shared.entries.slice() };
   }
   const abort = new AbortController();
-  const promise = readUsageEntriesFullCooperatively(path, abort.signal, maxReadBytes);
+  const retained = retainedUsageSnapshot;
+  const reusable = retained
+    && retained.identityKey === usageLogIdentityKey(observed)
+    && retained.maxReadBytes === maxReadBytes
+      ? retained
+      : null;
+  const promise = (async (): Promise<ManagementUsageSnapshot> => {
+    if (reusable) {
+      const incremental = await readUsageEntriesIncrementally(path, abort.signal, maxReadBytes, reusable);
+      if (incremental) return incremental;
+      // The retained rows could not be extended safely; drop them before the full read
+      // so a stale window is never combined with freshly parsed bytes.
+      discardRetainedUsageSnapshot();
+    }
+    return readUsageEntriesFullCooperatively(path, abort.signal, maxReadBytes);
+  })();
   managementUsageReadInflight = { key, openedSize: observedSize, promise, startedAt: Date.now(), abort };
   try {
     const snapshot = await promise;
+    retainedUsageSnapshot = {
+      identityKey: usageLogIdentityKey(snapshot.revision),
+      maxReadBytes,
+      coveredThroughBytes: snapshot.revision.size,
+      truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
+      entries: snapshot.entries,
+      entriesTruncated: snapshot.entriesTruncated,
+      entriesDropped: snapshot.entriesDropped,
+      revision: snapshot.revision,
+      retainedAt: Date.now(),
+      approxBytes: retainedUsageSnapshotBytes(snapshot.entries),
+    };
+    enforceAppOwnedMemoryBudget();
     return { ...snapshot, entries: snapshot.entries.slice() };
   } finally {
     if (managementUsageReadInflight?.promise === promise) managementUsageReadInflight = null;
