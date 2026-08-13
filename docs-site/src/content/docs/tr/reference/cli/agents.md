@@ -89,8 +89,8 @@ Inspect proxy requests, usage, storage, memory, and debug data. The direct alias
 
 | Alias | Equivalent resource |
 | --- | --- |
-| `ocx logs [filters] [--follow] [--json|--jsonl]` | `ocx observe logs` |
-| `ocx usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]` | `ocx observe usage` |
+| `ocx logs [filters] [--follow] [--json\|--jsonl]` | `ocx observe logs` |
+| `ocx usage [--range <7d\|30d\|all>] [--surface <all\|codex\|claude\|grok>] [--json]` | `ocx observe usage` |
 | `ocx storage [--json]` | `ocx observe storage` |
 | `ocx memory [--json]` | `ocx observe memory` |
 

@@ -227,13 +227,13 @@ ocx service uninstall
 baked into the installed service before reporting success — on all three platforms.
 They wait up to 20 seconds and then print the serving port:
 
-```
+```text
 ✅ opencodex service installed and serving on port 10100.
 ```
 
 If nothing answers, they warn and **exit non-zero**:
 
-```
+```text
 ⚠️  Service installed, but no proxy answered on port 10100 within 20s.
    The manager registered the job; that is not the same as serving.
    Log:       ~/.opencodex/service.log
@@ -246,12 +246,12 @@ log named in the message, and use `ocx start` to serve in the foreground meanwhi
 
 `ocx service status` reports the same three states rather than raw manager output:
 
-```
+```text
 ✅ installed and loaded (launchd; logs: …)
    Serving on port 10100.
 ```
 
-```
+```text
 ⚠️  installed and loaded (launchd; logs: …)
    Registered, but no proxy is answering on port 10100.
    launchd is running an OLDER plist than the one on disk.

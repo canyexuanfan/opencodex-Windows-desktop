@@ -38,7 +38,6 @@ Add `videoBridgeEnabled: true` to your `images` config:
 ```json
 {
   "images": {
-    "bridgeEnabled": true,
     "videoBridgeEnabled": true,
     "videoBridgeModel": "grok-imagine-video",
     "videoMaxRounds": 2,

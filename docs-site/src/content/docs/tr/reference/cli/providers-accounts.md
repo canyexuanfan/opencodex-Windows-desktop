@@ -80,7 +80,7 @@ running proxy cannot accept that request — most often because it started from 
 attested reload — the login still succeeds and the credential is still written to disk, but the
 live process keeps serving the previous one. The CLI says so and asks you to restart:
 
-```
+```text
 ⚠️  A proxy is running but could not reload this provider (unattested-target).
    The credential is saved to disk; the running proxy keeps using the previous one.
    Restart it to pick this up: ocx restart

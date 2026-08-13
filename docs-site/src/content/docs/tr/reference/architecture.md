@@ -9,7 +9,7 @@ model, routed, sent to a provider via an adapter, and bridged back to Responses 
 
 ## Module map
 
-```
+```text
 src/
 ├── cli/                # ocx command dispatch, init, status, provider commands
 ├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
