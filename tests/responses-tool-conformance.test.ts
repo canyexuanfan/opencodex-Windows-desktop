@@ -108,13 +108,11 @@ describe("Responses tool-kind discrimination", () => {
       { type: "namespace", name: "ns", tools: [{ type: "function", name: "child", parameters: { type: "object", properties: {} } }] },
     ]));
     const byName = new Map((parsed.context.tools ?? []).map(tool => [tool.name, tool]));
-    // Presence first: `byName.get("fn")?.freeform` is also undefined when "fn" is MISSING,
-    // so the marker assertion alone would survive deleting the function branch.
-    expect([...byName.keys()].sort()).toEqual(["child", "fn", "freeform", "tool_search"]);
-    expect(byName.get("fn")?.freeform).toBeUndefined();
-    // Presence is still not discrimination: the generic named-tool fallback would recreate
-    // `fn` with the same marker state. The declared SCHEMA only survives the real function
-    // branch, so assert it rather than the tool's mere existence.
+    // NOTE: this asserts function-declaration BEHAVIOR, not branch discrimination. The
+    // explicit `type === "function"` branch and the generic named-tool fallback both call
+    // pushFn(t) (parser.ts:157 and :194), so they are observably identical for a named tool
+    // and NO assertion can tell them apart. Deleting the explicit branch keeps this green on
+    // purpose; what it does pin is that a declared schema reaches the model intact.
     expect(byName.get("fn")?.parameters).toEqual({ type: "object", properties: { path: { type: "string" } } } as never);
     expect(byName.get("freeform")?.freeform).toBe(true);
     expect(byName.get("tool_search")?.toolSearch).toBe(true);
