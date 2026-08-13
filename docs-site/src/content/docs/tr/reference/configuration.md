@@ -1,31 +1,39 @@
 ---
 title: Yapılandırma Referansı
-description: opencodex yapılandırmasının nerede saklandığı, düzenlemelerin nasıl uygulandığı ve yapılandırma alanlarına bağlantılar.
+description: opencodex'in yapılandırmayı nerede sakladığı, düzenlemelerin nasıl uygulandığı ve her yapılandırma alanına bağlantılar.
 ---
 
-opencodex kalıcı yapılandırmasını `$OPENCODEX_HOME/config.json` (genellikle `~/.opencodex/config.json`) dosyasında saklar. Windows üzerinde varsayılan yol `%USERPROFILE%\.opencodex\config.json` şeklindedir.
+opencodex kalıcı yapılandırmasını `$OPENCODEX_HOME/config.json` içinde saklar, normalde `~/.opencodex/config.json` konumundadır. Windows'ta varsayılan `%USERPROFILE%\.opencodex\config.json`'dır.
 
-## Yapılandırmayı Düzenleme Yolları
+## Yapılandırmayı düzenleme yolları
 
-İhtiyacınıza uygun düzenleme kanalını seçin:
+Göreve uygun düzenleme kanalını seçin:
 
-- **Kontrol Paneli (Dashboard):** Sağlayıcı, model, ajan, erişim ve depolama ayarları için web arayüzünü kullanın.
-- **CLI:** `ocx init` başlangıç dosyasını oluştururken `ocx provider`, `ocx models`, `ocx combo`, `ocx agent` ve `ocx config` gibi komutlar ilgili ayarları günceller.
-- **Dosya:** Özel bir UI veya CLI komutu bulunmayan alanlar için doğrudan `config.json` dosyasını düzenleyin. Dosya geçerli bir JSON formatında kalmalıdır.
+- **Kontrol Paneli:** rehberli sağlayıcı, model, ajan, erişim ve depolama ayarları için web kullanıcı arayüzünü kullanın.
+- **CLI:** `ocx init` başlangıç dosyasını oluştururken `ocx provider`, `ocx models`, `ocx combo`, `ocx agent` ve `ocx config` gibi komutlar sahip oldukları ayarları günceller veya inceler.
+- **Dosya:** özel bir kullanıcı arayüzü veya CLI komutu olmayan alanlar için `config.json` dosyasını doğrudan düzenleyin. Dosya geçerli JSON olarak kalmalıdır.
 
-Canlı bir işlem yapılandırmayı bellekte tuttuğundan, elle düzenleme yapmadan önce proxy'yi durdurmanız önerilir.
+Kontrol paneli, yönetim API'si ve değiştiren CLI komutlarının tümü aynı dosyaya kalıcı hale gelir. Bu kanalları tercih edin veya elle düzenlemeden önce proxy'yi durdurun. Çalışan bir süreç yapılandırmayı bellekte tutar, bu nedenle daha sonraki canlı bir kaydetme, ilişkisiz el düzenlemelerini anlık görüntüsünden yeniden yazabilir. Canlı kaydetmeler, bu yolların açık çakışma korumasına sahip olduğu harici olarak düzenlenmiş `claudeCode` ve dinleyici bağlama alanlarını birleştirir, ancak bu koruma her alt ağacı kapsamaz.
 
-## Öncelik Sırası ve Varsayılanlar
+Dosya ayrıştırılamazsa opencodex dosyayı `config.json.invalid-<zaman-damgasi>` olarak yedekler, konsolda uyarır ve varsayılanlarla başlar. Eksik bir dosya da yeni yükleme varsayılanını kullanır: bir `openai` iletme sağlayıcısı.
 
-`config.json` dosyasındaki geçerli değerler yerleşik varsayılanları geçersiz kılar. `OPENCODEX_HOME` ortam değişkeni varsayılan yapılandırma dizinine göre önceliklidir. `apiKey: "${PROVIDER_API_KEY}"` gibi ortam değişkeni referansı kabul eden alanlar, ilgili değişkeni istek anında çözer.
+## Öncelik ve varsayılanlar
 
-## Yapılandırma Alanları
+`config.json` içindeki geçerli değerler yerleşik varsayılanları geçersiz kılar. Eksik isteğe bağlı alanlar, alan sayfalarında belgelenen varsayılanları kullanır. `OPENCODEX_HOME` varsayılan yapılandırma dizinine göre önceliklidir. `apiKey: "${PROVIDER_API_KEY}"` gibi bir ortam referansını kabul eden alanlar bu değişkeni istek zamanında çözer. Giden proxy oluşturma için önceden ayarlanmış bir `HTTP_PROXY` veya `HTTPS_PROXY`, üst düzey `proxy` alanına göre önceliklidir.
 
-- [Sağlayıcılar (Providers)](/reference/configuration/providers/) — Sağlayıcı girdileri, kimlik doğrulama, uç noktalar, kataloglar, izin listeleri, bağlam sınırları ve kotalar.
-- [Yönlendirme (Routing)](/reference/configuration/routing/) — `defaultProvider`, model çözümleme sırası, kombolar ve takma adlar.
-- [Ajanlar (Agents)](/reference/configuration/agents/) — Çoklu ajan modu, yetkilendirme yönlendirmesi, yedek modeller ve akıl yürütme sınırları.
-- [Sunucu ve Çalışma Zamanı (Server & Runtime)](/reference/configuration/server/) — Dinleyici ve uzaktan erişim, erişim anahtarları, zaman aşımları, depolama ve sidecar'lar.
+Yönlendirmenin kendi sıralı çözümleme kuralları vardır; bkz. [Yönlendirme](/tr/reference/configuration/routing/).
 
-## Gizli Bilgileri Dosyadan Uzak Tutun
+## Yapılandırma alanları
 
-API anahtarları için `${ENV_VAR}` referanslarını tercih edin. Düz metin API anahtarları gizlidir; bunları commit etmeyin veya günlüklerde paylaşmayın. OAuth belirteçleri `config.json` yerine ayrı kimlik depolarında saklanır.
+- [Sağlayıcılar](/tr/reference/configuration/providers/) — sağlayıcı girdileri, kimlik doğrulama, uç noktalar, kataloglar, izin listeleri, bağlam sınırları, kotalar ve sağlayıcıya özgü seçenekler.
+- [Yönlendirme](/tr/reference/configuration/routing/) — `defaultProvider`, model çözümleme sırası, kombolar, takma adlar ve kombo çaba varsayılanları.
+- [Ajanlar](/tr/reference/configuration/agents/) — çoklu ajan modu, yetkilendirme rehberliği, geri dönüş modelleri, yerel varsayılan senkronizasyonu ve çaba sınırları.
+- [Sunucu ve çalışma zamanı](/tr/reference/configuration/server/) — dinleyici ve uzaktan erişim, kabul anahtarları, zaman aşımları, depolama, sidecar'lar, başlangıç davranışı ve gölge çağrılar.
+
+## Sırları dosyanın dışında tutun
+
+API anahtarları için `${ENV_VAR}` referanslarını tercih edin. Değişmez `apiKey`, `apiKeyPool[].key` ve `apiKeys[].key` değerleri sırdır; bunları kaydetmeyin, günlüklere yapıştırmayın veya paylaşmayın. OAuth ve iletme sağlayıcı belirteçleri `config.json` yerine ayrı kimlik bilgisi depolarında saklanır. Hesap kimlikleri ve e-postaları da gizli kalmalıdır; desteklendiğinde genel seçici takma adlarını kullanın.
+
+:::note[Atomik yazmalar]
+opencodex, yönetilen `config.toml` ve `opencodex-catalog.json` dosyalarını geçici bir dosya ve ardından yeniden adlandırma (`atomicWriteFile`) yoluyla yazar. Bu, `ocx stop` ve proxy kapatma işleyicisi gibi eşzamanlı yazıcılar Codex'i aynı anda geri yüklediğinde kısmi dosyaları önler.
+:::

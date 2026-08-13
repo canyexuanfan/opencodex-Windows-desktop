@@ -1,26 +1,32 @@
 ---
 title: CLI Referansı
-description: Komut yapısı, çıkış kodları ve tüm ocx komut ailelerine bağlantılar.
+description: Komut dağıtımı, çıkış kodları ve her ocx komut ailesine bağlantılar.
 ---
 
-opencodex CLI aracı `ocx` adını kullanır. İlk komut adına göre yönlendirme yapar; `setup`/`init`, `restore`/`eject` ve `models`/`model` gibi belgelenmiş takma adlar aynı işleme karşılık gelir.
+opencodex CLI'sı `ocx`'tir. `setup`/`init`, `restore`/`eject` ve `models`/`model` gibi belgelenmiş takma adların aynı işleme ulaşmasıyla ilk komut adında dağıtım yapar. Bilinmeyen komutlar ve geçersiz komut şekilleri hatadır.
 
-Genel kullanım için `ocx help` (veya `ocx --help` / `ocx -h`) komutunu çalıştırın. Belirli bir komut için `ocx help <komut>`, `ocx <komut> --help` veya `ocx <komut> -h` kullanabilirsiniz.
+Üst düzey kullanım için `ocx help` (veya `ocx --help` / `ocx -h`) çalıştırın. Yardım tablosunda kayıtlı bir komut için `ocx help <komut>`, `ocx <komut> --help` veya `ocx <komut> -h` çalıştırın. Yardım ve sürüm komutları salt okunurdur: Codex veya opencodex durumunu başlatmaz, durdurmaz, kurmaz, kaldırmaz veya yeniden yazmazlar.
 
-## Komut Aileleri
+## Komut aileleri
 
-- [Yaşam Döngüsü (Lifecycle)](/reference/cli/lifecycle/) — Kurulum, proxy ve servis yaşam döngüsü, sistem sağlığı, tanılama, katalog senkronizasyonu, kontrol paneli ve güncellemeler.
-- [Sağlayıcılar, Hesaplar ve Modeller](/reference/cli/providers-accounts/) — Sağlayıcı yapılandırması, kimlik doğrulama, kimlik havuzları, kotalar, özel modeller, görünürlük ve bağlam sınırları.
-- [Ajanlar, Yönlendirme ve Entegrasyonlar](/reference/cli/agents/) — Çoklu ajan kontrolleri, kombolar, gözlemlenebilirlik, erişim anahtarları ve istemci entegrasyonları.
+- [Yaşam Döngüsü](/tr/reference/cli/lifecycle/) — kurulum, proxy ve servis yaşam döngüsü, sağlık, tanılama, katalog senkronizasyonu, kontrol paneli ve güncellemeler.
+- [Sağlayıcılar, hesaplar ve modeller](/tr/reference/cli/providers-accounts/) — sağlayıcı yapılandırması, kimlik doğrulama, kimlik bilgisi havuzları, kota, özel modeller, görünürlük, seçilen modeller ve bağlam sınırları.
+- [Ajanlar, yönlendirme ve entegrasyonlar](/tr/reference/cli/agents/) — çoklu ajan kontrolleri, kombolar, gözlemlenebilirlik, kabul anahtarları, istemci entegrasyonları, çalışma zamanı ayarları ve doğrulanmış yapılandırma.
 
-## Başsız (Headless) Davranış
+## Başsız (Headless) davranış
 
-Yönetim komutları çalışan canlı proxy'nin yönetim API'si ile haberleşir. Durdurulmuş veya erişilemeyen bir proxy HTTP 503 olarak değerlendirilir ve sıfır dışı bir çıkış kodu üretir. Çevrimdışı yapılandırma işlemleri olarak belgelenen komutlar ise canlı proxy olmadan da yapılandırma dosyasını doğrulayabilir ve düzenleyebilir.
+Yönetim komutları, ikinci bir yapılandırma yolunu sürdürmek yerine kaydedilen çalışma zamanı portunu ve kimlik denetimlerini kullanarak canlı proxy'nin yönetim API'sine gidiş-dönüş yapar. Durdurulmuş veya erişilemeyen bir proxy HTTP 503 olarak temsil edilir ve sıfır olmayan bir CLI çıkışı üretir. Çevrimdışı yapılandırma işlemleri olarak açıkça belgelenen komutlar, bunun yerine canlı bir proxy olmadan yapılandırma dosyasını doğrulayabilir ve düzenleyebilir.
 
-Yapılandırılmış anlık çıktılar için `--json` ve akış halindeki istek günlükleri için `ocx observe logs --follow --jsonl` kullanabilirsiniz.
+Belirsiz olmayan yerlerde liste veya durum varsayılandır. Yapılandırılmış anlık görüntüler için `--json` ve akışlı bir istek günlüğü akışı için `ocx observe logs --follow --jsonl` kullanın. Tema, dil, gezinme ve diğer tamamen görsel tarayıcı durumlarının CLI eşdeğeri yoktur; Cloudflare Tünel kurulumu bu komut kümesinin dışındadır.
 
-## Çıkış Kodları ve Onay
+## Çıkış kodları ve onaylama
 
-Başarılı komutlar `0` koduyla çıkar. Geçersiz kullanım, bilinmeyen komutlar, başarısız API işlemleri ve ulaşılamayan servisler sıfır dışı kodla çıkar. `ocx health`, yalnızca proxy sağlıklı olduğunda `0`, aksi takdirde `1` döndürür; böylece servis sağlık kontrolü (health probe) olarak kullanılabilir.
+Başarılı komutlar 0 ile çıkar. Geçersiz kullanım, bilinmeyen komutlar veya kaynaklar, başarısız API işlemleri ve kullanılamayan gerekli servisler sıfır olmayan bir çıkış yapar. `ocx health` özellikle yalnızca proxy sağlıklı olduğunda 0 ve aksi takdirde 1 ile çıkar, bu nedenle bir servis probu olarak kullanılabilir. Betikler insan tarafından okunabilir çıktıyı kazımak yerine çıkış kodunu test etmelidir.
 
-Etkileşimsiz kullanımlarda onay gerektiren işlemler için `--yes` bayrağı gereklidir.
+Onay bildiren yıkıcı kaldırma, içe aktarma, kredi tüketimi ve güncelleme işlemleri etkileşimsiz kullanımda `--yes` gerektirir. Bayrak açık bir katılımdır; atlanması eylemi sessizce onaylamamalıdır.
+
+## Sürüm ve dahili dağıtım hedefleri
+
+`ocx --version`, `ocx -v` ve `ocx version` betik dostu tek bir sürüm satırı yazdırır ve çıkar.
+
+İki dağıtım hedefi normal yardımdan kasıtlı olarak çıkarılmıştır: `__refresh-version [preview]`, ayrılmış bir süreçte güncelleme bildirimi önbelleğini yeniler ve `__gui-update-worker <is-kimligi> [latest|preview] [restart]`, bir kontrol paneli güncelleme işini çalıştırır. Bunlar kararlı kullanıcıya yönelik komutlar değil, uygulama ayrıntılarıdır. Kontrol paneli çalışan PID'sini kaydeder, çalışanı ölen aktif bir işi kurtarır, daha eski PID'siz aktif kayıtları on dakika sonra eski olarak değerlendirir ve canlı bir çalışanı eşzamanlı güncellemelerden korur.

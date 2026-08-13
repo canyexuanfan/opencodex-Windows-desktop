@@ -1,90 +1,109 @@
 ---
-title: "OpenCode"
-description: "OpenCode üzerinden yönlendirilen tüm modelleri kullanın — OpenCodex, çalışma zamanında bir sağlayıcı bloğu enjekte eder ve kendi OpenCode yapılandırmanıza dokunmaz."
+title: opencode
+description: opencode içerisinden yönlendirilen herhangi bir modeli kullanın — opencodex bir çalışma zamanı sağlayıcı bloğu enjekte eder ve kendi opencode yapılandırmanıza dokunmaz.
 ---
 
-OpenCode, sağlayıcılarını ortam değişkenleri yerine birleştirilmiş JSON yapılandırma katmanlarından okur. \`ocx opencode\`, proxy'nin çalıştığından emin olur, görünür katalogdan bir sağlayıcı bloğu oluşturur ve bunu OpenCode'un satır içi çalışma zamanı katmanı (\`OPENCODE_CONFIG_CONTENT\`) aracılığıyla enjekte eder.
+opencode, sağlayıcılarını ortam değişkenleri yerine birleştirilmiş JSON yapılandırma katmanlarından okur, bu nedenle enjekte edilecek `ANTHROPIC_BASE_URL` tarzı bir yuva yoktur. `ocx opencode` bu boşluğu doldurur: proxy'nin çalıştığından emin olur, görünür katalogdan bir sağlayıcı bloğu oluşturur ve bunu OpenCode'un satır içi çalışma zamanı katmanı (`OPENCODE_CONFIG_CONTENT`) aracılığıyla enjekte eder.
 
 ## Hızlı Başlangıç
 
-\`\`\`bash
+```bash
 ocx opencode
-\`\`\`
+```
 
-Bu komut, proxy'nin çalıştığından emin olur ve yalnızca o süreç için oluşturulan \`provider.opencodex\` bloğu eklenmiş olarak OpenCode'u başlatır. Ek argümanlar doğrudan iletilir: \`ocx opencode run "merhaba"\`.
+Bu, proxy'nin çalıştığından emin olur ve bu süreç için yalnızca oluşturulan `provider.opencodex` bloğu enjekte edilmiş olarak opencode'u başlatır. Fazladan argümanlar doğrudan iletilir: `ocx opencode run "hello"`.
 
-Yönlendirilen modeller seçicide \`opencodex\` sağlayıcısı altında görünür:
+Yönlendirilen modeller seçicide `opencodex` sağlayıcısı altında görünür:
 
-\`\`\`text
+```text
 opencodex/kiro/glm-5
-opencodex/gpt-5.6-sol      # yerel modeller ön ek almaz
-\`\`\`
+opencodex/gpt-5.6-sol      # yerel slug'lar öneksiz kalır
+```
 
-## Kendi Yapılandırmanız Asla Değiştirilmez
+## Kendi yapılandırmanız asla değiştirilmez
 
-Başlatıcı, \`~/.config/opencode/opencode.json\`, proje \`opencode.json\` / \`opencode.jsonc\` veya diskteki başka bir yapılandırma katmanını kopyalamaz veya yeniden yazmaz. Mevcut sağlayıcılarınız, ajanlarınız, tuş atamalarınız, MCP girdileriniz ve göreli \`{file:…}\` referanslarınız orijinal dosyalarından çözümlenmeye devam eder.
+Başlatıcı `~/.config/opencode/opencode.json`, proje `opencode.json` / `opencode.jsonc` veya diskteki başka bir yapılandırma katmanını kopyalamaz veya yeniden yazmaz. Bir `provider.opencodex` geçersiz kılmasını algılamak için genel veya proje yapılandırmasını okuyabilir, mevcut sağlayıcılarınız, ajanlarınız, tuş atamalarınız, MCP girdileriniz ve göreli `{file:…}` referanslarınız orijinal dosyalarından çözümlenmeye devam eder.
 
-| Katman | \`ocx opencode\` ile Davranış |
+Yalnızca bu başlatma için opencodex, oluşturulan `provider.opencodex` bloğunu OpenCode'un satır içi çalışma zamanı katmanı aracılığıyla ekler. Bu katman, genel/özel/proje yapılandırmasından sonra birleşir ve alt süreç için yalnızca çakışan anahtarları geçersiz kılar.
+
+| Katman | `ocx opencode` ile Davranış |
 | --- | --- |
-| Genel / özel / proje yapılandırması | Diskte tam olarak yazdığınız gibi bırakılır |
-| Satır içi çalışma zamanı (\`OPENCODE_CONFIG_CONTENT\`) | Yalnızca oluşturulan \`provider.opencodex\` bloğunu alır |
-| Göreli \`{file:…}\` yolları | İlk tanımlandıkları yapılandırma dosyasına göre çözümlenmeye devam eder |
+| Genel / özel / proje yapılandırması | Tam olarak yazdığınız gibi diskte bırakılır |
+| Satır içi çalışma zamanı (`OPENCODE_CONFIG_CONTENT`) | Yalnızca oluşturulan `provider.opencodex` bloğunu alır |
+| Göreli `{file:…}` yolları | Yine de bunları ilk tanımlayan yapılandırma dosyasına göre çözümlenir |
 
-## Bloğu Kendi Yapılandırmanıza Ekleme
+Bir genel veya proje yapılandırması da `provider.opencodex` tanımlıyorsa, başlatıcı bilgilendirici bir not yazdırır: `ocx opencode`'dan gelen çalışma zamanı katmanı bu başlatma için onu geçersiz kılar.
 
-\`ocx opencode\`, sağlayıcı bloğunu yalnızca tek bir başlatma için enjekte eder. Yönlendirilen modellerin doğrudan yalın \`opencode\` veya başlatıcıyı kullanmayan bir editör eklentisi tarafından kullanılabilmesini istediğinizde, \`ocx export\` aynı sağlayıcı bloğunu kendi yapılandırmanıza birleştirmeniz için yazdırır:
+## Bloğu kendi yapılandırmanıza yerleştirme
 
-\`\`\`bash
+`ocx opencode`, sağlayıcı bloğunu yalnızca bir başlatma için enjekte eder; bu da düz `opencode`'un proxy hakkında hala hiçbir şey bilmediği anlamına gelir. Yönlendirilen modellerin düz `opencode`'dan — veya başlatıcıdan asla geçmeyen bir düzenleyici uzantısından — kullanılabilir olmasını istediğinizde, `ocx export` kendi yapılandırmanızla birleştirmeniz için aynı sağlayıcı bloğunu yazdırır:
+
+```bash
 ocx export --client opencode
-\`\`\`
+```
+
+Proxy çalışıyor olmalıdır. Komut yapılandırmayı, kurallı hedefi (`~/.config/opencode/opencode.json` veya ayarlandığında `XDG_CONFIG_HOME` altında), birleştirme uyarısını ve ortam dışa aktarma satırını yazdırır. Bu dosyaya asla dokunmaz — yukarıdaki bölüm geçerliliğini korur ve bloğu yapılandırmanıza taşımak sizin açık eyleminizdir.
 
 :::caution[Birleştirin, asla üzerine yazmayın]
-\`provider.opencodex\` bloğunu mevcut yapılandırmanıza birleştirin. Tüm dosyanın üzerine dışa aktarılan dosyayı yazmak diğer sağlayıcılarınızı, ajanlarınızı ve MCP girdilerinizi yok eder. \`ocx export --out\` bu nedenle var olan bir dosyanın üzerine yazmayı reddeder:
+`provider.opencodex` bloğunu mevcut yapılandırmanızla birleştirin. Tüm dosyanın dışa aktarılanla değiştirilmesi diğer sağlayıcılarınızı, ajanlarınızı, tuş atamalarınızı ve MCP girdilerinizi yok eder. `ocx export --out` tam olarak bu nedenle mevcut bir dosyanın üzerine yazmayı reddeder, bu nedenle `--out`'u geçici bir yola yönlendirin ve bloğu kopyalayın:
 
-\`\`\`bash
+```bash
 ocx export --client opencode --out ~/opencodex-opencode.json
-\`\`\`
-
+```
 :::
 
-Birleştirildikten sonra, proxy loopback üzerinde değilse başlatmadan önce kabul anahtarını dışa aktarın:
+Başlatıcının çalışma zamanı bloğunun aksine, birleştirilmiş bir blok statik bir anlık görüntüdür: kataloğunuzu takip etmez. Bir sağlayıcı ekledikten veya model görünürlüğünü değiştirdikten sonra `ocx export`'u yeniden çalıştırın.
 
-\`\`\`bash
+Birleştirildikten sonra opencode'u başlatmadan önce kabul anahtarını dışa aktarın — proxy'nin geri döngüde olduğu durumlar hariç (orada hiçbir anahtar gerekmez):
+
+```bash
 export OPENCODEX_OPENCODE_API_KEY=<anahtarınız>
-\`\`\`
+```
 
-## Kabul Anahtarı Diske Yazılmaz
+## Kabul anahtarı diske yazılmaz
 
-Proxy bir API anahtarı gerektirdiğinde, satır içi çalışma zamanı yapılandırması gizli anahtar yerine OpenCode'un \`{env:…}\` referansını taşır.
+Proxy bir API anahtarı gerektirdiğinde, satır içi çalışma zamanı yapılandırması sır yerine opencode'un `{env:…}` referansını taşır. Geri döngü (loopback) bağlantıları bu referansı `apiKey` olarak kullanır; geri döngü olmayan bağlantılar, proxy kabulünün herhangi bir yukarı akış `Authorization` başlığından ayrı kalması için bunu yalnızca `x-opencodex-api-key` üzerinden gönderir.
 
-Loopback örneği:
+Geri döngü örneği:
 
-\`\`\`json
+```json
 "options": {
   "baseURL": "http://127.0.0.1:10100/v1",
   "apiKey": "{env:OPENCODEX_OPENCODE_API_KEY}"
 }
-\`\`\`
+```
 
-Loopback harici örnek:
+Geri döngü olmayan örnek:
 
-\`\`\`json
+```json
 "options": {
   "baseURL": "http://192.168.1.10:10100/v1",
   "headers": {
     "x-opencodex-api-key": "{env:OPENCODEX_OPENCODE_API_KEY}"
   }
 }
-\`\`\`
+```
+
+Gerçek değer yalnızca alt süreç ortamı üzerinden iletilir. `OPENCODEX_API_AUTH_TOKEN` önceliklidir, ardından güçlendirilmiş servis belirteci dosyası, ardından yapılandırılmış bir API anahtarı gelir — geri döngü olmayan bir bağlantının gerektirdiği budur.
+
+Bir geri döngü bağlantısı (`127.0.0.1`, varsayılan) hiçbir şeyi doğrulamaz, bu nedenle `{env:…}` referansı etkisizdir ve değişkeni ayarlanmamış bırakabilirsiniz. Yalnızca `hostname` geri döngünün ötesine ayarlandığında önemlidir; bkz. [Uzaktan erişim](/tr/reference/configuration/#remote-access). Bu kabul anahtarı opencodex'in kendisine aittir ve [Sağlayıcılar](/tr/guides/providers/) altında yapılandırılan yukarı akış sağlayıcı anahtarlarıyla ilgisizdir.
 
 ## Geri Alma (Reverting)
 
-Geri alınacak bir şey yoktur — \`~/.opencodex\` altında oluşturulmuş bir yapılandırma dosyası yazılmaz. Yalın \`opencode\` çalıştırdığınızda kendi yapılandırmanızı eskisi gibi okur.
+Geri alınacak bir şey yoktur — `~/.opencodex` altında oluşturulmuş hiçbir yapılandırma dosyası yazılmaz. Düz `opencode` çalıştırdığınızda kendi yapılandırmanızı tam olarak eskisi gibi okur.
+
+## Model sınırları
+
+`limit.context` yalnızca katalog yetkili bir bağlam penceresi bildirdiğinde yazılır; bildirmediğinde tüm `limit` bloğu atlanır ve opencode kendi varsayılanlarını korur.
+
+opencode'un şeması `output` olmadan `context` taşıyan bir `limit` bloğunu reddeder ve kataloğun yetkili bir model başına çıktı alanı yoktur; bu nedenle yanında `32000`'lik bir `output` bütçesi yayınlanır ve küçük bağlamlı bir modele asla `output > context` verilmemesi için bağlam penceresine doğru sabitlenir. Bu rakam şemayı karşılamak için vardır — belirli bir modelin gerçek maksimumu hakkında bir iddia değildir.
+
+`opencodex` sağlayıcı bloğu her başlatmada yeniden oluşturulur, bu nedenle içinde yapılan model başına ince ayarlar hayatta kalmaz. Bunun yerine özel girdileri kendinize ait bir sağlayıcı anahtarı altında tutun.
 
 ## Gereksinimler
 
-OpenCode kurulu ve \`PATH\` üzerinde bulunmalıdır:
+opencode kurulu olmalı ve `PATH` üzerinde bulunmalıdır:
 
-\`\`\`bash
+```bash
 npm install -g opencode-ai
-\`\`\`
+```

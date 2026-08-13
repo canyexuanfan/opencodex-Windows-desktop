@@ -1,59 +1,61 @@
 ---
 title: Model Yönlendirme
-description: opencodex belirli bir model kimliğini hangi sağlayıcının sunacağına nasıl karar verir.
+description: opencodex'in belirli bir model kimliğine hangi sağlayıcının hizmet vereceğine nasıl karar verdiği.
 ---
 
-Codex bir model talep ettiğinde `router.ts` bu isteği yapılandırılmış tek bir sağlayıcıya çözümler. Kurallar **sırasıyla** kontrol edilir; ilk eşleşen kural kazanır.
+Codex bir model istediğinde, `router.ts` bunu tam olarak bir yapılandırılmış sağlayıcıya çözer. Kurallar **sırayla** denetlenir; ilk eşleşen kazanır.
 
-OpenAI için yapılandırılmış bir `<seçici>/gpt-*` kimliği, kombo veya sağlayıcı ad alanlarından önce `codexAccountNamespaces` üzerinden tam olarak tek bir kayıtlı Codex hesabına eşlenir. Yalın `gpt-*` kimlikleri ise resmi `openai` sağlayıcısını seçer. Bunun `codexAccountMode` ayarı, model kimliğini değiştirmeden Havuz (Pool - varsayılan, ana hesap artı eklenen hesaplar) veya Doğrudan (Direct - mevcut çağıran/ana bearer) modunu belirler. `openai-apikey/<model>` ise açıkça API anahtarı taşımasını seçer. Bu kimlik doğrulama rotaları kesinlikle birbirine aktarılmaz veya birbirinin yerine geçmez (these credential routes do not fall through to one another).
+OpenAI için, yapılandırılmış bir `<seçici>/gpt-*` kimliği, kombo veya sağlayıcı ad alanları değerlendirilmeden önce `codexAccountNamespaces` aracılığıyla tam olarak bir saklanan Codex hesabına eşlenir. Yalın `gpt-*` kimlikleri bunun yerine kurallı `openai` sağlayıcısını seçer. `codexAccountMode`, model kimliğini değiştirmeden Pool (varsayılan, ana artı eklenen hesaplar) veya Direct (geçerli arayan/ana taşıyıcı) seçer. `openai-apikey/<model>` açıkça API anahtarı aktarımını seçer. Bu kimlik bilgisi rotaları birbirine geri dönmez (fall through yapmaz).
 
-## Öncelik Sırası (Precedence)
+## Öncelik Sırası
 
-1. **Tam Codex Hesap Seçicisi** — Kimlik `<seçici>/<yerel-openai-modeli>` biçimindeyse ve seçici `codexAccountNamespaces` içinde yapılandırılmışsa, istek yalnızca eşlenen kayıtlı hesabı kullanır ve yerel modeli üst sağlayıcıya gönderir. Hedef kullanılamıyorsa yönlendirme başarısız olur (fail closed).
-
-   ```text
-   side/gpt-5.6-sol → sağlayıcı "openai", model "gpt-5.6-sol", hesap seçici "side"
-   ```
-
-2. **Kombo Kimliği veya Takma Adı** — En az bir kombo yapılandırılmışsa, `combo/<id>` veya yapılandırılmış bir kombo takma adı, sağlayıcı ad alanları kontrol edilmeden önce somut hedefini seçer. Bkz: [Kombolar](/guides/combos/).
-
-3. **Açık `sağlayıcı/model` Biçimi** — Kimlik `/` içeriyorsa ve bölü işaretinden önceki kısım yapılandırılmış bir sağlayıcının adıysa, o sağlayıcı kullanılır ve kimlik eğik çizgiden sonraki kısma indirgenir.
+1. **Tam Codex hesap seçicisi** — kimlik `<seçici>/<yerel-openai-modeli>` ise ve seçici `codexAccountNamespaces` içinde yapılandırılmışsa, istek yalnızca eşlenen saklanan hesabı kullanır ve yalın yerel modeli yukarı akışa gönderir. Kullanılamayan tam hedefler, Pool, Direct veya sağlayıcı yönlendirmesi üzerinden devam etmek yerine kapalı olarak başarısız olur.
 
    ```text
-   anthropic/claude-opus-5       →  sağlayıcı "anthropic",   model "claude-opus-5"
-   ollama-cloud/glm-5.2          →  sağlayıcı "ollama-cloud", model "glm-5.2"
-   openrouter/openai/gpt-5.6-sol →  sağlayıcı "openrouter",  model "openai/gpt-5.6-sol"
+   side/gpt-5.6-sol → sağlayıcı "openai", model "gpt-5.6-sol", hesap seçicisi "side"
    ```
 
-   Bu, açık yönlendirilmiş sağlayıcı biçimidir ve Codex'in model seçicisinde gösterdiği biçimdir. Belirtilen sağlayıcı devre dışıysa yönlendirme yapılmaz ve hata fırlatılır.
+2. **Kombo kimliği veya takma adı** — en az bir kombo yapılandırılmışken, kurallı bir `combo/<kimlik>` veya yapılandırılmış kombo takma adı, sağlayıcı ad alanları denetlenmeden önce somut hedefini seçer. Yapılandırılmış hiçbir kombo olmadığında, kelimenin tam anlamıyla `combo` olarak adlandırılan eski bir fiziksel sağlayıcı normal bir sağlayıcı ad alanı olarak kalır. Hedef seçimi ve yük devretme davranışı için [Kombolar](/tr/guides/combos/) sayfasına bakın.
 
-4. **Yalın Yerel OpenAI Ailesi Kimliği** — `gpt-*`, `o1-*`, `o3-*` veya `o4-*` gibi bir kimlik, etkin durumdaki resmi `openai` sağlayıcısını ve onun yapılandırılmış Havuz (Pool) veya Doğrudan (Direct) hesap modunu kullanır.
+3. **Açık `sağlayıcı/model`** — kimlik `/` içeriyorsa ve ondan önceki kısım yapılandırılmış bir sağlayıcının adıysa, o sağlayıcı kullanılır ve kimlik eğik çizgiden sonraki kısma indirgenir.
 
-5. **Bir Sağlayıcının `defaultModel` Değeri** — Herhangi bir sağlayıcının `defaultModel` değeri istenen kimliğe eşitse o sağlayıcı kullanılır.
+   ```text
+   anthropic/claude-opus-5     →  sağlayıcı "anthropic",   model "claude-opus-5"
+   ollama-cloud/glm-5.2        →  sağlayıcı "ollama-cloud", model "glm-5.2"
+   openrouter/openai/gpt-5.6-sol → sağlayıcı "openrouter",  model "openai/gpt-5.6-sol"
+   ```
 
-6. **Yerleşik Önek Kalıpları (Prefix Patterns)** — Kimlik bilinen model ailesi önekleriyle eşleştirilir ve o ada sahip yapılandırılmış bir sağlayıcıya yönlendirilir:
+   Bu, açık yönlendirilen sağlayıcı formudur ve Codex'in model seçicisinin yönlendirilen modeller için kullandığı formdur. Aynı genel kimlik yapılandırılmış bir kombo takma adıysa kural 2 kazanır. Adlandırılmış sağlayıcı devre dışı bırakılmışsa bu açık form yönlendirmek yerine hata fırlatır.
+
+4. **Yalın yerel OpenAI ailesi kimliği** — `gpt-*`, `o1-*`, `o3-*` veya `o4-*` gibi bir kimlik, kurallı etkinleştirilmiş `openai` sağlayıcısını ve onun yapılandırılmış Pool veya Direct hesap modunu kullanır.
+
+5. **Bir sağlayıcının `defaultModel`'i** — herhangi bir sağlayıcının `defaultModel`'i kimliğe eşitse, o sağlayıcı kullanılır (kimlik değiştirilmeden iletilir).
+
+6. **Yerleşik önek desenleri** — kimlik bilinen model ailesi önekleriyle eşleştirilir, ardından bu addaki (veya ad önekindeki) yapılandırılmış bir sağlayıcıya yönlendirilir:
 
    | Önekler | Sağlayıcı |
    | --- | --- |
    | `claude-`, `claude-sonnet-`, `claude-opus-`, `claude-haiku-` | `anthropic` |
    | `llama-`, `mixtral-`, `gemma-` | `groq` |
 
-7. **Bir Sağlayıcının `models[]` Listesi** — Yukarıdaki kurallar eşleşmezse ve aktif bir sağlayıcı bu kimliği kendi `models[]` listesinde barındırıyorsa o sağlayıcı kullanılır.
+   Bu eşleştirici ada dayalıdır ve `defaultModel` / `models[]` taramalarından farklı olarak şu anda `disabled` bayrağı true olan eşleşen bir sağlayıcıyı filtrelemez.
 
-8. **Varsayılan Sağlayıcı (Default Provider)** — Hiçbir kural eşleşmezse kimlik doğrudan `config.defaultProvider` sağlayıcısına iletilir. (Varsayılan sağlayıcı tanımlı değilse veya devre dışıysa yönlendirme hata verir.)
+7. **Bir sağlayıcının `models[]`'i** — hiçbir önek kuralı kazanmadıysa ve aktif bir sağlayıcı kimliği kendi `models[]` içinde listeliyorsa, o sağlayıcı kullanılır. Kural 4, başka bir sağlayıcının `models[]` iddiası eşleşmeden önce yalın bir `gpt-*` kimliğini zaten kurallı etkinleştirilmiş `openai` sağlayıcısına gönderir.
 
-## API Anahtarları ve Ortam Değişkenleri
+8. **Varsayılan sağlayıcı** — hiçbir şey eşleşmediyse kimlik değiştirilmeden `config.defaultProvider`'a gönderilir. (Hiçbir varsayılan sağlayıcı yapılandırılmamışsa veya devre dışıysa yönlendirme hata fırlatır.)
 
-Hangi rota seçilirse seçilsin sağlayıcının `apiKey` değeri `resolveEnvValue()` üzerinden çözümlenir: `${OPENAI_API_KEY}` veya `$OPENAI_API_KEY` değeri istek anında ortamdan genişletilir; böylece gizli anahtarların asla `config.json` içinde düz metin olarak saklanması gerekmez.
+## API anahtarları ve ortam değişkenleri
 
-## Katalog Görünürlüğü ve Bağlam Sınırları
+Hangi rota seçilirse seçilsin sağlayıcının `apiKey`'i `resolveEnvValue()` aracılığıyla çözümlenir: istek zamanında ortamdan `${OPENAI_API_KEY}` veya `$OPENAI_API_KEY` değeri genişletilir, bu nedenle sırların asla `config.json` içinde yaşaması gerekmez.
 
-Yönlendirme ve katalog görünürlüğü birbirinden bağımsız kontrollerdir:
+## Katalog görünürlüğü ve bağlam sınırları
 
-- `disabledModels`, ad alanlı yönlendirilmiş kimlikleri Codex kataloğundan ve `/v1/models` çıktısından gizler.
-- Bir sağlayıcının boş olmayan `selectedModels` listesi başka bir katalog izin listesidir.
-- `provider.disabled: true`, o sağlayıcıyı katalog keşfinden tamamen kaldırır.
-- `providerContextCaps`, sağlayıcı başına Codex tarafından görülebilen bağlam sınırlarını belirler.
+Yönlendirme ve katalog görünürlüğü ayrı kontrollerdir:
+
+- `disabledModels`, ad alanlı yönlendirilen kimlikleri Codex kataloğundan ve `/v1/models` listesinden gizler; yalın bir yerel GPT slug'ı `visibility: "hide"` ile katalogda tutulur. Bu model için doğrudan bir isteği **reddetmez**.
+- Bir sağlayıcının boş olmayan `selectedModels` alanı başka bir katalog izin listesidir. Canlı keşif ve doğrudan yönlendirme hala çalışır; yalnızca katalog ve `/v1/models` yayını daraltılır.
+- `provider.disabled: true`, bu sağlayıcıyı katalog keşfinden kaldırır. Açık `sağlayıcı/model` istekleri başarısız olur ve `defaultModel` / `models[]` taramaları bunu atlar.
+- `providerContextCaps`, sağlayıcı başına Codex tarafından görülebilen bağlam sınırlarını uygular. `contextCapValue` kontrol paneli varsayılanıdır (varsayılan olarak 350.000), ancak bir sağlayıcı `providerContextCaps` içinde yer alana kadar tek başına hiçbir şey yapmaz. Kontrol paneli değerini değiştirmek, yalnızca "tüm yönlendirilen sağlayıcılara uygula" açık olduğunda etkinleştirilmiş her sağlayıcıyı yeniden yönlendirir; aksi takdirde her sağlayıcı kendi sınırını korur. Sınırlar yalnızca bilinen bir bağlam penceresini düşürür; asla bir pencereyi yükseltmez veya yukarı akış modelinin gerçek sınırını değiştirmez.
 
 ```json
 {
@@ -67,6 +69,9 @@ Yönlendirme ve katalog görünürlüğü birbirinden bağımsız kontrollerdir:
 
 ## İpuçları
 
-- **Bir Codex hesabını açıkça hedefleyin:** `<seçici>/<yerel-openai-modeli>` (Kural 1). Bu rota kesindir ve asla başka bir hesaba sessizce geçiş yapmaz.
-- **Yönlendirilen modeller için açık olun:** Tercihen `sağlayıcı/model` (Kural 3) biçimini kullanın.
-- **Kısa kimlikler için `models[]` veya `defaultModel` tanımlayın:** Böylece `sağlayıcı/` öneki olmadan da doğrudan model adıyla istek atabilirsiniz.
+- `<seçici>/<yerel-openai-modeli>` ile **açıkça bir Codex hesabını hedefleyin** (kural 1). Bu rota tamdır ve kapalı olarak başarısız olur; asla sessizce başka bir hesaba geçmez.
+- **Yönlendirilen modeller için açık olun.** Bu tam genel kimlik bir kombo takma adı olmadığında `sağlayıcı/model`'i (kural 3) tercih edin. Doğrudan sağlayıcıyı adlandırır ve katalog senkronizasyonundan sonra Codex'in seçicisinde gösterdiği şeyle eşleşir.
+- Bir sağlayıcıda **`models[]` veya `defaultModel` tohumlayın**, böylece kısa kimlikler (kurallar 5/7) `sağlayıcı/` öneki olmadan çözümlenir.
+- **Önek desenleri bir kolaylıktır**, bir garanti değildir: yalnızca bu adda bir sağlayıcı (örneğin `anthropic` veya `groq`) gerçekten yapılandırılmışsa çözümlenirler.
+
+Bu kuralların okuduğu sağlayıcı alanları için [Yapılandırma](/tr/reference/configuration/) sayfasına bakın.
