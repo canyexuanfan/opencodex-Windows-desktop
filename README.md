@@ -57,6 +57,33 @@ npm install -g @bitkyc08/opencodex   # Node 18+; the Bun runtime is bundled auto
 ocx start                            # or `ocx service` to run it in the background
 ```
 
+<details>
+<summary>Install from source (latest dev, Bun canary)</summary>
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://bun.sh/install | bash && ~/.bun/bin/bun upgrade --canary
+git clone https://github.com/lidge-jun/opencodex.git
+cd opencodex && ~/.bun/bin/bun install
+~/.bun/bin/bun run src/cli/index.ts start
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm bun.sh/install.ps1 | iex; bun upgrade --canary
+git clone https://github.com/lidge-jun/opencodex.git
+cd opencodex; bun install
+bun run src/cli/index.ts start
+```
+
+Source install runs the latest `dev` branch with Bun canary. Memory ownership
+patches, runtime GC improvements, and unreleased fixes are available here before
+they reach the npm package.
+
+</details>
+
 Open **http://localhost:10100** and configure everything in the web dashboard — add providers
 (40+ built-ins, or any OpenAI-compatible endpoint), pick models, manage accounts. `ocx gui`
 re-opens the dashboard at any time.
