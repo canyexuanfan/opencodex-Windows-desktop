@@ -318,27 +318,31 @@ describe("Command Code provider", () => {
       });
       expect(JSON.parse(withEffort.body).params.reasoning_effort).toBe(effort);
     }
-    // xhigh is advertised but the wire maps it to max when max is supported
-    // (src/adapters/command-code.ts supportedCommandCodeEffort).
+    // xhigh is a distinct wire value for muse spark (upstream accepts it) and
+    // must not be collapsed to max — only deepseek/glm need that aliasing.
     const xhigh = await builtRequest({
       ...parsed("meta/muse-spark-1.2-contributor"),
       options: { reasoning: "xhigh", maxOutputTokens: 100 },
     });
-    expect(JSON.parse(xhigh.body).params.reasoning_effort).toBe("max");
-    // ultra is not advertised for muse spark; supportedCommandCodeEffort maps
-    // ultra→max only when max is in the table, but muse spark's table has no
-    // synthetic ultra tier — ultra must not appear on the wire as-is (upstream
-    // returns 400 for ultra), and the adapter strips it via the supported check.
-    // For muse spark, ultra DOES map to max via the same xhigh/ultra branch,
-    // so ultra→max is forwarded. Keep the assertion explicit:
+    expect(JSON.parse(xhigh.body).params.reasoning_effort).toBe("xhigh");
+    // ultra is not advertised for muse spark and upstream rejects it (400).
+    // The adapter must strip it before request construction.
     const ultra = await builtRequest({
       ...parsed("meta/muse-spark-1.2-contributor"),
       options: { reasoning: "ultra", maxOutputTokens: 100 },
     });
-    // Current adapter maps ultra→max whenever max is supported; muse spark
-    // supports max, so ultra forwards as max (not stripped). This matches the
-    // upstream's "echo max for capability parity" intent — keep pinned.
-    expect(JSON.parse(ultra.body).params.reasoning_effort).toBe("max");
+    expect(JSON.parse(ultra.body).params).not.toHaveProperty("reasoning_effort");
+    // Deepseek/glm still alias xhigh/ultra→max per their official profiles.
+    const deepseekUltra = await builtRequest({
+      ...parsed("deepseek/deepseek-v4-flash"),
+      options: { reasoning: "ultra", maxOutputTokens: 100 },
+    });
+    expect(JSON.parse(deepseekUltra.body).params.reasoning_effort).toBe("max");
+    const deepseekXhigh = await builtRequest({
+      ...parsed("deepseek/deepseek-v4-flash"),
+      options: { reasoning: "xhigh", maxOutputTokens: 100 },
+    });
+    expect(JSON.parse(deepseekXhigh.body).params.reasoning_effort).toBe("max");
   });
 
   test("maps ultra and xhigh to the max wire effort and honors legacy alias ids", async () => {
