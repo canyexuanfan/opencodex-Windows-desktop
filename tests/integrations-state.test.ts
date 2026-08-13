@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXPORT_CLIENTS, type ExportModel } from "../src/clients/config-export";
@@ -125,6 +125,20 @@ describe("the five states, each triggered directly", () => {
     ];
     const text = seedOurConfig(previousModels);
     seedRecord(text, undefined, previousModels);
+    expect(readIntegrationState(input()).state).toBe("stale");
+  });
+
+  test("stale: a sibling edit next to an intact json block is drift, not conflict", () => {
+    // The full readIntegrationState path — real file I/O, configPath and
+    // clientId guards engaged — not just the synthetic classify calls below.
+    seedRecord(seedOurConfig());
+    const path = join(home, ".pi", "agent", "models.json");
+    const edited = JSON.parse(readFileSync(path, "utf8")) as {
+      providers: Record<string, unknown>;
+    };
+    edited.providers.mine = { baseUrl: "http://user.invalid/v1" };
+    writeFileSync(path, `${JSON.stringify(edited, null, 2)}\n`);
+
     expect(readIntegrationState(input()).state).toBe("stale");
   });
 
@@ -384,6 +398,49 @@ describe("classifier unit behavior", () => {
     expect(parseConfig("{{{", "json")).toBe(PARSE_FAILED);
   });
 
+  test("parseConfig refuses json number literals a rewrite would change", () => {
+    // Overflow to Infinity — a rewrite would bake in null.
+    expect(parseConfig("{\"a\": 1e999}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("[-1e999]", "json")).toBe(PARSE_FAILED);
+    // Rounded at parse: consumers reading JSON integers exactly (python, jq)
+    // would see a different value after the rewrite.
+    expect(parseConfig("{\"a\": 9007199254740993}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": [{\"b\": [9007199254740993]}]}", "json")).toBe(PARSE_FAILED);
+    // Negative zero re-serializes as 0 — in every literal spelling.
+    expect(parseConfig("{\"a\": -0}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": -0.0}", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": -0e5}", "json")).toBe(PARSE_FAILED);
+    // Scanner lexing edges: a bare top-level literal (token touches both text
+    // boundaries), a literal right after a comma, and a backslash-terminated
+    // string followed by a real literal (escape-flag handling).
+    expect(parseConfig("9007199254740993", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("[1, 9007199254740993]", "json")).toBe(PARSE_FAILED);
+    expect(parseConfig("{\"a\": \"x\\\\\", \"b\": 9007199254740993}", "json")).toBe(PARSE_FAILED);  });
+
+  test("parseConfig keeps json numbers that round-trip exactly", () => {
+    // 1e21 and 2^54 are exactly representable doubles; only the literal's
+    // spelling may normalize, never the value any JSON consumer reads.
+    expect(parseConfig("{\"a\": 1e21}", "json")).toEqual({ a: 1e21 });
+    expect(parseConfig("{\"a\": 18014398509481984}", "json")).toEqual({ a: 2 ** 54 });
+    // A huge number inside a string is data, not a number literal — even
+    // behind an escaped quote.
+    expect(parseConfig("{\"a\": \"1e999\"}", "json")).toEqual({ a: "1e999" });
+    expect(parseConfig("{\"a\": \"id 9007199254740993 ok\"}", "json"))
+      .toEqual({ a: "id 9007199254740993 ok" });
+    expect(parseConfig("{\"a\": \"he said \\\" 9007199254740993\"}", "json"))
+      .toEqual({ a: "he said \" 9007199254740993" });
+    // Decimal/exponent spellings are float semantics for every consumer —
+    // they round identically before and after a rewrite, so they stay usable
+    // (only plain digit runs carry exact-integer semantics, e.g. python's
+    // json module reads them as arbitrary-precision int).
+    expect(parseConfig("{\"a\": 9007199254740993e0}", "json"))
+      .toEqual({ a: 9007199254740992 });
+    expect(parseConfig("{\"a\": 9007199254740993.0}", "json"))
+      .toEqual({ a: 9007199254740992 });
+    // The guard is json-only: json5 keeps today's behavior.
+    expect(parseConfig("{\"a\": 9007199254740993}", "json5")).toEqual({ a: 9007199254740992 });
+  });
+
   test("fragment order does not change the contribution fingerprint", () => {
     const reversed = { ...contribution, fragments: [...contribution.fragments].reverse() };
     expect(canonicalContribution(reversed)).toBe(canonicalContribution(contribution));
@@ -494,27 +551,34 @@ describe("ownership is scoped to recorded fragments", () => {
     expect(result).toEqual({ state: "stale" });
   });
 
-  test("comment-capable formats still conflict on an unrelated source edit", () => {
-    // hermes writes YAML: re-serializing the whole document would drop any
-    // comments the user keeps next to our block, so file-level drift stays a
-    // hard conflict there.
-    const hermesContribution = { ...ownedContribution, clientId: "hermes" as const };
-    const hermesRecord: OwnershipRecord = {
-      ...record,
-      clientId: "hermes",
-      configPath: "/tmp/hermes-config.yaml",
-      blockFingerprint: fingerprint(canonicalContribution(hermesContribution)),
-    };
-    const result = classifyIntegration({
-      fileText: textWithExtra,
-      fileIsRegular: true,
-      parsed: documentWithExtra,
-      record: hermesRecord,
-      contribution: hermesContribution,
-    });
+  // Re-serializing a whole document in these formats would drop any comments
+  // the user keeps next to our block, so file-level drift stays a hard
+  // conflict for every one of them — a regression that narrowed the condition
+  // (say, to yaml only) must fail here, not in a user's config.
+  for (const { clientId, configPath } of [
+    { clientId: "hermes" as const, configPath: "/tmp/hermes-config.yaml" },
+    { clientId: "openclaw" as const, configPath: "/tmp/openclaw.json5" },
+    { clientId: "kimi" as const, configPath: "/tmp/kimi-config.toml" },
+  ]) {
+    test(`${clientId} (comment-capable) still conflicts on an unrelated source edit`, () => {
+      const contribution = { ...ownedContribution, clientId };
+      const clientRecord: OwnershipRecord = {
+        ...record,
+        clientId,
+        configPath,
+        blockFingerprint: fingerprint(canonicalContribution(contribution)),
+      };
+      const result = classifyIntegration({
+        fileText: textWithExtra,
+        fileIsRegular: true,
+        parsed: documentWithExtra,
+        record: clientRecord,
+        contribution,
+      });
 
-    expect(result).toEqual({ state: "conflict", reason: "foreign-edit" });
-  });
+      expect(result).toEqual({ state: "conflict", reason: "foreign-edit" });
+    });
+  }
 
   test("a json sibling edit combined with an edit inside our block is still a conflict", () => {
     // The sibling-edit exemption must never mask tampering with an owned

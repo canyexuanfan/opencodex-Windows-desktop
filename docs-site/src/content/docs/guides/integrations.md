@@ -65,7 +65,14 @@ always recoverable:
   and their history rows read **Backup expired**.
 
 Disable removes only the entries opencodex recorded as its own. If your file changed
-after we wrote it, the switch locks and disable refuses rather than guessing which
+after we wrote it, what happens depends on whether our own entries are still intact
+and on the file's format. For strict-JSON configs (OpenCode, Pi), an edit **next to**
+our block — adding an MCP server, a provider of your own — shows as **Update needed**:
+refreshing merges around your entries and keeps them, though formatting may be
+normalized. The exception is a value JSON cannot rewrite exactly — a non-finite
+number like `1e999`, an integer literal past 2^53, or `-0` — which locks the
+switch instead, so the value is never silently changed. For formats that can carry comments (YAML, JSON5, TOML), or when our own
+entries were edited, the switch locks and disable refuses rather than guessing which
 edits were yours.
 
 ## What to expect, honestly

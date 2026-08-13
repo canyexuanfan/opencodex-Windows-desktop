@@ -23,12 +23,65 @@ import type { IntegrationClientId } from "./registry";
  */
 export const PARSE_FAILED = Symbol("parse-failed");
 
+/**
+ * Number literals JSON.parse has already damaged: `1e999` overflows to
+ * Infinity (a later rewrite would bake in `null` — the merge layer's JSON
+ * clone does it even before the serializer could refuse), an integer literal
+ * beyond 2^53 may have been rounded (a rewrite then hands consumers that read
+ * JSON integers exactly — python, jq, BigInt revivers — a different value),
+ * and `-0` re-serializes as `0`. By the time the document is parsed the
+ * original literal is gone, which is why this scans the RAW text — same
+ * reasoning as the TOML inf/nan guard below — and only literals whose value
+ * actually changed: `1e21` or 2^54 round-trip exactly and stay usable.
+ * Scanning also avoids recursing over attacker-shaped nesting depth.
+ */
+function jsonNumberLiteralsRoundTrip(text: string): boolean {
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === "\"") inString = false;
+      continue;
+    }
+    if (ch === "\"") { inString = true; continue; }
+    if (ch !== "-" && (ch < "0" || ch > "9")) continue;
+    let end = i + 1;
+    while (end < text.length && /[0-9+\-.eE]/.test(text[end]!)) end += 1;
+    const literal = text.slice(i, end);
+    i = end - 1;
+    const value = Number(literal);
+    if (!Number.isFinite(value)) return false;
+    if (value === 0 && literal.startsWith("-")) return false;
+    /*
+     * Deliberately plain digit runs only. They are the one spelling real
+     * consumers read with exact integer semantics (python's json yields an
+     * arbitrary-precision int, jq preserves big integer literals), so baking
+     * in the rounded double changes what those consumers extract. Decimal or
+     * exponent spellings of the same value (`9007199254740993e0`, `…3.0`) are
+     * float semantics for every consumer — they round identically before and
+     * after a rewrite, and shortest-round-trip stringify preserves what any
+     * reader can observe, so refusing them would only manufacture dead ends
+     * (`1e308` is not exactly representable either, yet rewrites losslessly
+     * for every possible reader).
+     */
+    const digits = literal[0] === "-" ? literal.slice(1) : literal;
+    if (/^[0-9]{16,}$/.test(digits) && BigInt(literal) !== BigInt(value)) return false;
+  }
+  return true;
+}
+
 /** Parse a client config, tolerating absence. PARSE_FAILED on garbage. */
 export function parseConfig(text: string | null, format: ConfigFormat): unknown | typeof PARSE_FAILED {
   if (text === null || text.trim().length === 0) return {};
   try {
     switch (format) {
-      case "json": return JSON.parse(text);
+      case "json": {
+        const parsed = JSON.parse(text);
+        return jsonNumberLiteralsRoundTrip(text) ? parsed : PARSE_FAILED;
+      }
       case "json5": return Bun.JSON5.parse(text);
       case "yaml": return Bun.YAML.parse(text);
       case "toml": {

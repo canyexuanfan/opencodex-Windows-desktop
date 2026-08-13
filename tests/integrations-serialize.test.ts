@@ -155,6 +155,10 @@ describe("serializeDocument", () => {
     expect(() => serializeDocument([1, 2], "toml")).toThrow(/TOML root must be a table/);
   });
 
+
+
+
+
   test("media types are declared for every format", () => {
     expect(Object.keys(FORMAT_MEDIA_TYPE).sort()).toEqual(["json", "json5", "toml", "yaml"]);
   });

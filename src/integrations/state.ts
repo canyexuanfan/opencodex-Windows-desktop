@@ -134,9 +134,15 @@ function recordedFragmentFingerprint(
 /**
  * The two-axis rule: the recorded bytes or fragments prove nobody changed
  * what we may rewrite, and the contribution hash proves our catalog has not
- * moved on. OMP is the sole fragment-scoped client because its writer patches
- * only `providers.opencodex`; every whole-document serializer retains the
- * whole-file fingerprint guard.
+ * moved on. Three classes of client (revising the unconditional whole-file
+ * rule of devlog 260802_client_toggle_api/021 §3 for json — #1631):
+ * OMP is fragment-scoped because its writer patches only
+ * `providers.opencodex`, so the whole-file check is skipped entirely;
+ * strict-json clients keep the whole-file check but downgrade a drift with
+ * intact owned fragments to `stale`, because a rewrite there can lose only
+ * formatting (comments cannot parse, non-round-tripping numbers are refused
+ * by the serializer); every comment-capable whole-document serializer (yaml,
+ * json5, toml) retains the whole-file fingerprint guard as a hard conflict.
  */
 export function classifyIntegration(input: {
   fileText: string | null;
@@ -196,10 +202,14 @@ export function classifyIntegration(input: {
      * json5, toml) it would drop comments the user wrote next to us: fail
      * closed there. Strict JSON cannot carry comments — a commented file
      * never reaches this branch because parsing already failed — so the only
-     * possible loss is formatting normalization, and refusing forever over
-     * that dead-ends the integration on the user's first own config edit
-     * (#1631). Report drift instead; a re-apply merges into the parsed
-     * document as it stands and re-owns the file.
+     * possible loss is formatting normalization: numbers that would not
+     * round-trip (non-finite, integers past 2^53) are PARSE_FAILED in
+     * parseConfig and classify as unsafe long before this branch, exactly
+     * like comments. Refusing forever over formatting
+     * dead-ends the integration on the user's first own config edit (#1631).
+     * Report drift instead; a re-apply merges into the parsed document as it
+     * stands and re-owns the file. This also lets disable proceed on a
+     * drifted file — removal still touches only the recorded fragment paths.
      */
     if (EXPORT_CLIENTS[clientId].format !== "json") {
       return { state: "conflict", reason: "foreign-edit" };

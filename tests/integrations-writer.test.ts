@@ -171,12 +171,114 @@ describe("apply", () => {
 
     const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
     expect((after.providers as Record<string, unknown>).mine).toEqual({ baseUrl: "http://user.invalid/v1" });
-    expect((after.providers as Record<string, unknown>).opencodex).toBeDefined();
+    // The block a fresh apply would write, not merely "something is there".
+    expect((after.providers as Record<string, unknown>).opencodex).toMatchObject({
+      baseUrl: "http://127.0.0.1:10100/v1",
+    });
 
     // The re-apply re-owned the file: a third apply is a no-op again.
     const third = applyIntegration(input({ clientId: "pi" }));
     expect(third.ok).toBe(true);
     if (third.ok) expect(third.changed).toBe(false);
+  });
+
+  test("json disable after a sibling edit keeps the sibling (#1631)", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const doc = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    (doc.providers as Record<string, unknown>).mine = { baseUrl: "http://user.invalid/v1" };
+    writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(true);
+
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect((after.providers as Record<string, unknown>).mine).toEqual({ baseUrl: "http://user.invalid/v1" });
+    expect((after.providers as Record<string, unknown>).opencodex).toBeUndefined();
+  });
+
+  test("json apply refuses when a sibling number cannot round-trip", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    // 1e999 is valid strict JSON but parses to Infinity; a rewrite would bake
+    // in `null`. The refusal must fire instead of reporting success.
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 1e999,");
+    writeFileSync(configPath, drifted);
+
+    const result = applyIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    // The file is untouched, the user's literal survives.
+    expect(readFileSync(configPath, "utf8")).toContain("1e999");
+  });
+
+  test("a sibling with an exactly-representable big number stays usable (#1631)", () => {
+    // 2^54 round-trips value- and literal-exactly. classify promises 'stale'
+    // (recoverable) for this file; apply must honor that promise instead of
+    // refusing at serialize time — the asymmetry that re-created the dead-end.
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 18014398509481984,");
+    writeFileSync(configPath, drifted);
+
+    const second = applyIntegration(input({ clientId: "pi" }));
+    expect(second.ok).toBe(true);
+
+    expect(readFileSync(configPath, "utf8")).toContain("18014398509481984");
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect(after.quota).toBe(2 ** 54);
+  });
+
+  test("disable also honors a 2^54 sibling: proceeds and keeps the literal", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 18014398509481984,");
+    writeFileSync(configPath, drifted);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(true);
+
+    const text = readFileSync(configPath, "utf8");
+    expect(text).toContain("18014398509481984");
+    const after = JSON.parse(text) as Record<string, unknown>;
+    expect(after.quota).toBe(2 ** 54);
+    expect((after.providers as Record<string, unknown> | undefined)?.opencodex).toBeUndefined();
+  });
+
+  test("json disable also refuses when a sibling number cannot round-trip", () => {
+    const spec = INTEGRATION_CLIENTS.pi;
+    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+    const configPath = spec.configPath(TEST_ENV, home);
+    mkdirSync(dirname(configPath), { recursive: true });
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 1e999,");
+    writeFileSync(configPath, drifted);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toContain("1e999");
   });
 
   test("yaml clients still refuse a sibling edit rather than risk user comments", () => {
