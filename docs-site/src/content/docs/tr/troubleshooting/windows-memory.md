@@ -9,11 +9,11 @@ Bazı Windows kullanıcıları, uzun akış (streaming) oturumları sırasında 
 
 OpenCodex, Bun çalışma zamanını (şu anda **1.3.14**) paket olarak içerir. Bellek artışı proxy'deki JavaScript düzeyindeki sızıntılardan değil, bilinen upstream Bun sorunlarından kaynaklanır:
 
-| Bun Sorunu | Durum (2026-07-23 kontrolü) |
+| Bun Sorunu | Durum (2026-08-12 kontrolü) |
 |---|---|
 | [#28035](https://github.com/oven-sh/bun/issues/28035) — `fetch()` geri basıncı JS tüketimine bağlı değil | [PR #29831](https://github.com/oven-sh/bun/pull/29831) ile düzeltildi; hangi sürümde yer aldığı doğrulanmadı — paketli 1.3.14'te olmadığı varsayılır |
 | [#32111](https://github.com/oven-sh/bun/issues/32111) — İstemci asenkron akışı iptal ettiğinde çökme | Düzeltme [PR #32120](https://github.com/oven-sh/bun/pull/32120) 2026-06-21'de birleştirildi; 1.3.14'te olmadığı varsayılır. Bu çökme Windows'a özel değildir (macOS/Linux'ta da tekrarlanmıştır) |
-| [PR #31654](https://github.com/oven-sh/bun/pull/31654) — `node:net` soket tutamacı (handle) sızıntısı | Upstream'de hala **açık** |
+| [PR #31654](https://github.com/oven-sh/bun/pull/31654) — `node:net` soket tutamacı (handle) sızıntısı | Upstream'de **kapandı** (birleştirilmedi) |
 
 Windows üzerinde OpenCodex, #32111 çökmesini önlemek için yanıt akışlarını muhafazakar bir kod yolunda tutmalıdır; bu yol geri basınç sorununa en açık olanıdır: Yavaş veya duraklatılmış bir istemci, çalışma zamanının JavaScript'in sınırlandıramayacağı yerel bellekte veri arabelleğe almasına neden olabilir.
 
