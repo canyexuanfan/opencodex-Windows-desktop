@@ -61,6 +61,7 @@ export function DashboardEffortCapPanel({ apiBase, d }: { apiBase: string; d: Da
           }}
           disabled={effortCapSaving}
           label={t("dash.effortCapLabel")}
+          align="right"
         />
         <Select
           value={subagentEffortCap}
@@ -85,6 +86,7 @@ export function DashboardEffortCapPanel({ apiBase, d }: { apiBase: string; d: Da
           }}
           disabled={effortCapSaving}
           label={t("dash.subagentEffortCapLabel")}
+          align="right"
         />
       </div>
     </div>
@@ -118,6 +120,7 @@ export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
           onChange={(v) => { void saveInjection({ model: v || null, effort: injectionEffort || null }); }}
           disabled={injectionSaving}
           label={t("dash.injectionLabel")}
+          align="right"
         />
         {injectionModel && injectionEfforts.length > 0 && (
           <Select
@@ -129,6 +132,7 @@ export function DashboardInjectionPanel({ d }: { apiBase: string; d: Dash }) {
             onChange={(v) => { void saveInjection({ model: injectionModel || null, effort: v || null }); }}
             disabled={injectionSaving}
             label={t("dash.injectionEffortLabel")}
+            align="right"
           />
         )}
         <button
@@ -309,6 +313,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               onChange={model => { void saveSidecar({ webSearch: { model, backend: sidecarBackendForModel(models, model) } }); }}
               disabled={!sidecar || sidecarSaving}
               label={t("dash.sidecarModel")}
+              align="right"
             />
           </div>
           <div className="muted setting-hint">{t("dash.webSearchSidecarHint")}</div>
@@ -323,6 +328,7 @@ export function DashboardSidecarPanels({ d }: { d: Dash }) {
               onChange={model => { void saveSidecar({ vision: { model, backend: sidecarBackendForModel(models, model) } }); }}
               disabled={!sidecar || sidecarSaving}
               label={t("dash.sidecarModel")}
+              align="right"
             />
           </div>
           <div className="muted setting-hint">{t("dash.visionSidecarHint")}</div>
