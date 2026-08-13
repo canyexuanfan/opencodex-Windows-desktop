@@ -506,10 +506,12 @@ jobs:
           for attempt in 1 2; do
             # --timeout: Bun's default 5s per-test ceiling is the recurring flake
             # class on this loaded shared runner (real retry windows + server
-            # round-trips exceed 5s under contention; Linux shards and local runs
-            # stay on the default). 20s keeps hangs bounded while removing the
-            # timing flakes — assertions are untouched.
-            bun test --isolate --timeout 20000 tests 2>&1 | tee "$suite_log"
+            # round-trips exceed 5s under contention; a 10s-floor in-test
+            # watchdog fired at 10.16s there). 60s keeps hangs bounded (the 30m
+            # job timeout is the outer backstop) while removing the timing
+            # flakes — assertions are untouched. Pairs with the 30s CI floor in
+            # tests/helpers/ci-watchdog.ts.
+            bun test --isolate --timeout 60000 tests 2>&1 | tee "$suite_log"
             suite_status="${PIPESTATUS[0]}"
             if [ "$suite_status" -eq 0 ]; then
               exit 0

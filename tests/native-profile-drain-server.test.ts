@@ -218,7 +218,7 @@ describe("native main profile scoped server admission", () => {
       url.protocol = "ws:";
       const ws = new WebSocket(url, { headers } as unknown as string[]);
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("sideband echo timeout")), 5_000);
+        const timer = setTimeout(() => reject(new Error("sideband echo timeout")), watchdogMs(5_000));
         ws.addEventListener("open", () => ws.send("ping"), { once: true });
         ws.addEventListener("message", event => {
           if (String(event.data) !== "echo:ping") return;
