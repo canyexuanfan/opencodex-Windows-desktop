@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config";
@@ -457,6 +458,8 @@ export interface ManagementUsageSnapshot {
   truncatedPrefixBytes: number;
   entriesTruncated: boolean;
   entriesDropped: number;
+  /** Digest of the covered prefix, used to detect an in-place rewrite before reuse. */
+  prefixDigest: string;
 }
 let managementUsageReadInflight: {
   key: string;
@@ -484,6 +487,17 @@ interface RetainedUsageSnapshot {
   maxReadBytes: number;
   /** Absolute end offset in the file that `entries` already covers. */
   coveredThroughBytes: number;
+  /**
+   * Digest of the last bytes of the covered prefix, re-verified before extending.
+   *
+   * Identity (path/dev/ino/birthtime) intentionally ignores size and mtime so appends
+   * can share work, which also means an in-place rewrite that keeps the inode is
+   * invisible to it. A hand-edit or external compaction can therefore replace history
+   * under a stable identity without shrinking the file. Re-reading this trailing window
+   * catches that: if the bytes behind `coveredThroughBytes` changed, the retained rows
+   * no longer describe the file and must not be extended.
+   */
+  prefixDigest: string;
   /** Bytes of the file skipped ahead of the retained window. */
   truncatedPrefixBytes: number;
   entries: PersistedUsageEntry[];
@@ -497,6 +511,22 @@ let retainedUsageSnapshot: RetainedUsageSnapshot | null = null;
 
 /** Rough per-row retained cost; exact sizing would cost another full serialization pass. */
 const RETAINED_USAGE_ENTRY_BYTES = 512;
+
+/**
+ * Trailing bytes of the covered prefix that are re-read to detect an in-place rewrite.
+ * Bounded and small: this is an integrity check on every incremental read, not a hash
+ * of the whole window.
+ */
+const RETAINED_USAGE_PREFIX_DIGEST_BYTES = 4096;
+
+/** Digest of the last bytes ending at `end`; null when it cannot be read. */
+function usagePrefixDigest(fd: number, end: number): string | null {
+  if (end <= 0) return "empty";
+  const length = Math.min(RETAINED_USAGE_PREFIX_DIGEST_BYTES, end);
+  const tail = readExactly(fd, length, end - length);
+  if (tail === null) return null;
+  return `${end}:${createHash("sha256").update(tail).digest("hex")}`;
+}
 
 function retainedUsageSnapshotBytes(entries: PersistedUsageEntry[]): number {
   return entries.length * RETAINED_USAGE_ENTRY_BYTES;
@@ -648,12 +678,17 @@ async function readUsageEntriesFullCooperatively(
     }
     const parsed = await parseUsageTextCooperatively(bytes.toString("utf-8"), signal);
     usageReadCacheStats.fullReads += 1;
+    // Digest the exact prefix these rows describe, so a later incremental read can
+    // prove the file was appended to rather than rewritten under the same inode.
+    const prefixDigest = usagePrefixDigest(fd, Number(stat.size));
+    if (prefixDigest === null) throw new Error("usage log changed while it was being read");
     return {
       entries: parsed.entries,
       revision: usageLogRevision(path, stat),
       truncatedPrefixBytes,
       entriesTruncated: parsed.entriesDropped > 0,
       entriesDropped: parsed.entriesDropped,
+      prefixDigest,
     };
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -688,6 +723,10 @@ async function readUsageEntriesIncrementally(
     // otherwise honoring maxReadBytes would require dropping rows we cannot locate.
     const windowStart = Math.max(0, size - maxReadBytes);
     if (retained.truncatedPrefixBytes < windowStart) return null;
+    // Identity plus a non-shrinking size does not prove the covered prefix is intact:
+    // an in-place rewrite keeps dev/ino/birthtime. Re-verify the prefix before reusing
+    // or extending the retained rows.
+    if (usagePrefixDigest(fd, retained.coveredThroughBytes) !== retained.prefixDigest) return null;
     if (size === retained.coveredThroughBytes) {
       usageReadCacheStats.tailReads += 1;
       return {
@@ -696,6 +735,7 @@ async function readUsageEntriesIncrementally(
         truncatedPrefixBytes: retained.truncatedPrefixBytes,
         entriesTruncated: retained.entriesTruncated,
         entriesDropped: retained.entriesDropped,
+        prefixDigest: retained.prefixDigest,
       };
     }
     // The covered offset must land immediately after a newline, or the retained rows
@@ -704,6 +744,8 @@ async function readUsageEntriesIncrementally(
       const preceding = readExactly(fd, 1, retained.coveredThroughBytes - 1);
       if (preceding === null || preceding[0] !== 0x0a) return null;
     }
+    const nextPrefixDigest = usagePrefixDigest(fd, size);
+    if (nextPrefixDigest === null) return null;
     const chunks: Buffer[] = [];
     for (let position = retained.coveredThroughBytes; position < size;) {
       if (signal.aborted) throw signal.reason;
@@ -728,6 +770,7 @@ async function readUsageEntriesIncrementally(
       truncatedPrefixBytes: retained.truncatedPrefixBytes,
       entriesTruncated: retained.entriesTruncated || entriesDropped > 0,
       entriesDropped,
+      prefixDigest: nextPrefixDigest,
     };
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -790,6 +833,7 @@ export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_U
       identityKey: usageLogIdentityKey(snapshot.revision),
       maxReadBytes,
       coveredThroughBytes: snapshot.revision.size,
+      prefixDigest: snapshot.prefixDigest,
       truncatedPrefixBytes: snapshot.truncatedPrefixBytes,
       entries: snapshot.entries,
       entriesTruncated: snapshot.entriesTruncated,

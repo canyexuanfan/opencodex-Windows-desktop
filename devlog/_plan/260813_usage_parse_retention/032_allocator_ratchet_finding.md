@@ -61,3 +61,38 @@ covered offset that is not on a record boundary.
 
 Measured after the fix, same real ledger: cold 350 ms / 388 MB, then **five further reads
 in 1 ms total and +2 MB**, `fullReads` 1, `tailReads` 5, `parsedLines` flat at 53,012.
+
+## Independent review: one real defect, folded in
+
+Sol (gpt-5.6-sol) returned VERDICT: DEFECT FOUND on the first landed version and it was
+correct. `usageLogIdentityKey` deliberately excludes size/mtime/ctime so appends share
+work, which also means an **in-place rewrite that keeps the inode is invisible**. Neither
+the identity check nor the shrink check sees it, so the reader could concatenate stale
+retained rows with bytes from the replacement content.
+
+Reproduced directly, guard disabled, same inode, file only grows:
+
+```
+first: aaa1,aaa2,aaa3
+after: aaa1,aaa2,aaa3,bbb4     <- three rows that no longer exist in the file
+```
+
+Note the record-boundary check masks this whenever the rewrite shifts row widths, which
+is why a naive regression test passes vacuously. The reproduction needs **fixed-width
+request ids** so a newline still lands exactly at the previously covered offset.
+
+Fix: carry a `prefixDigest` (SHA-256 over the last 4 KiB ending at the covered offset)
+on the snapshot and re-verify it before reuse or extension. With the guard:
+
+```
+after: bbb1,bbb2,bbb3,bbb4     fullReads 2, tailReads 0
+```
+
+Sol's other three points were checked and stand as sound: retained entries stay capped by
+`MANAGEMENT_USAGE_MAX_ENTRIES` and the window-refusal bound, `concat()` does not alias,
+and concurrent callers share one flight and each receive a copy. Its caveat on the 512 B
+per-row estimate is accepted and recorded: `usage_snapshot` accounting is coarse
+telemetry for eviction ordering, not a guaranteed byte ceiling.
+
+The regression test was driven red against the disabled guard before being accepted, so
+it is not vacuous.

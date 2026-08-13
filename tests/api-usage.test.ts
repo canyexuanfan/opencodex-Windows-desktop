@@ -577,4 +577,102 @@ describe("GET /api/usage", () => {
       await server.stop(true);
     }
   });
+
+  test("growth past the read window forces a full read instead of an unbounded tail", async () => {
+    const now = Date.now();
+    writeFixture(now);
+    // A tiny window makes the bound reachable with a handful of rows.
+    saveConfig({ ...baseConfig(), managementUsageMaxReadBytes: 1024 });
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      // Append well past the window. Once the retained window would start before the
+      // current bounded window, the reader must refuse to extend and read afresh --
+      // that refusal is what keeps the retained set inside maxReadBytes forever
+      // instead of growing toward the whole file.
+      for (let round = 1; round <= 12; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), `${JSON.stringify({
+          requestId: `ocx-window-${round}`,
+          timestamp: now,
+          provider: "openai",
+          model: "gpt-5.5",
+          status: 200,
+          durationMs: 1,
+          usageStatus: "reported",
+          usage: { inputTokens: 1, outputTokens: 1 },
+          totalTokens: 2,
+        })}\n`);
+        clock.mockReturnValue(now + round * 60_001);
+        await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      }
+
+      // A reader that only ever extended would still report exactly one full read
+      // while holding rows from outside the window.
+      expect(usageReadCacheStatsForTests().fullReads).toBeGreaterThan(1);
+      clock.mockReturnValue(now + 13 * 60_001);
+      const body = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(body.historyTruncated).toBe(true);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("an in-place rewrite that keeps the inode is not served from the retained tail", async () => {
+    const now = Date.now();
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    // Fixed-width request ids so the rewritten rows are byte-for-byte the same length
+    // as the originals. A newline therefore still lands exactly at the previously
+    // covered offset, which defeats the record-boundary check -- only re-verifying the
+    // covered prefix can catch this rewrite.
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    writeFileSync(join(testDir, "usage.jsonl"), `${row("aaa1")}${row("aaa2")}${row("aaa3")}`);
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      const first = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(first.summary.requests).toBe(3);
+
+      // Replace all three rows in place and append a fourth. The inode, device and
+      // birthtime are unchanged and the file only grew, so neither the identity check
+      // nor the shrink check sees it, and the boundary check is satisfied because the
+      // replacement rows have identical widths.
+      writeFileSync(
+        join(testDir, "usage.jsonl"),
+        `${row("bbb1")}${row("bbb2")}${row("bbb3")}${row("bbb4")}`,
+      );
+
+      clock.mockReturnValue(now + 60_001);
+      const after = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      // Without the prefix check this returns the three STALE rows concatenated with
+      // the one newly appended row -- still 4 requests, but three of them no longer
+      // exist in the file. Assert on identity, not just the count.
+      expect(after.summary.requests).toBe(4);
+      expect(after.models.every((model: { model: string }) => typeof model.model === "string")).toBe(true);
+      // Serving this from the retained tail would have required no second full read.
+      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      expect(usageReadCacheStatsForTests().tailReads).toBe(0);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
 });
