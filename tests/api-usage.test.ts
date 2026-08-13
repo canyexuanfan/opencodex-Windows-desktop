@@ -774,4 +774,61 @@ describe("GET /api/usage", () => {
       await server.stop(true);
     }
   });
+
+  test("unparseable lines do not make the window trim lose history", async () => {
+    const now = Date.now();
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    // Interleave lines that parse to nothing -- a torn write, a hand-edit, a pre-schema
+    // legacy row. Their bytes still occupy the file, so if the recorded row lengths omit
+    // them the trim walk under-counts the byte distance and silently drops extra rows.
+    const seed: string[] = [];
+    for (let index = 0; index < 120; index++) {
+      seed.push(row(`R${String(index).padStart(6, "0")}`));
+      if (index % 5 === 0) seed.push("{ not json at all ~~~\n");
+    }
+    writeFileSync(join(testDir, "usage.jsonl"), seed.join(""));
+    saveConfig({ ...baseConfig(), managementUsageMaxReadBytes: 4096 });
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      for (let round = 1; round <= 40; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), row(`A${String(round).padStart(6, "0")}`));
+        if (round % 5 === 0) appendFileSync(join(testDir, "usage.jsonl"), "{ torn write\n");
+        clock.mockReturnValue(now + round * 60_001);
+        await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      }
+      const cached = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      // The incremental path must have stayed engaged. Without skipped-line accounting
+      // the recorded lengths stop summing to the byte span, the consistency check
+      // rejects every reuse, and this collapses back to a full read per poll -- correct
+      // output, but the optimization is gone.
+      const stats = usageReadCacheStatsForTests();
+      expect(stats.tailReads).toBeGreaterThanOrEqual(20);
+
+      // A cold read of the same window is the ground truth.
+      resetUsageReadCacheForTests();
+      resetUsageSummaryCacheForTests();
+      clock.mockReturnValue(now + 41 * 60_001);
+      const fresh = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(cached.summary.requests).toBe(fresh.summary.requests);
+      expect(cached.truncatedPrefixBytes).toBe(fresh.truncatedPrefixBytes);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
 });
