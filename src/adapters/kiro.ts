@@ -455,7 +455,16 @@ export function buildKiroPayload(
     const boundedAddition = boundedInjectedInstruction(addition, injectedChars);
     if (boundedAddition) systemParts.push(boundedAddition);
   }
-  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(kiroToolWireNames(kiroTools));
+  // Kiro renames tools to satisfy its wire constraints, so resolve neighbor names through the
+  // registry's existing aliases; a bare-name comparison would forbid tools this turn actually
+  // advertises. Read the recorded mapping instead of calling `alias()`, which would REGISTER a
+  // name for a tool that was never advertised and pollute the collision domain.
+  const advertisedAlias = new Map<string, string>();
+  for (const [alias, wireName] of registry.nameMap) advertisedAlias.set(wireName, alias);
+  const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(
+    kiroToolWireNames(kiroTools),
+    name => advertisedAlias.get(name) ?? name,
+  );
   const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
   if (boundedNudge) systemParts.push(boundedNudge);
   if (completionMode !== "disabled") {
