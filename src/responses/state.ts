@@ -66,7 +66,6 @@ export type PreviousResponseReplayFailure = {
   reason: "spill_missing" | "spill_corrupt" | "spill_failed" | "spill_too_large";
 };
 
-// OCX_LOCAL_PATCH_RESPONSE_STATE_TASK_SCOPE: prevent cross-task continuation replay.
 const states = new Map<string, StoredResponseState>();
 const replayScopeMismatches = new WeakSet<object>();
 let storedResponseBytes = 0;
