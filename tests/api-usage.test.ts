@@ -9,7 +9,7 @@ import type { OcxConfig } from "../src/types";
 import { refreshUserCostOverlays, userCostOverlayVersion } from "../src/usage/user-cost-overlays";
 import { stopUserCostOverlayReconciler } from "../src/usage/user-cost-overlay-reconciler";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
-import { resetUsageReadCacheForTests, usageReadCacheStatsForTests } from "../src/usage/log";
+import { resetUsageReadCacheForTests, setManagementUsageMaxEntriesForTests, usageReadCacheStatsForTests } from "../src/usage/log";
 import * as usageLogModule from "../src/usage/log";
 import { getUsageSummaryCacheEntry, resetUsageSummaryCacheForTests } from "../src/server/management/usage-summary-cache";
 
@@ -826,6 +826,98 @@ describe("GET /api/usage", () => {
       const fresh = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
       expect(cached.summary.requests).toBe(fresh.summary.requests);
       expect(cached.truncatedPrefixBytes).toBe(fresh.truncatedPrefixBytes);
+    } finally {
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("the entry cap does not desynchronize the retained window", async () => {
+    const now = Date.now();
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\n`;
+    // Bind the ENTRY cap rather than the byte window: a generous window with a small cap
+    // is the only way to reach this path without a half-million-row fixture.
+    setManagementUsageMaxEntriesForTests(25);
+    writeFileSync(
+      join(testDir, "usage.jsonl"),
+      Array.from({ length: 40 }, (_, index) => row(`R${String(index).padStart(6, "0")}`)).join(""),
+    );
+    saveConfig({ ...baseConfig(), managementUsageMaxReadBytes: 1024 * 1024 });
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      for (let round = 1; round <= 12; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), row(`A${String(round).padStart(6, "0")}`));
+        clock.mockReturnValue(now + round * 60_001);
+        await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      }
+      const cached = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      // Capped rows must move into the skipped prefix. If they do not, the byte
+      // accounting no longer sums to the span, the consistency check rejects every
+      // reuse, and the reader silently degrades to a full read on every poll.
+      expect(usageReadCacheStatsForTests().tailReads).toBeGreaterThanOrEqual(6);
+
+      resetUsageReadCacheForTests();
+      resetUsageSummaryCacheForTests();
+      clock.mockReturnValue(now + 13 * 60_001);
+      const fresh = await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      expect(cached.summary.requests).toBe(fresh.summary.requests);
+      expect(cached.truncatedPrefixBytes).toBe(fresh.truncatedPrefixBytes);
+    } finally {
+      setManagementUsageMaxEntriesForTests(null);
+      clock.mockRestore();
+      await server.stop(true);
+    }
+  });
+
+  test("a CRLF ledger still uses the incremental path", async () => {
+    const now = Date.now();
+    const row = (id: string): string => `${JSON.stringify({
+      requestId: id,
+      timestamp: now - 86_400_000,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: 200,
+      durationMs: 1,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    })}\r\n`;
+    writeFileSync(
+      join(testDir, "usage.jsonl"),
+      Array.from({ length: 20 }, (_, index) => row(`C${String(index).padStart(6, "0")}`)).join(""),
+    );
+    resetUsageReadCacheForTests();
+    resetUsageSummaryCacheForTests();
+    const server = startServer(0);
+    const clock = spyOn(Date, "now");
+    try {
+      clock.mockReturnValue(now);
+      await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      for (let round = 1; round <= 5; round++) {
+        appendFileSync(join(testDir, "usage.jsonl"), row(`D${String(round).padStart(6, "0")}`));
+        clock.mockReturnValue(now + round * 60_001);
+        await fetch(new URL("/api/usage?range=all", server.url)).then(res => res.json());
+      }
+      // A CRLF line owes two separator bytes. Counting one leaves the recorded lengths
+      // short of the real span, the accounting self-check rejects every reuse, and the
+      // reader silently falls back to a full parse on every poll.
+      expect(usageReadCacheStatsForTests().tailReads).toBeGreaterThanOrEqual(5);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
     } finally {
       clock.mockRestore();
       await server.stop(true);
