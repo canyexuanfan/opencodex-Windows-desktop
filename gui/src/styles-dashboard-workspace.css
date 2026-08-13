@@ -179,28 +179,51 @@
 }
 
 .dash-vision-select-row .custom-select:first-child {
-  min-width: 10.5rem;
-  max-width: 14rem;
+  flex: 1 1 70%;
+  min-width: 9rem;
+  max-width: 16rem;
 }
 
 .dash-vision-select-row .custom-select:nth-child(2) {
-  min-width: 6.5rem;
+  flex: 1 1 30%;
+  min-width: 6rem;
   max-width: 9rem;
 }
 
-.dash-vision-sidecar-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+.dash-vision-select-row .custom-select .select-trigger {
+  width: 100%;
+  max-width: 100%;
 }
 
-.dash-vision-advanced {
+.dash-vision-advanced-row {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 12px 16px;
+  justify-content: flex-end;
   width: 100%;
+}
+
+.dash-vision-advanced-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-control);
+  cursor: pointer;
+}
+.dash-vision-advanced-trigger:hover:not(:disabled) {
+  color: var(--text);
+}
+.dash-vision-advanced-trigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.dash-vision-advanced-trigger:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-2xs);
 }
 
 .dash-vision-number {
@@ -216,6 +239,37 @@
 
 .dash-vision-number .codex-auto-switch-input {
   min-width: 0;
+}
+
+/* Floating popover for the advanced vision settings. Portaled to body and
+   positioned via computeSelectMenuStyle (same pattern as the Select dropdown):
+   fixed position, never consumes page flow or shifts the dashboard layout. */
+.dash-vision-advanced-popover {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 16rem;
+  max-width: min(22rem, calc(100vw - 2rem));
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 24px rgb(0 0 0 / 0.14);
+  overflow-y: auto;
+}
+.dash-vision-advanced-popover-title {
+  font-weight: var(--weight-semibold);
+}
+.dash-vision-advanced-popover .dash-vision-number .codex-auto-switch-input-wrap {
+  width: 100%;
+}
+.dash-vision-advanced-popover .dash-vision-number .codex-auto-switch-input {
+  flex: 1 1 0;
+}
+.dash-vision-advanced-popover .dash-vision-number {
+  gap: 4px;
 }
 
 @media (max-width: 36rem) {
@@ -234,18 +288,12 @@
     align-items: stretch;
   }
 
-  .dash-vision-select-row,
-  .dash-vision-advanced {
+  .dash-vision-select-row {
     justify-content: flex-start;
   }
 }
 
 @media (max-width: 30rem) {
-  .dash-vision-advanced {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .dash-vision-number .codex-auto-switch-input-wrap {
     width: 100%;
   }
