@@ -5,6 +5,7 @@
  * arrive in WP090/091; until then the slot renders a real placeholder message.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useKeyedClientResource } from "../../client-resource";
 import { useT } from "../../i18n/shared";
 import { IconFilter, IconSearch, IconBoxes, IconGlobe, IconLock, IconKey, IconTrash } from "../../icons";
 import {
@@ -173,6 +174,7 @@ export default function ProviderWorkspaceShell({
   });
   const [modelsLoadEpoch, setModelsLoadEpoch] = useState(0);
   const filterWrapRef = useRef<HTMLDivElement>(null);
+  const usageResource = useKeyedClientResource(`usage-summary-30d:${apiBase}:all`, [apiBase], async (signal) => { const res = await fetch(`${apiBase}/api/usage?range=30d`, { signal }); if (!res.ok) throw new Error(String(res.status)); return await res.json(); });
 
   const sections = useMemo(() => {
     const base = buildProviderWorkspace(hideRedundantChatGptForwardProviders(providers));
@@ -214,49 +216,24 @@ export default function ProviderWorkspaceShell({
   }, [apiBase, modelsRefreshToken, modelsLoadEpoch]);
 
   useEffect(() => {
-    let cancelled = false;
-    const timeout = window.setTimeout(() => {
-      // Keep last-good paint when sessionStorage already seeded — don't flash loading skeletons.
-      // Read inside the effect (keyed by usageCacheKey) so the seed check stays correct without
-      // closing over an unstable cachedUsage render value.
-      if (!readSessionListCache(usageCacheKey)) setUsageLoading(true);
-      void fetch(`${apiBase}/api/usage?range=30d`)
-        .then(r => readJsonIfOk<{
-          providers?: Array<{ provider: string; requests: number; totalTokens?: number }>;
-          models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; shareRatio: number; estimatedCostUsd?: number }>;
-        }>(r))
-        .then((data) => {
-          if (cancelled || !data) return;
-          const byProvider: Record<string, ProviderUsageTotals> = {};
-          for (const p of data.providers ?? []) byProvider[p.provider] = { requests: p.requests, totalTokens: p.totalTokens };
-          setUsageTotals(byProvider);
-          // Group model rows by provider
-          const byProviderModels: Record<string, ProviderModelUsageRow[]> = {};
-          for (const m of data.models ?? []) {
-            const key = m.provider;
-            if (!byProviderModels[key]) byProviderModels[key] = [];
-            byProviderModels[key].push({
-              model: m.model,
-              ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
-              requests: m.requests,
-              totalTokens: m.totalTokens,
-              inputTokens: m.inputTokens,
-              outputTokens: m.outputTokens,
-              shareRatio: m.shareRatio,
-              ...(m.estimatedCostUsd !== undefined ? { estimatedCostUsd: m.estimatedCostUsd } : {}),
-            });
-          }
-          setUsageModels(byProviderModels);
-          writeSessionListCache(usageCacheKey, { totals: byProvider, models: byProviderModels });
-        })
-        .catch(() => {})
-        .finally(() => { if (!cancelled) setUsageLoading(false); });
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
-  }, [apiBase, usageCacheKey]);
+    const data = usageResource.data as { providers?: Array<{ provider: string; requests: number; totalTokens?: number }>; models?: Array<{ provider: string; model: string; resolvedModel?: string; requests: number; totalTokens: number; inputTokens: number; outputTokens: number; shareRatio: number; estimatedCostUsd?: number }> } | undefined;
+    if (!data) {
+      if (usageResource.loading) setUsageLoading(!readSessionListCache(usageCacheKey));
+      return;
+    }
+    const byProvider: Record<string, ProviderUsageTotals> = {};
+    for (const row of data.providers ?? []) byProvider[row.provider] = { requests: row.requests, totalTokens: row.totalTokens };
+    setUsageTotals(byProvider);
+    const byProviderModels: Record<string, ProviderModelUsageRow[]> = {};
+    for (const m of data.models ?? []) {
+      const key = m.provider;
+      if (!byProviderModels[key]) byProviderModels[key] = [];
+      byProviderModels[key].push({ model: m.model, ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}), requests: m.requests, totalTokens: m.totalTokens, inputTokens: m.inputTokens, outputTokens: m.outputTokens, shareRatio: m.shareRatio, ...(m.estimatedCostUsd !== undefined ? { estimatedCostUsd: m.estimatedCostUsd } : {}) });
+    }
+    setUsageModels(byProviderModels);
+    writeSessionListCache(usageCacheKey, { totals: byProvider, models: byProviderModels });
+    setUsageLoading(false);
+  }, [apiBase, usageCacheKey, usageResource.data, usageResource.loading]);
 
   useEffect(() => {
     let cancelled = false;

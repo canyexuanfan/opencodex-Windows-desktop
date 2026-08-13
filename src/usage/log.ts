@@ -459,6 +459,7 @@ export interface ManagementUsageSnapshot {
 }
 let managementUsageReadInflight: {
   key: string;
+  openedSize: number;
   promise: Promise<ManagementUsageSnapshot>;
   startedAt: number;
   abort: AbortController;
@@ -510,6 +511,12 @@ export function usageLogRevisionKey(revision: UsageLogRevision | null): string {
     revision.mtimeMs,
     revision.ctimeMs,
   ].join("\0");
+}
+
+/** Identity of the usage ledger file, excluding size/mtime/ctime so appends can share work. */
+export function usageLogIdentityKey(revision: UsageLogRevision | null): string {
+  if (!revision) return "missing";
+  return [revision.path, revision.dev, revision.ino, revision.birthtimeMs].join("\0");
 }
 
 export function currentUsageLogRevision(): UsageLogRevision | null {
@@ -598,8 +605,9 @@ async function readUsageEntriesFullCooperatively(
 
 /**
  * Management API reader: full parses yield between bounded batches and concurrent
- * callers share work only when they observed the same exact file revision. Parsed rows
- * are returned to the request and never retained in module state.
+ * callers share work when they observe the same ledger identity and byte window.
+ * Appends keep that identity; replacements (inode/birthtime change) start a new flight.
+ * Parsed rows are returned to the request and never retained in module state.
  */
 export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_USAGE_MAX_READ_BYTES): Promise<{
   entries: PersistedUsageEntry[];
@@ -612,16 +620,23 @@ export async function readUsageSnapshotForManagement(maxReadBytes = MANAGEMENT_U
   const path = usageLogPath();
   if (!existsSync(path)) return { entries: [], revision: null, truncatedPrefixBytes: 0, entriesTruncated: false, entriesDropped: 0 };
   const observed = currentUsageLogRevision();
-  const key = `${usageLogRevisionKey(observed)}\0${maxReadBytes}`;
+  const key = `${usageLogIdentityKey(observed)}\0${maxReadBytes}`;
+  const observedSize = observed?.size ?? 0;
   const existing = managementUsageReadInflight;
-  if (existing?.key === key && Date.now() - existing.startedAt <= MANAGEMENT_USAGE_FLIGHT_STALE_MS) {
+  const replacement = Boolean(existing && observedSize < existing.openedSize);
+  if (!replacement && existing?.key === key && Date.now() - existing.startedAt <= MANAGEMENT_USAGE_FLIGHT_STALE_MS) {
     const shared = await existing.promise;
     return { ...shared, entries: shared.entries.slice() };
   }
-  existing?.abort.abort(new Error("management usage read superseded"));
+  if (existing && (existing.key !== key || replacement || Date.now() - existing.startedAt > MANAGEMENT_USAGE_FLIGHT_STALE_MS)) {
+    existing.abort.abort(new Error("management usage read superseded"));
+  } else if (existing) {
+    const shared = await existing.promise;
+    return { ...shared, entries: shared.entries.slice() };
+  }
   const abort = new AbortController();
   const promise = readUsageEntriesFullCooperatively(path, abort.signal, maxReadBytes);
-  managementUsageReadInflight = { key, promise, startedAt: Date.now(), abort };
+  managementUsageReadInflight = { key, openedSize: observedSize, promise, startedAt: Date.now(), abort };
   try {
     const snapshot = await promise;
     return { ...snapshot, entries: snapshot.entries.slice() };

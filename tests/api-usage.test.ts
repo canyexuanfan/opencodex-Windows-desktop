@@ -317,9 +317,19 @@ describe("GET /api/usage", () => {
         usage: { inputTokens: 1, outputTokens: 1 },
         totalTokens: 2,
       })}\n`);
-      const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
-      expect(changed.summary.requests).toBe(first.summary.requests + 1);
-      expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      const stale = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+      expect(stale.summary.requests).toBe(first.summary.requests);
+      expect(usageReadCacheStatsForTests().fullReads).toBe(1);
+
+      const originalNow = Date.now();
+      const clock = spyOn(Date, "now").mockReturnValue(originalNow + 60_001);
+      try {
+        const changed = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
+        expect(changed.summary.requests).toBe(first.summary.requests + 1);
+        expect(usageReadCacheStatsForTests().fullReads).toBe(2);
+      } finally {
+        clock.mockRestore();
+      }
     } finally {
       await server.stop(true);
     }

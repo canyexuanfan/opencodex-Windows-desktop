@@ -50,6 +50,7 @@ import {
 import {
   currentUsageLogRevision,
   readUsageSnapshotForManagement,
+  usageLogIdentityKey,
   usageLogRevisionKey,
   type PersistedUsageEntry,
 } from "../../usage/log";
@@ -215,12 +216,16 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
     try {
       const cacheKey = `${range}:${surface}`;
       const effectiveReadLimit = config.managementUsageMaxReadBytes ?? 64 * 1024 * 1024;
-      const observedRevisionKey = `${usageLogRevisionKey(currentUsageLogRevision())}\0${effectiveReadLimit}`;
+      const observed = currentUsageLogRevision();
+      const identityKey = `${usageLogIdentityKey(observed)}\0${effectiveReadLimit}`;
+      const observedSize = observed?.size ?? 0;
       const cached = getUsageSummaryCacheEntry(cacheKey);
       if (cached
-        && cached.revisionKey === observedRevisionKey
+        && cached.identityKey === identityKey
+        && cached.maxReadBytes === effectiveReadLimit
         && cached.overlayVersion === userCostOverlayVersion()
-        && now < cached.expiresAt) {
+        && now < cached.freshUntil
+        && observedSize >= cached.lastSeenSize) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
       if (cached) discardUsageSummaryCacheEntry(cacheKey);
@@ -249,13 +254,36 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         // mixed-price entry under either version.
         return jsonResponse(summary);
       }
-      setUsageSummaryCacheEntry(cacheKey, {
-        revisionKey: `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`,
-        overlayVersion,
-        expiresAt: usageSummaryExpiresAt(snapshot.entries, range, surface, now),
-        revisionReadAt,
-        summary,
-      });
+      const freshUntil = now + 60_000;
+      const snapshotIdentity = `${usageLogIdentityKey(snapshot.revision)}\0${effectiveReadLimit}`;
+      const revisionKey = `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`;
+      const lastSeenSize = snapshot.revision?.size ?? 0;
+      const ranges: UsageRange[] = ["7d", "30d", "all"];
+      const surfaces: UsageSurface[] = ["all", "codex", "claude", "grok"];
+      for (const nextRange of ranges) {
+        for (const nextSurface of surfaces) {
+          const nextSummary = nextRange === range && nextSurface === surface ? summary : {
+            ...summarizeUsage(snapshot.entries, nextRange, now, nextSurface),
+            historyTruncated: summary.historyTruncated,
+            truncatedPrefixBytes: summary.truncatedPrefixBytes,
+            entriesTruncated: summary.entriesTruncated,
+            entriesDropped: summary.entriesDropped,
+            snapshotWindowStart: summary.snapshotWindowStart,
+            snapshotWindowEnd: summary.snapshotWindowEnd,
+          };
+          setUsageSummaryCacheEntry(`${nextRange}:${nextSurface}`, {
+            revisionKey,
+            identityKey: snapshotIdentity,
+            maxReadBytes: effectiveReadLimit,
+            overlayVersion,
+            expiresAt: usageSummaryExpiresAt(snapshot.entries, nextRange, nextSurface, now),
+            freshUntil,
+            lastSeenSize,
+            revisionReadAt,
+            summary: nextSummary,
+          });
+        }
+      }
       return jsonResponse(summary);
     } catch {
       return jsonResponse({

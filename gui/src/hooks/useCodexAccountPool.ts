@@ -112,8 +112,6 @@ export interface CodexAccountPoolController {
 }
 
 const REFRESH_INTERVAL_MS = 30_000;
-const USAGE_REFRESH_INTERVAL_MS = 60_000;
-
 interface CodexAccountUsageRow {
   accountLogLabel: string;
   totalTokens: number;
@@ -132,14 +130,14 @@ export function useCodexAccountPool(apiBase: string, enabled = true): CodexAccou
   const seed = lastGoodByBase.get(apiBase);
   const [accounts, setAccounts] = useState<CodexAccountEntry[]>(() => seed?.accounts ?? []);
   const usage30d = useKeyedClientResource<CodexAccountUsageSummary>(
-    `codex-account-usage-30d:${apiBase}`,
+    `usage-summary-30d:${apiBase}:codex`,
     [apiBase],
     async (signal) => {
       const response = await fetch(`${apiBase}/api/usage?range=30d&surface=codex`, { signal });
       if (!response.ok) throw new Error("account usage load failed");
       return response.json() as Promise<CodexAccountUsageSummary>;
     },
-    { enabled, pollMs: USAGE_REFRESH_INTERVAL_MS },
+    { enabled },
   );
   const [activeId, setActiveId] = useState<string | null>(() => seed?.activeId ?? null);
   const [loadState, setLoadState] = useState<CodexAccountLoadState>(() => (seed != null ? "ready" : "loading"));
