@@ -9,6 +9,7 @@
  */
 import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import type { ConfigFormat } from "../clients/config-export";
+import { MAX_JSON_NESTING } from "./serialize";
 import { atomicWriteFile } from "../config";
 import type { JournalEntry } from "./journal";
 import type { OwnershipRecord } from "./ownership";
@@ -33,11 +34,21 @@ export const PARSE_FAILED = Symbol("parse-failed");
  * original literal is gone, which is why this scans the RAW text — same
  * reasoning as the TOML inf/nan guard below — and only literals whose value
  * actually changed: `1e21` or 2^54 round-trip exactly and stay usable.
- * Scanning also avoids recursing over attacker-shaped nesting depth.
+ *
+ * The same pass counts container nesting against MAX_JSON_NESTING (shared
+ * with the serializer, see serialize.ts): JSON.parse handles hundreds of
+ * thousands of levels iteratively, but the downstream merge and
+ * JSON.stringify recurse — a 100KB file nested 50k deep sailed through parse
+ * and guard, then blew up serialization with a raw RangeError after a
+ * multi-GB allocation spike. A hand-written scan rather than a JSON.parse
+ * source-access reviver on purpose: the reviver walk recurses internally, so
+ * its depth limit would be an unpredictable stack size instead of this
+ * deterministic ceiling.
  */
-function jsonNumberLiteralsRoundTrip(text: string): boolean {
+function jsonTextSafeToRewrite(text: string): boolean {
   let inString = false;
   let escaped = false;
+  let depth = 0;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i]!;
     if (inString) {
@@ -47,6 +58,12 @@ function jsonNumberLiteralsRoundTrip(text: string): boolean {
       continue;
     }
     if (ch === "\"") { inString = true; continue; }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      if (depth > MAX_JSON_NESTING) return false;
+      continue;
+    }
+    if (ch === "}" || ch === "]") { depth -= 1; continue; }
     if (ch !== "-" && (ch < "0" || ch > "9")) continue;
     let end = i + 1;
     while (end < text.length && /[0-9+\-.eE]/.test(text[end]!)) end += 1;
@@ -80,7 +97,7 @@ export function parseConfig(text: string | null, format: ConfigFormat): unknown 
     switch (format) {
       case "json": {
         const parsed = JSON.parse(text);
-        return jsonNumberLiteralsRoundTrip(text) ? parsed : PARSE_FAILED;
+        return jsonTextSafeToRewrite(text) ? parsed : PARSE_FAILED;
       }
       case "json5": return Bun.JSON5.parse(text);
       case "yaml": return Bun.YAML.parse(text);
