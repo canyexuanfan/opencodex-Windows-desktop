@@ -4,6 +4,12 @@ This is a **queue**, not a schedule. Severity × blast radius × evidence × fix
 
 ## Top action queue for maintainers
 
+### Tier 0 — ship now (external China Moonshot breakage)
+
+| Order | Action | Why first |
+|---:|---|---|
+| 0 | **Zhaorui report: Moonshot China endpoint + CNY balance unit** | Built-in Moonshot forces `.ai`; China users must leave the preset. Balance amount is right but unit shows `$` instead of **¥/CNY** on `.cn`. Highest user-facing money-display + onboarding break. |
+
 ### Tier 1 — review/merge almost ready fixes first
 
 These convert open bugs into closed bugs with the least new design risk.

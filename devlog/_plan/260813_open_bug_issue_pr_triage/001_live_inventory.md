@@ -97,3 +97,7 @@ gh pr list --state open --limit 100 --json number,title,labels,createdAt,updated
 | C | Cicero `019ffa9f-8893-...` | remaining issues + all fix PRs (partial at synthesis; main re-verified PR JSON) |
 
 Main session re-checked key states with `gh issue view` / open PR rollup before ranking.
+
+## External report not yet filed as GH issue
+
+- **Zhaorui (email, 2026-08-13):** Moonshot preset stuck on `.ai`; China `.cn` needs custom provider. Balance amount correct, unit wrong (`$` vs Yuan/CNY).

@@ -783,9 +783,16 @@ async function fetchMoonshotQuota(provider: string, config: OcxProviderConfig): 
   if (available === undefined || available < 0) return null;
   // Moonshot exposes no per-window quota ceiling, only a balance — report it
   // as a balance-only window (percent 0) rather than a fabricated utilization.
+  // Currency is host-scoped: China platform (api.moonshot.cn) bills in CNY;
+  // the international platform (api.moonshot.ai) bills in USD. Do not force
+  // either side into the other unit — the number is correct, only the unit
+  // must match the host.
+  const isChinaHost = host.startsWith("https://api.moonshot.cn");
+  const money = (n: number) => isChinaHost ? `¥${n.toFixed(2)}` : `$${n.toFixed(2)}`;
+  const unit = isChinaHost ? "CNY" : "USD";
   const label = voucher !== undefined && cash !== undefined
-    ? `Balance ($${available.toFixed(2)} available, $${voucher.toFixed(2)} voucher)`
-    : `Balance ($${available.toFixed(2)} available)`;
+    ? `Balance (${money(available)} ${unit} available, ${money(voucher)} voucher)`
+    : `Balance (${money(available)} ${unit} available)`;
   return report(provider, "moonshot:balance", {
     customWindows: [{ label, percent: 0 }],
     updatedAt: Date.now(),

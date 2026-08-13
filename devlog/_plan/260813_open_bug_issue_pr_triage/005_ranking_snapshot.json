@@ -58,5 +58,9 @@
     "devlog/_plan/260813_open_bug_issue_pr_triage/004_simple_korean_explainer.md",
     ".tmp/bug-triage-20260813/issues-open.json",
     ".tmp/bug-triage-20260813/prs-open.json"
-  ]
+  ],
+  "tier0_external": [
+    "zhaorui-moonshot-cn-endpoint-cny-balance"
+  ],
+  "notes": "P0: Moonshot China baseUrl choice + CNY balance unit (not convert to USD)."
 }

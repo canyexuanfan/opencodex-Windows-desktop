@@ -92,3 +92,9 @@ Registry ladder missing `xhigh` for grok-4.6. Two ready PRs; #1593 is the direct
 - #904 remains needs-info after clean wire re-verification.
 - #1091 is intentionally restricted OAuth baseUrl (security design), not a bug.
 - PR review attention order from deep-read: #1576 → #1593 (vs #1591) → #1583 → #1574 → #1597 → #1412 careful → #1585 → #1579 after hygiene → #1581 after rebase.
+
+## F. External report added mid-cycle (Zhaorui, 2026-08-13)
+
+| Ref | Class | Pri | Plain symptom | Disposition |
+|---|---|---|---|---|
+| **Zhaorui email** (no GH issue yet) | BUG | **P0** | 1) Built-in Moonshot preset always uses `api.moonshot.ai` so China-platform keys cannot stay on the preset. 2) Balance number is correct but unit is shown as dollars; China platform balance is **CNY/Yuan**. | Fix in this worktree: add Moonshot `baseUrlChoices` (intl/china/custom) + host-scoped balance labels (`¥ … CNY` on `.cn`, `$ … USD` on `.ai`). Custom-provider workaround remains valid. |
