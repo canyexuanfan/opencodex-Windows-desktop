@@ -907,9 +907,14 @@ async function readUsageEntriesIncrementally(
     }
     let lengths = retained.entryLengths.concat(joinedLengths);
     let rowsBeginAtBytes = retained.rowsBeginAtBytes;
+    // Byte-window truncation advances ONLY here, so it stays exactly what a cold read of
+    // this window reports. The entry cap below is entry-count truncation and must not
+    // move it -- the two are independent signals in the API.
+    let windowTruncatedBytes = retained.truncatedPrefixBytes;
     let dropIndex = 0;
     while (dropIndex < lengths.length && rowsBeginAtBytes < windowStart) {
       rowsBeginAtBytes += lengths[dropIndex]!;
+      windowTruncatedBytes += lengths[dropIndex]!;
       dropIndex += 1;
     }
     // If every row is gone and a trailing unparseable remainder still sits before the
@@ -922,22 +927,17 @@ async function readUsageEntriesIncrementally(
       lengths = lengths.slice(dropIndex);
     }
     let entriesDropped = retained.entriesDropped + appendedDropped;
-    // Bytes removed by the entry cap, tracked separately so byte-window truncation and
-    // entry-count truncation stay independent in what the API reports.
-    let cappedBytesSoFar = retained.rowsBeginAtBytes - retained.truncatedPrefixBytes;
     if (entries.length > MANAGEMENT_USAGE_MAX_ENTRIES) {
-      const excess = entries.length - MANAGEMENT_USAGE_MAX_ENTRIES;
-      // These rows leave the result, so the retained rows now begin later. Not advancing
-      // here would break the accounting invariant below and make the self-check reject
-      // every subsequent read, permanently disabling the incremental path once the entry
-      // cap is reached.
-      for (let index = 0; index < excess; index++) {
-        rowsBeginAtBytes += lengths[index]!;
-        cappedBytesSoFar += lengths[index]!;
-      }
-      entriesDropped += excess;
-      entries = entries.slice(excess);
-      lengths = lengths.slice(excess);
+      // A cold read applies the entry cap to the whole window and reports byte
+      // truncation for the window boundary alone. An incremental read arrives at the cap
+      // by a different route and cannot reconstruct that ordering from retained state, so
+      // continuing here would report a truncatedPrefixBytes that disagrees with a fresh
+      // read of the same window. Re-anchor instead.
+      //
+      // This is reachable in production, not a theoretical branch: rows average ~118
+      // bytes on a real ledger, so 500,000 of them occupy ~56 MiB and fit inside the
+      // 64 MiB window. Both truncations can therefore apply at once.
+      return null;
     }
     // The recorded lengths plus the trailing remainder must account for every byte from
     // the retained rows' start to EOF; if they do not, the lengths and the file have
@@ -951,14 +951,15 @@ async function readUsageEntriesIncrementally(
     // on, which is where the rows begin MINUS whatever the entry cap removed -- the cap
     // is not window truncation. When nothing was skipped by the window at all, a cold
     // read reports 0.
-    const truncatedPrefixBytes = windowStart === 0
-      ? 0
-      : Math.max(0, rowsBeginAtBytes - cappedBytesSoFar);
+    const truncatedPrefixBytes = windowTruncatedBytes;
     return {
       entries,
       revision,
       truncatedPrefixBytes,
-      entriesTruncated: truncatedPrefixBytes > 0 || entriesDropped > 0,
+      // ENTRY-count truncation only. Byte-window truncation is reported by
+      // truncatedPrefixBytes, and the route ORs the two itself; folding bytes in here
+      // would make a byte-truncated read claim rows were dropped when none were.
+      entriesTruncated: entriesDropped > 0,
       entriesDropped,
       // The digest must describe exactly the region the returned rows came from, which
       // is the post-trim window, not the pre-trim one.

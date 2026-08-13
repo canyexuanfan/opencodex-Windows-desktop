@@ -250,3 +250,25 @@ counted; `JSON.parse` tolerates the trailing `\r`. Before: 2 full reads / 0 tail
 
 All three regression tests were driven red against the defective implementation. Cost
 remains flat: 0.07x at 245 MB, 1 GB and 2 GB.
+
+### Equivalence across all four truncation states
+
+Checking `truncatedPrefixBytes` against a cold read in every combination — none, byte
+window, entry cap, both — found two more problems that single-scenario probes had missed:
+
+`entriesTruncated` was being ORed with byte truncation, so a byte-truncated read claimed
+rows had been dropped when none had. It means ENTRY-count truncation only; the route ORs
+the two signals itself.
+
+When BOTH truncations apply, a cold read caps across the whole window and reports the
+window boundary alone, while an incremental read reaches the cap by a different route and
+cannot reconstruct that ordering from retained state. It now re-anchors there. This is not
+a theoretical branch: real rows average **118 bytes**, so 500,000 of them occupy ~56 MiB
+and fit inside the 64 MiB window, which means both truncations genuinely co-occur.
+
+```
+no-truncation         MATCH  trunc 0 vs 0          dropped 0 vs 0
+window-truncation     MATCH  trunc 37830 vs 37830  dropped 0 vs 0
+entrycap-truncation   MATCH  trunc 0 vs 0          dropped 40 vs 40
+both-truncations      MATCH  trunc 74496 vs 74496  dropped 9 vs 9
+```
