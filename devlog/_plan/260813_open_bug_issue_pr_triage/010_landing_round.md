@@ -88,7 +88,8 @@ the merge commit and the verifying run.
 
 Each run is a fresh execution on `lidge`, not a remembered result.
 
-## Remaining open bug-labeled issues: 21
+## Remaining open bug-labeled issues: 20
 
-Down from 23 at the morning cutoff, with #1599 now fixed-pending-verification via #1605.
+Down from 23 at the morning cutoff. #1605 closed #1599 on merge, and #1571/#1563 were
+closed by hand; the count also moves as new reports arrive.
 The child-level explanation of what is left is in `011_remaining_simple_korean.md`.
