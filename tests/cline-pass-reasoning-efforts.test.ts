@@ -105,4 +105,27 @@ describe("ClinePass reasoning effort capabilities", () => {
       wireValue: "max",
     });
   });
+
+  test("canonical ClinePass repairs the legacy persisted low-only preset", () => {
+    const staleConfig: OcxConfig = {
+      ...config,
+      providers: {
+        "cline-pass": {
+          ...config.providers!["cline-pass"],
+          reasoningEfforts: ["low"],
+        },
+      },
+    };
+    const route = routeModel(staleConfig, "cline-pass/cline-pass/deepseek-v4-flash");
+    const request = createOpenAIChatAdapter(route.provider).buildRequest(parsed(route.modelId, "max"));
+    const body = JSON.parse(request.body) as Record<string, unknown>;
+
+    expect(route.provider.reasoningEfforts).toEqual([...CLINE_PASS_REASONING_EFFORTS]);
+    expect(body.reasoning).toEqual({ enabled: true, effort: "max" });
+    expect(request.reasoningLog).toEqual({
+      effectiveEffort: "max",
+      wireField: "reasoning.effort",
+      wireValue: "max",
+    });
+  });
 });
