@@ -267,6 +267,10 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
   const modelDefaultReasoningEfforts = mergeRecordFill(registryEntry.modelDefaultReasoningEfforts, provider.modelDefaultReasoningEfforts);
+  // Key-login used to persist this exact low-only ClinePass capability seed. Once the gateway's
+  // wider input ladder was live-verified, leaving that generated row untouched would keep old
+  // installs clamped forever. This branch is reached only after canonical transport matching, so
+  // same-named custom destinations and every other explicit ladder still retain user precedence.
   const repairLegacyClinePassReasoningEfforts = providerName === "cline-pass"
     && provider.reasoningWireFormat === "gateway-object"
     && provider.reasoningEfforts?.length === 1
