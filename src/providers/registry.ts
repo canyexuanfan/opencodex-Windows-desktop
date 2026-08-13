@@ -976,6 +976,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // grok-4.5 reasoning is always-on with low/medium/high (no off tier, no xhigh).
     // grok-4.6 adds xhigh per docs.x.ai/docs/guides/reasoning (default remains high).
     modelReasoningEfforts: { "grok-4.6": ["low", "medium", "high", "xhigh"], "grok-4.5": ["low", "medium", "high"] },
+    modelDefaultReasoningEfforts: { "grok-4.6": "high" },
+    // Codex's synthetic max rung resolves to xAI's real top rung. The mapped xhigh value also
+    // lets a non-empty pre-4.6 API-key ladder self-heal without changing grok-4.5.
+    modelReasoningEffortMap: { "grok-4.6": { max: "xhigh" } },
     modelContextWindows: {
       "grok-4.6": 500_000,
       "grok-4.5": 500_000,
