@@ -28,6 +28,7 @@ npm install -g --allow-scripts=bun @bitkyc08/opencodex
 # Orijinal kurulum sudo ile yapıldıysa sudo kullanmaya devam edin:
 sudo npm install -g --allow-scripts=bun @bitkyc08/opencodex
 ```
+
 :::
 
 Her iki komut takma adının da `PATH` üzerinde olduğunu doğrulayın:
