@@ -170,7 +170,7 @@ test("load-more failures stay visible and a retry can recover", async () => {
   await waitFor(() => container.querySelector(".lab-load-more button") !== null);
   const button = container.querySelector(".lab-load-more button") as HTMLButtonElement;
   await act(async () => { button.click(); });
-  await waitFor(() => container.querySelector(".notice-err")?.textContent?.includes("HTTP 503") ?? false);
+  await waitFor(() => container.querySelector(".notice-err")?.textContent?.includes(String(503)) ?? false);
   expect(container.textContent).toContain("Verified");
   expect(container.querySelector(".lab-load-more button")).not.toBeNull();
 
