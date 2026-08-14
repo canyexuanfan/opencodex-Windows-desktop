@@ -98,7 +98,7 @@ test("public barrel does not expose private test fault setters", () => {
   expect("setPublicEvidencePurgeFaultForTests" in publicApi).toBe(false);
 });
 
-test("public origin quota stays bounded when unreclaimable unexpected entries fill it", () => {
+test("foreign origin entries do not consume marker quota but remain explicitly unsafe to list", () => {
   const home = configDir("ocx-cl10-origin-bound-");
   ensureLabDirs(home);
   const dir = labPublicOriginDir(home);
@@ -106,11 +106,13 @@ test("public origin quota stays bounded when unreclaimable unexpected entries fi
     writeFileSync(join(dir, `occupied-${String(index).padStart(4, "0")}`), "x", { mode: 0o600 });
   }
 
-  expect(() => recordLocalPublicOrigin({
+  const current = {
     publisherKeyId: hex("publisher-bound"),
     bundleId: hex("bundle-bound"),
-  }, home)).toThrow(/origin marker bound/i);
-  expect(readdirSync(dir)).toHaveLength(1024);
+  };
+  expect(() => recordLocalPublicOrigin(current, home)).not.toThrow();
+  expect(readdirSync(dir)).toHaveLength(1025);
+  expect(() => publicApi.listLocalPublicOrigins(home)).toThrow(/unexpected public origin marker entry/i);
 });
 
 test("public origin pressure reclaims markers with no community copy", () => {
@@ -134,7 +136,7 @@ test("public origin pressure reclaims markers with no community copy", () => {
   expect(names[0]).toBe(`origin-${current.publisherKeyId}-${current.bundleId}.json`);
 });
 
-test("corrupt origin provenance cannot retain mandatory local export bytes", () => {
+test("corrupt origin provenance cannot retain mandatory local export bytes and reports incomplete classification", () => {
   const home = configDir("ocx-cl10-origin-corrupt-");
   const bundle = signedBundle(home);
   writePublicEvidenceBundle(bundle, home);
@@ -142,7 +144,14 @@ test("corrupt origin provenance cannot retain mandatory local export bytes", () 
   const originEntry = readdirSync(labPublicOriginDir(home))[0]!;
   writeFileSync(join(labPublicOriginDir(home), originEntry), "{", { mode: 0o600 });
 
-  expect(purgeLocalPublicEvidenceCopies(home).deletedExports).toBe(1);
+  let failure: unknown;
+  try {
+    purgeLocalPublicEvidenceCopies(home);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PublicEvidenceValidationError);
+  expect((failure as PublicEvidenceValidationError).code).toBe("public_origin_incomplete");
   expect(readdirSync(ensureLabDirs(home).exportDir)).toEqual([]);
 });
 
