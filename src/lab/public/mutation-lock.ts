@@ -17,6 +17,7 @@ const PUBLIC_EVIDENCE_MUTATION_LOCK_NAME = ".mutation-lock";
 const PUBLIC_EVIDENCE_MUTATION_LOCK_OWNER = "owner.json";
 const PUBLIC_EVIDENCE_MUTATION_LOCK_RECLAIM = ".reclaim.json";
 const PUBLIC_EVIDENCE_MUTATION_LOCK_INCOMPLETE_STALE_MS = 24 * 60 * 60 * 1000;
+const PUBLIC_EVIDENCE_MUTATION_LOCK_ABSOLUTE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const DETACHED_MUTATION_LOCK_RE = /^\.mutation-lock-(?:stale|release)-\d+-[0-9a-f-]{36}$/;
 const MUTATION_LOCK_META_FILE_OPTIONS = {
   maxBytes: 1024,
@@ -63,6 +64,10 @@ function pidDefinitelyDead(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
+}
+
+function exceedsAbsoluteLockAge(createdAt: number, nowMs: number): boolean {
+  return nowMs - createdAt > PUBLIC_EVIDENCE_MUTATION_LOCK_ABSOLUTE_STALE_MS;
 }
 
 function readLockMetadata<T extends MutationLockOwner | MutationLockReclaim>(
@@ -127,9 +132,9 @@ function mutationLockIsReclaimable(lockPath: string, nowMs: number): boolean {
   const stat = assertMutationLockDirectory(lockPath);
   const owner = readMutationLockOwner(lockPath);
   if (owner) {
-    // Never evict a recorded live owner based on age alone. Long operations or a
-    // suspended process must retain mutual exclusion until that process exits.
-    return pidDefinitelyDead(owner.pid);
+    // A live PID is strong evidence only while the recorded ownership generation is
+    // reasonably recent. The absolute ceiling recovers from PID reuse after a crash.
+    return pidDefinitelyDead(owner.pid) || exceedsAbsoluteLockAge(owner.createdAt, nowMs);
   }
   // The only ownerless state is the tiny mkdir-to-owner publication window. Use
   // a deliberately long fallback so a crashed acquisition can eventually heal
@@ -201,7 +206,9 @@ function publishMutationLockOwner(
 function reclaimClaimIsRecoverable(lockPath: string, nowMs: number): boolean {
   const claimPath = mutationLockReclaimPath(lockPath);
   const claim = readMutationLockReclaim(lockPath);
-  if (claim) return pidDefinitelyDead(claim.pid);
+  if (claim) {
+    return pidDefinitelyDead(claim.pid) || exceedsAbsoluteLockAge(claim.createdAt, nowMs);
+  }
   try {
     const stat = lstatSync(claimPath);
     return nowMs - stat.mtimeMs > PUBLIC_EVIDENCE_MUTATION_LOCK_INCOMPLETE_STALE_MS;
@@ -276,7 +283,11 @@ function tryReclaimMutationLock(lockPath: string, nowMs: number): boolean {
     if (!reclaimClaimStillOwned(lockPath, claim)) return false;
     if (!sameDirectoryIdentity(currentDirectoryIdentity(lockPath), staleDirectory)) return false;
     const currentOwner = readMutationLockOwner(lockPath);
-    if (currentOwner && !pidDefinitelyDead(currentOwner.pid)) return false;
+    if (
+      currentOwner
+      && !pidDefinitelyDead(currentOwner.pid)
+      && !exceedsAbsoluteLockAge(currentOwner.createdAt, nowMs)
+    ) return false;
     if (!reclaimClaimStillOwned(lockPath, claim)) return false;
 
     const quarantinePath = join(
