@@ -151,28 +151,35 @@ function pinnedHttpRequest(
       let received = 0;
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          response.setTimeout(inactivityTimeoutMs, () => {
-            const error = new PinnedHttpError("inactivity_timeout", `${context} stalled`);
-            fail(error);
+          let bodySettled = false;
+          const failBody = (error: Error) => {
+            if (bodySettled) return;
+            bodySettled = true;
             try { controller.error(error); } catch { /* closed */ }
+            try { response.destroy(); } catch { /* ignore */ }
+            try { req?.destroy(); } catch { /* ignore */ }
+          };
+
+          response.setTimeout(inactivityTimeoutMs, () => {
+            failBody(new PinnedHttpError("inactivity_timeout", `${context} stalled`));
           });
           response.on("data", (chunk: Buffer | string) => {
+            if (bodySettled) return;
             const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
             received += buffer.byteLength;
             if (maxBytes !== undefined && received > maxBytes) {
-              const error = new PinnedHttpError("output_byte_limit", `${context} exceeds ${maxBytes} byte cap`);
-              fail(error);
-              try { controller.error(error); } catch { /* closed */ }
+              failBody(new PinnedHttpError("output_byte_limit", `${context} exceeds ${maxBytes} byte cap`));
               return;
             }
             try { controller.enqueue(buffer); } catch { /* closed */ }
           });
           response.on("end", () => {
+            if (bodySettled) return;
+            bodySettled = true;
             try { controller.close(); } catch { /* closed */ }
           });
           response.on("error", (error: Error) => {
-            fail(error);
-            try { controller.error(error); } catch { /* closed */ }
+            failBody(error);
           });
         },
         cancel() {
