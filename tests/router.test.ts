@@ -563,4 +563,27 @@ describe("routeModel backfills google wire mode from the registry", () => {
     };
     expect(routeModel(config, "gemini-3-pro").provider.googleMode).toBe("vertex");
   });
+
+  test("routes bare claude-* models to active Anthropic adapter providers instead of incompatible defaultProvider (#1697)", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "deepseek",
+      providers: {
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+        },
+        RelayA: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.relay.example/v1",
+        },
+      },
+    };
+
+    const routed = routeModel(config, "claude-opus-5");
+    expect(routed.providerName).toBe("RelayA");
+    expect(routed.modelId).toBe("claude-opus-5");
+    expect(routed.routeKind).toBe("explicit-provider");
+    expect(routed.routeReason).toBe("model-pattern");
+  });
 });

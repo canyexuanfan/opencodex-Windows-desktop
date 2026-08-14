@@ -715,11 +715,20 @@ function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResu
   for (const { providerNames, prefixes } of MODEL_PROVIDER_PATTERNS) {
     if (prefixes.some(prefix => modelId.startsWith(prefix))) {
       const matchingProvider = Object.entries(config.providers).find(
-        ([name]) => providerNames.some(providerName => name === providerName || name.startsWith(`${providerName}-`))
+        ([name, prov]) => prov.disabled !== true && providerNames.some(providerName => name === providerName || name.startsWith(`${providerName}-`))
       );
       if (matchingProvider) {
         const [provName, prov] = matchingProvider;
         return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
+      }
+      if (providerNames.includes("anthropic")) {
+        const anthropicAdapterProvider = Object.entries(config.providers).find(
+          ([_, prov]) => prov.disabled !== true && (prov.adapter === "anthropic" || prov.adapter === "anthropic-messages")
+        );
+        if (anthropicAdapterProvider) {
+          const [provName, prov] = anthropicAdapterProvider;
+          return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
+        }
       }
     }
   }

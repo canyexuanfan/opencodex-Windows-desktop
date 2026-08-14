@@ -285,6 +285,42 @@ describe("claude inbound translation", () => {
     expect(resolveInboundModel("anything", undefined)).toBe("anything");
   });
 
+  test("Claude Code Auto Mode classifier provider affinity and configuration (#1697)", () => {
+    // 1. Same-provider affinity from cc.model (e.g. RelayA/claude-fable-5 -> RelayA/claude-opus-5)
+    const ccWithAffinity = { model: "RelayA/claude-fable-5" };
+    expect(resolveInboundModel("claude-opus-5", ccWithAffinity)).toBe("RelayA/claude-opus-5");
+    expect(resolveInboundModel("claude-opus-5-20250514", ccWithAffinity)).toBe("RelayA/claude-opus-5-20250514");
+
+    // 2. Same-provider affinity from aliased cc.model (e.g. claude-ocx-RelayA--claude-fable-5)
+    const ccWithAliasedModel = { model: "claude-ocx-RelayA--claude-fable-5" };
+    expect(resolveInboundModel("claude-opus-5", ccWithAliasedModel)).toBe("RelayA/claude-opus-5");
+
+    // 3. Explicit classifierModel wins over same-provider affinity
+    const ccWithExplicitClassifier = {
+      model: "RelayA/claude-fable-5",
+      classifierModel: "RelayB/claude-opus-5",
+    };
+    expect(resolveInboundModel("claude-opus-5", ccWithExplicitClassifier)).toBe("RelayB/claude-opus-5");
+
+    // 4. Explicit modelMap wins over both classifierModel and same-provider affinity
+    const ccWithModelMap = {
+      model: "RelayA/claude-fable-5",
+      classifierModel: "RelayB/claude-opus-5",
+      modelMap: { "claude-opus-5": "Custom/my-opus-5" },
+    };
+    expect(resolveInboundModel("claude-opus-5", ccWithModelMap)).toBe("Custom/my-opus-5");
+
+    // 5. classifierFallbacks resolution when no main model provider is present
+    const ccWithFallbacks = {
+      classifierFallbacks: ["RelayC/claude-opus-5", "RelayD/claude-opus-5"],
+    };
+    expect(resolveInboundModel("claude-opus-5", ccWithFallbacks)).toBe("RelayC/claude-opus-5");
+
+    // 6. Native pseudo-provider in cc.model does not create false affinity
+    const ccNative = { model: "native/claude-opus-5" };
+    expect(resolveInboundModel("claude-opus-5", ccNative)).toBe("claude-opus-5");
+  });
+
   test("error cases: no model, empty messages, bad role, bad tool_result", () => {
     expect(() => anthropicToResponsesBody({ max_tokens: 1, messages: [{ role: "user", content: "x" }] })).toThrow(AnthropicRequestError);
     expect(() => anthropicToResponsesBody({ model: "m", max_tokens: 1, messages: [] })).toThrow(AnthropicRequestError);

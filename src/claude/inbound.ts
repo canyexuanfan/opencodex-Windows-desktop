@@ -25,7 +25,23 @@ function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-/** Alias first, then modelMap: exact id, then date-suffix-stripped (`-\d{8}$`), else passthrough. */
+function isClaudeClassifierModel(model: string): boolean {
+  const stripped = model.replace(/-\d{8}$/, "");
+  return stripped === "claude-opus-5" || stripped === "claude-opus-4" || /^claude-opus-[45]/.test(stripped);
+}
+
+function getClassifierAffinityProvider(mainModel: string | undefined): string | null {
+  if (!mainModel) return null;
+  const resolvedMain = resolveAlias(mainModel) ?? mainModel;
+  const sep = resolvedMain.indexOf("/");
+  if (sep > 0) {
+    const provider = resolvedMain.slice(0, sep);
+    if (provider !== "native" && provider !== "policy") return provider;
+  }
+  return null;
+}
+
+/** Alias first, then modelMap: exact id, then date-suffix-stripped (`-\d{8}$`), then classifier affinity/config, else passthrough. */
 export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): string {
   // Defensive: Desktop/CLI strip the [1m] context-variant marker client-side, but a
   // leaking build must not break alias decode (devlog 138 — the 1M signal is the
@@ -47,6 +63,25 @@ export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): st
   const stripped = model.replace(/-\d{8}$/, "");
   const dateless = map[stripped];
   if (typeof dateless === "string" && dateless.length > 0) return dateless;
+
+  // Claude Code Auto Mode classifier routing (issue #1697):
+  // When Claude Code sends internal bare safety checks (e.g. claude-opus-5),
+  // preserve session provider affinity or configured classifierModel so requests
+  // do not fall through to an incompatible defaultProvider.
+  if (isClaudeClassifierModel(model)) {
+    if (typeof cc?.classifierModel === "string" && cc.classifierModel.trim().length > 0) {
+      return cc.classifierModel.trim();
+    }
+    const affinityProvider = getClassifierAffinityProvider(cc?.model);
+    if (affinityProvider) {
+      return `${affinityProvider}/${model}`;
+    }
+    if (Array.isArray(cc?.classifierFallbacks) && cc.classifierFallbacks.length > 0) {
+      const firstValid = cc.classifierFallbacks.find(fb => typeof fb === "string" && fb.trim().length > 0);
+      if (firstValid) return firstValid.trim();
+    }
+  }
+
   return model;
 }
 

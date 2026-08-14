@@ -458,6 +458,17 @@ export interface OcxClaudeCodeConfig {
   /** Inbound model id remaps: exact id first, then date-stripped (`-\d{8}$`). */
   modelMap?: Record<string, string>;
   /**
+   * Explicit classifier model for Claude Code Auto Mode safety checks (e.g. "RelayA/claude-opus-5").
+   * When unset, bare classifier requests check modelMap, then same-provider affinity from
+   * `claudeCode.model`, then compatible Anthropic-adapter providers, and finally fallbacks.
+   */
+  classifierModel?: string;
+  /**
+   * Ordered fallback candidates for Claude Code Auto Mode classifier routing when the primary
+   * classifier route is not available.
+   */
+  classifierFallbacks?: string[];
+  /**
   * Inject ANTHROPIC_BASE_URL etc. into the macOS user domain via `launchctl setenv`
   * so plain `claude` commands route through the proxy without `ocx claude`. Reverted
    * on stop/shutdown. Default: false (opt-in). macOS only.
