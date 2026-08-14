@@ -1361,6 +1361,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       }
 
       const forward = provider.authMode === "forward";
+      let convertedRoutedCustomToolNames: Set<string> | undefined;
       const unexpandedMiss = !!parsed.previousResponseId && parsed._previousResponseInputExpanded !== true;
       let outBody = stripPreviousResponseId(
         parsed._rawBody,
@@ -1408,7 +1409,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = promoteClientLoadedTools(outBody);
       }
       if (provider.authMode !== "forward") {
-        outBody = rewriteRoutedCustomToolsForUpstream(outBody).body;
+        const rewritten = rewriteRoutedCustomToolsForUpstream(outBody);
+        outBody = rewritten.body;
+        convertedRoutedCustomToolNames = rewritten.names;
       }
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody), { preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true })))))));
       const body = JSON.stringify(stripDisabledReasoningSummaries(
@@ -1426,6 +1429,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         headers,
         body,
         releaseBodyObservation,
+        ...(convertedRoutedCustomToolNames ? { convertedRoutedCustomToolNames } : {}),
       };
     },
 
