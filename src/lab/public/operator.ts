@@ -56,7 +56,7 @@ export function projectPublicEvidence(input: ProjectPublicEvidenceInput): {
       recordInput.observation.completedAt,
     );
   });
-  records.sort((a, b) => a.recordId.localeCompare(b.recordId));
+  records.sort((a, b) => a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0);
   return {
     bundle: {
       schemaVersion: PUBLIC_EVIDENCE_BUNDLE_SCHEMA_VERSION,
@@ -96,7 +96,7 @@ export interface LocalPublicExportV1 {
 
 export type PublicVerificationSummaryV1 =
   | { status: "cryptographically_valid"; bundleId: string; publisherKeyId: string; locallyVerified: false }
-  | { status: "schema_rejected" | "digest_invalid" | "signature_invalid"; locallyVerified: false; detail?: string };
+  | { status: "schema_rejected" | "digest_invalid" | "signature_invalid"; locallyVerified: false };
 
 function assertOperatorEventIds(eventIds: readonly string[]): Array<{ eventId: string; selectionIndex: number }> {
   if (eventIds.length === 0 || eventIds.length > MAX_OPERATOR_EVENTS) {
@@ -147,30 +147,54 @@ function canonicalVerdictsForObservations(
   observations: readonly ObservationEvent[],
   configDir?: string,
 ): Map<string, ProjectPublicEvidenceRecordInput["verdict"]> {
-  const pending = new Map(observations.map((observation) => [observation.eventId, observation] as const));
   const verdictByEventId = new Map<string, ProjectPublicEvidenceRecordInput["verdict"]>();
-  let cursor: string | undefined;
+  const groups = new Map<string, {
+    subjectId: string;
+    evidenceLayer: ObservationEvent["evidenceLayer"];
+    suiteId: string;
+    observations: ObservationEvent[];
+  }>();
 
-  while (pending.size > 0) {
-    const page = queryLabVerdicts({}, cursor, 200, configDir);
-    for (const row of page.items) {
-      for (const eventId of row.contributingEventIds) {
-        const observation = pending.get(eventId);
-        if (!observation) continue;
-        if (
-          row.subjectId !== observation.subjectId
-          || row.evidenceLayer !== observation.evidenceLayer
-          || row.suiteId !== observation.suiteId
-          || row.suiteVersion !== observation.suiteVersion
-        ) {
-          continue;
+  for (const observation of observations) {
+    const key = `${observation.subjectId}\0${observation.evidenceLayer}\0${observation.suiteId}`;
+    const existing = groups.get(key);
+    if (existing) existing.observations.push(observation);
+    else groups.set(key, {
+      subjectId: observation.subjectId,
+      evidenceLayer: observation.evidenceLayer,
+      suiteId: observation.suiteId,
+      observations: [observation],
+    });
+  }
+
+  for (const group of groups.values()) {
+    const pending = new Map(group.observations.map((observation) => [observation.eventId, observation] as const));
+    let cursor: string | undefined;
+    while (pending.size > 0) {
+      const page = queryLabVerdicts({
+        subjectId: group.subjectId,
+        layer: group.evidenceLayer,
+        suiteId: group.suiteId,
+      }, cursor, 200, configDir);
+      for (const row of page.items) {
+        for (const eventId of row.contributingEventIds) {
+          const observation = pending.get(eventId);
+          if (!observation) continue;
+          if (
+            row.subjectId !== observation.subjectId
+            || row.evidenceLayer !== observation.evidenceLayer
+            || row.suiteId !== observation.suiteId
+            || row.suiteVersion !== observation.suiteVersion
+          ) {
+            continue;
+          }
+          verdictByEventId.set(eventId, row.verdict);
+          pending.delete(eventId);
         }
-        verdictByEventId.set(eventId, row.verdict);
-        pending.delete(eventId);
       }
+      if (!page.hasMore || !page.nextCursor) break;
+      cursor = page.nextCursor;
     }
-    if (!page.hasMore || !page.nextCursor) break;
-    cursor = page.nextCursor;
   }
 
   return verdictByEventId;
