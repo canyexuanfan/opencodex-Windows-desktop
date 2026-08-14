@@ -6,12 +6,18 @@ import {
   appendLabEvent,
   appendLabEventIfAbsent,
   assignEventId,
+  createArtifactStore,
   LAB_EVENT_SCHEMA_VERSION,
   LAB_PRODUCER,
   LAB_PRODUCER_VERSION,
+  persistConformanceResult,
   purgeSensitiveEvidence,
   replayLabLedger,
 } from "../src/lab";
+import type { ArtifactStore } from "../src/lab/artifacts/store";
+import { discoverScenarios, loadCaseAuthority } from "../src/lab/conformance/manifest";
+import { resolveProtocolExecutionContext } from "../src/lab/conformance/executor";
+import type { CaseRecord } from "../src/lab/conformance/types";
 import type { InvalidationEvent } from "../src/lab/events/types";
 
 const HOMES: string[] = [];
@@ -47,6 +53,26 @@ function invalidation(seed: string, recordedAt = 1_700_000_000_000): Invalidatio
     targetEventIds: [hash(`target:${seed}`)],
     reason: "manual_correction" as const,
   }) as InvalidationEvent;
+}
+
+function syntheticPassResult(caseRecord: CaseRecord) {
+  return {
+    scenarioId: caseRecord.id,
+    suite: caseRecord.suite,
+    passed: true,
+    classification: "inconclusive" as const,
+    assertionResults: caseRecord.assertions.map((assertion) => ({
+      id: assertion.id,
+      operator: assertion.operator,
+      required: assertion.required,
+      passed: true,
+      observedSummary: "ok",
+    })),
+    diagnostics: [],
+    executionContext: resolveProtocolExecutionContext(caseRecord),
+    startedAt: 999,
+    completedAt: 1000,
+  };
 }
 
 async function waitForPath(path: string): Promise<void> {
@@ -150,6 +176,35 @@ test("appendLabEventIfAbsent immediately recovers a lock owned by an exited proc
   expect(appendLabEventIfAbsent(ledgerPath, event)).toBe(true);
   expect(existsSync(lockPath)).toBe(false);
   expect(replayLabLedger(ledgerPath).events.some((row) => row.eventId === event.eventId)).toBe(true);
+});
+
+test("canonical persistence publishes artifacts while holding the ledger mutation lock", () => {
+  const home = tempHome();
+  const ledgerPath = join(home, "lab", "compatibility.jsonl");
+  const authority = loadCaseAuthority();
+  const caseRecord = discoverScenarios(authority, ["responses-core"]).find(
+    (candidate) => candidate.id === "responses-core.protocol.request-shape",
+  )!;
+  const realStore = createArtifactStore(join(home, "lab", "artifacts"));
+  const guardedStore: ArtifactStore = {
+    ...realStore,
+    put(input) {
+      expect(existsSync(`${ledgerPath}.lock`)).toBe(true);
+      return realStore.put(input);
+    },
+  };
+
+  try {
+    const { event } = persistConformanceResult(
+      syntheticPassResult(caseRecord),
+      caseRecord,
+      authority,
+      { configDir: home, recordedAt: 1000, artifactStore: guardedStore },
+    );
+    expect(replayLabLedger(ledgerPath).events.some((row) => row.eventId === event.eventId)).toBe(true);
+  } finally {
+    realStore.close();
+  }
 });
 
 test("sensitive purge waits for the ledger mutation lock before rewriting", async () => {
