@@ -87,14 +87,6 @@ import {
 } from "./usage-summary-cache";
 import { cacheApiKeyUsageFromSnapshot } from "./api-key-usage";
 
-const USAGE_DAY_MS = 86_400_000;
-function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
-  if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
-  if (surface === "grok") return entry.surface === "grok";
-  if (surface === "codex") return entry.surface === undefined;
-  return true;
-}
-
 function nextLocalMidnight(now: number): number {
   const next = new Date(now);
   next.setHours(24, 0, 0, 0);
