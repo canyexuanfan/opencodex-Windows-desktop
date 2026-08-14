@@ -539,6 +539,8 @@ export const de: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "z. B. Qwen 4 Max Preview",
   "models.customFieldContext": "Kontextfenster",
   "models.customFieldModalities": "Eingabemodalitäten",
+  "models.customFieldReasoning": "Unterstützte Reasoning Stufen",
+  "models.customFieldReasoningOverride": "Reasoning-Stufen überschreiben",
   "models.tipProvider": "Anbieter",
   "models.tipContext": "Kontext",
   "models.tipModalities": "Modalitäten",

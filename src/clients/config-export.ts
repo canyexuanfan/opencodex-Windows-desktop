@@ -664,6 +664,8 @@ export interface PiModelEntry {
   input: string[];
   contextWindow?: number;
   maxTokens?: number;
+  /** Advertised when the catalog row carries a non-empty effort ladder. */
+  reasoning?: true;
 }
 
 export interface PiProviderBlock {
@@ -836,16 +838,21 @@ export interface DshGeneratedConfig {
  * Pi's `~/.pi/agent/models.json` shape. `models` is an ARRAY (identity lives in `id`),
  * unlike OpenCode's keyed object.
  *
- * Two fields are deliberately absent. `cost` requires all four price fields and we have
- * no price data at all, so emitting zeros would assert every routed model is free.
- * `reasoning` is a boolean in Pi while our catalog carries an effort list — mapping one
- * to the other would be a guess.
+ * Two fields were deliberately absent once. `cost` still is: it requires all four price
+ * fields and we have no price data at all, so emitting zeros would assert every routed
+ * model is free. `reasoning` used to be omitted because Pi's boolean and the catalog's
+ * effort ladder did not obviously map — but a NON-EMPTY ladder is the catalog's own
+ * statement that the model accepts reasoning parameters (adapters honor `reasoning_effort`),
+ * and an empty or absent ladder is the statement that it does not. Emitting `reasoning:
+ * true` exactly for rows with a ladder is therefore not a guess; it is what makes Pi's
+ * effort control appear for routed models at all. Users who need Pi-specific
+ * effort values (e.g. `xhigh`/`max` clamping) can still hand-tune `thinkingLevelMap`.
  *
  * Pi's input enum IS verified: its documented model configuration accepts only
  * `text` and `image`, and a validation failure yields an EMPTY model config
  * rather than dropping the offending entry — one bad value costs every routed
- * model. The rest of this contract (omitting `cost` and `reasoning`) is still
- * ours rather than a claim about Pi's acceptance.
+ * model. The rest of this contract (omitting `cost`) is still ours rather than
+ * a claim about Pi's acceptance.
  */
 function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
   const models: PiModelEntry[] = [];
@@ -862,6 +869,9 @@ function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
       name: exportModelLabel(model),
       input,
     };
+    if (Array.isArray(model.reasoningEfforts) && model.reasoningEfforts.length > 0) {
+      entry.reasoning = true;
+    }
     const context = authoritativeContextWindow(model.contextWindow);
     if (context !== undefined) {
       entry.contextWindow = context;

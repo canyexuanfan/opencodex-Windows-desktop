@@ -163,3 +163,160 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
     expect(persistCalls).toBe(1);
   });
 });
+
+/*
+ * The same closed-enum argument applies to the reasoning ladder: a label outside the Codex
+ * ladder (low..ultra) stored through /api/custom-models would surface in a catalog the
+ * upstream never accepts, and the GUI's effort checkboxes are only as honest as the API
+ * that validates them. Unlike modalities, an EMPTY ladder is meaningful here — it is the
+ * explicit "no reasoning" override that hides the effort control (#883) — so `[]` is
+ * stored, not cleared, and `null` is the only way a PUT restores inheritance.
+ */
+describe("custom-model API validates reasoning-effort ladders", () => {
+  let persistCalls = 0;
+
+  async function callCustomModels(
+    method: "POST" | "PUT",
+    body: unknown,
+    pathname = "/api/custom-models",
+  ): Promise<Response | null> {
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL(`http://127.0.0.1:10199${pathname}`);
+    const req = new Request(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
+        customModels: [
+          // Seeded WITH a ladder on purpose: the null-clear test needs a stored value to
+          // remove, and the explicit-empty test needs to prove `[]` is NOT a clear.
+          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", reasoningEfforts: ["low", "high"] },
+        ],
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
+      convergeCodexCatalog: async () => ({
+        status: "committed",
+        changed: false,
+        degraded: false,
+        notices: [],
+      }),
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+  }
+
+  test("POST refuses an effort outside the Codex ladder, naming the offending value", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v5",
+      reasoningEfforts: ["low", "deep"],
+    });
+    expect(res?.status).toBe(400);
+    expect((await res!.json() as { error?: string }).error).toContain("deep");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("POST refuses a non-string member instead of filtering it away", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v5",
+      reasoningEfforts: ["low", 42],
+    });
+    expect(res?.status).toBe(400);
+    expect((await res!.json() as { error?: string }).error).toContain("strings");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("POST accepts a valid ladder with a member default and dedupes", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      reasoningEfforts: ["low", "high", "high"],
+      defaultReasoningEffort: "high",
+    });
+    expect(res?.status).toBe(201);
+    const payload = await res!.json() as { reasoningEfforts?: string[]; defaultReasoningEffort?: string };
+    expect(payload.reasoningEfforts).toEqual(["low", "high"]);
+    expect(payload.defaultReasoningEffort).toBe("high");
+    expect(persistCalls).toBe(1);
+  });
+
+  test("POST stores an explicit empty ladder as the no-reasoning override", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      reasoningEfforts: [],
+    });
+    expect(res?.status).toBe(201);
+    const payload = await res!.json() as { reasoningEfforts?: string[] };
+    expect(payload.reasoningEfforts).toEqual([]);
+    expect(persistCalls).toBe(1);
+  });
+
+  test("POST refuses a default effort outside the declared ladder", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      reasoningEfforts: ["low", "high"],
+      defaultReasoningEffort: "max",
+    });
+    expect(res?.status).toBe(400);
+    expect((await res!.json() as { error?: string }).error).toContain("max");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("POST refuses a default effort without any ladder", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      defaultReasoningEffort: "high",
+    });
+    expect(res?.status).toBe(400);
+    expect((await res!.json() as { error?: string }).error).toContain("reasoningEfforts");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("PUT stores an explicit empty ladder instead of clearing it", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("PUT", { reasoningEfforts: [] }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(200);
+    const payload = await res!.json() as { reasoningEfforts?: string[] };
+    expect(payload.reasoningEfforts).toEqual([]);
+    expect(persistCalls).toBe(1);
+  });
+
+  test("PUT null restores inheritance by clearing the stored ladder", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("PUT", { reasoningEfforts: null }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(200);
+    const payload = await res!.json() as { reasoningEfforts?: string[] };
+    expect(payload.reasoningEfforts).toBeUndefined();
+    expect(persistCalls).toBe(1);
+  });
+
+  test("PUT clears the default when the ladder is removed", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels(
+      "PUT",
+      { reasoningEfforts: null, defaultReasoningEffort: null },
+      "/api/custom-models/existing-uuid",
+    );
+    expect(res?.status).toBe(200);
+    const payload = await res!.json() as { reasoningEfforts?: string[]; defaultReasoningEffort?: string };
+    expect(payload.reasoningEfforts).toBeUndefined();
+    expect(payload.defaultReasoningEffort).toBeUndefined();
+    expect(persistCalls).toBe(1);
+  });
+});

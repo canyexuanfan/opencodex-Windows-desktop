@@ -182,10 +182,23 @@ describe("Pi serializer (accept criterion 2)", () => {
     expect(JSON.stringify(piConfig())).not.toContain("cost");
   });
 
-  test("reasoning is omitted — an effort list is not Pi's boolean", () => {
+  test("reasoning is emitted only for rows with a non-empty effort ladder", () => {
+    // The shared fixture carries no ladder anywhere: every entry stays reasoning-free.
     for (const model of piConfig().providers.opencodex!.models) {
       expect(model).not.toHaveProperty("reasoning");
     }
+    const config = piConfig(ctx({
+      models: [
+        { namespaced: "a/reasoning", provider: "a", id: "reasoning", reasoningEfforts: ["low", "high"] },
+        { namespaced: "b/none", provider: "b", id: "none", reasoningEfforts: [] },
+        { namespaced: "c/plain", provider: "c", id: "plain" },
+      ],
+    }));
+    const models = config.providers.opencodex!.models;
+    expect(models.find(model => model.id === "a/reasoning")!.reasoning).toBe(true);
+    // An explicit empty ladder is the catalog's "no reasoning" statement; no boolean.
+    expect(models.find(model => model.id === "b/none")).not.toHaveProperty("reasoning");
+    expect(models.find(model => model.id === "c/plain")).not.toHaveProperty("reasoning");
   });
 
   test("contextWindow and maxTokens are omitted when the context window is unknown", () => {

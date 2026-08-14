@@ -1957,6 +1957,8 @@ export const ja: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "e.g. Qwen 4 Max Preview",
   "models.customFieldContext": "Context window",
   "models.customFieldModalities": "Input modalities",
+  "models.customFieldReasoning": "サポートされる推論ステップ",
+  "models.customFieldReasoningOverride": "推論ステップを上書き",
   "models.tipProvider": "Provider",
   "models.tipContext": "Context",
   "models.tipModalities": "Modalities",

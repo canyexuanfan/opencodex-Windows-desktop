@@ -49,6 +49,7 @@ import {
   THREAD_OPTIONS,
   writeCollapsedProviders,
   discoveryFailureLabel,
+  REASONING_EFFORT_LEVELS,
   type ModelRow,
   type ProviderContextCapsResponse,
   type ShadowCallData,
@@ -193,6 +194,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [customFormContextWindow, setCustomFormContextWindow] = useState("");
   const [customFormShowCustomCtx, setCustomFormShowCustomCtx] = useState(false);
   const [customFormModalities, setCustomFormModalities] = useState<string[]>(["text"]);
+  const [customFormReasoning, setCustomFormReasoning] = useState(false);
+  const [customFormReasoningEfforts, setCustomFormReasoningEfforts] = useState<string[]>([]);
   const [customSaving, setCustomSaving] = useState(false);
   const [customError, setCustomError] = useState("");
   const [contextModalProvider, setContextModalProvider] = useState<string | null>(null);
@@ -831,6 +834,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
     displayName?: string,
     contextWindow?: number,
     inputModalities?: string[],
+    reasoningEfforts?: string[],
   ) => {
     setCustomSaving(true);
     setCustomError("");
@@ -838,7 +842,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
       const r = await fetch(`${apiBase}/api/custom-models`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, modelId, displayName, contextWindow, inputModalities }),
+        body: JSON.stringify({ provider, modelId, displayName, contextWindow, inputModalities, reasoningEfforts }),
       });
       try {
         await readJsonOrThrow(r, t("models.customSaveFailed"));
@@ -1000,6 +1004,8 @@ export default function Models({ apiBase }: { apiBase: string }) {
                    setCustomFormContextWindow("");
                    setCustomFormShowCustomCtx(false);
                    setCustomFormModalities(["text"]);
+                   setCustomFormReasoning(false);
+                   setCustomFormReasoningEfforts([]);
                    setCustomError("");
                    setCustomModalOpen(true);
                  }}
@@ -1146,6 +1152,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
                                  setCustomFormContextWindow(m.contextWindow ? String(m.contextWindow) : "");
                                  setCustomFormShowCustomCtx(false);
                                  setCustomFormModalities(m.inputModalities ?? ["text"]);
+                                 // Only a STORED ladder counts as "configured": an inherited one
+                                 // would show a phantom override that saves "inherit" over the
+                                 // provider row's current metadata.
+                                 setCustomFormReasoning(Array.isArray(m.reasoningEfforts));
+                                 setCustomFormReasoningEfforts(m.reasoningEfforts ?? []);
                                  setCustomError("");
                                  setCustomModalOpen(true);
                                  setHoveredModel(null);
@@ -1595,6 +1606,40 @@ export default function Models({ apiBase }: { apiBase: string }) {
                   ))}
                 </div>
               </div>
+
+              <div className="text-label models-field">
+                {t("models.customFieldReasoning")}
+                <div className="row models-field-row">
+                  <label className="row models-modality-option">
+                    <input
+                      type="checkbox"
+                      checked={customFormReasoning}
+                      onChange={e => setCustomFormReasoning(e.target.checked)}
+                      disabled={customSaving}
+                    />
+                    <span className="text-control">{t("models.customFieldReasoningOverride")}</span>
+                  </label>
+                </div>
+                {customFormReasoning && (
+                  <div className="row models-field-row" style={{ flexWrap: "wrap" }}>
+                    {REASONING_EFFORT_LEVELS.map(effort => (
+                      <label key={effort} className="row models-modality-option">
+                        <input
+                          type="checkbox"
+                          checked={customFormReasoningEfforts.includes(effort)}
+                          onChange={e => {
+                            setCustomFormReasoningEfforts(prev => (
+                              e.target.checked ? [...prev, effort] : prev.filter(level => level !== effort)
+                            ));
+                          }}
+                          disabled={customSaving}
+                        />
+                        <span className="text-control">{effort}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="modal-actions">
@@ -1611,19 +1656,24 @@ export default function Models({ apiBase }: { apiBase: string }) {
                   const ctxVal = customFormContextWindow ? Number(customFormContextWindow.replace(/[_,\s]/g, "")) : undefined;
                   const contextWindow = ctxVal && ctxVal > 0 ? Math.floor(ctxVal) : undefined;
                   if (customModalMode === "add") {
+                    const reasoningEfforts = customFormReasoning ? customFormReasoningEfforts : undefined;
                     void addCustomModel(
                       customModalProvider,
                       modelId,
                       displayName || undefined,
                       contextWindow,
                       customFormModalities.length > 0 ? customFormModalities : undefined,
+                      reasoningEfforts,
                     );
                   } else {
+                    // `null` clears a stored override back to "inherit from the provider row";
+                    // an explicit empty ladder stays stored as "no reasoning".
                     void updateCustomModel(customModalId, {
                       modelId,
                       displayName,
                       contextWindow: contextWindow ?? null,
                       inputModalities: customFormModalities,
+                      reasoningEfforts: customFormReasoning ? customFormReasoningEfforts : null,
                     });
                   }
                 }}

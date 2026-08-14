@@ -420,6 +420,8 @@ export const zhTW: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "例如 Qwen 4 Max Preview",
   "models.customFieldContext": "上下文視窗",
   "models.customFieldModalities": "輸入模態",
+  "models.customFieldReasoning": "支援的推理步驟",
+  "models.customFieldReasoningOverride": "覆寫推理步驟",
   "models.tipProvider": "供應商",
   "models.tipContext": "上下文",
   "models.tipModalities": "模態",

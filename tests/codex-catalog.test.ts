@@ -1877,6 +1877,105 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
       clearModelCache("custom-provider");
     }
   });
+
+  test("a customModel reasoning ladder overrides the inherited provider ladder end-to-end", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (() => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["baseline-model", "renamed-model"],
+            // The provider row for the same slug advertises low/high; the custom row must win.
+            modelReasoningEfforts: { "baseline-model": ["low", "high"], "renamed-model": ["low", "high"] },
+          },
+        },
+        customModels: [
+          {
+            id: "cm-1",
+            provider: "custom-provider",
+            modelId: "renamed-model",
+            displayName: "Renamed Model",
+            reasoningEfforts: ["medium", "max"],
+            defaultReasoningEffort: "max",
+            addedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      });
+
+      expect(fetchCalls).toBe(0);
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      // The explicit ladder rides on the row itself, not on the replaced provider row.
+      expect(custom?.reasoningEfforts).toEqual(["medium", "max"]);
+      expect(custom?.defaultReasoningEffort).toBe("max");
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      const levels = (row?.supported_reasoning_levels ?? []).map((l: { effort: string }) => l.effort);
+      // The sync appends the mock top rungs (max/ultra) for subagent spawn compatibility;
+      // the declared medium/max survive verbatim, the inherited low/high does not.
+      expect(levels).toEqual(["medium", "max", "ultra"]);
+      expect(row?.default_reasoning_level).toBe("max");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
+  });
+
+  test("an explicit empty customModel ladder hides the effort control despite an inherited one", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["renamed-model"],
+            modelReasoningEfforts: { "renamed-model": ["low", "high"] },
+          },
+        },
+        customModels: [
+          {
+            id: "cm-1",
+            provider: "custom-provider",
+            modelId: "renamed-model",
+            reasoningEfforts: [],
+            addedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      });
+
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      expect(custom?.reasoningEfforts).toEqual([]);
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      expect(row?.supported_reasoning_levels).toEqual([]);
+      expect(row).not.toHaveProperty("default_reasoning_level");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
+  });
 });
 
 describe("legacy custom-model catalog ownership", () => {

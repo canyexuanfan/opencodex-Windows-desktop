@@ -555,6 +555,8 @@ export const tr: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "örn. Qwen 4 Max Preview",
   "models.customFieldContext": "Bağlam penceresi",
   "models.customFieldModalities": "Girdi türleri",
+  "models.customFieldReasoning": "Desteklenen akıl yürütme adımları",
+  "models.customFieldReasoningOverride": "Akıl yürütme adımlarını geçersiz kıl",
   "models.tipProvider": "Sağlayıcı",
   "models.tipContext": "Bağlam",
   "models.tipModalities": "Girdi Türleri",

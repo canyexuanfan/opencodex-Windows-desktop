@@ -564,6 +564,8 @@ export const en = {
   "models.customFieldDisplayNamePlaceholder": "e.g. Qwen 4 Max Preview",
   "models.customFieldContext": "Context window",
   "models.customFieldModalities": "Input modalities",
+  "models.customFieldReasoning": "Supported reasoning steps",
+  "models.customFieldReasoningOverride": "Override reasoning steps",
   "models.tipProvider": "Provider",
   "models.tipContext": "Context",
   "models.tipModalities": "Modalities",

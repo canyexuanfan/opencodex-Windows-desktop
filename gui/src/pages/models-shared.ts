@@ -38,7 +38,13 @@ export interface ModelRow {
   contextWindow?: number;
   contextCap?: number;
   contextCapped?: boolean;
+  /** Stored custom-row override (not the inherited ladder); only present on custom rows. */
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
+
+/** Codex ladder labels offered in the custom-model dialog. */
+export const REASONING_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 export interface ProviderContextCapsResponse {
   cap?: number;

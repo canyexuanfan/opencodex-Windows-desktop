@@ -547,6 +547,8 @@ export const zh: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "例如 Qwen 4 Max Preview",
   "models.customFieldContext": "上下文窗口",
   "models.customFieldModalities": "输入模态",
+  "models.customFieldReasoning": "支持的推理步骤",
+  "models.customFieldReasoningOverride": "覆盖推理步骤",
   "models.tipProvider": "提供方",
   "models.tipContext": "上下文",
   "models.tipModalities": "模态",

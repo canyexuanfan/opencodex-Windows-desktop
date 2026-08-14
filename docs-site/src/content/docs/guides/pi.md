@@ -103,9 +103,16 @@ small-context model is never given more output than context. It is not a claim a
 model's true maximum.
 
 Two fields are deliberately absent. `cost` requires all four price fields and opencodex has no
-price data for routed models — emitting zeros would assert that every model is free. `reasoning` is
-a boolean in Pi while the catalog carries an effort ladder, and mapping one onto the other would be
-a guess.
+price data for routed models — emitting zeros would assert that every model is free.
+
+`reasoning` is the one field that used to be absent and now is not: Pi stores a boolean while the
+catalog carries an effort ladder, and mapping one onto the other used to be a guess. Since the
+catalog's ladder is the proxy's own statement about whether a model accepts reasoning parameters
+(adapters honor `reasoning_effort`), an export row with a **non-empty** ladder now emits
+`"reasoning": true`, and a row without one (or with an explicitly empty ladder) stays
+reasoning-free. Pi then offers its effort control for exactly the models opencodex will accept it
+on. If you need Pi-specific effort values — for example clamping `xhigh`/`max` away — add a
+hand-written `thinkingLevelMap` to the model entry as documented by Pi.
 
 ## Schema status
 

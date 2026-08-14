@@ -1774,6 +1774,11 @@ async function gatherRoutedModelsUncached(
       ...(cm.inputModalities
         ? { inputModalities: cm.inputModalities }
         : codexForwardNativeCapabilityAlias ? { inputModalities: nativeInputModalities(cm.modelId) } : {}),
+      // Explicit custom-row ladder wins over the inherited provider row below: the merge only
+      // gap-fills, so a stored `[]` (explicit "no reasoning") or a declared ladder is kept
+      // verbatim instead of being replaced by the replaced row's metadata.
+      ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
+      ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
       ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
       ...(codexForwardNativeCapabilityAlias
         ? {

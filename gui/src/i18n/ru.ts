@@ -552,6 +552,8 @@ export const ru: Record<TKey, string> = {
   "models.customFieldDisplayNamePlaceholder": "например, Qwen 4 Max Preview",
   "models.customFieldContext": "Контекстное окно",
   "models.customFieldModalities": "Входные модальности",
+  "models.customFieldReasoning": "Поддерживаемые ступени рассуждений",
+  "models.customFieldReasoningOverride": "Переопределить ступени рассуждений",
   "models.tipProvider": "Провайдер",
   "models.tipContext": "Контекст",
   "models.tipModalities": "Модальности",
