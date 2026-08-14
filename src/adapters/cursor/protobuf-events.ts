@@ -964,6 +964,10 @@ export function translateStructuredEditCall(
     if (!Array.isArray(edits) || edits.length === 0) {
       return { error: "multi_edit requires a non-empty edits array; the call was dropped." };
     }
+    // Cap edit count to prevent quadratic CPU exhaustion in the fold and overlap scans.
+    if (edits.length > 500) {
+      return { error: "multi_edit exceeds the 500-edit limit; split into smaller batches." };
+    }
     const pairs: StructuredEditPair[] = [];
     for (const edit of edits) {
       if (!edit || typeof edit !== "object" || Array.isArray(edit)) {

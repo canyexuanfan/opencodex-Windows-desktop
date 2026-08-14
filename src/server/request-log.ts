@@ -1011,8 +1011,11 @@ function finalizedUsage(
         estimated: true,
       }
     : finalUsage
-      // When the adapter itself produced an estimated count, cap it at the context
-      // window — adapter estimates are no more authoritative than our own fallback.
+      // When the adapter alone produced an estimated count and no local estimate
+      // exists, cap it at the context window — an adapter estimate above the window
+      // misleads the usage dashboard.  The combined branch (above) already caps the
+      // ESTIMATE via capEstimateAtContextWindow, and Math.max preserves a real
+      // provider-reported count, so it needs no further reduction.
       ? (finalUsage.estimated && contextWindow !== undefined && finalUsage.inputTokens > contextWindow
           ? { ...finalUsage, inputTokens: contextWindow }
           : finalUsage)
