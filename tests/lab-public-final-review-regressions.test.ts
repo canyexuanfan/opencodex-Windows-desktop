@@ -105,13 +105,15 @@ test.skipIf(process.platform === "win32")(
     const own = bundle(home);
     writePublicEvidenceBundle(own, home);
 
-    setPublicEvidencePurgeFaultForTests("export_directory_sync");
-    expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
-    // The first attempt already removed the export pathname. A retry must still
-    // fsync the now-empty directory rather than reporting success without durability.
-    expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
-
-    setPublicEvidencePurgeFaultForTests(null);
+    const restoreFault = setPublicEvidencePurgeFaultForTests("export_directory_sync");
+    try {
+      expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
+      // The first attempt already removed the export pathname. A retry must still
+      // fsync the now-empty directory rather than reporting success without durability.
+      expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
+    } finally {
+      restoreFault();
+    }
     expect(() => purgeLocalPublicEvidenceCopies(home)).not.toThrow();
   },
 );
