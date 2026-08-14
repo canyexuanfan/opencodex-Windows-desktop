@@ -24,10 +24,11 @@ import { readPrivateRegularFile } from "./file-safety";
 import { publicEvidenceId } from "./ids";
 import { withPublicEvidenceMutationLock } from "./mutation-lock";
 import { clearLocalPublicOrigins } from "./origin";
-import { listValidPublicOriginsForPurge } from "./origin-purge";
+import { recoverPublicOriginsForPurge } from "./origin-purge";
 import { publicEvidencePurgeFaultForTests } from "./purge-test-fault";
 import { readPublicEvidenceBundle } from "./storage";
 import { parseStrictPublicJson } from "./strict-json";
+import { PublicEvidenceValidationError } from "./validate";
 
 const MAX_PRIVATE_KEY_BYTES = 8 * 1024;
 const MAX_COMMUNITY_OBJECT_BYTES = 2 * 1024 * 1024;
@@ -152,8 +153,9 @@ function purgeLocalPublicEvidenceCopiesLocked(configDir?: string): {
   deletedCommunityRevocations: number;
 } {
   const exportedIdentities = localExportIdentities(configDir);
+  const originRecovery = recoverPublicOriginsForPurge(configDir);
   const localPublisherKeyIds = new Set<string>();
-  for (const origin of listValidPublicOriginsForPurge(configDir)) {
+  for (const origin of originRecovery.identities) {
     exportedIdentities.add(publicIdentity(origin.publisherKeyId, origin.bundleId));
     localPublisherKeyIds.add(origin.publisherKeyId);
   }
@@ -191,6 +193,15 @@ function purgeLocalPublicEvidenceCopiesLocked(configDir?: string): {
   // As with exports, a retry after a failed directory fsync may have no remaining
   // names to unlink. Re-sync the directory unconditionally before success.
   syncPurgeDirectory(communityDir, "community");
+
+  if (originRecovery.skipped > 0) {
+    // Preserve provenance markers for operator recovery. Sensitive exports are already
+    // durably gone, but unknown community copies cannot be reported as fully purged.
+    throw new PublicEvidenceValidationError(
+      "public_origin_incomplete",
+      `public origin classification incomplete: ${originRecovery.skipped} marker(s) could not be validated`,
+    );
+  }
 
   // Markers are purge-owned public provenance only. Remove them last, then establish
   // deletion durability before the caller may record an export purge tombstone.
