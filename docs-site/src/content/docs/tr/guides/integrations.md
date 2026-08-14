@@ -77,9 +77,24 @@ sahip olduğunuz durum her zaman kurtarılabilir:
   expired)** yazar.
 
 Devre dışı bırakma, yalnızca opencodex'in kendisine ait olarak kaydettiği
-girdileri kaldırır. Dosyanız biz yazdıktan sonra değiştiyse, anahtar kilitlenir
-ve hangi düzenlemelerin size ait olduğunu tahmin etmek yerine devre dışı
-bırakmayı reddeder.
+girdileri kaldırır. Dosyanız biz yazdıktan sonra değiştiyse, ne olacağı kendi
+girdilerimizin hâlâ bozulmamış olup olmadığına ve dosyanın biçimine bağlıdır.
+Katı JSON yapılandırmalarında (OpenCode, Pi), bloğumuzun **yanında** yapılan bir
+düzenleme — bir MCP sunucusu eklemek, kendinize ait bir sağlayıcı tanımlamak —
+**Güncelleme gerekli (Update needed)** olarak görünür: yenileme, girdilerinizin
+etrafında birleştirir ve onları korur; yalnızca biçimlendirme
+normalleştirilebilir. İstisna, JSON'un birebir yeniden yazamayacağı şeylerdir —
+`1e999` gibi sonlu olmayan bir sayı, yeniden yazımın yuvarlayacağı bir sayı (çok
+büyük bir tam sayı ya da sıfıra çökecek kadar küçük bir sayı), `-0`, aynı
+nesnede iki kez yazılmış bir anahtar veya 1000 seviyeden derin iç içe geçme —
+bu durumda anahtar kilitlenir, böylece
+hiçbir şey sessizce değiştirilmez veya düşürülmez. **OMP** de yanındaki
+düzenlemelerden etkilenmez, ama başka bir nedenle: writer'ı yalnızca kendi
+`providers.opencodex` aralığını bayt bayt yamalar, dosyanın geri kalanı hiçbir
+zaman yeniden yazılmaz. Yorum taşıyabilen diğer biçimlerde (Hermes, OpenClaw,
+Kimi Code, Gajae Code — bütün belge olarak yazılan YAML, JSON5 ve TOML) veya
+kendi girdilerimiz düzenlenmişse, anahtar kilitlenir ve hangi düzenlemelerin
+size ait olduğunu tahmin etmek yerine devre dışı bırakmayı reddeder.
 
 ## Dürüstçe ne beklenmeli?
 

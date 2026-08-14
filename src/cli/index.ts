@@ -941,4 +941,5 @@ process.exit(await dispatchCommand(head, {
   handleStatus,
   handleRecoverHistory,
   handleReady,
+  serviceCommand,
 }));

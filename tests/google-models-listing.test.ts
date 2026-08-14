@@ -87,15 +87,21 @@ describe("Antigravity live model discovery", () => {
       return Response.json({
         models: {
           "gemini-3.1-pro-low": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 1000 },
-          "gemini-3.7-flash": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "gemini-3.7-flash-tiered": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "future-flash-tiered": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "future-flash-low": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "future-flash-medium": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "future-flash-high": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
           "future-agent-model": { maxTokens: 333_333, supportsImages: false, supportsThinking: true, thinkingBudget: 7777 },
           "gemini-3.1-flash-image": { maxTokens: 555_555, supportsImages: true },
           "non-agent-command-model": { maxTokens: 222_222 },
           "tab-only-model": { maxTokens: 32_768 },
         },
         agentModelSorts: [{ groups: [{ modelIds: [
-          "future-agent-model", "gemini-3.1-pro-low", "gemini-3.7-flash",
+          "future-agent-model", "gemini-3.1-pro-low",
+          "future-flash-low", "future-flash-medium", "future-flash-high",
         ] }] }],
+        tieredModelIds: { flash: ["gemini-3.7-flash-tiered", "future-flash-tiered"] },
         imageGenerationModelIds: ["gemini-3.1-flash-image"],
         tabModelIds: ["tab-only-model"],
         commandModelIds: ["non-agent-command-model"],
@@ -120,6 +126,10 @@ describe("Antigravity live model discovery", () => {
       expect(JSON.parse(String(seen[0]?.init?.body))).toEqual({ project: "configured-project" });
       expect(live.map(model => model.id).sort()).toEqual([
         "future-agent-model",
+        "future-flash-high",
+        "future-flash-low",
+        "future-flash-medium",
+        "future-flash-tiered",
         "gemini-3.1-flash-image",
         "gemini-3.1-pro-low",
         "gemini-3.7-flash",

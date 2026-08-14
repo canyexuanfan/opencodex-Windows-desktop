@@ -65,8 +65,21 @@ always recoverable:
   and their history rows read **Backup expired**.
 
 Disable removes only the entries opencodex recorded as its own. If your file changed
-after we wrote it, the switch locks and disable refuses rather than guessing which
-edits were yours.
+after we wrote it, what happens depends on whether our own entries are still intact
+and on the file's format. For strict-JSON configs (OpenCode, Pi), an edit **next to**
+our block — adding an MCP server, a provider of your own — shows as **Update needed**:
+refreshing merges around your entries and keeps them, though formatting may be
+normalized. The exception is something JSON cannot rewrite exactly — a non-finite
+number like `1e999`, a number a rewrite would round (a very large integer, or one
+so small it collapses to zero), `-0`, the same key written twice in one object, or nesting deeper
+than 1000 levels — which locks the switch instead, so nothing is silently changed or dropped.
+**OMP** is unaffected by sibling edits too, for a different reason: its writer
+patches only its own `providers.opencodex` range byte-wise, so the rest of the
+file is never rewritten. For the remaining formats that can carry comments
+(Hermes, OpenClaw, Kimi Code, Gajae Code — YAML, JSON5 and TOML written as whole
+documents), or
+whenever our own entries were edited, the switch locks and disable refuses rather
+than guessing which edits were yours.
 
 ## What to expect, honestly
 

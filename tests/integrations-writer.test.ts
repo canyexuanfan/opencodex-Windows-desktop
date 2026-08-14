@@ -72,6 +72,14 @@ function installHermes(): string {
   return configPath;
 }
 
+function installPi(): string {
+  const spec = INTEGRATION_CLIENTS.pi;
+  mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+  const configPath = spec.configPath(TEST_ENV, home);
+  mkdirSync(dirname(configPath), { recursive: true });
+  return configPath;
+}
+
 function installOmp(): string {
   const spec = INTEGRATION_CLIENTS.omp;
   mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
@@ -149,6 +157,146 @@ describe("apply", () => {
     if (!result.ok) expect(result.reason).toBe("conflict");
     // The user's edit is still there.
     expect(readFileSync(configPath, "utf8")).toContain("api_mode: user_edited");
+  });
+
+  test("json clients re-apply after a sibling edit and keep the user's entry (#1631)", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+
+    // The user adds an unrelated sibling — the routine edit that used to
+    // dead-end the integration in `conflict` with no recovery path.
+    const doc = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    (doc.providers as Record<string, unknown>).mine = { baseUrl: "http://user.invalid/v1" };
+    writeFileSync(configPath, `${JSON.stringify(doc, null, 4)}\n`);
+
+    const second = applyIntegration(input({ clientId: "pi" }));
+    expect(second.ok).toBe(true);
+    if (second.ok) expect(second.changed).toBe(true);
+
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect((after.providers as Record<string, unknown>).mine).toEqual({ baseUrl: "http://user.invalid/v1" });
+    // The block a fresh apply would write, not merely "something is there".
+    expect((after.providers as Record<string, unknown>).opencodex).toMatchObject({
+      baseUrl: "http://127.0.0.1:10100/v1",
+    });
+
+    // The re-apply re-owned the file: a third apply is a no-op again.
+    const third = applyIntegration(input({ clientId: "pi" }));
+    expect(third.ok).toBe(true);
+    if (third.ok) expect(third.changed).toBe(false);
+  });
+
+  test("json disable after a sibling edit keeps the sibling (#1631)", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const doc = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    (doc.providers as Record<string, unknown>).mine = { baseUrl: "http://user.invalid/v1" };
+    writeFileSync(configPath, `${JSON.stringify(doc, null, 2)}\n`);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(true);
+
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect((after.providers as Record<string, unknown>).mine).toEqual({ baseUrl: "http://user.invalid/v1" });
+    expect((after.providers as Record<string, unknown>).opencodex).toBeUndefined();
+  });
+
+  test("json apply refuses when a sibling number cannot round-trip", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    // 1e999 is valid strict JSON but parses to Infinity; a rewrite would bake
+    // in `null`. The refusal must fire instead of reporting success.
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 1e999,");
+    writeFileSync(configPath, drifted);
+
+    const result = applyIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    // The file is untouched, the user's literal survives.
+    expect(readFileSync(configPath, "utf8")).toContain("1e999");
+  });
+
+  test("json apply refuses a duplicate sibling member instead of deleting it", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    // Valid strict JSON, but JSON.parse keeps only the last "notes" — a
+    // rewrite would silently delete the first one while reporting success.
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"notes\": \"keep me\",\n  \"notes\": \"second\",");
+    writeFileSync(configPath, drifted);
+
+    const result = applyIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    // Byte-for-byte untouched: both members survive on disk.
+    expect(readFileSync(configPath, "utf8")).toBe(drifted);
+  });
+
+  test("a sibling with an exactly-representable big number stays usable (#1631)", () => {
+    // 2^54 round-trips value- and literal-exactly. classify promises 'stale'
+    // (recoverable) for this file; apply must honor that promise instead of
+    // refusing at serialize time — the asymmetry that re-created the dead-end.
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 18014398509481984,");
+    writeFileSync(configPath, drifted);
+
+    const second = applyIntegration(input({ clientId: "pi" }));
+    expect(second.ok).toBe(true);
+
+    expect(readFileSync(configPath, "utf8")).toContain("18014398509481984");
+    const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect(after.quota).toBe(2 ** 54);
+  });
+
+  test("disable also honors a 2^54 sibling: proceeds and keeps the literal", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 18014398509481984,");
+    writeFileSync(configPath, drifted);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(true);
+
+    const text = readFileSync(configPath, "utf8");
+    expect(text).toContain("18014398509481984");
+    const after = JSON.parse(text) as Record<string, unknown>;
+    expect(after.quota).toBe(2 ** 54);
+    expect((after.providers as Record<string, unknown> | undefined)?.opencodex).toBeUndefined();
+  });
+
+  test("json disable also refuses when a sibling number cannot round-trip", () => {
+    const configPath = installPi();
+
+    expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
+    const drifted = readFileSync(configPath, "utf8")
+      .replace(/^\{/, "{\n  \"quota\": 1e999,");
+    writeFileSync(configPath, drifted);
+
+    const result = disableIntegration(input({ clientId: "pi" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toContain("1e999");
+  });
+
+  test("yaml clients still refuse a sibling edit rather than risk user comments", () => {
+    const configPath = installHermes();
+    expect(applyIntegration(input()).ok).toBe(true);
+    writeFileSync(configPath, `${readFileSync(configPath, "utf8")}unknown_top: added-later\n`);
+
+    const result = applyIntegration(input());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("conflict");
+    expect(readFileSync(configPath, "utf8")).toContain("unknown_top: added-later");
   });
 
   test("refuses an unparseable config rather than overwriting it", () => {
@@ -310,6 +458,23 @@ describe("OMP source preservation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unsafe");
     expect(readFileSync(configPath, "utf8")).toBe(edited);
+  });
+
+  test("refuses disable when removing the managed block would break a YAML alias", () => {
+    const configPath = installOmp();
+    expect(applyIntegration(input({ clientId: "omp" })).ok).toBe(true);
+    const edited = readFileSync(configPath, "utf8")
+      .replace("    baseUrl:", "    baseUrl: &opencodex_url")
+      .concat("settings:\n  inheritedBase: *opencodex_url\n");
+    expect(edited).toContain("    baseUrl: &opencodex_url");
+    writeFileSync(configPath, edited);
+
+    const journalBefore = store.listOperations("omp");
+    const result = disableIntegration(input({ clientId: "omp" }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("unsafe");
+    expect(readFileSync(configPath, "utf8")).toBe(edited);
+    expect(store.listOperations("omp")).toEqual(journalBefore);
   });
 });
 

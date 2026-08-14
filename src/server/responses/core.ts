@@ -33,7 +33,7 @@ import {
   type RouteResult,
 } from "../../router";
 import { evidenceFromBody } from "../../routing/request-evidence";
-import { resolveProductionRouteSubject } from "../../routing/compatibility/subject";
+import { resolvePassiveRouteSubjectId } from "../passive-route-linker";
 import {
   advanceComboAfterFailure,
   comboDefaultEffort,
@@ -228,7 +228,7 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
-import { collectRoutedCustomToolNames, restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
+import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
@@ -1991,22 +1991,19 @@ async function handleResponsesInner(
     (logCtx.attempts ??= []).push(attempt);
   }
   sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name, logCtx.accountLogLabel);
-  // CL-09: attach only the opaque exact route-subject identity to the attempt.
-  // This is best-effort passive metadata: no Lab state is created and failure
-  // must never alter, retry, or delay the upstream request.
+  // Optional route-identity linkage for attempt correlation (CL-09 consumes it). The slot
+  // resolves to null unless an opt-in subsystem registered a linker, so an install without
+  // routing profiles does no work here and loads no additional module. The non-throwing
+  // guarantee lives in the slot helper.
   if (logCtx.activeAttempt && !logCtx.activeAttempt.labRouteSubjectId) {
-    try {
-      const passiveSubject = resolveProductionRouteSubject(
-        config,
-        route.providerName,
-        route.modelId,
-        route.provider,
-        inboundWire,
-      );
-      if (passiveSubject) logCtx.activeAttempt.labRouteSubjectId = passiveSubject.subjectId;
-    } catch {
-      // Omit passive linkage when exact subject construction is unavailable.
-    }
+    const passiveSubjectId = resolvePassiveRouteSubjectId(
+      config,
+      route.providerName,
+      route.modelId,
+      route.provider,
+      inboundWire,
+    );
+    if (passiveSubjectId) logCtx.activeAttempt.labRouteSubjectId = passiveSubjectId;
   }
   const isPassthrough = "passthrough" in adapter && !!adapter.passthrough;
 
@@ -2130,9 +2127,7 @@ async function handleResponsesInner(
     const imageGenCallAliases = route.provider.authMode === "forward"
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
-    const routedCustomToolNames = route.provider.authMode === "forward"
-      ? new Set<string>()
-      : collectRoutedCustomToolNames(parsed._rawBody);
+    const routedCustomToolNames = new Set<string>();
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -2160,6 +2155,11 @@ async function handleResponsesInner(
     } catch (error) {
       releaseCodexAuthContextProbeLease(authCtx);
       throw error;
+    }
+    if (route.provider.authMode !== "forward") {
+      for (const name of request.convertedRoutedCustomToolNames ?? []) {
+        if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
+      }
     }
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
