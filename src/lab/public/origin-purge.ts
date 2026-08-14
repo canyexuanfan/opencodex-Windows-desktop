@@ -13,6 +13,11 @@ export interface PurgeOriginIdentity {
   bundleId: string;
 }
 
+export interface PurgeOriginRecovery {
+  identities: PurgeOriginIdentity[];
+  skipped: number;
+}
+
 /**
  * Purge must salvage each provenance marker independently. A corrupt marker is untrusted
  * and skipped, but it cannot hide later valid markers that are needed to classify local
@@ -20,7 +25,7 @@ export interface PurgeOriginIdentity {
  * 1024-marker quota is deliberately not a read cutoff here: recovery must inspect every
  * valid-format marker present after a race/crash instead of silently losing provenance.
  */
-export function listValidPublicOriginsForPurge(configDir?: string): PurgeOriginIdentity[] {
+export function recoverPublicOriginsForPurge(configDir?: string): PurgeOriginRecovery {
   ensureLabDirs(configDir);
   const dir = labPublicOriginDir(configDir);
   cleanupStalePrivateFileStagesInDir(dir);
@@ -28,6 +33,7 @@ export function listValidPublicOriginsForPurge(configDir?: string): PurgeOriginI
     .filter((name) => !isPrivateFileStageName(name) && ORIGIN_RE.test(name))
     .sort();
   const identities: PurgeOriginIdentity[] = [];
+  let skipped = 0;
 
   for (const name of names) {
     const match = ORIGIN_RE.exec(name)!;
@@ -45,18 +51,29 @@ export function listValidPublicOriginsForPurge(configDir?: string): PurgeOriginI
         "public origin marker during purge",
         "public_origin_json",
       );
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        skipped += 1;
+        continue;
+      }
       const row = raw as Record<string, unknown>;
       if (
         Object.keys(row).sort().join(",") !== "bundleId,publisherKeyId,schemaVersion"
         || row.schemaVersion !== "public_origin_v1"
         || row.publisherKeyId !== expected.publisherKeyId
         || row.bundleId !== expected.bundleId
-      ) continue;
+      ) {
+        skipped += 1;
+        continue;
+      }
       identities.push(expected);
     } catch {
+      skipped += 1;
       // Salvage continues with the next marker.
     }
   }
-  return identities;
+  return { identities, skipped };
+}
+
+export function listValidPublicOriginsForPurge(configDir?: string): PurgeOriginIdentity[] {
+  return recoverPublicOriginsForPurge(configDir).identities;
 }
