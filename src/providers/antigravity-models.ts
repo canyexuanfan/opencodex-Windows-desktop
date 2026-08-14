@@ -10,10 +10,39 @@ import { isValidModelDiscoveryModelId, MODEL_DISCOVERY_MAX_MODELS } from "./mode
 // returned wire id remains visible so an unavailable tier cannot be selected.
 
 // ── Wire IDs (what CCA :fetchAvailableModels returns) ──
+
+/** Current Antigravity Flash generation. */
+const GEMINI_FLASH_CURRENT = "gemini-3.7-flash";
+
+/**
+ * Retired Flash ids → the reasoning tier they used to encode.
+ *
+ * Google pulls the previous Flash model from CCA almost immediately when the next
+ * one ships, so a saved selection cannot keep pointing at it. A flat alias would
+ * strand the user's tier: `resolveAntigravityEffortWireModel` rule 1 treats any
+ * alias as "the suffix IS the effort" and deliberately sends no thinkingConfig, so
+ * `gemini-3.6-flash-high` would silently become an untiered 3.7 call. Carrying the
+ * level here preserves what the user actually chose.
+ *
+ * 3.7 exposes tiers through `thinkingLevel` on ONE wire id rather than through
+ * suffixed wire ids, which is why the mapping is id → level and not id → id.
+ */
+const RETIRED_FLASH_TIERS: Record<string, string> = {
+  // 3.6 generation.
+  "gemini-3.6-flash": "medium", // bare base carried a medium default
+  "gemini-3.6-flash-low": "low",
+  "gemini-3.6-flash-medium": "medium",
+  "gemini-3.6-flash-high": "high",
+  // 3.5 generation — these already pointed at 3.6 wire ids, which are now dead too.
+  "gemini-3.5-flash-extra-low": "low",
+  "gemini-3.5-flash-low": "medium",
+  "gemini-3.5-flash-mid": "medium",
+  "gemini-3.5-flash-high": "high",
+  "gemini-3-flash-agent": "high",
+};
+
 const ANTIGRAVITY_WIRE_MODELS = [
-  "gemini-3.6-flash-low",
-  "gemini-3.6-flash-medium",
-  "gemini-3.6-flash-high",
+  "gemini-3.7-flash",
   "gemini-3.1-pro-low",
   "gemini-pro-agent",
   "gemini-3.1-flash-image",
@@ -23,9 +52,6 @@ const ANTIGRAVITY_WIRE_MODELS = [
 ];
 
 const ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID: Record<string, string> = {
-  "gemini-3.6-flash-low": "gemini-3.6-flash",
-  "gemini-3.6-flash-medium": "gemini-3.6-flash",
-  "gemini-3.6-flash-high": "gemini-3.6-flash",
   "gemini-3.1-pro-low": "gemini-3.1-pro",
   "gemini-pro-agent": "gemini-3.1-pro",
 };
@@ -41,7 +67,7 @@ const ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL: Record<string, string[]> = Object.en
 // Gemini models: effort → wire model suffix (official agy UI pattern).
 // Claude Opus: effort → thinkingConfig.thinkingLevel (CLIProxyAPI proven pattern).
 export const ANTIGRAVITY_MODEL_EFFORTS: Record<string, string[]> = {
-  "gemini-3.6-flash": ["low", "medium", "high"],
+  "gemini-3.7-flash": ["low", "medium", "high"],
   "gemini-3.1-pro": ["low", "high"],
   "claude-sonnet-4-6": ["low", "medium", "high", "max"],
   "claude-opus-4-6-thinking": ["low", "medium", "high", "max"],
@@ -49,11 +75,6 @@ export const ANTIGRAVITY_MODEL_EFFORTS: Record<string, string[]> = {
 
 // ── Effort → wire model map for Gemini base models ──
 const ANTIGRAVITY_EFFORT_WIRE_MAP: Record<string, Record<string, string>> = {
-  "gemini-3.6-flash": {
-    low: "gemini-3.6-flash-low",
-    medium: "gemini-3.6-flash-medium",
-    high: "gemini-3.6-flash-high",
-  },
   "gemini-3.1-pro": {
     low: "gemini-3.1-pro-low",
     high: "gemini-pro-agent",
@@ -62,11 +83,20 @@ const ANTIGRAVITY_EFFORT_WIRE_MAP: Record<string, Record<string, string>> = {
 
 // ── Default effort per Gemini base model ──
 const ANTIGRAVITY_DEFAULT_EFFORT: Record<string, string> = {
-  "gemini-3.6-flash": "medium",
   "gemini-3.1-pro": "high",
 };
 
-const ANTIGRAVITY_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
+/**
+ * Gemini base models whose efforts ride on `thinkingLevel` against a single wire id
+ * instead of suffixed wire ids, with the level applied when the caller names none.
+ */
+const ANTIGRAVITY_THINKING_LEVEL_MODELS: Record<string, string> = {
+  "gemini-3.7-flash": "medium",
+};
+
+// `minimal` is deliberately absent: Google documents it as unsupported for the current
+// Flash generation, where it is an error rather than a quieter tier.
+const ANTIGRAVITY_THINKING_LEVELS = new Set(["low", "medium", "high"]);
 
 function resolveAntigravityThinkingLevel(effort: string): string | undefined {
   if (effort === "xhigh" || effort === "max" || effort === "ultra") return "high";
@@ -83,16 +113,17 @@ const ANTIGRAVITY_VISIBLE_MODEL_ALIASES: Record<string, string> = {
 // Wire suffix IDs are identity aliases — they resolve to themselves so saved configs
 // with explicit suffixes (e.g. gemini-3.6-flash-low) continue to work.
 const ANTIGRAVITY_COMPATIBILITY_MODEL_ALIASES: Record<string, string> = {
-  "gemini-3.6-flash-low": "gemini-3.6-flash-low",
-  "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
-  "gemini-3.6-flash-high": "gemini-3.6-flash-high",
   "gemini-3.1-pro-low": "gemini-3.1-pro-low",
   "gemini-pro-agent": "gemini-pro-agent",
-  "gemini-3.5-flash-extra-low": "gemini-3.6-flash-low",
-  "gemini-3.5-flash-low": "gemini-3.6-flash-medium",
-  "gemini-3.5-flash-mid": "gemini-3.6-flash-medium",
-  "gemini-3.5-flash-high": "gemini-3.6-flash-high",
-  "gemini-3-flash-agent": "gemini-3.6-flash-high",
+  // ── Retired Flash generations ──
+  // Google takes the previous Antigravity Flash model offline almost immediately
+  // once its successor ships, so 3.6 (and the 3.5 ids that used to land on it)
+  // route to 3.7. These stay in the alias map — not only in the tier map below —
+  // because `parseAntigravityAvailableModels` uses THIS map to keep a stale CCA
+  // payload from republishing a dead wire id as a picker row.
+  ...Object.fromEntries(
+    Object.keys(RETIRED_FLASH_TIERS).map(retired => [retired, GEMINI_FLASH_CURRENT]),
+  ),
 };
 
 export const ANTIGRAVITY_MODEL_ALIASES: Record<string, string> = {
@@ -102,7 +133,7 @@ export const ANTIGRAVITY_MODEL_ALIASES: Record<string, string> = {
 
 // Picker-visible: collapsed base models only.
 export const ANTIGRAVITY_MODELS = [
-  "gemini-3.6-flash",
+  GEMINI_FLASH_CURRENT,
   "gemini-3.1-pro",
   "gemini-3.1-flash-image",
   "claude-sonnet-4-6",
@@ -112,9 +143,7 @@ export const ANTIGRAVITY_MODELS = [
 
 // Context windows from the upstream `:fetchAvailableModels` maxTokens per model.
 const ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  "gemini-3.6-flash-low": 1_048_576,
-  "gemini-3.6-flash-medium": 1_048_576,
-  "gemini-3.6-flash-high": 1_048_576,
+  "gemini-3.7-flash": 1_048_576,
   "gemini-3.1-pro-low": 1_048_576,
   "gemini-pro-agent": 1_048_576,
   "gemini-3.1-flash-image": 1_048_576,
@@ -125,7 +154,7 @@ const ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 
 export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   // Collapsed base IDs — explicit entries for the picker.
-  "gemini-3.6-flash": 1_048_576,
+  "gemini-3.7-flash": 1_048_576,
   "gemini-3.1-pro": 1_048_576,
   // Wire IDs and aliases via derivation.
   ...ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS,
@@ -138,7 +167,11 @@ export const ANTIGRAVITY_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 };
 
 export const ANTIGRAVITY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
-  "gemini-3.6-flash": ["text", "image"],
+  // Google documents 3.7 Flash as also accepting video, audio and PDF, but this proxy
+  // carries only text and image parts (`OcxImageContent`, src/types.ts) and the Codex
+  // catalog normalizes `input_modalities` against a closed enum. Advertising a modality
+  // the wire cannot carry would be a promise we break at request time.
+  "gemini-3.7-flash": ["text", "image"],
   "gemini-3.1-pro": ["text", "image"],
   "gemini-3.1-flash-image": ["text", "image"],
   "claude-sonnet-4-6": ["text", "image"],
@@ -244,6 +277,11 @@ export function isAntigravitySuffixModelId(modelId: string): boolean {
   return !(ANTIGRAVITY_MODELS as string[]).includes(modelId);
 }
 
+/** The reasoning tier a retired Flash id used to encode, if it is one. */
+export function retiredAntigravityFlashTier(modelId: string): string | undefined {
+  return RETIRED_FLASH_TIERS[modelId];
+}
+
 /**
  * Resolve a picker-visible base model + optional reasoning effort to the CCA wire model ID.
  *
@@ -258,9 +296,30 @@ export function resolveAntigravityEffortWireModel(
   modelId: string,
   effort?: string,
 ): { wireModelId: string; thinkingLevel?: string } {
+  // Rule 0: retired Flash id — Google has taken the wire id offline, so route to the
+  // current generation and carry the tier the retired id encoded. This runs BEFORE the
+  // suffix check because those ids are aliases, and rule 1 would drop the tier.
+  const retiredTier = RETIRED_FLASH_TIERS[modelId];
+  if (retiredTier) {
+    return {
+      wireModelId: GEMINI_FLASH_CURRENT,
+      thinkingLevel: effort ? resolveAntigravityThinkingLevel(effort) ?? retiredTier : retiredTier,
+    };
+  }
+
   // Rule 1: suffix/compat alias — suffix IS the effort.
   if (isAntigravitySuffixModelId(modelId)) {
     return { wireModelId: resolveAntigravityWireModelId(modelId) };
+  }
+
+  // Rule 1b: single-wire-id Gemini model whose tiers ride on thinkingLevel. Without
+  // this the model falls to rule 5 and silently loses reasoning control entirely.
+  const defaultLevel = ANTIGRAVITY_THINKING_LEVEL_MODELS[modelId];
+  if (defaultLevel) {
+    return {
+      wireModelId: modelId,
+      thinkingLevel: effort ? resolveAntigravityThinkingLevel(effort) ?? defaultLevel : defaultLevel,
+    };
   }
 
   // Rule 2/3: mapped Gemini base model.
@@ -301,6 +360,12 @@ const ANTIGRAVITY_USAGE_BASE_BY_ID: Record<string, string> = (() => {
     // If alias is itself a base/wire already mapped, keep that mapping.
     else if (rev[wire]) rev[alias] = rev[wire]!;
   }
+  // Retired ids keep their OWN identity for usage aggregation, overriding the alias
+  // pass above. Routing sends new 3.6 calls to 3.7, but a usage row written months ago
+  // records a model the user actually called: relabelling it would move historical spend
+  // onto a model that did not exist then, and away from the 3.6 price row that still
+  // prices it correctly. Retirement changes what we CALL, not what we RECORD.
+  for (const retired of Object.keys(RETIRED_FLASH_TIERS)) rev[retired] = retired;
   // Visible aliases that only appear in ANTIGRAVITY_VISIBLE_MODEL_ALIASES are already
   // included via ANTIGRAVITY_MODEL_ALIASES. Identity bases without effort maps remain.
   return rev;

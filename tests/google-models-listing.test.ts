@@ -86,15 +86,15 @@ describe("Antigravity live model discovery", () => {
       seen.push({ url: String(input), init });
       return Response.json({
         models: {
-          "gemini-3.6-flash-low": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 1000 },
-          "gemini-3.6-flash-high": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
+          "gemini-3.1-pro-low": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 1000 },
+          "gemini-3.7-flash": { maxTokens: 1_048_576, supportsImages: true, supportsThinking: true, thinkingBudget: 10000 },
           "future-agent-model": { maxTokens: 333_333, supportsImages: false, supportsThinking: true, thinkingBudget: 7777 },
           "gemini-3.1-flash-image": { maxTokens: 555_555, supportsImages: true },
           "non-agent-command-model": { maxTokens: 222_222 },
           "tab-only-model": { maxTokens: 32_768 },
         },
         agentModelSorts: [{ groups: [{ modelIds: [
-          "future-agent-model", "gemini-3.6-flash-low", "gemini-3.6-flash-high",
+          "future-agent-model", "gemini-3.1-pro-low", "gemini-3.7-flash",
         ] }] }],
         imageGenerationModelIds: ["gemini-3.1-flash-image"],
         tabModelIds: ["tab-only-model"],
@@ -121,10 +121,10 @@ describe("Antigravity live model discovery", () => {
       expect(live.map(model => model.id).sort()).toEqual([
         "future-agent-model",
         "gemini-3.1-flash-image",
-        "gemini-3.6-flash-high",
-        "gemini-3.6-flash-low",
+        "gemini-3.1-pro-low",
+        "gemini-3.7-flash",
       ]);
-      expect(live.find(model => model.id === "gemini-3.6-flash-low")).toMatchObject({
+      expect(live.find(model => model.id === "gemini-3.1-pro-low")).toMatchObject({
         contextWindow: 1_048_576,
         inputModalities: ["text", "image"],
         reasoningEfforts: [],
@@ -138,8 +138,8 @@ describe("Antigravity live model discovery", () => {
       expect(live.map(model => model.id)).not.toContain("non-agent-command-model");
 
       const catalog = buildCatalogEntries(null, [], live);
-      const flashLow = catalog.find(entry => entry.slug === "google-antigravity/gemini-3.6-flash-low");
-      const flashHigh = catalog.find(entry => entry.slug === "google-antigravity/gemini-3.6-flash-high");
+      const flashLow = catalog.find(entry => entry.slug === "google-antigravity/gemini-3.1-pro-low");
+      const flashHigh = catalog.find(entry => entry.slug === "google-antigravity/gemini-3.7-flash");
       const future = catalog.find(entry => entry.slug === "google-antigravity/future-agent-model");
       expect(flashLow).toMatchObject({
         context_window: 1_048_576,
