@@ -28,6 +28,7 @@ export interface LedgerStore {
 export interface LedgerMutationContext {
   replay(): ReplayResult;
   append(event: LabEvent): void;
+  appendIfAbsent(event: LabEvent): boolean;
 }
 
 const LEDGER_LOCK_STALE_MS = 60_000;
@@ -180,17 +181,25 @@ function appendValidatedLabEvent(ledgerPath: string, event: LabEvent): void {
 
 /**
  * Serialize a ledger read-modify-write transaction with all ordinary appends.
- * The callback receives lock-aware replay and append operations so callers do
- * not have to reacquire the non-reentrant lock.
+ * The callback receives lock-aware operations so callers that also publish
+ * artifacts can keep artifact writes and the corresponding event atomic with
+ * respect to sensitive purge.
  */
 export function withLedgerMutation<T>(
   ledgerPath: string,
   fn: (mutation: LedgerMutationContext) => T,
 ): T {
-  return withLedgerLock(ledgerPath, () => fn({
-    replay: () => replayLabLedger(ledgerPath),
-    append: (event) => appendValidatedLabEvent(ledgerPath, validateLabEvent(event)),
-  }));
+  return withLedgerLock(ledgerPath, () => {
+    const replay = () => replayLabLedger(ledgerPath);
+    const append = (event: LabEvent) => appendValidatedLabEvent(ledgerPath, validateLabEvent(event));
+    const appendIfAbsent = (event: LabEvent): boolean => {
+      const validated = validateLabEvent(event);
+      if (replay().events.some((row) => row.eventId === validated.eventId)) return false;
+      appendValidatedLabEvent(ledgerPath, validated);
+      return true;
+    };
+    return fn({ replay, append, appendIfAbsent });
+  });
 }
 
 /** Durable append of one validated event as a single JSONL line + fsync. */
@@ -202,22 +211,12 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
 }
 
 /**
- * Append only when eventId is absent. Uses an exclusive lock file and refreshes
- * the event-id index under the same mutation lock used by every ledger writer.
+ * Append only when eventId is absent. Uses the same mutation lock as every
+ * other ledger writer so the presence check and append are one transaction.
  */
 export function appendLabEventIfAbsent(ledgerPath: string, event: LabEvent): boolean {
   const validated = validateLabEvent(event);
-  return withLedgerMutation(ledgerPath, (mutation) => {
-    const fresh = new Set<string>();
-    if (existsSync(ledgerPath)) {
-      for (const row of mutation.replay().events) {
-        fresh.add(row.eventId);
-      }
-    }
-    if (fresh.has(validated.eventId)) return false;
-    mutation.append(validated);
-    return true;
-  });
+  return withLedgerMutation(ledgerPath, (mutation) => mutation.appendIfAbsent(validated));
 }
 
 function processLine(
