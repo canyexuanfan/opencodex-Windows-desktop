@@ -529,7 +529,7 @@ describe("DSH source preservation", () => {
     );
   });
 
-  test("an edit inside the owned DSH leaf conflicts and survives", () => {
+  test("an edit inside the owned DSH leaf refuses refresh and disable, preserving the edit", () => {
     const configPath = installDsh();
     expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
     const edited = readFileSync(configPath, "utf8").replace(
@@ -537,10 +537,51 @@ describe("DSH source preservation", () => {
       "api: user-edited",
     );
     writeFileSync(configPath, edited);
+
+    const refreshed = applyIntegration(input({
+      clientId: "dsh",
+      models: [...MODELS, {
+        namespaced: "openai/gpt-5.6",
+        provider: "openai",
+        id: "gpt-5.6",
+        contextWindow: 272_000,
+      }],
+    }));
+    expect(refreshed.ok).toBe(false);
+    if (!refreshed.ok) expect(refreshed.reason).toBe("conflict");
+    expect(readFileSync(configPath, "utf8")).toBe(edited);
+
     const disabled = disableIntegration(input({ clientId: "dsh" }));
     expect(disabled.ok).toBe(false);
     if (!disabled.ok) expect(disabled.reason).toBe("conflict");
     expect(readFileSync(configPath, "utf8")).toBe(edited);
+  });
+
+  test("restores a disabled DSH integration to the exact applied bytes", () => {
+    const configPath = installDsh();
+    const original = [
+      "agent-default-model: deepseek-official/deepseek-chat",
+      "llm-pi-ai:",
+      "  providers:",
+      "    deepseek-official:",
+      "      api: openai-completions # native stays",
+      "",
+    ].join("\n");
+    writeFileSync(configPath, original);
+
+    expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    const applied = readFileSync(configPath, "utf8");
+    expect(disableIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+
+    const disableOperation = store.listOperations("dsh")[0]!;
+    expect(disableOperation.kind).toBe("disable");
+    const restored = restoreIntegration({
+      ...input({ clientId: "dsh" }),
+      opId: disableOperation.opId,
+    });
+    expect(restored.ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(applied);
   });
 
   test("a sibling added below a container we created survives disable", () => {
