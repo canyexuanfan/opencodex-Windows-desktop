@@ -227,15 +227,17 @@ describe("CL-10 deep-review trust regressions", () => {
   test("duplicate-key diagnostics are bounded and do not reflect attacker-controlled key contents", () => {
     const key = `SECRET-${"x".repeat(64 * 1024)}`;
     const raw = Buffer.from(`{${JSON.stringify(key)}:1,${JSON.stringify(key)}:2}`, "utf8");
+    let failure: unknown;
     try {
       parseStrictPublicJson(raw);
-      throw new Error("expected duplicate-key rejection");
     } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-      const message = (error as Error).message;
-      expect(message.length).toBeLessThan(256);
-      expect(message).not.toContain("SECRET-");
+      failure = error;
     }
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/duplicate json object key/i);
+    expect(message.length).toBeLessThan(256);
+    expect(message).not.toContain("SECRET-");
   });
 
   test("privacy scanner rejects unbracketed IPv6 literals", () => {
