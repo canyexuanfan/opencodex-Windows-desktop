@@ -18,6 +18,7 @@ import { parseDataUrl } from "./image";
 const COMMAND_CODE_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "kimi-k3": "moonshotai/Kimi-K3",
+  "glm-5.3": "zai-org/GLM-5.3",
   "glm-5.2": "zai-org/GLM-5.2",
 };
 

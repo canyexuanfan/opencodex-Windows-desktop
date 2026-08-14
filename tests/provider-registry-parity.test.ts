@@ -59,6 +59,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
     // Zen Go text-only models are vision-sidecar covered; Kimi K2.7 Code is multimodal and must NOT be listed.
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual([
+      "glm-5.3",
       "glm-5.2", "glm-5", "glm-5.1",
       "deepseek-v4-flash", "deepseek-v4-pro",
       "mimo-v2-pro", "mimo-v2.5-pro",
@@ -298,7 +299,7 @@ describe("provider registry parity", () => {
       liveModels: false,
       models: [
         "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-        "glm-5.2", "deepseek-v4-pro",
+        "glm-5.3", "glm-5.2", "deepseek-v4-pro",
       ],
       modelInputModalities: {
         "qwen3.8-max": ["text", "image"],
@@ -313,7 +314,7 @@ describe("provider registry parity", () => {
         "qwen3.7-max": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
       },
-      noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
+      noVisionModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro"],
       preserveReasoningContentModels: expect.arrayContaining(["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus"]),
     });
     expect(PROVIDER_REGISTRY.find(entry => entry.id === "alibaba-token-plan")?.directReasoningEffortModels)
@@ -330,6 +331,7 @@ describe("provider registry parity", () => {
 
     const neuralwatt = PROVIDER_REGISTRY.find(entry => entry.id === "neuralwatt");
     expect(neuralwatt?.models).toEqual([
+      "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "kimi-k2.6", "kimi-k2.6-fast", "kimi-k2.7-code",
       "qwen3.5-397b", "qwen3.5-397b-fast", "qwen3.6-35b", "qwen3.6-35b-fast",
@@ -344,6 +346,7 @@ describe("provider registry parity", () => {
     expect(neuralwatt?.noReasoningModels).toContain("glm-5.2-short-fast");
     expect(neuralwatt?.noReasoningModels).not.toContain("kimi-k2.5-fast");
     expect(neuralwatt?.noVisionModels).toEqual([
+      "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "qwen3.5-397b", "qwen3.5-397b-fast",
     ]);
@@ -356,7 +359,7 @@ describe("provider registry parity", () => {
     const optedInProviders = PROVIDER_REGISTRY
       .filter(entry => entry.modelSuffixBracketStrip)
       .map(entry => entry.id);
-    expect(zai?.modelContextWindows).toEqual({ "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
+    expect(zai?.modelContextWindows).toEqual({ "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
     expect(providerConfigSeed(zai!).modelSuffixBracketStrip).toBe(true);
     // `zhipu-bigmodel-coding` opts in for the same reason `zai` does: it serves the same
     // bracketed GLM ids, and that vendor's OpenAI path returns 400 code 1211 for them.
@@ -553,7 +556,7 @@ describe("provider registry parity", () => {
     const ollamaCloud = PROVIDER_REGISTRY.find(entry => entry.id === "ollama-cloud");
 
     expect(ollamaCloud?.models).toEqual([
-      "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b",
+      "glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b",
       "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b",
     ]);
     expect(ollamaCloud?.models).not.toContain("qwen3-coder");

@@ -28,6 +28,9 @@ const CURSOR_MODEL_EFFORT_TIERS: Record<string, readonly string[]> = {
   "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
   "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
   "glm-5.2": ["high", "max"],
+  // 260814 preemptive: glm-5.3 seeded ahead of Cursor's lineup update. Unlike 5.2, Z.AI folds
+  // 5.3 efforts into low/high/max (docs.z.ai/devpack/latest-model), so `low` is a real tier.
+  "glm-5.3": ["low", "high", "max"],
   // GetUsableModels (2026-07-28) lists kimi-k3 only as effort-suffixed kimi-k3-{low,high,max};
   // the bare id returns not_found. Tiers mirror the native Kimi provider's K3 ladder.
   "kimi-k3": ["low", "high", "max"],

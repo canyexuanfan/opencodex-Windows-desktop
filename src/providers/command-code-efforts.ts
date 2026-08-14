@@ -9,6 +9,10 @@ const COMMAND_CODE_MODEL_EFFORTS = {
     efforts: ["high", "max"],
     profileUrl: "https://commandcode.ai/models/deepseek-v4-flash",
   },
+  "zai-org/glm-5.3": {
+    efforts: ["low", "high", "max"],
+    profileUrl: "https://commandcode.ai/models/glm-5-3",
+  },
   "zai-org/glm-5.2": {
     efforts: ["high", "max"],
     profileUrl: "https://commandcode.ai/models/glm-5-2",

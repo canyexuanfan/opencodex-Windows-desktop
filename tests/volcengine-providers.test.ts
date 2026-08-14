@@ -59,6 +59,7 @@ describe("Volcengine Ark providers", () => {
         "doubao-seed-2.0-code",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
+        "glm-5.3",
         "glm-5.2",
         "kimi-k2.6",
         "minimax-m3",
@@ -91,6 +92,7 @@ describe("Volcengine Ark providers", () => {
       models: [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
+        "glm-5.3",
         "glm-5.2",
         "kimi-k2.6",
         "minimax-m3",
