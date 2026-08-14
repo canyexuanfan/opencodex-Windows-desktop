@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExportModel } from "../src/clients/config-export";
@@ -89,6 +90,19 @@ describe("DSH sibling writer lock", () => {
       .rejects.toThrow("boom");
     expect(removes).toBe(1);
   });
+
+  test("keeps the protected operation error when release also fails", async () => {
+    const boom = new Error("boom");
+    const seams: IntegrationWriterLockSeams = {
+      writeFile: async () => {},
+      removeFile: async () => { throw new Error("release failed"); },
+      now: () => 0,
+      delay: async () => {},
+      pid: 1,
+    };
+    await expect(withIntegrationWriterLock("/tmp/settings.yaml", async () => { throw boom; }, seams))
+      .rejects.toBe(boom);
+  });
 });
 
 const MODELS: ExportModel[] = [
@@ -154,6 +168,27 @@ describe("DSH coordinated mutations", () => {
     const second = await applyIntegrationCoordinated(writeInput(), { lockSeams: seams });
     expect(second).toMatchObject({ ok: true, changed: false, state: "current" });
     expect(acquisitions).toBe(2);
+  });
+
+  test("a real settings.yaml.lock contender becomes the typed coordinated busy error", async () => {
+    const dshHome = INTEGRATION_CLIENTS.dsh.detectDir({}, home);
+    mkdirSync(dshHome, { recursive: true });
+    const configPath = INTEGRATION_CLIENTS.dsh.configPath({}, home);
+    const lockPath = `${configPath}.lock`;
+    writeFileSync(lockPath, "1\n", { mode: 0o600 });
+    let clockReads = 0;
+    const seams: IntegrationWriterLockSeams = {
+      writeFile: async (path, payload, options) => { await writeFile(path, payload, options); },
+      removeFile: async path => { await rm(path); },
+      now: () => clockReads++ === 0 ? 0 : 2_001,
+      delay: async () => {},
+      pid: 123,
+    };
+
+    await expect(applyIntegrationCoordinated(writeInput(), { lockSeams: seams }))
+      .rejects.toBeInstanceOf(IntegrationWriterLockBusyError);
+    expect(readFileSync(lockPath, "utf8")).toBe("1\n");
+    expect(existsSync(configPath)).toBe(false);
   });
 
   test("freezes environment and path before awaiting lock acquisition", async () => {

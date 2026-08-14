@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  DSH_E2E_TOOL_CALLS,
   DSH_RC6_VERSION,
   assertExpectedDshVersion,
   buildDshChildEnv,
+  hasExpectedDshToolOutputs,
   renderDshSettings,
 } from "../scripts/dsh-rc6-compat-e2e";
 
@@ -63,5 +65,20 @@ describe("optional DSH rc.6 compatibility E2E helpers", () => {
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
+  });
+
+  test("requires two distinct parallel tool outputs correlated by call id", () => {
+    expect(new Set(DSH_E2E_TOOL_CALLS.map(call => call.callId)).size).toBe(2);
+    const matching = DSH_E2E_TOOL_CALLS.map(call => ({
+      type: "function_call_output",
+      call_id: call.callId,
+      output: `${call.marker}\n`,
+    }));
+    expect(hasExpectedDshToolOutputs(matching)).toBe(true);
+    expect(hasExpectedDshToolOutputs(matching.slice(0, 1))).toBe(false);
+    expect(hasExpectedDshToolOutputs(matching.map((item, index) => ({
+      ...item,
+      output: matching[(index + 1) % matching.length]!.output,
+    })))).toBe(false);
   });
 });

@@ -33,7 +33,8 @@ export class IntegrationWriterLockIOError extends Error {
 
 const defaultSeams: IntegrationWriterLockSeams = {
   writeFile: async (path, payload, options) => { await writeFile(path, payload, options); },
-  removeFile: async path => { await rm(path); },
+  // Match DSH rc.6: an already-absent lock is a successful release.
+  removeFile: async path => { await rm(path, { force: true }); },
   now: () => Date.now(),
   delay: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
   pid: process.pid,
@@ -76,13 +77,19 @@ export async function withIntegrationWriterLock<T>(
     }
   }
 
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
-    return await operation();
-  } finally {
-    try {
-      await seams.removeFile(lockPath);
-    } catch (error) {
-      throw new IntegrationWriterLockIOError(lockPath, "release", error);
-    }
+    outcome = { ok: true, value: await operation() };
+  } catch (error) {
+    outcome = { ok: false, error };
   }
+  try {
+    await seams.removeFile(lockPath);
+  } catch (error) {
+    // Cleanup cannot replace the protected operation's actual failure.
+    if (!outcome.ok) throw outcome.error;
+    throw new IntegrationWriterLockIOError(lockPath, "release", error);
+  }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }

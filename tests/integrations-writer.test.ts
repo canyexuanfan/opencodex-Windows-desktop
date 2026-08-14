@@ -518,6 +518,11 @@ describe("DSH source preservation", () => {
       contextWindow: 272_000,
     }];
     expect(applyIntegration(input({ clientId: "dsh", models: refreshedModels })).ok).toBe(true);
+    const refreshed = Bun.YAML.parse(readFileSync(configPath, "utf8")) as {
+      "llm-pi-ai": { providers: { opencodex: { models: Array<{ id: string }> } } };
+    };
+    expect(refreshed["llm-pi-ai"].providers.opencodex.models.map(model => model.id))
+      .toContain("openai/gpt-5.6");
     expect(disableIntegration(input({ clientId: "dsh", models: refreshedModels })).ok).toBe(true);
     expect(readFileSync(configPath, "utf8")).toBe(
       original.replace("# DSH user header", "# DSH user header edited"),

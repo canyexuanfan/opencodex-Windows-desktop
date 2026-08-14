@@ -58,6 +58,8 @@ describe("DSH 0.1.0-rc.6 path contract", () => {
     expect(parsed).toHaveProperty("llm-pi-ai.providers.acme-gateway.api", "openai-completions");
     expect(parsed).toHaveProperty("llm-pi-ai.providers.acme-gateway.models.1.reasoningEfforts.max", "ultra");
     expect(text).not.toContain("Bearer ");
-    expect(text).not.toContain("api_key");
+    // Env references are allowed (`apiKeyEnv`); literal credential fields are not.
+    expect(text).not.toMatch(/^\s*api[-_]?key\s*:/imu);
+    expect(text).not.toMatch(/\bsk-[a-z0-9]/iu);
   });
 });

@@ -13,6 +13,10 @@ const RUN_TIMEOUT_MS = 60_000;
 const TEMPLATE_PLACEHOLDER = "__OCX_BASE_URL__";
 const E2E_MODEL = "dsh-e2e-reasoner";
 const MISSING_MODEL = "dsh-e2e-missing";
+export const DSH_E2E_TOOL_CALLS = [
+  { id: "fc_dsh_e2e_alpha", callId: "call_dsh_e2e_alpha", filePath: "probe-alpha.txt", marker: "TOOL_ALPHA" },
+  { id: "fc_dsh_e2e_beta", callId: "call_dsh_e2e_beta", filePath: "probe-beta.txt", marker: "TOOL_BETA" },
+] as const;
 const CREDENTIAL_ENV_PATTERN = /(?:_API_KEY|_API_TOKEN|_AUTH_TOKEN|_ACCESS_TOKEN|_SECRET_ACCESS_KEY)$/i;
 
 type StringEnv = Record<string, string | undefined>;
@@ -155,25 +159,51 @@ function usage() {
 }
 
 function toolResponse(): Response {
-  const item = {
+  const items = DSH_E2E_TOOL_CALLS.map(call => ({
     type: "function_call",
-    id: "fc_dsh_e2e",
-    call_id: "call_dsh_e2e",
+    id: call.id,
+    call_id: call.callId,
     name: "read",
-    arguments: JSON.stringify({ file_path: "probe.txt" }),
+    arguments: JSON.stringify({ file_path: call.filePath }),
     status: "completed",
-  };
-  return sse([
+  }));
+  const events: Array<Record<string, unknown>> = [
     { type: "response.created", response: { id: "resp_dsh_e2e_tool", status: "in_progress", output: [] } },
-    { type: "response.output_item.added", output_index: 0, item: { ...item, arguments: "", status: "in_progress" } },
-    { type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: item.arguments },
-    { type: "response.function_call_arguments.done", output_index: 0, item_id: item.id, arguments: item.arguments },
-    { type: "response.output_item.done", output_index: 0, item },
+  ];
+  // Interleave both calls so rc.6 must keep their indices and call ids distinct.
+  items.forEach((item, outputIndex) => {
+    events.push({
+      type: "response.output_item.added",
+      output_index: outputIndex,
+      item: { ...item, arguments: "", status: "in_progress" },
+    });
+  });
+  items.forEach((item, outputIndex) => {
+    events.push({
+      type: "response.function_call_arguments.delta",
+      output_index: outputIndex,
+      item_id: item.id,
+      delta: item.arguments,
+    });
+  });
+  items.forEach((item, outputIndex) => {
+    events.push({
+      type: "response.function_call_arguments.done",
+      output_index: outputIndex,
+      item_id: item.id,
+      arguments: item.arguments,
+    });
+  });
+  items.forEach((item, outputIndex) => {
+    events.push({ type: "response.output_item.done", output_index: outputIndex, item });
+  });
+  events.push(
     {
       type: "response.completed",
-      response: { id: "resp_dsh_e2e_tool", status: "completed", output: [item], usage: usage() },
+      response: { id: "resp_dsh_e2e_tool", status: "completed", output: items, usage: usage() },
     },
-  ]);
+  );
+  return sse(events);
 }
 
 function textResponse(text: string, suffix: string): Response {
@@ -202,6 +232,19 @@ function finalResponse(): Response {
 
 function hasReadTool(request: UpstreamRequest): boolean {
   return (request.tools ?? []).some(tool => tool.name === "read" || tool.function?.name === "read");
+}
+
+/** Both results must correlate to the exact call id that requested their file. */
+export function hasExpectedDshToolOutputs(input: unknown): boolean {
+  if (!Array.isArray(input)) return false;
+  const outputs = new Map<string, string>();
+  for (const item of input) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const record = item as { type?: unknown; call_id?: unknown; output?: unknown };
+    if (record.type !== "function_call_output" || typeof record.call_id !== "string") continue;
+    outputs.set(record.call_id, typeof record.output === "string" ? record.output : (JSON.stringify(record.output) ?? ""));
+  }
+  return DSH_E2E_TOOL_CALLS.every(call => outputs.get(call.callId)?.includes(call.marker) === true);
 }
 
 function opencodexConfig(baseUrl: string): OcxConfig {
@@ -241,7 +284,9 @@ async function runCompatibilityE2E(): Promise<void> {
   const dshHome = join(root, "dsh-home");
   const workspace = join(root, "workspace");
   for (const dir of [ocxHome, childHome, dshHome, workspace]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(workspace, "probe.txt"), "TOOL_OK\n", { mode: 0o600 });
+  for (const call of DSH_E2E_TOOL_CALLS) {
+    writeFileSync(join(workspace, call.filePath), `${call.marker}\n`, { mode: 0o600 });
+  }
 
   const previousOpenCodexHome = process.env.OPENCODEX_HOME;
   const requests: UpstreamRequest[] = [];
@@ -262,18 +307,18 @@ async function runCompatibilityE2E(): Promise<void> {
         }
         const request = await req.json() as UpstreamRequest;
         requests.push(request);
-        const hasToolOutput = JSON.stringify(request.input).includes("TOOL_OK");
+        const hasToolOutputs = hasExpectedDshToolOutputs(request.input);
         if (requests.length === 1) {
           if (request.model !== E2E_MODEL) return new Response("unexpected model", { status: 400 });
           if (request.reasoning?.effort !== "high") return new Response("unexpected reasoning effort", { status: 400 });
           if (!hasReadTool(request)) return new Response("read tool missing", { status: 400 });
           return toolResponse();
         }
-        if (hasToolOutput && hasReadTool(request)) {
+        if (hasToolOutputs && hasReadTool(request)) {
           return finalResponse();
         }
         // rc.6 performs one no-tools title request alongside the two Agent data steps.
-        if (!hasToolOutput && !hasReadTool(request)) return textResponse("DSH E2E", "title");
+        if (!hasToolOutputs && !hasReadTool(request)) return textResponse("DSH E2E", "title");
         return new Response("unexpected DSH request shape", { status: 400 });
       },
     });
@@ -286,7 +331,7 @@ async function runCompatibilityE2E(): Promise<void> {
 
     const success = await runCommand(
       dshBin,
-      ["--profile", "headless", "Read probe.txt with the read tool, then report the result."],
+      ["--profile", "headless", "Read probe-alpha.txt and probe-beta.txt with the read tool, then report both results."],
       { cwd: workspace, env: childEnv, timeoutMs: RUN_TIMEOUT_MS },
     );
     if (success.exitCode !== 0) throw new Error("DSH success scenario exited non-zero");
@@ -310,7 +355,7 @@ async function runCompatibilityE2E(): Promise<void> {
     }
     if (requests.length !== beforeUnknown) throw new Error("DSH unknown-model scenario reached the upstream server");
 
-    console.log(`DSH ${DSH_RC6_VERSION} compatibility E2E passed: tool continuation and unknown-model refusal`);
+    console.log(`DSH ${DSH_RC6_VERSION} compatibility E2E passed: parallel tool continuation and unknown-model refusal`);
   } finally {
     if (proxy) await proxy.stop(true);
     upstream?.stop(true);

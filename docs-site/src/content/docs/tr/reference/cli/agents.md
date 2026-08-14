@@ -255,6 +255,9 @@ döngünün ötesine bağlandığında ayarlayın; kabul anahtarlarının nasıl
 görmek için [Uzaktan erişim](/tr/reference/configuration/#remote-access)
 bölümüne bakın. Yukarı akış sağlayıcılarının kendi anahtarları tamamen ayrı bir
 şeydir ve [Sağlayıcılar](/tr/guides/providers/) bölümüne göre yapılandırılır.
+Gajae istisnadır: `OPENCODEX_GAJAE_API_KEY` provider kimlik bilgisini ortamdan
+sağlar, ancak şeması uzaktan kabul başlığını gönderemediği için üretilen Gajae
+entegrasyonu yalnızca geri döngüde çalışır.
 
 Aynı yük `GET /api/client-config` tarafından sunulur ve kontrol panelinin API
 sekmesinde işlenir; böylece CLI, API ve GUI aynı baytları kullanır.
@@ -275,4 +278,3 @@ ocx system settings --stream-mode eager-relay
 Doğrulanmış OpenCodex yapılandırmasını inceleyin ve güvenle değiştirin. `show`
 ve `get` sırları maskeler. İçe aktarma yazmadan önce doğrular ve `--yes`
 gerektirir.
-

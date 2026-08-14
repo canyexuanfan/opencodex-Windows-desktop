@@ -230,6 +230,9 @@ the proxy binds beyond loopback; see
 [Remote access](/reference/configuration/#remote-access) for how admission keys are issued. Keys for
 the upstream providers themselves are a separate thing entirely, configured per
 [Providers](/guides/providers/).
+Gajae is the exception: `OPENCODEX_GAJAE_API_KEY` fills its provider credential from the
+environment, but its schema cannot send the remote admission header, so the generated Gajae
+integration remains loopback-only.
 
 The same payload is served by `GET /api/client-config` and rendered on the dashboard's API tab, so
 the CLI, the API, and the GUI use the same bytes.

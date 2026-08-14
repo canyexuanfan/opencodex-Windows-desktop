@@ -164,7 +164,7 @@ opencode は `{env:OPENCODEX_OPENCODE_API_KEY}` を補間します。opencodex �
 `ocx export` は実際のクライアント設定を書き込むことはありません。宛先は手動でマージできるように出力されます。`--out` は、`--force` なしで既存のファイルを上書きすることを拒否します。これは、設定を置き換えると、その中にすでに含まれている他のプロバイダー、エージェント、および MCP エントリが破壊されるためです。
 :::
 
-キーはシリアル化されません。opencode、Hermes、OpenClaw の設定には環境参照のみが含まれるためシークレットは環境内に残り、Pi、OMP、Kimi、Gajae、DSH の設定には認証情報ではなくループバック用プレースホルダーが入ります。ループバック プロキシ (`127.0.0.1`、デフォルト) にはアドミッション キーはまったく必要ありません。プロキシがループバックを超えてバインドする場合は、対応する `OPENCODEX_OPENCODE_API_KEY`、`OPENCODEX_HERMES_API_KEY`、または `OPENCODEX_OPENCLAW_API_KEY` を設定します。生成される Pi、OMP、Kimi、Gajae、DSH 統合はループバック専用です。アドミッションキーの発行方法については、[リモートアクセス](/reference/configuration/#remote-access) を参照してください。上流プロバイダー自体のキーは完全に別のものであり、[プロバイダー](/guides/providers/) ごとに構成されます。
+キーはシリアル化されません。opencode、Hermes、OpenClaw、Gajae の設定には環境参照のみが含まれるためシークレットは環境内に残り、Pi、OMP、Kimi、DSH の設定には認証情報ではなくループバック用プレースホルダーが入ります。ループバック プロキシ (`127.0.0.1`、デフォルト) にはアドミッション キーはまったく必要ありません。プロキシがループバックを超えてバインドする場合は、対応する `OPENCODEX_OPENCODE_API_KEY`、`OPENCODEX_HERMES_API_KEY`、または `OPENCODEX_OPENCLAW_API_KEY` を設定します。`OPENCODEX_GAJAE_API_KEY` は Gajae の provider 認証値を環境から渡しますが、remote admission header は送れないため、生成される Gajae 統合は Pi、OMP、Kimi、DSH と同様にループバック専用です。アドミッションキーの発行方法については、[リモートアクセス](/reference/configuration/#remote-access) を参照してください。上流プロバイダー自体のキーは完全に別のものであり、[プロバイダー](/guides/providers/) ごとに構成されます。
 
 同じペイロードが `GET /api/client-config` によって提供され、ダッシュボードの [API] タブにレンダリングされるため、CLI、API、および GUI は同じバイトを使用します。
 
