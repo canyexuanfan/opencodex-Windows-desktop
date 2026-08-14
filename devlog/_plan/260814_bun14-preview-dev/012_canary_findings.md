@@ -39,6 +39,39 @@ the only such key in the tree today, but it is the shape to watch for.
 
 ## F2 — SHASUMS256.txt lags the rolling assets (upstream artifact, not a bug here)
 
+## F1b — An empty PATH is now passed through to children (real upstream change)
+
+**Bun 1.4 stopped ignoring `PATH=""`.** Measured by having a child print its
+own `$PATH` while the parent set `process.env.PATH = ""`:
+
+```text
+1.3.14 → CHILD_PATH=[/Users/…/bin:/opt/homebrew/bin:/usr/bin:/bin:…]   (parent's real PATH)
+1.4.0  → CHILD_PATH=[]                                                 (what was actually set)
+```
+
+1.4 is right. 1.3.14 silently substituted the inherited PATH, so `PATH=""` was
+never really in effect.
+
+Fallout: three tests in `tests/codex-runtime.test.ts` set `PATH=""` to stop
+PATH-based codex discovery, but their fake launchers are `/bin/sh` scripts that
+call `dirname` and `cat`. On 1.3.14 those resolved through the leaked PATH; on
+1.4 they fail with `dirname: No such file or directory`, the launcher exits
+non-zero, `loadBundledCodexCatalog()` returns null, and the assertion sees
+`undefined` where it expected `false`.
+
+The intent was to defeat discovery, not to starve the script of coreutils, so
+the fix is `PATH=/usr/bin:/bin` — utilities reachable, no `codex` on it. Fixed
+in `tests/codex-runtime.test.ts` via a named `NO_CODEX_PATH` constant.
+
+**Worth noticing beyond the test:** any code that clears `PATH` to sandbox a
+child now genuinely gets an empty PATH on 1.4. Checked, and production is
+clear: `rg 'PATH\s*[:=]\s*""|delete .*\.PATH' src/ bin/ scripts/` returns
+nothing, and the one generated shell script in the tree
+(`buildUnixCodexShim`) uses only shell builtins — `printf`, `exit`, `case` —
+so it has no coreutils dependency to lose. The exposure was test-only, but a
+spawn that relied on the old leak would have broken at runtime rather than in
+a test.
+
 ```text
 bun-darwin-aarch64.zip  updated 2026-08-14T11:52:50Z
 SHASUMS256.txt          updated 2026-08-13T14:30:31Z
