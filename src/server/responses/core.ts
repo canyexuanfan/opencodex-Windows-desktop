@@ -3621,9 +3621,13 @@ async function handleResponsesInner(
 
   cancelBodyOnAbort(upstreamResponse.body, upstream.signal);
 
-  // Anthropic-only: one bounded internal continuation re-ask for clean end_turn turns that
-  // announced an edit without emitting a tool call.
-  const terminalGuardEnabled = activeAdapter.name === "anthropic" && !options.comboAttempt && !routedCompaction;
+  // One bounded internal continuation re-ask for clean end_turn turns that announced an edit
+  // without emitting a tool call. Anthropic gets this by default; openai-chat providers opt in
+  // per-provider via `terminalContinuationGuard` (the heuristic was tuned on Anthropic turns,
+  // so it stays off for the shared openai-chat adapter unless a provider enables it).
+  const terminalGuardEnabled = (activeAdapter.name === "anthropic"
+      || (activeAdapter.name === "openai-chat" && route.provider.terminalContinuationGuard === true))
+    && !options.comboAttempt && !routedCompaction;
   /**
    * One bounded internal re-ask for Anthropic end_turn-without-tool-call turns. Replays the
    * continuation on a 429 with the same-key retry budget (hoisted per request), then falls

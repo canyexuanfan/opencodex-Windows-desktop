@@ -1476,6 +1476,18 @@ export interface OcxProviderConfig {
    */
   pinParallelToolCallsFalse?: boolean;
   /**
+   * Opt-in: extend the no-tool-call terminal continuation guard to this provider's
+   * `openai-chat` routed turns. The guard (originally Anthropic-only, see
+   * devlog/_fin/260706_previous-response-id-400) issues one bounded internal re-ask when a
+   * model announces work but ends the turn without emitting a tool call. Self-hosted
+   * OpenAI-compatible gateways (GLM/Kimi-family, etc.) hit the same premature-completion
+   * pattern, but the heuristic that decides a "suspicious no-tool stop" was tuned on
+   * Anthropic turns, so it stays OFF by default for the many registry providers that share
+   * the `openai-chat` adapter. Enable only for a provider whose models are known to stop
+   * mid-work; non-`openai-chat` adapters ignore this flag.
+   */
+  terminalContinuationGuard?: boolean;
+  /**
    * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
    * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
    * fields. Default off; only enable for providers that document this parameter.
