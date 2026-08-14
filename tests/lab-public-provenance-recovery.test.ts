@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { labPublicOriginDir } from "../src/lab/paths";
+import { labExportDir, labPublicOriginDir } from "../src/lab/paths";
 import {
   createPublicEvidenceRevocation,
   importCommunityEvidenceBundle,
@@ -84,9 +84,10 @@ test("one corrupt origin marker does not discard later valid purge provenance", 
   expect(names).toHaveLength(2);
   writeFileSync(join(dir, names[0]!), "{", { mode: 0o600 });
   const validName = names[1]!;
-  const validBundle = bundles.find((bundle) => validName.includes(bundle.bundleId))!;
+  const validBundle = bundles.find((bundle) => validName.includes(bundle.bundleId));
+  if (!validBundle) throw new Error(`no bundle matches origin marker ${validName}`);
 
-  purgeLocalPublicEvidenceCopies(home);
+  expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/origin.*classification.*incomplete/i);
   expect(listCommunityEvidence(home).map((row) => row.bundleId)).not.toContain(validBundle.bundleId);
 });
 
@@ -138,34 +139,44 @@ test("failed own-origin commit rolls back a newly imported community copy", () =
   const home = configDir("ocx-cl10-origin-rollback-");
   const bundle = signedBundle(home);
   const dir = labPublicOriginDir(home);
+  const exportDir = labExportDir(home);
   for (let index = 0; index < 1024; index += 1) {
-    writeFileSync(join(dir, `occupied-${String(index).padStart(4, "0")}`), "x", { mode: 0o600 });
+    const publisherKeyId = publicEvidenceId("publisher_key", { seed: `occupied-publisher-${index}` });
+    const bundleId = publicEvidenceId("bundle", { seed: `occupied-bundle-${index}` });
+    writeFileSync(
+      join(dir, `origin-${publisherKeyId}-${bundleId}.json`),
+      JSON.stringify({ schemaVersion: "public_origin_v1", publisherKeyId, bundleId }),
+      { mode: 0o600 },
+    );
+    writeFileSync(join(exportDir, `${bundleId}.json`), "retained", { mode: 0o600 });
   }
 
   expect(() => importCommunityEvidenceValue(bundle, home)).toThrow(/origin marker bound/i);
   expect(listCommunityEvidence(home)).toEqual([]);
 });
 
-test("origin and community persistence recover after same-process parent-directory sync failures", () => {
-  if (process.platform === "win32") return;
-  const home = configDir("ocx-cl10-origin-recovery-");
-  const publisher = configDir("ocx-cl10-community-recovery-publisher-");
-  const identity = {
-    publisherKeyId: publicEvidenceId("publisher_key", { seed: "recovery-publisher" }),
-    bundleId: publicEvidenceId("bundle", { seed: "recovery-bundle" }),
-  };
+test.skipIf(process.platform === "win32")(
+  "origin and community persistence recover after same-process parent-directory sync failures",
+  () => {
+    const home = configDir("ocx-cl10-origin-recovery-");
+    const publisher = configDir("ocx-cl10-community-recovery-publisher-");
+    const identity = {
+      publisherKeyId: publicEvidenceId("publisher_key", { seed: "recovery-publisher" }),
+      bundleId: publicEvidenceId("bundle", { seed: "recovery-bundle" }),
+    };
 
-  setPrivateFileCommitFaultForTests("parent_directory_sync");
-  expect(() => recordLocalPublicOrigin(identity, home)).toThrow();
-  setPrivateFileCommitFaultForTests(null);
-  expect(() => recordLocalPublicOrigin(identity, home)).not.toThrow();
+    setPrivateFileCommitFaultForTests("parent_directory_sync");
+    expect(() => recordLocalPublicOrigin(identity, home)).toThrow();
+    setPrivateFileCommitFaultForTests(null);
+    expect(() => recordLocalPublicOrigin(identity, home)).not.toThrow();
 
-  const bundle = signedBundle(publisher);
-  setPrivateFileCommitFaultForTests("parent_directory_sync");
-  expect(() => importCommunityEvidenceBundle(bundle, home)).toThrow();
-  setPrivateFileCommitFaultForTests(null);
-  expect(importCommunityEvidenceBundle(bundle, home)).toMatchObject({ created: false, bundleId: bundle.bundleId });
-});
+    const bundle = signedBundle(publisher);
+    setPrivateFileCommitFaultForTests("parent_directory_sync");
+    expect(() => importCommunityEvidenceBundle(bundle, home)).toThrow();
+    setPrivateFileCommitFaultForTests(null);
+    expect(importCommunityEvidenceBundle(bundle, home)).toMatchObject({ created: false, bundleId: bundle.bundleId });
+  },
+);
 
 test("V1 revocations are bounded to one already-verified anchor bundle", () => {
   const publisher = configDir("ocx-cl10-revocation-anchor-");
