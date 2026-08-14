@@ -130,17 +130,24 @@ describe("antigravity CCA envelope", () => {
     });
 
     expect(parseAntigravityAvailableModels(payload([
-      "gemini-3.7-flash-low",
-      "gemini-3.7-flash-medium",
-      "gemini-3.7-flash-high",
-    ]))?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
+      "future-flash-low",
+      "future-flash-medium",
+      "future-flash-high",
+    ]))?.map(model => model.id)).toEqual(["future-flash"]);
     expect(parseAntigravityAvailableModels(payload([
-      "gemini-3.7-flash-low",
-      "gemini-3.7-flash-high",
+      "future-flash-low",
+      "future-flash-high",
     ]))?.map(model => model.id)).toEqual([
-      "gemini-3.7-flash-low",
-      "gemini-3.7-flash-high",
+      "future-flash-low",
+      "future-flash-high",
     ]);
+    expect(parseAntigravityAvailableModels({
+      models: {
+        "future-flash-tiered": { maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [] }] }],
+      tieredModelIds: { flash: ["future-flash-tiered"] },
+    })?.map(model => model.id)).toEqual(["future-flash"]);
     expect(parseAntigravityAvailableModels(payload([
       "gemini-3.1-pro-low",
       "gemini-pro-agent",

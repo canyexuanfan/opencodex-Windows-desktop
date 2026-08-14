@@ -41,14 +41,6 @@ const RETIRED_FLASH_TIERS: Record<string, string> = {
   "gemini-3-flash-agent": "high",
 };
 
-// Current agy releases expose the 3.7 effort tiers as separate discovery rows even though
-// runtime requests use the single `gemini-3.7-flash` wire id plus `thinkingLevel`.
-const GEMINI_FLASH_DISCOVERY_TIER_IDS = [
-  "gemini-3.7-flash-low",
-  "gemini-3.7-flash-medium",
-  "gemini-3.7-flash-high",
-] as const;
-
 const ANTIGRAVITY_WIRE_MODELS = [
   "gemini-3.7-flash",
   "gemini-3.1-pro-low",
@@ -60,7 +52,6 @@ const ANTIGRAVITY_WIRE_MODELS = [
 ];
 
 const ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID: Record<string, string> = {
-  ...Object.fromEntries(GEMINI_FLASH_DISCOVERY_TIER_IDS.map(id => [id, GEMINI_FLASH_CURRENT])),
   "gemini-3.1-pro-low": "gemini-3.1-pro",
   "gemini-pro-agent": "gemini-3.1-pro",
 };
@@ -71,6 +62,33 @@ const ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL: Record<string, string[]> = Object.en
   (out[pickerId] ??= []).push(wireId);
   return out;
 }, {});
+
+const ANTIGRAVITY_DISCOVERY_EFFORTS = ["low", "medium", "high"] as const;
+
+function pickerModelIdForDiscoveredWireId(
+  wireId: string,
+  available: ReadonlyMap<string, Record<string, unknown>>,
+): string {
+  const explicitPickerId = ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID[wireId];
+  if (explicitPickerId) {
+    const requiredWireIds = ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL[explicitPickerId] ?? [];
+    if (requiredWireIds.every(id => available.has(id))) return explicitPickerId;
+  }
+
+  // CCA uses a single `-tiered` row for models whose effort levels ride on the
+  // request's thinkingLevel field. Keep this generic so new tiered models do not
+  // require another provider-specific ID mapping.
+  if (wireId.endsWith("-tiered")) return wireId.slice(0, -"-tiered".length);
+
+  const effortMatch = /^(.*)-(low|medium|high)$/.exec(wireId);
+  if (effortMatch) {
+    const baseId = effortMatch[1]!;
+    if (ANTIGRAVITY_DISCOVERY_EFFORTS.every(effort => available.has(`${baseId}-${effort}`))) {
+      return baseId;
+    }
+  }
+  return wireId;
+}
 
 // ── Effort ladders per collapsed base model ──
 // Gemini models: effort → wire model suffix (official agy UI pattern).
@@ -244,6 +262,18 @@ export function parseAntigravityAvailableModels(
     if (ids.length >= limit) return null;
     ids.push("gemini-3.1-flash-image");
   }
+  // Newer CCA responses identify tiered Flash models through this index instead of
+  // adding their synthetic wire ids to agentModelSorts.
+  const tieredModelIds = antigravityRecord(body.tieredModelIds);
+  const flashTieredIds = tieredModelIds?.flash;
+  if (Array.isArray(flashTieredIds)) {
+    for (const id of flashTieredIds) {
+      if (!isValidModelDiscoveryModelId(id)
+        || !antigravityRecord(models[id])
+        || ids.length >= limit) return null;
+      ids.push(id);
+    }
+  }
 
   const available = new Map<string, Record<string, unknown>>();
   for (const wireId of ids) {
@@ -258,10 +288,7 @@ export function parseAntigravityAvailableModels(
   const out: AntigravityAvailableModel[] = [];
   const seen = new Set<string>();
   for (const [wireId, info] of available) {
-    const pickerId = ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID[wireId];
-    const completePickerSet = pickerId !== undefined
-      && ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL[pickerId]!.every(id => available.has(id));
-    const id = completePickerSet ? pickerId! : wireId;
+    const id = pickerModelIdForDiscoveredWireId(wireId, available);
     if (seen.has(id)) continue;
     seen.add(id);
     out.push({
