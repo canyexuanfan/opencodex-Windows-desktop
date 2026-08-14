@@ -1,0 +1,25 @@
+{
+  "$comment": [
+    "Runtime qualification record for the Bun 1.4 migration on preview-dev.",
+    "candidate.revision is the build qualification runs against, fetched from the",
+    "oven-sh/bun GitHub 'canary' release (npm has no 1.4 line yet).",
+    "qualifiedRevisions is the ONLY list src/ may trust. A revision enters it after",
+    "CI has executed the suite against that exact revision on every supported OS —",
+    "downloading a binary is not qualification. src/lib/bun-stream-caps.ts and the",
+    "worker settle gate read this list; writing a revision here on faith defeats the",
+    "entire point of gating on revision instead of on a version string."
+  ],
+  "candidate": {
+    "channel": "github-canary",
+    "version": "1.4.0",
+    "revision": "1.4.0-canary.1+032b8dbf1",
+    "sourceCommit": "032b8dbf137807a7c340f9a5d1894ab6ccd2663d",
+    "observedAt": "2026-08-14"
+  },
+  "control": {
+    "channel": "npm-bundled",
+    "version": "1.3.14",
+    "revision": "1.3.14+0d9b296af"
+  },
+  "qualifiedRevisions": []
+}
