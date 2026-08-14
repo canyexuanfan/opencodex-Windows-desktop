@@ -218,6 +218,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         && cached.maxReadBytes === effectiveReadLimit
         && cached.overlayVersion === userCostOverlayVersion()
         && now < cached.freshUntil
+        && now < cached.expiresAt
         && observedSize >= cached.lastSeenSize) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
