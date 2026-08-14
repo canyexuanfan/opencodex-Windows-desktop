@@ -837,6 +837,15 @@ function restoreFlushLeftIndent(oldString: string, newString: string): string {
   const oldLines = patchLines(oldString);
   const newLines = patchLines(newString);
   if (oldLines.length !== newLines.length || oldLines.length === 0) return newString;
+  // If the only difference is leading whitespace, the edit IS a deliberate
+  // indent change — restoring old indent would erase the user's intent.
+  const contentSame = oldLines.every((ol, i) => ol.trimStart() === newLines[i].trimStart());
+  const whitespaceDiffers = oldLines.some((ol, i) => {
+    const oldLead = /^[ \t]*/.exec(ol)?.[0] ?? "";
+    const newLead = /^[ \t]*/.exec(newLines[i])?.[0] ?? "";
+    return oldLead !== newLead;
+  });
+  if (contentSame && whitespaceDiffers) return newString;
   return newLines.map((line, i) => {
     const oldLead = /^[ \t]*/.exec(oldLines[i])?.[0] ?? "";
     const newLead = /^[ \t]*/.exec(line)?.[0] ?? "";
@@ -861,18 +870,21 @@ function replacementHunk(oldString: string, newString: string): { hunk: string }
         "structured edit requires a non-empty old_string to locate the replacement; for new files or insertions without existing text, call apply_patch with an `*** Add File` / context hunk or use the shell bridge",
     };
   }
-  const restoredNew = restoreFlushLeftIndent(oldString, newString);
   const oldLines = patchLines(oldString);
-  const newLines = patchLines(restoredNew);
+  const rawNewLines = patchLines(newString);
   // Line-based patch semantics cannot express an edit that only adds or removes the file's
   // final newline, and an old/new pair that normalizes to the same lines is a silent no-op —
   // reject it rather than emitting an empty hunk that apply_patch would drop.
-  if (oldLines.length === 0 && newLines.length === 0) {
+  if (oldLines.length === 0 && rawNewLines.length === 0) {
     return { error: "structured edit requires a non-empty old_string; an empty replacement is not a valid edit" };
   }
-  if (oldLines.length === newLines.length && oldLines.every((line, i) => line === newLines[i])) {
+  // Check for no-op against the RAW new_string (before indent restoration) so that
+  // intentional dedent edits are not falsely classified as identical.
+  if (oldLines.length === rawNewLines.length && oldLines.every((line, i) => line === rawNewLines[i])) {
     return { error: "structured edit old_string and new_string are identical after line normalization; the replacement is a no-op and was dropped" };
   }
+  const restoredNew = restoreFlushLeftIndent(oldString, newString);
+  const newLines = patchLines(restoredNew);
   const removed = oldLines.map(line => `-${line}`);
   const added = newLines.map(line => `+${line}`);
   return { hunk: ["@@", ...removed, ...added].join("\n") };

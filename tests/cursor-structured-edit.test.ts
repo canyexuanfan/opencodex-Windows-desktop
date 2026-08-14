@@ -1289,6 +1289,19 @@ describe("translateStructuredEditCall", () => {
       error: "structured edit old_string and new_string are identical after line normalization; the replacement is a no-op and was dropped",
     });
   });
+
+  test("intentional full dedent is not rejected as a no-op", () => {
+    const args = JSON.stringify({
+      file_path: "src/indent.ts",
+      old_string: "    return value",
+      new_string: "return value",
+    });
+    const result = translateStructuredEditCall(CURSOR_EDIT_FILE_TOOL, args);
+    expect(result).toHaveProperty("patch");
+    expect(result).not.toHaveProperty("error");
+    expect((result as { patch: string }).patch).toContain("-    return value");
+    expect((result as { patch: string }).patch).toContain("+return value");
+  });
 });
 
 describe("cursor protobuf event translation", () => {
