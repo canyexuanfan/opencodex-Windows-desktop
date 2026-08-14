@@ -756,11 +756,11 @@ export interface OcxConfig {
    */
   customModelCatalogMigration?: unknown;
   /**
-   * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
-   * commit messages, skill orchestration) to a user-chosen model. Default intercepted
-   * source models: gpt-5.4-mini (older clients) and gpt-5.6-luna (Codex 0.145.0+).
-   * Opt-in; disabled by default. Matching maintenance/helper requests are forced to low.
-   * Normal Codex turns identified by request_kind=turn are never rewritten.
+  * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
+  * commit messages, skill orchestration) to a user-chosen model. Default intercepted
+  * source models: gpt-5.4-mini (older clients) and gpt-5.6-luna (Codex 0.145.0+).
+  * Opt-in; disabled by default. Matching maintenance/helper requests are forced to low.
+   * All requests for configured shadow source models are intercepted unconditionally.
    */
   shadowCallIntercept?: {
     /** When true, requests for known shadow/helper source models are rewritten to the configured model. */
