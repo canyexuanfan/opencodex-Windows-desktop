@@ -9,6 +9,7 @@
  */
 import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import type { ConfigFormat } from "../clients/config-export";
+import { MAX_JSON_NESTING } from "./serialize";
 import { atomicWriteFile } from "../config";
 import type { JournalEntry } from "./journal";
 import type { OwnershipRecord } from "./ownership";
@@ -42,10 +43,21 @@ export const PARSE_FAILED = Symbol("parse-failed");
  * normalization we promise, and this classifier is what makes the rewrite of a
  * user-edited file reachable at all — so it fails closed here.
  *
- * Scanning also avoids recursing over attacker-shaped nesting depth.
+ * Depth: the same pass counts container nesting against MAX_JSON_NESTING
+ * (shared with the serializer, see serialize.ts). JSON.parse handles hundreds
+ * of thousands of levels iteratively, but the downstream merge and
+ * JSON.stringify recurse — a 100KB file nested 50k deep sailed through parse
+ * and guard, then blew up serialization with a raw RangeError after a
+ * multi-GB allocation spike. A hand-written scan rather than a JSON.parse
+ * source-access reviver on purpose: the reviver walk recurses internally, so
+ * its depth limit would be an unpredictable stack size instead of this
+ * deterministic ceiling.
  */
 function jsonTextSafeToRewrite(text: string): boolean {
-  /** One frame per open container; a Set for objects, null for arrays. */
+  /**
+   * One frame per open container; a Set of member names for objects, null for
+   * arrays. Its length is the current nesting depth.
+   */
   const containers: Array<Set<string> | null> = [];
   /** The most recent string literal — the member name if a `:` follows. */
   let lastString: string | null = null;
@@ -66,6 +78,7 @@ function jsonTextSafeToRewrite(text: string): boolean {
     if (ch === "\"") { inString = true; stringStart = i; continue; }
     if (ch === "{" || ch === "[") {
       containers.push(ch === "{" ? new Set<string>() : null);
+      if (containers.length > MAX_JSON_NESTING) return false;
       lastString = null;
       continue;
     }
@@ -124,8 +137,15 @@ export function parseConfig(text: string | null, format: ConfigFormat): unknown 
   try {
     switch (format) {
       case "json": {
-        const parsed = JSON.parse(text);
-        return jsonTextSafeToRewrite(text) ? parsed : PARSE_FAILED;
+        /*
+         * Scanned BEFORE parsing: the guard is text-only, and refusing first
+         * means a hostile document is never materialized — the depth ceiling
+         * would otherwise cap the rewrite only after JSON.parse had already
+         * built the 50k-deep object graph. The outcome is unchanged: invalid
+         * JSON still returns PARSE_FAILED, from the catch below.
+         */
+        if (!jsonTextSafeToRewrite(text)) return PARSE_FAILED;
+        return JSON.parse(text);
       }
       case "json5": return Bun.JSON5.parse(text);
       case "yaml": return Bun.YAML.parse(text);

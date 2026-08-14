@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXPORT_CLIENTS, type ExportModel } from "../src/clients/config-export";
 import { PARSE_FAILED, fileIO, loadTarget, parseConfig } from "../src/integrations/config-io";
+import { serializeDocument } from "../src/integrations/serialize";
 import {
   canonicalContribution,
   fingerprint,
@@ -456,6 +457,21 @@ describe("classifier unit behavior", () => {
     expect(parseConfig("{\"a\": 0.0}", "json")).toEqual({ a: 0 });
     // A subnormal is a representable nonzero double — it survives a rewrite.
     expect(parseConfig("{\"a\": 1e-320}", "json")).toEqual({ a: 1e-320 });
+  });
+
+  test("parseConfig refuses json nested deeper than the rewrite can carry", () => {
+    // Nesting past the ceiling: parse would succeed, but the downstream
+    // rewrite machinery recurses — refuse at the trust boundary.
+    expect(parseConfig(`${"[".repeat(1001)}1${"]".repeat(1001)}`, "json")).toBe(PARSE_FAILED);
+    // The exact boundary: what the scanner admits, the serializer must also
+    // rewrite — one document through both layers, or a config the classifier
+    // reported recoverable would refuse at rewrite time.
+    const atCeiling = parseConfig(`${"[".repeat(1000)}1${"]".repeat(1000)}`, "json");
+    expect(atCeiling).not.toBe(PARSE_FAILED);
+    expect(() => serializeDocument(atCeiling, "json")).not.toThrow();
+    // Brackets inside strings do not count toward depth.
+    expect(parseConfig(`{"a": "${"[".repeat(2000)}"}`, "json"))
+      .toEqual({ a: "[".repeat(2000) });
   });
 
   test("parseConfig keeps json numbers that round-trip exactly", () => {

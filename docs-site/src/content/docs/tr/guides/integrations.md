@@ -85,8 +85,9 @@ düzenleme — bir MCP sunucusu eklemek, kendinize ait bir sağlayıcı tanımla
 etrafında birleştirir ve onları korur; yalnızca biçimlendirme
 normalleştirilebilir. İstisna, JSON'un birebir yeniden yazamayacağı şeylerdir —
 `1e999` gibi sonlu olmayan bir sayı, yeniden yazımın yuvarlayacağı bir sayı (çok
-büyük bir tam sayı ya da sıfıra çökecek kadar küçük bir sayı), `-0` veya aynı
-nesnede iki kez yazılmış bir anahtar — bu durumda anahtar kilitlenir, böylece
+büyük bir tam sayı ya da sıfıra çökecek kadar küçük bir sayı), `-0`, aynı
+nesnede iki kez yazılmış bir anahtar veya 1000 seviyeden derin iç içe geçme —
+bu durumda anahtar kilitlenir, böylece
 hiçbir şey sessizce değiştirilmez veya düşürülmez. **OMP** de yanındaki
 düzenlemelerden etkilenmez, ama başka bir nedenle: writer'ı yalnızca kendi
 `providers.opencodex` aralığını bayt bayt yamalar, dosyanın geri kalanı hiçbir

@@ -71,8 +71,8 @@ our block — adding an MCP server, a provider of your own — shows as **Update
 refreshing merges around your entries and keeps them, though formatting may be
 normalized. The exception is something JSON cannot rewrite exactly — a non-finite
 number like `1e999`, a number a rewrite would round (a very large integer, or one
-so small it collapses to zero), `-0`, or the same key written twice in one object
-— which locks the switch instead, so nothing is silently changed or dropped.
+so small it collapses to zero), `-0`, the same key written twice in one object, or nesting deeper
+than 1000 levels — which locks the switch instead, so nothing is silently changed or dropped.
 **OMP** is unaffected by sibling edits too, for a different reason: its writer
 patches only its own `providers.opencodex` range byte-wise, so the rest of the
 file is never rewritten. For the remaining formats that can carry comments

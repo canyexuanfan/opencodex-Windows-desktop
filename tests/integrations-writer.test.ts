@@ -72,6 +72,14 @@ function installHermes(): string {
   return configPath;
 }
 
+function installPi(): string {
+  const spec = INTEGRATION_CLIENTS.pi;
+  mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+  const configPath = spec.configPath(TEST_ENV, home);
+  mkdirSync(dirname(configPath), { recursive: true });
+  return configPath;
+}
+
 function installOmp(): string {
   const spec = INTEGRATION_CLIENTS.omp;
   mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
@@ -152,10 +160,7 @@ describe("apply", () => {
   });
 
   test("json clients re-apply after a sibling edit and keep the user's entry (#1631)", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
 
@@ -183,10 +188,7 @@ describe("apply", () => {
   });
 
   test("json disable after a sibling edit keeps the sibling (#1631)", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     const doc = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
@@ -202,10 +204,7 @@ describe("apply", () => {
   });
 
   test("json apply refuses when a sibling number cannot round-trip", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     // 1e999 is valid strict JSON but parses to Infinity; a rewrite would bake
@@ -222,10 +221,7 @@ describe("apply", () => {
   });
 
   test("json apply refuses a duplicate sibling member instead of deleting it", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     // Valid strict JSON, but JSON.parse keeps only the last "notes" — a
@@ -245,10 +241,7 @@ describe("apply", () => {
     // 2^54 round-trips value- and literal-exactly. classify promises 'stale'
     // (recoverable) for this file; apply must honor that promise instead of
     // refusing at serialize time — the asymmetry that re-created the dead-end.
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     const drifted = readFileSync(configPath, "utf8")
@@ -264,10 +257,7 @@ describe("apply", () => {
   });
 
   test("disable also honors a 2^54 sibling: proceeds and keeps the literal", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     const drifted = readFileSync(configPath, "utf8")
@@ -285,10 +275,7 @@ describe("apply", () => {
   });
 
   test("json disable also refuses when a sibling number cannot round-trip", () => {
-    const spec = INTEGRATION_CLIENTS.pi;
-    mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
-    const configPath = spec.configPath(TEST_ENV, home);
-    mkdirSync(dirname(configPath), { recursive: true });
+    const configPath = installPi();
 
     expect(applyIntegration(input({ clientId: "pi" })).ok).toBe(true);
     const drifted = readFileSync(configPath, "utf8")
