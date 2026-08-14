@@ -51,16 +51,19 @@ describe("DSH sibling writer lock", () => {
   test("times out as typed busy without deleting a contender", async () => {
     let now = 0;
     let removes = 0;
+    const delays: number[] = [];
     const seams: IntegrationWriterLockSeams = {
       writeFile: async () => { throw eexist(); },
       removeFile: async () => { removes += 1; },
       now: () => now,
-      delay: async ms => { now += ms; },
+      delay: async ms => { delays.push(ms); now += ms; },
       pid: 7,
     };
     await expect(withIntegrationWriterLock("/tmp/settings.yaml", async () => undefined, seams))
       .rejects.toBeInstanceOf(IntegrationWriterLockBusyError);
-    expect(now).toBe(2_100);
+    expect(now).toBe(2_000);
+    expect(delays.at(-1)).toBe(100);
+    expect(Math.max(...delays)).toBe(200);
     expect(removes).toBe(0);
   });
 

@@ -449,7 +449,7 @@ describe("cross-process integration writer lock mapping", () => {
       code: "integration_mutation_busy",
       clientId: "dsh",
     });
-    expect(now).toBe(2_100);
+    expect(now).toBe(2_000);
     expect(existsSync(configPath)).toBe(false);
   });
 

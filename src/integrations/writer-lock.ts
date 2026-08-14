@@ -68,10 +68,13 @@ export async function withIntegrationWriterLock<T>(
       if (errorCode(error) !== "EEXIST") {
         throw new IntegrationWriterLockIOError(lockPath, "acquire", error);
       }
-      if (seams.now() - startedAt >= LOCK_DEADLINE_MS) {
+      const elapsedMs = seams.now() - startedAt;
+      if (elapsedMs >= LOCK_DEADLINE_MS) {
         throw new IntegrationWriterLockBusyError(lockPath);
       }
-      const delayMs = LOCK_DELAYS_MS[Math.min(delayIndex, LOCK_DELAYS_MS.length - 1)]!;
+      const backoffMs = LOCK_DELAYS_MS[Math.min(delayIndex, LOCK_DELAYS_MS.length - 1)]!;
+      // Keep the final retry inside the advertised two-second deadline.
+      const delayMs = Math.min(backoffMs, LOCK_DEADLINE_MS - elapsedMs);
       delayIndex += 1;
       await seams.delay(delayMs);
     }
