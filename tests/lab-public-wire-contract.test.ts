@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname } from "node:path";
+import { labPublicPublisherKeyPath } from "../src/lab/paths";
 import {
   buildPublicEvidenceBundle,
   importCommunityEvidenceBundle,
@@ -33,9 +34,8 @@ function configDir(prefix: string): string {
 }
 
 function installFixedPublisherKey(config: string): void {
-  const lab = join(config, "lab");
-  mkdirSync(lab, { recursive: true, mode: 0o700 });
-  const path = join(lab, "publisher-ed25519.pem");
+  const path = labPublicPublisherKeyPath(config);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, FIXED_PRIVATE_KEY, { encoding: "utf8", mode: 0o600 });
   if (process.platform !== "win32") chmodSync(path, 0o600);
 }
