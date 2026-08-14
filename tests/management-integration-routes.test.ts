@@ -113,6 +113,13 @@ function installHermes(): string {
   return spec.configPath(routeEnv, home);
 }
 
+function installOmp(): string {
+  const spec = INTEGRATION_CLIENTS.omp;
+  const dir = spec.detectDir(routeEnv, home);
+  mkdirSync(dir, { recursive: true });
+  return spec.configPath(routeEnv, home);
+}
+
 function hermesConfigPath(): string {
   return INTEGRATION_CLIENTS.hermes.configPath(routeEnv, home);
 }
@@ -412,6 +419,29 @@ function bookkeeping(): Pick<IntegrationIO, "appendJournal" | "putRecord" | "dro
 }
 
 describe("refusals", () => {
+  test("invalid OMP alias removal returns unsafe without changing bytes or journal", async () => {
+    const configPath = installOmp();
+    expect((await put("omp", true)).status).toBe(200);
+    const edited = readFileSync(configPath, "utf8")
+      .replace("    baseUrl:", "    baseUrl: &opencodex_url")
+      .concat("settings:\n  inheritedBase: *opencodex_url\n");
+    expect(edited).toContain("    baseUrl: &opencodex_url");
+    writeFileSync(configPath, edited);
+    const journalBefore = store.listOperations("omp");
+
+    const response = await put("omp", false);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: "integration config is unsafe",
+      code: "integration_unsafe",
+      clientId: "omp",
+      state: "unsafe",
+      reason: "unsafe",
+    });
+    expect(readFileSync(configPath, "utf8")).toBe(edited);
+    expect(store.listOperations("omp")).toEqual(journalBefore);
+  });
+
   test("conflict rejects disable without changing a managed-field edit", async () => {
     const configPath = installHermes();
     expect((await put("hermes", true)).status).toBe(200);
