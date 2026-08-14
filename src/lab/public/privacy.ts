@@ -13,7 +13,7 @@ const FORBIDDEN_PUBLIC_STRING_PATTERNS: ReadonlyArray<{ label: string; pattern: 
   {
     label: "local path",
     pattern:
-      /(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9._-]+\\|(?:^|[\s"'([{=:])\/(?:Users|home|root|tmp|var|opt|private|etc|mnt|media|srv|usr)(?:\/|$))/i,
+      /(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9._-]+\\|(?:^|[\s"'([{=:])\/(?:Users|home|root|tmp|var|opt|private|etc|mnt|media|srv|usr|dev|run|Library|System|Applications|Volumes|bin|sbin|lib|lib64|proc|sys|boot|Network|cores|nix|snap|app)(?:\/|$))/i,
   },
   { label: "email", pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i },
   { label: "IP address", pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b|\[[0-9a-f:]{2,}\]/i },

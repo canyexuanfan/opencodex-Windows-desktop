@@ -95,21 +95,30 @@ test("public projection drops invalid completion timestamps with a diagnostic co
   });
 });
 
-test("public privacy rejects embedded POSIX absolute paths", () => {
-  const bytes = Buffer.from("diagnostic path=/var/folders/9k/opencodex/output.json", "utf8");
-  const bundle = {
-    createdDayUtc: "2026-08-14",
-    records: [],
-    artifacts: [{
-      artifactId: "0".repeat(64),
-      artifactClass: "verifier_summary",
-      mediaType: "text/plain",
-      byteCount: bytes.byteLength,
-      contentBase64: bytes.toString("base64"),
-    }],
-  } as unknown as PublicEvidenceBundleUnsignedV1;
+test("public privacy rejects embedded POSIX absolute paths across common runtime roots", () => {
+  const localPaths = [
+    "/var/folders/9k/opencodex/output.json",
+    "/dev/shm/opencodex.sock",
+    "/run/user/1000/opencodex/token",
+    "/Library/Application Support/opencodex/config.json",
+  ];
 
-  expect(() => validatePublicEvidencePrivacy(bundle)).toThrow(/local path|privacy/i);
+  for (const localPath of localPaths) {
+    const bytes = Buffer.from(`diagnostic path=${localPath}`, "utf8");
+    const bundle = {
+      createdDayUtc: "2026-08-14",
+      records: [],
+      artifacts: [{
+        artifactId: "0".repeat(64),
+        artifactClass: "verifier_summary",
+        mediaType: "text/plain",
+        byteCount: bytes.byteLength,
+        contentBase64: bytes.toString("base64"),
+      }],
+    } as unknown as PublicEvidenceBundleUnsignedV1;
+
+    expect(() => validatePublicEvidencePrivacy(bundle)).toThrow(/local path|privacy/i);
+  }
 });
 
 test("private publication prepares an empty stage before writing secret bytes", () => {
