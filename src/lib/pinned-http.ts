@@ -47,6 +47,8 @@ function pinnedHttpRequest(
   const context = options?.context ?? "request";
   const connectTimeoutMs = options?.connectTimeoutMs;
   const legacyIdleTimeoutMs = options?.idleTimeoutMs ?? 60_000;
+  const usesLegacyIdleTimeout = options?.firstByteTimeoutMs === undefined
+    && options?.inactivityTimeoutMs === undefined;
   const firstByteTimeoutMs = options?.firstByteTimeoutMs ?? legacyIdleTimeoutMs;
   const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? legacyIdleTimeoutMs;
   const maxBytes = options?.maxBytes;
@@ -190,7 +192,7 @@ function pinnedHttpRequest(
     req.on("socket", (socket) => {
       const connectedEvent = parsed.protocol === "https:" ? "secureConnect" : "connect";
       if (!socket.connecting) {
-        startFirstByteTimer();
+        if (!usesLegacyIdleTimeout) startFirstByteTimer();
         return;
       }
       if (connectTimeoutMs !== undefined) {
@@ -201,7 +203,7 @@ function pinnedHttpRequest(
       }
       socket.once(connectedEvent, () => {
         clearConnectTimer();
-        startFirstByteTimer();
+        if (!usesLegacyIdleTimeout) startFirstByteTimer();
       });
       socket.once("error", () => {
         clearConnectTimer();
@@ -212,6 +214,9 @@ function pinnedHttpRequest(
         clearFirstByteTimer();
       });
     });
+    if (usesLegacyIdleTimeout) {
+      req.setTimeout(legacyIdleTimeoutMs, () => fail(new Error(`${context} timed out`)));
+    }
     req.on("error", error => {
       signal?.removeEventListener("abort", onAbort);
       fail(error);
