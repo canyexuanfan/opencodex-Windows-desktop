@@ -8,6 +8,7 @@ import { routeModel } from "../src/router";
 import type { OcxConfig, OcxParsedRequest } from "../src/types";
 
 const OFFICIAL_CLINE_PASS_MODELS = [
+  "cline-pass/glm-5.3",
   "cline-pass/glm-5.2",
   "cline-pass/kimi-k3",
   "cline-pass/kimi-k2.7-code",
@@ -68,6 +69,7 @@ describe("ClinePass provider", () => {
     expect(entry?.modelReasoningEfforts).toBeUndefined();
     expect(entry?.modelMaxInputTokens).toBeUndefined();
     expect(entry?.noVisionModels).toEqual([
+      "cline-pass/glm-5.3",
       "cline-pass/glm-5.2",
       "cline-pass/deepseek-v4-pro",
       "cline-pass/deepseek-v4-flash",

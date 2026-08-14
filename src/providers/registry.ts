@@ -280,8 +280,30 @@ export type ProviderConfigSeed = Pick<
 const ANTHROPIC_MODELS = ["claude-fable-5", "claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000, "claude-opus-5": 1_000_000, "claude-opus-4-8": 1_000_000, "claude-opus-4-7": 1_000_000, "claude-opus-4-6": 1_000_000, "claude-sonnet-4-6": 1_000_000, "claude-haiku-4-5": 200_000 };
 
+// 260814 GLM-5.3 is registered pre-emptively alongside 5.2 everywhere 5.2 appears. Z.AI's
+// devpack "How to Switch Models" page (docs.z.ai/devpack/latest-model) lists glm-5.3 and
+// glm-5.3[1m] as Coding Plan ids on the unchanged endpoints; the capability and pricing
+// tables were not published yet, so every 5.3 row mirrors its 5.2 sibling until they settle.
+// The non-Z.AI providers below are speculative on purpose: they carry 5.2 today and are
+// expected to pick 5.3 up on their usual lag. Providers whose live /v1/models discovery is
+// enabled self-correct on the next successful fetch; static ones need a follow-up refresh.
+const ZAI_GLM_53_MODELS = ["glm-5.3", "glm-5.3[1m]"];
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
+const ZAI_GLM_5X_MODELS = [...ZAI_GLM_53_MODELS, ...ZAI_GLM_52_MODELS];
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * GLM-5.3 does NOT share 5.2's five-tier ladder. docs.z.ai/devpack/latest-model folds every
+ * incoming effort into three effective tiers — low/minimal/light -> low, medium/high -> high,
+ * xhigh/max/ultra -> max — with max as both the default and the unknown-value fallback.
+ * Advertising five levels would publish two picker rows that are indistinguishable on the wire,
+ * so only the effective tiers are exposed (same treatment Cursor and Baseten already give GLM).
+ */
+const ZAI_GLM_53_REASONING_EFFORTS = ["low", "high", "max"];
+/** Per-model ladders for the Coding Plan rows: 5.3 gets its three effective tiers, 5.2 keeps five. */
+const ZAI_GLM_5X_REASONING_EFFORTS: Record<string, string[]> = {
+  ...Object.fromEntries(ZAI_GLM_53_MODELS.map(id => [id, ZAI_GLM_53_REASONING_EFFORTS])),
+  ...Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
+};
 // 260710 MiniMax models and context windows: Tier-2 evidence in
 // devlog/_plan/260710_provider_hardening/002_research_cn.md.
 const MINIMAX_MODELS = [
@@ -387,13 +409,13 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
  * images through the proxy's vision sidecar (src/codex/catalog/provider-fetch.ts), a claim nobody
  * has verified for BigModel-hosted GLM.
  */
-const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1"];
+const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3"];
 const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-4.6v"];
 const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
   ...Object.fromEntries(ZHIPU_BIGMODEL_TEXT_MODELS.map(id => [id, ["text"]])),
   "glm-4.6v": ["text", "image"],
 };
-const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1"];
+const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3"];
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // Qwen3.8-Max is the first Qwen3.x model with official direct `reasoning_effort` support.
 // Evidence: https://qwen.ai/blog?id=qwen3.8
@@ -491,7 +513,7 @@ const deepseekReasoningMapFor = (modelId: string): Record<string, string> =>
 //           https://help.aliyun.com/en/model-studio/token-plan-quickstart
 const ALIBABA_TOKEN_PLAN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-  "glm-5.2", "deepseek-v4-pro",
+  "glm-5.3", "glm-5.2", "deepseek-v4-pro",
 ];
 const ALIBABA_TOKEN_PLAN_QWEN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
@@ -501,6 +523,7 @@ const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.7-max": ["text", "image"],
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-flash": ["text", "image"],
+  "glm-5.3": ["text"],
   "glm-5.2": ["text"],
   "deepseek-v4-pro": ["text"],
 };
@@ -513,7 +536,7 @@ const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
   "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2",
   "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
-  "glm-5.2", "glm-5.1", "glm-5",
+  "glm-5.3", "glm-5.2", "glm-5.1", "glm-5",
   "MiniMax-M2.5",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
@@ -547,6 +570,8 @@ const VOLCENGINE_ARK_MODELS = [
   "deepseek-v4-pro-260425",
   "deepseek-v4-flash-260425",
   "deepseek-v3-2-251201",
+  // No glm-5-3 row: Ark pins date-stamped snapshot ids (glm-5-2-260617) that cannot be
+  // guessed ahead of the vendor publishing them. Add it once /api/v3/models lists one.
   "glm-5-2-260617",
   "glm-4-7-251222",
 ];
@@ -560,6 +585,7 @@ const VOLCENGINE_CODING_PLAN_MODELS = [
   "doubao-seed-2.0-code",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
+  "glm-5.3",
   "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
@@ -567,6 +593,7 @@ const VOLCENGINE_CODING_PLAN_MODELS = [
 const VOLCENGINE_AGENT_PLAN_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
+  "glm-5.3",
   "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
@@ -584,6 +611,7 @@ const VOLCENGINE_PLAN_TEXT_ONLY_MODELS = [
   "doubao-seed-2.0-code",
   "deepseek-v4-pro",
   "deepseek-v4-flash",
+  "glm-5.3",
   "glm-5.2",
   "doubao-seed-2.0-pro",
 ];
@@ -599,6 +627,7 @@ const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "kimi-k2.7-code": ["text", "image"],
   "kimi-k2.6": ["text", "image"],
   "kimi-k2.5": ["text", "image"],
+  "glm-5.3": ["text"],
   "glm-5.2": ["text"],
   "glm-5.1": ["text"],
   "glm-5": ["text"],
@@ -722,7 +751,7 @@ const NVIDIA_NIM_NO_VISION_MODELS = [
   "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-mini-4b-instruct",
   "nvidia/nvidia-nemotron-nano-9b-v2",
   "openai/gpt-oss-120b", "openai/gpt-oss-20b",
-  "poolside/laguna-xs-2.1", "z-ai/glm-5.2",
+  "poolside/laguna-xs-2.1", "z-ai/glm-5.3", "z-ai/glm-5.2",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
@@ -731,6 +760,7 @@ const KIMI_CODING_MODEL_INPUT_MODALITIES = Object.fromEntries(
   KIMI_CODING_K3_MODELS.map(id => [id, ["text", "image"]]),
 );
 const NEURALWATT_REASONING_HISTORY_MODELS = [
+  "glm-5.3", "glm-5.3-short",
   "glm-5.2", "glm-5.2-short",
   "kimi-k2.6", "kimi-k2.7-code",
   "qwen3.5-397b", "qwen3.6-35b",
@@ -749,6 +779,9 @@ const BASETEN_MODEL_REASONING_EFFORTS: Record<string, string[]> = {
   "thinkingmachines/inkling": BASETEN_FULL_REASONING_EFFORTS,
   "openai/gpt-oss-120b": BASETEN_FULL_REASONING_EFFORTS,
   "moonshotai/Kimi-K3": ["low", "high", "max"],
+  // 260814: GLM-5.3 honours low/high/max upstream, unlike 5.2's high/max on Baseten.
+  "zai-org/GLM-5.3": ["low", "high", "max"],
+  "zai-org/GLM-5.3-Fast": ["low", "high", "max"],
   "zai-org/GLM-5.2": ["high", "max"],
   "zai-org/GLM-5.2-Fast": ["high", "max"],
 };
@@ -757,6 +790,8 @@ const BASETEN_MODEL_REASONING_EFFORT_MAP: Record<string, Record<string, string>>
   "thinkingmachines/inkling": { none: "none", minimal: "minimal" },
   "openai/gpt-oss-120b": { none: "none", minimal: "minimal" },
   "moonshotai/Kimi-K3": { none: "none" },
+  "zai-org/GLM-5.3": { none: "none" },
+  "zai-org/GLM-5.3-Fast": { none: "none" },
   "zai-org/GLM-5.2": { none: "none" },
   "zai-org/GLM-5.2-Fast": { none: "none" },
 };
@@ -805,6 +840,7 @@ const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
   "nemotron-3-nano-omni",
   "nemotron-nano-12b-v2-vl",
   "mimo-v2.5-pro",
+  "glm-5.3",
   "glm-5.2",
   "glm-5.1",
   "glm-5",
@@ -812,6 +848,7 @@ const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
   "meta-llama/Meta-Llama-3.1-8B-Instruct",
 ] as const;
 const SCALEWAY_SERVERLESS_CHAT_MODELS = [
+  "glm-5.3",
   "glm-5.2",
   // gpt-oss-120b is intentionally omitted: Scaleway requires Responses API for tool calling,
   // while this preset routes Codex agent tools through Chat Completions.
@@ -832,17 +869,22 @@ const UMANS_MODELS = [
   "umans-coder",
   "umans-kimi-k2.7",
   "umans-flash",
+  "umans-glm-5.3",
   "umans-glm-5.2",
   "umans-glm-5.1",
   "umans-qwen3.6-35b-a3b",
 ];
 const UMANS_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const UMANS_GLM_REASONING_EFFORTS = ["high", "xhigh", "max"];
-const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.2", "umans-glm-5.1"];
+// 260814: Z.AI folds GLM-5.3 efforts into low/high/max, so `low` is a real tier here and
+// `xhigh` is not distinct from `max` (docs.z.ai/devpack/latest-model).
+const UMANS_GLM_53_REASONING_EFFORTS = ["low", "high", "max"];
+const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.3", "umans-glm-5.2", "umans-glm-5.1"];
 const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "umans-coder": 262_144,
   "umans-kimi-k2.7": 262_144,
   "umans-flash": 262_144,
+  "umans-glm-5.3": 405_504,
   "umans-glm-5.2": 405_504,
   "umans-glm-5.1": 202_752,
   "umans-qwen3.6-35b-a3b": 262_144,
@@ -851,6 +893,7 @@ const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntrie
   UMANS_MODELS.map(id => [id, UMANS_TEXT_ONLY_MODELS.includes(id) ? ["text"] : ["text", "image"]]),
 );
 const CLINE_PASS_MODELS = [
+  "cline-pass/glm-5.3",
   "cline-pass/glm-5.2",
   "cline-pass/kimi-k3",
   "cline-pass/kimi-k2.7-code",
@@ -864,6 +907,7 @@ const CLINE_PASS_MODELS = [
   "cline-pass/qwen3.7-plus",
 ];
 const CLINE_PASS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "cline-pass/glm-5.3": 1_048_576,
   "cline-pass/glm-5.2": 1_048_576,
   "cline-pass/kimi-k3": 1_048_576,
   "cline-pass/kimi-k2.7-code": 262_144,
@@ -1177,6 +1221,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "umans-coder": UMANS_REASONING_EFFORTS,
       "umans-kimi-k2.7": UMANS_REASONING_EFFORTS,
       "umans-flash": UMANS_REASONING_EFFORTS,
+      "umans-glm-5.3": UMANS_GLM_53_REASONING_EFFORTS,
       "umans-glm-5.2": UMANS_GLM_REASONING_EFFORTS,
       "umans-glm-5.1": UMANS_GLM_REASONING_EFFORTS,
       "umans-qwen3.6-35b-a3b": UMANS_REASONING_EFFORTS,
@@ -1200,6 +1245,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
     modelInputModalities: { "kimi-k3": ["text", "image"] },
     modelReasoningEfforts: {
+      "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "kimi-k3": KIMI_CODING_K3_REASONING_EFFORTS,
       "kimi-k2.7-code": [],
@@ -1217,6 +1263,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       ...Object.fromEntries(DEEPSEEK_THINKING_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     },
     modelSupportsReasoningSummaries: {
+      "glm-5.3": true,
       "glm-5.2": true,
       "glm-5.1": true,
       "glm-5": true,
@@ -1229,7 +1276,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // every model listed here (and the catalog advertises image input on their behalf).
     // Kimi K2.7 Code accepts text+image+video: do NOT list it here.
     noVisionModels: [
-      "glm-5.2", "glm-5", "glm-5.1",
+      "glm-5.3", "glm-5.2", "glm-5", "glm-5.1",
       "deepseek-v4-flash", "deepseek-v4-pro",
       "mimo-v2-pro", "mimo-v2.5-pro",
       "minimax-m2.5", "minimax-m2.7",
@@ -1240,7 +1287,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noPenaltyModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     // Issue #78: DeepSeek V4 thinking mode requires reasoning_content replay on tool-call turns.
-    preserveReasoningContentModels: ["glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
   },
   {
     id: "neuralwatt",
@@ -1249,10 +1296,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://api.neuralwatt.com/v1",
     authKind: "key",
     dashboardUrl: "https://portal.neuralwatt.com",
-    defaultModel: "glm-5.2",
+    defaultModel: "glm-5.3",
     // 2026-07-10 live /v1/models: K2.5 rows were removed and GLM-5.2 short variants added.
+    // 260814: the glm-5.3 quartet is speculative; live discovery is authoritative and drops
+    // any id Neuralwatt has not published yet.
     // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md and https://api.neuralwatt.com/v1/models.
     models: [
+      "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "kimi-k2.6", "kimi-k2.6-fast",
       "kimi-k2.7-code",
@@ -1260,6 +1310,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     ],
     // Neuralwatt's /v1/models metadata is authoritative; these static hints are the offline fallback.
     modelReasoningEfforts: {
+      "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
+      "glm-5.3-fast": [],
+      "glm-5.3-short": ZAI_GLM_53_REASONING_EFFORTS,
+      "glm-5.3-short-fast": [],
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "glm-5.2-fast": [],
       "glm-5.2-short": ZAI_GLM_52_REASONING_EFFORTS,
@@ -1275,8 +1329,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "qwen3.6-35b-fast": [],
     },
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
-    noReasoningModels: ["glm-5.2-fast", "glm-5.2-short-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
-    noVisionModels: ["glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
+    noReasoningModels: ["glm-5.3-fast", "glm-5.3-short-fast", "glm-5.2-fast", "glm-5.2-short-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
+    noVisionModels: ["glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast", "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
     noTopPModels: ["kimi-k2.7-code"],
     noPenaltyModels: ["kimi-k2.7-code"],
@@ -1917,18 +1971,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "venice", label: "Venice", baseUrl: "https://api.venice.ai/api/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://venice.ai/settings/api" },
   // 260710 GLM-5.2 context and path-specific ids: Tier-2 evidence in
   // devlog/_plan/260710_provider_hardening/002_research_cn.md.
+  // 260814: glm-5.3 / glm-5.3[1m] added per docs.z.ai/devpack/latest-model, which lists them as
+  // Coding Plan ids on this same endpoint. Capabilities mirror 5.2 until Z.AI publishes tables.
   {
     id: "zai", label: "Z.AI — GLM Coding Plan", baseUrl: "https://api.z.ai/api/coding/paas/v4", adapter: "openai-chat", authKind: "key",
-    dashboardUrl: "https://z.ai/manage-apikey/apikey-list", defaultModel: "glm-5.2",
-    note: "GLM-5.2 coding subscription",
-    models: ["glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
-    modelContextWindows: { "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    dashboardUrl: "https://z.ai/manage-apikey/apikey-list", defaultModel: "glm-5.3",
+    note: "GLM-5.3 coding subscription",
+    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     // Z.AI's OpenAI path returns 400 code 1211 for bracketed model ids.
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_52_MODELS,
-    modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
-    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
-    preserveReasoningContentModels: ZAI_GLM_52_MODELS,
+    noVisionModels: ZAI_GLM_5X_MODELS,
+    modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_5X_MODELS.map(id => [id, true])),
+    preserveReasoningContentModels: ZAI_GLM_5X_MODELS,
   },
   // Zhipu's domestic BigModel platform: OpenAI-compatible pay-as-you-go on open.bigmodel.cn — a
   // different host and billing product from the `zai` coding-plan subscription above.
@@ -1999,15 +2055,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "openai-chat",
     authKind: "key",
     dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
-    defaultModel: "glm-5.2",
-    models: ["glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    defaultModel: "glm-5.3",
+    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
     jawcodeBundle: "zai",
-    modelContextWindows: { "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_52_MODELS,
-    modelReasoningEfforts: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, ZAI_GLM_52_REASONING_EFFORTS])),
-    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_52_MODELS.map(id => [id, true])),
-    preserveReasoningContentModels: ZAI_GLM_52_MODELS,
+    noVisionModels: ZAI_GLM_5X_MODELS,
+    modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
+    modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_5X_MODELS.map(id => [id, true])),
+    preserveReasoningContentModels: ZAI_GLM_5X_MODELS,
     // No liveModels: the same reasoning as the pay-as-you-go row — an unverified live claim
     // yields an empty picker at runtime.
     note: "Domestic BigModel Coding Plan endpoint (open.bigmodel.cn)",
@@ -2146,11 +2202,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
       "qwen3.8-max": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
-      "qwen3.6-flash": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
+      "qwen3.6-flash": 1_000_000, "glm-5.3": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
       "qwen3.8-max": QWEN38_REASONING_EFFORTS,
+      "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
     },
@@ -2158,8 +2215,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: { "deepseek-v4-pro": deepseekReasoningMapFor("deepseek-v4-pro") },
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
-    noVisionModels: ["glm-5.2", "deepseek-v4-pro"],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+    noVisionModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro"],
   },
   {
     id: "alibaba-token-plan-intl",
@@ -2181,12 +2238,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000, "qwen3.6-plus": 1_000_000, "qwen3.6-flash": 1_000_000,
       "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-v3.2": 131_072,
       "kimi-k2.7-code": 262_144, "kimi-k2.6": 262_144, "kimi-k2.5": 262_144,
-      "glm-5.2": 1_000_000, "glm-5.1": 1_000_000, "glm-5": 1_000_000,
+      "glm-5.3": 1_000_000, "glm-5.2": 1_000_000, "glm-5.1": 1_000_000, "glm-5": 1_000_000,
       "MiniMax-M2.5": 204_800,
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
       "qwen3.8-max": QWEN38_REASONING_EFFORTS,
+      "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
       "deepseek-v4-flash": deepseekThinkingEffortsFor("deepseek-v4-flash"),
@@ -2197,8 +2255,8 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
-    preserveReasoningContentModels: ["glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
-    noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
+    noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
   },
@@ -2230,10 +2288,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     dashboardUrl: "https://ollama.com/settings/keys",
     // Live IDs verified 2026-07-10; qwen3-coder:480b retires 2026-07-15.
-    models: ["glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
-    defaultModel: "glm-5.2",
+    models: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
+    defaultModel: "glm-5.3",
     noVisionModels: [
-      "glm-5.2", "glm-5.1", "glm-5", "glm-4.7",
+      "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7",
       "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
       "nemotron-3-ultra", "nemotron-3-super",
       "deepseek-v4-pro", "deepseek-v4-flash",
@@ -2406,6 +2464,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "@cf/qwen/qwq-32b",
       "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
       "@cf/moonshotai/kimi-k2.7-code",
+      "@cf/zai-org/glm-5.3",
       "@cf/zai-org/glm-5.2",
       "@cf/mistralai/mistral-small-3.1-24b-instruct",
     ],
