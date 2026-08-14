@@ -130,10 +130,19 @@ describe("antigravity CCA envelope", () => {
     });
 
     expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.7-flash-low",
+      "gemini-3.7-flash-medium",
+      "gemini-3.7-flash-high",
+    ]))?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
+    expect(parseAntigravityAvailableModels(payload([
       "future-flash-low",
       "future-flash-medium",
       "future-flash-high",
-    ]))?.map(model => model.id)).toEqual(["future-flash"]);
+    ]))?.map(model => model.id)).toEqual([
+      "future-flash-low",
+      "future-flash-medium",
+      "future-flash-high",
+    ]);
     expect(parseAntigravityAvailableModels(payload([
       "future-flash-low",
       "future-flash-high",
@@ -147,7 +156,14 @@ describe("antigravity CCA envelope", () => {
       },
       agentModelSorts: [{ groups: [{ modelIds: [] }] }],
       tieredModelIds: { flash: ["future-flash-tiered"] },
-    })?.map(model => model.id)).toEqual(["future-flash"]);
+    })?.map(model => model.id)).toEqual(["future-flash-tiered"]);
+    expect(parseAntigravityAvailableModels({
+      models: {
+        "gemini-3.7-flash-tiered": { maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [] }] }],
+      tieredModelIds: { flash: ["gemini-3.7-flash-tiered"] },
+    })?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
     expect(parseAntigravityAvailableModels({
       models: { "-tiered": { maxTokens: 1_048_576 } },
       agentModelSorts: [{ groups: [{ modelIds: ["-tiered"] }] }],
@@ -166,6 +182,15 @@ describe("antigravity CCA envelope", () => {
     ]))?.map(model => model.id)).toEqual([
       "gemini-3.1-pro-low",
     ]);
+  });
+
+  test("keeps unknown discovered tier IDs directly routable", async () => {
+    for (const modelId of ["future-flash-tiered", "future-flash-low"]) {
+      const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort(modelId, "high"));
+      const env = JSON.parse(req.body);
+      expect(env.model).toBe(modelId);
+      expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    }
   });
 
   test("rejects malformed and oversized CCA agent-model lists", () => {

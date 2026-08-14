@@ -6,8 +6,8 @@ import { isValidModelDiscoveryModelId, MODEL_DISCOVERY_MAX_MODELS } from "./mode
 // CLI resolves labels against. The ids below separate CCA wire ids, collapsed picker entries,
 // and hidden compatibility aliases for saved selections. The CCA envelope's `model` field must
 // receive the wire id (for example "Gemini 3.1 Pro (High)" => gemini-pro-agent), while the
-// picker exposes collapsed base models only when CCA returns every known tier; otherwise each
-// returned wire id remains visible so an unavailable tier cannot be selected.
+// picker exposes collapsed known base models only when CCA returns every known tier; unknown
+// returned wire ids remain visible so they stay directly routable.
 
 // ── Wire IDs (what CCA :fetchAvailableModels returns) ──
 
@@ -80,13 +80,13 @@ function pickerModelIdForDiscoveredWireId(
   // require another provider-specific ID mapping.
   if (wireId.endsWith("-tiered")) {
     const baseId = wireId.slice(0, -"-tiered".length);
-    if (isValidModelDiscoveryModelId(baseId)) return baseId;
+    if (isKnownAntigravityPickerModelId(baseId)) return baseId;
   }
 
   const effortMatch = /^(.*)-(low|medium|high)$/.exec(wireId);
   if (effortMatch) {
     const baseId = effortMatch[1]!;
-    if (isValidModelDiscoveryModelId(baseId)
+    if (isKnownAntigravityPickerModelId(baseId)
       && ANTIGRAVITY_DISCOVERY_EFFORTS.every(effort => available.has(`${baseId}-${effort}`))) {
       return baseId;
     }
@@ -171,6 +171,10 @@ export const ANTIGRAVITY_MODELS = [
   "claude-opus-4-6-thinking",
   "gpt-oss-120b-medium",
 ];
+
+function isKnownAntigravityPickerModelId(value: string): boolean {
+  return isValidModelDiscoveryModelId(value) && ANTIGRAVITY_MODELS.includes(value);
+}
 
 // Context windows from the upstream `:fetchAvailableModels` maxTokens per model.
 const ANTIGRAVITY_WIRE_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
