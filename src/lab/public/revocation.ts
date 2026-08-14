@@ -47,6 +47,12 @@ function targetKey(target: PublicRevocationTargetV1): string {
   return `${target.kind}:${target.id}`;
 }
 
+function compareCanonicalText(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 function canonicalTargets(targets: readonly PublicRevocationTargetV1[]): PublicRevocationTargetV1[] {
   if (targets.length === 0 || targets.length > MAX_TARGETS) {
     throw new PublicEvidenceValidationError("revocation_targets", "revocation must contain 1..256 targets");
@@ -56,7 +62,7 @@ function canonicalTargets(targets: readonly PublicRevocationTargetV1[]): PublicR
       throw new PublicEvidenceValidationError("revocation_target", "invalid revocation target");
     }
     return { kind: target.kind, id: target.id } as PublicRevocationTargetV1;
-  }).sort((a, b) => targetKey(a).localeCompare(targetKey(b)));
+  }).sort((a, b) => compareCanonicalText(targetKey(a), targetKey(b)));
   if (new Set(normalized.map(targetKey)).size !== normalized.length) {
     throw new PublicEvidenceValidationError("revocation_target_duplicate", "revocation targets must be unique");
   }
