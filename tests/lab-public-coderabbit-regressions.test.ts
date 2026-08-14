@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import {
   ensureLabDirs,
   labCommunityDir,
   labPublicOriginDir,
+  labPublicPublisherKeyPath,
 } from "../src/lab/paths";
 import {
   createPublicEvidenceRevocation,
@@ -174,6 +176,10 @@ test("corrupt origin classification makes export purge report incomplete instead
   const marker = readdirSync(originDir).find((name) => name.startsWith("origin-"));
   if (!marker) throw new Error("expected local origin marker");
   writeFileSync(join(originDir, marker), "{", { mode: 0o600 });
+  // Remove the two fallback provenance sources so the corrupt marker is the only
+  // evidence that can classify the matching community copy as locally originated.
+  writeFileSync(exportPath, "{", { mode: 0o600 });
+  unlinkSync(labPublicPublisherKeyPath(home));
 
   expect(() => purgeSensitiveEvidence({
     configDir: home,
