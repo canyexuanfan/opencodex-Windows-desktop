@@ -76,17 +76,23 @@ function verdictPage(eventIds: string[]) {
 }
 
 type FetchOptions = {
-  failLoadMore?: boolean;
+  failLoadMoreOnce?: boolean;
   partialEvents?: boolean;
 };
 
 function installLabFetch(opts: FetchOptions = {}) {
+  const requests: string[] = [];
+  let loadMoreAttempts = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
+    requests.push(url);
     if (url.endsWith("/api/lab/status")) return Response.json(STATUS_AVAILABLE);
     if (url.includes("/api/lab/verdicts")) {
       if (url.includes("cursor=cursor-2")) {
-        if (opts.failLoadMore) return new Response("unavailable", { status: 503 });
+        loadMoreAttempts += 1;
+        if (opts.failLoadMoreOnce && loadMoreAttempts === 1) {
+          return new Response("unavailable", { status: 503 });
+        }
         return Response.json({ verdicts: [], hasMore: false });
       }
       return Response.json(verdictPage(opts.partialEvents ? ["e1", "missing-event"] : ["e1"]));
@@ -100,6 +106,7 @@ function installLabFetch(opts: FetchOptions = {}) {
     if (url.includes("/api/lab/production-signals")) return new Response("gone", { status: 404 });
     return new Response("{}", { status: 404 });
   }) as typeof fetch;
+  return { requests };
 }
 
 beforeEach(() => {
@@ -157,8 +164,8 @@ async function renderMatrix(): Promise<{ root: Root; container: HTMLDivElement }
   return { root, container };
 }
 
-test("load-more failures stay visible while the loaded rows remain retryable", async () => {
-  installLabFetch({ failLoadMore: true });
+test("load-more failures stay visible and a retry can recover", async () => {
+  const { requests } = installLabFetch({ failLoadMoreOnce: true });
   const { root, container } = await renderMatrix();
   await waitFor(() => container.querySelector(".lab-load-more button") !== null);
   const button = container.querySelector(".lab-load-more button") as HTMLButtonElement;
@@ -166,6 +173,14 @@ test("load-more failures stay visible while the loaded rows remain retryable", a
   await waitFor(() => container.querySelector(".notice-err")?.textContent?.includes("HTTP 503") ?? false);
   expect(container.textContent).toContain("Verified");
   expect(container.querySelector(".lab-load-more button")).not.toBeNull();
+
+  await act(async () => {
+    (container.querySelector(".lab-load-more button") as HTMLButtonElement).click();
+  });
+  await waitFor(() => container.querySelector(".notice-err") === null);
+  await waitFor(() => container.querySelector(".lab-load-more button") === null);
+  expect(requests.filter(url => url.includes("/api/lab/verdicts") && url.includes("cursor=cursor-2"))).toHaveLength(2);
+  expect(container.textContent).toContain("Verified");
   await act(async () => root.unmount());
 });
 
