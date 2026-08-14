@@ -1010,7 +1010,13 @@ function finalizedUsage(
         inputTokens: Math.max(finalUsage.inputTokens, estimate),
         estimated: true,
       }
-    : (finalUsage ?? usageFallback);
+    : finalUsage
+      // When the adapter itself produced an estimated count, cap it at the context
+      // window — adapter estimates are no more authoritative than our own fallback.
+      ? (finalUsage.estimated && contextWindow !== undefined && finalUsage.inputTokens > contextWindow
+          ? { ...finalUsage, inputTokens: contextWindow }
+          : finalUsage)
+      : usageFallback;
   const totalTokens = usageTotalTokens(loggedUsage);
   return {
     status: usageStatusForFinalLog(loggedUsage),
