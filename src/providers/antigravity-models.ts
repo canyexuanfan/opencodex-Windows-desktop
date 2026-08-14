@@ -69,9 +69,13 @@ function pickerModelIdForDiscoveredWireId(
   wireId: string,
   available: ReadonlyMap<string, Record<string, unknown>>,
 ): string {
-  const explicitPickerId = ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID[wireId];
+  const explicitPickerId = Object.hasOwn(ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID, wireId)
+    ? ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID[wireId]
+    : undefined;
   if (explicitPickerId) {
-    const requiredWireIds = ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL[explicitPickerId] ?? [];
+    const requiredWireIds = Object.hasOwn(ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL, explicitPickerId)
+      ? ANTIGRAVITY_WIRE_IDS_BY_PICKER_MODEL[explicitPickerId] ?? []
+      : [];
     if (requiredWireIds.every(id => available.has(id))) return explicitPickerId;
   }
 
@@ -257,6 +261,7 @@ export function parseAntigravityAvailableModels(
       if (!Array.isArray(modelIds)) return null;
       for (const id of modelIds) {
         if (!isValidModelDiscoveryModelId(id)
+          || !Object.hasOwn(models, id)
           || !antigravityRecord(models[id])
           || ids.length >= limit) return null;
         ids.push(id);
@@ -277,6 +282,7 @@ export function parseAntigravityAvailableModels(
   if (Array.isArray(flashTieredIds)) {
     for (const id of flashTieredIds) {
       if (!isValidModelDiscoveryModelId(id)
+        || !Object.hasOwn(models, id)
         || !antigravityRecord(models[id])
         || ids.length >= limit) return null;
       ids.push(id);
@@ -289,7 +295,10 @@ export function parseAntigravityAvailableModels(
     if (!info || available.has(wireId)) continue;
     // Legacy compatibility aliases are deliberately routed to newer wire ids for saved
     // selections. They are not safe as independently discovered picker rows.
-    if (ANTIGRAVITY_MODEL_ALIASES[wireId] && ANTIGRAVITY_MODEL_ALIASES[wireId] !== wireId) continue;
+    const alias = Object.hasOwn(ANTIGRAVITY_MODEL_ALIASES, wireId)
+      ? ANTIGRAVITY_MODEL_ALIASES[wireId]
+      : undefined;
+    if (alias && alias !== wireId) continue;
     available.set(wireId, info);
   }
 
@@ -309,7 +318,9 @@ export function parseAntigravityAvailableModels(
 }
 
 export function resolveAntigravityWireModelId(modelId: string): string {
-  return ANTIGRAVITY_MODEL_ALIASES[modelId] ?? modelId;
+  return Object.hasOwn(ANTIGRAVITY_MODEL_ALIASES, modelId)
+    ? ANTIGRAVITY_MODEL_ALIASES[modelId]
+    : modelId;
 }
 
 /**
@@ -323,7 +334,7 @@ export function isAntigravitySuffixModelId(modelId: string): boolean {
 
 /** The reasoning tier a retired Flash id used to encode, if it is one. */
 export function retiredAntigravityFlashTier(modelId: string): string | undefined {
-  return RETIRED_FLASH_TIERS[modelId];
+  return Object.hasOwn(RETIRED_FLASH_TIERS, modelId) ? RETIRED_FLASH_TIERS[modelId] : undefined;
 }
 
 /**
@@ -343,7 +354,7 @@ export function resolveAntigravityEffortWireModel(
   // Rule 0: retired Flash id — Google has taken the wire id offline, so route to the
   // current generation and carry the tier the retired id encoded. This runs BEFORE the
   // suffix check because those ids are aliases, and rule 1 would drop the tier.
-  const retiredTier = RETIRED_FLASH_TIERS[modelId];
+  const retiredTier = retiredAntigravityFlashTier(modelId);
   if (retiredTier) {
     return {
       wireModelId: GEMINI_FLASH_CURRENT,

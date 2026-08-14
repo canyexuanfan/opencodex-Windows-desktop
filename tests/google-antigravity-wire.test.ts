@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel, parseAntigravityAvailableModels } from "../src/providers/antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel, parseAntigravityAvailableModels, resolveAntigravityEffortWireModel, resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
 import { MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH, MODEL_DISCOVERY_MAX_MODELS } from "../src/providers/model-discovery";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
@@ -191,6 +191,24 @@ describe("antigravity CCA envelope", () => {
       expect(env.model).toBe(modelId);
       expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
     }
+  });
+
+  test("ignores inherited CCA model and alias properties", () => {
+    const inheritedModels = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(inheritedModels, "__proto__", {
+      value: { maxTokens: 1_048_576 },
+      enumerable: true,
+    });
+    const models = Object.create(inheritedModels);
+
+    expect(parseAntigravityAvailableModels({
+      models,
+      agentModelSorts: [{ groups: [{ modelIds: ["__proto__"] }] }],
+    })).toBeNull();
+    expect(resolveAntigravityWireModelId("__proto__")).toBe("__proto__");
+    expect(resolveAntigravityEffortWireModel("__proto__", "high")).toEqual({
+      wireModelId: "__proto__",
+    });
   });
 
   test("rejects malformed and oversized CCA agent-model lists", () => {
