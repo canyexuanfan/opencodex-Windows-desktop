@@ -227,6 +227,7 @@ test("canonical persistence publishes artifacts while holding the ledger mutatio
       { configDir: home, recordedAt: 1000, artifactStore: guardedStore },
     );
     expect(replayLabLedger(ledgerPath).events.some((row) => row.eventId === event.eventId)).toBe(true);
+    expect(existsSync(`${ledgerPath}.lock`)).toBe(false);
   } finally {
     realStore.close();
   }
