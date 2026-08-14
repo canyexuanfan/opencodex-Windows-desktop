@@ -275,7 +275,6 @@ function publicVerificationLines(result: PublicVerificationSummaryV1): string[] 
     return [
       `Public evidence verification: ${result.status}`,
       "Not locally verified.",
-      ...(result.detail ? [result.detail] : []),
     ];
   }
   return [
@@ -315,7 +314,7 @@ function handlePublicLabCommand(
       const result = verifyPublicEvidenceFile(path);
       printData(result, wantsJson, publicVerificationLines(result));
       if (result.status !== "cryptographically_valid") {
-        throw new Error(`public evidence verification failed: ${result.status}`);
+        throw new RuntimeApiError(`public evidence verification failed: ${result.status}`, 422, result);
       }
       return;
     }
@@ -592,7 +591,7 @@ export async function handleLabCommand(argv: string[], deps: LabCliDeps = {}): P
           throw new CliUsageError(`unknown lab subcommand: ${sub}`, USAGE);
       }
     } catch (err) {
-      if (err instanceof CliUsageError) throw err;
+      if (err instanceof CliUsageError || err instanceof RuntimeApiError) throw err;
       if (err instanceof LabProjectionUnavailableError || err instanceof LabProjectionIncompatibleError) {
         throw new LabStateError(labErrorMessage(err));
       }
