@@ -146,9 +146,40 @@ Fixed in `7bab92781`.
 Bun 1.4 was innocent. Noted because "the canary run is red" is not by itself
 evidence about the canary — the control run is what decides that.
 
+## Full-suite result
+
+Run on a dedicated machine (Mac mini, macOS 15.7.4, arm64, 10 cores) rather
+than a laptop shared with other work, so a stall could not be confused with
+contention:
+
+```console
+$ bun test --isolate --timeout 60000 tests/     # bun = 1.4.0-canary.1 (032b8dbf1)
+ 11712 pass
+ 8 skip
+ 0 fail
+Ran 11720 tests across 726 files. [422.37s]
+CANARY_EXIT=0
+```
+
+Every difference above is closed. Note the machine had no Node installed at
+first and `tests/cursor-native-exec.test.ts` failed twice — identically on BOTH
+runtimes, because the test shells out to `node`. Environment, not runtime;
+installing Node 24 cleared it. Same discipline as F4: a red run is not evidence
+about the candidate until the control run says otherwise.
+
 ## Not yet observed
 
 Nothing yet on the surfaces the migration actually targets: SSE relay
-behaviour, Worker teardown timing, or fetch receive-backpressure. Those need
-the memory harness (`040`) and the revision-gated paths (`050`, `080`), which
-stay closed until a revision is in `qualifiedRevisions`.
+behaviour, Worker teardown timing, or fetch receive-backpressure. A green
+functional suite says the runtime swap is safe; it says nothing about the
+memory characteristics this migration is FOR. Those need the memory harness
+(`040`) and the revision-gated paths (`050`, `080`), which stay closed until a
+revision is in `qualifiedRevisions`.
+
+## Promotion status
+
+`qualifiedRevisions` is still EMPTY. One green macOS run is not qualification
+across the supported platforms — Linux and Windows are exactly where the Bun
+1.3.14 Worker and isolate problems lived, and they are the reason the split
+fresh-process CI jobs exist. The CI lane on `preview-dev` is what supplies
+the remaining evidence.
