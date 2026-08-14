@@ -414,7 +414,12 @@ describe("google provider hardening", () => {
     expect(JSON.parse(high.body).generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high" });
     expect(JSON.parse(unset.body).generationConfig).toBeUndefined();
     expect(JSON.parse(legacy.body).generationConfig.thinkingConfig).toEqual({ thinkingLevel: "medium" });
-    expect(JSON.parse(antigravity.body).request.generationConfig).toBeUndefined();
+    // Antigravity used to encode the tier in the wire id, so it sent no thinkingConfig.
+    // Now that Google has retired the suffixed 3.6 ids, that tier has nowhere to live
+    // except an explicit thinkingLevel on the current model.
+    expect(JSON.parse(antigravity.body).model).toBe("gemini-3.7-flash");
+    expect(JSON.parse(antigravity.body).request.generationConfig.thinkingConfig)
+      .toEqual({ thinkingLevel: "high" });
   });
 
   test("provider-wide effort ladder drives thinkingLevel for a non-image model", async () => {

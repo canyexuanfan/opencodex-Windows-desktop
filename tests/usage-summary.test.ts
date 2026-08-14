@@ -751,13 +751,25 @@ describe("summarizeUsage", () => {
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
     const byModel = Object.fromEntries(sum.models.map(m => [`${m.provider}/${m.model}`, m]));
 
-    expect(byModel["google-antigravity/gemini-3.6-flash"]).toMatchObject({
-      provider: "google-antigravity",
-      model: "gemini-3.6-flash",
-      requests: 3,
-      totalTokens: 1760,
+    // Retired Flash ids keep their own usage identity. Routing now sends these ids to
+    // 3.7, but a historical row records the model the user actually called — collapsing
+    // them into the successor would move past spend onto a model that did not exist yet.
+    expect(byModel["google-antigravity/gemini-3.5-flash-high"]).toMatchObject({
+      model: "gemini-3.5-flash-high",
+      requests: 1,
+      totalTokens: 1100,
     });
-    expect(byModel["google-antigravity/gemini-3.6-flash"]?.resolvedModel).toBeUndefined();
+    expect(byModel["google-antigravity/gemini-3.5-flash-low"]).toMatchObject({
+      model: "gemini-3.5-flash-low",
+      requests: 1,
+      totalTokens: 550,
+    });
+    expect(byModel["google-antigravity/gemini-3-flash-agent"]).toMatchObject({
+      model: "gemini-3-flash-agent",
+      requests: 1,
+      totalTokens: 110,
+    });
+    expect(byModel["google-antigravity/gemini-3.7-flash"]).toBeUndefined();
 
     expect(byModel["google-antigravity/gemini-3.1-pro"]).toMatchObject({
       provider: "google-antigravity",
@@ -782,11 +794,11 @@ describe("summarizeUsage", () => {
 
     const day = sum.days.find(d => d.requests > 0)!;
     const dayModels = Object.fromEntries(day.models.map(m => [`${m.provider}/${m.model}`, m]));
-    expect(dayModels["google-antigravity/gemini-3.6-flash"]?.requests).toBe(3);
+    expect(dayModels["google-antigravity/gemini-3.5-flash-high"]?.requests).toBe(1);
     expect(dayModels["google-antigravity/gemini-3.1-pro"]?.requests).toBe(2);
   });
 
-  test("collapses antigravity base model + wire resolvedModel into one picker row", () => {
+  test("keeps a retired antigravity model's history under its own id", () => {
     const entries: PersistedUsageEntry[] = [
       entry({
         ts: FIXED_NOW - 1,
@@ -809,14 +821,18 @@ describe("summarizeUsage", () => {
       }),
     ];
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
-    expect(sum.models).toHaveLength(1);
-    expect(sum.models[0]).toMatchObject({
+    const byModel = Object.fromEntries(sum.models.map(m => [m.model, m]));
+    expect(byModel["gemini-3.6-flash"]).toMatchObject({
       provider: "google-antigravity",
       model: "gemini-3.6-flash",
-      requests: 2,
-      totalTokens: 165,
+      requests: 1,
+      totalTokens: 110,
     });
-    expect(sum.models[0]?.resolvedModel).toBeUndefined();
+    expect(byModel["gemini-3.6-flash-high"]).toMatchObject({
+      model: "gemini-3.6-flash-high",
+      requests: 1,
+      totalTokens: 55,
+    });
   });
 
   test("caps top-level and per-day model breakdowns with a lossless other bucket", () => {

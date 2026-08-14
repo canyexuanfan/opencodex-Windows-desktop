@@ -26,6 +26,22 @@ export interface ModelRename {
   to: string;
   /** Why the vendor retired it, for the startup warning and future readers. */
   reason: string;
+  /**
+   * Drop the retired key from `modelReasoningEffortMap` instead of renaming it.
+   *
+   * Renaming preserves the VALUE, which is right for records whose values describe the
+   * model — a context window or an effort ladder survives a rename — and wrong for the
+   * one record whose values are themselves wire ids. An effort map saved as
+   * `high -> gemini-3.6-flash-high` would keep naming a dead wire id under the new key,
+   * and the adapter maps effort BEFORE resolving CCA routing, so that value arrives as
+   * an unrecognised effort and silently degrades to the default tier.
+   *
+   * Only that one record is dropped. Emptying the others would be worse than the bug:
+   * catalog enrichment treats an existing `{}` as "already populated" and will not
+   * restore the registry's records, so the migrated user would keep routing correctly
+   * but lose the reasoning picker entirely.
+   */
+  dropReasoningEffortMap?: boolean;
 }
 
 /**
@@ -46,6 +62,22 @@ export const MODEL_RENAMES: readonly ModelRename[] = [
     to: "qwen3.8-max",
     reason: "Alibaba shipped Qwen3.8-Max as stable and documents the preview endpoint as liable to be taken offline once preview concludes",
   },
+  // Antigravity Flash generations. Google takes the previous Flash model off Cloud Code
+  // Assist almost immediately when the next ships, so a saved 3.6 (or older 3.5) id is a
+  // dead selection rather than a merely outdated one. Routing already redirects these ids
+  // at request time; this migration repairs the saved config so the picker, the allowlist
+  // and the capability maps stop naming a model the backend no longer serves.
+  ...(["gemini-3.6-flash", "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
+    "gemini-3.5-flash-extra-low", "gemini-3.5-flash-low", "gemini-3.5-flash-mid", "gemini-3.5-flash-high",
+    "gemini-3-flash-agent"] as const).map(from => ({
+    provider: "google-antigravity",
+    from,
+    to: "gemini-3.7-flash",
+    reason: "Google retires the previous Antigravity Flash generation from Cloud Code Assist when its successor ships, so the saved id no longer resolves to a live model",
+    // The retired Flash tiers were wire ids, so any saved per-model record keyed by one
+    // may also hold one as a value. 3.7 expresses tiers as thinkingLevel names instead.
+    dropReasoningEffortMap: true,
+  })),
 ];
 
 /** Provider fields that key metadata by model id. */
@@ -61,6 +93,12 @@ const MODEL_KEYED_RECORDS = [
 /** Provider fields that are flat lists of model ids. */
 const MODEL_ID_LISTS = [
   "models",
+  // A retired id left here is worse than a stale label: `filterCatalogModels` treats
+  // `selectedModels` as an exact-match allowlist, so a user who allowlisted only the
+  // retired model gets NO replacement row at all — the model silently vanishes from
+  // their catalog instead of being renamed. OAuth reconciliation does not cover this
+  // field, so the rename has to.
+  "selectedModels",
   "noVisionModels",
   "noReasoningModels",
   "noTemperatureModels",
@@ -98,6 +136,19 @@ function renameInRecord(value: unknown, from: string, to: string): Record<string
     if (mapped in next) continue;
     // An explicit entry already saved under the new id is the newer intent.
     next[mapped] = key === from && to in record ? record[to] : entry;
+  }
+  return next;
+}
+
+/** Drop the retired key entirely, leaving any entry already saved under the new id. */
+function dropFromRecord(value: unknown, from: string): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (!(from in record)) return null;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if (key === from) continue;
+    next[key] = entry;
   }
   return next;
 }
@@ -179,7 +230,9 @@ export function projectModelRenames(
       touched = true;
     }
     for (const field of MODEL_KEYED_RECORDS) {
-      const next = renameInRecord(row[field], rename.from, rename.to);
+      const next = rename.dropReasoningEffortMap && field === "modelReasoningEffortMap"
+        ? dropFromRecord(row[field], rename.from)
+        : renameInRecord(row[field], rename.from, rename.to);
       if (!next) continue;
       row[field] = next;
       touched = true;
