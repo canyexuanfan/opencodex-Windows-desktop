@@ -1451,6 +1451,16 @@ export interface OcxProviderConfig {
    */
   parallelToolCalls?: boolean;
   /**
+   * Opt-in: when `parallelToolCalls` is `false`, actually send `parallel_tool_calls: false`
+   * on the `/chat/completions` wire for this provider. By default an opted-out provider only
+   * OMITS the field (strict OpenAI-compatible hosts reject unknown knobs), and the NVIDIA NIM
+   * baseUrl is the sole built-in exception that pins the wire bit. Some self-hosted gateways
+   * (Kimi/GLM-family, vLLM, etc.) do honor `parallel_tool_calls` and keep emitting concurrent
+   * tool calls unless it is present; enable this to pin the bit without hardcoding their URL.
+   * No effect unless `parallelToolCalls === false`; ignored by non-`openai-chat` adapters.
+   */
+  pinParallelToolCallsFalse?: boolean;
+  /**
    * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
    * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
    * fields. Default off; only enable for providers that document this parameter.
