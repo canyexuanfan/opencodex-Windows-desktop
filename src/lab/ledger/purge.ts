@@ -18,7 +18,7 @@ import {
   expandSensitiveArtifactEventTargets,
 } from "./artifact-refs";
 import { buildInvalidationIndex } from "./invalidation";
-import { appendLabEvent, replayLabLedger } from "./store";
+import { withLedgerMutation } from "./store";
 import { ensureLabDirs } from "../paths";
 import { rebuildLabProjection } from "../projection/rebuild";
 import { jcsStringify } from "../digest";
@@ -153,73 +153,86 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   const targetArtifactDigests = [...(req.targetArtifactDigests ?? [])].sort();
   const purgeActions = [...(req.purgeActions ?? PURGE_ACTIONS)].sort();
   const explicitSensitive = new Set(targetArtifactDigests);
-
-  const replay = replayLabLedger(paths.ledgerPath);
-  const index = buildInvalidationIndex(replay.events);
-  const removeIds = expandSensitiveArtifactEventTargets(
-    replay.events,
-    index,
-    new Set(targetEventIds),
-    explicitSensitive,
-  );
-
-  const tombstonePayload = {
-    schemaVersion: LAB_EVENT_SCHEMA_VERSION,
-    eventKind: "purge_tombstone" as const,
-    recordedAt: req.recordedAt ?? Date.now(),
-    producer: LAB_PRODUCER,
-    producerVersion: req.producerVersion ?? LAB_PRODUCER_VERSION,
-    targetEventIds: [...removeIds].sort(),
-    targetArtifactDigests,
-    reason: "sensitive_evidence" as const,
-    purgeActions,
-  };
-  const tombstone = validateLabEvent(assignEventId(tombstonePayload)) as PurgeTombstoneEvent;
-
-  const deletionPlan = purgeActions.includes("artifact")
-    ? artifactDeletionPlan(replay.events, index, removeIds, targetArtifactDigests)
-    : { deletable: [], retainedExplicit: [] };
-
-  if (deletionPlan.retainedExplicit.length > 0) {
-    throw new PurgeError(
-      "sensitive_bytes_retained",
-      `explicit sensitive artifacts remain required: ${deletionPlan.retainedExplicit.join(",")}`,
-    );
-  }
-
-  let dir: TrustedArtifactDir | null = null;
   const completed: string[] = [];
+
   try {
-    if (purgeActions.includes("scratch")) {
-      purgeBoundedDirectory(paths.scratchDir);
-      completed.push("scratch");
-    }
-    if (purgeActions.includes("export")) {
-      purgeBoundedDirectory(paths.exportDir);
-      completed.push("export");
-    }
+    const tombstone = withLedgerMutation(paths.ledgerPath, (ledger) => {
+      // Replay and plan under the same lock as every append. Otherwise an event
+      // appended after this snapshot can be lost by the atomic rename or can
+      // start referencing an artifact after the deletion plan was calculated.
+      const replay = ledger.replay();
+      const index = buildInvalidationIndex(replay.events);
+      const removeIds = expandSensitiveArtifactEventTargets(
+        replay.events,
+        index,
+        new Set(targetEventIds),
+        explicitSensitive,
+      );
 
-    if (purgeActions.includes("artifact")) {
-      if (deletionPlan.deletable.length > 0) {
-        dir = openTrustedArtifactDir(paths.artifactsDir);
-        deleteArtifactsFailClosed(dir, deletionPlan.deletable);
+      const tombstonePayload = {
+        schemaVersion: LAB_EVENT_SCHEMA_VERSION,
+        eventKind: "purge_tombstone" as const,
+        recordedAt: req.recordedAt ?? Date.now(),
+        producer: LAB_PRODUCER,
+        producerVersion: req.producerVersion ?? LAB_PRODUCER_VERSION,
+        targetEventIds: [...removeIds].sort(),
+        targetArtifactDigests,
+        reason: "sensitive_evidence" as const,
+        purgeActions,
+      };
+      const tombstone = validateLabEvent(assignEventId(tombstonePayload)) as PurgeTombstoneEvent;
+
+      const deletionPlan = purgeActions.includes("artifact")
+        ? artifactDeletionPlan(replay.events, index, removeIds, targetArtifactDigests)
+        : { deletable: [], retainedExplicit: [] };
+
+      if (deletionPlan.retainedExplicit.length > 0) {
+        throw new PurgeError(
+          "sensitive_bytes_retained",
+          `explicit sensitive artifacts remain required: ${deletionPlan.retainedExplicit.join(",")}`,
+        );
       }
-      completed.push("artifact");
-    }
 
-    if (purgeActions.includes("ledger")) {
-      const kept: LabEvent[] = [];
-      for (const event of replay.events) {
-        if (removeIds.has(event.eventId)) continue;
-        kept.push(event);
+      if (purgeActions.includes("scratch")) {
+        purgeBoundedDirectory(paths.scratchDir);
+        completed.push("scratch");
       }
-      kept.push(tombstone);
-      atomicRewriteLedger(paths.ledgerPath, kept);
-    } else {
-      appendLabEvent(paths.ledgerPath, tombstone);
-    }
-    completed.push("ledger");
+      if (purgeActions.includes("export")) {
+        purgeBoundedDirectory(paths.exportDir);
+        completed.push("export");
+      }
 
+      let dir: TrustedArtifactDir | null = null;
+      try {
+        if (purgeActions.includes("artifact")) {
+          if (deletionPlan.deletable.length > 0) {
+            dir = openTrustedArtifactDir(paths.artifactsDir);
+            deleteArtifactsFailClosed(dir, deletionPlan.deletable);
+          }
+          completed.push("artifact");
+        }
+
+        if (purgeActions.includes("ledger")) {
+          const kept: LabEvent[] = [];
+          for (const event of replay.events) {
+            if (removeIds.has(event.eventId)) continue;
+            kept.push(event);
+          }
+          kept.push(tombstone);
+          atomicRewriteLedger(paths.ledgerPath, kept);
+        } else {
+          ledger.append(tombstone);
+        }
+        completed.push("ledger");
+      } finally {
+        if (dir) closeTrustedArtifactDir(dir);
+      }
+
+      return tombstone;
+    });
+
+    // SQLite is disposable and rebuildLabProjection replays the canonical
+    // ledger again, so it does not need to extend the mutation lock duration.
     if (purgeActions.includes("sqlite")) {
       rebuildLabProjection(req.configDir);
       completed.push("sqlite");
@@ -235,7 +248,5 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
       err instanceof Error ? err.message : String(err),
       completed,
     );
-  } finally {
-    if (dir) closeTrustedArtifactDir(dir);
   }
 }
