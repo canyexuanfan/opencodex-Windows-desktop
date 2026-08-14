@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { syncModelsToCodex } from "../codex/sync";
 import { hasOwnProvider, isValidProviderName, loadConfig, saveConfig } from "../config";
-import { isCodexReasoningEffort } from "../reasoning-effort";
+import { canonicalizeReasoningEfforts, isCodexReasoningEffort } from "../reasoning-effort";
 import { routedSlug } from "../providers/slug-codec";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig, OcxCustomModel } from "../types";
@@ -14,6 +14,55 @@ const ADD_USAGE = "Usage: ocx models add <provider> <modelId> [--display-name <n
 const REMOVE_USAGE = "Usage: ocx models remove <customId|provider/modelId> [--yes]";
 const LIST_CUSTOM_USAGE = "Usage: ocx models list-custom [--json]";
 const ALLOWED_MODALITIES = new Set(["text", "image", "audio"]);
+
+/**
+ * Parse and validate the reasoning flags shared by `ocx models add` (offline path).
+ * "-" means "inherit" and omits the field entirely; an empty string is rejected instead of
+ * silently meaning something (edit's "-" is the documented clear idiom). Values are
+ * canonicalized into Codex ladder order so the stored config matches what the API stores.
+ */
+export function parseReasoningArgs(
+  reasoningEffortsValue: string | undefined,
+  defaultEffortValue: string | undefined,
+): { reasoningEfforts?: string[]; defaultReasoningEffort?: string; error?: string } {
+  if (reasoningEffortsValue === undefined && defaultEffortValue === undefined) return {};
+  let reasoningEfforts: string[] | undefined;
+  if (reasoningEffortsValue !== undefined) {
+    const trimmed = reasoningEffortsValue.trim();
+    if (trimmed === "-") {
+      reasoningEfforts = undefined;
+    } else {
+      const parts = trimmed.split(",").map(value => value.trim());
+      if (parts.length === 0 || parts.some(part => part === "")) {
+        return { error: "--reasoning-efforts must be comma-separated values from low, medium, high, xhigh, max, ultra (or \"-\" to inherit)" };
+      }
+      const invalid = parts.filter(value => !isCodexReasoningEffort(value));
+      if (invalid.length > 0) {
+        return { error: `unsupported reasoning effort: ${invalid.join(", ")} (allowed: low, medium, high, xhigh, max, ultra)` };
+      }
+      reasoningEfforts = canonicalizeReasoningEfforts(parts);
+    }
+  }
+  let defaultReasoningEffort: string | undefined;
+  if (defaultEffortValue !== undefined) {
+    const trimmed = defaultEffortValue.trim();
+    if (trimmed === "-") {
+      defaultReasoningEffort = undefined;
+    } else {
+      if (!isCodexReasoningEffort(trimmed)) {
+        return { error: `unsupported reasoning effort: ${trimmed} (allowed: low, medium, high, xhigh, max, ultra)` };
+      }
+      if (!reasoningEfforts || reasoningEfforts.length === 0) {
+        return { error: "--default-reasoning-effort requires --reasoning-efforts" };
+      }
+      if (!reasoningEfforts.includes(trimmed)) {
+        return { error: `--default-reasoning-effort "${trimmed}" is not in the declared reasoning efforts` };
+      }
+      defaultReasoningEffort = trimmed;
+    }
+  }
+  return { reasoningEfforts, defaultReasoningEffort };
+}
 
 interface ModelEntry {
   provider: string;
@@ -153,26 +202,8 @@ async function handleCustomAdd(args: string[]): Promise<void> {
     inputModalities = [...new Set(inputModalities)];
   }
 
-  let reasoningEfforts: string[] | undefined;
-  if (reasoningEffortsValue !== undefined) {
-    reasoningEfforts = reasoningEffortsValue.split(",").map(value => value.trim()).filter(Boolean);
-    const invalid = reasoningEfforts.filter(value => !isCodexReasoningEffort(value));
-    if (invalid.length > 0) {
-      fail(`unsupported reasoning effort: ${invalid.join(", ")} (allowed: low, medium, high, xhigh, max, ultra)`);
-    }
-    reasoningEfforts = [...new Set(reasoningEfforts)];
-  }
-  if (defaultEffortValue !== undefined) {
-    if (!isCodexReasoningEffort(defaultEffortValue)) {
-      fail(`unsupported reasoning effort: ${defaultEffortValue} (allowed: low, medium, high, xhigh, max, ultra)`);
-    }
-    if (!reasoningEfforts || reasoningEfforts.length === 0) {
-      fail("--default-reasoning-effort requires --reasoning-efforts");
-    }
-    if (!reasoningEfforts.includes(defaultEffortValue)) {
-      fail(`--default-reasoning-effort "${defaultEffortValue}" is not in the declared reasoning efforts`);
-    }
-  }
+  const parsed = parseReasoningArgs(reasoningEffortsValue, defaultEffortValue);
+  if (parsed.error) fail(parsed.error);
 
   const existing = config.customModels ?? [];
   const slug = routedSlug(provider, modelId);
@@ -187,8 +218,8 @@ async function handleCustomAdd(args: string[]): Promise<void> {
     ...(displayName ? { displayName } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(inputModalities ? { inputModalities } : {}),
-    ...(reasoningEfforts ? { reasoningEfforts } : {}),
-    ...(defaultEffortValue ? { defaultReasoningEffort: defaultEffortValue } : {}),
+    ...(parsed.reasoningEfforts ? { reasoningEfforts: parsed.reasoningEfforts } : {}),
+    ...(parsed.defaultReasoningEffort ? { defaultReasoningEffort: parsed.defaultReasoningEffort } : {}),
     addedAt: new Date().toISOString(),
   };
   config.customModels = [...existing, entry];

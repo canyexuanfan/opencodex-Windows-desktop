@@ -40,7 +40,6 @@ export interface ModelRow {
   contextCapped?: boolean;
   /** Stored custom-row override (not the inherited ladder); only present on custom rows. */
   reasoningEfforts?: string[];
-  defaultReasoningEffort?: string;
 }
 
 /** Codex ladder labels offered in the custom-model dialog. */

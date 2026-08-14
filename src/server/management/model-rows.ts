@@ -95,7 +95,6 @@ export async function listManagementModelRows(config: OcxConfig): Promise<Manage
       // set (including an explicit empty "no reasoning" ladder), not what the provider row
       // happens to advertise today.
       ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
-      ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
     };
   });
   const publicModels = uniqueCatalogModelsForPublicList(models);

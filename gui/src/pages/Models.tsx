@@ -1614,7 +1614,13 @@ export default function Models({ apiBase }: { apiBase: string }) {
                     <input
                       type="checkbox"
                       checked={customFormReasoning}
-                      onChange={e => setCustomFormReasoning(e.target.checked)}
+                      onChange={e => {
+                        setCustomFormReasoning(e.target.checked);
+                        // Default to the full ladder: the common intent is "allow every known
+                        // step". An explicit no-reasoning override (empty ladder) then requires
+                        // deliberately unchecking all of them instead of being an accident.
+                        if (e.target.checked) setCustomFormReasoningEfforts([...REASONING_EFFORT_LEVELS]);
+                      }}
                       disabled={customSaving}
                     />
                     <span className="text-control">{t("models.customFieldReasoningOverride")}</span>

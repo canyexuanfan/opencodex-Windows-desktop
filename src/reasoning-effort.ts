@@ -20,6 +20,17 @@ export function isCodexReasoningEffort(effort: string): boolean {
 }
 
 /**
+ * Reorder any subset of the Codex ladder into canonical low..ultra order and drop
+ * duplicates. Catalog `supported_reasoning_levels` follow the input order and the
+ * fallback default picks the first entry, so non-canonical input ("high,low") would
+ * otherwise leak a caller-chosen order into the catalog.
+ */
+export function canonicalizeReasoningEfforts(values: readonly string[]): string[] {
+  const seen = new Set(values);
+  return CODEX_REASONING_ORDER.filter(effort => seen.has(effort));
+}
+
+/**
  * Reasoning ladder accepted for the OpenAI vision sidecar. `ultra` is deliberately excluded:
  * the vision describer is a single helper call, and `ultra` would be collapsed to `max` by the
  * upstream client boundary anyway.

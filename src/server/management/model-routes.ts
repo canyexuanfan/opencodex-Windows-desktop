@@ -49,7 +49,9 @@ function readReasoningEfforts(raw: unknown): { values?: string[]; error?: string
   if (rejected.length > 0) {
     return { error: `unsupported reasoning effort: ${rejected.join(", ")} (allowed: low, medium, high, xhigh, max, ultra)` };
   }
-  return { values };
+  // Canonical order: the catalog writes supported_reasoning_levels in input order and the
+  // fallback default picks the first entry, so a caller-chosen order must not leak through.
+  return { values: canonicalizeReasoningEfforts(values) };
 }
 
 /** Default effort must be a ladder member that the declared ladder actually includes. */
@@ -109,7 +111,7 @@ import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summa
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
-import { isCodexReasoningEffort } from "../../reasoning-effort";
+import { canonicalizeReasoningEfforts, isCodexReasoningEffort } from "../../reasoning-effort";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
   clearDebugSettings,
@@ -452,6 +454,16 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       const edited = readDefaultReasoningEffort(body.defaultReasoningEffort, cm.reasoningEfforts);
       if (edited.error) return jsonResponse({ error: edited.error }, 400);
       cm.defaultReasoningEffort = edited.value;
+    }
+    // Mirror of the POST invariant: a default only survives as a member of the final ladder.
+    // Without this, a ladder shrink/clear on a row that was created with a default leaves a
+    // stale default that re-applies itself onto the inherited ladder in the generated catalog
+    // (the GUI toggle-off path sends only reasoningEfforts, never the default).
+    if (cm.defaultReasoningEffort !== undefined) {
+      const ladder = cm.reasoningEfforts;
+      if (!ladder || ladder.length === 0 || !ladder.includes(cm.defaultReasoningEffort)) {
+        cm.defaultReasoningEffort = undefined;
+      }
     }
     const updatedSlug = routedSlug(cm.provider, cm.modelId);
     if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {

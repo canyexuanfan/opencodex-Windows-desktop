@@ -666,6 +666,13 @@ export interface PiModelEntry {
   maxTokens?: number;
   /** Advertised when the catalog row carries a non-empty effort ladder. */
   reasoning?: true;
+  /**
+   * Constrains pi's own level scale (minimal..max) to the declared ladder: members map to
+   * themselves, everything else is hidden (`null`). Without it pi would offer levels the
+   * ladder does not contain — harmless for provider-config ladders (the proxy clamps those
+   * at the wire) but a real 400 risk for custom-row ladders, which are advertisement-only.
+   */
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 export interface PiProviderBlock {
@@ -845,8 +852,11 @@ export interface DshGeneratedConfig {
  * statement that the model accepts reasoning parameters (adapters honor `reasoning_effort`),
  * and an empty or absent ladder is the statement that it does not. Emitting `reasoning:
  * true` exactly for rows with a ladder is therefore not a guess; it is what makes Pi's
- * effort control appear for routed models at all. Users who need Pi-specific
- * effort values (e.g. `xhigh`/`max` clamping) can still hand-tune `thinkingLevelMap`.
+ * effort control appear for routed models at all. The export also emits a `thinkingLevelMap`
+ * that hides every pi level outside the declared ladder, so pi never offers (and sends) an
+ * effort the ladder does not contain — custom-row ladders are catalog advertisement only
+ * and get no wire clamp, so this map is what keeps pi honest for those. Users who need a
+ * different mapping can still hand-tune `thinkingLevelMap` afterwards.
  *
  * Pi's input enum IS verified: its documented model configuration accepts only
  * `text` and `image`, and a validation failure yields an EMPTY model config
@@ -871,6 +881,15 @@ function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
     };
     if (Array.isArray(model.reasoningEfforts) && model.reasoningEfforts.length > 0) {
       entry.reasoning = true;
+      const efforts = model.reasoningEfforts;
+      entry.thinkingLevelMap = {
+        minimal: efforts.includes("minimal") ? "minimal" : null,
+        low: efforts.includes("low") ? "low" : null,
+        medium: efforts.includes("medium") ? "medium" : null,
+        high: efforts.includes("high") ? "high" : null,
+        xhigh: efforts.includes("xhigh") ? "xhigh" : null,
+        max: efforts.includes("max") ? "max" : null,
+      };
     }
     const context = authoritativeContextWindow(model.contextWindow);
     if (context !== undefined) {

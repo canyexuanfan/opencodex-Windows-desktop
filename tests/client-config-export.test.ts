@@ -196,6 +196,16 @@ describe("Pi serializer (accept criterion 2)", () => {
     }));
     const models = config.providers.opencodex!.models;
     expect(models.find(model => model.id === "a/reasoning")!.reasoning).toBe(true);
+    // Pi's level scale is constrained to the ladder: members map to themselves, everything
+    // else (incl. minimal, which the Codex ladder has no equivalent for) is hidden.
+    expect(models.find(model => model.id === "a/reasoning")!.thinkingLevelMap).toEqual({
+      minimal: null,
+      low: "low",
+      medium: null,
+      high: "high",
+      xhigh: null,
+      max: null,
+    });
     // An explicit empty ladder is the catalog's "no reasoning" statement; no boolean.
     expect(models.find(model => model.id === "b/none")).not.toHaveProperty("reasoning");
     expect(models.find(model => model.id === "c/plain")).not.toHaveProperty("reasoning");
