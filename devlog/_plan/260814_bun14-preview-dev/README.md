@@ -21,36 +21,49 @@ Landed on `preview-dev`:
 - `c7c34f6e3` — CI reads the Bun version from `package.json`; `preview-dev` is a
   CI-qualified push target.
 - `f8f9200d4` — this plan unit (decade docs `010`–`100`).
+- `d29b837e3` — this README.
+- `bce1fe8f4` — the GitHub canary qualification channel (`011`).
 
-Everything else is **blocked on upstream**: Bun 1.4.0 has no canary on npm yet.
-
-```console
-$ npm view bun dist-tags --json
-{ "latest": "1.3.14", "canary": "1.3.13-canary.20260425.1" }
-```
-
-The runtime patches (stream caps, relay byte queue, fetch body disposal, worker
-settle skip) are deliberately **not** committed. Each one is gated on a verified
-`Bun.revision`, and a revision that does not exist cannot be verified — landing
-them now would put unreachable dead branches in `src/` and invite someone to
-enable them on faith. They live as diffs in the decade docs until there is a
-binary to qualify them against.
-
-## Resuming when a 1.4 canary appears
+**The canary is available, just not on npm.** npm has no 1.4 line
+(`latest 1.3.14`, `canary 1.3.13-canary.20260425.1`), but the `oven-sh/bun`
+GitHub `canary` release already serves **1.4.0-canary.1+032b8dbf1**. So the
+runtime is reachable today through the existing `OPENCODEX_BUN_PATH` override:
 
 ```bash
-npm view bun versions --json | grep 1.4.0-canary   # confirm availability
+bun scripts/runtime/fetch-canary-bun.ts --json
+CANARY="$(bun scripts/runtime/fetch-canary-bun.ts --print-path)"
+OPENCODEX_BUN_PATH="$CANARY" bun run typecheck
+```
+
+`package.json` deliberately stays at `1.3.14` — that is the runtime users
+install. npm is the destination on stable day, not the prerequisite.
+
+The runtime patches (stream caps, relay byte queue, fetch body disposal, worker
+settle skip) are still **not** committed. Each is gated on a *qualified*
+`Bun.revision`, and `qualifiedRevisions` in
+`scripts/runtime/qualified-bun.json` is empty until CI proves a revision on
+every supported OS. Having the binary is not qualification.
+
+## Resuming
+
+```bash
 git fetch origin
 git switch preview-dev
-git rebase origin/dev                              # keep the stack on current dev
+git rebase origin/dev     # keep the stack on current dev
 ```
+
+Push to `preview-dev` and the `bun-canary-qualify` lane runs the suite against
+the canary and reports its revision. When that is green across the supported
+platforms, add the revision to `qualifiedRevisions` in its own commit — that
+single edit is what opens `050` and `080`.
 
 Then work the decade docs in dependency order. Each doc is one PABCD cycle and
 carries its own diff-level file map:
 
 | Doc | Commit | Depends on |
 |-----|--------|------------|
-| `020` | `chore(runtime): bundle Bun 1.4.0-canary.N` | — |
+| `011` | `ci(runtime): qualify Bun 1.4 from the GitHub canary channel` | done |
+| `020` | `chore(runtime): move the npm dependency to Bun 1.4` | stable release day |
 | `030` | `test(runtime): record bundled Bun version and revision` | 020 |
 | `040` | `test(memory): 1.3.14 vs 1.4 wave and quiescence harness` | 020 |
 | `050` | `perf(stream): eager relay for qualified canary revisions` | 020 |
@@ -60,8 +73,8 @@ carries its own diff-level file map:
 | `090` | `test(runtime): isolate teardown without legacy job splits` | 080 |
 | `100` | `docs(release): promotion and rollback` | all |
 
-`020` gates every other doc: the qualified `Bun.revision` it records is what
-`050` and `080` branch on. Do not open those gates on a version string.
+The qualified `Bun.revision` gates the rest: `050` and `080` branch on it. Do
+not open those gates on a version string — that is what `011` exists to prevent.
 
 ## Branch invariants
 
