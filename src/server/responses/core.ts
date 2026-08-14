@@ -228,7 +228,7 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
-import { collectRoutedCustomToolNames, restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
+import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
@@ -2130,9 +2130,7 @@ async function handleResponsesInner(
     const imageGenCallAliases = route.provider.authMode === "forward"
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
-    const routedCustomToolNames = route.provider.authMode === "forward"
-      ? new Set<string>()
-      : collectRoutedCustomToolNames(parsed._rawBody);
+    const routedCustomToolNames = new Set<string>();
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -2160,6 +2158,11 @@ async function handleResponsesInner(
     } catch (error) {
       releaseCodexAuthContextProbeLease(authCtx);
       throw error;
+    }
+    if (route.provider.authMode !== "forward") {
+      for (const name of request.convertedRoutedCustomToolNames ?? []) {
+        if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
+      }
     }
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
