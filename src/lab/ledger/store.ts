@@ -106,6 +106,20 @@ function writeLedgerLockMeta(fd: number, token: string): void {
   }
 }
 
+/** Discard a lock whose exclusive creator failed before publishing ownership metadata. */
+function discardUninitialisedLedgerLock(lockPath: string, lockFd: number): void {
+  try {
+    closeSync(lockFd);
+  } catch {
+    /* ignore */
+  }
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Release a lock file only when the token still matches the path owner. */
 function releaseLedgerLock(lockPath: string, lockFd: number, token: string): void {
   try {
@@ -147,7 +161,7 @@ function recoverStaleLedgerLock(lockPath: string): boolean {
   try {
     writeLedgerLockMeta(recoveryFd, token);
   } catch (error) {
-    releaseLedgerLock(recoveryPath, recoveryFd, token);
+    discardUninitialisedLedgerLock(recoveryPath, recoveryFd);
     throw error;
   }
 
@@ -184,7 +198,7 @@ function tryAcquireLedgerLock(lockPath: string, deadline: number): { fd: number;
     try {
       writeLedgerLockMeta(fd, token);
     } catch (error) {
-      releaseLedgerLock(lockPath, fd, token);
+      discardUninitialisedLedgerLock(lockPath, fd);
       throw error;
     }
     return { fd, token };
