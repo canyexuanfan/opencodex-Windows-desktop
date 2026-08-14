@@ -12,6 +12,8 @@ import {
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { projectModelRenames } from "../src/providers/model-rename-migration";
 import { EXPECTED_PRICE_OVERLAYS } from "../src/usage/expected-prices";
+import { mapReasoningEffort } from "../src/reasoning-effort";
+import { resolveMatchedPrice } from "../src/usage/cost";
 import type { OcxConfig } from "../src/types";
 
 // Google takes the previous Antigravity Flash generation off Cloud Code Assist almost
@@ -161,6 +163,65 @@ describe("a saved config survives the retirement", () => {
     const { config } = projectModelRenames(configWith(["claude-sonnet-4-6"]));
     expect(config.providers["google-antigravity"]!.selectedModels).toEqual(["claude-sonnet-4-6"]);
   });
+
+  test("a saved effort map keyed by a retired id is dropped, but the other records are renamed", () => {
+    // Renaming the KEY while keeping the VALUE is the trap: the adapter maps effort
+    // before it resolves CCA routing, so a surviving `high -> gemini-3.6-flash-high`
+    // entry would feed a dead wire id in as an effort name and silently degrade the
+    // request to the default tier instead of honouring "high".
+    //
+    // Dropping MORE than that map would be its own bug: catalog enrichment treats an
+    // existing `{}` as already-populated and skips the registry's records, so the user
+    // would keep routing correctly while losing the reasoning picker.
+    const config = {
+      providers: {
+        "google-antigravity": {
+          adapter: "google",
+          baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+          models: ["gemini-3.6-flash"],
+          modelReasoningEffortMap: {
+            "gemini-3.6-flash": { high: "gemini-3.6-flash-high", low: "gemini-3.6-flash-low" },
+          },
+          modelReasoningEfforts: { "gemini-3.6-flash": ["low", "medium", "high"] },
+          modelContextWindows: { "gemini-3.6-flash": 1_048_576 },
+          modelInputModalities: { "gemini-3.6-flash": ["text", "image"] },
+        },
+      },
+    } as unknown as OcxConfig;
+
+    const { config: migrated } = projectModelRenames(config);
+    const prov = migrated.providers["google-antigravity"]!;
+    const map = prov.modelReasoningEffortMap ?? {};
+    expect(map["gemini-3.6-flash"]).toBeUndefined();
+    expect(map["gemini-3.7-flash"]).toBeUndefined();
+    // The descriptive records move to the new id rather than vanishing.
+    expect(prov.modelReasoningEfforts?.["gemini-3.7-flash"]).toEqual(["low", "medium", "high"]);
+    expect(prov.modelReasoningEfforts?.["gemini-3.6-flash"]).toBeUndefined();
+    expect(prov.modelContextWindows?.["gemini-3.7-flash"]).toBe(1_048_576);
+    expect(prov.modelInputModalities?.["gemini-3.7-flash"]).toEqual(["text", "image"]);
+  });
+
+  test("a request under the retired effort map still reaches 3.7 at the requested tier", () => {
+    const config = {
+      providers: {
+        "google-antigravity": {
+          adapter: "google",
+          baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+          models: ["gemini-3.6-flash"],
+          modelReasoningEffortMap: {
+            "gemini-3.6-flash": { high: "gemini-3.6-flash-high" },
+          },
+        },
+      },
+    } as unknown as OcxConfig;
+    projectModelRenames(config);
+    const prov = config.providers["google-antigravity"]!;
+    const mapped = mapReasoningEffort(prov, "gemini-3.6-flash", "high");
+    expect(resolveAntigravityEffortWireModel("gemini-3.6-flash", mapped)).toEqual({
+      wireModelId: "gemini-3.7-flash",
+      thinkingLevel: "high",
+    });
+  });
 });
 
 describe("retirement does not rewrite history", () => {
@@ -188,5 +249,16 @@ describe("retirement does not rewrite history", () => {
     );
     expect(row?.status).toBe("verified-derived");
     expect(row?.cost4).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
+  });
+
+  test("cost resolution actually selects that overlay rather than generated metadata", () => {
+    // Declaring the overlay is not enough. Bundled generated metadata is consulted FIRST
+    // and returns status "verified", so a cost on the google/gemini-3.7-flash source row
+    // would shadow this overlay and assert a CCA billing equivalence Google never
+    // published. The source record omits cost precisely so this lookup lands here.
+    const matched = resolveMatchedPrice("google-antigravity", "gemini-3.7-flash");
+    expect(matched?.status).toBe("verified-derived");
+    expect(matched?.cost4).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
+    expect(matched?.source).not.toBe("jawcode");
   });
 });
