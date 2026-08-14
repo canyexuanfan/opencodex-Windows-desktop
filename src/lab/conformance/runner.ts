@@ -1,6 +1,6 @@
 import { discoverScenarios, loadCaseAuthority } from "./manifest";
 import { runScenario } from "./executor";
-import { buildNegativeControls } from "./negative-controls";
+import { baseCaseForNegativeControl, buildNegativeControls } from "./negative-controls";
 import type { CaseRecord, ScenarioRunResult } from "./types";
 import { CL01_SUITES } from "./types";
 
@@ -43,7 +43,10 @@ export async function runNegativeControls(
   if (scenarios.length === 0) throw new Error("harness_failure: no negative controls discovered");
   const results: ScenarioRunResult[] = [];
   for (const scenario of scenarios) {
-    results.push(await execute(scenario));
+    const baseCase = baseCaseForNegativeControl(scenario.id, authority.cases);
+    const executionScenario = baseCase ? { ...scenario, id: baseCase.id } : scenario;
+    const result = await execute(executionScenario);
+    results.push({ ...result, scenarioId: scenario.id });
   }
   const rejected = results.filter((r) => (
     !r.passed
