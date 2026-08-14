@@ -14,6 +14,7 @@ import { useT } from "../../i18n/shared";
 import { IconLock } from "../../icons";
 import { isCatalogProviderId } from "../../provider-icons";
 import { openAiAccountProviderState } from "../../provider-payload";
+import { providerSupportsLiveModelDiscovery } from "../../provider-workspace/catalog";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import { authModeLabel } from "./ProviderRail";
 import type { WorkspaceItem, ProviderUpdatePatch } from "./types";
@@ -37,6 +38,8 @@ export default function ProviderSettings({
 }) {
   const t = useT();
   const initialAuth = String(item.authMode ?? (item.keyOptional ? "local" : "key"));
+  const liveModelDiscoverySupported = providerSupportsLiveModelDiscovery(item.name, item);
+  const savedLiveModels = liveModelDiscoverySupported ? item.liveModels !== false : false;
   const [adapter, setAdapter] = useState(item.adapter);
   const [baseUrl, setBaseUrl] = useState(item.baseUrl);
   const [defaultModel, setDefaultModel] = useState(item.defaultModel ?? "");
@@ -44,7 +47,7 @@ export default function ProviderSettings({
   const [apiKeyTransport, setApiKeyTransport] = useState(item.apiKeyTransport ?? "x-api-key");
   const [note, setNote] = useState(item.note ?? "");
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(item.allowPrivateNetwork ?? false);
-  const [liveModels, setLiveModels] = useState(item.liveModels !== false);
+  const [liveModels, setLiveModels] = useState(savedLiveModels);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [accountMode, setAccountMode] = useState<"pool" | "direct">(item.codexAccountMode ?? "pool");
@@ -63,11 +66,11 @@ export default function ProviderSettings({
     setApiKeyTransport(item.apiKeyTransport ?? "x-api-key");
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
-    setLiveModels(item.liveModels !== false);
+    setLiveModels(savedLiveModels);
     setMsg(null);
     setModeMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, savedLiveModels, baseUrlChoices]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Account mode syncs on its own: a mode PATCH refresh must not reset an in-progress
@@ -116,7 +119,7 @@ export default function ProviderSettings({
     || (adapter.trim() === "anthropic" && authMode === "key" && apiKeyTransport !== (item.apiKeyTransport ?? "x-api-key"))
     || note.trim() !== (item.note ?? "")
     || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false)
-    || liveModels !== (item.liveModels !== false);
+    || liveModels !== savedLiveModels;
 
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
 
@@ -155,7 +158,7 @@ export default function ProviderSettings({
       const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork };
       // Keep omitted legacy values omitted unless the user actually changes this toggle.
       // Otherwise an unrelated settings save manufactures `liveModels: true` provenance.
-      if (liveModels !== (item.liveModels !== false)) patch.liveModels = liveModels;
+      if (liveModelDiscoverySupported && liveModels !== (item.liveModels !== false)) patch.liveModels = liveModels;
       if (supportsApiKeyTransport) patch.apiKeyTransport = apiKeyTransport;
       else if (item.apiKeyTransport !== undefined) patch.apiKeyTransport = "";
       const res = await onUpdateProvider(item.name, patch);
@@ -200,7 +203,7 @@ export default function ProviderSettings({
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
     setDefaultModel(item.defaultModel ?? ""); setAuthMode(initialAuth);
     setApiKeyTransport(item.apiKeyTransport ?? "x-api-key");
-    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(item.liveModels !== false); setMsg(null);
+    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(savedLiveModels); setMsg(null);
     setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
   };
 
@@ -335,7 +338,12 @@ export default function ProviderSettings({
         <span className="pwi-settings-label">{t("pws.allowPrivateNetwork")}</span>
       </label>
       <label className="pwi-settings-field" style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-        <input type="checkbox" checked={liveModels} onChange={e => setLiveModels(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={liveModels}
+          disabled={!liveModelDiscoverySupported}
+          onChange={e => setLiveModels(e.target.checked)}
+        />
         <span>
           <span className="pwi-settings-label">{t("pws.liveModels")}</span>
           <span className="muted text-label" style={{ display: "block", marginTop: 2 }}>{t("pws.liveModelsDesc")}</span>
