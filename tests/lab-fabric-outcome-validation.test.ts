@@ -100,6 +100,8 @@ describe("CL-07 fabric outcome validation", () => {
     const outcome = validOutcome();
     expect(() => assertFabricOutcomeV1({ ...outcome, startedAt: -1 })).toThrow(FabricTaskError);
     expect(() => assertFabricOutcomeV1({ ...outcome, startedAt: 201 })).toThrow(FabricTaskError);
+    expect(() => assertFabricOutcomeV1({ ...outcome, startedAt: 100.5 })).toThrow(FabricTaskError);
+    expect(() => assertFabricOutcomeV1({ ...outcome, completedAt: 200.5 })).toThrow(FabricTaskError);
   });
 
   test("rejects contradictory task identity fields", () => {
