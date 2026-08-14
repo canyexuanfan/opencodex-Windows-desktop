@@ -195,7 +195,7 @@ test("failed export purge is omitted from the durable tombstone action set", () 
   const paths = ensureLabDirs(home);
   writeFileSync(join(paths.scratchDir, "scratch.txt"), "scratch", { mode: 0o600 });
   writeFileSync(join(paths.exportDir, "sensitive.txt"), "sensitive", { mode: 0o600 });
-  setPublicEvidencePurgeFaultForTests("before_export_delete");
+  const restoreFault = setPublicEvidencePurgeFaultForTests("before_export_delete");
 
   let failure: unknown;
   try {
@@ -207,11 +207,55 @@ test("failed export purge is omitted from the durable tombstone action set", () 
   } catch (error) {
     failure = error;
   } finally {
-    setPublicEvidencePurgeFaultForTests(null);
+    restoreFault();
   }
   expect(failure).toBeInstanceOf(Error);
 
   const tombstones = replayLabLedger(paths.ledgerPath).events.filter((event) => event.eventKind === "purge_tombstone");
   expect(tombstones).toHaveLength(1);
   expect(tombstones[0]!.purgeActions).toEqual(["scratch"]);
+});
+
+test("failed export plus ledger does not persist a targetless tombstone", () => {
+  const home = configDir("ocx-cl10-tombstone-export-ledger-");
+  const paths = ensureLabDirs(home);
+  const restoreFault = setPublicEvidencePurgeFaultForTests("before_export_delete");
+  let failure: unknown;
+  try {
+    purgeSensitiveEvidence({
+      configDir: home,
+      purgeActions: ["export", "ledger"],
+      recordedAt: Date.UTC(2026, 7, 14, 6, 0, 0),
+    });
+  } catch (error) {
+    failure = error;
+  } finally {
+    restoreFault();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect(replayLabLedger(paths.ledgerPath).events).toEqual([]);
+});
+
+test("failed export plus sqlite still rebuilds projection from the unchanged ledger", () => {
+  const home = configDir("ocx-cl10-tombstone-export-sqlite-");
+  const paths = ensureLabDirs(home);
+  expect(existsSync(paths.sqlitePath)).toBe(false);
+  const restoreFault = setPublicEvidencePurgeFaultForTests("before_export_delete");
+  let failure: unknown;
+  try {
+    purgeSensitiveEvidence({
+      configDir: home,
+      purgeActions: ["export", "sqlite"],
+      recordedAt: Date.UTC(2026, 7, 14, 6, 5, 0),
+    });
+  } catch (error) {
+    failure = error;
+  } finally {
+    restoreFault();
+  }
+
+  expect(failure).toBeInstanceOf(Error);
+  expect(replayLabLedger(paths.ledgerPath).events).toEqual([]);
+  expect(existsSync(paths.sqlitePath)).toBe(true);
 });
