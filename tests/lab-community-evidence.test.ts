@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import {
   type ObservationEvent,
   type ProtocolSubjectV1,
 } from "../src/lab";
+import { labCommunityDir } from "../src/lab/paths";
 import {
   buildPublicEvidenceBundle,
   createPublicEvidenceRevocation,
@@ -173,7 +174,7 @@ describe("CL-10 community quarantine", () => {
     expect(listCommunityEvidence(consumerDir)[0]).toMatchObject({ activeRecordCount: 0, revokedRecordCount: 1 });
   });
 
-  test("rejects cross-key revocation and conflicting same-id bytes", () => {
+  test("rejects cross-key revocation and conflicting same-id stored bytes", () => {
     const publisherDir = configDir("ocx-cl10-publisher-");
     const otherDir = configDir("ocx-cl10-other-");
     const consumerDir = configDir("ocx-cl10-consumer-");
@@ -194,9 +195,9 @@ describe("CL-10 community quarantine", () => {
       reason: "publisher_retracted",
       targets: [{ kind: "bundle", id: bundle.bundleId }],
     });
-    importCommunityEvidenceRevocation(revocation, consumerDir);
-    const conflict = { ...revocation, issuedDayUtc: "2026-08-13" };
-    expect(() => importCommunityEvidenceRevocation(conflict, consumerDir)).toThrow();
+    const conflictPath = join(labCommunityDir(consumerDir), `revocation-${revocation.revocationId}.json`);
+    writeFileSync(conflictPath, JSON.stringify({ conflicting: true }), { mode: 0o600 });
+    expect(() => importCommunityEvidenceRevocation(revocation, consumerDir)).toThrow(/identity.*different bytes|conflict/i);
   });
 
   test("sensitive export purge removes local exports and local community copies but preserves third-party bundles", () => {
