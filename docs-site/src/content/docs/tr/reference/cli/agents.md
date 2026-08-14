@@ -191,7 +191,7 @@ Grok Build model çitini yönetin ve uygulayın.
 
 ## İstemci yapılandırma dışa aktarma
 
-### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae>`
+### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh>`
 
 Çalışan proxy'ye bağlı bir istemci yapılandırmasını yazdırın. Komut, `opencodex`
 sağlayıcı bloğunu — temel URL, model listesi ve istemcinin kimlik bilgisi
@@ -203,7 +203,7 @@ yalnızca Codex'in şu anda görebildiği modelleri yayınlar.
 
 | Bayrak | Eylem |
 | --- | --- |
-| `--client <opencode\|pi\|omp\|hermes\|openclaw\|kimi\|gajae>` | Gerekli. İstemci yapılandırma lehçesini seçer. |
+| `--client <opencode\|pi\|omp\|hermes\|openclaw\|kimi\|gajae\|dsh>` | Gerekli. İstemci yapılandırma lehçesini seçer. |
 | `--json` | Betikler için stdout üzerinde oluşturulan belgeyi JSON olarak yazdırın. Bu, seçilen istemcinin yerel formatı YAML, TOML veya JSON5 olsa bile JSON'dur. |
 | `--out <path>` | İstemcinin yerel yapılandırma formatını `<path>` konumuna yazın. Mevcut bir dosyanın üzerine yazmayı reddeder. |
 | `--force` | `--out`'un mevcut bir dosyanın üzerine yazmasına izin verin. |
@@ -229,6 +229,7 @@ için kendi varsayılanlarını uygular) gelir.
 | `openclaw` | `~/.openclaw/openclaw.json` | `openclaw.json5` | `OPENCODEX_OPENCLAW_API_KEY` |
 | `kimi` | `~/.kimi-code/config.toml` | `kimi-config.toml` | yok — geri döngü yer tutucusu |
 | `gajae` | `~/.gjc/agent/models.yml` | `gajae-models.yaml` | `OPENCODEX_GAJAE_API_KEY` |
+| `dsh` | `$DSH_HOME/settings.yaml` (varsayılan `~/.dsh/settings.yaml`) | `settings.yaml` | yok — gizli olmayan geri döngü bearer yer tutucusu |
 
 opencode `{env:OPENCODEX_OPENCODE_API_KEY}` değerini enterpole eder. Üretilen Pi
 ve OMP dışa aktarımları bir ortam değişkeni gerektirmez: her biri değişmez
@@ -274,5 +275,4 @@ ocx system settings --stream-mode eager-relay
 Doğrulanmış OpenCodex yapılandırmasını inceleyin ve güvenle değiştirin. `show`
 ve `get` sırları maskeler. İçe aktarma yazmadan önce doğrular ve `--yes`
 gerektirir.
-
 

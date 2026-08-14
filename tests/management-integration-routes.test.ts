@@ -9,6 +9,7 @@ import { INTEGRATION_CLIENTS, INTEGRATION_CLIENT_IDS } from "../src/integrations
 import { readIntegrationState } from "../src/integrations/state";
 import { createIntegrationStateStore, type IntegrationStateStore } from "../src/integrations/store";
 import { applyIntegration } from "../src/integrations/writer";
+import type { IntegrationWriterLockSeams } from "../src/integrations/writer-lock";
 import { handleManagementAPI } from "../src/server/management-api";
 import {
   setIntegrationMutationFlightTestHooks,
@@ -117,6 +118,12 @@ function installOmp(): string {
   const spec = INTEGRATION_CLIENTS.omp;
   const dir = spec.detectDir(routeEnv, home);
   mkdirSync(dir, { recursive: true });
+  return spec.configPath(routeEnv, home);
+}
+
+function installDsh(): string {
+  const spec = INTEGRATION_CLIENTS.dsh;
+  mkdirSync(spec.detectDir(routeEnv, home), { recursive: true });
   return spec.configPath(routeEnv, home);
 }
 
@@ -406,6 +413,60 @@ describe("single-flight", () => {
     } finally {
       for (const release of releases) release();
     }
+  });
+});
+
+describe("cross-process integration writer lock mapping", () => {
+  test("an unresolvable DSH path stays a typed unsafe refusal before lock acquisition", async () => {
+    setIntegrationPathTestHooks({ env: { DSH_HOME: "relative/dsh-home" }, home });
+
+    const response = await put("dsh", true);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      code: "integration_unsafe",
+      clientId: "dsh",
+      reason: "unsafe",
+      state: "unsafe",
+    });
+    expect(store.listOperations()).toHaveLength(0);
+  });
+
+  test("DSH lock timeout maps to the existing busy 409 without a real wait", async () => {
+    const configPath = installDsh();
+    let now = 0;
+    const lockSeams: IntegrationWriterLockSeams = {
+      writeFile: async () => { throw Object.assign(new Error("contended"), { code: "EEXIST" }); },
+      removeFile: async () => { throw new Error("must not remove contender"); },
+      now: () => now,
+      delay: async ms => { now += ms; },
+      pid: 11,
+    };
+    setIntegrationMutationFlightTestHooks({ store, lockSeams });
+    const response = await put("dsh", true);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "integration mutation busy",
+      code: "integration_mutation_busy",
+      clientId: "dsh",
+    });
+    expect(now).toBe(2_100);
+    expect(existsSync(configPath)).toBe(false);
+  });
+
+  test("non-contention lock IO maps to integration_internal_error", async () => {
+    const configPath = installDsh();
+    const lockSeams: IntegrationWriterLockSeams = {
+      writeFile: async () => { throw Object.assign(new Error("permission denied"), { code: "EACCES" }); },
+      removeFile: async () => {},
+      now: () => 0,
+      delay: async () => {},
+      pid: 12,
+    };
+    setIntegrationMutationFlightTestHooks({ store, lockSeams });
+    const response = await put("dsh", true);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ code: "integration_internal_error" });
+    expect(existsSync(configPath)).toBe(false);
   });
 });
 

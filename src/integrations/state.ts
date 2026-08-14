@@ -136,8 +136,8 @@ function recordedFragmentFingerprint(
  * what we may rewrite, and the contribution hash proves our catalog has not
  * moved on. Three classes of client (revising the unconditional whole-file
  * rule of devlog 260802_client_toggle_api/021 §3 for json — #1631):
- * OMP is fragment-scoped because its writer patches only
- * `providers.opencodex`, so the whole-file check is skipped entirely;
+ * registry-declared source-preserving YAML clients are fragment-scoped because
+ * their writers patch only the owned leaf, so the whole-file check is skipped;
  * strict-json clients keep the whole-file check but downgrade a drift with
  * intact owned fragments to `stale`, because a rewrite there can lose only
  * formatting (comments cannot parse, non-round-tripping numbers are refused
@@ -194,7 +194,8 @@ export function classifyIntegration(input: {
   if (recordedFragmentFingerprint(input.parsed, input.record) !== input.record.blockFingerprint) {
     return { state: "conflict", reason: "foreign-edit" };
   }
-  if (clientId !== "omp" && fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) {
+  if (!INTEGRATION_CLIENTS[clientId].sourcePreservingYaml
+    && fingerprint(input.fileText ?? "") !== input.record.fileFingerprint) {
     /*
      * The file changed since we wrote it, but every fragment we own is still
      * byte-for-byte what we put there — a sibling edit, not tampering. Apply

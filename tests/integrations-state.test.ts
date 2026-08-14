@@ -546,6 +546,36 @@ describe("ownership is scoped to recorded fragments", () => {
     expect(result).toEqual({ state: "current" });
   });
 
+  test("DSH also ignores whole-file edits outside its registry-declared fragment", () => {
+    const dshContribution = {
+      clientId: "dsh" as const,
+      fragments: [{
+        path: ["llm-pi-ai", "providers", "opencodex"],
+        value: ownedValue,
+      }],
+    };
+    const dshDocument = {
+      "agent-default-model": "user-edited-after-apply",
+      "llm-pi-ai": { providers: { opencodex: ownedValue } },
+    };
+    const dshRecord: OwnershipRecord = {
+      ...record,
+      clientId: "dsh",
+      configPath: "/tmp/settings.yaml",
+      blockFingerprint: fingerprint(canonicalContribution(dshContribution)),
+      fragmentPaths: [["llm-pi-ai", "providers", "opencodex"]],
+    };
+    expect(classifyIntegration({
+      fileText: "agent-default-model: user-edited-after-apply\n",
+      fileIsRegular: true,
+      parsed: dshDocument,
+      record: dshRecord,
+      contribution: dshContribution,
+      clientId: "dsh",
+      configPath: "/tmp/settings.yaml",
+    })).toEqual({ state: "current" });
+  });
+
   test("an unrelated extra fragment remains stale when our catalog moves", () => {
     const newerContribution = {
       ...ownedContribution,
@@ -684,9 +714,9 @@ describe("installation detection is independent of config state", () => {
  * from. Rationale and the per-client table: 020 §1 amendment.
  */
 describe("the loopback-only set is one fact, read through one seam", () => {
-  test("omp, pi, kimi and gajae are loopback-only and nobody else is", () => {
+  test("omp, pi, kimi, gajae and dsh are loopback-only and nobody else is", () => {
     const loopbackOnly = INTEGRATION_CLIENT_IDS.filter(id => isLoopbackOnly(id));
-    expect(loopbackOnly).toEqual(["pi", "omp", "kimi", "gajae"]);
+    expect(loopbackOnly).toEqual(["pi", "omp", "kimi", "gajae", "dsh"]);
   });
 
   test("the registry restates nothing — it reads the export spec", () => {
