@@ -130,6 +130,18 @@ describe("antigravity CCA envelope", () => {
     });
 
     expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.7-flash-low",
+      "gemini-3.7-flash-medium",
+      "gemini-3.7-flash-high",
+    ]))?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.7-flash-low",
+      "gemini-3.7-flash-high",
+    ]))?.map(model => model.id)).toEqual([
+      "gemini-3.7-flash-low",
+      "gemini-3.7-flash-high",
+    ]);
+    expect(parseAntigravityAvailableModels(payload([
       "gemini-3.1-pro-low",
       "gemini-pro-agent",
     ]))?.map(model => model.id)).toEqual(["gemini-3.1-pro"]);

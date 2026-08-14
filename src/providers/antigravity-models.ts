@@ -41,6 +41,14 @@ const RETIRED_FLASH_TIERS: Record<string, string> = {
   "gemini-3-flash-agent": "high",
 };
 
+// Current agy releases expose the 3.7 effort tiers as separate discovery rows even though
+// runtime requests use the single `gemini-3.7-flash` wire id plus `thinkingLevel`.
+const GEMINI_FLASH_DISCOVERY_TIER_IDS = [
+  "gemini-3.7-flash-low",
+  "gemini-3.7-flash-medium",
+  "gemini-3.7-flash-high",
+] as const;
+
 const ANTIGRAVITY_WIRE_MODELS = [
   "gemini-3.7-flash",
   "gemini-3.1-pro-low",
@@ -52,6 +60,7 @@ const ANTIGRAVITY_WIRE_MODELS = [
 ];
 
 const ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID: Record<string, string> = {
+  ...Object.fromEntries(GEMINI_FLASH_DISCOVERY_TIER_IDS.map(id => [id, GEMINI_FLASH_CURRENT])),
   "gemini-3.1-pro-low": "gemini-3.1-pro",
   "gemini-pro-agent": "gemini-3.1-pro",
 };
