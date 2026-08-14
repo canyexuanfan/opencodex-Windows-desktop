@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { jcsStringify } from "../digest";
 import { ensureLabDirs, labCommunityDir } from "../paths";
 import { validateCommunityEvidenceAuthorities } from "./community-authority";
+import { communityBundleFileName } from "./community-files";
 import { privateRegularFileSize, readPrivateRegularFile } from "./file-safety";
 import { withPublicEvidenceMutationLock } from "./mutation-lock";
 import { recordLocalPublicOrigin } from "./origin";
@@ -127,7 +128,10 @@ function verifiedBundle(raw: unknown): PublicEvidenceBundleV1 {
 }
 
 function bundleObjectPath(publisherKeyId: string, bundleId: string, configDir?: string): string {
-  return join(labCommunityDir(configDir), `bundle-${assertId(publisherKeyId)}-${assertId(bundleId)}.json`);
+  return join(
+    labCommunityDir(configDir),
+    communityBundleFileName(assertId(publisherKeyId), assertId(bundleId)),
+  );
 }
 
 function revocationObjectPath(revocationId: string, configDir?: string): string {
