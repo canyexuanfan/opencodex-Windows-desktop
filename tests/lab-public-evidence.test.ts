@@ -315,7 +315,12 @@ describe("CL-10 public bundle and publisher", () => {
     expect(verifyPublicEvidenceBundle(bundle)).toEqual({ status: "cryptographically_valid" });
     const serialized = JSON.stringify(bundle);
     expect(serialized).not.toContain(handle.privateKeyPath);
-    expect(serialized).not.toContain(readFileSync(handle.privateKeyPath, "utf8").trim());
+    const pemBodyLines = readFileSync(handle.privateKeyPath, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("-----"));
+    expect(pemBodyLines.length).toBeGreaterThan(0);
+    for (const line of pemBodyLines) expect(serialized).not.toContain(line);
 
     const badDigest = { ...bundle, bundleDigest: hex("tampered-bundle") };
     expect(verifyPublicEvidenceBundle(badDigest)).toEqual({ status: "digest_invalid" });
