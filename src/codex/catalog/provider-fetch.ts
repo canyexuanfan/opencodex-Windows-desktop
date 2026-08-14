@@ -855,9 +855,24 @@ export function warnDroppedConfiguredIdsOnce(name: string, droppedConfiguredIds:
   );
 }
 
+/**
+ * Z.AI and Neuralwatt advertise GLM reasoning as a bare boolean, which would otherwise
+ * collapse to the four-tier default ladder that omits `max`. These two helpers name the
+ * ladder each GLM generation actually honours on the wire.
+ */
+/** GLM-5.2 and its 1M alias: the full five-tier ladder including `max`. */
 export function isGlm52ModelId(id: string): boolean {
-  const normalized = id.toLowerCase();
+  const normalized = id.trim().toLowerCase();
   return normalized === "glm-5.2" || normalized === "glm-5.2[1m]";
+}
+/**
+ * GLM-5.3 and its 1M alias. 260814: docs.z.ai/devpack/latest-model folds every incoming
+ * effort into three effective tiers (low/minimal/light -> low, medium/high -> high,
+ * xhigh/max/ultra -> max), so a boolean capability must not be expanded to five rows.
+ */
+export function isGlm53ModelId(id: string): boolean {
+  const normalized = id.trim().toLowerCase();
+  return normalized === "glm-5.3" || normalized === "glm-5.3[1m]";
 }
 
 function plainRecord(value: unknown): Record<string, unknown> | undefined {
@@ -993,9 +1008,11 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
     ? sanitizeCodexReasoningEfforts(listedReasoningEfforts)
     : typeof rawReasoningEfforts === "boolean"
       ? (rawReasoningEfforts
-        ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
-          ? ["low", "medium", "high", "xhigh", "max"]
-          : ["low", "medium", "high", "xhigh"])
+        ? ((providerName === "neuralwatt" || providerName === "zai") && isGlm53ModelId(item.id)
+          ? ["low", "high", "max"]
+          : (providerName === "neuralwatt" || providerName === "zai") && isGlm52ModelId(item.id)
+            ? ["low", "medium", "high", "xhigh", "max"]
+            : ["low", "medium", "high", "xhigh"])
         : [])
       : undefined;
   const capabilities = modelCapabilities(item);
