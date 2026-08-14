@@ -4,6 +4,7 @@ import { publicEvidenceId } from "./ids";
 import { findPublicRouteRegistryEntry } from "./registry";
 import {
   PUBLIC_ADAPTER_FAMILIES,
+  PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
   type PublicAdapterFamily,
   type PublicAssertionSummaryV1,
   type PublicEvidenceRecordV1,
@@ -354,7 +355,7 @@ export function validatePublicRouteRegistryManifest(rawValue: unknown): PublicRo
     "entries",
     "manifestDigest",
   ]);
-  if (raw.schemaVersion !== "public_route_registry_v1") {
+  if (raw.schemaVersion !== PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION) {
     throw new PublicEvidenceValidationError("unsupported_version", "unsupported public route registry schema");
   }
   const registryVersion = assertPublicIdentifier(raw.registryVersion, "publicRouteRegistry.registryVersion");
@@ -372,7 +373,7 @@ export function validatePublicRouteRegistryManifest(rawValue: unknown): PublicRo
   }
   const manifestDigest = assertSha256(raw.manifestDigest, "publicRouteRegistry.manifestDigest");
   const expectedDigest = publicEvidenceId("route_registry", {
-    schemaVersion: "public_route_registry_v1",
+    schemaVersion: PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
     registryVersion,
     sourceCommit,
     entries,
@@ -381,7 +382,7 @@ export function validatePublicRouteRegistryManifest(rawValue: unknown): PublicRo
     throw new PublicEvidenceValidationError("digest_invalid", "publicRouteRegistry.manifestDigest mismatch");
   }
   return {
-    schemaVersion: "public_route_registry_v1",
+    schemaVersion: PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
     registryVersion,
     sourceCommit,
     entries,

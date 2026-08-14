@@ -3,6 +3,7 @@ import type { CompatibilityVerdict, EvidenceLayer } from "../constants";
 export const PUBLIC_EVIDENCE_BUNDLE_SCHEMA_VERSION = "public_evidence_bundle_v1" as const;
 export const PUBLIC_EXPORT_POLICY_VERSION = "public_export_policy_v1" as const;
 export const PUBLIC_EVIDENCE_REVOCATION_SCHEMA_VERSION = "public_evidence_revocation_v1" as const;
+export const PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION = "public_route_registry_v1" as const;
 
 export const PUBLIC_ADAPTER_FAMILIES = [
   "openai-responses",
@@ -18,7 +19,7 @@ export interface PublicRouteRegistryEntryV1 {
 }
 
 export interface PublicRouteRegistryManifestV1 {
-  schemaVersion: "public_route_registry_v1";
+  schemaVersion: typeof PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION;
   registryVersion: string;
   sourceCommit: string;
   entries: PublicRouteRegistryEntryV1[];
@@ -168,4 +169,4 @@ export type PublicProjectionNotExportableReason =
 
 export type PublicEvidenceProjectionResult =
   | { status: "exportable"; record: PublicEvidenceRecordV1 }
-  | { status: "not_exportable"; reason: PublicProjectionNotExportableReason };
+  | { status: "not_exportable"; reason: PublicProjectionNotExportableReason; detailCode?: string };

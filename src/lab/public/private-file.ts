@@ -15,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 
 export type PrivateFileCommitFault = "before_publish" | "parent_directory_sync" | null;
 let privateFileCommitFaultForTests: PrivateFileCommitFault = null;
+let privateFileCleanupSyncFaultForTests = false;
 const PRIVATE_STAGE_RE = /^\..+\.(\d+)\.[0-9a-f-]{36}\.tmp$/;
 export const PRIVATE_FILE_STAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 
@@ -47,8 +48,24 @@ function fsyncParentBestEffort(path: string): void {
     fd = openSync(dirname(path), fsConstants.O_RDONLY);
     fsyncSync(fd);
   } catch {
-    // Cleanup durability is best-effort. Publication durability uses the strict
-    // fsyncParentForPublication path below and never swallows POSIX failures.
+    // Cleanup durability is best-effort after unlink. Publication and crash-witness
+    // retirement use the strict path below and never swallow POSIX failures.
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function fsyncParentStrict(path: string): void {
+  if (process.platform === "win32") return;
+  let fd: number | null = null;
+  try {
+    fd = openSync(dirname(path), fsConstants.O_RDONLY);
+    fsyncSync(fd);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    const wrapped = new Error(`private-file parent directory sync failed (${code})`);
+    (wrapped as Error & { cause?: unknown }).cause = error;
+    throw wrapped;
   } finally {
     if (fd !== null) closeSync(fd);
   }
@@ -62,19 +79,7 @@ function fsyncParentForPublication(path: string): void {
   if (privateFileCommitFaultForTests === "parent_directory_sync") {
     throw new Error("synthetic private-file parent directory sync failure");
   }
-  let fd: number | null = null;
-  try {
-    fd = openSync(dirname(path), fsConstants.O_RDONLY);
-    fsyncSync(fd);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("synthetic private-file")) throw error;
-    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
-    const wrapped = new Error(`private-file parent directory sync failed (${code})`);
-    (wrapped as Error & { cause?: unknown }).cause = error;
-    throw wrapped;
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
+  fsyncParentStrict(path);
 }
 
 export function isPrivateFileStageName(name: string): boolean {
@@ -115,9 +120,19 @@ export function cleanupStalePrivateFileStagesInDir(dir: string): void {
     throw error;
   }
   const nowMs = Date.now();
+  const reclaimable = names.filter((name) => shouldReclaimPrivateFileStage(dir, name, nowMs));
+  if (reclaimable.length === 0) return;
+
+  // A stale stage can be the hard-link witness for a final name that was linked
+  // before a crash or directory-sync failure. Make that final directory entry
+  // durable before removing any such witness.
+  if (process.platform !== "win32" && privateFileCleanupSyncFaultForTests) {
+    throw new Error("synthetic private-file cleanup parent directory sync failure");
+  }
+  fsyncParentStrict(join(dir, "."));
+
   let changed = false;
-  for (const name of names) {
-    if (!shouldReclaimPrivateFileStage(dir, name, nowMs)) continue;
+  for (const name of reclaimable) {
     try {
       unlinkSync(join(dir, name));
       changed = true;
@@ -238,4 +253,9 @@ export function publishPrivateFileExclusive(
 /** Test-only fault seam at the atomic publication point. Import this module directly in tests. */
 export function setPrivateFileCommitFaultForTests(fault: PrivateFileCommitFault): void {
   privateFileCommitFaultForTests = fault;
+}
+
+/** Test-only fault seam for strict stale-stage cleanup durability. */
+export function setPrivateFileCleanupSyncFaultForTests(enabled: boolean): void {
+  privateFileCleanupSyncFaultForTests = enabled;
 }

@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { labPublicPublisherKeyPath } from "../src/lab/paths";
 import { buildPublicEvidenceBundle } from "../src/lab/public/bundle";
+import { validatePublicEvidenceAuthorities } from "../src/lab/public/community-authority";
 import { publicEvidenceId } from "../src/lab/public/ids";
 import { validatePublicEvidencePrivacy } from "../src/lab/public/privacy";
 import { PUBLIC_ROUTE_REGISTRY_V1 } from "../src/lab/public/registry";
 import { signPublicEvidenceBundle, verifyPublicEvidenceBundle } from "../src/lab/public/signature";
 import { parseStrictPublicJson } from "../src/lab/public/strict-json";
 import { publicUtcDay } from "../src/lab/public/time";
-import type { PublicEvidenceBundleUnsignedV1 } from "../src/lab/public/types";
+import {
+  PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
+  type PublicEvidenceBundleUnsignedV1,
+} from "../src/lab/public/types";
 import { validatePublicRouteRegistryManifest } from "../src/lab/public/validate";
 
 const FIXED_PRIVATE_KEY = [
@@ -112,6 +116,23 @@ describe("CL-10 public evidence core contract", () => {
     expect(bundle.bundleDigest).toBe("63fef67418ec196b480bba3865fba287cc92aa94a760e2e3648b0759c0be046e");
   });
 
+  test("retains protocol V1 authority as an explicit historical snapshot", () => {
+    const current = fixedRecord();
+    expect(() => validatePublicEvidenceAuthorities([current])).not.toThrow();
+
+    const { recordId: _recordId, ...body } = current;
+    const unsupportedBody = {
+      ...body,
+      suiteVersion: "9.9.9",
+      scenarioVersion: "9.9.9",
+    };
+    const unsupported = {
+      recordId: publicEvidenceId("record", unsupportedBody),
+      ...unsupportedBody,
+    };
+    expect(() => validatePublicEvidenceAuthorities([unsupported])).toThrow(/not retained/i);
+  });
+
   test("rejects non-canonical publisher Base64", () => {
     const publicKey = `${FIXED_PUBLIC_KEY}\n`;
     const publisher = {
@@ -181,6 +202,7 @@ describe("CL-10 public evidence core contract", () => {
 
   test("pins the reviewed public route registry authority", () => {
     const manifest = validatePublicRouteRegistryManifest(PUBLIC_ROUTE_REGISTRY_V1);
+    expect(manifest.schemaVersion).toBe(PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION);
     expect(manifest.registryVersion).toBe("2026-08-13.v2");
     expect(manifest.sourceCommit).toBe(REVIEWED_AUTHORITY_SOURCE_COMMIT);
     expect(manifest.entries).toEqual([{
@@ -188,5 +210,12 @@ describe("CL-10 public evidence core contract", () => {
       modelId: "gpt-5.6-sol",
       adapterFamilies: ["openai-responses"],
     }]);
+
+    expect(Object.isFrozen(PUBLIC_ROUTE_REGISTRY_V1)).toBe(true);
+    expect(Object.isFrozen(PUBLIC_ROUTE_REGISTRY_V1.entries)).toBe(true);
+    for (const entry of PUBLIC_ROUTE_REGISTRY_V1.entries) {
+      expect(Object.isFrozen(entry)).toBe(true);
+      expect(Object.isFrozen(entry.adapterFamilies)).toBe(true);
+    }
   });
 });

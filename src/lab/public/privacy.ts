@@ -10,7 +10,11 @@ import { PublicEvidenceValidationError } from "./validate";
 
 const FORBIDDEN_PUBLIC_STRING_PATTERNS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   { label: "URL", pattern: /(?:https?|file):\/\//i },
-  { label: "local path", pattern: /(?:[A-Za-z]:[\\/]|(?:^|[\\/])(?:Users|home)[\\/])/i },
+  {
+    label: "local path",
+    pattern:
+      /(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9._-]+\\|(?:^|[\s"'([{=:])\/(?:Users|home|root|tmp|var|opt|private|etc|mnt|media|srv|usr)(?:\/|$))/i,
+  },
   { label: "email", pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i },
   { label: "IP address", pattern: /\b(?:\d{1,3}\.){3}\d{1,3}\b|\[[0-9a-f:]{2,}\]/i },
   { label: "query string", pattern: /[?&][A-Za-z0-9_.~-]+=/ },

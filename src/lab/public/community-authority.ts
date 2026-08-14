@@ -14,13 +14,60 @@ import { findPublicRouteRegistryEntry } from "./registry";
 import type { PublicEvidenceBundleV1, PublicEvidenceRecordV1, PublicRouteSubjectV1 } from "./types";
 import { PublicEvidenceValidationError } from "./validate";
 
-let cachedCaseAuthority: ReturnType<typeof loadCaseAuthority> | null = null;
+type ProtocolCaseAuthority = ReturnType<typeof loadCaseAuthority>;
+
+interface ProtocolAuthoritySnapshot {
+  scenarioVersion: string;
+  suiteVersion: string;
+  sourceCommit: string;
+  load: () => ProtocolCaseAuthority;
+}
+
+// Public records are historical evidence. Never replace an authority entry when a
+// protocol version advances: retain the old loader and append a new snapshot.
+const PROTOCOL_AUTHORITY_SNAPSHOTS: readonly ProtocolAuthoritySnapshot[] = Object.freeze([
+  Object.freeze({
+    scenarioVersion: "1.0.0",
+    suiteVersion: "1.0.0",
+    sourceCommit: "3ad5bb6bd3f76f6879d84b78ea39edd3e01ec296",
+    load: loadCaseAuthority,
+  }),
+]);
+
+const cachedCaseAuthorities = new Map<string, ProtocolCaseAuthority>();
 let cachedFabricCaseAuthority: ReturnType<typeof loadFabricCaseAuthority> | null = null;
 let cachedVerifierManifestDigest: string | null = null;
 
-function caseAuthority(): ReturnType<typeof loadCaseAuthority> {
-  cachedCaseAuthority ??= loadCaseAuthority();
-  return cachedCaseAuthority;
+function protocolAuthorityKey(snapshot: ProtocolAuthoritySnapshot): string {
+  return `${snapshot.suiteVersion}\0${snapshot.scenarioVersion}`;
+}
+
+function caseAuthorityFor(record: PublicEvidenceRecordV1): ProtocolCaseAuthority {
+  const snapshot = PROTOCOL_AUTHORITY_SNAPSHOTS.find((candidate) =>
+    candidate.scenarioVersion === record.scenarioVersion
+    && candidate.suiteVersion === record.suiteVersion
+  );
+  if (!snapshot) {
+    throw new PublicEvidenceValidationError(
+      "public_authority",
+      "scenario/suite authority version is not retained",
+    );
+  }
+
+  const key = protocolAuthorityKey(snapshot);
+  const cached = cachedCaseAuthorities.get(key);
+  if (cached) return cached;
+
+  const authority = snapshot.load();
+  if (
+    String(authority.manifestDefaults.version) !== snapshot.scenarioVersion
+    || String(authority.manifestDefaults.suiteVersion) !== snapshot.suiteVersion
+    || authority.sourceCommit !== snapshot.sourceCommit
+  ) {
+    throw new Error("public protocol authority snapshot drift");
+  }
+  cachedCaseAuthorities.set(key, authority);
+  return authority;
 }
 
 function fabricCaseAuthority(): ReturnType<typeof loadFabricCaseAuthority> {
@@ -102,14 +149,9 @@ function validateScenarioAuthority(record: PublicEvidenceRecordV1): void {
     return;
   }
 
-  const authority = caseAuthority();
+  const authority = caseAuthorityFor(record);
   const caseRecord = authority.cases.find((candidate) => candidate.id === record.scenarioId);
-  if (
-    !caseRecord
-    || caseRecord.suite !== record.suiteId
-    || record.scenarioVersion !== String(authority.manifestDefaults.version)
-    || record.suiteVersion !== String(authority.manifestDefaults.suiteVersion)
-  ) {
+  if (!caseRecord || caseRecord.suite !== record.suiteId) {
     throw new PublicEvidenceValidationError("public_authority", "scenario/suite authority mismatch");
   }
   validateAssertionAuthority(record, caseRecord.assertions);

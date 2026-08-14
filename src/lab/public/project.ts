@@ -21,7 +21,6 @@ import {
 const PROJECTOR_INVARIANT_ERROR_CODES = new Set([
   "subject_id_mismatch",
   "record_id_mismatch",
-  "public_selection_time",
 ]);
 
 export interface ProjectPublicEvidenceRecordInput {
@@ -115,7 +114,7 @@ export function projectPublicEvidenceRecord(
   } catch (error) {
     if (error instanceof PublicEvidenceValidationError) {
       if (PROJECTOR_INVARIANT_ERROR_CODES.has(error.code)) throw error;
-      return { status: "not_exportable", reason: "unsafe_public_field" };
+      return { status: "not_exportable", reason: "unsafe_public_field", detailCode: error.code };
     }
     if (error instanceof TypeError && error.message.startsWith("jcsStringify:")) {
       return { status: "not_exportable", reason: "unsafe_public_field" };

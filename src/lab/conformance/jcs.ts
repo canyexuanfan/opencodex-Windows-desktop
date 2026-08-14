@@ -48,6 +48,10 @@ export function jcsStringify(value: unknown): string {
     return `[${value.map(jcsStringify).join(",")}]`;
   }
   if (typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("jcsStringify: only plain JSON objects are representable in JCS");
+    }
     const obj = value as Record<string, unknown>;
     const keys = Object.keys(obj).sort();
     return `{${keys.map((key) => `${stringifyJcsString(key)}:${jcsStringify(obj[key])}`).join(",")}}`;

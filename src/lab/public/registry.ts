@@ -1,8 +1,9 @@
 import { publicEvidenceId } from "./ids";
-import type {
-  PublicAdapterFamily,
-  PublicRouteRegistryEntryV1,
-  PublicRouteRegistryManifestV1,
+import {
+  PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
+  type PublicAdapterFamily,
+  type PublicRouteRegistryEntryV1,
+  type PublicRouteRegistryManifestV1,
 } from "./types";
 
 // Repository-authoritative provider/model/adapter snapshot. The public manifest
@@ -18,7 +19,7 @@ const entries: PublicRouteRegistryEntryV1[] = [
 ];
 
 const manifestWithoutDigest = {
-  schemaVersion: "public_route_registry_v1" as const,
+  schemaVersion: PUBLIC_ROUTE_REGISTRY_SCHEMA_VERSION,
   registryVersion: "2026-08-13.v2",
   sourceCommit: PUBLIC_ROUTE_REGISTRY_SOURCE_COMMIT,
   entries,

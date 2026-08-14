@@ -55,16 +55,22 @@ function publisherForPrivateKey(privateKeyPem: string): PublicPublisherV1 {
 function requirePublisherKeyAcl(path: string, timeoutMemoKey = path): void {
   privateRegularFileSize(path, PRIVATE_KEY_FILE_OPTIONS);
   let hardened: { ok: boolean };
+  let hardeningError: unknown;
   try {
     hardened = hardenSecretPath(path, { required: true, timeoutMemoKey });
-  } catch {
+  } catch (error) {
+    hardeningError = error;
     hardened = { ok: false };
   }
   if (!hardened.ok) {
-    throw new PublicEvidenceValidationError(
+    const failure = new PublicEvidenceValidationError(
       "public_publisher_key_unsafe",
       "public publisher key ACL hardening did not complete",
     );
+    if (hardeningError !== undefined) {
+      (failure as Error & { cause?: unknown }).cause = hardeningError;
+    }
+    throw failure;
   }
 }
 

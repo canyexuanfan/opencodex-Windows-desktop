@@ -6,8 +6,10 @@ import { jcsStringify } from "../src/lab/conformance/jcs";
 import type { ObservationEvent } from "../src/lab/events/types";
 import { labPublicPublisherKeyPath } from "../src/lab/paths";
 import { publishPrivateFileExclusive } from "../src/lab/public/private-file";
+import { validatePublicEvidencePrivacy } from "../src/lab/public/privacy";
 import { projectPublicEvidenceRecord } from "../src/lab/public/project";
 import { getOrCreatePublicPublisher } from "../src/lab/public/signature";
+import type { PublicEvidenceBundleUnsignedV1 } from "../src/lab/public/types";
 import {
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
@@ -36,6 +38,18 @@ test("JCS rejects sparse JavaScript arrays instead of collapsing holes", () => {
   expect(() => jcsStringify(sparse)).toThrow(/sparse|array hole/i);
 });
 
+test("JCS rejects non-plain objects instead of collapsing canonical identity", () => {
+  const values: unknown[] = [
+    new Date(0),
+    new Map([["a", 1]]),
+    new Set([1]),
+    new Uint8Array([1, 2, 3]),
+  ];
+  for (const value of values) {
+    expect(() => jcsStringify(value)).toThrow(/plain JSON object/i);
+  }
+});
+
 test("public projection maps JCS-invalid public fields to not_exportable", () => {
   const observation = {
     evidenceLayer: "protocol_conformance",
@@ -53,6 +67,49 @@ test("public projection maps JCS-invalid public fields to not_exportable", () =>
     status: "not_exportable",
     reason: "unsafe_public_field",
   });
+});
+
+test("public projection drops invalid completion timestamps with a diagnostic code", () => {
+  const observation = {
+    evidenceLayer: "protocol_conformance",
+    suiteId: "responses-core",
+    suiteVersion: "1.0.0",
+    scenarioId: "responses-core.protocol.request-shape",
+    scenarioVersion: "1.0.0",
+    completedAt: Date.UTC(10_000, 0, 1),
+    assertions: [],
+    subject: {
+      subjectKind: "protocol",
+      effectiveAdapter: "openai-chat",
+      opencodexCompatibilityVersion: "2.13.0",
+      inboundProtocol: "openai-responses",
+      upstreamProtocol: "openai-chat",
+      surface: "responses-http",
+    },
+  } as unknown as ObservationEvent;
+
+  expect(projectPublicEvidenceRecord({ observation, verdict: "VERIFIED" })).toEqual({
+    status: "not_exportable",
+    reason: "unsafe_public_field",
+    detailCode: "public_selection_time",
+  });
+});
+
+test("public privacy rejects embedded POSIX absolute paths", () => {
+  const bytes = Buffer.from("diagnostic path=/var/folders/9k/opencodex/output.json", "utf8");
+  const bundle = {
+    createdDayUtc: "2026-08-14",
+    records: [],
+    artifacts: [{
+      artifactId: "0".repeat(64),
+      artifactClass: "verifier_summary",
+      mediaType: "text/plain",
+      byteCount: bytes.byteLength,
+      contentBase64: bytes.toString("base64"),
+    }],
+  } as unknown as PublicEvidenceBundleUnsignedV1;
+
+  expect(() => validatePublicEvidencePrivacy(bundle)).toThrow(/local path|privacy/i);
 });
 
 test("private publication prepares an empty stage before writing secret bytes", () => {
@@ -99,4 +156,24 @@ test("publisher key creation never publishes the final path when required Window
 
   expect(() => getOrCreatePublicPublisher(home)).toThrow(/ACL hardening/i);
   expect(existsSync(keyPath)).toBe(false);
+});
+
+test("publisher key ACL failures preserve their underlying cause", () => {
+  const home = configDir("ocx-cl10-windows-publisher-acl-cause-");
+
+  resetHardenedStateForTests();
+  setPlatformForTests("win32");
+  setIcaclsRunnerForTests(() => {
+    throw new Error("synthetic icacls runner failure");
+  });
+
+  let caught: unknown;
+  try {
+    getOrCreatePublicPublisher(home);
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(caught).toBeInstanceOf(Error);
+  expect((caught as Error & { cause?: unknown }).cause).toBeInstanceOf(Error);
 });

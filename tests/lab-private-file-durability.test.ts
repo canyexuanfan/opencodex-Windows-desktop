@@ -7,6 +7,7 @@ import {
   isPrivateFileStageName,
   PRIVATE_FILE_STAGE_RETENTION_MS,
   publishPrivateFileExclusive,
+  setPrivateFileCleanupSyncFaultForTests,
   setPrivateFileCommitFaultForTests,
 } from "../src/lab/public/private-file";
 
@@ -14,6 +15,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   setPrivateFileCommitFaultForTests(null);
+  setPrivateFileCleanupSyncFaultForTests(false);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -76,6 +78,32 @@ describe("CL-10 private-file durability", () => {
     cleanupStalePrivateFileStages(finalPath);
 
     expect(readFileSync(finalPath).equals(bytes)).toBe(true);
+    expect(readdirSync(root).filter(isPrivateFileStageName)).toEqual([]);
+  });
+
+  test("stale cleanup keeps the crash witness when its pre-unlink directory sync fails", () => {
+    if (process.platform === "win32") return;
+    const root = tempRoot();
+    const finalPath = join(root, "bundle.json");
+    const bytes = Buffer.from("durable-public-evidence", "utf8");
+
+    setPrivateFileCommitFaultForTests("parent_directory_sync");
+    expect(() => publishPrivateFileExclusive(finalPath, bytes)).toThrow(/directory.*sync|durab/i);
+    setPrivateFileCommitFaultForTests(null);
+
+    const stages = readdirSync(root).filter(isPrivateFileStageName);
+    expect(stages).toHaveLength(1);
+    const stagePath = join(root, stages[0]!);
+    const old = new Date(Date.now() - PRIVATE_FILE_STAGE_RETENTION_MS - 60_000);
+    utimesSync(stagePath, old, old);
+
+    setPrivateFileCleanupSyncFaultForTests(true);
+    expect(() => cleanupStalePrivateFileStages(finalPath)).toThrow(/cleanup.*directory.*sync/i);
+    expect(readFileSync(finalPath).equals(bytes)).toBe(true);
+    expect(readdirSync(root).filter(isPrivateFileStageName)).toHaveLength(1);
+
+    setPrivateFileCleanupSyncFaultForTests(false);
+    cleanupStalePrivateFileStages(finalPath);
     expect(readdirSync(root).filter(isPrivateFileStageName)).toEqual([]);
   });
 
