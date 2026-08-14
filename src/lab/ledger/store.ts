@@ -25,6 +25,11 @@ export interface LedgerStore {
   replay(): ReplayResult;
 }
 
+export interface LedgerMutationContext {
+  replay(): ReplayResult;
+  append(event: LabEvent): void;
+}
+
 const LEDGER_LOCK_STALE_MS = 60_000;
 const LEDGER_LOCK_WAIT_MS = 5_000;
 
@@ -36,10 +41,7 @@ interface LedgerLockMeta {
 
 /** Block synchronously for the given duration (ledger lock retry only). */
 function sleepSyncMs(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    /* spin */
-  }
+  Bun.sleepSync(ms);
 }
 
 /** Read pid, createdAt, and token metadata from a ledger lock file, if well-formed. */
@@ -83,8 +85,7 @@ function isLedgerLockStale(lockPath: string): boolean {
       return false;
     }
   }
-  if (isLockHolderAlive(meta.pid)) return false;
-  return Date.now() - meta.createdAt > LEDGER_LOCK_STALE_MS;
+  return !isLockHolderAlive(meta.pid);
 }
 
 /** Create a ledger lock file exclusively, recovering stale locks when needed. */
@@ -156,11 +157,10 @@ function withLedgerLock<T>(ledgerPath: string, fn: () => T): T {
   }
 }
 
-/** Durable append of one validated event as a single JSONL line + fsync. */
-export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
-  const validated = validateLabEvent(event);
+/** Durable append of one already-validated event as a single JSONL line + fsync. */
+function appendValidatedLabEvent(ledgerPath: string, event: LabEvent): void {
   mkdirSync(dirname(ledgerPath), { recursive: true, mode: 0o700 });
-  const line = `${jcsStringify(validated)}\n`;
+  const line = `${jcsStringify(event)}\n`;
   const bytes = new TextEncoder().encode(line);
   const fd = openSync(ledgerPath, "a", 0o600);
   try {
@@ -179,21 +179,43 @@ export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
 }
 
 /**
- * Append only when eventId is absent. Uses an exclusive lock file plus a
- * process-local event-id index refreshed under the lock.
+ * Serialize a ledger read-modify-write transaction with all ordinary appends.
+ * The callback receives lock-aware replay and append operations so callers do
+ * not have to reacquire the non-reentrant lock.
+ */
+export function withLedgerMutation<T>(
+  ledgerPath: string,
+  fn: (mutation: LedgerMutationContext) => T,
+): T {
+  return withLedgerLock(ledgerPath, () => fn({
+    replay: () => replayLabLedger(ledgerPath),
+    append: (event) => appendValidatedLabEvent(ledgerPath, validateLabEvent(event)),
+  }));
+}
+
+/** Durable append of one validated event as a single JSONL line + fsync. */
+export function appendLabEvent(ledgerPath: string, event: LabEvent): void {
+  const validated = validateLabEvent(event);
+  withLedgerMutation(ledgerPath, (mutation) => {
+    mutation.append(validated);
+  });
+}
+
+/**
+ * Append only when eventId is absent. Uses an exclusive lock file and refreshes
+ * the event-id index under the same mutation lock used by every ledger writer.
  */
 export function appendLabEventIfAbsent(ledgerPath: string, event: LabEvent): boolean {
   const validated = validateLabEvent(event);
-  return withLedgerLock(ledgerPath, () => {
-    // Refresh from disk under the lock so concurrent writers are visible.
+  return withLedgerMutation(ledgerPath, (mutation) => {
     const fresh = new Set<string>();
     if (existsSync(ledgerPath)) {
-      for (const row of replayLabLedger(ledgerPath).events) {
+      for (const row of mutation.replay().events) {
         fresh.add(row.eventId);
       }
     }
     if (fresh.has(validated.eventId)) return false;
-    appendLabEvent(ledgerPath, validated);
+    mutation.append(validated);
     return true;
   });
 }
