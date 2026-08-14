@@ -79,7 +79,7 @@ function seedProtocolProjection(home: string): string {
   return eventId;
 }
 
-test("a provenance failure rolls back a newly-created local public export", () => {
+test("a provenance failure prevents local public export publication", () => {
   const home = tempHome();
   const eventId = seedProtocolProjection(home);
   const preview = previewLocalPublicEvidence({ eventIds: [eventId] }, home);
@@ -98,6 +98,6 @@ test("a provenance failure rolls back a newly-created local public export", () =
 
   // A directory at the marker pathname makes the provenance commit fail closed.
   mkdirSync(originPath, { mode: 0o700 });
-  expect(() => exportLocalPublicEvidence({ eventIds: [eventId] }, home)).toThrow();
+  expect(() => exportLocalPublicEvidence({ eventIds: [eventId] }, home)).toThrow(/public origin marker/i);
   expect(existsSync(exportPath)).toBe(false);
 });
