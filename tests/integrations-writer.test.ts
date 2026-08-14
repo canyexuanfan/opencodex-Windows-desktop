@@ -88,6 +88,14 @@ function installOmp(): string {
   return configPath;
 }
 
+function installDsh(): string {
+  const spec = INTEGRATION_CLIENTS.dsh;
+  mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
+  const configPath = spec.configPath(TEST_ENV, home);
+  mkdirSync(dirname(configPath), { recursive: true });
+  return configPath;
+}
+
 function input(overrides: Partial<IntegrationWriteInput> = {}): IntegrationWriteInput {
   return {
     clientId: "hermes",
@@ -309,7 +317,7 @@ describe("apply", () => {
   });
 
   test("refuses a loopback-only client on a remote bind without denying manual OMP headers", () => {
-    for (const clientId of ["gajae", "omp"] as const) {
+    for (const clientId of ["gajae", "omp", "dsh"] as const) {
       const spec = INTEGRATION_CLIENTS[clientId];
       mkdirSync(spec.detectDir(TEST_ENV, home), { recursive: true });
       const result = applyIntegration(input({
@@ -475,6 +483,126 @@ describe("OMP source preservation", () => {
     if (!result.ok) expect(result.reason).toBe("unsafe");
     expect(readFileSync(configPath, "utf8")).toBe(edited);
     expect(store.listOperations("omp")).toEqual(journalBefore);
+  });
+});
+
+describe("DSH source preservation", () => {
+  test("preserves defaults, namespaces, providers, comments, and formatting through refresh and disable", () => {
+    const configPath = installDsh();
+    const original = [
+      "# DSH user header",
+      "agent-default-model: deepseek-official/deepseek-chat",
+      "llm-pi-ai:",
+      "  providers:",
+      "    deepseek-official:",
+      "      api: openai-completions # native stays",
+      "other-namespace:",
+      "  compact: false",
+      "# DSH user tail",
+      "",
+    ].join("\n");
+    writeFileSync(configPath, original);
+
+    expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    const applied = readFileSync(configPath, "utf8");
+    expect(applied).toContain("agent-default-model: deepseek-official/deepseek-chat\n");
+    expect(applied).toContain("      api: openai-completions # native stays\n");
+    expect(applied).toContain("other-namespace:\n  compact: false\n");
+
+    const externallyEdited = applied.replace("# DSH user header", "# DSH user header edited");
+    writeFileSync(configPath, externallyEdited);
+    const refreshedModels = [...MODELS, {
+      namespaced: "openai/gpt-5.6",
+      provider: "openai",
+      id: "gpt-5.6",
+      contextWindow: 272_000,
+    }];
+    expect(applyIntegration(input({ clientId: "dsh", models: refreshedModels })).ok).toBe(true);
+    const refreshed = Bun.YAML.parse(readFileSync(configPath, "utf8")) as {
+      "llm-pi-ai": { providers: { opencodex: { models: Array<{ id: string }> } } };
+    };
+    expect(refreshed["llm-pi-ai"].providers.opencodex.models.map(model => model.id))
+      .toContain("openai/gpt-5.6");
+    expect(disableIntegration(input({ clientId: "dsh", models: refreshedModels })).ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(
+      original.replace("# DSH user header", "# DSH user header edited"),
+    );
+  });
+
+  test("an edit inside the owned DSH leaf refuses refresh and disable, preserving the edit", () => {
+    const configPath = installDsh();
+    expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    const edited = readFileSync(configPath, "utf8").replace(
+      "api: openai-responses",
+      "api: user-edited",
+    );
+    writeFileSync(configPath, edited);
+
+    const refreshed = applyIntegration(input({
+      clientId: "dsh",
+      models: [...MODELS, {
+        namespaced: "openai/gpt-5.6",
+        provider: "openai",
+        id: "gpt-5.6",
+        contextWindow: 272_000,
+      }],
+    }));
+    expect(refreshed.ok).toBe(false);
+    if (!refreshed.ok) expect(refreshed.reason).toBe("conflict");
+    expect(readFileSync(configPath, "utf8")).toBe(edited);
+
+    const disabled = disableIntegration(input({ clientId: "dsh" }));
+    expect(disabled.ok).toBe(false);
+    if (!disabled.ok) expect(disabled.reason).toBe("conflict");
+    expect(readFileSync(configPath, "utf8")).toBe(edited);
+  });
+
+  test("restores a disabled DSH integration to the exact applied bytes", () => {
+    const configPath = installDsh();
+    const original = [
+      "agent-default-model: deepseek-official/deepseek-chat",
+      "llm-pi-ai:",
+      "  providers:",
+      "    deepseek-official:",
+      "      api: openai-completions # native stays",
+      "",
+    ].join("\n");
+    writeFileSync(configPath, original);
+
+    expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    const applied = readFileSync(configPath, "utf8");
+    expect(disableIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+
+    const disableOperation = store.listOperations("dsh")[0]!;
+    expect(disableOperation.kind).toBe("disable");
+    const restored = restoreIntegration({
+      ...input({ clientId: "dsh" }),
+      opId: disableOperation.opId,
+    });
+    expect(restored.ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe(applied);
+  });
+
+  test("a sibling added below a container we created survives disable", () => {
+    const configPath = installDsh();
+    writeFileSync(configPath, "agent-default-model: native\n");
+    expect(applyIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    const applied = readFileSync(configPath, "utf8");
+    const edited = applied.replace(
+      "    opencodex:\n",
+      "    user-provider:\n      api: openai-completions # keep\n    opencodex:\n",
+    );
+    writeFileSync(configPath, edited);
+    expect(disableIntegration(input({ clientId: "dsh" })).ok).toBe(true);
+    expect(readFileSync(configPath, "utf8")).toBe([
+      "agent-default-model: native",
+      "llm-pi-ai:",
+      "  providers:",
+      "    user-provider:",
+      "      api: openai-completions # keep",
+      "",
+    ].join("\n"));
   });
 });
 

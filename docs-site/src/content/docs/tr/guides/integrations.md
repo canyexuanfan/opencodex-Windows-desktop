@@ -1,10 +1,10 @@
 ---
 title: Entegrasyonlar
-description: Kontrol panelinden OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code ve Gajae Code'u opencodex'e bağlayın — istemci başına tek bir anahtar ve her yazmadan önce alınan bir yedek.
+description: Kontrol panelinden OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code, Gajae Code ve DeepSeek Harness'ı opencodex'e bağlayın — istemci başına tek bir anahtar ve her yazmadan önce alınan bir yedek.
 ---
 
 **Entegrasyonlar** sekmesi, opencodex'in sağlayıcı bloğunu istemcinin kendi
-yapılandırma dosyasına yazar ve tekrar kaldırır. Yedi istemci bu şekilde
+yapılandırma dosyasına yazar ve tekrar kaldırır. Sekiz istemci bu şekilde
 çalışır, her biri bir anahtarla:
 
 | İstemci | Yapılandırma dosyası | Format | Değişiklik ne zaman geçerli olur? | Kimlik bilgisi |
@@ -16,6 +16,14 @@ yapılandırma dosyasına yazar ve tekrar kaldırır. Yedi istemci bu şekilde
 | OpenClaw | `~/.openclaw/openclaw.json` | JSON5 | hemen, çalışan bir ağ geçidinde | `OPENCODEX_OPENCLAW_API_KEY` |
 | Kimi Code | `~/.kimi-code/config.toml` | TOML | yeniden başlatmada veya `/reload` ile | geri döngü (loopback) yer tutucusu |
 | Gajae Code | `~/.gjc/agent/models.yml` | YAML | yeni oturumlarda veya `/model` açtığınızda | `OPENCODEX_GAJAE_API_KEY` |
+| DeepSeek Harness (DSH) | `$DSH_HOME/settings.yaml` (varsayılan `~/.dsh/settings.yaml`) | YAML | çalışırken yeniden yükleme | gizli olmayan geri döngü bearer yer tutucusu |
+
+Yönetilen DSH desteğinin en düşük uyumlu sürümü **DSH 0.1.0-rc.6**'dır. OpenCodex yalnızca
+`llm-pi-ai.providers.opencodex` bölümünü yönetir: Uygula ve Yenile bu bölümü değiştirir, Devre Dışı
+Bırak yalnızca bu bölümü kaldırır, Geri Yükle ise kaydedilmiş bir anlık görüntüyü geri koyar. DSH
+sağlayıcı değişikliklerini çalışırken yeniden yükler. Bu işlemler kullanıcının varsayılan modelini
+veya yerel `deepseek-official` sağlayıcısını değiştirmez. Yönetilen DSH entegrasyonu şu anda yalnızca
+geri döngü içindir ve asla gerçek bir kimlik bilgisi yazmaz.
 
 Yollar, varsa her istemcinin kendi ortam geçersiz kılmalarını dikkate alır. OMP
 için `OMP_PROFILE`, açıkça boş olduğunda bile varlığıyla `PI_PROFILE`'a üstün
@@ -100,8 +108,9 @@ size ait olduğunu tahmin etmek yerine devre dışı bırakmayı reddeder.
 
 **Biçimlendirme genellikle korunmaz.** Uygulama işlemi bir yapılandırmayı
 ayrıştırır ve geri yazar, bu nedenle JSON, JSON5 ve TOML yeniden
-biçimlendirilebilir ve JSON5 veya TOML içindeki yorumlar kaybolur. OMP
-istisnadır: YAML yazıcısı yalnızca `providers.opencodex` kısmını yamalar,
+biçimlendirilebilir ve JSON5 veya TOML içindeki yorumlar kaybolur. OMP ve DSH
+istisnadır: YAML yazıcıları sırasıyla yalnızca `providers.opencodex` ve
+`llm-pi-ai.providers.opencodex` kısımlarını yamalar,
 ilgisiz sağlayıcı yorumlarını ve biçimlendirmesini bayt bayt korur. Bu tam
 kaynak aralığı güvenli bir şekilde tanımlanamazsa işlem bunun yerine reddeder.
 Diğer istemciler için önceki dosya baytlarına ihtiyacınız olduğunda Geri
@@ -115,12 +124,12 @@ değişen bir değer yazıp buna başarı demek yerine durur ve bunu söyler. Do
 adlandırıldığını ve diskte hiçbir şeyin taşınmadığını görürsünüz. Bu dosyayı
 elle düzenlemek hala çalışır; yalnızca otomatik yeniden yazmamız reddeder.
 
-**Pi, Kimi Code ve Gajae Code yalnızca geri döngü (loopback) bağlantısına karşı
-çalışır.** Yapılandırma şemalarında geri döngü olmayan bir bağlantının
-gerektirdiği `x-opencodex-api-key` başlığı için yer yoktur, bu nedenle
-oluşturulan bir yapılandırma basitçe reddedilir. Bunun yerine onlara bir SSH
-tüneli veya başlığı ekleyen yerel bir iletici aracılığıyla geri döngü erişimi
-verin.
+**Pi, Kimi Code, Gajae Code ve yönetilen DSH entegrasyonu yalnızca geri döngü (loopback) bağlantısına karşı
+çalışır.** İlk üçünün yapılandırmasında geri döngü olmayan bir bağlantının gerektirdiği
+`x-opencodex-api-key` başlığı için alan yoktur. DSH genel bir headers haritası sunar, ancak rc.6
+bu özel kabul başlığını desteklenen bir entegrasyon sözleşmesi olarak belgelememektedir; bu nedenle
+yönetilen writer tahmin yürütmek yerine kapalı biçimde reddeder. Bunun yerine bir SSH tüneli veya
+başlığı ekleyen yerel bir iletici aracılığıyla geri döngü erişimi verin.
 
 **Oluşturulan OMP entegrasyonu da kasıtlı olarak yalnızca geri döngü içindir.**
 OMP sağlayıcı düzeyinde başlıkları destekler, ancak bu ilk entegrasyon uzak
@@ -157,5 +166,3 @@ değiştiyse, komut reddeder ve size bildirir; çünkü daha yeni düzenlemeleri
 doğrulanmıştır; neyin ne zaman denetlendiğine ilişkin
 `devlog/_fin/260802_client_toggle_api/002_client_toggle_matrix.md` içindeki
 araştırma notlarına bakın.
-
-
