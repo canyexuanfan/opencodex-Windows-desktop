@@ -213,7 +213,8 @@ function preflight(input: IntegrationWriteInput) {
   const before = target.before;
   const parsed = parseConfig(before, exportSpec.format);
   if (parsed === PARSE_FAILED) {
-    return { failed: refuse(clientId, "unsafe", "unsafe", `${configPath} could not be parsed`) } as const;
+    return { failed: refuse(clientId, "unsafe", "unsafe",
+      `${configPath} could not be parsed, or holds something opencodex cannot rewrite without changing it (a non-finite number, a large integer or a tiny one a rewrite would round, -0, or a duplicate member)`) } as const;
   }
   const contribution = exportSpec.buildContribution(exportContextOf(input));
   // A record proves ownership of the file it was written FOR. Matching only by
@@ -368,8 +369,15 @@ export function disableIntegration(input: IntegrationWriteInput): WriteOutcome {
         : `${configPath} cannot be changed safely`);
   }
 
-  // current | stale only: the file fingerprint still matches our record, so the
-  // recorded paths are exactly what we put there.
+  /*
+   * current | stale only. What makes the removal safe is the BLOCK
+   * fingerprint, not the file fingerprint: the classifier verified the values
+   * at the recorded paths are byte-for-byte what we wrote, so removing them
+   * cannot take a user edit with them. The file itself may have drifted — a
+   * json client classifies a sibling edit as stale (#1631) — which is why the
+   * removal runs against the document as parsed NOW, and the re-serialize is
+   * value-safe because non-round-tripping numbers were refused at parse time.
+   */
   const { doc, removed } = removeFragments(
     parsed,
     record!.fragmentPaths,
