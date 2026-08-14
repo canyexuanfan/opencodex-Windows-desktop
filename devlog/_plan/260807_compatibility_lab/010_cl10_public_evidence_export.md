@@ -326,7 +326,7 @@ A publish action must require an explicit user action for the specific bundle. C
 
 Deleting local Lab data remains absolute locally. Public copies already distributed cannot be cryptographically erased, so revocation semantics are required separately.
 
-### Sensitive purge interaction
+## Sensitive purge interaction
 
 CL-00 sensitive purge remains authoritative over CL-10 local copies. A purge whose closed action set includes `export` must fail closed until every affected local export/staging copy is removed. CL-10 must additionally remove any locally-originated copy of an affected bundle that has been imported into the local `community/` cache. Third-party community bundles are unrelated to the local sensitive bytes and are not deleted merely because they contain the same public route identity.
 
