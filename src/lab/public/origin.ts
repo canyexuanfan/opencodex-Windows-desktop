@@ -71,9 +71,18 @@ function readOrigin(path: string, expected?: PublicOriginIdentityV1): PublicOrig
   return identity;
 }
 
+/** Marker names only. Quota accounting, reclaim, and listing must agree on this set. */
 function originNames(dir: string): string[] {
   cleanupStalePrivateFileStagesInDir(dir);
-  return readdirSync(dir).filter((name) => !isPrivateFileStageName(name)).sort();
+  return readdirSync(dir)
+    .filter((name) => !isPrivateFileStageName(name) && ORIGIN_RE.test(name))
+    .sort();
+}
+
+function foreignOriginNames(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((name) => !isPrivateFileStageName(name) && !ORIGIN_RE.test(name))
+    .sort();
 }
 
 function pathExistsConservatively(path: string): boolean {
@@ -108,8 +117,7 @@ function reclaimUnreferencedOrigins(
   configDir?: string,
 ): void {
   for (const name of originNames(dir)) {
-    const match = ORIGIN_RE.exec(name);
-    if (!match) continue;
+    const match = ORIGIN_RE.exec(name)!;
     const path = join(dir, name);
     if (path === preservePath) continue;
     const identity = { publisherKeyId: match[1]!, bundleId: match[2]! };
@@ -170,12 +178,12 @@ export function listLocalPublicOrigins(configDir?: string): PublicOriginIdentity
   if (names.length > MAX_ORIGINS) {
     throw new PublicEvidenceValidationError("public_origin_bound", "public origin marker bound exceeded");
   }
+  if (foreignOriginNames(dir).length > 0) {
+    throw new PublicEvidenceValidationError("public_origin_unsafe", "unexpected public origin marker entry");
+  }
   const identities: PublicOriginIdentityV1[] = [];
   for (const name of names) {
-    const match = ORIGIN_RE.exec(name);
-    if (!match) {
-      throw new PublicEvidenceValidationError("public_origin_unsafe", "unexpected public origin marker entry");
-    }
+    const match = ORIGIN_RE.exec(name)!;
     const expected = { publisherKeyId: match[1]!, bundleId: match[2]! };
     identities.push(readOrigin(join(dir, name), expected));
   }
