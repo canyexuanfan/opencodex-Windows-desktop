@@ -5,11 +5,15 @@ export type PublicEvidencePurgeFaultForTests =
 
 let purgeFaultForTests: PublicEvidencePurgeFaultForTests = null;
 
-/** Internal deterministic fault seam. This module is intentionally not barrel-exported. */
+/** Arms the internal deterministic fault seam and returns a scoped restore handle. */
 export function setPublicEvidencePurgeFaultForTests(
   fault: PublicEvidencePurgeFaultForTests,
-): void {
+): () => void {
+  const previous = purgeFaultForTests;
   purgeFaultForTests = fault;
+  return () => {
+    purgeFaultForTests = previous;
+  };
 }
 
 export function publicEvidencePurgeFaultForTests(): PublicEvidencePurgeFaultForTests {
