@@ -12,7 +12,7 @@ import { fixtureDigest, isSha256Hex, jcsStringify } from "../digest";
 import type { ObservationEvent, RouteSubjectV1, TaskSubjectV1 } from "../events/types";
 import { LabValidationError } from "../events/errors";
 import { assignEventId, validateSubject } from "../events/validate";
-import { appendLabEventIfAbsent } from "../ledger/store";
+import { withLedgerMutation } from "../ledger/store";
 import { ensureLabDirs } from "../paths";
 import {
   FABRIC_EVIDENCE_LAYER,
@@ -430,9 +430,11 @@ function persistFabricOutcome(
   const ownsStore = !opts.artifactStore;
   const store = opts.artifactStore ?? createArtifactStore(paths.artifactsDir);
   try {
-    const { event } = observationFromFabricOutcome(outcome, { ...opts, artifactStore: store });
-    appendLabEventIfAbsent(paths.ledgerPath, event);
-    return { event, ledgerPath: paths.ledgerPath };
+    return withLedgerMutation(paths.ledgerPath, (ledger) => {
+      const { event } = observationFromFabricOutcome(outcome, { ...opts, artifactStore: store });
+      ledger.appendIfAbsent(event);
+      return { event, ledgerPath: paths.ledgerPath };
+    });
   } finally {
     if (ownsStore) store.close();
   }
