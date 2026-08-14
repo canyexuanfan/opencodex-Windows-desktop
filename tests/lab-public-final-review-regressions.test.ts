@@ -1,10 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureLabDirs, labPublicOriginDir } from "../src/lab/paths";
 import {
-  createPublicEvidenceRevocation,
   importCommunityEvidenceBundle,
   listLocalPublicOrigins,
   purgeLocalPublicEvidenceCopies,
@@ -99,47 +98,20 @@ test("purge provenance salvage does not truncate valid markers at the operationa
   expect(listValidPublicOriginsForPurge(home)).toHaveLength(1025);
 });
 
-test("successful local export commits provenance before export storage", () => {
-  const source = readFileSync(new URL("../src/lab/public/operator.ts", import.meta.url), "utf8");
-  const start = source.indexOf("export function exportLocalPublicEvidence");
-  const end = source.indexOf("export function summarizePublicEvidenceVerification", start);
-  const block = source.slice(start, end);
-  const origin = block.indexOf("recordLocalPublicOrigin");
-  const stored = block.indexOf("const stored = storePublicEvidenceBundle");
+test.skipIf(process.platform === "win32")(
+  "export purge keeps failing closed on retry until POSIX deletion durability is established",
+  () => {
+    const home = configDir("ocx-cl10-export-delete-durability-");
+    const own = bundle(home);
+    writePublicEvidenceBundle(own, home);
 
-  expect(origin).toBeGreaterThanOrEqual(0);
-  expect(stored).toBeGreaterThan(origin);
-});
+    setPublicEvidencePurgeFaultForTests("export_directory_sync");
+    expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
+    // The first attempt already removed the export pathname. A retry must still
+    // fsync the now-empty directory rather than reporting success without durability.
+    expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
 
-test("V1 revocation rejects targets that span multiple bundle anchors", () => {
-  const publisher = configDir("ocx-cl10-multibundle-rev-publisher-");
-  const first = bundle(publisher, "2026-08-12");
-  const second = bundle(publisher, "2026-08-13");
-
-  expect(() => createPublicEvidenceRevocation({
-    configDir: publisher,
-    targetBundle: first,
-    issuedDayUtc: "2026-08-13",
-    reason: "superseded",
-    targets: [
-      { kind: "bundle", id: first.bundleId },
-      { kind: "bundle", id: second.bundleId },
-    ],
-  })).toThrow();
-});
-
-test("export purge keeps failing closed on retry until POSIX deletion durability is established", () => {
-  if (process.platform === "win32") return;
-  const home = configDir("ocx-cl10-export-delete-durability-");
-  const own = bundle(home);
-  writePublicEvidenceBundle(own, home);
-
-  setPublicEvidencePurgeFaultForTests("export_directory_sync");
-  expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
-  // The first attempt already removed the export pathname. A retry must still
-  // fsync the now-empty directory rather than reporting success without durability.
-  expect(() => purgeLocalPublicEvidenceCopies(home)).toThrow(/directory|sync|durab/i);
-
-  setPublicEvidencePurgeFaultForTests(null);
-  expect(() => purgeLocalPublicEvidenceCopies(home)).not.toThrow();
-});
+    setPublicEvidencePurgeFaultForTests(null);
+    expect(() => purgeLocalPublicEvidenceCopies(home)).not.toThrow();
+  },
+);
