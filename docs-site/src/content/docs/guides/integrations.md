@@ -1,10 +1,10 @@
 ---
 title: Integrations
-description: Connect opencodex to OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code and Gajae Code from the dashboard — one switch per client, with a backup taken before every write.
+description: Connect opencodex to OpenCode, Pi, OMP, Hermes, OpenClaw, Kimi Code, Gajae Code and DeepSeek Harness from the dashboard — one switch per client, with a backup taken before every write.
 ---
 
 The **Integrations** tab writes opencodex's provider block into a client's own config
-file, and removes it again. Seven clients work this way, each with a switch:
+file, and removes it again. Eight clients work this way, each with a switch:
 
 | Client | Config file | Format | When the change takes effect | Credential |
 |---|---|---|---|---|
@@ -15,6 +15,13 @@ file, and removes it again. Seven clients work this way, each with a switch:
 | OpenClaw | `~/.openclaw/openclaw.json` | JSON5 | immediately, on a running gateway | `OPENCODEX_OPENCLAW_API_KEY` |
 | Kimi Code | `~/.kimi-code/config.toml` | TOML | on restart, or `/reload` | loopback placeholder |
 | Gajae Code | `~/.gjc/agent/models.yml` | YAML | new sessions, or when you open `/model` |`OPENCODEX_GAJAE_API_KEY` |
+| DeepSeek Harness (DSH) | `$DSH_HOME/settings.yaml` (default `~/.dsh/settings.yaml`) | YAML | hot reload | non-secret loopback bearer placeholder |
+
+Managed DSH support has a compatibility floor of **DSH 0.1.0-rc.6**. OpenCodex owns only
+`llm-pi-ai.providers.opencodex`; Apply and Refresh replace that fragment, Disable removes only that
+fragment, and Restore puts back a recorded snapshot. DSH hot reloads provider changes. These
+operations do not change the user's default model or the native `deepseek-official` provider.
+The managed DSH integration is currently loopback-only and never writes a real credential.
 
 Paths honor each client's own environment override where it has one. For OMP,
 `OMP_PROFILE` wins over `PI_PROFILE` by presence, even when explicitly empty. A named profile
@@ -85,7 +92,8 @@ than guessing which edits were yours.
 
 **Formatting is generally not preserved.** Applying parses a config and writes it back
 out, so JSON, JSON5 and TOML may be reformatted and comments in JSON5 or TOML are lost.
-OMP is the exception: its YAML writer patches only `providers.opencodex`, preserving
+OMP and DSH are the exceptions: their YAML writers patch only `providers.opencodex` and
+`llm-pi-ai.providers.opencodex`, respectively, preserving
 unrelated provider comments and formatting byte-for-byte. If that exact source range
 cannot be identified safely, the operation refuses instead. For other clients, use
 Restore when you need the previous file bytes: the snapshot is a verbatim copy.
@@ -98,10 +106,11 @@ changed value and calling it success. You will see the file named and nothing on
 disk will have moved. Editing that file by hand still works; it is only our
 automatic rewrite that declines.
 
-**Pi, Kimi Code and Gajae Code only work against a loopback bind.** Their config schemas
-have no place for the `x-opencodex-api-key` header that a non-loopback bind requires, so a
-generated config would simply be rejected. Give them loopback access instead, through an
-SSH tunnel or a local forwarder that adds the header.
+**Pi, Kimi Code, Gajae Code and the managed DSH integration only work against a loopback bind.**
+The first three have no config field for the `x-opencodex-api-key` header a non-loopback bind
+requires. DSH has a generic headers map, but rc.6 does not document that dedicated admission
+header as a supported integration contract, so the managed writer fails closed instead of
+guessing. Give them loopback access through an SSH tunnel or a local forwarder that adds the header.
 
 **The generated OMP integration is also deliberately loopback-only.** OMP does support
 provider-level headers, but this initial integration does not emit remote
