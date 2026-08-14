@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import {
   persistConformanceResult,
   purgeSensitiveEvidence,
   replayLabLedger,
+  withLedgerMutation,
 } from "../src/lab";
 import type { ArtifactStore } from "../src/lab/artifacts/store";
 import { discoverScenarios, loadCaseAuthority } from "../src/lab/conformance/manifest";
@@ -175,7 +176,31 @@ test("appendLabEventIfAbsent immediately recovers a lock owned by an exited proc
   const event = invalidation("dead-lock");
   expect(appendLabEventIfAbsent(ledgerPath, event)).toBe(true);
   expect(existsSync(lockPath)).toBe(false);
+  expect(existsSync(`${lockPath}.recovery`)).toBe(false);
   expect(replayLabLedger(ledgerPath).events.some((row) => row.eventId === event.eventId)).toBe(true);
+});
+
+test("withLedgerMutation rejects async callbacks and invalidates their context", async () => {
+  const home = tempHome();
+  const ledgerPath = join(home, "lab", "compatibility.jsonl");
+  const event = invalidation("async-callback");
+  let continuation: Promise<void> | undefined;
+  let continuationError: unknown;
+
+  expect(() => withLedgerMutation(ledgerPath, (mutation) => {
+    continuation = (async () => {
+      await Bun.sleep(1);
+      mutation.append(event);
+    })().catch((error) => {
+      continuationError = error;
+    });
+    return continuation;
+  })).toThrow("ledger mutation callback must be synchronous");
+
+  await continuation;
+  expect(continuationError).toBeInstanceOf(Error);
+  expect((continuationError as Error).message).toContain("after its lock was released");
+  expect(replayLabLedger(ledgerPath).events.some((row) => row.eventId === event.eventId)).toBe(false);
 });
 
 test("canonical persistence publishes artifacts while holding the ledger mutation lock", () => {
@@ -230,12 +255,8 @@ test("sensitive purge waits for the ledger mutation lock before rewriting", asyn
     const replay = replayLabLedger(ledgerPath);
     expect(replay.events.some((row) => row.eventId === event.eventId)).toBe(false);
     expect(replay.events.some((row) => row.eventKind === "purge_tombstone")).toBe(true);
+    expect(existsSync(`${ledgerPath}.lock`)).toBe(false);
   } finally {
     await waitForChild(child);
-    try {
-      unlinkSync(`${ledgerPath}.lock`);
-    } catch {
-      /* ignore */
-    }
   }
 });
