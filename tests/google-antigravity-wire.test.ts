@@ -104,11 +104,11 @@ describe("antigravity CCA envelope", () => {
     for (const [alias, wire] of [
       // Google retires the previous Flash generation from CCA when the next ships, so
       // every retired id — 3.6 tiers included — now lands on 3.7.
-      ["gemini-3.5-flash-extra-low", "gemini-3.7-flash"],
-      ["gemini-3.5-flash-low", "gemini-3.7-flash"],
-      ["gemini-3.5-flash-mid", "gemini-3.7-flash"],
-      ["gemini-3.5-flash-high", "gemini-3.7-flash"],
-      ["gemini-3-flash-agent", "gemini-3.7-flash"],
+      ["gemini-3.5-flash-extra-low", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-low", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-mid", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-high", "gemini-3.7-flash-tiered"],
+      ["gemini-3-flash-agent", "gemini-3.7-flash-tiered"],
       ["gemini-3.1-pro-high", "gemini-pro-agent"],
       ["gemini-3.1-pro-preview", "gemini-pro-agent"],
     ]) {
@@ -119,7 +119,7 @@ describe("antigravity CCA envelope", () => {
     for (const modelId of ["gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high"]) {
       const req = await createGoogleAdapter(provider).buildRequest(parsed("x", false, modelId));
       // The retired tier ids no longer exist upstream; they route to the live model.
-      expect(JSON.parse(req.body).model).toBe("gemini-3.7-flash");
+      expect(JSON.parse(req.body).model).toBe("gemini-3.7-flash-tiered");
     }
   });
 
@@ -396,28 +396,28 @@ describe("antigravity CCA envelope", () => {
   test("gemini-3.7-flash with effort=high keeps the wire id + thinkingConfig", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "high"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
   test("gemini-3.7-flash with effort=low keeps the wire id + thinkingConfig", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 
   test("gemini-3.7-flash with no effort still sends the documented medium default", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("medium");
   });
 
   test("gemini-3.7-flash with effort=max clamps to high", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "max"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
@@ -455,7 +455,7 @@ describe("antigravity CCA envelope", () => {
     // A retired id must not keep its dead wire id, and an explicit effort still wins.
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash-low", "high"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
@@ -464,14 +464,14 @@ describe("antigravity CCA envelope", () => {
     // survive as an explicit thinkingLevel or the user silently loses their choice.
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash-low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 
   test("legacy 3.5 compat alias now resolves to 3.7 with an explicit effort", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.5-flash-high", "low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.7-flash");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 

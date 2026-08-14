@@ -45,6 +45,25 @@ const GOOGLE_BREVITY_INSTRUCTION = [
   "- This applies only to intermediate progress text. Your final answer after the work is done is exempt: write it in full and at whatever length the task requires.",
 ].join("\n");
 
+/**
+ * Google renamed the current Gemini Flash generations on the Generative Language API,
+ * appending a `-tiered` suffix (`gemini-3.7-flash` -> `gemini-3.7-flash-tiered`). The
+ * old `gemini-3.7-flash` path 404s, so a saved config or registry entry naming the base
+ * id must be resolved here before it reaches the URL. The user-facing id is deliberately
+ * left alone: the picker, the catalog, the usage log and the price overlays all stay
+ * keyed on the base id, and only the wire path learns the new spelling.
+ */
+const GEMINI_DIRECT_WIRE_RENAMES: Record<string, string> = {
+  "gemini-3.7-flash": "gemini-3.7-flash-tiered",
+  "gemini-3.6-flash": "gemini-3.6-flash-tiered",
+};
+
+function resolveDirectGeminiWireModelId(modelId: string): string {
+  return Object.hasOwn(GEMINI_DIRECT_WIRE_RENAMES, modelId)
+    ? GEMINI_DIRECT_WIRE_RENAMES[modelId]!
+    : modelId;
+}
+
 /** Vertex API key: provider.apiKey if it looks real (not a sentinel), else GOOGLE_CLOUD_API_KEY env. */
 function resolveVertexApiKey(optKey?: string): string | undefined {
   const realKey = optKey && !optKey.startsWith("<") && optKey !== "N/A" ? optKey : undefined;
@@ -353,7 +372,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             parsed.modelId,
             mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning),
           ).wireModelId
-        : parsed.modelId;
+        : resolveDirectGeminiWireModelId(parsed.modelId);
       const { systemInstruction, contents } = messagesToGeminiFormat(parsed, routedModelId);
       const tools = toolsToGeminiFormat(parsed);
 
@@ -501,7 +520,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       }
 
       // ai-studio (default): Generative Language API + x-goog-api-key.
-      const url = `${provider.baseUrl}/v1beta/models/${parsed.modelId}:${method}${streamParam}`;
+      const url = `${provider.baseUrl}/v1beta/models/${routedModelId}:${method}${streamParam}`;
       const apiKey = provider.apiKey?.trim();
       if (!apiKey) throw new Error("google (AI Studio) requires a non-empty API key");
       headers["x-goog-api-key"] = apiKey;
