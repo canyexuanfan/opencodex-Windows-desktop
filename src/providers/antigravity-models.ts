@@ -78,12 +78,16 @@ function pickerModelIdForDiscoveredWireId(
   // CCA uses a single `-tiered` row for models whose effort levels ride on the
   // request's thinkingLevel field. Keep this generic so new tiered models do not
   // require another provider-specific ID mapping.
-  if (wireId.endsWith("-tiered")) return wireId.slice(0, -"-tiered".length);
+  if (wireId.endsWith("-tiered")) {
+    const baseId = wireId.slice(0, -"-tiered".length);
+    if (isValidModelDiscoveryModelId(baseId)) return baseId;
+  }
 
   const effortMatch = /^(.*)-(low|medium|high)$/.exec(wireId);
   if (effortMatch) {
     const baseId = effortMatch[1]!;
-    if (ANTIGRAVITY_DISCOVERY_EFFORTS.every(effort => available.has(`${baseId}-${effort}`))) {
+    if (isValidModelDiscoveryModelId(baseId)
+      && ANTIGRAVITY_DISCOVERY_EFFORTS.every(effort => available.has(`${baseId}-${effort}`))) {
       return baseId;
     }
   }

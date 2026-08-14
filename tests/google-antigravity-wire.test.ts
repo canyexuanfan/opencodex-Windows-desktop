@@ -148,6 +148,15 @@ describe("antigravity CCA envelope", () => {
       agentModelSorts: [{ groups: [{ modelIds: [] }] }],
       tieredModelIds: { flash: ["future-flash-tiered"] },
     })?.map(model => model.id)).toEqual(["future-flash"]);
+    expect(parseAntigravityAvailableModels({
+      models: { "-tiered": { maxTokens: 1_048_576 } },
+      agentModelSorts: [{ groups: [{ modelIds: ["-tiered"] }] }],
+    })?.map(model => model.id)).toEqual(["-tiered"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "-low",
+      "-medium",
+      "-high",
+    ]))?.map(model => model.id)).toEqual(["-low", "-medium", "-high"]);
     expect(parseAntigravityAvailableModels(payload([
       "gemini-3.1-pro-low",
       "gemini-pro-agent",
