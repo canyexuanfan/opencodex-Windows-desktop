@@ -39,6 +39,48 @@ the only such key in the tree today, but it is the shape to watch for.
 
 ## F2 — SHASUMS256.txt lags the rolling assets (upstream artifact, not a bug here)
 
+## F1c — TOML values must start on the assignment line (real upstream change, and it found a latent bug)
+
+**Bun 1.4 enforces the TOML rule that a value begins on its assignment line.**
+
+```text
+[features.multi_agent_v2]
+hint =
+[
+  ["nested"],
+]
+enabled = true
+
+1.3.14 → {"features":{"multi_agent_v2":{"hint":[["nested"]],"enabled":true}}}
+1.4.0  → THREW: Missing value after '='; values must be on the same line
+```
+
+1.4 is right; the document is not valid TOML.
+
+What makes this the most interesting finding so far is that it exposed a
+**latent defect in our own fallback**, not just a test assumption.
+`multiAgentV2EnabledFromConfigText` tries a real parse first and falls back to a
+line-based scanner when the parse fails. On 1.3.14 the parse always succeeded
+here, so the fallback was never exercised for this shape. On 1.4 the parse fails,
+the fallback runs, and `tomlTableBody` reads the `[` on the line after `hint =`
+as a table header — truncating the table before `enabled = true` and answering
+`false` for a feature the user enabled.
+
+That is exactly the failure mode the function's own comment warns against:
+"reporting a feature as disabled on account of an unreadable file presents a
+failure as a state."
+
+The scanner itself is off limits — its comment records that making it
+string-aware previously gave `getAgentsEnabled`, `getAgentsMaxDepth`, and
+`getMaxConcurrentThreads` three new wrong answers, and twenty call sites consume
+its output. So the repair is at the call site: if the real parse fails, join
+dangling `key =` lines to the value that follows and parse once more. If the
+joined document parses, that answer wins; if it does not, the old fallback runs
+unchanged. The unmodified document is always tried first, so a bad join cannot
+displace a correct read.
+
+Fixed in `src/codex/features.ts`. 132 pass / 0 fail on both runtimes.
+
 ## F1b — An empty PATH is now passed through to children (real upstream change)
 
 **Bun 1.4 stopped ignoring `PATH=""`.** Measured by having a child print its
