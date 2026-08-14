@@ -46,6 +46,7 @@ const TECHNICAL_UNITS = new Set([
   "Mo",
   "Mi",
   "Fr",
+  "HTTP",
   // IEC binary unit rendered next to a formatted number; a unit symbol, not UI prose.
   "GiB",
 ]);
