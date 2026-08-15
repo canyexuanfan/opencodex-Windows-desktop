@@ -196,9 +196,11 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [customFormModalities, setCustomFormModalities] = useState<string[]>(["text"]);
   const [customFormReasoning, setCustomFormReasoning] = useState(false);
   const [customFormReasoningEfforts, setCustomFormReasoningEfforts] = useState<string[]>([]);
-  // The ladder loaded from the row being edited. Re-enabling the override must restore this
-  // instead of re-pre-checking every level, which would silently discard a stored ladder.
-  const customFormReasoningLoadedRef = useRef<string[]>([]);
+  // Whether the ladder has been seeded at least once. `[]` is a MEANINGFUL explicit
+  // no-reasoning override, so initialization is tracked separately from the array contents:
+  // once seeded (an edit's stored ladder — including an explicit empty one — or a new form's
+  // first enable), re-enabling the override preserves the current array even when empty.
+  const customFormReasoningInitializedRef = useRef(false);
   const [customSaving, setCustomSaving] = useState(false);
   const [customError, setCustomError] = useState("");
   const [contextModalProvider, setContextModalProvider] = useState<string | null>(null);
@@ -1009,7 +1011,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                    setCustomFormModalities(["text"]);
                    setCustomFormReasoning(false);
                    setCustomFormReasoningEfforts([]);
-                   customFormReasoningLoadedRef.current = [];
+                   customFormReasoningInitializedRef.current = false;
                    setCustomError("");
                    setCustomModalOpen(true);
                  }}
@@ -1161,7 +1163,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
                                  // provider row's current metadata.
                                  setCustomFormReasoning(Array.isArray(m.reasoningEfforts));
                                  setCustomFormReasoningEfforts(m.reasoningEfforts ?? []);
-                                 customFormReasoningLoadedRef.current = m.reasoningEfforts ?? [];
+                                 // A stored ladder — even an explicit empty one — is a real
+                                 // configuration: re-enabling must preserve it, not reseed.
+                                 customFormReasoningInitializedRef.current = Array.isArray(m.reasoningEfforts);
                                  setCustomError("");
                                  setCustomModalOpen(true);
                                  setHoveredModel(null);
@@ -1621,15 +1625,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
                       checked={customFormReasoning}
                       onChange={e => {
                         setCustomFormReasoning(e.target.checked);
-                        if (e.target.checked) {
-                          setCustomFormReasoningEfforts(prev => {
-                            // First enable (nothing picked yet): seed from the stored ladder,
-                            // or pre-check the full set for a new row / an explicit
-                            // no-reasoning row. Re-enable keeps whatever the user had.
-                            if (prev.length > 0) return prev;
-                            const loaded = customFormReasoningLoadedRef.current;
-                            return loaded.length > 0 ? loaded : [...REASONING_EFFORT_LEVELS];
-                          });
+                        if (e.target.checked && !customFormReasoningInitializedRef.current) {
+                          customFormReasoningInitializedRef.current = true;
+                          // First enable: seed from the model's advertised ladder when the
+                          // row is known (a provider may support only a subset of levels —
+                          // preselecting the full shared list would persist levels the model
+                          // does not accept). Unknown model ids fall back to the full set:
+                          // the common intent of enabling the override is "allow every known
+                          // step", and the wire clamp still bounds what is actually sent.
+                          const row = models.find(m => m.provider === customModalProvider && m.id === customFormModelId);
+                          const advertised = Array.isArray(row?.reasoningEfforts)
+                            ? row.reasoningEfforts
+                            : undefined;
+                          setCustomFormReasoningEfforts(advertised ?? [...REASONING_EFFORT_LEVELS]);
                         }
                       }}
                       disabled={customSaving}

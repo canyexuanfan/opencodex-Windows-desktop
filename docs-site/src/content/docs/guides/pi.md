@@ -111,8 +111,10 @@ catalog's ladder is the proxy's own statement about whether a model accepts reas
 (adapters honor `reasoning_effort`), an export row with a **non-empty** ladder now emits
 `"reasoning": true`, and a row without one (or with an explicitly empty ladder) stays
 reasoning-free. Pi then offers its effort control for exactly the models opencodex will accept it
-on. The export also emits a `thinkingLevelMap` that hides every pi level outside the declared
-ladder (`null`), so pi never offers — and never sends — an effort the ladder does not contain.
+on. The export also emits a `thinkingLevelMap` that hides every pi level with no declared target
+(`null`), so pi never offers — and never sends — an effort the ladder does not contain. One
+fallback keeps the model usable: when `ultra` is declared without `max`, pi's `max` level maps
+to `ultra` (still a ladder member).
 If you need a different mapping, hand-edit `thinkingLevelMap` afterward as documented by Pi.
 
 Treat `reasoning` as Pi-UI metadata: it is derived from the catalog ladder, not proof that the
