@@ -98,7 +98,9 @@ function parseContextWindowDraft(raw: string): number | null | undefined {
 export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string; restartEpoch?: number }) {
   // Codex app-server staleness (devlog/_plan/260815_gui_codex_restart). Named
   // appServerState, not catalogState: this file already binds that name to the
-  // /api/catalog resource state, which is an unrelated concept.
+  // model-catalog resource state, which is an unrelated concept. (Spelling the
+  // catalog route here would register a phantom endpoint with the CLI parity
+  // sweep, which reads GUI sources for api paths.)
   const [appServerState, setAppServerState] = useState<AppServerStateOutcome["state"]>(null);
   // A restart request outlives a navigation away from this page, so its completion
   // callback must not set state after unmount.
