@@ -653,6 +653,20 @@ export interface OcxConfig {
    */
   subagentModels?: string[];
   /**
+   * Optional full picker ordering for the Codex model catalog, independent of the
+   * 5-slot `subagentModels` spawn_agent cap. DISPLAY-ONLY: it controls the visual order of
+   * the Codex model picker for large routed catalogs (10-20+ models) that would otherwise sort
+   * arbitrarily and reshuffle on every rebuild. Values are routed `<provider>/<model>` catalog
+   * slugs (matched by exact slug or `provider/id`); native OpenAI passthrough rows and
+   * account-qualified native rows are not reordered (order native rows via `subagentModels`).
+   * Listed routed rows appear in array order; rows not listed keep their normal display order.
+   * `subagentModels`-featured rows keep their top position. When unset or empty, catalog
+   * priority is unchanged. This changes ONLY what the user sees in the picker: the spawn_agent
+   * candidate set is derived from each row's natural priority and is provably unaffected, even
+   * when every routed row is listed (see opencodex_spawn_priority / effectiveSubagentRoster).
+   */
+  modelPickerOrder?: string[];
+  /**
    * Priority-ordered fallback models for spawned sub-agents. When the requested
    * model is quota-exhausted or recently failed, opencodex rewrites the child
    * turn to the next available entry before routing.
@@ -973,6 +987,12 @@ export interface OcxComboConfig {
   stickyLimit?: number;
   /** Used when the client omits reasoning.effort. null/omitted leaves the target default unchanged. */
   defaultEffort?: OcxComboDefaultEffort | null;
+  /**
+   * Disable image input even when every target supports it.
+   * Omitted / `"auto"` keeps automatic capability derivation (default: enabled when
+   * the target intersection includes image).
+   */
+  imageInput?: "auto" | "disabled";
   /**
    * Optional public model name replacing the default `combo/<id>` slug. Bare names
    * without "/" are allowed (e.g. "deepseek-v4-flash") so the combo can answer to a
@@ -1475,6 +1495,18 @@ export interface OcxProviderConfig {
    * No effect unless `parallelToolCalls === false`; ignored by non-`openai-chat` adapters.
    */
   pinParallelToolCallsFalse?: boolean;
+  /**
+   * Opt-in: extend the no-tool-call terminal continuation guard to this provider's
+   * `openai-chat` routed turns. The guard (originally Anthropic-only, see
+   * devlog/_fin/260706_previous-response-id-400) issues one bounded internal re-ask when a
+   * model announces work but ends the turn without emitting a tool call. Self-hosted
+   * OpenAI-compatible gateways (GLM/Kimi-family, etc.) hit the same premature-completion
+   * pattern, but the heuristic that decides a "suspicious no-tool stop" was tuned on
+   * Anthropic turns, so it stays OFF by default for the many registry providers that share
+   * the `openai-chat` adapter. Enable only for a provider whose models are known to stop
+   * mid-work; non-`openai-chat` adapters ignore this flag.
+   */
+  terminalContinuationGuard?: boolean;
   /**
    * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
    * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
