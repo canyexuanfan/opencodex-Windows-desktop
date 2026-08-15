@@ -615,11 +615,18 @@ ignored because a credit is not a token count.
 ## Chat Completions inbound native path
 
 `POST /v1/chat/completions` sends eligible `openai-chat` routes directly to the provider's Chat
-Completions endpoint. Request construction remains owned by `src/adapters/openai-chat.ts`, including
-model normalization, provider headers, capability-specific fields, and the canonical
-`openaiChatCompletionsUrl()` path. Combo/policy routes and requests that need Responses-only hosted
-tools, continuation, background, or storage semantics retain the existing Chat -> Responses -> Chat
-bridge.
+Completions endpoint. Route selection reads the raw Chat body and the native request keeps that body
+as its wire source; a Responses projection is constructed only after the native route is declined
+and is never converted back into Chat. Request construction remains owned by `src/adapters/openai-chat.ts`, including model
+normalization, credential and provider headers, capability-specific fields, and the canonical
+`openaiChatCompletionsUrl()` path. The passthrough builder uses an explicit Chat-field whitelist so
+messages (including `name` and separate `system`/`developer` entries), Chat token controls,
+sampling/logprob fields, caller identity/metadata, and caller stream options retain their wire
+shape. For streams, caller `stream_options` are merged with mandatory `include_usage: true`.
+`service_tier` remains gated by `chatServiceTier: true`; `parallel_tool_calls` is emitted only for
+providers opted into parallel tools (or pinned false by the existing provider opt-out contract).
+Combo/policy routes and requests that need Responses-only hosted tools, continuation, background,
+or storage semantics retain the existing Chat -> Responses -> Chat bridge.
 
 The direct SSE relay accepts CRLF and arbitrary transport chunk boundaries while retaining at most
 one bounded event. EOF with an unterminated event and an event above the translator limit are typed

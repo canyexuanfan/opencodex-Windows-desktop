@@ -886,6 +886,7 @@ test("chat-native uses the shared request builder and normalized Chat Completion
         model: "mock/test-model",
         stream: false,
         temperature: 0.9,
+        service_tier: "priority",
         messages: [{ role: "user", content: "hi" }],
       }),
     });
@@ -894,6 +895,70 @@ test("chat-native uses the shared request builder and normalized Chat Completion
     expect(captured[0]?.pathname).toBe("/v1/chat/completions");
     expect(captured[0]?.body.model).toBe("test-model");
     expect(captured[0]?.body.temperature).toBeUndefined();
+    expect(captured[0]?.body.service_tier).toBeUndefined();
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native preserves caller Chat fields on the upstream wire", async () => {
+  const { server: upstream, captured } = mockChatUpstreamCapturing();
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`, {
+    chatServiceTier: true,
+    parallelToolCalls: true,
+  }));
+  const server = startServer(0);
+  const messages = [
+    { role: "system", name: "system-sentinel", content: "system sentinel" },
+    { role: "developer", name: "developer-sentinel", content: "developer sentinel" },
+    { role: "user", name: "user-sentinel", content: "user sentinel" },
+  ];
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        messages,
+        stream: true,
+        stream_options: { include_usage: false, sentinel_option: "preserved" },
+        max_completion_tokens: 321,
+        service_tier: "priority",
+        seed: 42,
+        n: 2,
+        logprobs: true,
+        top_logprobs: 3,
+        logit_bias: { "123": -5 },
+        user: "user-wire-sentinel",
+        metadata: { trace: "metadata-sentinel" },
+        parallel_tool_calls: false,
+        tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({
+      model: "test-model",
+      messages,
+      stream: true,
+      stream_options: { include_usage: true, sentinel_option: "preserved" },
+      max_completion_tokens: 321,
+      service_tier: "priority",
+      seed: 42,
+      n: 2,
+      logprobs: true,
+      top_logprobs: 3,
+      logit_bias: { "123": -5 },
+      user: "user-wire-sentinel",
+      metadata: { trace: "metadata-sentinel" },
+      parallel_tool_calls: false,
+    });
+    expect(captured[0]!.messages).toEqual(messages);
+    expect(captured[0]).not.toHaveProperty("max_tokens");
+    expect(captured[0]).not.toHaveProperty("instructions");
+    expect(captured[0]).not.toHaveProperty("input");
   } finally {
     await server.stop(true);
     upstream.stop(true);

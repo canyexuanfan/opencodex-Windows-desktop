@@ -1,4 +1,4 @@
-import { createOpenAIChatAdapter } from "../adapters/openai-chat";
+import { buildOpenAIChatPassthroughRequest, createOpenAIChatAdapter } from "../adapters/openai-chat";
 import type { AdapterRequest, ProviderAdapter } from "../adapters/base";
 import {
   chatCompletionsErrorBody,
@@ -26,9 +26,8 @@ import {
   rateLimitRetryPolicyFor,
   rotateProviderTransportOn429,
 } from "../providers/key-failover";
-import { parseRequest } from "../responses/parser";
 import type { RouteResult } from "../router";
-import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../types";
+import type { OcxConfig, OcxProviderConfig } from "../types";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./responses/fetch-helpers";
 import { linkAbortSignal } from "./responses";
 import {
@@ -75,22 +74,13 @@ function chatCompletionJson(value: unknown): Rec | null {
   return value;
 }
 
-function prepareParsedRequest(body: Rec, route: RouteResult, stream: boolean): OcxParsedRequest {
-  const raw = { ...body, model: route.modelId, stream };
-  const parsed = parseRequest(raw);
-  parsed.modelId = route.modelId;
-  parsed.stream = stream;
-  parsed._rawBody = raw;
-  return parsed;
-}
-
 interface HandleNativeChatOptions {
   req: Request;
   config: OcxConfig;
   logCtx: RequestLogContext;
   logIds?: { requestId: string; start: number };
   route: RouteResult;
-  responsesBody: Rec;
+  chatBody: Rec;
   requestedModel: string;
   requestedStream: boolean;
   translatorBudget: TranslatorBudget;
@@ -123,14 +113,12 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
     return chatCompletionsErrorResponse(status, safeMessage, type, code);
   };
 
-  let parsed: OcxParsedRequest;
-  try {
-    parsed = prepareParsedRequest(options.responsesBody, route, requestedStream);
-  } catch (error) {
-    return fail(400, error instanceof Error ? error.message : String(error), "invalid_request_error");
-  }
-  logCtx.requestedEffort = parsed.options.reasoning;
-  logCtx.requestedServiceTier = parsed.options.serviceTier;
+  logCtx.requestedEffort = typeof options.chatBody.reasoning_effort === "string"
+    ? options.chatBody.reasoning_effort
+    : undefined;
+  logCtx.requestedServiceTier = typeof options.chatBody.service_tier === "string"
+    ? options.chatBody.service_tier
+    : undefined;
 
   const upstream = new AbortController();
   const cleanupAbort = linkAbortSignal(upstream, req.signal);
@@ -150,7 +138,7 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
     retainedRequestBytes = bytes;
   };
   try {
-    activeRequest = await activeAdapter.buildRequest(parsed, { headers: new Headers(), translatorBudget, abortSignal: upstream.signal });
+    activeRequest = buildOpenAIChatPassthroughRequest(activeProvider, options.chatBody, route.modelId, requestedStream);
     retainRequest(activeRequest);
   } catch (error) {
     releaseRetainedRequest();
@@ -207,14 +195,14 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
         retryAfter: response.headers.get("retry-after"),
         now: Date.now(),
         attemptedKey: activeProvider.apiKey,
-        promptCacheKey: parsed.options.promptCacheKey,
+        promptCacheKey: typeof options.chatBody.prompt_cache_key === "string" ? options.chatBody.prompt_cache_key : undefined,
       });
       if (!rotated) break;
       try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
       activeProvider = rotated;
       activeAdapter = createOpenAIChatAdapter(activeProvider);
       releaseRetainedRequest();
-      activeRequest = await activeAdapter.buildRequest(parsed, { headers: new Headers(), translatorBudget, abortSignal: upstream.signal });
+      activeRequest = buildOpenAIChatPassthroughRequest(activeProvider, options.chatBody, route.modelId, requestedStream);
       retainRequest(activeRequest);
       response = await send(activeRequest, "key-429");
     }
