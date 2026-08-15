@@ -270,7 +270,7 @@ export const de: Record<TKey, string> = {
   "dash.codexRestartNothing": "Es läuft kein Codex-App-Server. Der nächste Start liest die aktuelle Modellliste.",
   "dash.codexRestartUnknown": "Prozesse konnten nicht aufgelistet werden, daher wurde nichts gestoppt.",
   "dash.codexRestartPartial": "{count} App-Server wurden nicht beendet. Beende sie manuell, falls die Modellliste veraltet bleibt.",
-  "dash.codexRestartFailed": "Codex konnte nicht neu gestartet werden (HTTP {status}).",
+  "dash.codexRestartFailed": "Codex-Modelle konnten nicht neu geladen werden (HTTP {status}).",
   "dash.codexRestartUnreachable": "Der Proxy war nicht erreichbar.",
   "dash.codexRestartMalformed": "Der Proxy hat eine unerwartete Antwort gesendet.",
   "dash.codexRestartTimeout": "Der Proxy hat nicht rechtzeitig geantwortet. Möglicherweise stoppt er noch App-Server.",

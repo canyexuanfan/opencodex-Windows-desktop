@@ -280,7 +280,7 @@ export const tr: Record<TKey, string> = {
   "dash.codexRestartNothing": "Çalışan Codex app-server yok. Sonraki açılışta güncel model listesi okunur.",
   "dash.codexRestartUnknown": "Süreçler listelenemedi, bu yüzden hiçbir şey durdurulmadı.",
   "dash.codexRestartPartial": "{count} app-server kapanmadı. Model listesi eski kalırsa bunları elle durdurun.",
-  "dash.codexRestartFailed": "Codex yeniden başlatılamadı (HTTP {status}).",
+  "dash.codexRestartFailed": "Codex model listesi yenilenemedi (HTTP {status}).",
   "dash.codexRestartUnreachable": "Proxy'ye ulaşılamadı.",
   "dash.codexRestartMalformed": "Proxy beklenmeyen bir yanıt döndürdü.",
   "dash.codexRestartTimeout": "Proxy zamanında yanıt vermedi. App-server'ları durdurmaya devam ediyor olabilir.",

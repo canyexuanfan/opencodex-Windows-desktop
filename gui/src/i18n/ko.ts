@@ -274,7 +274,7 @@ export const ko: Record<TKey, string> = {
   "dash.codexRestartNothing": "실행 중인 Codex app-server가 없습니다. 다음 실행 때 최신 목록을 읽습니다.",
   "dash.codexRestartUnknown": "프로세스 목록을 읽지 못해 아무것도 종료하지 않았습니다.",
   "dash.codexRestartPartial": "app-server {count}개가 종료되지 않았습니다. 모델 목록이 최신 상태로 바뀌지 않으면 직접 종료하세요.",
-  "dash.codexRestartFailed": "Codex를 재시작하지 못했습니다 (HTTP {status}).",
+  "dash.codexRestartFailed": "Codex 모델 목록을 새로고침하지 못했습니다 (HTTP {status}).",
   "dash.codexRestartUnreachable": "프록시에 연결하지 못했습니다.",
   "dash.codexRestartMalformed": "프록시가 예상과 다른 응답을 보냈습니다.",
   "dash.codexRestartTimeout": "프록시가 제때 응답하지 않았습니다. app-server를 계속 종료하는 중일 수 있습니다.",

@@ -282,7 +282,7 @@ export const en = {
   "dash.codexRestartNothing": "No Codex app-server is running. The next launch reads the current model list.",
   "dash.codexRestartUnknown": "Could not list processes, so nothing was stopped.",
   "dash.codexRestartPartial": "{count} app-server(s) did not exit. Stop them manually if the model list stays stale.",
-  "dash.codexRestartFailed": "Failed to restart Codex (HTTP {status}).",
+  "dash.codexRestartFailed": "Failed to reload Codex models (HTTP {status}).",
   "dash.codexRestartUnreachable": "Could not reach the proxy.",
   "dash.codexRestartMalformed": "The proxy returned an unexpected response.",
   "dash.codexRestartTimeout": "The proxy did not answer in time. It may still be stopping app-servers.",

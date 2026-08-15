@@ -186,5 +186,37 @@ describe("requestCodexRestart", () => {
     expect(cleanCodeWithSurvivors).toEqual({ ok: false, message: "malformed" });
     expect(nothingRunningButStopped).toEqual({ ok: false, message: "malformed" });
   });
+
+  test("a body that never finishes arriving is a timeout, not a malformed body", async () => {
+    // The response headers arrived, so this is not "unreachable"; the body then
+    // timed out, so it is not the payload's fault either. Blaming the payload
+    // would send the user looking for a proxy bug that is not there.
+    const stalled = {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    } as unknown as Response;
+
+    const outcome = await requestCodexRestart("", {
+      fetchFn: (async () => stalled) as typeof fetch,
+      ...formatters,
+    });
+
+    expect(outcome).toEqual({ ok: false, message: "timeout" });
+  });
+
+  test("a genuinely unparseable body is still reported as malformed", async () => {
+    const outcome = await requestCodexRestart("", {
+      fetchFn: (async () => new Response("not json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch,
+      ...formatters,
+    });
+
+    expect(outcome).toEqual({ ok: false, message: "malformed" });
+  });
 });
 

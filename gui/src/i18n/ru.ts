@@ -279,7 +279,7 @@ export const ru: Record<TKey, string> = {
   "dash.codexRestartNothing": "Ни один app-server Codex не запущен. При следующем запуске будет прочитан актуальный список моделей.",
   "dash.codexRestartUnknown": "Не удалось получить список процессов, поэтому ничего не остановлено.",
   "dash.codexRestartPartial": "app-server не завершились: {count}. Остановите их вручную, если список моделей остаётся устаревшим.",
-  "dash.codexRestartFailed": "Не удалось перезапустить Codex (HTTP {status}).",
+  "dash.codexRestartFailed": "Не удалось обновить список моделей Codex (HTTP {status}).",
   "dash.codexRestartUnreachable": "Не удалось связаться с прокси.",
   "dash.codexRestartMalformed": "Прокси вернул неожиданный ответ.",
   "dash.codexRestartTimeout": "Прокси не ответил вовремя. Возможно, он всё ещё останавливает app-server'ы.",

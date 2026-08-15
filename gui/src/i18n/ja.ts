@@ -279,7 +279,7 @@ export const ja: Record<TKey, string> = {
   "dash.codexRestartNothing": "実行中の Codex app-server はありません。次回起動時に最新のモデル一覧を読み込みます。",
   "dash.codexRestartUnknown": "プロセスを列挙できなかったため、何も停止しませんでした。",
   "dash.codexRestartPartial": "app-server が {count} 個終了しませんでした。モデル一覧が古いままなら手動で停止してください。",
-  "dash.codexRestartFailed": "Codex を再起動できませんでした (HTTP {status})。",
+  "dash.codexRestartFailed": "Codex のモデル一覧を再読み込みできませんでした (HTTP {status})。",
   "dash.codexRestartUnreachable": "プロキシに接続できませんでした。",
   "dash.codexRestartMalformed": "プロキシが予期しない応答を返しました。",
   "dash.codexRestartTimeout": "プロキシから時間内に応答がありませんでした。app-server の停止が続いている可能性があります。",

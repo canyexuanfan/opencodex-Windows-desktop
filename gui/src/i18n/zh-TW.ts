@@ -173,7 +173,7 @@ export const zhTW: Record<TKey, string> = {
   "dash.codexRestartNothing": "沒有執行中的 Codex app-server。下次啟動會讀取最新的模型清單。",
   "dash.codexRestartUnknown": "無法列舉行程，因此沒有停止任何行程。",
   "dash.codexRestartPartial": "有 {count} 個 app-server 未結束。若模型清單仍然過舊，請手動停止。",
-  "dash.codexRestartFailed": "重新啟動 Codex 失敗 (HTTP {status})。",
+  "dash.codexRestartFailed": "無法重新載入 Codex 模型清單 (HTTP {status})。",
   "dash.codexRestartUnreachable": "無法連線到代理。",
   "dash.codexRestartMalformed": "代理回傳了非預期的回應。",
   "dash.codexRestartTimeout": "代理未在時限內回應，可能仍在停止 app-server。",

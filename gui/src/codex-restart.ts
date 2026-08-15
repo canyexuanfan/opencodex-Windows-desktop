@@ -7,21 +7,6 @@ import { isCodexRestartResponse } from "../../src/lib/codex-restart-contract";
 // Re-exported so callers import the vocabulary from one place.
 export type { CodexRestartCode, CodexRestartResponse };
 
-export interface CodexRestartOutcome {
-  ok: boolean;
-  result?: CodexRestartResponse;
-  /** Localized by the caller through the format* options. */
-  message?: string;
-}
-
-export interface CodexRestartOptions {
-  fetchFn?: typeof fetch;
-  timeoutMs?: number;
-  formatFailure?: (status: number) => string;
-  formatUnreachable?: () => string;
-  formatMalformed?: () => string;
-}
-
 // Enumeration can shell out to ps, procfs, or PowerShell CIM, and the request also
 // rewrites the catalog first, so this is slower than an ordinary management call.
 const DEFAULT_TIMEOUT_MS = 30_000;
