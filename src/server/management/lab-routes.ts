@@ -31,6 +31,7 @@ import {
   LabProjectionIncompatibleError,
   LabProjectionUnavailableError,
   LAB_QUERY_MAX_PAGE_SIZE,
+  PASSIVE_PRODUCTION_MAX_LIMIT,
   queryLabArtifactByDigest,
   queryLabArtifacts,
   queryLabCatalogEntries,
@@ -76,20 +77,24 @@ function projectionErrorResponse(err: unknown, ctx: ManagementContext): Response
   return null;
 }
 
-function parseLimit(raw: string | null, ctx: ManagementContext): number | undefined | Response {
+function parseLimit(
+  raw: string | null,
+  ctx: ManagementContext,
+  max = LAB_QUERY_MAX_PAGE_SIZE,
+): number | undefined | Response {
   const parsed = raw === null ? undefined : parseQueryInt(raw);
   if (parsed === "invalid") {
     return errorResponse(
       "invalid_limit",
-      `limit must be an integer from 1 to ${LAB_QUERY_MAX_PAGE_SIZE}`,
+      `limit must be an integer from 1 to ${max}`,
       400,
       ctx,
     );
   }
-  if (parsed !== undefined && (parsed < 1 || parsed > LAB_QUERY_MAX_PAGE_SIZE)) {
+  if (parsed !== undefined && (parsed < 1 || parsed > max)) {
     return errorResponse(
       "invalid_limit",
-      `limit must be an integer from 1 to ${LAB_QUERY_MAX_PAGE_SIZE}`,
+      `limit must be an integer from 1 to ${max}`,
       400,
       ctx,
     );
@@ -199,7 +204,7 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
   if (url.pathname === "/api/lab/production-signals") {
     const subjectId = url.searchParams.get("subjectId")?.trim();
     if (!subjectId) return errorResponse("invalid_subject", "subjectId is required", 400, ctx);
-    const limit = parseLimit(url.searchParams.get("limit"), ctx);
+    const limit = parseLimit(url.searchParams.get("limit"), ctx, PASSIVE_PRODUCTION_MAX_LIMIT);
     if (limit instanceof Response) return limit;
     try {
       return jsonResponse(queryPassiveProductionSignals(subjectId, limit), 200, req, config);
