@@ -40,6 +40,7 @@ import {
   comboDefaultEffort,
   comboFailureDecision,
   comboIdFromRawBody,
+  comboRequestHasImageInput,
   concreteComboRequestBody,
   getCombo,
   isComboTargetInCooldown,
@@ -1172,6 +1173,41 @@ export async function handleComboResponses(
   if (!combo) {
     return formatErrorResponse(404, "invalid_request_error", `Unknown combo: ${comboId}`);
   }
+  // Expand previous_response_id before image policy and child dispatch so a
+  // continuation that only references prior images still fails closed when
+  // imageInput is disabled (and so targets see the full replayed input).
+  const body = expandPreviousResponseInput(rawBody);
+  if (previousResponseReplayFailure(body)) {
+    return formatErrorResponse(
+      400,
+      "previous_response_not_found",
+      "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
+    );
+  }
+  // Missing state returns the original body without a failure marker. Reject
+  // that unresolved continuation for image-disabled combos so a target cannot
+  // resolve prior images out of band. A successful expansion yields a new
+  // object (still carrying previous_response_id) and must not be treated as
+  // unresolved — text-only stored continuations remain allowed.
+  const requestedPreviousId = typeof (rawBody as { previous_response_id?: unknown } | null)?.previous_response_id === "string"
+    ? (rawBody as { previous_response_id: string }).previous_response_id.trim()
+    : "";
+  const unresolvedPrevious = requestedPreviousId.length > 0 && body === rawBody;
+  if (combo.imageInput === "disabled" && unresolvedPrevious) {
+    return formatErrorResponse(
+      400,
+      "previous_response_not_found",
+      "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
+    );
+  }
+  if (combo.imageInput === "disabled" && comboRequestHasImageInput(body)) {
+    return formatErrorResponse(400, "invalid_request_error", `Combo "${comboId}" does not accept image input`);
+  }
+  // Expansion already materialised prior input. Drop the id so the child
+  // handleResponses path does not expand again and double-prepend history.
+  if (body !== rawBody && body && typeof body === "object" && !Array.isArray(body)) {
+    delete (body as Record<string, unknown>).previous_response_id;
+  }
   const adoptFailedChildLog = (childLog: RequestLogContext): void => {
     // Attempts remain the complete physical history; the logical row mirrors the most recent
     // failed target so an exhausted combo still has useful top-level reasoning diagnostics.
@@ -1188,7 +1224,7 @@ export async function handleComboResponses(
   };
 
   const unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
-    (rawBody as { input?: unknown } | undefined)?.input,
+    (body as { input?: unknown } | undefined)?.input,
   );
   const canDecryptUnreadableAgentTask = (target: (typeof combo.targets)[number]): boolean => {
     const provider = config.providers[target.provider];
@@ -1230,7 +1266,7 @@ export async function handleComboResponses(
     };
     const targetRoute = routeConcreteModel(config, `${pick.target.provider}/${pick.target.model}`);
     const childBody = concreteComboRequestBody(
-      rawBody,
+      body,
       pick.target,
       comboDefaultEffort(config, comboId),
       supportedLadderFor({ provider: targetRoute.provider, modelId: targetRoute.modelId }),
