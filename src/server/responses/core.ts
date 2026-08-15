@@ -118,6 +118,7 @@ import { createTranslatorBudget, isTranslatorBudgetExceededError, type Translato
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { SERVICE_TIER_ADAPTERS, serviceTierSupportForModel } from "../../providers/service-tier";
+import { waitForProviderRequestSlot } from "../../providers/request-pacing";
 import { slugsEquivalent } from "../../providers/slug-codec";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
@@ -594,7 +595,10 @@ async function retryCodexPoolOnAlternateAccount(
       upstream.signal,
       connectMs,
       stream,
-      providerFetch(route.provider, options.codexWsRuntimeIdentity),
+      providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+        providerName: route.providerName,
+        modelId: route.modelId,
+      }),
       // Credential-bearing forward send: never follow a redirect into a
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
@@ -2362,7 +2366,10 @@ async function handleResponsesInner(
             headers: request.headers,
             body: request.body,
           }, recovery), upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, options.codexWsRuntimeIdentity),
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
             // retry wrapper replaces — proves the host was reached (#914 review).
@@ -2424,7 +2431,10 @@ async function handleResponsesInner(
               headers: request.headers,
               body: request.body,
             }, recovery), upstream.signal, connectMs, parsed.stream,
-              providerFetch(route.provider, options.codexWsRuntimeIdentity),
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              }),
               route.provider.authMode === "forward")
               .then(res => {
                 settleObservedHostResponse();
@@ -3013,6 +3023,11 @@ async function handleResponsesInner(
       && (tc.name === "image_generation" || imgPlan.toolNames.has(tc.name))) {
       parsed.options.toolChoice = { ...tc, name: IMAGE_GEN_TOOL_NAME };
     }
+    const imageProviderFetch = providerFetch(
+      route.provider,
+      options.codexWsRuntimeIdentity,
+      { providerName: route.providerName, modelId: route.modelId },
+    );
     const imgResponse = await runWithImageBridge({
       parsed, adapter,
       incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
@@ -3029,7 +3044,8 @@ async function handleResponsesInner(
           : clampImageMaxRounds(config.images?.videoMaxRounds ?? 2),
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       stallTimeoutSec: config.stallTimeoutSec,
-      fetchImpl: providerFetch(route.provider, options.codexWsRuntimeIdentity),
+      waitForRequestSlot: imageProviderFetch.waitForPacing,
+      fetchImpl: imageProviderFetch.unpacedFetch ?? imageProviderFetch,
       onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
       ...(vidPlan?.timeoutMs ? { videoTimeoutMs: vidPlan.timeoutMs } : {}),
       onUsage: usage => {
@@ -3164,6 +3180,7 @@ async function handleResponsesInner(
     const queue = createAdapterEventQueue({
       onBacklogExceeded: () => runTurnAbort.abort(),
     });
+    await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
     const runTurn = async (): Promise<void> => {
       try {
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
@@ -3340,6 +3357,7 @@ async function handleResponsesInner(
   try {
     if (activeAdapter.fetchResponse) {
       noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate);
+      await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, upstream.signal);
       upstreamResponse = await activeAdapter.fetchResponse(builtInitialRequest, {
         abortSignal: upstream.signal,
         timeoutMs: connectMs,
@@ -3354,7 +3372,10 @@ async function handleResponsesInner(
             headers: builtInitialRequest.headers,
             body: builtInitialRequest.body,
           }, recovery), upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, options.codexWsRuntimeIdentity));
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }));
         },
         { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
       );
@@ -3429,12 +3450,17 @@ async function handleResponsesInner(
       noteAttemptSend(logCtx.activeAttempt, retryEstimate, recovery);
       try {
         try {
-          return activeAdapter.fetchResponse
-            ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
-            : await fetchWithHeaderTimeout(retryRequest.url, {
-              method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
-            }, upstream.signal, connectMs, parsed.stream,
-              providerFetch(route.provider, options.codexWsRuntimeIdentity));
+          if (activeAdapter.fetchResponse) {
+            await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, upstream.signal);
+            return await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream });
+          }
+          return await fetchWithHeaderTimeout(retryRequest.url, {
+            method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
+          }, upstream.signal, connectMs, parsed.stream,
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }));
         } finally {
           retryRequest.releaseBodyObservation?.();
         }
@@ -3743,6 +3769,7 @@ async function handleResponsesInner(
       try {
         if (activeAdapter.fetchResponse) {
           noteAttemptSend(logCtx.activeAttempt, continuationEstimate, replayKind);
+          await waitForProviderRequestSlot(route.providerName, route.provider, nextParsed.modelId, upstream.signal);
           return await activeAdapter.fetchResponse(builtContinuationRequest, {
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
@@ -3762,7 +3789,10 @@ async function handleResponsesInner(
               upstream.signal,
               connectMs,
               nextParsed.stream,
-              providerFetch(route.provider, options.codexWsRuntimeIdentity),
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: nextParsed.modelId,
+              }),
             );
           },
           { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },
