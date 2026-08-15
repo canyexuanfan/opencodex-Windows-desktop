@@ -1,6 +1,7 @@
 import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import { formatPassthroughUpstreamError } from "./passthrough-error";
+import { checkInputAdmission } from "./input-admission";
 import { describeUpstreamConnectFailure } from "./upstream-error";
 import {
   getConfigPath,
@@ -76,7 +77,7 @@ import {
 } from "../../oauth/anthropic-routing";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
 import { buildImageTool, buildVideoTool, planImageBridge, planVideoBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME, VIDEO_GEN_TOOL_NAME } from "../../images";
-import { describeImagesInPlace, planVisionSidecar, resolveOpenAiVisionModel, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
+import { describeImagesInPlace, isModelTextOnly, planVisionSidecar, resolveOpenAiVisionModel, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
 import { createAdapterEventQueue, preflightAdapterEvents } from "../../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
@@ -190,6 +191,7 @@ import {
 } from "../responses-terminal-repair";
 import { isWin32EagerRewrite, selectEagerPath } from "../../lib/bun-stream-caps";
 import { cancelBodyOnAbort } from "../../lib/abort";
+import { isCodexWsUpstreamResponse, type BunRuntimeGateInput } from "./ws-upstream";
 import {
   createResponsesItemIdPayloadRewrite,
   hasResponsesItemIdRepair,
@@ -418,6 +420,7 @@ interface CodexPoolAccountRetryArgs {
     // needs the inbound scope or the retry could land on a different wire than the
     // first attempt.
     inboundWire?: InboundWire;
+    codexWsRuntimeIdentity?: BunRuntimeGateInput;
     translatorBudget: TranslatorBudget;
     turnAdmissionLease?: AdmissionLease;
   };
@@ -590,7 +593,7 @@ async function retryCodexPoolOnAlternateAccount(
       upstream.signal,
       connectMs,
       stream,
-      providerFetch(route.provider),
+      providerFetch(route.provider, options.codexWsRuntimeIdentity),
       // Credential-bearing forward send: never follow a redirect into a
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
@@ -719,6 +722,8 @@ export interface ConsumedComboFailure {
 
 export interface HandleResponsesOptions {
   turnAdmissionLease?: AdmissionLease;
+  /** Called at most once after the complete client body is read and accepted for dispatch. */
+  onRequestBodyRead?: () => void;
   forceEmptyResponseId?: boolean;
   abortSignal?: AbortSignal;
   /** One-shot TTFT callback: first non-empty model output observed (WP4). */
@@ -730,6 +735,8 @@ export interface HandleResponsesOptions {
   onNativePassthroughCancel?: () => void;
   /** Internal deterministic clock/timer seam for provider terminal repair. */
   responsesTerminalRepairScheduler?: ResponsesTerminalRepairScheduler;
+  /** Internal deterministic runtime-identity seam for Codex upstream WS selection tests. */
+  codexWsRuntimeIdentity?: BunRuntimeGateInput;
   /**
    * When true, body `prompt_cache_key` is a Claude Desktop shared cache cohort
    * (system/tools hash), not a per-session id — do not use it for Anthropic pool affinity.
@@ -1495,11 +1502,20 @@ async function handleResponsesInner(
   try {
     body = await readJsonRequestBody(req, translatorBudget);
   } catch (err) {
+    if (options.abortSignal?.aborted || req.signal.aborted) {
+      return clientCancelledResponse();
+    }
     return decodeRequestErrorResponse(err, "responses");
   }
   const comboId = !options.comboAttempt ? comboIdFromRawBody(body, config) : null;
   if (comboId && Object.hasOwn(config.combos ?? {}, comboId)) {
-    return handleComboResponses(req, body, comboId, config, logCtx, options);
+    options.onRequestBodyRead?.();
+    return handleComboResponses(req, body, comboId, config, logCtx, {
+      ...options,
+      // The original request body was accepted above. Combo children are synthetic
+      // replays and must not repeat the caller-owned timeout transition.
+      onRequestBodyRead: undefined,
+    });
   }
   let unreadableEncryptedAgentTask = hasUnreadableEncryptedAgentTask(
     (body as { input?: unknown } | undefined)?.input,
@@ -1555,6 +1571,7 @@ async function handleResponsesInner(
     }
     return formatErrorResponse(400, "invalid_request_error", err instanceof Error ? err.message : String(err));
   }
+  options.onRequestBodyRead?.();
   const responseStateOptions = (force = false): { force?: boolean; clientThreadId?: string } => ({
     ...(force ? { force: true } : {}),
     ...(parsed._clientThreadId ? { clientThreadId: parsed._clientThreadId } : {}),
@@ -1837,6 +1854,24 @@ async function handleResponsesInner(
   }
 
   if (options.abortSignal?.aborted) return clientCancelledResponse();
+  // Refuse an input that cannot plausibly fit the model context window before spending auth,
+  // circuit budget, or upstream bandwidth on a turn the provider will reject anyway (#1412).
+  //
+  // Compaction turns are exempt: Codex sends compaction_trigger BECAUSE context is full, so
+  // refusing the turn that shrinks the context would deadlock the client against the very
+  // limit this gate reports — it would be told to compact and then denied the compaction.
+  if (parsed._compactionRequest !== true) {
+    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId);
+    if (!inputAdmission.admitted) {
+      return formatErrorResponse(
+        413,
+        "request_too_large",
+        `Estimated input (~${inputAdmission.estimatedTokens} tokens) is far past the context window `
+          + `of ${parsed.modelId} (${inputAdmission.ceiling} tokens). Start a new session or choose a `
+          + `model with a larger context window.`,
+      );
+    }
+  }
   const preAuthHostKey = preAuthUpstreamHostCircuitKey(route, config);
   if (preAuthHostKey) {
     const admission = acquireUpstreamHostAdmission(
@@ -2060,7 +2095,7 @@ async function handleResponsesInner(
       recordSidecarOutcome,
       translatorBudget,
     );
-  } else if (modelInList(route.provider.noVisionModels, route.modelId)) {
+  } else if (isModelTextOnly(route.provider, route.modelId)) {
     // Sidecar-covered model but NO plan (no forward provider / missing forwarded auth / sidecar
     // disabled): fail closed — never forward raw images to a text-only upstream.
     stripImagesInPlace(parsed, translatorBudget);
@@ -2265,7 +2300,8 @@ async function handleResponsesInner(
             method: request.method,
             headers: request.headers,
             body: request.body,
-          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+          }, recovery), upstream.signal, connectMs, parsed.stream,
+            providerFetch(route.provider, options.codexWsRuntimeIdentity),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
             // retry wrapper replaces — proves the host was reached (#914 review).
@@ -2326,7 +2362,8 @@ async function handleResponsesInner(
               method: request.method,
               headers: request.headers,
               body: request.body,
-            }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider),
+            }, recovery), upstream.signal, connectMs, parsed.stream,
+              providerFetch(route.provider, options.codexWsRuntimeIdentity),
               route.provider.authMode === "forward")
               .then(res => {
                 settleObservedHostResponse();
@@ -2573,9 +2610,14 @@ async function handleResponsesInner(
         needsClientRewrite,
         config.streamMode ?? "auto",
       );
+      // A successful Codex WS upgrade is a push source. If it entered tee(),
+      // the inspection branch could drain continuously while the slow client
+      // branch retained bytes without a bound. Force the existing bounded,
+      // single-reader relay before tee; HTTP fallback responses stay unmarked.
+      const forceCodexWsEagerRelay = isCodexWsUpstreamResponse(upstreamResponse);
       const inlineEagerRewrite = needsClientRewrite
-        && (win32EagerRewrite || eagerPath?.useEagerRelay === true);
-      if (eagerPath?.useEagerRelay || win32EagerRewrite) {
+        && (forceCodexWsEagerRelay || win32EagerRewrite || eagerPath?.useEagerRelay === true);
+      if (forceCodexWsEagerRelay || eagerPath?.useEagerRelay || win32EagerRewrite) {
         const turnAc = new AbortController();
         linkAbortSignal(upstream, turnAc.signal);
         registerTurn(turnAc, options.turnAdmissionLease);
@@ -2633,9 +2675,9 @@ async function handleResponsesInner(
           onDone: () => unregisterTurn(turnAc),
         }, inlineEagerRewrite ? { rewriteBudget: translatorBudget } : undefined);
         // When selected, this relay closes response.completed even if upstream
-        // keeps the connection alive. Windows forced-rewrite traffic and Darwin
-        // explicit eager traffic apply client rewrites inline rather than via
-        // the tee()+JS-pull chain.
+        // keeps the connection alive. Marked Codex WS traffic, Windows
+        // forced-rewrite traffic, and Darwin explicit eager traffic apply
+        // client rewrites inline rather than via the tee()+JS-pull chain.
         if (!headers.has("content-type")) headers.set("content-type", "text/event-stream");
         return markEagerRelaySseResponse(
           markNativePassthroughSseResponse(new Response(eagerBody, {
@@ -2925,7 +2967,7 @@ async function handleResponsesInner(
           : clampImageMaxRounds(config.images?.videoMaxRounds ?? 2),
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       stallTimeoutSec: config.stallTimeoutSec,
-      fetchImpl: providerFetch(route.provider),
+      fetchImpl: providerFetch(route.provider, options.codexWsRuntimeIdentity),
       onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
       ...(vidPlan?.timeoutMs ? { videoTimeoutMs: vidPlan.timeoutMs } : {}),
       onUsage: usage => {
@@ -3249,7 +3291,8 @@ async function handleResponsesInner(
             method: builtInitialRequest.method,
             headers: builtInitialRequest.headers,
             body: builtInitialRequest.body,
-          }, recovery), upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+          }, recovery), upstream.signal, connectMs, parsed.stream,
+            providerFetch(route.provider, options.codexWsRuntimeIdentity));
         },
         { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
       );
@@ -3328,7 +3371,8 @@ async function handleResponsesInner(
             ? await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream })
             : await fetchWithHeaderTimeout(retryRequest.url, {
               method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
-            }, upstream.signal, connectMs, parsed.stream, providerFetch(route.provider));
+            }, upstream.signal, connectMs, parsed.stream,
+              providerFetch(route.provider, options.codexWsRuntimeIdentity));
         } finally {
           retryRequest.releaseBodyObservation?.();
         }
@@ -3652,7 +3696,7 @@ async function handleResponsesInner(
               upstream.signal,
               connectMs,
               nextParsed.stream,
-              providerFetch(route.provider),
+              providerFetch(route.provider, options.codexWsRuntimeIdentity),
             );
           },
           { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },

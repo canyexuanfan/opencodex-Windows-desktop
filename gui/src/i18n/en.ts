@@ -271,6 +271,8 @@ export const en = {
   "dash.stop": "Stop Proxy",
   "dash.stopConfirm": "Stop the proxy and restore native Codex?",
   "dash.stopFailed": "Failed to stop proxy (HTTP {status}).",
+  "dash.maSwitchFailed": "Mode switch failed (HTTP {status}).",
+  "dash.maNetworkError": "Network error — is the proxy running?",
   "dash.stopping": "Stopping…",
   "dash.codexAutoStart": "Start opencodex with Codex",
   "dash.codexAutoStartHint": "Allows an installed launcher shim to run ocx ensure. This setting does not install restart protection; check Startup safety for the effective state.",

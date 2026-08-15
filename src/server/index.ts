@@ -53,6 +53,7 @@ import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../p
 import { providerContextCap } from "../providers/context-cap";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { StorageCleanupPolicy } from "../types";
+import { MAX_DECOMPRESSED_BODY_BYTES } from "./request-decompress";
 import {
   CodexAccountCooldownError,
   cooldownErrorMessage,
@@ -412,6 +413,8 @@ function attachLiveSidebandUpstream(
 // upstream cannot hold Codex open after response.completed; darwin no-rewrite traffic
 // requires explicit config-eager opt-in (`auto` always stays tee on darwin).
 // selectEagerPath(process.platform, needsClientRewrite, config.streamMode ?? "auto")
+// Codex upstream WS runtime gating and the forced bounded single-reader branch
+// are owned by responses/ws-upstream.ts and responses/core.ts respectively.
 // relaySseEagerBounded(upstreamResponse.body, turnAc,
 // new Response(eagerBody,
 // Default shape (tee + background inspection):
@@ -721,6 +724,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     userCostOverlayReconciler = startUserCostOverlayReconciler({ liveConfig: config });
     const serveOptions = {
       idleTimeout: 255,
+      maxRequestBodySize: MAX_DECOMPRESSED_BODY_BYTES,
       async fetch(req: Request, requestServer: Server<WsData>): Promise<Response> {
       // The unauthenticated loopback listener (#1102) serves a fixed allowlist and nothing
       // else. Rejecting here, before any handler runs, is what keeps the surface from growing
@@ -1181,7 +1185,6 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       }
 
       if (url.pathname === "/v1/responses" && req.method === "POST") {
-        disableResponsesRequestTimeout(req, requestServer);
         if (isDraining()) {
           return drainingResponse(req, policy);
         }
@@ -1210,6 +1213,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleResponses(req, config, logCtx, {
             turnAdmissionLease,
+            onRequestBodyRead: () => disableResponsesRequestTimeout(req, requestServer),
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
             onNativePassthroughTerminal: status => {

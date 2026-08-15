@@ -55,7 +55,7 @@ import {
   type PersistedUsageEntry,
 } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
-import { parseRange, parseUsageSurface, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { parseRange, parseUsageSurface, rangeWindow, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
@@ -87,14 +87,6 @@ import {
 } from "./usage-summary-cache";
 import { cacheApiKeyUsageFromSnapshot } from "./api-key-usage";
 
-const USAGE_DAY_MS = 86_400_000;
-function usageEntryMatchesSurface(entry: PersistedUsageEntry, surface: UsageSurface): boolean {
-  if (surface === "claude") return entry.surface === "claude" || entry.surface === "claude-desktop";
-  if (surface === "grok") return entry.surface === "grok";
-  if (surface === "codex") return entry.surface === undefined;
-  return true;
-}
-
 function nextLocalMidnight(now: number): number {
   const next = new Date(now);
   next.setHours(24, 0, 0, 0);
@@ -102,24 +94,16 @@ function nextLocalMidnight(now: number): number {
 }
 
 function usageSummaryExpiresAt(
-  entries: PersistedUsageEntry[],
-  range: UsageRange,
-  surface: UsageSurface,
+  _entries: PersistedUsageEntry[],
+  _range: UsageRange,
+  _surface: UsageSurface,
   now: number,
 ): number {
-  let expiresAt = nextLocalMidnight(now);
-  const windowMs = range === "7d" ? 7 * USAGE_DAY_MS : range === "30d" ? 30 * USAGE_DAY_MS : null;
-  if (windowMs === null) return expiresAt;
-  for (const entry of entries) {
-    if (!usageEntryMatchesSurface(entry, surface)) continue;
-    const expiry = entry.timestamp + windowMs;
-    if (expiry > now && expiry < expiresAt) expiresAt = expiry;
-  }
-  return expiresAt;
+  return nextLocalMidnight(now);
 }
 
 function refreshedUsageSummary<T extends UsageSummary & { historyTruncated: boolean }>(summary: T, range: UsageRange, now: number): T {
-  const since = range === "7d" ? now - 7 * USAGE_DAY_MS : range === "30d" ? now - 30 * USAGE_DAY_MS : null;
+  const { since } = rangeWindow(range, now);
   return { ...summary, since, generatedAt: now };
 }
 
@@ -226,6 +210,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         && cached.maxReadBytes === effectiveReadLimit
         && cached.overlayVersion === userCostOverlayVersion()
         && now < cached.freshUntil
+        && now < cached.expiresAt
         && observedSize >= cached.lastSeenSize) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }

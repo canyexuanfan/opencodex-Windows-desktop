@@ -417,7 +417,7 @@ describe("google provider hardening", () => {
     // Antigravity used to encode the tier in the wire id, so it sent no thinkingConfig.
     // Now that Google has retired the suffixed 3.6 ids, that tier has nowhere to live
     // except an explicit thinkingLevel on the current model.
-    expect(JSON.parse(antigravity.body).model).toBe("gemini-3.7-flash");
+    expect(JSON.parse(antigravity.body).model).toBe("gemini-3.7-flash-tiered");
     expect(JSON.parse(antigravity.body).request.generationConfig.thinkingConfig)
       .toEqual({ thinkingLevel: "high" });
   });
@@ -516,15 +516,20 @@ describe("google provider hardening", () => {
     const vertex = PROVIDER_REGISTRY.find(entry => entry.id === "google-vertex");
 
     expect(google?.defaultModel).toBe("gemini-3.5-flash");
-    expect(google?.models).toEqual(["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview"]);
+    expect(google?.models).toEqual(["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-3.7-flash"]);
     expect(google?.modelContextWindows?.["gemini-3.6-flash"]).toBe(1_048_576);
     expect(google?.modelContextWindows?.["gemini-3.5-flash"]).toBe(1_000_000);
+    expect(google?.modelContextWindows?.["gemini-3.7-flash"]).toBe(1_048_576);
     expect(google?.modelContextWindows?.["gemini-3.1-pro-preview"]).toBeUndefined();
     expect(google?.modelInputModalities?.["gemini-3.6-flash"]).toEqual(["text", "image"]);
+    expect(google?.modelInputModalities?.["gemini-3.7-flash"]).toEqual(["text", "image"]);
     expect(google?.modelReasoningEfforts?.["gemini-3.6-flash"]).toEqual([
       "minimal", "low", "medium", "high",
     ]);
     expect(google?.modelReasoningEfforts?.["gemini-3.5-flash"]).toEqual([
+      "minimal", "low", "medium", "high",
+    ]);
+    expect(google?.modelReasoningEfforts?.["gemini-3.7-flash"]).toEqual([
       "minimal", "low", "medium", "high",
     ]);
     expect(google?.modelReasoningEfforts?.["gemini-3.1-pro-preview"]).toEqual([

@@ -92,10 +92,11 @@ function responseError(status: number, type: string, message: string): OcxErrorP
  * non-stream adapters degrade a bad payload to `{}`.
  */
 function toolCallArgumentsUsable(args: string): boolean {
+  if (args.length === 0) return true;
   const trimmed = args.trim();
-  if (!trimmed) return true;
+  if (!trimmed) return false;
   try {
-    JSON.parse(trimmed);
+    JSON.parse(args);
     return true;
   } catch {
     return false;
@@ -1593,6 +1594,15 @@ function buildResponseJSONWithBudget(
   };
 
   for (const e of events) {
+    if (errorEvent) {
+      // Match streaming: once the turn fails, later parallel calls must not become executable
+      // completed output. Still release every retained event in order and preserve terminal usage.
+      if (e.type === "error" || e.type === "incomplete" || e.type === "done") {
+        usage = e.usage ?? usage;
+      }
+      if (budget) releaseTranslatedEvent(e, budget);
+      continue;
+    }
     switch (e.type) {
       case "assistant_boundary":
         flushText("commentary");

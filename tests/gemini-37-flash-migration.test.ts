@@ -14,7 +14,8 @@ import { projectModelRenames } from "../src/providers/model-rename-migration";
 import { EXPECTED_PRICE_OVERLAYS } from "../src/usage/expected-prices";
 import { mapReasoningEffort } from "../src/reasoning-effort";
 import { resolveMatchedPrice } from "../src/usage/cost";
-import type { OcxConfig } from "../src/types";
+import { createGoogleAdapter } from "../src/adapters/google";
+import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 // Google takes the previous Antigravity Flash generation off Cloud Code Assist almost
 // immediately once the next one ships. That makes 3.6 -> 3.7 a REPLACEMENT, and the
@@ -64,14 +65,14 @@ describe("retired Flash ids keep routing AND keep their tier", () => {
     "%s routes to 3.7 carrying thinkingLevel %s",
     (retired, expectedLevel) => {
       const resolved = resolveAntigravityEffortWireModel(retired);
-      expect(resolved.wireModelId).toBe("gemini-3.7-flash");
+      expect(resolved.wireModelId).toBe("gemini-3.7-flash-tiered");
       expect(resolved.thinkingLevel).toBe(expectedLevel);
     },
   );
 
   test("an explicit effort still wins over the id's historical tier", () => {
     const resolved = resolveAntigravityEffortWireModel("gemini-3.6-flash-low", "high");
-    expect(resolved.wireModelId).toBe("gemini-3.7-flash");
+    expect(resolved.wireModelId).toBe("gemini-3.7-flash-tiered");
     expect(resolved.thinkingLevel).toBe("high");
   });
 
@@ -86,7 +87,7 @@ describe("retired Flash ids keep routing AND keep their tier", () => {
 describe("3.7 reasoning control", () => {
   test("an unset effort still sends the documented medium default", () => {
     const resolved = resolveAntigravityEffortWireModel("gemini-3.7-flash");
-    expect(resolved.wireModelId).toBe("gemini-3.7-flash");
+    expect(resolved.wireModelId).toBe("gemini-3.7-flash-tiered");
     // Without an explicit branch this model falls through to the resolver's final rule
     // and returns no thinkingConfig at all, silently ignoring reasoning effort.
     expect(resolved.thinkingLevel).toBe("medium");
@@ -218,7 +219,7 @@ describe("a saved config survives the retirement", () => {
     const prov = config.providers["google-antigravity"]!;
     const mapped = mapReasoningEffort(prov, "gemini-3.6-flash", "high");
     expect(resolveAntigravityEffortWireModel("gemini-3.6-flash", mapped)).toEqual({
-      wireModelId: "gemini-3.7-flash",
+      wireModelId: "gemini-3.7-flash-tiered",
       thinkingLevel: "high",
     });
   });
@@ -260,5 +261,65 @@ describe("retirement does not rewrite history", () => {
     expect(matched?.status).toBe("verified-derived");
     expect(matched?.cost4).toEqual({ input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0 });
     expect(matched?.source).not.toBe("jawcode");
+  });
+});
+
+// Google renamed the live Flash wire ids to a `-tiered` spelling. The base id keeps
+// 404ing, and the failure is invisible from the picker: the catalog, the usage log and
+// the price overlays all still name the base id, so only the request path can prove the
+// rename landed. These tests were driven red against the pre-fix tree — every one of
+// them returned the un-suffixed id.
+describe("the -tiered wire rename reaches the request path", () => {
+  function directProvider(): OcxProviderConfig {
+    return {
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "google-test-key",
+      authMode: "key",
+    } as OcxProviderConfig;
+  }
+
+  function directRequest(modelId: string): OcxParsedRequest {
+    return {
+      modelId,
+      context: { messages: [{ role: "user", content: "hi" }] },
+      stream: false,
+      options: {},
+    } as OcxParsedRequest;
+  }
+
+  test.each([
+    ["gemini-3.7-flash", "gemini-3.7-flash-tiered"],
+    ["gemini-3.6-flash", "gemini-3.6-flash-tiered"],
+  ])("direct AI Studio sends %s as %s in the URL path", async (requested, wire) => {
+    const req = await createGoogleAdapter(directProvider()).buildRequest(directRequest(requested));
+    expect(req.url).toContain(`/v1beta/models/${wire}:generateContent`);
+    // Not vacuous: the dead base id must not survive anywhere in the path.
+    expect(req.url).not.toContain(`/models/${requested}:`);
+  });
+
+  test("a model without a rename keeps its own id on the wire", async () => {
+    // 3.5 is not deprecated; a blanket suffix would break the generation that still works.
+    const req = await createGoogleAdapter(directProvider()).buildRequest(directRequest("gemini-3.5-flash"));
+    expect(req.url).toContain("/v1beta/models/gemini-3.5-flash:generateContent");
+    expect(req.url).not.toContain("-tiered");
+  });
+
+  test("the rename is confined to the wire, leaving the user-facing id intact", () => {
+    // The picker, the usage rows and the price overlays are all keyed on the base id.
+    // If the rename leaked into them, saved selections and historical spend would move.
+    expect(ANTIGRAVITY_MODELS).toContain("gemini-3.7-flash");
+    expect(ANTIGRAVITY_MODELS).not.toContain("gemini-3.7-flash-tiered");
+    expect(canonicalAntigravityUsageModel("gemini-3.7-flash")).toBe("gemini-3.7-flash");
+    expect(resolveMatchedPrice("google-antigravity", "gemini-3.7-flash")?.cost4).toBeDefined();
+  });
+
+  test("the collapsed picker row still carries a context window after the rename", () => {
+    // The map derives alias entries from the WIRE table, so renaming the wire key without
+    // keeping the picker entry would silently blank the window for every retired id.
+    expect(ANTIGRAVITY_MODEL_CONTEXT_WINDOWS["gemini-3.7-flash"]).toBe(1_048_576);
+    for (const retired of Object.keys(RETIRED_TIERS)) {
+      expect(ANTIGRAVITY_MODEL_CONTEXT_WINDOWS[retired]).toBe(1_048_576);
+    }
   });
 });

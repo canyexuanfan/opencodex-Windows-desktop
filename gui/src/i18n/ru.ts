@@ -268,6 +268,8 @@ export const ru: Record<TKey, string> = {
   "dash.stop": "Остановить прокси",
   "dash.stopConfirm": "Остановить прокси и восстановить нативный Codex?",
   "dash.stopFailed": "Не удалось остановить прокси (HTTP {status}).",
+  "dash.maSwitchFailed": "Не удалось переключить режим (HTTP {status}).",
+  "dash.maNetworkError": "Ошибка сети — прокси запущен?",
   "dash.stopping": "Остановка…",
   "dash.codexAutoStart": "Запускать opencodex вместе с Codex",
   "dash.codexAutoStartHint": "Разрешает установленному launcher shim выполнять ocx ensure. Эта настройка не устанавливает защиту перезапуска; проверьте фактическое состояние в разделе безопасности запуска.",

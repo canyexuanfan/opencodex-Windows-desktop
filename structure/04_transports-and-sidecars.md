@@ -93,6 +93,17 @@ The two-shape contract is mirror-commented in `src/server/index.ts`; the real
 and the platform matrix lives in `tests/bun-stream-caps.test.ts`. Keep all three
 in lockstep with any passthrough-policy change.
 
+Canonical ChatGPT forward streaming has one transport-specific exception. A
+stable Bun runtime at or above 1.4.0 may use Codex's upstream
+`responses_websockets` transport; bundled Bun 1.3.14, prereleases, and
+unverifiable runtime identities stay on HTTP/SSE. A successful upstream WS
+response is re-encoded to the same SSE surface and forced through the bounded
+eager single-reader relay instead of `tee()`: raw and enveloped frames are capped
+at 4 MiB and the WS producer queue at 8 MiB. Overflow closes the upstream and
+the downstream relay emits its terminal `response.failed` event plus `[DONE]`.
+Pre-open HTTP fallback remains unmarked and follows the ordinary configured
+stream path.
+
 Translated response request-log tracking and the heartbeat relay also reuse
 `createSseInspector`. This keeps every client-facing SSE observation path on
 the same byte-bounded, discard-and-resynchronize frame policy and ensures the
@@ -228,6 +239,20 @@ MCP, screen recording, and computer-use stay on their separate explicit executor
 - 다른 대안 대신 이 방식을 선택한 이유: opencodex has no trustworthy per-request sandbox attestation in request text or headers, so any prompt-carried marker is spoofable by data-plane callers.
 - 장점, 단점 및 영향: this closes prompt-to-native-exec escalation while preserving an explicit operator escape hatch; existing configs that relied on `codex-sandbox` must switch to `nativeLocalExec: "on"` for trusted local experiments.
 
+Cursor's generic tool-use prompt filter must preserve every Responses-owned execution-path tool
+that survives the transport budget: unified Desktop `exec` as well as the legacy
+`exec_command`/`shell_command` aliases. The legacy aliases receive Cursor-specific shell guidance;
+unified `exec` keeps its own schema and is surfaced back to Codex as a client tool. It must never
+fall through to the separate native-local-exec dispatcher.
+
+[Decision Log]
+- 목적과 의도: keep fresh Cursor-routed Codex Desktop subagents able to invoke the actual unified `exec` tool exposed by their client catalog.
+- 기존 구현 및 제약 조건: catalog truncation already pinned `exec`, but the later generic-tool filter recognized only bare `exec_command`/`shell_command` and could erase the sole executable client tool while also naming aliases that were absent.
+- 검토한 주요 대안: synthesize a legacy alias, execute `exec` through Cursor native-local-exec, disable generic filtering, or treat every Responses-owned execution-path tool as eligible.
+- 선택한 방식: preserve the existing client tool and schema by filtering with `isCursorExecutionPathTool`; keep alias-specific prompt guidance gated on an alias actually being present.
+- 다른 대안 대신 이 방식을 선택한 이유: Codex Desktop remains the execution and approval authority, no unavailable tool name is invented, and the existing Responses MCP suspension path can relay the call without widening native execution privileges.
+- 장점, 단점 및 영향: unified `exec` survives the filter and returns to Desktop for execution; legacy aliases behave as before; `wait` and unrelated tools remain excluded from generic tool-count prompts.
+
 ## WebSocket
 
 The WebSocket endpoint exists at `/v1/responses`, but discovery is opt-in:
@@ -243,6 +268,10 @@ The WebSocket endpoint exists at `/v1/responses`, but discovery is opt-in:
 HTTP/SSE. When true, Codex may use Responses WebSocket frames handled by `src/server/ws-bridge.ts`.
 If Codex still attempts a WebSocket upgrade while the feature is disabled, `/v1/responses` rejects
 the upgrade with 426 so Codex falls back to HTTP cleanly.
+
+That setting controls the client-facing upgrade only. The transparent upstream
+ChatGPT WS optimization described above is selected independently and still
+returns the same downstream SSE contract.
 
 The endpoint handles `response.create`, ignores `response.processed`, supports warmup
 `generate: false`, and feeds the same request pipeline as HTTP/SSE.
