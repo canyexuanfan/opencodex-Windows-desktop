@@ -25,7 +25,11 @@ const EXPECTED_ADAPTER_NAMES = {
 function provider(adapter: string): OcxProviderConfig {
   return {
     adapter,
-    baseUrl: "https://example.invalid/v1",
+    // mimo-free throws for non-canonical endpoints since #1714; every other
+    // adapter accepts the placeholder URL.
+    baseUrl: adapter === "mimo-free"
+      ? "https://api.xiaomimimo.com/api/free-ai/openai/chat"
+      : "https://example.invalid/v1",
     authMode: "key",
     apiKey: "test-key",
     defaultMaxOutputTokens: 4096,
