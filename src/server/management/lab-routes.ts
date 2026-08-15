@@ -14,6 +14,7 @@
  */
 
 import {
+  ARTIFACT_CLASSES,
   EVIDENCE_LAYERS,
   EXECUTION_MODES,
   EVENT_KINDS,
@@ -323,9 +324,10 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
     const eventKind = parseEventKind(url.searchParams.get("eventKind"), ctx);
     if (eventKind instanceof Response) return eventKind;
     const excludedRaw = url.searchParams.get("excluded");
-    let excluded: boolean | undefined;
-    if (excludedRaw === "true") excluded = true;
-    else if (excludedRaw === "false") excluded = false;
+    if (excludedRaw !== null && excludedRaw !== "true" && excludedRaw !== "false") {
+      return errorResponse("invalid_excluded", "excluded must be true or false", 400, ctx);
+    }
+    const excluded = excludedRaw === "true" ? true : excludedRaw === "false" ? false : undefined;
     try {
       const page = queryLabEvents({
         eventKind,
@@ -366,6 +368,14 @@ export async function handleLabRoutes(ctx: ManagementContext): Promise<Response 
     const artifactClass = url.searchParams.get("artifactClass")?.trim() || undefined;
     if (statusRaw && !["present", "corrupt", "purged_unavailable"].includes(statusRaw)) {
       return errorResponse("invalid_status", "status must be present, corrupt, or purged_unavailable", 400, ctx);
+    }
+    if (artifactClass && !ARTIFACT_CLASSES.includes(artifactClass as (typeof ARTIFACT_CLASSES)[number])) {
+      return errorResponse(
+        "invalid_artifact_class",
+        "artifactClass must be a supported artifact class",
+        400,
+        ctx,
+      );
     }
     try {
       const page = queryLabArtifacts({
