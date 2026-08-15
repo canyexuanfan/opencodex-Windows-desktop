@@ -47,7 +47,7 @@ function providerFixture(adapterId: string, wire: AdapterWire): OcxProviderConfi
   };
   // Semantic wrappers with provider-specific URL shapes must override the wire-family default here.
   const baseUrl = adapterId === "mimo-free"
-    ? "https://api.xiaomimimo.com/api/free-ai/openai"
+    ? "https://api.xiaomimimo.com/api/free-ai/openai/chat"
     : adapterId === "azure" || adapterId === "azure-openai"
       ? "https://example.openai.azure.com/openai/v1"
       : baseUrls[wire];
