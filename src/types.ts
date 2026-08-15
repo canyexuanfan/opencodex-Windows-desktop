@@ -587,6 +587,13 @@ export interface OcxCustomModel {
   contextWindow?: number;
   /** 입력 모달리티 (선택, 기본 ["text"]) */
   inputModalities?: string[];
+  /**
+   * Reasoning ladder (Codex labels) this custom row explicitly advertises. An empty array
+   * hides the effort control; an omitted key leaves the provider-derived ladder in charge.
+   */
+  reasoningEfforts?: string[];
+  /** Default effort label when `reasoningEfforts` is non-empty. */
+  defaultReasoningEffort?: string;
   /** 추가 시각 (ISO 8601) */
   addedAt?: string;
 }
