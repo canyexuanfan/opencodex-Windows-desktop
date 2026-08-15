@@ -1375,6 +1375,14 @@ export interface OcxProviderConfig {
    * link-local, or unique-local upstreams. Metadata endpoints remain blocked.
    */
   allowPrivateNetwork?: boolean;
+  /**
+   * Pin the HTTP version used for upstream provider requests. Bun's fetch negotiates
+   * HTTP/2 via TLS ALPN by default; some Cloudflare-fronted SSE endpoints hang on
+   * HTTP/2 streaming responses (issue #1668). "http1.1" / "h1" forces HTTP/1.1,
+   * "http2" / "h2" forces HTTP/2. Absent or "auto" keeps Bun's default negotiation
+   * (current behavior unchanged). Only meaningful for https: base URLs.
+   */
+  upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2";
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
   /**
