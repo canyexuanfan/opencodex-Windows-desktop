@@ -198,17 +198,17 @@ describe("performCodexRestart", () => {
         processes: [{ pid: 100, startedAtMs: 1 }],
         catalogMtimeMs: 10,
       }),
-      listProcesses: () => [proc(100, "/Users/secret-person/codex app-server")],
+      listProcesses: () => [proc(100, "/opt/private-marker/codex app-server")],
       restart: () => ({
         requested: [100],
         stopped: [],
         surviving: [100],
-        failed: [{ pid: 100, error: "EPERM: /Users/secret-person/Library/private" }],
+        failed: [{ pid: 100, error: "EPERM: /opt/private-marker/Library/private" }],
       }),
     }));
 
     const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain("secret-person");
+    expect(serialized).not.toContain("private-marker");
     expect(serialized).not.toContain("EPERM");
     expect(serialized).not.toContain("app-server");
     expect(result.failed).toEqual([100]);
