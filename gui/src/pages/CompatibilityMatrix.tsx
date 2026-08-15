@@ -62,6 +62,12 @@ type ExtraVerdictPage = {
   hasMore: boolean;
 };
 
+type LoadMoreFailure = {
+  baseData: LabPageData;
+  queryKey: string;
+  message: string;
+};
+
 function localizedFetchError(e: unknown, fallback: string): string {
   if (!(e instanceof Error)) return fallback;
   const msg = e.message;
@@ -171,6 +177,11 @@ function DetailPane({
   locale: Parameters<typeof labSupplement>[0];
   onClose: () => void;
 }) {
+  const expectedEventCount = new Set([
+    ...verdict.contributingEventIds,
+    ...verdict.contradictingEventIds,
+  ]).size;
+
   return (
     <aside className="lab-detail-pane" aria-label={t("lab.detailTitle")}>
       <div className="lab-detail-head">
@@ -219,9 +230,12 @@ function DetailPane({
               </ul>
             </section>
           )}
-          {detail.events.length > 0 && (
+          {(detail.events.length > 0 || expectedEventCount > 0) && (
             <section className="lab-detail-section">
-              <h4>{t("lab.detailEvents")}</h4>
+              <h4>
+                {t("lab.detailEvents")}
+                {detail.events.length < expectedEventCount ? ` (${detail.events.length}/${expectedEventCount})` : ""}
+              </h4>
               <ul className="lab-detail-list">
                 {detail.events.map(event => (
                   <li key={event.eventId}>
@@ -264,6 +278,7 @@ export default function CompatibilityMatrix({
   const { t, locale } = useI18n();
   const [filters, setFilters] = useState<VerdictFilters>({ layer: "", verdict: "", subjectQuery: "", suiteId: "" });
   const [extraPage, setExtraPage] = useState<ExtraVerdictPage | null>(null);
+  const [loadMoreFailure, setLoadMoreFailure] = useState<LoadMoreFailure | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedVerdict, setSelectedVerdict] = useState<VerdictDto | null>(null);
   const [detail, setDetail] = useState<VerdictDetailData | null>(null);
@@ -293,6 +308,7 @@ export default function CompatibilityMatrix({
     loadMoreRef.current?.abort();
     loadMoreRef.current = null;
     setExtraPage(null);
+    setLoadMoreFailure(null);
     setLoadingMore(false);
   }, []);
 
@@ -329,6 +345,11 @@ export default function CompatibilityMatrix({
     && extraPage.queryKey === queryKey
     ? extraPage
     : null;
+  const visibleLoadMoreError = loadMoreFailure !== null
+    && loadMoreFailure.baseData === surface.data
+    && loadMoreFailure.queryKey === queryKey
+    ? loadMoreFailure.message
+    : null;
 
   const reportedCount = useMemo(() => {
     if (!active || !surface.data?.status.projectionAvailable) return null;
@@ -357,6 +378,7 @@ export default function CompatibilityMatrix({
     const controller = new AbortController();
     loadMoreRef.current = controller;
     const startedKey = queryKey;
+    setLoadMoreFailure(null);
     setLoadingMore(true);
     try {
       const page = await fetchMoreVerdicts(apiBase, queryFilters, cursor, controller.signal);
@@ -373,15 +395,21 @@ export default function CompatibilityMatrix({
           hasMore: page.hasMore,
         };
       });
-    } catch {
-      // Keep the current rows. The normal refresh action retries from a consistent first page.
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setLoadMoreFailure({
+          baseData,
+          queryKey: startedKey,
+          message: localizedFetchError(e, t("lab.loadFailed")),
+        });
+      }
     } finally {
       if (loadMoreRef.current === controller) {
         loadMoreRef.current = null;
         setLoadingMore(false);
       }
     }
-  }, [apiBase, loadingMore, queryFilters, queryKey, surface.data, validExtraPage]);
+  }, [apiBase, loadingMore, queryFilters, queryKey, surface.data, t, validExtraPage]);
 
   const selectVerdict = useCallback(async (verdict: VerdictDto) => {
     if (!active) return;
@@ -582,6 +610,7 @@ export default function CompatibilityMatrix({
                   </div>
                 </div>
 
+                {visibleLoadMoreError && <Notice tone="err">{visibleLoadMoreError}</Notice>}
                 {pageHasMore && (
                   <div className="lab-load-more">
                     <button type="button" className="btn btn-ghost" disabled={loadingMore} onClick={() => { void loadMore(); }}>
