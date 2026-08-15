@@ -163,11 +163,17 @@ describe("streamAborted marker (codex-router #139)", () => {
 
   test("translated SSE client cancel never sets the truncation marker", async () => {
     const { logCtx, attempt } = makeLogCtx();
+    const readStarted = Promise.withResolvers<void>();
+    let upstreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) { upstreamController = controller; },
+      pull() { readStarted.resolve(); },
+    });
     const cancelFired = Promise.withResolvers<void>();
     const terminals: string[] = [];
     let cancels = 0;
     const relayed = trackSseForRequestLog(
-      pendingStream(),
+      upstream,
       status => { terminals.push(status); },
       () => {
         cancels += 1;
@@ -175,8 +181,13 @@ describe("streamAborted marker (codex-router #139)", () => {
       },
       logCtx,
     );
-    await relayed.getReader().cancel(new DOMException("client closed", "AbortError"));
+    const reader = relayed.getReader();
+    const pendingRead = reader.read();
+    await readStarted.promise;
+    upstreamController?.error(new Error("socket reset during client cancel"));
+    await reader.cancel(new DOMException("client closed", "AbortError"));
     await cancelFired.promise;
+    await pendingRead;
     expect(cancels).toBe(1);
     expect(terminals).toEqual([]);
     expect(attempt.streamAborted).toBeUndefined();

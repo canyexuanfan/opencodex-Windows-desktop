@@ -386,8 +386,10 @@ export function trackSseForRequestLog(
       try {
         const { done, value } = await reader.read();
         if (done) {
-          inspector.finish();
-          if (!terminalReported) reportTerminal("incomplete");
+          if (!cancelled) {
+            inspector.finish();
+            if (!terminalReported) reportTerminal("incomplete");
+          }
           inspector.dispose();
           controller.close();
           return;
@@ -401,7 +403,7 @@ export function trackSseForRequestLog(
         if (!cancelled && !terminalReported && logCtx?.activeAttempt) {
           logCtx.activeAttempt.streamAborted = true;
         }
-        if (!terminalReported) reportTerminal("incomplete");
+        if (!cancelled && !terminalReported) reportTerminal("incomplete");
         inspector.dispose();
         try { controller.error(err); } catch { /* already torn down */ }
       }
