@@ -39,6 +39,10 @@ import {
   createLocalManagementReadCapability,
 } from "../src/lib/local-management-capability";
 import {
+  CODEX_APP_SERVER_STATE_PATH,
+  CODEX_RESTART_PATH,
+} from "../src/lib/codex-restart-contract";
+import {
   SYSTEM_RESTART_CAPABILITY_HEADER,
   SYSTEM_RESTART_EXPECTED_PID_HEADER,
   SYSTEM_RESTART_METHOD,
@@ -1036,6 +1040,54 @@ describe("management and data-plane credential separation", () => {
         headers: { "x-opencodex-api-key": "env-admin-secret" },
       });
       expect(management.status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
+
+describe("codex app-server restart routes ride the management gate", () => {
+  // The service itself is unit-tested with injected seams
+  // (tests/codex-app-server-restart-service.test.ts). These cases exist for one
+  // reason: the route terminates the user's Codex app-servers, so it must be
+  // unreachable without management credentials and from a foreign origin.
+  test("both routes reject an unauthenticated caller and a cross-origin caller", async () => {
+    const server = startServer(0);
+    try {
+      const stateUrl = new URL(CODEX_APP_SERVER_STATE_PATH, server.url);
+      const restartUrl = new URL(CODEX_RESTART_PATH, server.url);
+
+      const anonymousState = await fetch(stateUrl, { method: "GET" });
+      expect(anonymousState.status).toBe(401);
+
+      const anonymousRestart = await fetch(restartUrl, { method: "POST" });
+      expect(anonymousRestart.status).toBe(401);
+
+      // An admin token authenticates, but the shared management-origin gate runs
+      // ahead of every route, so a foreign Origin is refused before dispatch.
+      const foreignOrigin = await fetch(restartUrl, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer admin-secret",
+          Origin: "https://evil.example",
+        },
+      });
+      expect(foreignOrigin.status).toBe(403);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("the data-plane token does not authorize the restart route", async () => {
+    // The data token is handed to Codex itself. It must never be able to restart
+    // the app-servers it belongs to.
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL(CODEX_RESTART_PATH, server.url), {
+        method: "POST",
+        headers: { Authorization: "Bearer data-secret" },
+      });
+      expect(response.status).toBe(401);
     } finally {
       await server.stop(true);
     }

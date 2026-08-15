@@ -1,5 +1,6 @@
 import type { OcxConfig } from "../../types";
 import type { NativeProfileApiDeps } from "../../codex/native-profile-api";
+import type { StartupHealth } from "../../codex/autostart-health";
 import type { StartupInstallAction } from "../startup-action-control";
 import type { ManagementPrincipal } from "../management-auth";
 import type { CatalogModel } from "../../codex/catalog";
@@ -7,11 +8,17 @@ import type { injectGrokConfig } from "../../grok/inject";
 import type { removeDesktop3pStandardPivot, writeDesktop3pConfig } from "../../claude/desktop-3p";
 import type { RuntimePortState } from "../../config";
 import type { CatalogDisposition, ConvergeCodex } from "../../codex/convergence-types";
+import type {
+  performCodexRestart,
+  readCodexAppServerState,
+} from "../../codex/app-server-restart-service";
 
 export interface ManagementApiDeps {
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
   toggleDefaultModeRequestUserInput?: (enabled: boolean) => void;
   createManagementConvergeCodex?: (config: Readonly<OcxConfig>) => ConvergeCodex;
+  /** Startup-health seam keeps route tests from launching platform probes. */
+  getCachedStartupHealth?: (config: Pick<OcxConfig, "codexAutoStart">) => Promise<StartupHealth>;
   /**
    * Persistence seam for route-level tests. Production leaves this unset and uses
    * `saveConfigPreservingClaudeCode`; tests that pass an in-memory fixture config
@@ -52,6 +59,16 @@ export interface ManagementApiDeps {
    * Native-main profile persistence seam for server-boundary tests. Production
    * leaves this unset, so the route creates its normal NativeProfileManager.
    */
+  /**
+   * Codex app-server restart seam (devlog/_plan/260815_gui_codex_restart).
+   * Grouped rather than three separate fields: the route is an adapter over one
+   * service, and a route test that could not stub it would really terminate the
+   * developer's own Codex app-servers.
+   */
+  codexRestartService?: {
+    readState: typeof readCodexAppServerState;
+    performRestart: typeof performCodexRestart;
+  };
   nativeProfileApi?: NativeProfileApiDeps;
 }
 
