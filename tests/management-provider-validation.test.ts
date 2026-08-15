@@ -30,6 +30,7 @@ import {
 } from "../src/server";
 import { handleManagementAPI } from "../src/server/management-api";
 import { providerManagementConfigError } from "../src/server/auth-cors";
+import { providerServiceTierConfigError, withProviderServiceTierDTO } from "../src/server/management/provider-capability-config";
 import { clearModelCache, markProviderDiscoveryFailed } from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
@@ -239,6 +240,39 @@ describe("provider management validation", () => {
     } finally {
       resolvedError.mockRestore();
     }
+  });
+
+  test("service-tier validation and public projection stay in the management boundary", () => {
+    expect(providerServiceTierConfigError("relay", {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      modelSupportsServiceTier: { verified: true, blocked: false },
+    })).toBeNull();
+    expect(providerServiceTierConfigError("relay", {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      modelSupportsServiceTier: { verified: "yes" },
+    })).toContain("modelSupportsServiceTier.verified must be a boolean");
+
+    const config = {
+      providers: {
+        relay: {
+          adapter: "openai-chat",
+          baseUrl: "https://relay.example/v1",
+          apiKey: "sk-never-project",
+          modelSupportsServiceTier: { verified: true },
+        },
+      },
+    } as unknown as OcxConfig;
+    const dto = withProviderServiceTierDTO(
+      { providers: { relay: { hasApiKey: true } } },
+      config,
+    ) as { providers: { relay: Record<string, unknown> } };
+    expect(dto.providers.relay).toMatchObject({
+      hasApiKey: true,
+      modelSupportsServiceTier: { verified: true },
+    });
+    expect(JSON.stringify(dto)).not.toContain("sk-never-project");
   });
 
   test("validates and exposes structured-output model opt-outs", () => {
@@ -2515,9 +2549,11 @@ describe("provider management validation", () => {
           adapter: "openai-chat",
           baseUrl: "https://relay.example.test/v1",
           apiKey: "sk-existing",
+          allowPrivateNetwork: true,
           models: ["wide", "narrow"],
           contextWindow: 256_000,
           modelContextWindows: { narrow: 64_000 },
+          modelSupportsServiceTier: { narrow: false },
         },
       },
     };
@@ -2544,20 +2580,24 @@ describe("provider management validation", () => {
     expect(rows.find(row => row.name === "relay")).toMatchObject({
       contextWindow: 256_000,
       modelContextWindows: { narrow: 64_000 },
+      modelSupportsServiceTier: { narrow: false },
     });
 
     const updated = await request("PATCH", {
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000 },
+      modelSupportsServiceTier: { wide: true },
     });
     expect(updated?.status).toBe(200);
     expect(liveConfig.providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
     });
     expect(loadConfig().providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
     });
 
     for (const invalid of [
@@ -2570,24 +2610,32 @@ describe("provider management validation", () => {
       { modelContextWindows: { wide: 1e100 } },
       { modelContextWindows: { "": 100_000 } },
       { modelContextWindows: { wide: -1 } },
+      { modelSupportsServiceTier: { wide: "yes" } },
+      { modelSupportsServiceTier: { "": true } },
     ]) {
       expect((await request("PATCH", invalid))?.status).toBe(400);
     }
     expect(liveConfig.providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
     });
 
     expect((await request("PATCH", { modelContextWindows: { wide: null } }))?.status).toBe(200);
     expect(liveConfig.providers.relay.modelContextWindows).toEqual({ narrow: 64_000 });
 
+    expect((await request("PATCH", { modelSupportsServiceTier: { wide: null } }))?.status).toBe(200);
+    expect(liveConfig.providers.relay.modelSupportsServiceTier).toEqual({ narrow: false });
+
     const cleared = await request("PATCH", {
       contextWindow: null,
       modelContextWindows: null,
+      modelSupportsServiceTier: null,
     });
     expect(cleared?.status).toBe(200);
     expect(liveConfig.providers.relay.contextWindow).toBeUndefined();
     expect(liveConfig.providers.relay.modelContextWindows).toBeUndefined();
+    expect(liveConfig.providers.relay.modelSupportsServiceTier).toBeUndefined();
   });
 
   test("provider PATCH manages custom headers with merge and clear semantics", async () => {

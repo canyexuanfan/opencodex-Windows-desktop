@@ -71,6 +71,7 @@ import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from ".
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
+import { providerServiceTierConfigError } from "./provider-capability-config";
 import { applySystemEnvToggle } from "../system-env";
 import {
   LOCAL_PROVIDER_RELOAD_NAME_HEADER,
@@ -216,6 +217,29 @@ function applyProviderPatchFields(
     }
     touched = true;
   }
+  if (Object.hasOwn(rawBody, "modelSupportsServiceTier")) {
+    const value = rawBody.modelSupportsServiceTier;
+    if (value === null) {
+      delete next.modelSupportsServiceTier;
+    } else {
+      if (!isPlainRecord(value)) return { error: "modelSupportsServiceTier must be a plain object or null" };
+      const capabilities: Record<string, boolean> = { ...(next.modelSupportsServiceTier ?? {}) };
+      for (const [model, supported] of Object.entries(value)) {
+        if (!model.trim()) return { error: "modelSupportsServiceTier keys must be nonblank model ids" };
+        if (supported === null) {
+          delete capabilities[model];
+          continue;
+        }
+        if (typeof supported !== "boolean") {
+          return { error: "modelSupportsServiceTier values must be booleans or null" };
+        }
+        capabilities[model] = supported;
+      }
+      if (Object.keys(capabilities).length > 0) next.modelSupportsServiceTier = capabilities;
+      else delete next.modelSupportsServiceTier;
+    }
+    touched = true;
+  }
   if (Object.hasOwn(rawBody, "noStructuredOutputModels")) {
     const value = rawBody.noStructuredOutputModels;
     if (value === null) {
@@ -315,6 +339,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       models: p.models ?? [],
       contextWindow: p.contextWindow,
       modelContextWindows: p.modelContextWindows,
+      modelSupportsServiceTier: p.modelSupportsServiceTier,
       noStructuredOutputModels: p.noStructuredOutputModels,
       authMode: p.authMode,
       apiKeyTransport: p.apiKeyTransport,
@@ -405,6 +430,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const name = typeof body.name === "string" ? body.name.trim() : "";
     const providerError = providerManagementConfigError(name, body.provider);
     if (providerError) return jsonResponse({ error: providerError }, 400);
+    const serviceTierError = providerServiceTierConfigError(name, body.provider);
+    if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
     const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider as OcxProviderConfig) : undefined;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
@@ -551,6 +578,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     if (applied.editorTouched) {
       const providerError = providerManagementConfigError(name, next);
       if (providerError) return jsonResponse({ error: providerError }, 400);
+      const serviceTierError = providerServiceTierConfigError(name, next);
+      if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
       const resolvedError = await providerDestinationResolvedError(name, next);
       if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
     } else if (applied.enablingOpenAi) {
@@ -579,6 +608,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         const syncError = providerManagementConfigError(name, replay.next);
         if (syncError) {
           replayError = syncError;
+          return;
+        }
+        const serviceTierError = providerServiceTierConfigError(name, replay.next);
+        if (serviceTierError) {
+          replayError = serviceTierError;
           return;
         }
       } else if (replay.enablingOpenAi && !isCanonicalOpenAiForwardProvider(replay.next)) {
