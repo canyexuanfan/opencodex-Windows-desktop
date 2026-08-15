@@ -1,10 +1,14 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
 import {
   PROVIDER_REGISTRY,
-  providerMatchesRegistryTransport,
   registryEntryForProviderDestination,
   type ProviderRegistryEntry,
 } from "./registry";
+import {
+  providerMatchesRegistryTransportWithStaticGuards,
+  registryEntrySupportsLiveModelDiscovery,
+  repairStaticModelCatalogProvider,
+} from "./static-model-discovery";
 
 export interface DerivedKeyLoginProvider {
   label: string;
@@ -204,6 +208,7 @@ export function applyDirectReasoningEffortContracts(
  * keep distinguishing local runtimes from API-key providers after the seed round-trip.
  */
 export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderConfig {
+  const liveModels = registryEntrySupportsLiveModelDiscovery(entry) ? entry.liveModels : false;
   return {
     adapter: entry.adapter,
     baseUrl: entry.baseUrl,
@@ -219,7 +224,7 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.staticHeaders ? { headers: { ...entry.staticHeaders } } : {}),
     ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
     ...(entry.models ? { models: [...entry.models] } : {}),
-    ...(entry.liveModels !== undefined ? { liveModels: entry.liveModels } : {}),
+    ...(liveModels !== undefined ? { liveModels } : {}),
     ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
     ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
     ...(entry.modelInputModalities ? { modelInputModalities: cloneRecordOfArrays(entry.modelInputModalities) } : {}),
@@ -263,6 +268,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
   for (const entry of PROVIDER_REGISTRY) {
     if (entry.authKind !== "key") continue;
     if (!entry.dashboardUrl) throw new Error(`Registry key provider missing dashboardUrl: ${entry.id}`);
+    const liveModels = registryEntrySupportsLiveModelDiscovery(entry) ? entry.liveModels : false;
     out[entry.id] = {
       label: entry.label,
       baseUrl: entry.baseUrl,
@@ -272,7 +278,7 @@ export function deriveKeyLoginMap(): Record<string, DerivedKeyLoginProvider> {
       ...(entry.apiKeyTransport !== undefined ? { apiKeyTransport: entry.apiKeyTransport } : {}),
       dashboardUrl: entry.dashboardUrl,
       ...(entry.models ? { models: [...entry.models] } : {}),
-      ...(entry.liveModels !== undefined ? { liveModels: entry.liveModels } : {}),
+      ...(liveModels !== undefined ? { liveModels } : {}),
       ...(entry.defaultModel ? { defaultModel: entry.defaultModel } : {}),
       ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
       ...(entry.modelContextWindows ? { modelContextWindows: { ...entry.modelContextWindows } } : {}),
@@ -378,7 +384,7 @@ function enrichReasoningSummariesByDestination(prov: OcxProviderConfig): void {
 
 export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig): void {
   const entry = PROVIDER_REGISTRY.find(row => row.id === name);
-  if (!entry || !providerMatchesRegistryTransport(name, prov)) {
+  if (!entry || !providerMatchesRegistryTransportWithStaticGuards(name, prov)) {
     // Name lookup failed, but the row may still point at a vendor route we know. #1100 was
     // reported against a hand-added provider literally named "GLM": routing worked, yet every
     // piece of registry metadata was skipped because no registry id is called "GLM".
@@ -395,6 +401,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
     modelReasoningEffortMap: prov.modelReasoningEffortMap,
   };
   const seed = providerConfigSeed(entry);
+  repairStaticModelCatalogProvider(name, prov);
   if (prov.apiKeyTransport === undefined && seed.apiKeyTransport !== undefined) prov.apiKeyTransport = seed.apiKeyTransport;
   if (!prov.defaultModel && seed.defaultModel) prov.defaultModel = seed.defaultModel;
   if (prov.responsesPath === undefined && seed.responsesPath !== undefined) prov.responsesPath = seed.responsesPath;
