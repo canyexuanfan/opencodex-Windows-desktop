@@ -12,6 +12,7 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
+import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import {
   isTranslatorBudgetExceededError,
@@ -1070,11 +1071,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // an explicit value here makes the Responses parser's serviceTier projection ineffective.
       //
       // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
-      // extension and 66 registry providers share this adapter, several of which reject
-      // unknown body fields. Forwarding unconditionally would turn a caller-supplied
-      // `service_tier` into an upstream 400 on those routes. `supportsServiceTier` is the
-      // Responses-wire flag (applyServiceTierGate) and deliberately does not gate this path.
-      if (provider.chatServiceTier && parsed.options.serviceTier !== undefined) {
+      // extension and 66 registry providers share this adapter. A provider-wide Chat opt-in
+      // authorizes undeclared models; an exact model declaration can authorize or deny one
+      // model. Provider-level false remains fail-closed.
+      if (canSerializeServiceTierForChatModel(provider, parsed.modelId)
+        && parsed.options.serviceTier !== undefined) {
         body.service_tier = parsed.options.serviceTier;
       }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;

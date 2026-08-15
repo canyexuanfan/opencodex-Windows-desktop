@@ -296,18 +296,18 @@ describe("the gate fires on the live handleResponses path", () => {
     expect(optedIn.service_tier).toBe("priority");
   });
 
-  test("custom Chat provider injects Fast only for an explicitly capable model", async () => {
+  test("an exact-model-only Chat capability forwards Fast while undeclared models stay blocked", async () => {
     const custom = (): OcxProviderConfig => ({
       adapter: "openai-chat",
       baseUrl: "https://gateway.example.com/v1",
       apiKey: "sk-test",
-      supportsServiceTier: true,
-      chatServiceTier: true,
       modelSupportsServiceTier: { "verified-model": true, "blocked-model": false },
     });
     const supported = await drive("custom-chat", custom(), "verified-model", {}, true);
     expect(supported.service_tier).toBe("priority");
     const blocked = await drive("custom-chat", custom(), "blocked-model", { service_tier: "priority" }, true);
     expect(blocked).not.toHaveProperty("service_tier");
+    const undeclared = await drive("custom-chat", custom(), "undeclared-model", { service_tier: "priority" });
+    expect(undeclared).not.toHaveProperty("service_tier");
   });
 });

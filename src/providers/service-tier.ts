@@ -46,6 +46,16 @@ export function supportsServiceTierForModel(
     ?? provider.supportsServiceTier;
 }
 
+/** Whether the Chat serializer may emit a tier for this exact model. */
+export function canSerializeServiceTierForChatModel(
+  provider: Pick<OcxProviderConfig, "supportsServiceTier" | "modelSupportsServiceTier" | "chatServiceTier">,
+  modelId: string,
+): boolean {
+  const exact = exactModelValue(provider.modelSupportsServiceTier, modelId);
+  if (provider.supportsServiceTier === false || exact === false) return false;
+  return provider.chatServiceTier === true || exact === true;
+}
+
 /** Resolve an explicit model wire override for catalog-time capability projection. */
 export function serviceTierAdapterForModel(
   providerName: string,
@@ -91,10 +101,9 @@ export function serviceTierSupportForModel(
     ? provider.adapter
     : serviceTierAdapterForModel(providerName, provider, modelId, inbound);
   if (!SERVICE_TIER_ADAPTERS.has(adapter)) return false;
-  // The current OpenAI Chat adapter deliberately serializes this extension only for
-  // providers that opted in. Treat that serializer decision as authoritative so catalog
-  // metadata, routing evidence, fast-mode injection, and caller-tier stripping cannot claim
-  // support that the final request builder will silently omit.
-  if (adapter === "openai-chat" && provider.chatServiceTier !== true) return false;
+  // Treat the Chat serializer decision as authoritative so catalog metadata, routing
+  // evidence, fast-mode injection, and caller-tier stripping cannot claim support that the
+  // final request builder will omit. A provider-wide false and an exact false stay closed.
+  if (adapter === "openai-chat" && !canSerializeServiceTierForChatModel(provider, modelId)) return false;
   return supportsServiceTierForModel(provider, modelId);
 }

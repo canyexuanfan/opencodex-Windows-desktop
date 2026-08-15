@@ -1310,7 +1310,8 @@ export interface OcxProviderConfig {
   requiresAdjacentResponsesToolResults?: boolean;
   /**
    * Provider fallback for the OpenAI `service_tier` parameter. On Responses routes this
-   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier`.
+   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier` or an
+   * exact-model true declaration.
    * Tri-state: `true` lets fast mode inject/remove the field (an unset
    * fast mode preserves a caller-supplied value); `false` strips the field and
    * never injects, because an upstream documented as not supporting the parameter
@@ -1521,8 +1522,9 @@ export interface OcxProviderConfig {
    * OpenAI-specific extension with the same hazard as `promptCacheKey` — strict backends
    * reject unknown fields, and 66 registry providers share the `openai-chat` adapter, so a
    * caller-supplied `service_tier` would otherwise turn working requests into upstream 400s.
-   * `supportsServiceTier` is the Responses-wire flag and does not apply here.
-   * Default off; only enable for providers that document this parameter on the chat wire.
+   * Exact models may opt in through `modelSupportsServiceTier` instead; provider-level
+   * `supportsServiceTier: false` remains a global denial. Default off; only enable for
+   * providers that document this parameter on the chat wire.
    */
   chatServiceTier?: boolean;
   /**
