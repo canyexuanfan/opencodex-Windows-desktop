@@ -237,6 +237,12 @@ import {
 } from "../sse-payload-rewrite";
 import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
+import {
+  collectDeclaredWireToolNames,
+  createUndeclaredToolCallGuardBlockRewrite,
+  undeclaredToolCallMessage,
+  undeclaredToolCallNameInResponse,
+} from "../responses-undeclared-tool-guard";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
@@ -2267,6 +2273,25 @@ async function handleResponsesInner(
         if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
       }
     }
+    // #1700: the bridged paths refuse a call to a tool the request never declared
+    // (`declaredToolNames`, src/bridge.ts). The passthrough had no equivalent, so a routed
+    // provider's top-level `apply_patch` — which under Codex code mode exists only as a nested
+    // `tools.apply_patch(...)` helper inside `exec`, never as a wire tool — reached Codex as a
+    // call it cannot execute, and the turn showed a bare `aborted` with the file untouched.
+    // Forward auth is the canonical ChatGPT backend speaking Codex's own protocol rather than a
+    // routed provider, so it keeps passing through unguarded, as it does for the rewrites above.
+    // An empty catalog disables the guard: passthrough sends the raw body upstream, so a request
+    // whose tools this proxy could not read is not a catalog worth policing.
+    const outboundRequestBody = (() => {
+      try {
+        return JSON.parse(request.body) as unknown;
+      } catch {
+        return undefined;
+      }
+    })();
+    const declaredWireToolNames = route.provider.authMode === "forward"
+      ? new Set<string>()
+      : collectDeclaredWireToolNames(outboundRequestBody);
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
       route.providerName,
@@ -2654,13 +2679,6 @@ async function handleResponsesInner(
       // injection at the block level, after payload rewrites. Defaults come
       // from the finalized OUTBOUND body — the normalized internal tool shapes
       // are not the Responses wire shapes the snapshot must mirror.
-      const snapshotDefaultsRequest = (() => {
-        try {
-          return JSON.parse(request.body) as unknown;
-        } catch {
-          return undefined;
-        }
-      })();
       const blockRewrites = [
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
@@ -2672,7 +2690,12 @@ async function handleResponsesInner(
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
           : undefined,
         snapshotRepairEnabled
-          ? createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget)
+          ? createResponsesSnapshotBlockRewrite(outboundRequestBody, translatorBudget)
+          : undefined,
+        // Last: every rewrite above can still rename or reshape a call item, so the guard must
+        // compare the names the client will actually receive against the declared catalog.
+        declaredWireToolNames.size > 0
+          ? createUndeclaredToolCallGuardBlockRewrite(declaredWireToolNames)
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       const clientBlockRewrite = blockRewrites.length > 0
@@ -2862,20 +2885,27 @@ async function handleResponsesInner(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
           routedCustomToolNames,
         );
-        const repaired = (() => {
-          if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
-          let outbound: unknown;
-          try {
-            outbound = JSON.parse(request.body);
-          } catch {
-            outbound = undefined;
-          }
-          return repairResponsesSnapshotJson(restored, outbound);
-        })();
+        const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
+          ? repairResponsesSnapshotJson(restored, outboundRequestBody)
+          : restored;
         return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
           : repaired;
       })();
+      // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
+      // the reframed-SSE branch below are built from this body, so one check covers them.
+      if (declaredWireToolNames.size > 0) {
+        const undeclared = (() => {
+          try {
+            return undeclaredToolCallNameInResponse(JSON.parse(clientJson), declaredWireToolNames);
+          } catch {
+            return undefined;
+          }
+        })();
+        if (undeclared !== undefined) {
+          return formatErrorResponse(502, "upstream_error", undeclaredToolCallMessage(undeclared));
+        }
+      }
       // #875: the transport-neutral reliability policy forced a bounded JSON
       // upstream for a client that asked for SSE. Reframe the completed JSON
       // as the canonical terminal SSE sequence (created → output_item.done →
