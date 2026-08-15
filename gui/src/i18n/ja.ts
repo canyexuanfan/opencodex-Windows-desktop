@@ -268,6 +268,8 @@ export const ja: Record<TKey, string> = {
   "dash.stop": "プロキシを停止",
   "dash.stopConfirm": "プロキシを停止してネイティブの Codex に戻しますか?",
   "dash.stopFailed": "プロキシを停止できませんでした (HTTP {status})。",
+  "dash.maSwitchFailed": "モードの切り替えに失敗しました (HTTP {status})。",
+  "dash.maNetworkError": "ネットワークエラー — プロキシは起動していますか?",
   "dash.stopping": "停止中…",
   "dash.codexAutoStart": "Codex と一緒に opencodex を起動",
   "dash.codexAutoStartHint": "インストール済み launcher shim に ocx ensure の実行を許可します。この設定だけでは再起動保護はインストールされません。起動安全性で実際の状態を確認してください。",

@@ -259,6 +259,8 @@ export const de: Record<TKey, string> = {
   "dash.stop": "Proxy stoppen",
   "dash.stopConfirm": "Proxy stoppen und natives Codex wiederherstellen?",
   "dash.stopFailed": "Proxy konnte nicht gestoppt werden (HTTP {status}).",
+  "dash.maSwitchFailed": "Moduswechsel fehlgeschlagen (HTTP {status}).",
+  "dash.maNetworkError": "Netzwerkfehler — läuft der Proxy?",
   "dash.stopping": "Wird gestoppt…",
   "dash.codexAutoStart": "opencodex mit Codex starten",
   "dash.codexAutoStartHint": "Erlaubt einem installierten Launcher-Shim, ocx ensure auszuführen. Diese Einstellung installiert keinen Neustartschutz; prüfe den effektiven Zustand unter Startsicherheit.",

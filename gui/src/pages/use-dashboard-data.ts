@@ -551,7 +551,7 @@ export function useDashboardData(apiBase: string) {
        setMaMode(mode);
        writeSessionListCache(`${MA_MODE_CACHE_PREFIX}${apiBase}`, mode);
       } else {
-        let message = `HTTP ${r.status}`;
+        let message = t("dash.maSwitchFailed", { status: String(r.status) });
         try {
           const body = await r.json() as { error?: string; message?: string };
           message = (typeof body.error === "string" && body.error) || (typeof body.message === "string" && body.message) || message;
@@ -559,7 +559,7 @@ export function useDashboardData(apiBase: string) {
         setMaError(message);
      }
     } catch (e) {
-      setMaError(e instanceof Error ? e.message : "Network error");
+      setMaError(e instanceof Error ? e.message : t("dash.maNetworkError"));
     }
    finally { setMaBusy(false); }
  };
