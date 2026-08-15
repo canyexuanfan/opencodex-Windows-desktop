@@ -612,6 +612,22 @@ Spend arrives in `meteringEvent` as **credits, not tokens**. No captured respons
 `tokenUsage` on any event, which is why Kiro usage stays estimated; `meteringEvent` is currently
 ignored because a credit is not a token count.
 
+## Chat Completions inbound native path
+
+`POST /v1/chat/completions` sends eligible `openai-chat` routes directly to the provider's Chat
+Completions endpoint. Request construction remains owned by `src/adapters/openai-chat.ts`, including
+model normalization, provider headers, capability-specific fields, and the canonical
+`openaiChatCompletionsUrl()` path. Combo/policy routes and requests that need Responses-only hosted
+tools, continuation, background, or storage semantics retain the existing Chat -> Responses -> Chat
+bridge.
+
+The direct SSE relay accepts CRLF and arbitrary transport chunk boundaries while retaining at most
+one bounded event. EOF with an unterminated event and an event above the translator limit are typed
+upstream failures, never successful partial completions. Provider-controlled structured error
+messages are redacted before either JSON or SSE reaches the client. The native path uses the same
+request-attempt logging, reset retry, same-key 429 replay, key rotation, usage extraction, and
+request-signal cancellation contracts as routed Responses transport.
+
 ## Parallel tool calls (default-on for chat providers)
 
 The openai-chat adapter buffers ALL streamed `tool_calls` deltas (keyed by `index`, falling back to

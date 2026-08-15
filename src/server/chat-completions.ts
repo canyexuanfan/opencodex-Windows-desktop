@@ -2,8 +2,8 @@
  * OpenAI Chat Completions inbound (/v1/chat/completions) for GitHub Copilot App
  * and other OpenAI-compatible clients.
  *
- * Translate-and-replay: Chat Completions body -> /v1/responses via handleResponses,
- * then bridge the Responses output back to Chat Completions SSE/JSON.
+ * Ordinary openai-chat routes send directly on the Chat Completions wire. Routes
+ * that need Responses-only behavior keep the Chat -> Responses -> Chat bridge.
  */
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { ChatCompletionsRequestError, chatCompletionsToResponsesBody } from "../chat/inbound";
@@ -40,6 +40,7 @@ import {
   isTranslatorBudgetExceededError,
   type TranslatorBudget,
 } from "../lib/translator-budget";
+import { handleNativeChatCompletions, isNativeChatRouteEligible } from "./chat-native";
 
 type Rec = Record<string, unknown>;
 
@@ -109,6 +110,7 @@ async function handleChatCompletionsWithBudget(
 
   let nativeRoute = false;
   let directRoute = false;
+  let chatNativeRoute: ReturnType<typeof routeModel> | null = null;
   try {
     const route = routeModel(config, internalBody.model as string, evidenceFromBody(internalBody));
     // Settle the wire once so every branch below reads the adapter this model will
@@ -146,6 +148,7 @@ async function handleChatCompletionsWithBudget(
       if (next === undefined) delete internalBody.reasoning;
       else internalBody.reasoning = next;
     }
+    if (isNativeChatRouteEligible(route, chatBody as Rec)) chatNativeRoute = route;
   } catch (err) {
     if (err instanceof NoEligiblePolicyCandidateError) {
       logCtx.routeDecision = err.trace;
@@ -155,6 +158,20 @@ async function handleChatCompletionsWithBudget(
     /* unknown model: let handleResponses shape the 404 */
   }
   void nativeRoute;
+
+  if (chatNativeRoute) {
+    return handleNativeChatCompletions({
+      req,
+      config,
+      logCtx,
+      ...(logIds ? { logIds } : {}),
+      route: chatNativeRoute,
+      responsesBody: { ...internalBody, stream },
+      requestedModel,
+      requestedStream: stream,
+      translatorBudget,
+    });
+  }
 
   const headers = new Headers({ "content-type": "application/json" });
   for (const name of FORWARD_HEADERS) {

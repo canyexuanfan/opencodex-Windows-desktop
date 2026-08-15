@@ -799,8 +799,8 @@ test("chat-native non-stream fold preserves tool calls and finish reason", async
 });
 
 
-test("chat-native non-stream budget overflow returns 413 without hanging", async () => {
-  // Two sequential requests: first overflows the bounded JSON reader (413), second proves server still responsive.
+test("chat-native non-stream upstream overflow returns 502 without hanging", async () => {
+  // Provider-controlled overflow is a 502; the second request proves the reader was released.
   let calls = 0;
   const upstream = Bun.serve({
     port: 0,
@@ -813,7 +813,7 @@ test("chat-native non-stream budget overflow returns 413 without hanging", async
       return Response.json({ id: "chatcmpl_ok", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
     },
   });
-  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/\$/, "")}/v1`));
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
   const server = startServer(0);
   try {
     const response = await fetch(new URL("/v1/chat/completions", server.url), {
@@ -821,7 +821,7 @@ test("chat-native non-stream budget overflow returns 413 without hanging", async
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "mock/test-model", stream: false, messages: [{ role: "user", content: "hi" }] }),
     });
-    expect(response.status).toBe(413);
+    expect(response.status).toBe(502);
     const json = await response.json() as { error?: { code?: string } };
     expect(json.error?.code).toBe("translation_buffer_limit");
     const response2 = await fetch(new URL("/v1/chat/completions", server.url), {
@@ -838,15 +838,233 @@ test("chat-native non-stream budget overflow returns 413 without hanging", async
   }
 });
 
-test("chat-native non-stream invalid JSON is forwarded as 200 passthrough", async () => {
-  // The native JSON path forwards verbatim when parsing fails (bridges legacy behavior for untrusted upstreams).
+test("chat-native non-stream invalid JSON returns a provider error", async () => {
   const upstream = Bun.serve({
     port: 0,
     fetch() {
       return new Response("not-json-at-all", { headers: { "content-type": "application/json" } });
     },
   });
-  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/\$/, "")}/v1`));
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: false, messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(response.status).toBe(502);
+    const json = await response.json() as { error?: { type?: string } };
+    expect(json.error?.type).toBe("upstream_error");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native uses the shared request builder and normalized Chat Completions URL", async () => {
+  const captured: Array<{ pathname: string; body: Record<string, unknown> }> = [];
+  const upstream = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      captured.push({ pathname: new URL(req.url).pathname, body: await req.json() as Record<string, unknown> });
+      return Response.json({
+        id: "chatcmpl_builder",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      });
+    },
+  });
+  const endpointBase = `${upstream.url.toString().replace(/\/$/, "")}/v1/chat/completions/`;
+  saveConfig(mockConfig(endpointBase, { noTemperatureModels: ["test-model"] }));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        stream: false,
+        temperature: 0.9,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.pathname).toBe("/v1/chat/completions");
+    expect(captured[0]?.body.model).toBe("test-model");
+    expect(captured[0]?.body.temperature).toBeUndefined();
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native streaming accepts CRLF events split across transport chunks", async () => {
+  const encoder = new TextEncoder();
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"split"}}]}\r'));
+          controller.enqueue(encoder.encode('\n\r'));
+          controller.enqueue(encoder.encode('\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\r\n'));
+          controller.enqueue(encoder.encode('\r\ndata: [DONE]\r\n\r\n'));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain('"content":"split"');
+    expect(text).toContain('"object":"chat.completion.chunk"');
+    expect(text).toContain("data: [DONE]");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native streaming rejects an unterminated SSE event", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response('data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}', {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain('"code":"upstream_sse_unterminated"');
+    expect(text).not.toContain("data: [DONE]");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native streaming bounds an oversized unterminated SSE event", async () => {
+  let calls = 0;
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(`data: ${"x".repeat(33 * 1024 * 1024)}`, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      }
+      return new Response('data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const first = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const firstText = await first.text();
+    expect(firstText).toContain('"code":"translation_buffer_limit"');
+    expect(firstText).not.toContain("data: [DONE]");
+
+    const second = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(await second.text()).toContain("data: [DONE]");
+    expect(calls).toBe(2);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native redacts structured provider errors before returning them", async () => {
+  const echoedSecret = "Authorization: Bearer opaquecredential123456";
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        error: {
+          message: `upstream echoed ${echoedSecret}`,
+          type: "authentication_error",
+          code: "invalid_api_key",
+        },
+      }, { status: 401 });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: false, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const text = await response.text();
+    expect(response.status).toBe(401);
+    expect(text).toContain("Bearer [REDACTED]");
+    expect(text).not.toContain("opaquecredential123456");
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("chat-native preserves same-key retry, key rotation, usage, and request logging", async () => {
+  const { clearRequestLogsForTests, getRequestLogEntries } = await import("../src/server/request-log");
+  const { clearKeyCooldowns } = await import("../src/providers/key-failover");
+  clearRequestLogsForTests();
+  clearKeyCooldowns("mock");
+  const authorizations: Array<string | null> = [];
+  const upstream = Bun.serve({
+    port: 0,
+    fetch(req) {
+      authorizations.push(req.headers.get("authorization"));
+      if (authorizations.length < 3) {
+        return Response.json({ error: { message: "rate limited", type: "rate_limit_error" } }, {
+          status: 429,
+          headers: { "retry-after": "0" },
+        });
+      }
+      return Response.json({
+        id: "chatcmpl_retry",
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 4, completion_tokens: 2 },
+      });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`, {
+    authMode: "key",
+    apiKey: "key-one",
+    apiKeyPool: [{ id: "one", key: "key-one" }, { id: "two", key: "key-two" }],
+    retryOn429: { attempts: 1, intervalMs: 100, maxIntervalMs: 100, respectRetryAfter: false },
+  }));
   const server = startServer(0);
   try {
     const response = await fetch(new URL("/v1/chat/completions", server.url), {
@@ -855,7 +1073,98 @@ test("chat-native non-stream invalid JSON is forwarded as 200 passthrough", asyn
       body: JSON.stringify({ model: "mock/test-model", stream: false, messages: [{ role: "user", content: "hi" }] }),
     });
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("not-json-at-all");
+    await response.text();
+    expect(authorizations).toEqual(["Bearer key-one", "Bearer key-one", "Bearer key-two"]);
+    const entry = getRequestLogEntries().at(-1);
+    expect(entry?.status).toBe(200);
+    expect(entry?.usage).toMatchObject({ inputTokens: 4, outputTokens: 2 });
+    expect(entry?.attempts?.[0]?.recoveryKinds).toEqual(["rate-limit-429", "key-429"]);
+  } finally {
+    await server.stop(true);
+    upstream.stop(true);
+    clearKeyCooldowns("mock");
+  }
+});
+
+test("chat-native client cancellation cancels the upstream stream and logs 499", async () => {
+  const { clearRequestLogsForTests, getRequestLogEntries } = await import("../src/server/request-log");
+  const { handleChatCompletions } = await import("../src/server/chat-completions");
+  clearRequestLogsForTests();
+  let markCancelled!: () => void;
+  const cancelled = new Promise<void>(resolve => { markCancelled = resolve; });
+  const encoder = new TextEncoder();
+  globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
+        },
+        cancel() {
+          markCancelled();
+        },
+      }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+  try {
+    const clientAbort = new AbortController();
+    const request = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+      signal: clientAbort.signal,
+    });
+    const logCtx = {} as Parameters<typeof handleChatCompletions>[2];
+    const response = await handleChatCompletions(
+      request,
+      mockConfig("https://provider.example/v1"),
+      logCtx,
+      { requestId: "chat-cancel", start: Date.now() },
+    );
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    clientAbort.abort("client done");
+    expect((await reader.read()).done).toBe(true);
+    await cancelled;
+    expect(getRequestLogEntries().at(-1)?.status).toBe(499);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("chat-native streaming synthesizes tool-call SSE from Chat JSON", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return Response.json({
+        id: "chatcmpl_tc",
+        object: "chat.completion",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "lookup", arguments: "{\"q\":1}" } }],
+          },
+          finish_reason: "tool_calls",
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }],
+      }),
+    });
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(text).toContain("lookup");
+    expect(text).toContain("tool_calls");
+    expect(text).toContain("data: [DONE]");
   } finally {
     await server.stop(true);
     upstream.stop(true);
@@ -927,7 +1236,7 @@ test("POST /v1/chat/completions direct mode forwards caller Authorization", asyn
  */
 const inspectNativeCodexOwnership = ownedServiceHomeInspection("chat replay main-enrichment test");
 
-test("Chat replay owns optional main enrichment while routed work survives drain and recovery", async () => {
+test("chat-native skips optional main enrichment while routed work survives drain and recovery", async () => {
   resetLifecycleDrainStateForTests();
   writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
     tokens: { access_token: "chat-main-access", account_id: "chat-main-account" },
@@ -979,7 +1288,7 @@ test("Chat replay owns optional main enrichment while routed work survives drain
     await started;
     const response = await pending;
     expect(response.status).toBe(200);
-    expect(getNativeMainProfileRequestCount()).toBe(1);
+    expect(getNativeMainProfileRequestCount()).toBe(0);
     drain = acquireNativeMainProfileDrain("chat-overlap");
     expect(drain).not.toBeNull();
     const routedDuringDrain = await request();
