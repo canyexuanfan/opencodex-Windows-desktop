@@ -2668,6 +2668,7 @@ async function handleResponsesInner(
             } else {
               logCtx.transportPhase = "mid_stream";
               logCtx.terminalSource = "synthetic";
+              if (logCtx.activeAttempt) logCtx.activeAttempt.streamAborted = true;
               reportNativeTerminal("failed", 502);
             }
           },
