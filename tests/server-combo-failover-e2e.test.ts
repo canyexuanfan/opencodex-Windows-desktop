@@ -1371,7 +1371,7 @@ describe("server combo failover 030 activation matrix", () => {
     expect(hits).toBe(0);
   });
 
-  test("disabled image input expands text-only previous_response_id and dispatches once", async () => {
+  test("disabled image input expands text-only previous_response_id exactly once before child dispatch", async () => {
     const { rememberResponseState } = await import("../src/responses/state");
     rememberResponseState(
       { model: "combo/free", input: [{ role: "user", content: "earlier text" }] },
@@ -1399,8 +1399,42 @@ describe("server combo failover 030 activation matrix", () => {
     // Parent already expanded; child must not keep previous_response_id (would double-prepend).
     expect(child.previous_response_id).toBeUndefined();
     const inputText = JSON.stringify(child.input ?? child.messages ?? child);
-    expect(inputText).toContain("earlier text");
-    expect(inputText).toContain("next turn");
+    expect(inputText.split("earlier text")).toHaveLength(2);
+    expect(inputText.split("next turn")).toHaveLength(2);
+  });
+
+  test("disabled image input rejects an image restored from previous_response_id before dispatch", async () => {
+    const { rememberResponseState } = await import("../src/responses/state");
+    rememberResponseState(
+      {
+        model: "combo/free",
+        input: [{
+          role: "user",
+          content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }],
+        }],
+      },
+      {
+        id: "resp_combo_image_prev",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: "image received" }],
+      },
+    );
+    let hits = 0;
+    const a = serve(() => {
+      hits += 1;
+      return chatSuccess("unexpected", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      previous_response_id: "resp_combo_image_prev",
+      input: [{ role: "user", content: "continue" }],
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("does not accept image input");
+    expect(hits).toBe(0);
   });
 
   test("fresh child reparsing recomputes vision and effort per target", async () => {
