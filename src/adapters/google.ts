@@ -1,6 +1,6 @@
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../lib/debug";
-import { createHash } from "node:crypto";
+import { anthropicToolCallId } from "./tool-call-id";
 import { createImageBudget, materializeInlineImage, MAX_ENCODED_BYTES_PER_IMAGE, artifactHttpUrl } from "../images/artifacts";
 import type {
   AdapterEvent,
@@ -95,15 +95,7 @@ function vertexReplaySessionId(parsed: OcxParsedRequest): string {
  * the call/response pairing is preserved. Returns `undefined` for an empty id so the caller omits the
  * field entirely rather than inventing a non-matching one.
  */
-function geminiToolCallId(rawId: string | undefined): string | undefined {
-  const raw = rawId ?? "";
-  if (raw.length === 0) return undefined;
-  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
-  if (cleaned === raw) return cleaned;
-  // Lossy rewrite happened: disambiguate with a deterministic suffix derived from the raw id.
-  const suffix = createHash("sha256").update(raw).digest("hex").slice(0, 8);
-  return `${cleaned}_${suffix}`;
-}
+const geminiToolCallId = anthropicToolCallId;
 
 /**
  * Inline image parts (Gemini `inline_data`) extracted from tool-result content. Only base64 data URLs

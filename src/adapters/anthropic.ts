@@ -1,4 +1,5 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
+import { anthropicToolCallId } from "./tool-call-id";
 import { debugDroppedFrame } from "../lib/debug";
 import type {
   AdapterEvent,
@@ -574,7 +575,7 @@ function toAnthropicToolResult(msg: OcxToolResultMessage): Record<string, unknow
   }
   return {
     type: "tool_result",
-    tool_use_id: msg.toolCallId,
+    tool_use_id: anthropicToolCallId(msg.toolCallId) ?? msg.toolCallId,
     content,
     ...(msg.isError ? { is_error: true } : {}),
   };
@@ -643,8 +644,11 @@ function messagesToAnthropicFormat(
           } else if (part.type === "toolCall") {
             const tc = part as OcxToolCall;
             const flatName = namespacedToolName(tc.namespace, tc.name);
-            toolUseIds.push(tc.id);
-            toolUses.push({ type: "tool_use", id: tc.id, name: toolNames.toWire(flatName), input: tc.arguments });
+            // Normalized here, and identically for the matching tool_result above, so a history
+            // replayed from another provider path keeps its call/result pairing (#1767).
+            const wireCallId = anthropicToolCallId(tc.id) ?? tc.id;
+            toolUseIds.push(wireCallId);
+            toolUses.push({ type: "tool_use", id: wireCallId, name: toolNames.toWire(flatName), input: tc.arguments });
           }
         }
         // Anthropic treats text/thinking after tool_use as ending the tool turn, which makes
