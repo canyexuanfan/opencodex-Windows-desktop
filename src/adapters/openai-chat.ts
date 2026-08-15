@@ -12,6 +12,7 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
+import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import {
   isTranslatorBudgetExceededError,
@@ -32,6 +33,122 @@ export function stripBracketedModelSuffix(modelId: string): string {
     if (modelId[i] === "[") suffixStart = i;
   }
   return suffixStart === -1 ? modelId : modelId.slice(0, suffixStart);
+}
+
+const CHAT_PASSTHROUGH_FIELDS = [
+  "audio",
+  "frequency_penalty",
+  "logit_bias",
+  "logprobs",
+  "max_completion_tokens",
+  "max_tokens",
+  "metadata",
+  "modalities",
+  "n",
+  "prediction",
+  "presence_penalty",
+  "reasoning_effort",
+  "response_format",
+  "seed",
+  "stop",
+  "store",
+  "temperature",
+  "tool_choice",
+  "tools",
+  "top_logprobs",
+  "top_p",
+  "user",
+  "web_search_options",
+] as const;
+
+function openAIChatTransport(provider: OcxProviderConfig): {
+  url: string;
+  headers: Record<string, string>;
+  hasCredential: boolean;
+} {
+  const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
+  if ((provider.authMode === "key" || provider.authMode === "oauth") && !provider.keyOptional && !hasCredential) {
+    throw new Error(`${provider.adapter} requires a non-empty credential (authMode: ${provider.authMode})`);
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (hasCredential) headers.Authorization = `Bearer ${provider.apiKey}`;
+  if (provider.headers) Object.assign(headers, provider.headers);
+  return { url: openaiChatCompletionsUrl(provider.baseUrl), headers, hasCredential };
+}
+
+/**
+ * Build a provider request from an inbound Chat Completions body without translating it
+ * through the Responses contract. This is deliberately a whitelist: Chat-only caller
+ * fields retain their exact wire representation, while provider capability gates remain
+ * centralized beside the ordinary openai-chat adapter.
+ */
+export function buildOpenAIChatPassthroughRequest(
+  provider: OcxProviderConfig,
+  rawBody: Record<string, unknown>,
+  modelId: string,
+  stream: boolean,
+): AdapterRequest {
+  const { url, headers, hasCredential } = openAIChatTransport(provider);
+
+  const body: Record<string, unknown> = {
+    model: provider.modelSuffixBracketStrip ? stripBracketedModelSuffix(modelId) : modelId,
+    messages: rawBody.messages,
+    stream,
+  };
+  for (const field of CHAT_PASSTHROUGH_FIELDS) {
+    if (rawBody[field] !== undefined) body[field] = rawBody[field];
+  }
+
+  if (modelInList(provider.noTemperatureModels, modelId)) delete body.temperature;
+  if (modelInList(provider.noTopPModels, modelId)) delete body.top_p;
+  if (modelInList(provider.noPenaltyModels, modelId)) {
+    delete body.presence_penalty;
+    delete body.frequency_penalty;
+  }
+  if (modelInList(provider.noStructuredOutputModels, modelId)) delete body.response_format;
+
+  if (provider.chatServiceTier && rawBody.service_tier !== undefined) {
+    body.service_tier = rawBody.service_tier;
+  }
+  if (provider.promptCacheKey && rawBody.prompt_cache_key !== undefined) {
+    body.prompt_cache_key = rawBody.prompt_cache_key;
+  }
+  if (Array.isArray(rawBody.tools) && rawBody.tools.length > 0) {
+    if (provider.parallelToolCalls === true) {
+      body.parallel_tool_calls = rawBody.parallel_tool_calls !== false;
+    } else if (provider.parallelToolCalls === false
+        && (provider.baseUrl === "https://integrate.api.nvidia.com/v1" || provider.pinParallelToolCallsFalse === true)) {
+      body.parallel_tool_calls = false;
+    }
+  }
+  if (stream) {
+    const callerOptions = rawBody.stream_options !== null
+        && typeof rawBody.stream_options === "object"
+        && !Array.isArray(rawBody.stream_options)
+      ? rawBody.stream_options as Record<string, unknown>
+      : {};
+    body.stream_options = { ...callerOptions, include_usage: true };
+  } else if (rawBody.stream_options !== undefined) {
+    body.stream_options = rawBody.stream_options;
+  }
+
+  const bodyJson = JSON.stringify(body);
+
+  if (isDebugEnabled()) {
+    let host = "upstream";
+    try { host = new URL(url).host; } catch { /* keep fallback */ }
+    debugProviderDiagnostic("openai-chat", "passthrough-request", {
+      host,
+      model: body.model,
+      stream,
+      messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
+      toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+      hasCredential,
+      bodyBytes: new TextEncoder().encode(bodyJson).length,
+    });
+  }
+
+  return { url, method: "POST", headers, body: bodyJson };
 }
 
 // 260715 (issue #126): surface upstream error detail through the web-search sidecar loop.
@@ -658,11 +775,11 @@ function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
     || baseUrl === "https://opencode.ai/zen/go/v1";
 }
 
-const XAI_SCHEMA_BASE_URLS = new Set(["api.x.ai", "cli-chat-proxy.grok.com"]);
-
 function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   try {
-    return XAI_SCHEMA_BASE_URLS.has(new URL(provider.baseUrl).hostname);
+    // Public api.x.ai accepts native root object unions. Only the Grok CLI proxy
+    // 400s on a root oneOf/anyOf, so flattening/omitting is scoped to that host.
+    return new URL(provider.baseUrl).hostname === "cli-chat-proxy.grok.com";
   } catch {
     return false;
   }
@@ -696,36 +813,262 @@ function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
   return { ...obj, type: "object" };
 }
 
-function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return undefined;
-  const obj = schema as Record<string, unknown>;
-  const compositionKey = ["oneOf", "anyOf"].find(key => Array.isArray(obj[key]));
-  if (!compositionKey) {
-    if (obj.type !== undefined && obj.type !== "object") return undefined;
-    return [{ ...obj, type: "object" }];
+function isXaiObjectSchema(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringRequiredFields(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+/** Variant keys the merger can keep. Anything else is refused, not silently dropped. */
+const XAI_VARIANT_MERGE_KEYS = new Set([
+  "type",
+  "properties",
+  "required",
+  "additionalProperties",
+  "description",
+  "title",
+  "$comment",
+  "$defs",
+  "definitions",
+]);
+
+function decodeJsonPointerToken(token: string): string {
+  return token.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+function lookupLocalJsonPointer(root: unknown, ref: string): unknown {
+  if (ref === "#" || ref === "#/") return root;
+  if (!ref.startsWith("#/")) return undefined;
+  let current: unknown = root;
+  for (const token of ref.slice(2).split("/").map(decodeJsonPointerToken)) {
+    if (!isXaiObjectSchema(current) || !Object.hasOwn(current, token)) return undefined;
+    current = current[token];
+  }
+  return current;
+}
+
+/** Resolve local `#/` `$ref`s. Unresolvable or cyclic refs return undefined. */
+function resolveXaiSchemaRefs(
+  schema: unknown,
+  root: Record<string, unknown>,
+  stack: Set<string> = new Set(),
+): unknown | undefined {
+  if (!isXaiObjectSchema(schema)) return schema;
+  if (typeof schema.$ref === "string") {
+    const ref = schema.$ref;
+    if (stack.has(ref)) return undefined;
+    const target = lookupLocalJsonPointer(root, ref);
+    if (target === undefined) return undefined;
+    stack.add(ref);
+    const resolvedTarget = resolveXaiSchemaRefs(target, root, stack);
+    stack.delete(ref);
+    if (resolvedTarget === undefined) return undefined;
+    const rest: Record<string, unknown> = { ...schema };
+    delete rest.$ref;
+    if (Object.keys(rest).length === 0) return resolvedTarget;
+    const resolvedRest = resolveXaiSchemaRefs(rest, root, stack);
+    if (resolvedRest === undefined || !isXaiObjectSchema(resolvedTarget) || !isXaiObjectSchema(resolvedRest)) {
+      return undefined;
+    }
+    return composeXaiObjectSchemas(resolvedTarget, resolvedRest);
   }
 
-  const siblings = Object.fromEntries(Object.entries(obj).filter(([key]) => key !== compositionKey));
-  const branches = obj[compositionKey];
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if ((key === "oneOf" || key === "anyOf") && Array.isArray(value)) {
+      const items: unknown[] = [];
+      for (const item of value) {
+        const next = resolveXaiSchemaRefs(item, root, stack);
+        if (next === undefined) return undefined;
+        items.push(next);
+      }
+      resolved[key] = items;
+      continue;
+    }
+    if (key === "properties" && isXaiObjectSchema(value)) {
+      const properties: Record<string, unknown> = {};
+      for (const [name, property] of Object.entries(value)) {
+        const next = resolveXaiSchemaRefs(property, root, stack);
+        if (next === undefined) return undefined;
+        properties[name] = next;
+      }
+      resolved[key] = properties;
+      continue;
+    }
+    resolved[key] = value;
+  }
+  return resolved;
+}
+
+function xaiVariantIsConcreteObject(variant: Record<string, unknown>): boolean {
+  if (variant.type !== undefined && variant.type !== "object") return false;
+  return Object.keys(variant).every(key => XAI_VARIANT_MERGE_KEYS.has(key));
+}
+
+function variantProperties(variant: Record<string, unknown>): Record<string, unknown> {
+  return isXaiObjectSchema(variant.properties) ? variant.properties : {};
+}
+
+/**
+ * Independent per-property anyOf is lossless only when every property name exists
+ * on every variant (absence is meaningful under xAI's default additionalProperties:
+ * false, and promoting a branch-local key also tightens explicit-true variants)
+ * and at most one of those shared properties has a conflicting schema.
+ */
+function xaiPropertyMergeIsLossless(variants: Record<string, unknown>[]): boolean {
+  const names = new Set<string>();
+  const props = variants.map(variant => {
+    const properties = variantProperties(variant);
+    for (const name of Object.keys(properties)) names.add(name);
+    return properties;
+  });
+  let schemaConflicts = 0;
+  for (const name of names) {
+    const values = props.map(property => property[name]);
+    if (values.some(value => value === undefined)) return false;
+    if (values.some(value => JSON.stringify(value) !== JSON.stringify(values[0]))) schemaConflicts += 1;
+  }
+  return schemaConflicts <= 1;
+}
+
+function xaiRequiredSetsMatch(variants: Record<string, unknown>[]): boolean {
+  const serialized = variants.map(variant => [...stringRequiredFields(variant.required)].sort().join("\0"));
+  return serialized.every(value => value === serialized[0]);
+}
+
+function mergeXaiAdditionalProperties(
+  variants: Record<string, unknown>[],
+): { ok: true; value?: unknown } | { ok: false } {
+  const values = variants.map(variant => variant.additionalProperties);
+  const explicit = values.filter(value => value !== undefined);
+  if (explicit.length === 0) return { ok: true };
+  if (explicit.length !== values.length) return { ok: false };
+  const hasFalse = explicit.some(value => value === false);
+  const permissive = explicit.filter(value => value !== false);
+  if (hasFalse && permissive.length > 0) return { ok: false };
+  if (hasFalse) return { ok: true, value: false };
+  const unique: unknown[] = [];
+  const seen = new Set<string>();
+  for (const value of permissive) {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  if (unique.length !== 1) return { ok: false };
+  return { ok: true, value: unique[0] };
+}
+
+/** Compose root siblings into a branch so properties/required are not overwritten. */
+function composeXaiObjectSchemas(
+  inherited: Record<string, unknown>,
+  branch: Record<string, unknown>,
+): Record<string, unknown> {
+  const composed: Record<string, unknown> = { ...inherited, ...branch };
+  const inheritedProps = isXaiObjectSchema(inherited.properties) ? inherited.properties : undefined;
+  const branchProps = isXaiObjectSchema(branch.properties) ? branch.properties : undefined;
+  if (inheritedProps || branchProps) {
+    const properties: Record<string, unknown> = { ...(inheritedProps ?? {}) };
+    for (const [name, value] of Object.entries(branchProps ?? {})) {
+      const inheritedValue = inheritedProps?.[name];
+      properties[name] = inheritedValue !== undefined && JSON.stringify(inheritedValue) !== JSON.stringify(value)
+        ? { allOf: [inheritedValue, value] }
+        : value;
+    }
+    composed.properties = properties;
+  }
+  const required = [...new Set([
+    ...stringRequiredFields(inherited.required),
+    ...stringRequiredFields(branch.required),
+  ])];
+  if (required.length > 0) composed.required = required;
+  else delete composed.required;
+  return composed;
+}
+
+function expandXaiRootObjectSchemas(schema: unknown): Record<string, unknown>[] | undefined {
+  if (!isXaiObjectSchema(schema)) return undefined;
+  const compositionKey = ["oneOf", "anyOf"].find(key => Array.isArray(schema[key]));
+  if (!compositionKey) {
+    if (schema.type !== undefined && schema.type !== "object") return undefined;
+    return [{ ...schema, type: "object" }];
+  }
+
+  const siblings = Object.fromEntries(Object.entries(schema).filter(([key]) => key !== compositionKey));
+  const branches = schema[compositionKey];
   if (!Array.isArray(branches)) return undefined;
   const expanded: Record<string, unknown>[] = [];
   for (const branch of branches) {
     const variants = expandXaiRootObjectSchemas(branch);
     if (!variants) return undefined;
-    for (const variant of variants) expanded.push({ ...siblings, ...variant });
+    for (const variant of variants) expanded.push(composeXaiObjectSchemas(siblings, variant));
   }
   return expanded.length > 0 ? expanded : undefined;
 }
 
+function mergeXaiPropertySchemas(values: unknown[]): unknown {
+  const unique: unknown[] = [];
+  const serialized = new Set<string>();
+  for (const value of values) {
+    const key = JSON.stringify(value);
+    if (serialized.has(key)) continue;
+    serialized.add(key);
+    unique.push(value);
+  }
+  return unique.length === 1 ? unique[0] : { anyOf: unique };
+}
+
+/**
+ * The Grok CLI proxy rejects a function parameter schema whose root remains oneOf/anyOf.
+ * Flatten only when the merge is lossless: local $refs resolve, every variant is a concrete
+ * object whose keys we can preserve, required sets match, additionalProperties does not change
+ * meaning, every property name exists on every variant, and at most one property schema
+ * differs. Otherwise omit the tool rather than emit a weaker schema.
+ */
 function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown> | undefined {
-  const variants = expandXaiRootObjectSchemas(parameters);
+  if (!isXaiObjectSchema(parameters)) return undefined;
+  const resolved = resolveXaiSchemaRefs(parameters, parameters);
+  if (!isXaiObjectSchema(resolved)) return undefined;
+  const variants = expandXaiRootObjectSchemas(resolved);
   if (!variants) return undefined;
-  if (variants.length === 1) return variants[0];
-  const root = parameters && typeof parameters === "object" && !Array.isArray(parameters)
-    ? parameters as Record<string, unknown>
-    : {};
-  const metadata = Object.fromEntries(Object.entries(root).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
-  return { ...metadata, oneOf: variants };
+  if (variants.length === 1) {
+    return xaiVariantIsConcreteObject(variants[0]) ? variants[0] : undefined;
+  }
+  if (!variants.every(xaiVariantIsConcreteObject) || !xaiRequiredSetsMatch(variants)) return undefined;
+  const additionalProperties = mergeXaiAdditionalProperties(variants);
+  if (!additionalProperties.ok) return undefined;
+  if (!xaiPropertyMergeIsLossless(variants)) return undefined;
+
+  const metadata = Object.fromEntries(Object.entries(resolved).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  delete metadata.properties;
+  delete metadata.required;
+  delete metadata.additionalProperties;
+
+  const propertyValues = new Map<string, unknown[]>();
+  for (const variant of variants) {
+    if (!variant.properties || typeof variant.properties !== "object" || Array.isArray(variant.properties)) continue;
+    for (const [name, value] of Object.entries(variant.properties as Record<string, unknown>)) {
+      const values = propertyValues.get(name) ?? [];
+      values.push(value);
+      propertyValues.set(name, values);
+    }
+  }
+  const properties = Object.fromEntries(
+    [...propertyValues].map(([name, values]) => [name, mergeXaiPropertySchemas(values)]),
+  );
+  const required = stringRequiredFields(variants[0]?.required);
+
+  return {
+    ...metadata,
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+    ...("value" in additionalProperties ? { additionalProperties: additionalProperties.value } : {}),
+  };
 }
 
 function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
@@ -825,10 +1168,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
     formatErrorBody: formatOpenAIChatErrorBody,
 
     buildRequest(parsed: OcxParsedRequest) {
-      const hasCredential = typeof provider.apiKey === "string" && provider.apiKey.trim().length > 0;
-      if ((provider.authMode === "key" || provider.authMode === "oauth") && !provider.keyOptional && !hasCredential) {
-        throw new Error(`${provider.adapter} requires a non-empty credential (authMode: ${provider.authMode})`);
-      }
+      const { url, headers, hasCredential } = openAIChatTransport(provider);
 
       const messages = messagesToChatFormat(parsed, provider);
       const tools = toolsToChatFormatForProvider(parsed, provider);
@@ -844,11 +1184,11 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       // an explicit value here makes the Responses parser's serviceTier projection ineffective.
       //
       // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
-      // extension and 66 registry providers share this adapter, several of which reject
-      // unknown body fields. Forwarding unconditionally would turn a caller-supplied
-      // `service_tier` into an upstream 400 on those routes. `supportsServiceTier` is the
-      // Responses-wire flag (applyServiceTierGate) and deliberately does not gate this path.
-      if (provider.chatServiceTier && parsed.options.serviceTier !== undefined) {
+      // extension and 66 registry providers share this adapter. A provider-wide Chat opt-in
+      // authorizes undeclared models; an exact model declaration can authorize or deny one
+      // model. Provider-level false remains fail-closed.
+      if (canSerializeServiceTierForChatModel(provider, parsed.modelId)
+        && parsed.options.serviceTier !== undefined) {
         body.service_tier = parsed.options.serviceTier;
       }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
@@ -980,11 +1320,6 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
       }
       if (parsed.stream) body.stream_options = { include_usage: true };
-
-      const url = openaiChatCompletionsUrl(provider.baseUrl);
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (hasCredential) headers["Authorization"] = `Bearer ${provider.apiKey}`;
-      if (provider.headers) Object.assign(headers, provider.headers);
 
       const bodyJson = JSON.stringify(body);
       if (isDebugEnabled()) {

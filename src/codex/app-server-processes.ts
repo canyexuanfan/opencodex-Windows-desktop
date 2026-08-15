@@ -10,7 +10,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isProcessAlive, waitForExit } from "../lib/process-control";
-import { resolveTrustedWindowsPowerShellExe } from "../lib/windows-elevation";
+import {
+  resolveTrustedWindowsPowerShellExe,
+  resolveTrustedWindowsTaskkillExe,
+} from "../lib/windows-elevation";
 import { readCodexCatalogPath } from "./catalog/parsing";
 
 export const STALE_CODEX_APP_SERVER_HINT =
@@ -83,6 +86,14 @@ export interface CodexAppServerProcessIo {
   listSnapshots?: () => ProcessSnapshot[];
   isAlive?: (pid: number) => boolean;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Windows termination seam: drives the taskkill branch without a real exec. */
+  execFile?: (file: string, args: readonly string[]) => void;
+  /**
+   * Signal seam for the Unix branch and the taskkill fallback. Without it,
+   * injecting `kill` bypasses defaultKillCodexAppServer entirely, so the
+   * fallback could never be observed.
+   */
+  processKill?: (pid: number, signal: NodeJS.Signals) => void;
   waitExit?: (pid: number, timeoutMs: number) => boolean;
   now?: () => number;
   readStartMs?: (pid: number) => number | null;
@@ -658,13 +669,57 @@ export interface RestartCodexAppServersResult {
   failed: Array<{ pid: number; error: string }>;
 }
 
+/**
+ * Platform-appropriate termination for a matched app-server.
+ *
+ * On Windows `process.kill(pid, "SIGTERM")` is not a graceful signal — it is an
+ * unconditional terminate of that one process, and it leaves the process tree
+ * behind. `taskkill /T /F` is therefore not an escalation there: the kill was
+ * hard either way, and `/T` adds the child cleanup that keeps an app-server's
+ * children from being orphaned when the window is closed without a quit
+ * affordance. That matters most on Windows precisely because there is no Ctrl+Q.
+ *
+ * The asymmetry with Unix is deliberate and must not be "fixed" into symmetry:
+ * on Unix, SIGTERM really is graceful, and following it with SIGKILL would ask a
+ * harsher consent than a restart click gives. Survivors are reported instead.
+ *
+ * The executable is resolved from a trusted system directory rather than PATH,
+ * matching how this file already resolves PowerShell — an unqualified
+ * `taskkill` is a hijack surface.
+ */
+function defaultKillCodexAppServer(
+  pid: number,
+  signal: NodeJS.Signals,
+  io: CodexAppServerProcessIo = {},
+): void {
+  const platform = io.platform ?? process.platform;
+  const signalProcess = io.processKill ?? ((target: number, sig: NodeJS.Signals) => {
+    process.kill(target, sig);
+  });
+  if (platform !== "win32") {
+    signalProcess(pid, signal);
+    return;
+  }
+  const exec = io.execFile ?? ((file: string, args: readonly string[]) => {
+    execFileSync(file, [...args], { stdio: "ignore", timeout: 5_000, windowsHide: true });
+  });
+  try {
+    exec(resolveTrustedWindowsTaskkillExe(), ["/PID", String(pid), "/T", "/F"]);
+  } catch {
+    // Fall back to the previous behavior rather than reporting a failure the old
+    // code would not have reported.
+    signalProcess(pid, signal);
+  }
+}
+
+
 /** Send SIGTERM to matched processes and wait briefly; never escalates to SIGKILL. */
 export function restartCodexAppServers(
   processes: readonly CodexAppServerProcess[] = listCodexAppServerProcesses(),
   io: CodexAppServerProcessIo = {},
 ): RestartCodexAppServersResult {
   const isAlive = io.isAlive ?? isProcessAlive;
-  const kill = io.kill ?? ((pid, signal) => { process.kill(pid, signal); });
+  const kill = io.kill ?? ((pid, signal) => { defaultKillCodexAppServer(pid, signal, io); });
   const wait = io.waitExit ?? waitForExit;
   const now = io.now ?? Date.now;
   const requested = processes.map(process => process.pid);

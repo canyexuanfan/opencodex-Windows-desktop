@@ -31,8 +31,16 @@ import {
   SYSTEM_RESTART_EXPECTED_PID_HEADER,
   parseExpectedSystemRestartPid,
 } from "../../lib/system-restart-contract";
+import {
+  CODEX_APP_SERVER_STATE_PATH,
+  CODEX_RESTART_PATH,
+} from "../../lib/codex-restart-contract";
 import { jsonResponse } from "../auth-cors";
 import { getInspectionCounters } from "../relay";
+import type {
+  performCodexRestart,
+  readCodexAppServerState,
+} from "../../codex/app-server-restart-service";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
 
@@ -135,6 +143,36 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       drainTimeoutMs: result.drainTimeoutMs,
       alreadyDraining: result.alreadyDraining,
     }, 202, req, config);
+  }
+
+  if (
+    (url.pathname === CODEX_APP_SERVER_STATE_PATH && req.method === "GET")
+    || (url.pathname === CODEX_RESTART_PATH && req.method === "POST")
+  ) {
+    // Resolved inside the path check, not at the top of this function: every
+    // /api/system/* request runs through here, and an unconditional import would
+    // pull the platform process-enumeration helpers into requests that never
+    // touch them.
+    // An explicit branch rather than `??`: the seam is an optional property, and
+    // narrowing through a nullish default keeps its `undefined` in the union.
+    let service: {
+      readState: typeof readCodexAppServerState;
+      performRestart: typeof performCodexRestart;
+    };
+    const injected = ctx.deps.codexRestartService;
+    if (injected) {
+      service = injected;
+    } else {
+      const module = await import("../../codex/app-server-restart-service");
+      service = {
+        readState: module.readCodexAppServerState,
+        performRestart: module.performCodexRestart,
+      };
+    }
+    if (req.method === "GET") {
+      return jsonResponse(service.readState(), 200, req, config);
+    }
+    return jsonResponse(await service.performRestart(), 200, req, config);
   }
 
   return null;
