@@ -28,13 +28,13 @@ const goModels = [
   { id: "sonnet-5", provider: "jd-claude", owned_by: "jd" },
 ] as unknown as CatalogModel[];
 
-function build(overrides: { featured?: string[]; modelPickerOrder?: string[] }) {
+function build(overrides: { featured?: string[]; modelPickerOrder?: unknown }) {
   const entries = buildCatalogEntriesFromObservedState({
     template: template() as never,
     gptSlugs: [],
     goModels,
     featured: overrides.featured,
-    modelPickerOrder: overrides.modelPickerOrder,
+    modelPickerOrder: overrides.modelPickerOrder as string[] | undefined,
     wsEnabled: false,
     multiAgentMode: "default",
     exactComboSlugs: new Set(),
@@ -50,6 +50,24 @@ function build(overrides: { featured?: string[]; modelPickerOrder?: string[] }) 
 }
 
 describe("modelPickerOrder (#1649)", () => {
+  test.each([
+    ["non-array string", "tyler/deepseek-v4-pro"],
+    ["null", null],
+    ["number", 42],
+  ])("malformed %s input is ignored without crashing catalog sync", (_label, modelPickerOrder) => {
+    const p = build({ modelPickerOrder });
+    expect(p["tyler/deepseek-v4-pro"]).toBe(5);
+    expect(p["jd-chat/kimi-k3"]).toBe(5);
+  });
+
+  test("non-string array members are ignored while valid slugs survive", () => {
+    const p = build({
+      modelPickerOrder: ["tyler/deepseek-v4-pro", null, 42, { slug: "jd-chat/kimi-k3" }],
+    });
+    expect(p["tyler/deepseek-v4-pro"]).toBeGreaterThanOrEqual(1000);
+    expect(p["jd-chat/kimi-k3"]).toBe(5);
+  });
+
   test("unset leaves every non-featured routed row at the flat default priority", () => {
     const p = build({});
     expect(p["jd-chat/glm-5.2"]).toBe(5);

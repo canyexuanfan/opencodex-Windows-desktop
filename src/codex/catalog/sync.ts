@@ -461,7 +461,9 @@ export function buildCatalogEntriesFromObservedState({
   // modelPickerOrder is unset the helper is a no-op and every priority below is byte-identical to
   // before. The spawn_agent candidate window is derived separately from SPAWN_PRIORITY_FIELD, so
   // this display reorder cannot change which rows are spawn candidates.
-  const pickerOrder = (modelPickerOrder ?? []).filter(id => typeof id === "string" && id.length > 0);
+  const pickerOrder = Array.isArray(modelPickerOrder)
+    ? modelPickerOrder.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
   const pickerOrderRank = new Map(pickerOrder.map((slug, i) => [slug, i] as const));
   const pickerOrderActive = pickerOrder.length > 0;
   // The display band reuses the existing high priority tier (>= PICKER_ORDER_PRIORITY_BASE, the
