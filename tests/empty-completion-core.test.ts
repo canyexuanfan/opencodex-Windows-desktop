@@ -3,6 +3,7 @@ import type { ProviderAdapter } from "../src/adapters/base";
 import {
   providerRequestPacingStatus,
   resetProviderRequestPacingForTest,
+  setProviderRequestPacingLimitsForTest,
   setProviderRequestPacingRuntimeForTest,
 } from "../src/providers/request-pacing";
 import type { RequestLogContext } from "../src/server/request-log";
@@ -121,6 +122,53 @@ afterEach(() => {
 });
 
 describe("empty-completion core integration", () => {
+  test("streaming runTurn returns the local 429 contract when initial pacing admission is rejected", async () => {
+    setProviderRequestPacingLimitsForTest({ maxQueueDepth: 0 });
+    const overloaded = config("test-run-turn");
+    overloaded.providers.fixture!.requestPacing = { enabled: true, minIntervalMs: 100 };
+
+    const response = await handleResponses(request(true), overloaded, { model: "", provider: "" });
+    const body = await response.json() as { error?: { type?: string } };
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(body.error?.type).toBe("rate_limit_error");
+    expect(runTurnCalls).toBe(0);
+  });
+
+  test("streaming runTurn closes with an in-band error when retry pacing admission is rejected", async () => {
+    const paced = config("test-run-turn");
+    paced.providers.fixture!.requestPacing = { enabled: true, minIntervalMs: 100 };
+    customRunTurn = async (parsed, _incoming, emit) => {
+      runTurnCalls += 1;
+      parsedAttempts.push(parsed);
+      setProviderRequestPacingLimitsForTest({ maxQueueDepth: 0 });
+      emit({ type: "done" });
+    };
+
+    const response = await handleResponses(request(true), paced, { model: "", provider: "" });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let body = "";
+    const completed = (async () => {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) return "complete" as const;
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+    })();
+    const outcome = await Promise.race([
+      completed,
+      Bun.sleep(100).then(() => "timeout" as const),
+    ]);
+    if (outcome === "timeout") await reader.cancel("test timeout");
+
+    expect(outcome).toBe("complete");
+    expect(body).toContain("empty_completion_retry_failed");
+    expect(runTurnCalls).toBe(1);
+  });
+
   for (const stream of [true, false]) {
     test(`runTurn ${stream ? "streaming" : "non-streaming"} retries on a fresh queue`, async () => {
       attemptEvents = [

@@ -118,7 +118,10 @@ import { createTranslatorBudget, isTranslatorBudgetExceededError, type Translato
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { SERVICE_TIER_ADAPTERS, serviceTierSupportForModel } from "../../providers/service-tier";
-import { waitForProviderRequestSlot } from "../../providers/request-pacing";
+import {
+  RequestPacingQueueOverloadError,
+  waitForProviderRequestSlot,
+} from "../../providers/request-pacing";
 import { slugsEquivalent } from "../../providers/slug-codec";
 import { applyOpenAiVirtualModel, resolveOpenAiCompactModel } from "../../providers/openai-virtual-models";
 import { isUsageDebugEnabled } from "../../usage/debug";
@@ -3194,10 +3197,19 @@ async function handleResponsesInner(
 
   if (adapter.runTurn) {
     const runTurnAbort = new AbortController();
-    linkAbortSignal(runTurnAbort, options.abortSignal);
+    const cleanupRunTurnAbort = linkAbortSignal(runTurnAbort, options.abortSignal);
     const queue = createAdapterEventQueue({
       onBacklogExceeded: () => runTurnAbort.abort(),
     });
+    // Initial admission must settle before the streaming Response commits HTTP 200.
+    // Let the outer Responses facade preserve the local retryable-429 contract.
+    try {
+      await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
+    } catch (error) {
+      cleanupRunTurnAbort();
+      queue.close();
+      throw error;
+    }
     // One attempt of the runTurn transport, against an explicit queue. The
     // empty-completion guard re-invokes the IDENTICAL turn (same parsed request,
     // same forwarded headers, same abort signal) through a fresh queue, so the
@@ -3206,9 +3218,12 @@ async function handleResponsesInner(
     const runTurnAttempt = async (
       targetQueue: AdapterEventQueue,
       recovery?: AttemptRecoveryKind,
+      pacingSlotAcquired = false,
     ): Promise<void> => {
-      await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
       try {
+        if (!pacingSlotAcquired) {
+          await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
+        }
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery);
         await adapter.runTurn?.(
           parsed,
@@ -3216,10 +3231,18 @@ async function handleResponsesInner(
           targetQueue.push,
         );
       } catch (err) {
-        targetQueue.push({
-          type: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
+        targetQueue.push(err instanceof RequestPacingQueueOverloadError
+          ? {
+              type: "error",
+              status: 429,
+              errorType: "rate_limit_error",
+              retryable: true,
+              message: err.message,
+            }
+          : {
+              type: "error",
+              message: err instanceof Error ? err.message : String(err),
+            });
       } finally {
         // Cursor assigns a stable conversation id inside runTurn on the first headerless
         // turn; backfill so Logs can filter/total that opening request (#330 / #522).
@@ -3229,7 +3252,7 @@ async function handleResponsesInner(
         targetQueue.close();
       }
     };
-    const runTurn = async (): Promise<void> => runTurnAttempt(queue);
+    const runTurn = async (): Promise<void> => runTurnAttempt(queue, undefined, true);
     // The empty-completion retry re-runs the turn against a fresh queue: the
     // first queue is closed once its attempt settles, and pushing into it after
     // close is a silent no-op.
