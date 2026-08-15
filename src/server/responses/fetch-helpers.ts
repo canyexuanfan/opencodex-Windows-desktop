@@ -144,11 +144,15 @@ export interface PaceAwareFetch {
 
 export type ProviderFetch = typeof globalThis.fetch & PaceAwareFetch;
 
+export interface ProviderFetchOptions {
+  providerName?: string;
+  modelId?: string;
+}
+
 export function providerFetch(
   provider: OcxProviderConfig,
-  providerName?: string,
-  modelId?: string,
   runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
+  options: ProviderFetchOptions = {},
 ): ProviderFetch {
   const base = (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
   // ChatGPT Codex backend: streaming turns ride the responses_websockets
@@ -160,8 +164,8 @@ export function providerFetch(
     }
     return base(input, init);
   };
-  const waitForPacing = (signal?: AbortSignal) => providerName
-    ? waitForProviderRequestSlot(providerName, provider, modelId, signal)
+  const waitForPacing = (signal?: AbortSignal) => options.providerName
+    ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
     : Promise.resolve();
   const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
     await waitForPacing(init?.signal ?? undefined);

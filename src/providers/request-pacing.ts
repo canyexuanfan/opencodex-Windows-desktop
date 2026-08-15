@@ -1,4 +1,5 @@
 import type { OcxProviderConfig, RequestPacingRule } from "../types";
+import type { GenerationContext } from "../lib/state-store-sweeper";
 
 export const REQUEST_PACING_MAX_QUEUE_DEPTH = 256;
 export const REQUEST_PACING_MAX_QUEUE_AGE_MS = 60_000;
@@ -18,6 +19,13 @@ export class RequestPacingQueueOverloadError extends Error {
       ? `request pacing queue for provider '${providerName}' is full`
       : `request pacing queue for provider '${providerName}' exceeded the maximum queued age`);
     this.name = "RequestPacingQueueOverloadError";
+  }
+}
+
+export class RequestPacingProviderRemovedError extends Error {
+  constructor(public readonly providerName: string) {
+    super(`request pacing provider '${providerName}' was removed`);
+    this.name = "RequestPacingProviderRemovedError";
   }
 }
 
@@ -65,6 +73,7 @@ const defaultRuntime: RequestPacingRuntime = {
   enqueueMicrotask: queueMicrotask,
 };
 let runtime = defaultRuntime;
+let lastReconciledGeneration = 0;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
@@ -122,6 +131,18 @@ function rejectExpiredWaiters(providerName: string, state: ProviderPacer, now: n
       "queue_expired",
       pacingRetryAfterSeconds(state, waiter.modelId, now),
     ));
+  }
+}
+
+function removeProviderPacer(providerName: string, state: ProviderPacer): void {
+  if (state.timer) runtime.clearTimer(state.timer);
+  state.timer = undefined;
+  pacers.delete(providerName);
+  const waiters = state.queue.splice(0);
+  const error = new RequestPacingProviderRemovedError(providerName);
+  for (const waiter of waiters) {
+    if (waiter.abort) waiter.signal?.removeEventListener("abort", waiter.abort);
+    waiter.reject(error);
   }
 }
 
@@ -267,10 +288,23 @@ export function setProviderRequestPacingRuntimeForTest(nextRuntime: RequestPacin
   runtime = nextRuntime;
 }
 
+export function reconcileProviderRequestPacing(context: GenerationContext): number {
+  if (context.generation <= lastReconciledGeneration) return 0;
+  let removed = 0;
+  for (const [providerName, state] of pacers) {
+    if (context.providerNames.has(providerName)) continue;
+    removeProviderPacer(providerName, state);
+    removed += 1;
+  }
+  lastReconciledGeneration = context.generation;
+  return removed;
+}
+
 export function resetProviderRequestPacingForTest(): void {
   for (const state of pacers.values()) if (state.timer) runtime.clearTimer(state.timer);
   pacers.clear();
   maxQueueDepth = REQUEST_PACING_MAX_QUEUE_DEPTH;
   maxQueueAgeMs = REQUEST_PACING_MAX_QUEUE_AGE_MS;
   runtime = defaultRuntime;
+  lastReconciledGeneration = 0;
 }

@@ -595,7 +595,10 @@ async function retryCodexPoolOnAlternateAccount(
       upstream.signal,
       connectMs,
       stream,
-      providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity),
+      providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+        providerName: route.providerName,
+        modelId: route.modelId,
+      }),
       // Credential-bearing forward send: never follow a redirect into a
       // dead-host rejection after the credential was seen (#914).
       route.provider.authMode === "forward",
@@ -2338,7 +2341,10 @@ async function handleResponsesInner(
             headers: request.headers,
             body: request.body,
           }, recovery), upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity),
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }),
             route.provider.authMode === "forward")
             // Every real attempt response — including an intermediate 5xx the
             // retry wrapper replaces — proves the host was reached (#914 review).
@@ -2400,7 +2406,10 @@ async function handleResponsesInner(
               headers: request.headers,
               body: request.body,
             }, recovery), upstream.signal, connectMs, parsed.stream,
-              providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity),
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              }),
               route.provider.authMode === "forward")
               .then(res => {
                 settleObservedHostResponse();
@@ -2991,9 +3000,8 @@ async function handleResponsesInner(
     }
     const imageProviderFetch = providerFetch(
       route.provider,
-      route.providerName,
-      route.modelId,
       options.codexWsRuntimeIdentity,
+      { providerName: route.providerName, modelId: route.modelId },
     );
     const imgResponse = await runWithImageBridge({
       parsed, adapter,
@@ -3339,7 +3347,10 @@ async function handleResponsesInner(
             headers: builtInitialRequest.headers,
             body: builtInitialRequest.body,
           }, recovery), upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity));
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }));
         },
         { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
       );
@@ -3421,7 +3432,10 @@ async function handleResponsesInner(
           return await fetchWithHeaderTimeout(retryRequest.url, {
             method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
           }, upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity));
+            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: route.modelId,
+            }));
         } finally {
           retryRequest.releaseBodyObservation?.();
         }
@@ -3750,7 +3764,10 @@ async function handleResponsesInner(
               upstream.signal,
               connectMs,
               nextParsed.stream,
-              providerFetch(route.provider, route.providerName, nextParsed.modelId, options.codexWsRuntimeIdentity),
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: nextParsed.modelId,
+              }),
             );
           },
           { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },

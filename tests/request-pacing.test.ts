@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   providerRequestPacingStatus,
+  reconcileProviderRequestPacing,
   RequestPacingQueueOverloadError,
   requestPacingIntervalMs,
   resetProviderRequestPacingForTest,
@@ -23,6 +24,7 @@ function provider(requestPacing: OcxProviderConfig["requestPacing"]): OcxProvide
 function fakePacingClock(): {
   runtime: RequestPacingRuntime;
   now: () => number;
+  pendingTimerCount: () => number;
   advanceBy: (delayMs: number) => void;
 } {
   let now = 0;
@@ -40,6 +42,7 @@ function fakePacingClock(): {
       enqueueMicrotask: callback => callback(),
     },
     now: () => now,
+    pendingTimerCount: () => timers.size,
     advanceBy: (delayMs) => {
       const target = now + delayMs;
       while (true) {
@@ -91,7 +94,7 @@ describe("provider request pacing queue", () => {
       ...provider({ enabled: true, requestsPerMinute: 600 }),
       fetch: fetchImpl,
     } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
-    const send = providerFetch(configured, "demo", "model-a");
+    const send = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
     const pending = [send("https://example.test/v1/chat/completions"), send("https://example.test/v1/chat/completions"), send("https://example.test/v1/chat/completions")];
     await Bun.sleep(10);
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(2);
@@ -150,6 +153,43 @@ describe("provider request pacing queue", () => {
       providerName: "demo",
     });
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(0);
+  });
+
+  test("generation reconciliation removes deleted providers and rejects their queued waiters", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = provider({ enabled: true, minIntervalMs: 100 });
+
+    await waitForProviderRequestSlot("live", configured, "model");
+    await waitForProviderRequestSlot("removed", configured, "model");
+    const liveQueued = waitForProviderRequestSlot("live", configured, "model");
+    const removedQueued = waitForProviderRequestSlot("removed", configured, "model");
+    const removedOutcome = removedQueued.then(
+      () => null,
+      error => error,
+    );
+    expect(clock.pendingTimerCount()).toBe(2);
+
+    expect(reconcileProviderRequestPacing({
+      generation: 1,
+      providerNames: new Set(["live"]),
+      comboIds: new Set(),
+      comboTargets: new Set(),
+      codexAccountIds: new Set(),
+      oauthAccountKeys: new Set(),
+      configRoots: new Set(),
+    })).toBe(1);
+
+    expect(await removedOutcome).toMatchObject({
+      name: "RequestPacingProviderRemovedError",
+      providerName: "removed",
+    });
+    expect(providerRequestPacingStatus("removed", configured).queued).toBe(0);
+    expect(providerRequestPacingStatus("live", configured).queued).toBe(1);
+    expect(clock.pendingTimerCount()).toBe(1);
+    clock.advanceBy(100);
+    await liveQueued;
+    expect(clock.pendingTimerCount()).toBe(0);
   });
 
   test("maps pacing admission overload to 429 with Retry-After", async () => {
@@ -214,7 +254,7 @@ describe("provider request pacing queue", () => {
       ...provider({ enabled: true, minIntervalMs: 120 }),
       fetch: fetchImpl,
     } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
-    const executor = providerFetch(configured, "demo", "model-a");
+    const executor = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
     await fetchWithHeaderTimeout("https://example.test/v1/chat/completions", {}, new AbortController().signal, 50, false, executor);
     const second = await fetchWithHeaderTimeout("https://example.test/v1/chat/completions", {}, new AbortController().signal, 50, false, executor);
     expect(second.status).toBe(200);
