@@ -63,11 +63,19 @@ function isPidList(value: unknown): value is number[] {
     && value.every(entry => typeof entry === "number" && Number.isSafeInteger(entry) && entry > 0);
 }
 
-/** Runtime guard for GUI consumers: a 2xx body is not automatically this shape. */
+/**
+ * Runtime guard for GUI consumers: a 2xx body is not automatically this shape.
+ *
+ * Structure is not enough. A body can be structurally valid and still contradict
+ * itself — `code: "stopped"` alongside surviving pids, or `success: true` with a
+ * failure code — and a caller that trusts it reports a success that did not happen.
+ * A version-skewed or regressed proxy is exactly how that arrives, so the
+ * cross-field invariants are checked here rather than assumed.
+ */
 export function isCodexRestartResponse(value: unknown): value is CodexRestartResponse {
   if (typeof value !== "object" || value === null) return false;
   const view = value as Record<string, unknown>;
-  return typeof view.success === "boolean"
+  const structural = typeof view.success === "boolean"
     && typeof view.synced === "boolean"
     && typeof view.stateBefore === "string"
     && APP_SERVER_STATES.includes(view.stateBefore)
@@ -77,6 +85,25 @@ export function isCodexRestartResponse(value: unknown): value is CodexRestartRes
     && isPidList(view.stopped)
     && isPidList(view.surviving)
     && isPidList(view.failed);
+  if (!structural) return false;
+
+  const success = view.success as boolean;
+  const code = view.code as CodexRestartCode;
+  const surviving = view.surviving as number[];
+  const failed = view.failed as number[];
+  const stopped = view.stopped as number[];
+
+  // `success` and `code` must agree: only partially_stopped is an unsuccessful code.
+  if (success !== (code !== "partially_stopped")) return false;
+  // A clean outcome cannot leave anything behind.
+  if (success && (surviving.length > 0 || failed.length > 0)) return false;
+  // An unsuccessful outcome must name what survived.
+  if (!success && surviving.length === 0 && failed.length === 0) return false;
+  // Nothing can be reported stopped when the service says nothing was running.
+  if ((code === "nothing_running" || code === "enumeration_unavailable") && stopped.length > 0) {
+    return false;
+  }
+  return true;
 }
 
 export function isCodexAppServerStateResponse(

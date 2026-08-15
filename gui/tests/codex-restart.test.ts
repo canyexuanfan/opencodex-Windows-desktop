@@ -24,6 +24,7 @@ const formatters = {
   formatFailure: (status: number) => `http ${status}`,
   formatUnreachable: () => "unreachable",
   formatMalformed: () => "malformed",
+  formatTimeout: () => "timeout",
 };
 
 describe("requestCodexRestart", () => {
@@ -46,17 +47,31 @@ describe("requestCodexRestart", () => {
     expect(outcome).toEqual({ ok: false, message: "http 500" });
   });
 
-  test("treats a dropped connection as failure, unlike the stop route", async () => {
+  test("a network failure is reported as unreachable", async () => {
     // requestProxyStop reads a dropped socket as "the stop started". This route
     // does not kill the process serving it, so silence means something broke.
     const outcome = await requestCodexRestart("", {
       fetchFn: (async () => {
-        throw new DOMException("The operation timed out.", "AbortError");
+        throw new TypeError("Failed to fetch");
       }) as typeof fetch,
       ...formatters,
     });
 
     expect(outcome).toEqual({ ok: false, message: "unreachable" });
+  });
+
+  test("a timeout is reported separately, because the work may still be running", async () => {
+    // The proxy never sees the client abort: a long catalog sync can still stop
+    // app-servers afterwards. Saying "could not reach the proxy" would be a lie
+    // the user acts on.
+    const outcome = await requestCodexRestart("", {
+      fetchFn: (async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as typeof fetch,
+      ...formatters,
+    });
+
+    expect(outcome).toEqual({ ok: false, message: "timeout" });
   });
 
   test("rejects an unparseable 2xx body", async () => {
@@ -130,16 +145,46 @@ describe("requestCodexRestart", () => {
     expect(method).toBe("POST");
   });
 
-  test("passes each response code through for the caller to map", async () => {
-    const codes = ["stopped", "nothing_running", "enumeration_unavailable", "partially_stopped"] as const;
-    for (const code of codes) {
+  test("passes each response code through with a self-consistent body", async () => {
+    const cases = [
+      { code: "stopped", success: true, stopped: [4242], surviving: [], failed: [] },
+      { code: "nothing_running", success: true, stopped: [], surviving: [], failed: [] },
+      { code: "enumeration_unavailable", success: true, stopped: [], surviving: [], failed: [] },
+      { code: "partially_stopped", success: false, stopped: [], surviving: [4242], failed: [] },
+    ] as const;
+    for (const patch of cases) {
       const outcome = await requestCodexRestart("", {
-        fetchFn: (async () => response({ ...STOPPED, code })) as typeof fetch,
+        fetchFn: (async () => response({ ...STOPPED, ...patch })) as typeof fetch,
         ...formatters,
       });
       expect(outcome.ok).toBe(true);
-      expect(outcome.result?.code).toBe(code);
+      expect(outcome.result?.code).toBe(patch.code);
     }
+  });
+
+  test("rejects a body whose code contradicts its success flag", async () => {
+    // A version-skewed or regressed proxy is how this arrives; trusting it would
+    // report a success that never happened.
+    const successWithFailureCode = await requestCodexRestart("", {
+      fetchFn: (async () => response({ ...STOPPED, code: "partially_stopped" })) as typeof fetch,
+      ...formatters,
+    });
+    const cleanCodeWithSurvivors = await requestCodexRestart("", {
+      fetchFn: (async () => response({ ...STOPPED, surviving: [99] })) as typeof fetch,
+      ...formatters,
+    });
+    const nothingRunningButStopped = await requestCodexRestart("", {
+      fetchFn: (async () => response({
+        ...STOPPED,
+        code: "nothing_running",
+        stopped: [4242],
+      })) as typeof fetch,
+      ...formatters,
+    });
+
+    expect(successWithFailureCode).toEqual({ ok: false, message: "malformed" });
+    expect(cleanCodeWithSurvivors).toEqual({ ok: false, message: "malformed" });
+    expect(nothingRunningButStopped).toEqual({ ok: false, message: "malformed" });
   });
 });
 

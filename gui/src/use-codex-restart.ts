@@ -34,6 +34,7 @@ export function useCodexRestart(apiBase: string): CodexRestartController {
       formatFailure: status => t("dash.codexRestartFailed", { status: String(status) }),
       formatUnreachable: () => t("dash.codexRestartUnreachable"),
       formatMalformed: () => t("dash.codexRestartMalformed"),
+      formatTimeout: () => t("dash.codexRestartTimeout"),
     });
     setRestarting(false);
 
@@ -43,14 +44,19 @@ export function useCodexRestart(apiBase: string): CodexRestartController {
     }
 
     const result = outcome.result;
+    // Honor `success` rather than inferring it from `code` alone. The contract
+    // guard rejects a body where the two disagree, but a caller that read only the
+    // code would still report a success the proxy never claimed.
+    if (!result.success) {
+      alert(t("dash.codexRestartPartial", { count: String(result.surviving.length) }));
+      return result.code;
+    }
     if (result.code === "stopped") {
       alert(t("dash.codexRestartDone", { count: String(result.stopped.length) }));
     } else if (result.code === "nothing_running") {
       alert(t("dash.codexRestartNothing"));
-    } else if (result.code === "enumeration_unavailable") {
-      alert(t("dash.codexRestartUnknown"));
     } else {
-      alert(t("dash.codexRestartPartial", { count: String(result.surviving.length) }));
+      alert(t("dash.codexRestartUnknown"));
     }
     return result.code;
   }, [apiBase, t]);
