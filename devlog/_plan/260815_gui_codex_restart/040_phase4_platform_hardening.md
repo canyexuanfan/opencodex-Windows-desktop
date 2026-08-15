@@ -219,3 +219,22 @@ for that review. Delivery therefore requires, beyond the gates above:
 - Wording downgrade: the local push gate is an **early warning**. Final enforcement
   layer: repository CI on `dev`.
 
+## Platform termination (WP4)
+
+`restartCodexAppServers` now terminates through `defaultKillCodexAppServer`,
+which branches by platform:
+
+| Platform | Termination | Rationale |
+|---|---|---|
+| Windows | `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F`, resolved from a trusted system directory | `process.kill(pid, "SIGTERM")` on Windows is already an unconditional terminate of one process. `/T` is not an escalation — it adds the child cleanup that kill lacks, which matters most here because Windows has no Ctrl+Q and users close the window instead of quitting |
+| Linux | `process.kill(pid, "SIGTERM")` only | procfs enumeration is the Linux path; SIGTERM really is graceful there, so a follow-up SIGKILL would ask a harsher consent than a restart click gives |
+| macOS | `process.kill(pid, "SIGTERM")` only | same reasoning as Linux |
+
+The asymmetry is deliberate. Survivors are reported as `partially_stopped`
+rather than escalated.
+
+If `taskkill` fails on Windows, the code falls back to `process.kill` so the new
+path can never be worse than the one it replaced. The executable is resolved from
+a trusted system directory rather than PATH, matching `resolveTrustedWindowsPowerShellExe`
+— an unqualified `taskkill` is a hijack surface.
+
