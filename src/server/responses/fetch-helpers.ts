@@ -137,17 +137,19 @@ export function safeOriginLabel(url: string): string {
 
 
 
-interface PaceAwareFetch {
+export interface PaceAwareFetch {
   waitForPacing?: (signal?: AbortSignal) => Promise<void>;
   unpacedFetch?: typeof globalThis.fetch;
 }
+
+export type ProviderFetch = typeof globalThis.fetch & PaceAwareFetch;
 
 export function providerFetch(
   provider: OcxProviderConfig,
   providerName?: string,
   modelId?: string,
   runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
-): typeof globalThis.fetch {
+): ProviderFetch {
   const base = (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
   // ChatGPT Codex backend: streaming turns ride the responses_websockets
   // transport (measured ~3s faster TTFT than the SSE POST queue); everything
@@ -168,7 +170,11 @@ export function providerFetch(
   const preconnect = (...args: Parameters<typeof globalThis.fetch.preconnect>): void => {
     base.preconnect?.(...args);
   };
-  return Object.assign(wrapped, { preconnect, waitForPacing, unpacedFetch: Object.assign(unpaced, { preconnect }) });
+  return Object.assign(wrapped, {
+    preconnect,
+    waitForPacing,
+    unpacedFetch: Object.assign(unpaced, { preconnect }),
+  });
 }
 
 
@@ -182,7 +188,7 @@ export async function fetchWithHeaderTimeout(
   executor: typeof globalThis.fetch = globalThis.fetch,
   manualRedirect = false,
 ): Promise<Response> {
-  const pacing = executor as typeof globalThis.fetch & PaceAwareFetch;
+  const pacing = executor as ProviderFetch;
   await pacing.waitForPacing?.(abortSignal);
   const fetchExecutor = pacing.unpacedFetch ?? executor;
   const timeout = new AbortController();

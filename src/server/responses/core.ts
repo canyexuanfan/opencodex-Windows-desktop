@@ -2989,6 +2989,12 @@ async function handleResponsesInner(
       && (tc.name === "image_generation" || imgPlan.toolNames.has(tc.name))) {
       parsed.options.toolChoice = { ...tc, name: IMAGE_GEN_TOOL_NAME };
     }
+    const imageProviderFetch = providerFetch(
+      route.provider,
+      route.providerName,
+      route.modelId,
+      options.codexWsRuntimeIdentity,
+    );
     const imgResponse = await runWithImageBridge({
       parsed, adapter,
       incomingMeta: { headers: selectedForwardHeaders, abortSignal: options.abortSignal, translatorBudget },
@@ -3005,7 +3011,8 @@ async function handleResponsesInner(
           : clampImageMaxRounds(config.images?.videoMaxRounds ?? 2),
       connectTimeoutMs: config.connectTimeoutMs ?? 200_000,
       stallTimeoutSec: config.stallTimeoutSec,
-      fetchImpl: providerFetch(route.provider, route.providerName, route.modelId, options.codexWsRuntimeIdentity),
+      waitForRequestSlot: imageProviderFetch.waitForPacing,
+      fetchImpl: imageProviderFetch.unpacedFetch ?? imageProviderFetch,
       onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
       ...(vidPlan?.timeoutMs ? { videoTimeoutMs: vidPlan.timeoutMs } : {}),
       onUsage: usage => {
@@ -3140,6 +3147,7 @@ async function handleResponsesInner(
     const queue = createAdapterEventQueue({
       onBacklogExceeded: () => runTurnAbort.abort(),
     });
+    await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
     const runTurn = async (): Promise<void> => {
       try {
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);

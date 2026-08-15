@@ -36,10 +36,16 @@ interface ProviderPacer {
   queue: Waiter[];
   providerNextStartAt: number;
   modelNextStartAt: Map<string, number>;
-  timer?: ReturnType<typeof setTimeout>;
-  active: boolean;
+  timer?: unknown;
   lastStartedAt?: number;
   lastModelId?: string;
+}
+
+export interface RequestPacingRuntime {
+  now: () => number;
+  setTimer: (callback: () => void, delayMs: number) => unknown;
+  clearTimer: (handle: unknown) => void;
+  enqueueMicrotask: (callback: () => void) => void;
 }
 
 export interface ProviderRequestPacingStatus {
@@ -52,6 +58,13 @@ export interface ProviderRequestPacingStatus {
 }
 
 const pacers = new Map<string, ProviderPacer>();
+const defaultRuntime: RequestPacingRuntime = {
+  now: Date.now,
+  setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  enqueueMicrotask: queueMicrotask,
+};
+let runtime = defaultRuntime;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("The operation was aborted", "AbortError");
@@ -113,14 +126,13 @@ function rejectExpiredWaiters(providerName: string, state: ProviderPacer, now: n
 }
 
 function runQueue(providerName: string, state: ProviderPacer): void {
-  if (state.active) return;
   if (state.queue.length === 0) {
-    if (state.timer) clearTimeout(state.timer);
+    if (state.timer) runtime.clearTimer(state.timer);
     state.timer = undefined;
     return;
   }
   if (state.timer) return;
-  const now = Date.now();
+  const now = runtime.now();
   for (const [modelId, readyAt] of state.modelNextStartAt) {
     if (readyAt <= now) state.modelNextStartAt.delete(modelId);
   }
@@ -141,35 +153,24 @@ function runQueue(providerName: string, state: ProviderPacer): void {
       earliestAt = Math.min(earliestAt, readyAt, expiresAt);
     }
     const delayMs = Math.max(0, earliestAt - now);
-    state.timer = setTimeout(() => {
+    state.timer = runtime.setTimer(() => {
       state.timer = undefined;
       runQueue(providerName, state);
     }, delayMs);
     return;
   }
   const waiter = state.queue[waiterIndex]!;
-  const delayMs = Math.max(0, state.providerNextStartAt - now);
-  if (delayMs > 0) {
-    state.timer = setTimeout(() => {
-      state.timer = undefined;
-      runQueue(providerName, state);
-    }, delayMs);
-    return;
-  }
-
-  state.active = true;
   state.queue.splice(waiterIndex, 1);
   if (waiter.abort) waiter.signal?.removeEventListener("abort", waiter.abort);
-  const startedAt = Date.now();
+  const startedAt = runtime.now();
   state.lastStartedAt = startedAt;
   state.lastModelId = waiter.modelId;
   state.providerNextStartAt = startedAt + waiter.providerIntervalMs;
   if (waiter.modelId && waiter.modelIntervalMs > 0) {
     state.modelNextStartAt.set(waiter.modelId, startedAt + waiter.modelIntervalMs);
   }
-  state.active = false;
   waiter.resolve();
-  queueMicrotask(() => runQueue(providerName, state));
+  runtime.enqueueMicrotask(() => runQueue(providerName, state));
 }
 
 export async function waitForProviderRequestSlot(
@@ -183,7 +184,7 @@ export async function waitForProviderRequestSlot(
   if (signal?.aborted) throw abortReason(signal);
 
   const state = pacers.get(providerName) ?? {
-    queue: [], providerNextStartAt: 0, modelNextStartAt: new Map<string, number>(), active: false,
+    queue: [], providerNextStartAt: 0, modelNextStartAt: new Map<string, number>(),
   };
   pacers.set(providerName, state);
 
@@ -191,7 +192,7 @@ export async function waitForProviderRequestSlot(
   // admission bound to the newest request. This preserves FIFO-ish fairness while
   // keeping the retained queue strictly bounded under burst load.
   if (state.timer) {
-    clearTimeout(state.timer);
+    runtime.clearTimer(state.timer);
     state.timer = undefined;
   }
   runQueue(providerName, state);
@@ -199,17 +200,17 @@ export async function waitForProviderRequestSlot(
     throw new RequestPacingQueueOverloadError(
       providerName,
       "queue_full",
-      pacingRetryAfterSeconds(state, modelId, Date.now()),
+      pacingRetryAfterSeconds(state, modelId, runtime.now()),
     );
   }
 
   await new Promise<void>((resolve, reject) => {
-    const waiter: Waiter = { modelId, ...intervals, queuedAt: Date.now(), signal, resolve, reject };
+    const waiter: Waiter = { modelId, ...intervals, queuedAt: runtime.now(), signal, resolve, reject };
     waiter.abort = () => {
       const index = state.queue.indexOf(waiter);
       if (index >= 0) state.queue.splice(index, 1);
       if (state.timer) {
-        clearTimeout(state.timer);
+        runtime.clearTimer(state.timer);
         state.timer = undefined;
       }
       reject(abortReason(signal!));
@@ -223,7 +224,7 @@ export async function waitForProviderRequestSlot(
       return;
     }
     if (state.timer) {
-      clearTimeout(state.timer);
+      runtime.clearTimer(state.timer);
       state.timer = undefined;
     }
     runQueue(providerName, state);
@@ -233,7 +234,7 @@ export async function waitForProviderRequestSlot(
 export function providerRequestPacingStatus(
   providerName: string,
   provider: OcxProviderConfig,
-  now = Date.now(),
+  now = runtime.now(),
 ): ProviderRequestPacingStatus {
   const state = pacers.get(providerName);
   let nextSlotAt = state?.providerNextStartAt ?? 0;
@@ -262,9 +263,14 @@ export function setProviderRequestPacingLimitsForTest(limits: {
   if (limits.maxQueueAgeMs !== undefined) maxQueueAgeMs = limits.maxQueueAgeMs;
 }
 
+export function setProviderRequestPacingRuntimeForTest(nextRuntime: RequestPacingRuntime): void {
+  runtime = nextRuntime;
+}
+
 export function resetProviderRequestPacingForTest(): void {
-  for (const state of pacers.values()) if (state.timer) clearTimeout(state.timer);
+  for (const state of pacers.values()) if (state.timer) runtime.clearTimer(state.timer);
   pacers.clear();
   maxQueueDepth = REQUEST_PACING_MAX_QUEUE_DEPTH;
   maxQueueAgeMs = REQUEST_PACING_MAX_QUEUE_AGE_MS;
+  runtime = defaultRuntime;
 }

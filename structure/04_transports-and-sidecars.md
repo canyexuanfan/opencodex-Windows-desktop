@@ -379,8 +379,8 @@ before the proxy reacts. One provider-wide lane enforces the aggregate ceiling. 
 may add a slower interval without lowering the provider-wide interval or blocking an otherwise
 eligible sibling model. Queue wait is abort-aware and happens before the response-header timeout is
 armed. The shared fetch boundary covers HTTP and Responses WebSocket sends; explicit adapter
-`fetchResponse` calls reserve the same lane at their call sites. Custom `runTurn` transports stay
-outside this policy because they own their complete request lifecycle.
+`fetchResponse` and `runTurn` dispatches reserve the same lane at their call sites. Image-bridge
+iterations reserve before arming their per-attempt response-header deadline.
 
 [Decision Log]
 - 목적과 의도: Prevent Kiro progress from becoming a false final answer, reject invalid empty completion retries, and stop concurrent transient 429s from consuming independent retry budgets.

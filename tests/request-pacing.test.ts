@@ -5,7 +5,9 @@ import {
   requestPacingIntervalMs,
   resetProviderRequestPacingForTest,
   setProviderRequestPacingLimitsForTest,
+  setProviderRequestPacingRuntimeForTest,
   waitForProviderRequestSlot,
+  type RequestPacingRuntime,
 } from "../src/providers/request-pacing";
 import { providerFetch } from "../src/server/responses/fetch-helpers";
 import { fetchWithHeaderTimeout } from "../src/server/responses/fetch-helpers";
@@ -16,6 +18,43 @@ afterEach(() => resetProviderRequestPacingForTest());
 
 function provider(requestPacing: OcxProviderConfig["requestPacing"]): OcxProviderConfig {
   return { adapter: "openai-chat", baseUrl: "https://example.test/v1", requestPacing };
+}
+
+function fakePacingClock(): {
+  runtime: RequestPacingRuntime;
+  now: () => number;
+  advanceBy: (delayMs: number) => void;
+} {
+  let now = 0;
+  let nextId = 1;
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  return {
+    runtime: {
+      now: () => now,
+      setTimer: (callback, delayMs) => {
+        const id = nextId++;
+        timers.set(id, { at: now + delayMs, callback });
+        return id;
+      },
+      clearTimer: handle => { timers.delete(handle as number); },
+      enqueueMicrotask: callback => callback(),
+    },
+    now: () => now,
+    advanceBy: (delayMs) => {
+      const target = now + delayMs;
+      while (true) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= target)
+          .sort((left, right) => left[1].at - right[1].at || left[0] - right[0])[0];
+        if (!due) break;
+        const [id, timer] = due;
+        timers.delete(id);
+        now = timer.at;
+        timer.callback();
+      }
+      now = target;
+    },
+  };
 }
 
 describe("requestPacingIntervalMs", () => {
@@ -72,8 +111,8 @@ describe("provider request pacing queue", () => {
     const queued = waitForProviderRequestSlot("demo", configured, "cancelled", controller.signal);
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(1);
     controller.abort();
-    await expect(queued).rejects.toHaveProperty("name", "AbortError");
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(0);
+    await expect(queued).rejects.toHaveProperty("name", "AbortError");
   });
 
   test("rejects newest admission when the provider queue is full", async () => {
@@ -97,11 +136,14 @@ describe("provider request pacing queue", () => {
   });
 
   test("expires a queued request at the bounded queued-age deadline", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
     setProviderRequestPacingLimitsForTest({ maxQueueAgeMs: 25 });
     const configured = provider({ enabled: true, minIntervalMs: 1_000 });
     await waitForProviderRequestSlot("demo", configured, "first");
     const queued = waitForProviderRequestSlot("demo", configured, "stale");
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(1);
+    clock.advanceBy(25);
     await expect(queued).rejects.toMatchObject({
       name: "RequestPacingQueueOverloadError",
       reason: "queue_expired",
@@ -117,57 +159,49 @@ describe("provider request pacing queue", () => {
     expect(await response?.json()).toMatchObject({ error: { type: "rate_limit_error" } });
   });
 
-  test("a slow model override does not slow other models beyond the provider interval", async () => {
-    const starts: Array<{ model: string; at: number }> = [];
+  test("manual fetchResponse slots enforce the same-model interval without wall-clock timing", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = provider({
+      enabled: true,
+      minIntervalMs: 50,
+      models: { slow: { minIntervalMs: 180 } },
+    });
+    await waitForProviderRequestSlot("demo", configured, "slow");
+    const second = waitForProviderRequestSlot("demo", configured, "slow");
+    clock.advanceBy(179);
+    expect(providerRequestPacingStatus("demo", configured).queued).toBe(1);
+    clock.advanceBy(1);
+    await second;
+    expect(clock.now()).toBe(180);
+  });
+
+  test("an eligible sibling bypasses a slower model lane with an injected clock", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
     const configured = provider({
       enabled: true,
       minIntervalMs: 80,
       models: { slow: { minIntervalMs: 400 } },
     });
     await waitForProviderRequestSlot("demo", configured, "slow");
-    starts.push({ model: "slow", at: Date.now() });
-    await waitForProviderRequestSlot("demo", configured, "fast");
-    starts.push({ model: "fast", at: Date.now() });
-    expect(starts[1].at - starts[0].at).toBeGreaterThanOrEqual(65);
-    expect(starts[1].at - starts[0].at).toBeLessThan(250);
-  });
-
-  test("the same model still observes its slower model override", async () => {
-    const configured = provider({
-      enabled: true,
-      minIntervalMs: 50,
-      models: { slow: { minIntervalMs: 180 } },
-    });
-    const first = Date.now();
-    await waitForProviderRequestSlot("demo", configured, "slow");
-    await waitForProviderRequestSlot("demo", configured, "slow");
-    expect(Date.now() - first).toBeGreaterThanOrEqual(160);
-  });
-
-  test("a model waiting on its override does not block another eligible model", async () => {
-    const configured = provider({
-      enabled: true,
-      minIntervalMs: 60,
-      models: { slow: { minIntervalMs: 350 } },
-    });
-    await waitForProviderRequestSlot("demo", configured, "slow");
-    const started = Date.now();
     const secondSlow = waitForProviderRequestSlot("demo", configured, "slow");
     const fast = waitForProviderRequestSlot("demo", configured, "fast");
+    clock.advanceBy(80);
     await fast;
-    expect(Date.now() - started).toBeGreaterThanOrEqual(45);
-    expect(Date.now() - started).toBeLessThan(220);
+    expect(clock.now()).toBe(80);
+    expect(providerRequestPacingStatus("demo", configured).queued).toBe(1);
+    clock.advanceBy(320);
     await secondSlow;
+    expect(clock.now()).toBe(400);
   });
 
   test("disabled policies preserve the unpaced legacy path", async () => {
     const configured = provider({ enabled: false, requestsPerMinute: 1 });
-    const started = Date.now();
     await Promise.all([
       waitForProviderRequestSlot("demo", configured, "a"),
       waitForProviderRequestSlot("demo", configured, "b"),
     ]);
-    expect(Date.now() - started).toBeLessThan(50);
     expect(providerRequestPacingStatus("demo", configured).enabled).toBe(false);
   });
 
