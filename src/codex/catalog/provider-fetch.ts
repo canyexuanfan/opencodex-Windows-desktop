@@ -1774,20 +1774,27 @@ async function gatherRoutedModelsUncached(
       ...(cm.inputModalities
         ? { inputModalities: cm.inputModalities }
         : codexForwardNativeCapabilityAlias ? { inputModalities: nativeInputModalities(cm.modelId) } : {}),
+      ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
+      // Native-alias defaults apply only where the custom row declares nothing: the explicit
+      // spreads below must win (later in object order), so a stored `[]` stays empty and a
+      // declared ladder is never replaced by the alias's native ladder.
+      ...(codexForwardNativeCapabilityAlias
+        ? {
+          codexForwardNativeCapabilityAlias: true,
+          parallelToolCalls: nativeParallelToolCalls(cm.modelId),
+          ...(Array.isArray(cm.reasoningEfforts)
+            ? {}
+            : {
+              reasoningEfforts: nativeReasoningEfforts(cm.modelId),
+              ...(nativeAliasDefaultEffort ? { defaultReasoningEffort: nativeAliasDefaultEffort } : {}),
+            }),
+        }
+        : {}),
       // Explicit custom-row ladder wins over the inherited provider row below: the merge only
       // gap-fills, so a stored `[]` (explicit "no reasoning") or a declared ladder is kept
       // verbatim instead of being replaced by the replaced row's metadata.
       ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
       ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
-      ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
-      ...(codexForwardNativeCapabilityAlias
-        ? {
-          codexForwardNativeCapabilityAlias: true,
-          reasoningEfforts: nativeReasoningEfforts(cm.modelId),
-          parallelToolCalls: nativeParallelToolCalls(cm.modelId),
-          ...(nativeAliasDefaultEffort ? { defaultReasoningEffort: nativeAliasDefaultEffort } : {}),
-        }
-        : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,
@@ -1796,13 +1803,19 @@ async function gatherRoutedModelsUncached(
     // noReasoningModels model loses its empty ladder and the catalog synthesizes the generic one,
     // which Codex then rejects for spawn_agent with effort "none".
     const replaced = replacedByRoutedSlug.get(routedSlug(cm.provider, cm.modelId));
+    // The final ladder is what the catalog will advertise; the inherited default only rides
+    // along when it is actually a member — otherwise a provider default like "xhigh" would
+    // re-apply onto a narrower custom ladder and override the fallback in applyReasoningLevels.
+    const effectiveLadder = base.reasoningEfforts ?? replaced?.reasoningEfforts;
     const merged: CatalogModel = replaced ? {
       ...base,
       ...(base.contextWindow === undefined && replaced.contextWindow !== undefined ? { contextWindow: replaced.contextWindow } : {}),
       ...(base.maxInputTokens === undefined && replaced.maxInputTokens !== undefined ? { maxInputTokens: replaced.maxInputTokens } : {}),
       ...(base.inputModalities === undefined && replaced.inputModalities !== undefined ? { inputModalities: replaced.inputModalities } : {}),
       ...(base.reasoningEfforts === undefined && replaced.reasoningEfforts !== undefined ? { reasoningEfforts: replaced.reasoningEfforts } : {}),
-      ...(base.defaultReasoningEffort === undefined && replaced.defaultReasoningEffort !== undefined ? { defaultReasoningEffort: replaced.defaultReasoningEffort } : {}),
+      ...(base.defaultReasoningEffort === undefined && replaced.defaultReasoningEffort !== undefined
+        && Array.isArray(effectiveLadder) && effectiveLadder.includes(replaced.defaultReasoningEffort)
+        ? { defaultReasoningEffort: replaced.defaultReasoningEffort } : {}),
       ...(base.parallelToolCalls === undefined && replaced.parallelToolCalls !== undefined ? { parallelToolCalls: replaced.parallelToolCalls } : {}),
       ...(base.supportsVerbosity === undefined && replaced.supportsVerbosity !== undefined ? { supportsVerbosity: replaced.supportsVerbosity } : {}),
       ...(base.supportsReasoningSummaries === undefined && replaced.supportsReasoningSummaries !== undefined ? { supportsReasoningSummaries: replaced.supportsReasoningSummaries } : {}),

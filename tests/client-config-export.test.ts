@@ -192,6 +192,7 @@ describe("Pi serializer (accept criterion 2)", () => {
         { namespaced: "a/reasoning", provider: "a", id: "reasoning", reasoningEfforts: ["low", "high"] },
         { namespaced: "b/none", provider: "b", id: "none", reasoningEfforts: [] },
         { namespaced: "c/plain", provider: "c", id: "plain" },
+        { namespaced: "d/off", provider: "d", id: "off", reasoningEfforts: ["none", "minimal", "low"] },
       ],
     }));
     const models = config.providers.opencodex!.models;
@@ -199,10 +200,22 @@ describe("Pi serializer (accept criterion 2)", () => {
     // Pi's level scale is constrained to the ladder: members map to themselves, everything
     // else (incl. minimal, which the Codex ladder has no equivalent for) is hidden.
     expect(models.find(model => model.id === "a/reasoning")!.thinkingLevelMap).toEqual({
+      off: null,
       minimal: null,
       low: "low",
       medium: null,
       high: "high",
+      xhigh: null,
+      max: null,
+    });
+    // The none sentinel maps pi's off level to "none" (the proxy omits the parameter);
+    // minimal maps to itself.
+    expect(models.find(model => model.id === "d/off")!.thinkingLevelMap).toEqual({
+      off: "none",
+      minimal: "minimal",
+      low: "low",
+      medium: null,
+      high: null,
       xhigh: null,
       max: null,
     });

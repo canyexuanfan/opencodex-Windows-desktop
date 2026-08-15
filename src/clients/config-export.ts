@@ -883,6 +883,9 @@ function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
       entry.reasoning = true;
       const efforts = model.reasoningEfforts;
       entry.thinkingLevelMap = {
+        // pi's off level maps to the declared `none` sentinel (the proxy omits the
+        // reasoning parameter for it); hidden when the ladder does not declare none.
+        off: efforts.includes("none") ? "none" : null,
         minimal: efforts.includes("minimal") ? "minimal" : null,
         low: efforts.includes("low") ? "low" : null,
         medium: efforts.includes("medium") ? "medium" : null,

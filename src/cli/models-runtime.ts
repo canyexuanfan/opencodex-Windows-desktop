@@ -73,7 +73,17 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   // "-" restores inheritance by clearing the stored ladder (null). An explicit empty
   // ladder ("no reasoning") has no CLI shorthand — use the dashboard for that state.
   if (reasoningEffortsRaw !== undefined) {
-    patch.reasoningEfforts = reasoningEffortsRaw === "-" ? null : csv(reasoningEffortsRaw);
+    if (reasoningEffortsRaw === "-") {
+      patch.reasoningEfforts = null;
+    } else {
+      const values = csv(reasoningEffortsRaw);
+      // csv() silently drops empty members; a value that normalizes to an empty list would
+      // otherwise store an explicit "no reasoning" ladder the user never asked for.
+      if (!values || values.length === 0) {
+        throw new CliUsageError("--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (or \"-\" to inherit)", USAGE);
+      }
+      patch.reasoningEfforts = values;
+    }
   }
   if (defaultEffortRaw !== undefined) patch.defaultReasoningEffort = defaultEffortRaw === "-" ? null : defaultEffortRaw;
   if (Object.keys(patch).length === 0) throw new CliUsageError("at least one edit option is required", USAGE);

@@ -42,8 +42,14 @@ export interface ModelRow {
   reasoningEfforts?: string[];
 }
 
-/** Codex ladder labels offered in the custom-model dialog. */
-export const REASONING_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+/**
+ * Reasoning-effort labels offered in the custom-model dialog. The full set of real
+ * `reasoning_effort` values (none, minimal, low, medium, high, xhigh, max). Deliberately
+ * excludes `ultra`: that is a Codex catalog label for the multi-agent collab surface, not a
+ * real `reasoning_effort` value — codex-rs converts it to `max` before any provider
+ * request, and the catalog writer appends it to every non-empty ladder anyway.
+ */
+export const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface ProviderContextCapsResponse {
   cap?: number;

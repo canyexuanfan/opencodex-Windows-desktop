@@ -43,11 +43,11 @@ function readReasoningEfforts(raw: unknown): { values?: string[]; error?: string
   const values: string[] = [];
   for (const value of raw) {
     if (typeof value !== "string") return { error: "reasoningEfforts must contain only strings" };
-    if (!isCodexReasoningEffort(value)) { rejected.push(value); continue; }
+    if (!isDeclaredReasoningEffort(value)) { rejected.push(value); continue; }
     if (!values.includes(value)) values.push(value);
   }
   if (rejected.length > 0) {
-    return { error: `unsupported reasoning effort: ${rejected.join(", ")} (allowed: low, medium, high, xhigh, max, ultra)` };
+    return { error: `unsupported reasoning effort: ${rejected.join(", ")} (allowed: none, minimal, low, medium, high, xhigh, max, ultra)` };
   }
   // Canonical order: the catalog writes supported_reasoning_levels in input order and the
   // fallback default picks the first entry, so a caller-chosen order must not leak through.
@@ -58,8 +58,8 @@ function readReasoningEfforts(raw: unknown): { values?: string[]; error?: string
 function readDefaultReasoningEffort(raw: unknown, efforts: string[] | undefined): { value?: string; error?: string } {
   if (raw === undefined) return {};
   if (raw === null) return { value: undefined };
-  if (typeof raw !== "string" || !isCodexReasoningEffort(raw)) {
-    return { error: "defaultReasoningEffort must be one of: low, medium, high, xhigh, max, ultra" };
+  if (typeof raw !== "string" || !isDeclaredReasoningEffort(raw)) {
+    return { error: "defaultReasoningEffort must be one of: none, minimal, low, medium, high, xhigh, max, ultra" };
   }
   if (efforts === undefined || efforts.length === 0) {
     return { error: "defaultReasoningEffort requires a non-empty reasoningEfforts ladder" };
@@ -111,7 +111,7 @@ import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summa
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
-import { canonicalizeReasoningEfforts, isCodexReasoningEffort } from "../../reasoning-effort";
+import { canonicalizeReasoningEfforts, isDeclaredReasoningEffort } from "../../reasoning-effort";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
   clearDebugSettings,

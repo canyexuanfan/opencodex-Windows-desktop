@@ -115,6 +115,13 @@ on. The export also emits a `thinkingLevelMap` that hides every pi level outside
 ladder (`null`), so pi never offers — and never sends — an effort the ladder does not contain.
 If you need a different mapping, hand-edit `thinkingLevelMap` afterwards as documented by Pi.
 
+Treat `reasoning` as Pi-UI metadata: it is derived from the catalog ladder, not proof that the
+upstream natively supports a reasoning parameter. What the proxy actually sends for a given
+`reasoning_effort` value depends on the provider's adapter and model — it may pass the value
+through, translate it (wire aliases), clamp it to the configured ladder, emulate it, or omit it
+entirely (e.g. `noReasoningModels`). The boolean only controls whether Pi offers the control at
+all.
+
 ## Schema status
 
 :::note[Unverified against a real install]

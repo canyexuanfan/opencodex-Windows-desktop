@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline/promises";
 import { syncModelsToCodex } from "../codex/sync";
 import { hasOwnProvider, isValidProviderName, loadConfig, saveConfig } from "../config";
-import { canonicalizeReasoningEfforts, isCodexReasoningEffort } from "../reasoning-effort";
+import { canonicalizeReasoningEfforts, isDeclaredReasoningEffort } from "../reasoning-effort";
 import { routedSlug } from "../providers/slug-codec";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig, OcxCustomModel } from "../types";
@@ -34,11 +34,11 @@ export function parseReasoningArgs(
     } else {
       const parts = trimmed.split(",").map(value => value.trim());
       if (parts.length === 0 || parts.some(part => part === "")) {
-        return { error: "--reasoning-efforts must be comma-separated values from low, medium, high, xhigh, max, ultra (or \"-\" to inherit)" };
+        return { error: "--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (or \"-\" to inherit)" };
       }
-      const invalid = parts.filter(value => !isCodexReasoningEffort(value));
+      const invalid = parts.filter(value => !isDeclaredReasoningEffort(value));
       if (invalid.length > 0) {
-        return { error: `unsupported reasoning effort: ${invalid.join(", ")} (allowed: low, medium, high, xhigh, max, ultra)` };
+        return { error: `unsupported reasoning effort: ${invalid.join(", ")} (allowed: none, minimal, low, medium, high, xhigh, max, ultra)` };
       }
       reasoningEfforts = canonicalizeReasoningEfforts(parts);
     }
@@ -49,8 +49,8 @@ export function parseReasoningArgs(
     if (trimmed === "-") {
       defaultReasoningEffort = undefined;
     } else {
-      if (!isCodexReasoningEffort(trimmed)) {
-        return { error: `unsupported reasoning effort: ${trimmed} (allowed: low, medium, high, xhigh, max, ultra)` };
+      if (!isDeclaredReasoningEffort(trimmed)) {
+        return { error: `unsupported reasoning effort: ${trimmed} (allowed: none, minimal, low, medium, high, xhigh, max, ultra)` };
       }
       if (!reasoningEfforts || reasoningEfforts.length === 0) {
         return { error: "--default-reasoning-effort requires --reasoning-efforts" };

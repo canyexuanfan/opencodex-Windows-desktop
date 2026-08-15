@@ -1704,8 +1704,10 @@ describe("Google Gemini catalog metadata", () => {
     const entry = buildCatalogEntries(nativeTemplate(), [], models)
       .find(row => row.slug === "google/gemini-3.6-flash");
 
+    // The registry ladder declares minimal for Gemini 3.6 Flash; it now flows through
+    // (previously sanitize silently dropped it) plus the mock top rungs for subagent spawns.
     expect((entry?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
-      .toEqual(["low", "medium", "high", "max", "ultra"]);
+      .toEqual(["minimal", "low", "medium", "high", "max", "ultra"]);
     expect(entry?.input_modalities).toEqual(["text", "image"]);
     expect(entry?.context_window).toBe(1_048_576);
   });
@@ -1971,6 +1973,144 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
       const row = entries.find(e => e.slug === "custom-provider/renamed-model");
       expect(row?.supported_reasoning_levels).toEqual([]);
       expect(row).not.toHaveProperty("default_reasoning_level");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
+  });
+
+  test("a none-only custom ladder advertises no synthetic top rungs", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["renamed-model"],
+          },
+        },
+        customModels: [
+          {
+            id: "cm-1",
+            provider: "custom-provider",
+            modelId: "renamed-model",
+            reasoningEfforts: ["none"],
+            addedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      });
+
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      expect(custom?.reasoningEfforts).toEqual(["none"]);
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      const levels = (row?.supported_reasoning_levels ?? []).map((l: { effort: string }) => l.effort);
+      // No reasoning-capable rung -> the mock max/ultra repair must not fire.
+      expect(levels).toEqual(["none"]);
+      expect(row?.default_reasoning_level).toBe("none");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
+  });
+
+  test("a mixed none+low custom ladder keeps none first and gets the mock top rungs", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["renamed-model"],
+          },
+        },
+        customModels: [
+          {
+            id: "cm-1",
+            provider: "custom-provider",
+            modelId: "renamed-model",
+            reasoningEfforts: ["none", "low"],
+            addedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      });
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      const levels = (row?.supported_reasoning_levels ?? []).map((l: { effort: string }) => l.effort);
+      expect(levels).toEqual(["none", "low", "max", "ultra"]);
+      // `none` is declared but real rungs exist: the implicit default must be low, not none.
+      expect(row?.default_reasoning_level).toBe("low");
+    } finally {
+      globalThis.fetch = originalFetch;
+      clearModelCache("custom-provider");
+    }
+  });
+
+  test("an inherited provider default does not ride onto a custom ladder that excludes it", async () => {
+    clearModelCache("custom-provider");
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("fetch should not be called");
+    }) as typeof fetch;
+    try {
+      const models = await gatherRoutedModels({
+        port: 10100,
+        defaultProvider: "custom-provider",
+        providers: {
+          "custom-provider": {
+            baseUrl: "https://example.invalid/v1",
+            adapter: "openai-chat",
+            authMode: "key",
+            liveModels: false,
+            models: ["renamed-model"],
+            // The provider row advertises low/high with a high default; the custom ladder
+            // drops high, so the merged row must not keep advertising high as default.
+            modelReasoningEfforts: { "renamed-model": ["low", "high"] },
+            modelDefaultReasoningEfforts: { "renamed-model": "high" },
+          },
+        },
+        customModels: [
+          {
+            id: "cm-1",
+            provider: "custom-provider",
+            modelId: "renamed-model",
+            reasoningEfforts: ["low"],
+            addedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      });
+
+      const custom = models.find(m => m.provider === "custom-provider" && m.id === "renamed-model");
+      expect(custom?.reasoningEfforts).toEqual(["low"]);
+      expect(custom?.defaultReasoningEffort).toBeUndefined();
+
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const row = entries.find(e => e.slug === "custom-provider/renamed-model");
+      const levels = (row?.supported_reasoning_levels ?? []).map((l: { effort: string }) => l.effort);
+      expect(levels).toEqual(["low", "max", "ultra"]);
+      // No high in the ladder, so the fallback default is medium? low is the first rung —
+      // applyReasoningLevels picks medium when present, else high, else the first entry.
+      expect(row?.default_reasoning_level).toBe("low");
     } finally {
       globalThis.fetch = originalFetch;
       clearModelCache("custom-provider");
@@ -2773,6 +2913,43 @@ describe("Codex catalog routed normalization", () => {
     // rejection is proven by the native-only fields above and below.
     expect(row?.supports_search_tool).toBe(true);
     expect(row?.multi_agent_version).toBeUndefined();
+  });
+
+  test("an explicit empty custom ladder beats the native-alias ladder on a forward row", async () => {
+    globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccountPickerEnabled: false,
+      codexAccountNamespaces: { main: "@main" },
+      customModels: [{
+        id: "daybreak-no-reasoning",
+        provider: "openai",
+        modelId: NATIVE_DAYBREAK_BLUE_MODEL,
+        // Explicit "no reasoning": the alias's native ladder (low..ultra, default low) must
+        // not overwrite it — otherwise the catalog would advertise reasoning the user
+        // explicitly disabled for this row.
+        reasoningEfforts: [],
+      }],
+    });
+    const model = models.find(row => row.provider === "openai" && row.id === NATIVE_DAYBREAK_BLUE_MODEL);
+    expect(model).toMatchObject({
+      codexForwardNativeCapabilityAlias: true,
+      reasoningEfforts: [],
+    });
+    expect(model?.defaultReasoningEffort).toBeUndefined();
+
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const daybreak = entries.find(entry => entry.slug === `openai/${NATIVE_DAYBREAK_BLUE_MODEL}`);
+    expect(daybreak?.supported_reasoning_levels).toEqual([]);
+    expect(daybreak).not.toHaveProperty("default_reasoning_level");
   });
 
   test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {

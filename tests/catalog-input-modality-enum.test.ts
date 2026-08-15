@@ -263,6 +263,21 @@ describe("custom-model API validates reasoning-effort ladders", () => {
     expect(persistCalls).toBe(1);
   });
 
+  test("POST accepts the none/minimal sentinels, canonicalized first", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "deepseek-v6",
+      reasoningEfforts: ["max", "none", "low", "minimal"],
+      defaultReasoningEffort: "none",
+    });
+    expect(res?.status).toBe(201);
+    const payload = await res!.json() as { reasoningEfforts?: string[]; defaultReasoningEffort?: string };
+    expect(payload.reasoningEfforts).toEqual(["none", "minimal", "low", "max"]);
+    expect(payload.defaultReasoningEffort).toBe("none");
+    expect(persistCalls).toBe(1);
+  });
+
   test("POST refuses a default effort outside the declared ladder", async () => {
     persistCalls = 0;
     const res = await callCustomModels("POST", {
@@ -326,12 +341,13 @@ describe("custom-model API validates reasoning-effort ladders", () => {
   // the generated catalog (GUI toggle-off path sends only reasoningEfforts).
   test("PUT ladder shrink drops a stored default that is no longer a member", async () => {
     persistCalls = 0;
-    const seeded = await callCustomModels("PUT", {
+    const seededRes = await callCustomModels("PUT", {
       reasoningEfforts: ["low", "high", "max"],
       defaultReasoningEffort: "max",
     }, "/api/custom-models/existing-uuid");
-    expect(seeded?.status).toBe(200);
-    expect((await seeded!.json() as { defaultReasoningEffort?: string }).defaultReasoningEffort).toBe("max");
+    expect(seededRes?.status).toBe(200);
+    const seeded = await seededRes!.json() as { defaultReasoningEffort?: string };
+    expect(seeded.defaultReasoningEffort).toBe("max");
 
     persistCalls = 0;
     const res = await callCustomModels("PUT", { reasoningEfforts: ["low"] }, "/api/custom-models/existing-uuid");
@@ -344,11 +360,11 @@ describe("custom-model API validates reasoning-effort ladders", () => {
 
   test("PUT null-clear drops a stored default even when the body does not mention it", async () => {
     persistCalls = 0;
-    const seeded = await callCustomModels("PUT", {
+    const seededRes = await callCustomModels("PUT", {
       reasoningEfforts: ["low", "high"],
       defaultReasoningEffort: "high",
     }, "/api/custom-models/existing-uuid");
-    expect(seeded?.status).toBe(200);
+    expect(seededRes?.status).toBe(200);
 
     persistCalls = 0;
     const res = await callCustomModels("PUT", { reasoningEfforts: null }, "/api/custom-models/existing-uuid");
@@ -361,11 +377,11 @@ describe("custom-model API validates reasoning-effort ladders", () => {
 
   test("PUT explicit empty ladder also drops a stored default", async () => {
     persistCalls = 0;
-    const seeded = await callCustomModels("PUT", {
+    const seededRes = await callCustomModels("PUT", {
       reasoningEfforts: ["low", "high"],
       defaultReasoningEffort: "high",
     }, "/api/custom-models/existing-uuid");
-    expect(seeded?.status).toBe(200);
+    expect(seededRes?.status).toBe(200);
 
     persistCalls = 0;
     const res = await callCustomModels("PUT", { reasoningEfforts: [] }, "/api/custom-models/existing-uuid");
