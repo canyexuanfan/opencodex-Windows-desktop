@@ -630,6 +630,8 @@ export interface OcxClientIntegrationsConfig {
 
 export interface OcxConfig {
   port: number;
+  /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
+  emptyCompletionRetry?: boolean;
   /** Maximum usage-log bytes read for one management snapshot. */
   managementUsageMaxReadBytes?: number;
   providers: Record<string, OcxProviderConfig>;
@@ -1261,12 +1263,28 @@ export interface ProviderCostOverlay {
   cacheWrite: number;
 }
 
+export interface RequestPacingRule {
+  /** Evenly spread request starts to this many requests per minute. */
+  requestsPerMinute?: number;
+  /** Minimum delay between request starts. The slower configured value wins. */
+  minIntervalMs?: number;
+}
+
+export interface ProviderRequestPacingConfig extends RequestPacingRule {
+  /** False preserves legacy behavior with no client-side waiting. */
+  enabled: boolean;
+  /** Exact upstream model-id overrides; other models inherit the provider rule. */
+  models?: Record<string, RequestPacingRule>;
+}
+
 /**
  * One configured provider entry. `authMode` (default `"key"`) decides whether same-target 429
  * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
  */
 export interface OcxProviderConfig {
   adapter: string;
+  /** Optional outbound request-start pacing shared by this provider and its model overrides. */
+  requestPacing?: ProviderRequestPacingConfig;
   /** Cursor MCP compatibility bounds; positive integers when configured. */
   mcpMaxTools?: number;
   mcpMaxSchemaBytes?: number;
@@ -1309,8 +1327,10 @@ export interface OcxProviderConfig {
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
-   * Whether this provider's Responses route honours the OpenAI `service_tier`
-   * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
+   * Provider fallback for the OpenAI `service_tier` parameter. On Responses routes this
+   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier` or an
+   * exact-model true declaration.
+   * Tri-state: `true` lets fast mode inject/remove the field (an unset
    * fast mode preserves a caller-supplied value); `false` strips the field and
    * never injects, because an upstream documented as not supporting the parameter
    * must not receive it; absent (`undefined`) leaves the provider unclassified —
@@ -1318,6 +1338,8 @@ export interface OcxProviderConfig {
    * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
+  /** Exact upstream model ids that override the provider-level service-tier capability. */
+  modelSupportsServiceTier?: Record<string, boolean>;
   /**
    * Responses upstream whose native contract accepts plaintext reasoning replay
    * (DeepSeek documents reasoning items with plaintext content). When set, the
@@ -1518,8 +1540,9 @@ export interface OcxProviderConfig {
    * OpenAI-specific extension with the same hazard as `promptCacheKey` — strict backends
    * reject unknown fields, and 66 registry providers share the `openai-chat` adapter, so a
    * caller-supplied `service_tier` would otherwise turn working requests into upstream 400s.
-   * `supportsServiceTier` is the Responses-wire flag and does not apply here.
-   * Default off; only enable for providers that document this parameter on the chat wire.
+   * Exact models may opt in through `modelSupportsServiceTier` instead; provider-level
+   * `supportsServiceTier: false` remains a global denial. Default off; only enable for
+   * providers that document this parameter on the chat wire.
    */
   chatServiceTier?: boolean;
   /**
