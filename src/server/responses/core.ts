@@ -1080,6 +1080,19 @@ async function applyFinalRouteRequestNormalization(args: {
     }
   }
 
+  // Generic Responses clients (e.g. AI-SDK apps) omit `store`, but the canonical
+  // forward Codex backend rejects a native request without an explicit store:false.
+  // Default it only there — every other Responses upstream (key-auth providers and
+  // custom forward gateways) intentionally keeps the omitted-store server-side
+  // default for previous_response_id reuse — and never override an explicit value.
+  if (
+    isCanonicalOpenAiForwardProvider(route.provider)
+    && parsed._rawBody && typeof parsed._rawBody === "object"
+    && (parsed._rawBody as Record<string, unknown>).store === undefined
+  ) {
+    (parsed._rawBody as Record<string, unknown>).store = false;
+  }
+
   // Final selected model before virtual wire-model rewriting (Pro aliases).
   const finalSelectedModelId = route.modelId;
 
