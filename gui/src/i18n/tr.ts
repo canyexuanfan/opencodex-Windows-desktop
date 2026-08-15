@@ -269,6 +269,8 @@ export const tr: Record<TKey, string> = {
   "dash.stop": "Proxy'yi Durdur",
   "dash.stopConfirm": "Proxy durdurulsun ve yerel Codex geri yüklensin mi?",
   "dash.stopFailed": "Proxy durdurulamadı (HTTP {status}).",
+  "dash.maSwitchFailed": "Mod değiştirme başarısız oldu (HTTP {status}).",
+  "dash.maNetworkError": "Ağ hatası — proxy çalışıyor mu?",
   "dash.stopping": "Durduruluyor…",
   "dash.codexAutoStart": "opencodex'i Codex ile başlat",
   "dash.codexAutoStartHint": "Yüklü bir shim'in ocx ensure çalıştırmasına izin verir. Arka plan servisi veya yeniden başlatma koruması kurmaz; sistem durumu için Başlatma Güvenliği'ne bakın.",

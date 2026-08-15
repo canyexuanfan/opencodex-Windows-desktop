@@ -263,6 +263,8 @@ export const zh: Record<TKey, string> = {
   "dash.stop": "停止代理",
   "dash.stopConfirm": "停止代理并恢复原生 Codex 配置？",
   "dash.stopFailed": "无法停止代理 (HTTP {status})。",
+  "dash.maSwitchFailed": "模式切换失败 (HTTP {status})。",
+  "dash.maNetworkError": "网络错误 — 代理是否正在运行？",
   "dash.stopping": "正在停止…",
   "dash.codexAutoStart": "随 Codex 启动 opencodex",
   "dash.codexAutoStartHint": "允许已安装的 launcher shim 运行 ocx ensure。此设置不会安装重启保护；请在启动安全中检查实际状态。",

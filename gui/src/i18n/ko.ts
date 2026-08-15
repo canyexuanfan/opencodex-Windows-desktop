@@ -263,6 +263,8 @@ export const ko: Record<TKey, string> = {
   "dash.stop": "프록시 중지",
   "dash.stopConfirm": "프록시를 중지하고 Codex 원본 설정을 복원할까요?",
   "dash.stopFailed": "프록시를 중지하지 못했습니다 (HTTP {status}).",
+  "dash.maSwitchFailed": "모드 전환에 실패했습니다 (HTTP {status}).",
+  "dash.maNetworkError": "네트워크 오류 — 프록시가 실행 중인지 확인하세요.",
   "dash.stopping": "중지 중…",
   "dash.codexAutoStart": "Codex 실행 시 opencodex 시작",
   "dash.codexAutoStartHint": "설치된 launcher shim이 ocx ensure를 실행하도록 허용합니다. 이 설정은 재부팅 보호를 설치하지 않으므로 시작 안전성에서 실제 상태를 확인하세요.",
