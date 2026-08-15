@@ -187,12 +187,15 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
   const purgeActions = [...(req.purgeActions ?? PURGE_ACTIONS)].sort();
   const explicitSensitive = new Set(targetArtifactDigests);
   const completed: string[] = [];
-  let deferredExportError: PurgeError | null = null;
+  // Cell object: the mutation callback assigns through the property, which keeps
+  // the post-mutation read at the declared type (a closure-captured let would
+  // narrow to null and break the combined-error report below).
+  const deferredExport: { error: PurgeError | null } = { error: null };
   let operationError: PurgeError | null = null;
   let tombstone: PurgeTombstoneEvent | null = null;
  
   try {
-    withLedgerMutation(paths.ledgerPath, (ledger) => {
+    tombstone = withLedgerMutation(paths.ledgerPath, (ledger) => {
       // Replay and plan under the same lock as every append. Otherwise an event
       // appended after this snapshot can be lost by the atomic rename or can
       // start referencing an artifact after the deletion plan was calculated.
@@ -227,7 +230,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
         } catch (err) {
           // Export deletion is independent from artifact/ledger/sqlite deletion. Keep
           // deleting every other requested sensitive copy, then report this failure.
-          deferredExportError = normalizePurgeError(err, completed);
+          deferredExport.error = normalizePurgeError(err, completed);
         }
       }
  
@@ -243,7 +246,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
  
         // Never persist a tombstone claiming that export completed when the export
         // purge failed. Other independent actions remain recordable and continue.
-        const tombstoneActions = deferredExportError
+        const tombstoneActions = deferredExport.error
           ? purgeActions.filter((action) => action !== "export")
           : purgeActions;
         const hasTombstoneTarget = removeIds.size > 0
@@ -251,21 +254,23 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
           || tombstoneActions.includes("scratch")
           || tombstoneActions.includes("export");
  
-        if (tombstoneActions.length > 0 && (hasTombstoneTarget || !deferredExportError)) {
-          tombstone = buildPurgeTombstone(req, removeIds, targetArtifactDigests, tombstoneActions);
+        if (tombstoneActions.length > 0 && (hasTombstoneTarget || !deferredExport.error)) {
+          const mutationTombstone = buildPurgeTombstone(req, removeIds, targetArtifactDigests, tombstoneActions);
           if (purgeActions.includes("ledger")) {
             const kept: LabEvent[] = [];
             for (const event of replay.events) {
               if (removeIds.has(event.eventId)) continue;
               kept.push(event);
             }
-            kept.push(tombstone);
+            kept.push(mutationTombstone);
             atomicRewriteLedger(paths.ledgerPath, kept);
             completed.push("ledger");
           } else {
-            ledger.append(tombstone);
+            ledger.append(mutationTombstone);
           }
+          return mutationTombstone;
         }
+        return null;
       } finally {
         if (dir) closeTrustedArtifactDir(dir);
       }
@@ -281,6 +286,7 @@ export function purgeSensitiveEvidence(req: SensitivePurgeRequest): PurgeTombsto
     operationError = normalizePurgeError(err, completed);
   }
  
+  const deferredExportError = deferredExport.error;
   if (operationError && deferredExportError) {
     throw new PurgeError(
       "purge_failed",
