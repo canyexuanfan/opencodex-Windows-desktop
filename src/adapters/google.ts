@@ -143,10 +143,7 @@ function geminiToolResultText(content: string | OcxContentPart[]): string {
   return hasContent ? contentPartsToText(content) : GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
 }
 
-function messagesToGeminiFormat(
-  parsed: OcxParsedRequest,
-  routedModelId = parsed.modelId,
-): { systemInstruction?: unknown; contents: unknown[] } {
+function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
   // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
   // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(parsed.context.tools, parsed.options.toolChoice);
@@ -154,7 +151,7 @@ function messagesToGeminiFormat(
     ...(parsed.context.systemPrompt ?? []),
     ...(toolCatalogNudge ? [toolCatalogNudge] : []),
     GOOGLE_BREVITY_INSTRUCTION,
-  ].join("\n\n"), routedModelId);
+  ].join("\n\n"), parsed.modelId);
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
@@ -397,7 +394,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         : provider.googleMode === "vertex"
           ? parsed.modelId
           : resolveDirectGeminiWireModelId(parsed.modelId, provider.directGeminiWireRenames !== false);
-      const { systemInstruction, contents } = messagesToGeminiFormat(parsed, routedModelId);
+      // System identity names the public model id (parsed.modelId) so the model never
+      // self-reports as its -tiered wire spelling; routedModelId is only the wire id in the URL.
+      const { systemInstruction, contents } = messagesToGeminiFormat(parsed);
       const tools = toolsToGeminiFormat(parsed);
 
       const body: Record<string, unknown> = { contents };

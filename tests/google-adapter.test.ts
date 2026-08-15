@@ -304,6 +304,34 @@ describe("google adapter — direct -tiered wire renames", () => {
     }
   });
 
+  test("directGeminiWireRenames: true still maps to the -tiered wire id", async () => {
+    const adapter = createGoogleAdapter({ ...provider, directGeminiWireRenames: true });
+    for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
+      const { url } = await adapter.buildRequest(renamedParsed(modelId));
+      expect(url).toContain(`/v1beta/models/${modelId}-tiered:generateContent`);
+    }
+  });
+
+  test("directGeminiWireRenames does not affect Cloud Code Assist requests", async () => {
+    const ccaProvider = {
+      ...provider,
+      googleMode: "cloud-code-assist",
+      baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      project: "proj-123",
+    } as const;
+    for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
+      const parsed = renamedParsed(modelId);
+      const defaultRequest = await createGoogleAdapter(ccaProvider).buildRequest(parsed);
+      const optOutRequest = await createGoogleAdapter({ ...ccaProvider, directGeminiWireRenames: false })
+        .buildRequest(parsed);
+      expect(optOutRequest.url).toBe(defaultRequest.url);
+      // The envelope's requestId/sessionId are minted per request; compare the wire model only.
+      const defaultModel = JSON.parse(defaultRequest.body).model as string;
+      const optOutModel = JSON.parse(optOutRequest.body).model as string;
+      expect(optOutModel).toBe(defaultModel);
+    }
+  });
+
   test("directGeminiWireRenames does not affect Vertex requests", async () => {
     const vertexProvider = { ...provider, googleMode: "vertex" as const };
     for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
