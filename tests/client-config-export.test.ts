@@ -219,6 +219,16 @@ describe("Pi serializer (accept criterion 2)", () => {
       xhigh: null,
       max: null,
     });
+    // An ultra-only ladder has no exact pi level: pi's max maps to the only declared tier
+    // so the model's sole reasoning level is actually selectable.
+    const ultraOnly = piConfig(ctx({
+      models: [{ namespaced: "e/ultra", provider: "e", id: "ultra", reasoningEfforts: ["ultra"] }],
+    }));
+    expect(ultraOnly.providers.opencodex!.models[0]!.thinkingLevelMap).toMatchObject({
+      max: "ultra",
+      off: null,
+      minimal: null,
+    });
     // An explicit empty ladder is the catalog's "no reasoning" statement; no boolean.
     expect(models.find(model => model.id === "b/none")).not.toHaveProperty("reasoning");
     expect(models.find(model => model.id === "c/plain")).not.toHaveProperty("reasoning");

@@ -196,6 +196,9 @@ export default function Models({ apiBase }: { apiBase: string }) {
   const [customFormModalities, setCustomFormModalities] = useState<string[]>(["text"]);
   const [customFormReasoning, setCustomFormReasoning] = useState(false);
   const [customFormReasoningEfforts, setCustomFormReasoningEfforts] = useState<string[]>([]);
+  // The ladder loaded from the row being edited. Re-enabling the override must restore this
+  // instead of re-pre-checking every level, which would silently discard a stored ladder.
+  const customFormReasoningLoadedRef = useRef<string[]>([]);
   const [customSaving, setCustomSaving] = useState(false);
   const [customError, setCustomError] = useState("");
   const [contextModalProvider, setContextModalProvider] = useState<string | null>(null);
@@ -1006,6 +1009,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                    setCustomFormModalities(["text"]);
                    setCustomFormReasoning(false);
                    setCustomFormReasoningEfforts([]);
+                   customFormReasoningLoadedRef.current = [];
                    setCustomError("");
                    setCustomModalOpen(true);
                  }}
@@ -1157,6 +1161,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                                  // provider row's current metadata.
                                  setCustomFormReasoning(Array.isArray(m.reasoningEfforts));
                                  setCustomFormReasoningEfforts(m.reasoningEfforts ?? []);
+                                 customFormReasoningLoadedRef.current = m.reasoningEfforts ?? [];
                                  setCustomError("");
                                  setCustomModalOpen(true);
                                  setHoveredModel(null);
@@ -1616,10 +1621,16 @@ export default function Models({ apiBase }: { apiBase: string }) {
                       checked={customFormReasoning}
                       onChange={e => {
                         setCustomFormReasoning(e.target.checked);
-                        // Default to the full ladder: the common intent is "allow every known
-                        // step". An explicit no-reasoning override (empty ladder) then requires
-                        // deliberately unchecking all of them instead of being an accident.
-                        if (e.target.checked) setCustomFormReasoningEfforts([...REASONING_EFFORT_LEVELS]);
+                        if (e.target.checked) {
+                          setCustomFormReasoningEfforts(prev => {
+                            // First enable (nothing picked yet): seed from the stored ladder,
+                            // or pre-check the full set for a new row / an explicit
+                            // no-reasoning row. Re-enable keeps whatever the user had.
+                            if (prev.length > 0) return prev;
+                            const loaded = customFormReasoningLoadedRef.current;
+                            return loaded.length > 0 ? loaded : [...REASONING_EFFORT_LEVELS];
+                          });
+                        }
                       }}
                       disabled={customSaving}
                     />

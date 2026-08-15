@@ -2916,8 +2916,10 @@ describe("Codex catalog routed normalization", () => {
   });
 
   test("an explicit empty custom ladder beats the native-alias ladder on a forward row", async () => {
+    const originalFetch = globalThis.fetch;
     globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
-    const models = await gatherRoutedModels({
+    try {
+      const models = await gatherRoutedModels({
       port: 10100,
       defaultProvider: "openai",
       providers: {
@@ -2946,10 +2948,13 @@ describe("Codex catalog routed normalization", () => {
     });
     expect(model?.defaultReasoningEffort).toBeUndefined();
 
-    const entries = buildCatalogEntries(nativeTemplate(), [], models);
-    const daybreak = entries.find(entry => entry.slug === `openai/${NATIVE_DAYBREAK_BLUE_MODEL}`);
-    expect(daybreak?.supported_reasoning_levels).toEqual([]);
-    expect(daybreak).not.toHaveProperty("default_reasoning_level");
+      const entries = buildCatalogEntries(nativeTemplate(), [], models);
+      const daybreak = entries.find(entry => entry.slug === `openai/${NATIVE_DAYBREAK_BLUE_MODEL}`);
+      expect(daybreak?.supported_reasoning_levels).toEqual([]);
+      expect(daybreak).not.toHaveProperty("default_reasoning_level");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test("catalog sync upgrades fallback-quality gpt-5.6 entries but preserves genuine ones", () => {

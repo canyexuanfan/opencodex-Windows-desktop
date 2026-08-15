@@ -17,7 +17,7 @@ const USAGE = `Usage:
   ocx models live [--provider <name>] [--json]
   ocx models edit <custom-id> [--model-id <id>] [--display-name <name|->]
       [--context-window <tokens|0>] [--modalities <text,image,audio|->]
-      [--reasoning-efforts <low,medium,high,xhigh,max,ultra|->]
+      [--reasoning-efforts <none,minimal,low,medium,high,xhigh,max,ultra|->]
       [--default-reasoning-effort <level|->] [--json]
   ocx models <enable|disable> <provider/model|native-model> [--native] [--json]
   ocx models provider <name> <on|off> [--json]
@@ -70,17 +70,18 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     patch.contextWindow = value === 0 ? null : value;
   }
   if (modalitiesRaw !== undefined) patch.inputModalities = modalitiesRaw === "-" ? [] : csv(modalitiesRaw);
-  // "-" restores inheritance by clearing the stored ladder (null). An explicit empty
-  // ladder ("no reasoning") has no CLI shorthand — use the dashboard for that state.
+  // "-" restores inheritance by clearing the stored ladder (null); "" stores an explicit
+  // empty ladder (the "no reasoning" override, same as the dashboard's uncheck-all).
+  // Embedded blank CSV members (`low,,high`, `,,`) are malformed and must be rejected, not
+  // silently normalized by csv().
   if (reasoningEffortsRaw !== undefined) {
     if (reasoningEffortsRaw === "-") {
       patch.reasoningEfforts = null;
     } else {
-      const values = csv(reasoningEffortsRaw);
-      // csv() silently drops empty members; a value that normalizes to an empty list would
-      // otherwise store an explicit "no reasoning" ladder the user never asked for.
-      if (!values || values.length === 0) {
-        throw new CliUsageError("--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (or \"-\" to inherit)", USAGE);
+      const trimmed = reasoningEffortsRaw.trim();
+      const values = trimmed === "" ? [] : trimmed.split(",").map(value => value.trim());
+      if (values.some(value => value === "")) {
+        throw new CliUsageError("--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (\"\" for no reasoning, \"-\" to inherit)", USAGE);
       }
       patch.reasoningEfforts = values;
     }

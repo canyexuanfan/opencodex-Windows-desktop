@@ -891,7 +891,7 @@ function buildPiClientConfig(ctx: ExportContext): PiGeneratedConfig {
         medium: efforts.includes("medium") ? "medium" : null,
         high: efforts.includes("high") ? "high" : null,
         xhigh: efforts.includes("xhigh") ? "xhigh" : null,
-        max: efforts.includes("max") ? "max" : null,
+        max: efforts.includes("max") ? "max" : efforts.includes("ultra") ? "ultra" : null,
       };
     }
     const context = authoritativeContextWindow(model.contextWindow);

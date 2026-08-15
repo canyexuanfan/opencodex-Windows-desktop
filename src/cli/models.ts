@@ -10,16 +10,18 @@ import { routedSlug } from "../providers/slug-codec";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig, OcxCustomModel } from "../types";
 
-const ADD_USAGE = "Usage: ocx models add <provider> <modelId> [--display-name <name>] [--context-window <tokens>] [--modalities text,image,audio] [--reasoning-efforts <low,medium,high,xhigh,max,ultra>] [--default-reasoning-effort <level>]";
+const ADD_USAGE = "Usage: ocx models add <provider> <modelId> [--display-name <name>] [--context-window <tokens>] [--modalities text,image,audio] [--reasoning-efforts <none,minimal,low,medium,high,xhigh,max,ultra>] [--default-reasoning-effort <level>]";
 const REMOVE_USAGE = "Usage: ocx models remove <customId|provider/modelId> [--yes]";
 const LIST_CUSTOM_USAGE = "Usage: ocx models list-custom [--json]";
 const ALLOWED_MODALITIES = new Set(["text", "image", "audio"]);
 
 /**
  * Parse and validate the reasoning flags shared by `ocx models add` (offline path).
- * "-" means "inherit" and omits the field entirely; an empty string is rejected instead of
- * silently meaning something (edit's "-" is the documented clear idiom). Values are
- * canonicalized into Codex ladder order so the stored config matches what the API stores.
+ * "-" means "inherit" and omits the field entirely; "" means an explicit empty ladder
+ * ("no reasoning" override, the same state the dashboard stores for the toggle-off
+ * checkbox set). Malformed CSV like `low,,high` or `,,` is rejected instead of being
+ * silently normalized. Values are canonicalized into Codex ladder order so the stored
+ * config matches what the API stores.
  */
 export function parseReasoningArgs(
   reasoningEffortsValue: string | undefined,
@@ -31,10 +33,14 @@ export function parseReasoningArgs(
     const trimmed = reasoningEffortsValue.trim();
     if (trimmed === "-") {
       reasoningEfforts = undefined;
+    } else if (trimmed === "") {
+      // Explicit no-reasoning override, exactly like the API's [] / the dashboard's
+      // uncheck-all state.
+      reasoningEfforts = [];
     } else {
       const parts = trimmed.split(",").map(value => value.trim());
-      if (parts.length === 0 || parts.some(part => part === "")) {
-        return { error: "--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (or \"-\" to inherit)" };
+      if (parts.some(part => part === "")) {
+        return { error: "--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (\"\" for no reasoning, \"-\" to inherit)" };
       }
       const invalid = parts.filter(value => !isDeclaredReasoningEffort(value));
       if (invalid.length > 0) {

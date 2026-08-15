@@ -30,9 +30,14 @@ describe("ocx models add --reasoning-efforts parsing", () => {
     expect(parsed.reasoningEfforts).toBeUndefined();
   });
 
-  test("an empty string is rejected instead of silently meaning something", () => {
-    expect(parseReasoningArgs("", undefined)?.error).toContain("comma-separated");
+  test('an empty string is the explicit no-reasoning ladder; malformed CSV is rejected', () => {
+    expect(parseReasoningArgs("", undefined)).toEqual({ reasoningEfforts: [] });
     expect(parseReasoningArgs("low,,high", undefined)?.error).toContain("comma-separated");
+    expect(parseReasoningArgs(",,", undefined)?.error).toContain("comma-separated");
+  });
+
+  test("a default still cannot ride on an explicit empty ladder", () => {
+    expect(parseReasoningArgs("", "low")?.error).toContain("requires --reasoning-efforts");
   });
 
   test('"-" omits the field (inherit) exactly like the API null-clear', () => {
@@ -81,10 +86,15 @@ describe("ocx models edit reasoning flag mapping onto the PUT body", () => {
     expect(body.reasoningEfforts).toBeNull();
   });
 
-  test('"--reasoning-efforts \"\"" is rejected instead of storing an empty ladder', async () => {
+  test('"--reasoning-efforts \"\"" stores an explicit empty ladder (no-reasoning override)', async () => {
+    const body = await editWith(["--reasoning-efforts", ""]);
+    expect(body.reasoningEfforts).toEqual([]);
+  });
+
+  test("embedded blank CSV members are rejected without touching the API", async () => {
     let fetchCalled = false;
     const fetchImpl = async () => { fetchCalled = true; return new Response("{}", { status: 200 }); };
-    const code = await handleModelsRuntimeCommand("edit", ["cm-1", "--reasoning-efforts", ""], {
+    const code = await handleModelsRuntimeCommand("edit", ["cm-1", "--reasoning-efforts", "low,,high"], {
       baseUrl: "http://127.0.0.1:1",
       fetchImpl,
     });

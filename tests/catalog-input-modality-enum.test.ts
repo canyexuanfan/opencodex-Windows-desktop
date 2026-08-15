@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { ensureStrictCatalogFields } from "../src/codex/catalog/parsing";
 import { catalogHintsFromModelsApiItem } from "../src/codex/catalog/provider-fetch";
+import type { OcxConfig } from "../src/types";
 
 /**
  * Codex parses `input_modalities` as a closed enum of text | image | audio. A single out-of-enum
@@ -57,6 +58,21 @@ describe("catalog input_modalities stay inside the enum Codex accepts", () => {
  */
 describe("custom-model API rejects out-of-enum input modalities", () => {
   let persistCalls = 0;
+  // Shared fixture: the PUT/POST handlers mutate and persist the config object they
+  // receive, so seed requests and their follow-ups must see the SAME object (a fresh
+  // object per call would discard the seeded default before the follow-up asserts on it).
+  const fixtureConfig = {
+    providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
+    customModels: [] as Array<{ id: string; provider: string; modelId: string; inputModalities?: string[] }>,
+  } as unknown as OcxConfig;
+
+  beforeEach(() => {
+    // Seeded WITH modalities on purpose: a fixture without them would let the
+    // clear-path test pass against a PUT that ignored the field entirely.
+    fixtureConfig.customModels = [
+      { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", inputModalities: ["text", "image"] },
+    ];
+  });
 
   async function callCustomModels(
     method: "POST" | "PUT",
@@ -73,14 +89,7 @@ describe("custom-model API rejects out-of-enum input modalities", () => {
     return handleModelRoutes({
       req,
       url,
-      config: {
-        providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
-        customModels: [
-          // Seeded WITH modalities on purpose: a fixture without them would let the
-          // clear-path test pass against a PUT that ignored the field entirely.
-          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", inputModalities: ["text", "image"] },
-        ],
-      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      config: fixtureConfig,
       // This handler mutates and persists the config object it receives. The
       // fixture must NEVER reach the process-global OPENCODEX_HOME; that exact bug
       // replaced a real 41KB provider config with this `existing-uuid` fixture.

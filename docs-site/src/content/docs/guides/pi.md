@@ -113,7 +113,7 @@ catalog's ladder is the proxy's own statement about whether a model accepts reas
 reasoning-free. Pi then offers its effort control for exactly the models opencodex will accept it
 on. The export also emits a `thinkingLevelMap` that hides every pi level outside the declared
 ladder (`null`), so pi never offers — and never sends — an effort the ladder does not contain.
-If you need a different mapping, hand-edit `thinkingLevelMap` afterwards as documented by Pi.
+If you need a different mapping, hand-edit `thinkingLevelMap` afterward as documented by Pi.
 
 Treat `reasoning` as Pi-UI metadata: it is derived from the catalog ladder, not proof that the
 upstream natively supports a reasoning parameter. What the proxy actually sends for a given
