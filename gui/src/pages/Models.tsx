@@ -1659,7 +1659,7 @@ export default function Models({ apiBase }: { apiBase: string }) {
                           }}
                           disabled={customSaving}
                         />
-                        <span className="text-control">{effort}</span>
+                        <span className="text-control">{t(`models.reasoningEffort.${effort}` as TKey)}</span>
                       </label>
                     ))}
                   </div>
