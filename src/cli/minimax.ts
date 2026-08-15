@@ -15,6 +15,7 @@ import { ClientPathError, mcodeConfigPath, LOOPBACK_API_KEY_PLACEHOLDER } from "
 import { loadConfig } from "../config";
 import { clearableDeadline } from "../lib/abort";
 import { withProcessRuntimeProvenance } from "../lib/bun-runtime";
+import { selfLaunchArgv } from "../lib/self-launch-argv";
 import { commandInvocation } from "../lib/win-exec";
 import { isLoopbackHostname } from "../server/auth-cors";
 import { findLiveProxy, probeHostname, type LiveProxy } from "../server/proxy-liveness";
@@ -258,7 +259,7 @@ async function ensureProxy(config: OcxConfig): Promise<LiveProxy | null> {
   const live = usableMinimaxLiveProxy(await findLiveProxy());
   if (live) return live;
   const pinPort = typeof config.port === "number" && config.port > 0 ? config.port : 10100;
-  const child = spawn(process.execPath, [process.argv[1], "start", "--port", String(pinPort)], {
+  const child = spawn(process.execPath, selfLaunchArgv(["start", "--port", String(pinPort)]), {
     detached: true,
     stdio: "ignore",
     windowsHide: true,

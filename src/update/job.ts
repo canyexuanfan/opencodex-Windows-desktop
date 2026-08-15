@@ -13,6 +13,7 @@ import {
   verifyPidIdentity,
 } from "../config";
 import { isProcessAlive, killProxy } from "../lib/process-control";
+import { selfLaunchArgv } from "../lib/self-launch-argv";
 import {
   buildWindowsElevatedArgumentList,
   resolveTrustedWindowsPowerShellExe,
@@ -1866,11 +1867,11 @@ export async function runGuiUpdateWorker(
     }
 
     if (trayWasInstalled) {
-      const trayArgs = [process.argv[1], ...planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs];
+      const trayArgs = selfLaunchArgv(planWindowsTrayUpdate({ installed: trayWasInstalled, running: trayWasRunning }).installArgs);
       const tray = runLoggedCommand(job, process.execPath, trayArgs, 20_000);
       if (tray.status !== 0) {
         updateJob(job, {}, "Windows tray refresh failed; run 'ocx tray install'.");
-        if (trayWasRunning) runLoggedCommand(job, process.execPath, [process.argv[1], "tray", "start"], 15_000);
+        if (trayWasRunning) runLoggedCommand(job, process.execPath, selfLaunchArgv(["tray", "start"]), 15_000);
       }
     }
 
