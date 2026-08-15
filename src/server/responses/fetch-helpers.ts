@@ -170,7 +170,7 @@ export function withUpstreamHttpVersion(
   provider: OcxProviderConfig,
 ): RequestInit | undefined {
   const version = provider.upstreamHttpVersion;
-  if (!version || version === "auto" || !init) return init;
+  if (!version || version === "auto") return init;
   // Bun's protocol pin requires an https: target; local/plaintext upstreams keep
   // their existing transport untouched.
   const target = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -179,7 +179,7 @@ export function withUpstreamHttpVersion(
   } catch {
     return init;
   }
-  return { ...init, protocol: UPSTREAM_HTTP_VERSION_PROTOCOL[version] } as RequestInit;
+  return { ...(init ?? {}), protocol: UPSTREAM_HTTP_VERSION_PROTOCOL[version] } as RequestInit;
 }
 
 export function providerFetch(

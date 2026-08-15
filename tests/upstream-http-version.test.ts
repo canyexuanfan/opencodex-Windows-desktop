@@ -24,8 +24,9 @@ describe("withUpstreamHttpVersion", () => {
     expect(withUpstreamHttpVersion(HTTPS_URL, init, provider({ upstreamHttpVersion: "auto" }))).toBe(init);
   });
 
-  test("undefined init stays undefined", () => {
-    expect(withUpstreamHttpVersion(HTTPS_URL, undefined, provider({ upstreamHttpVersion: "http1.1" }))).toBeUndefined();
+  test("undefined init without a pin stays undefined", () => {
+    expect(withUpstreamHttpVersion(HTTPS_URL, undefined, provider())).toBeUndefined();
+    expect(withUpstreamHttpVersion(HTTPS_URL, undefined, provider({ upstreamHttpVersion: "auto" }))).toBeUndefined();
   });
 
   test("http1.1 pins the protocol on https targets", () => {
@@ -66,31 +67,49 @@ describe("withUpstreamHttpVersion", () => {
     const init = { method: "POST" };
     expect(withUpstreamHttpVersion("not a url", init, provider({ upstreamHttpVersion: "http1.1" }))).toBe(init);
   });
+
+  test("absent init still applies the pin (providerFetch without init)", () => {
+    const out = withUpstreamHttpVersion(HTTPS_URL, undefined, provider({ upstreamHttpVersion: "http1.1" }))!;
+    expect(out).toEqual({ protocol: "http1.1" });
+    const untouched = withUpstreamHttpVersion(HTTPS_URL, undefined, provider());
+    expect(untouched).toBeUndefined();
+  });
 });
 
 describe("providerFetch upstreamHttpVersion propagation", () => {
-  test("a provider-pinned version reaches the underlying fetch call", async () => {
-    let seenInit: RequestInit | undefined;
-    const stubFetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
-      seenInit = init;
+  type FetchOverride = typeof globalThis.fetch;
+
+  function stubFetch(seen: { init?: RequestInit }): FetchOverride {
+    return async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seen.init = init;
       return new Response("ok");
     };
+  }
+
+  test("a provider-pinned version reaches the underlying fetch call", async () => {
+    const seen: { init?: RequestInit } = {};
     const fetcher = providerFetch(provider({
       upstreamHttpVersion: "http1.1",
-      fetch: stubFetch,
+      fetch: stubFetch(seen),
     }));
     await fetcher(HTTPS_URL, { method: "POST", body: "{}" });
-    expect((seenInit as RequestInit & { protocol?: string })?.protocol).toBe("http1.1");
+    expect((seen.init as RequestInit & { protocol?: string })?.protocol).toBe("http1.1");
   });
 
   test("no pin keeps the caller init verbatim", async () => {
-    let seenInit: RequestInit | undefined;
-    const stubFetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
-      seenInit = init;
-      return new Response("ok");
-    };
-    const fetcher = providerFetch(provider({ fetch: stubFetch }));
+    const seen: { init?: RequestInit } = {};
+    const fetcher = providerFetch(provider({ fetch: stubFetch(seen) }));
     await fetcher(HTTPS_URL, { method: "POST", body: "{}" });
-    expect(seenInit).toEqual({ method: "POST", body: "{}" });
+    expect(seen.init).toEqual({ method: "POST", body: "{}" });
+  });
+
+  test("no init still applies a pinned version to the fetch call", async () => {
+    const seen: { init?: RequestInit } = {};
+    const fetcher = providerFetch(provider({
+      upstreamHttpVersion: "http1.1",
+      fetch: stubFetch(seen),
+    }));
+    await fetcher(HTTPS_URL);
+    expect((seen.init as RequestInit & { protocol?: string })?.protocol).toBe("http1.1");
   });
 });

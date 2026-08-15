@@ -734,6 +734,7 @@ const providerConfigSchema = z.object({
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  upstreamHttpVersion: z.enum(["auto", "http1.1", "h1", "http2", "h2"]).optional(),
   noStructuredOutputModels: z.array(z.string().min(1))
     .transform(normalizeNonBlankStringArray)
     .optional(),
