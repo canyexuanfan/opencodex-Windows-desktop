@@ -1273,6 +1273,8 @@ const configSchema = z.object({
   ]).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
+  // A retry can be billable, so absence and malformed hand edits both stay off.
+  emptyCompletionRetry: z.boolean().optional().catch(false),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   // Invalid hand edits must not discard an otherwise usable config.
   googleAntigravityStaticCatalogVersion: z.union([z.literal(1), z.literal(2)]).optional().catch(undefined),
@@ -2371,6 +2373,14 @@ function codexAccountPickerEnabledError(value: unknown): string | null {
   return "schema_invalid: codexAccountPickerEnabled: must be a boolean or omitted";
 }
 
+function emptyCompletionRetryError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "emptyCompletionRetry")) return null;
+  const enabled = raw.emptyCompletionRetry;
+  if (enabled === undefined || typeof enabled === "boolean") return null;
+  return "schema_invalid: emptyCompletionRetry: must be a boolean or omitted";
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 /**
  * Reject a loopback-listener port that collides with the proxy port (#1102).
@@ -2419,6 +2429,7 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? googleAntigravityStaticCatalogVersionError(value)
     ?? codexAccountPrioritiesError(value)
     ?? codexAccountPickerEnabledError(value)
+    ?? emptyCompletionRetryError(value)
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
@@ -3269,6 +3280,7 @@ export function getDefaultConfig(): OcxConfig {
   // Adding extra providers (e.g. opencode-go) and switching defaultProvider is a user/runtime choice.
   return {
     port: 10100,
+    emptyCompletionRetry: false,
     managementUsageMaxReadBytes: 64 * 1024 * 1024,
     appOwnedMemoryBudgetMb: DEFAULT_APP_OWNED_MEMORY_BUDGET_BYTES / (1024 * 1024),
     // Fresh/re-initialized configs are already written in the current three-tier

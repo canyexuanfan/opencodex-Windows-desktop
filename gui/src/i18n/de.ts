@@ -695,6 +695,7 @@ export const de: Record<TKey, string> = {
   "logs.detail.attempt.recovery.rateLimit429": "Ratenbegrenzt (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth ratenbegrenzt (429)",
   "logs.detail.attempt.recovery.image413": "Bildnutzlast zu groß (413)",
+  "logs.detail.attempt.recovery.emptyCompletion": "Wiederholung nach leerer Antwort",
   "logs.detail.attempt.recovery.unknown": "Unbekannter Wiederherstellungsgrund",
   "logs.detail.reason.usage_missing": "Nutzung wurde nicht gemeldet.",
   "logs.detail.reason.usage_unsupported": "Dieser Anbieter meldet keine Nutzung.",

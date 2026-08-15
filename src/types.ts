@@ -630,6 +630,8 @@ export interface OcxClientIntegrationsConfig {
 
 export interface OcxConfig {
   port: number;
+  /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
+  emptyCompletionRetry?: boolean;
   /** Maximum usage-log bytes read for one management snapshot. */
   managementUsageMaxReadBytes?: number;
   providers: Record<string, OcxProviderConfig>;

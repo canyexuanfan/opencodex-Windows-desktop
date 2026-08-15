@@ -774,6 +774,43 @@ test("chat-native consumes pacing before the response-header timeout starts", as
   expect(starts).toBe(2);
 });
 
+test("chat-native stays outside the Responses empty-completion retry guard", async () => {
+  const { handleChatCompletions } = await import("../src/server/chat-completions");
+  let upstreamCalls = 0;
+  const providerExecutor = Object.assign(async () => {
+    upstreamCalls += 1;
+    return Response.json({
+      id: "chatcmpl_empty_native",
+      object: "chat.completion",
+      choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+    });
+  }, { preconnect() {} }) as typeof globalThis.fetch;
+  const config = mockConfig("https://provider.example/v1", {
+    fetch: providerExecutor,
+  } as Partial<OcxProviderConfig> & { fetch: typeof globalThis.fetch });
+  config.emptyCompletionRetry = true;
+
+  const response = await handleChatCompletions(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }),
+    config,
+    {} as Parameters<typeof handleChatCompletions>[2],
+  );
+
+  expect(response.status).toBe(200);
+  expect(upstreamCalls).toBe(1);
+  expect(await response.json()).toMatchObject({
+    choices: [{ message: { content: "" }, finish_reason: "stop" }],
+  });
+});
+
 test("chat-native does not forward ChatGPT account headers to third-party providers", async () => {
   const seen: Array<{ authorization: string | null; account: string | null }> = [];
   const upstream = Bun.serve({
