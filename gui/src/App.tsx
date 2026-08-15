@@ -170,7 +170,14 @@ export default function App() {
     return () => mq.removeEventListener("change", onChange);
   }, []);
 
-  const { restarting: codexRestarting, restart: handleCodexRestart } = useCodexRestart(API_BASE);
+  // The sidebar control is on every page, including Models. Bumping an epoch on a
+  // settled restart lets the models tab re-read staleness without the two surfaces
+  // sharing a controller — the backend is already single-flight, so what is missing
+  // is invalidation, not mutual exclusion.
+  const [codexRestartEpoch, setCodexRestartEpoch] = useState(0);
+  const { restarting: codexRestarting, restart: handleCodexRestart } = useCodexRestart(API_BASE, {
+    onSettled: () => setCodexRestartEpoch(epoch => epoch + 1),
+  });
 
   const handleStop = async () => {
     if (!confirm(t("dash.stopConfirm"))) return;
@@ -324,7 +331,7 @@ export default function App() {
             {page === "dashboard" && <Dashboard apiBase={API_BASE} />}
             {page === "startup" && <Startup apiBase={API_BASE} />}
             {page === "providers" && <Providers apiBase={API_BASE} />}
-            {page === "models" && <Models key={API_BASE} apiBase={API_BASE} />}
+            {page === "models" && <Models key={API_BASE} apiBase={API_BASE} restartEpoch={codexRestartEpoch} />}
             {page === "subagents" && <Subagents key={API_BASE} apiBase={API_BASE} />}
             {page === "logs" && <Logs apiBase={API_BASE} />}
             {page === "usage" && <Usage apiBase={API_BASE} />}

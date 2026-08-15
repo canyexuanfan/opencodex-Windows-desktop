@@ -1,6 +1,10 @@
+import { CodexStaleBanner } from "../components/codex-stale-banner";
+import { fetchCodexAppServerState } from "../codex-app-server-state";
+import type { AppServerStateOutcome } from "../codex-app-server-state";
+import { useCodexRestart } from "../use-codex-restart";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch, Notice, EmptyState, Select, Tooltip } from "../ui";
-import { IconChevron, IconBoxes, IconInfo, IconCheck, IconAlert } from "../icons";
+import { IconChevron, IconBoxes, IconInfo, IconCheck, IconAlert, IconRefresh } from "../icons";
 import { useT } from "../i18n/shared";
 import type { TFn, TKey } from "../i18n/shared";
 import { modelLabel } from "../model-display";
@@ -91,7 +95,42 @@ function parseContextWindowDraft(raw: string): number | null | undefined {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-export default function Models({ apiBase }: { apiBase: string }) {
+export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string; restartEpoch?: number }) {
+  // Codex app-server staleness (devlog/_plan/260815_gui_codex_restart). Named
+  // appServerState, not catalogState: this file already binds that name to the
+  // /api/catalog resource state, which is an unrelated concept.
+  const [appServerState, setAppServerState] = useState<AppServerStateOutcome["state"]>(null);
+  // A restart request outlives a navigation away from this page, so its completion
+  // callback must not set state after unmount.
+  const appServerMounted = useRef(true);
+  useEffect(() => {
+    appServerMounted.current = true;
+    return () => { appServerMounted.current = false; };
+  }, []);
+
+  const reloadAppServerState = useCallback((signal?: AbortSignal) => {
+    void fetchCodexAppServerState(apiBase, { signal }).then(outcome => {
+      if (signal?.aborted || !appServerMounted.current) return;
+      setAppServerState(outcome.state);
+    });
+  }, [apiBase]);
+
+  // onSettled, not a per-button callback: the sidebar control knows nothing about
+  // this page, and a restart succeeding there must still clear the banner here.
+  const { restarting: codexRestarting, restart: handleCodexRestart } = useCodexRestart(apiBase, {
+    onSettled: () => reloadAppServerState(),
+  });
+
+  useEffect(() => {
+    // Once on mount, on apiBase change, and when a restart settles anywhere in the
+    // app (restartEpoch) — never a timer.
+    const controller = new AbortController();
+    reloadAppServerState(controller.signal);
+    return () => controller.abort();
+  }, [reloadAppServerState, restartEpoch]);
+
+
+
   /*
    * Tab state. The hash is the source of truth, so refresh, bookmark, and
    * Back/Forward keep the choice — same contract as `#logs` / `#logs/debug`.
@@ -1715,7 +1754,19 @@ export default function Models({ apiBase }: { apiBase: string }) {
     <>
       <div className="page-head">
         <h2>{t("nav.models")}</h2>
+        <div className="page-head-actions">
+          <button type="button" className="sidebar-orb"
+            onClick={() => { void handleCodexRestart(); }} disabled={codexRestarting}
+            aria-label={codexRestarting ? t("dash.codexRestarting") : t("dash.codexRestart")}
+            title={codexRestarting ? t("dash.codexRestarting") : t("dash.codexRestart")}>
+            <IconRefresh />
+          </button>
+        </div>
       </div>
+      <CodexStaleBanner
+        state={appServerState}
+        controller={{ restarting: codexRestarting, restart: handleCodexRestart }}
+      />
       <ModelsTabStrip tab={tab} onSelect={selectTab} meta={tabMeta} />
       {/*
         One subtitle for the active tab, rendered between the strip and the panels.
