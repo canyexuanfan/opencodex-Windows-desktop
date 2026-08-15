@@ -11,7 +11,7 @@ opencodex 어댑터나 프로바이더 헤더만 바꿔도 그 비공개 경로�
 검증된 연결 구조는 다음과 같습니다.
 
 ```text
-Codex App 또는 CLI
+텍스트 전용 Responses 클라이언트
   -> opencodex (http://127.0.0.1:10100/v1/responses)
   -> 로컬 Responses 브리지 (http://127.0.0.1:11435/v1/responses)
   -> 공식 droid exec 명령
@@ -60,9 +60,35 @@ Factory는 `droid exec`를 비대화형 자동화 표면으로 문서화하며, 
 ## 브리지 계약
 
 브리지는 `127.0.0.1`에만 바인딩하고, 무작위 bearer 토큰을 요구하며, 요청 크기와 모델 ID를
-제한해야 합니다. 최소 텍스트 브리지는 다음 작업을 수행합니다.
+제한해야 합니다. 최소 브리지는 다음 Responses `input` 형태만 허용합니다.
 
-1. Responses `input` 배열을 프롬프트로 변환합니다.
+- 비어 있지 않은 문자열
+- `message` item만 들어 있는 배열. 각 메시지의 role은 `user`, `developer`, `system`,
+  `assistant` 중 하나여야 하며, content는 문자열이거나 텍스트 전용 content part여야 합니다.
+  입력 role에는 `input_text`, assistant 이력에는 `output_text`만 허용합니다.
+
+Droid를 실행하기 전에 요청 전체를 검증해야 합니다. input part에 이미지나 파일이 있거나,
+`tools`에 도구 정의가 하나라도 있거나, `input`에 도구 호출 또는 결과(`function_call`,
+`function_call_output`, `custom_tool_call`, `custom_tool_call_output`)가 있으면 Responses 형식의
+`invalid_request_error`와 함께 HTTP `400`을 반환합니다. `unsupported_bridge_input`처럼 안정적인
+브리지 전용 code를 사용하고 message에서 거부한 필드를 명시하세요. `stream: true`여도 SSE를
+시작하기 전에 이렇게 거부해야 합니다. 지원하지 않는 내용을 버리거나 문자열로 바꾸거나
+프롬프트에 합치면 안 됩니다.
+
+```json
+{
+  "error": {
+    "type": "invalid_request_error",
+    "code": "unsupported_bridge_input",
+    "param": "tools",
+    "message": "The minimal Droid bridge does not accept tool definitions."
+  }
+}
+```
+
+허용된 요청에 대해 브리지는 다음 작업을 수행합니다.
+
+1. 허용된 Responses `input`을 프롬프트로 변환합니다.
 2. `droid exec --model <id> --output-format json <prompt>`를 실행합니다.
 3. 최종 `result`와 `session_id`를 파싱합니다.
 4. OpenAI Responses envelope을 반환합니다.
@@ -86,7 +112,18 @@ response.completed
 
 ## OpenCodex 프로바이더 설정
 
-사용자 지정 프로바이더를 추가한 뒤 **JSON 편집**에서 다음과 같이 설정합니다.
+명시적인 프로바이더 ID `droid`로 사용자 지정 프로바이더를 생성합니다.
+
+```bash
+ocx provider add droid \
+  --adapter openai-responses \
+  --base-url http://127.0.0.1:11435/v1 \
+  --default-model glm-5.2 \
+  --allow-private-network
+```
+
+이 명령은 `providers.droid` 설정 항목을 만듭니다. 대시보드에서 **Providers → droid → JSON
+편집**을 열고 해당 프로바이더의 값을 다음 내용으로 바꿉니다.
 
 ```json
 {
@@ -124,16 +161,17 @@ Codex app-server 재시작은 진행 중인 Codex 작업을 중단합니다. 해
 ```bash
 curl -fsS http://127.0.0.1:11435/healthz
 ocx doctor
-codex exec --ephemeral --model droid/glm-5.2 \
-  "도구를 호출하지 말고 CODEX_DROID_OK만 답하세요."
+ocx access test droid/glm-5.2 --protocol responses
 ```
 
-프로바이더 행이나 모델 선택기 표시는 카탈로그 노출만 증명합니다. 새 Codex 프로세스가
+프로바이더 행이나 모델 선택기 표시는 카탈로그 노출만 증명합니다. Responses probe가
 `droid/<model>` 경로를 통해 실제 응답을 반환해야 연동 성공입니다.
 
 ## 현재 한계
 
-위 최소 브리지는 텍스트와 Responses SSE 수명주기만 변환합니다. Codex의 완전한 양방향
-function/tool-call 프로토콜은 구현하지 않습니다. 도구 정의, 도구 호출과 결과, 권한, 취소, 풍부한
-Droid 이벤트를 처리하려면 Factory stream JSON-RPC 모드 또는 공식 Droid SDK를 사용하는 상태 유지
-브리지가 필요합니다. 텍스트 성공을 도구 경로 성공으로 간주하지 마세요.
+위 최소 브리지는 텍스트와 Responses SSE 수명주기만 변환합니다. Codex App과 `codex exec`는
+프롬프트에서 도구를 호출하지 말라고 해도 일반적으로 도구 정의를 보내며, 현재 Codex CLI에는 그
+정의를 모두 제거하는 범용 플래그가 없습니다. 최소 브리지는 위 계약에 따라 해당 요청을 `400`으로
+거부해야 합니다. 도구 정의, 도구 호출과 결과, 권한, 취소, 풍부한 Droid 이벤트를 처리하려면
+Factory stream JSON-RPC 모드 또는 공식 Droid SDK를 사용하는 상태 유지 브리지가 필요합니다.
+`ocx access test` 성공을 Codex 에이전트나 도구 경로 성공으로 간주하지 마세요.
