@@ -58,6 +58,23 @@ const chatContinuationTurn = [
   "data: [DONE]\n\n",
 ].join("");
 
+function openAiChatConfig(terminalContinuationGuard?: boolean): OcxConfig {
+  return {
+    port: 0,
+    defaultProvider: "glm-gw",
+    providers: {
+      "glm-gw": {
+        adapter: "openai-chat",
+        baseUrl: "https://example.test/v1",
+        apiKey: "key",
+        defaultModel: "glm-5.2",
+        models: ["glm-5.2"],
+        ...(terminalContinuationGuard !== undefined ? { terminalContinuationGuard } : {}),
+      },
+    },
+  } as unknown as OcxConfig;
+}
+
 describe("server terminal guard integration", () => {
   let originalFetch: typeof fetch;
   let calls: number;
@@ -339,19 +356,7 @@ describe("server terminal guard integration", () => {
   }, 5_000);
 
   test("openai-chat provider without terminalContinuationGuard does not re-ask", async () => {
-    const chatConfig = {
-      port: 0,
-      defaultProvider: "glm-gw",
-      providers: {
-        "glm-gw": {
-          adapter: "openai-chat",
-          baseUrl: "https://example.test/v1",
-          apiKey: "key",
-          defaultModel: "glm-5.2",
-          models: ["glm-5.2"],
-        },
-      },
-    } as unknown as OcxConfig;
+    const chatConfig = openAiChatConfig();
     let sends = 0;
     globalThis.fetch = (async () => {
       sends += 1;
@@ -376,21 +381,33 @@ describe("server terminal guard integration", () => {
     expect(text).toContain("response.completed");
   });
 
+  test("openai-chat provider with terminalContinuationGuard false does not re-ask", async () => {
+    const chatConfig = openAiChatConfig(false);
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      return chatSse(chatFirstTurn);
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "glm-gw/glm-5.2",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), chatConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(sends).toBe(1);
+    expect(text).toContain("response.completed");
+  });
+
   test("openai-chat provider with terminalContinuationGuard re-asks once and forwards the tool call", async () => {
-    const chatConfig = {
-      port: 0,
-      defaultProvider: "glm-gw",
-      providers: {
-        "glm-gw": {
-          adapter: "openai-chat",
-          baseUrl: "https://example.test/v1",
-          apiKey: "key",
-          defaultModel: "glm-5.2",
-          models: ["glm-5.2"],
-          terminalContinuationGuard: true,
-        },
-      },
-    } as unknown as OcxConfig;
+    const chatConfig = openAiChatConfig(true);
     let sends = 0;
     const bodies: Record<string, unknown>[] = [];
     globalThis.fetch = (async (_input, init) => {
@@ -418,6 +435,68 @@ describe("server terminal guard integration", () => {
     expect(text).toContain("exec_command");
     const messages = bodies[1]?.messages as Array<{ role?: string; content?: unknown }>;
     expect(messages.some(m => m.role === "developer" || m.role === "system")).toBe(true);
+  });
+
+  test("combo attempts do not run an opted-in openai-chat terminal guard", async () => {
+    const comboConfig = {
+      ...openAiChatConfig(true),
+      combos: {
+        guarded: {
+          strategy: "failover",
+          targets: [{ provider: "glm-gw", model: "glm-5.2" }],
+        },
+      },
+    } as OcxConfig;
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      return chatSse(chatFirstTurn);
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "combo/guarded",
+        input: "请检查这个问题并修复代码",
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), comboConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(sends).toBe(1);
+    expect(text).toContain("response.completed");
+  });
+
+  test("routed compaction does not run an opted-in openai-chat terminal guard", async () => {
+    const chatConfig = openAiChatConfig(true);
+    let sends = 0;
+    globalThis.fetch = (async () => {
+      sends += 1;
+      return chatSse(chatFirstTurn);
+    }) as typeof fetch;
+
+    const response = await handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "glm-gw/glm-5.2",
+        input: [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "earlier turn" }] },
+          { type: "compaction_trigger" },
+        ],
+        stream: true,
+        tools: [{ type: "function", name: "exec_command", description: "run a command", parameters: { type: "object" } }],
+      }),
+    }), chatConfig, { model: "", provider: "" });
+
+    const text = await response.text();
+    expect(response.status).toBe(200);
+    expect(sends).toBe(1);
+    expect(text).toContain('"type":"compaction"');
+    expect(text).toContain("response.completed");
   });
 
 });
