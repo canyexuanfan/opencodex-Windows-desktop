@@ -20,6 +20,10 @@ function eventsOf(...items: AdapterEvent[]): AsyncIterable<AdapterEvent> {
   return (async function* () { yield* items; })();
 }
 
+function withoutHeartbeats(events: AdapterEvent[]): AdapterEvent[] {
+  return events.filter(event => event.type !== "heartbeat");
+}
+
 describe("empty-completion guard content classification", () => {
   test("output text is content", () => {
     expect(isContentEvent({ type: "text_delta", text: "hello" })).toBe(true);
@@ -51,10 +55,14 @@ describe("empty-completion guard content classification", () => {
 });
 
 describe("empty-completion guard kill switch", () => {
-  test("enabled by default, disabled by OCX_EMPTY_COMPLETION_RETRY=0", () => {
-    expect(emptyCompletionRetryEnabled({})).toBe(true);
-    expect(emptyCompletionRetryEnabled({ [EMPTY_COMPLETION_RETRY_ENV]: "1" })).toBe(true);
-    expect(emptyCompletionRetryEnabled({ [EMPTY_COMPLETION_RETRY_ENV]: "0" })).toBe(false);
+  test("requires top-level config opt-in and lets OCX_EMPTY_COMPLETION_RETRY=0 disable it", () => {
+    expect(emptyCompletionRetryEnabled({}, {})).toBe(false);
+    expect(emptyCompletionRetryEnabled({}, { [EMPTY_COMPLETION_RETRY_ENV]: "1" })).toBe(false);
+    expect(emptyCompletionRetryEnabled({ emptyCompletionRetry: true }, {})).toBe(true);
+    expect(emptyCompletionRetryEnabled(
+      { emptyCompletionRetry: true },
+      { [EMPTY_COMPLETION_RETRY_ENV]: "0" },
+    )).toBe(false);
   });
 });
 
@@ -74,7 +82,7 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(0);
-    expect(events).toEqual([
+    expect(withoutHeartbeats(events)).toEqual([
       { type: "thinking_delta", thinking: "thinking..." },
       { type: "text_delta", text: "answer" },
       { type: "done", usage: { inputTokens: 10, outputTokens: 2 } },
@@ -83,7 +91,6 @@ describe("empty-completion guard retry", () => {
 
   test("a reasoning-only terminal turn is retried once and the identical-turn retry succeeds", async () => {
     let continuations = 0;
-    const retryParsedSeen: string[] = [];
     const events = await collect(guardEmptyCompletionEventStream({
       firstEvents: eventsOf(
         { type: "thinking_delta", thinking: "first attempt" },
@@ -101,10 +108,9 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(1);
-    expect(retryParsedSeen).toEqual([]);
     // The first attempt's buffered reasoning is released in order, then the
     // retry's reasoning, then the content, then the merged-usage terminal.
-    expect(events).toEqual([
+    expect(withoutHeartbeats(events)).toEqual([
       { type: "thinking_delta", thinking: "first attempt" },
       { type: "reasoning_raw_delta", text: "raw" },
       { type: "thinking_delta", thinking: "second attempt" },
@@ -154,8 +160,9 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(1);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const meaningful = withoutHeartbeats(events);
+    expect(meaningful).toHaveLength(1);
+    expect(meaningful[0]).toMatchObject({
       type: "error",
       status: 502,
       errorType: "upstream_error",
@@ -163,7 +170,7 @@ describe("empty-completion guard retry", () => {
       usage: { inputTokens: 22, outputTokens: 0, totalTokens: 22 },
     });
     // The silent completed event never reaches the client.
-    expect(events.some(event => event.type === "done")).toBe(false);
+    expect(meaningful.some(event => event.type === "done")).toBe(false);
   });
 
   test("a failed retry surfaces empty_completion_retry_failed", async () => {
@@ -177,8 +184,9 @@ describe("empty-completion guard retry", () => {
       ),
     }));
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const meaningful = withoutHeartbeats(events);
+    expect(meaningful).toHaveLength(1);
+    expect(meaningful[0]).toMatchObject({
       type: "error",
       status: 502,
       errorType: "upstream_error",
@@ -216,7 +224,7 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(0);
-    expect(events).toEqual([
+    expect(withoutHeartbeats(events)).toEqual([
       { type: "thinking_delta", thinking: "..." },
       { type: "done", stopReason: "max_tokens", usage: { inputTokens: 5, outputTokens: 1 } },
     ]);
@@ -256,7 +264,7 @@ describe("empty-completion guard retry", () => {
       },
     }));
     expect(continuations).toBe(0);
-    expect(incomplete).toEqual([
+    expect(withoutHeartbeats(incomplete)).toEqual([
       { type: "thinking_delta", thinking: "..." },
       { type: "incomplete", reason: "content_filter", retryable: false },
     ]);
@@ -289,8 +297,9 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(0);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: "error", code: EMPTY_COMPLETION_RETRY_FAILED_CODE });
+    const meaningful = withoutHeartbeats(events);
+    expect(meaningful).toHaveLength(1);
+    expect(meaningful[0]).toMatchObject({ type: "error", code: EMPTY_COMPLETION_RETRY_FAILED_CODE });
   });
 
   test("heartbeats pass through immediately even before content", async () => {
@@ -309,7 +318,7 @@ describe("empty-completion guard retry", () => {
 
     expect(continuations).toBe(1);
     expect(events.map(event => event.type)).toEqual([
-      "heartbeat", "thinking_delta", "text_delta", "done",
+      "heartbeat", "heartbeat", "thinking_delta", "text_delta", "done",
     ]);
   });
 
@@ -324,6 +333,6 @@ describe("empty-completion guard retry", () => {
     }));
 
     expect(continuations).toBe(0);
-    expect(events).toEqual([{ type: "thinking_delta", thinking: "..." }]);
+    expect(withoutHeartbeats(events)).toEqual([{ type: "thinking_delta", thinking: "..." }]);
   });
 });

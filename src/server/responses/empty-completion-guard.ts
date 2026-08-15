@@ -1,4 +1,4 @@
-import type { AdapterEvent, OcxUsage } from "../../types";
+import type { AdapterEvent, OcxConfig, OcxUsage } from "../../types";
 
 /**
  * Empty-completion guard for Responses turns (port of codex-router's
@@ -15,19 +15,21 @@ import type { AdapterEvent, OcxUsage } from "../../types";
  * upstream — the client sees a stated failure instead of a second silent
  * success.
  *
- * Kill switch on the pattern of the router's CODEX_ROUTER_EMPTY_COMPLETION_RETRY:
- * setting OCX_EMPTY_COMPLETION_RETRY=0 turns the guard off entirely and
- * restores the previous relay behavior exactly.
+ * The retry is explicitly enabled by top-level config. The environment switch
+ * is a disable-only emergency override: OCX_EMPTY_COMPLETION_RETRY=0 restores
+ * the previous relay behavior without editing the persisted config.
  */
 export const EMPTY_COMPLETION_RETRY_ENV = "OCX_EMPTY_COMPLETION_RETRY";
 
+/** Retained pre-content events are bounded independently by count and encoded size. */
+export const EMPTY_COMPLETION_MAX_BUFFERED_EVENTS = 1_024;
+export const EMPTY_COMPLETION_MAX_BUFFERED_BYTES = 1_048_576;
+
 export function emptyCompletionRetryEnabled(
+  config: Pick<OcxConfig, "emptyCompletionRetry">,
   env: Record<string, string | undefined> = process.env,
 ): boolean {
-  // "0" disables; anything else (including unset) enables — same contract as
-  // the router's CODEX_ROUTER_EMPTY_COMPLETION_RETRY.
-  const configured = env[EMPTY_COMPLETION_RETRY_ENV];
-  return configured !== "0";
+  return config.emptyCompletionRetry === true && env[EMPTY_COMPLETION_RETRY_ENV] !== "0";
 }
 
 /** Surfaced when the single retry was also empty or failed upstream. */
@@ -39,10 +41,26 @@ export const EMPTY_COMPLETION_RETRY_FAILED_CODE = "empty_completion_retry_failed
  * silent empty success this guard exists to catch, and retrying the identical
  * request would burn tokens for the same truncated result.
  */
-const VISIBLE_INCOMPLETE_STOP_REASONS: Record<string, true> = {
-  max_tokens: true,
-  content_filter: true,
-};
+const VISIBLE_INCOMPLETE_STOP_REASONS = new Set(["max_tokens", "content_filter"]);
+const UTF8_ENCODER = new TextEncoder();
+
+function retainedEventBytes(event: AdapterEvent): number {
+  return UTF8_ENCODER.encode(JSON.stringify(event)).byteLength;
+}
+
+function isReasoningEvent(event: AdapterEvent): boolean {
+  return event.type === "thinking_delta"
+    || event.type === "thinking_signature"
+    || event.type === "redacted_thinking"
+    || event.type === "kiro_redacted_reasoning"
+    || event.type === "reasoning_raw_delta";
+}
+
+function isTerminalEvent(
+  event: AdapterEvent,
+): event is Extract<AdapterEvent, { type: "done" | "incomplete" | "error" }> {
+  return event.type === "done" || event.type === "incomplete" || event.type === "error";
+}
 
 /**
  * Content means something the client can act on: output text or a tool call
@@ -104,12 +122,14 @@ export function mergeUsage(
   const cacheReadInputTokens = sumOptional("cacheReadInputTokens");
   const cacheCreationInputTokens = sumOptional("cacheCreationInputTokens");
   const reasoningOutputTokens = sumOptional("reasoningOutputTokens");
+  const contextTotalTokens = second.contextTotalTokens ?? first.contextTotalTokens;
   const inputTokens = first.inputTokens + second.inputTokens;
   const outputTokens = first.outputTokens + second.outputTokens;
   return {
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
+    ...(contextTotalTokens !== undefined ? { contextTotalTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {}),
     ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
@@ -147,7 +167,9 @@ export async function* guardEmptyCompletionEventStream(
   const maxRetries = Math.max(0, Math.floor(options.maxRetries ?? 1));
   let source = options.firstEvents;
   let held: AdapterEvent[] = [];
+  let heldBytes = 0;
   let sawContent = false;
+  let passthrough = false;
   let retries = 0;
   let usage: OcxUsage | undefined;
 
@@ -158,6 +180,7 @@ export async function* guardEmptyCompletionEventStream(
   const releaseHeld = (): AdapterEvent[] => {
     const released = held;
     held = [];
+    heldBytes = 0;
     return released;
   };
 
@@ -168,10 +191,10 @@ export async function* guardEmptyCompletionEventStream(
         yield event;
         continue;
       }
-      if (sawContent) {
+      if (sawContent || passthrough) {
         // Buffered content is already flowing; everything downstream passes
-        // through. The final done carries usage merged across every attempt.
-        yield event.type === "done" ? withUsage(event) : event;
+        // through. Every terminal carries usage merged across every attempt.
+        yield isTerminalEvent(event) ? withUsage(event) : event;
         continue;
       }
       if (isContentEvent(event)) {
@@ -182,7 +205,7 @@ export async function* guardEmptyCompletionEventStream(
       }
       if (event.type === "done") {
         usage = mergeUsage(usage, event.usage);
-        if (VISIBLE_INCOMPLETE_STOP_REASONS[event.stopReason ?? ""]) {
+        if (event.stopReason !== undefined && VISIBLE_INCOMPLETE_STOP_REASONS.has(event.stopReason)) {
           // Rendered as response.incomplete: a stated failure, not the silent
           // empty success this guard exists to catch.
           yield* releaseHeld();
@@ -196,7 +219,7 @@ export async function* guardEmptyCompletionEventStream(
           try {
             source = await options.continuation();
           } catch {
-            yield emptyCompletionRetryFailedEvent(usage);
+            yield emptyCompletionRetryFailedEvent(usage, true);
             return;
           }
           terminalSeen = true;
@@ -227,7 +250,21 @@ export async function* guardEmptyCompletionEventStream(
         yield withUsage(event);
         return;
       }
+      const eventBytes = retainedEventBytes(event);
+      if (held.length + 1 > EMPTY_COMPLETION_MAX_BUFFERED_EVENTS
+        || heldBytes + eventBytes > EMPTY_COMPLETION_MAX_BUFFERED_BYTES) {
+        // Preserve data rather than retaining without bound: release the prefix,
+        // emit this event, and stop attempting an empty-completion retry for the turn.
+        yield* releaseHeld();
+        yield event;
+        passthrough = true;
+        continue;
+      }
       held.push(event);
+      heldBytes += eventBytes;
+      // The bridge watchdog sees only yielded events. Feed it while reasoning is
+      // held so a long reasoning-only prefix remains live without exposing it early.
+      if (isReasoningEvent(event)) yield { type: "heartbeat" };
     }
     if (!terminalSeen) {
       // The source ended without a terminal event (truncated stream). Release

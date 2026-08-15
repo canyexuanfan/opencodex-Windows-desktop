@@ -714,6 +714,7 @@ export const ko: Record<TKey, string> = {
   "logs.detail.attempt.recovery.rateLimit429": "요청 한도 초과 (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth 요청 한도 초과 (429)",
   "logs.detail.attempt.recovery.image413": "이미지 페이로드가 너무 큼 (413)",
+  "logs.detail.attempt.recovery.emptyCompletion": "빈 응답 재시도",
   "logs.detail.attempt.recovery.unknown": "알 수 없는 복구 사유",
   "logs.detail.reason.usage_missing": "usage가 보고되지 않았습니다.",
   "logs.detail.reason.usage_unsupported": "이 프로바이더는 usage 보고를 지원하지 않습니다.",

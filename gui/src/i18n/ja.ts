@@ -671,6 +671,7 @@ export const ja: Record<TKey, string> = {
   "logs.detail.attempt.recovery.rateLimit429": "レート制限 (429)",
   "logs.detail.attempt.recovery.anthropicOauth429": "Anthropic OAuth レート制限 (429)",
   "logs.detail.attempt.recovery.image413": "画像ペイロードが大きすぎます (413)",
+  "logs.detail.attempt.recovery.emptyCompletion": "空の完了を再試行",
   "logs.detail.attempt.recovery.unknown": "不明なリカバリ理由",
   "logs.detail.reason.usage_missing": "使用量が報告されませんでした。",
   "logs.detail.reason.usage_unsupported": "このプロバイダーは使用量を報告しません。",

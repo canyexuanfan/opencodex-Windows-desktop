@@ -3141,10 +3141,11 @@ async function handleResponsesInner(
   // text and no tool call is a failure the client cannot see — it silently records the turn as
   // done. The guard holds pre-content adapter events, suppresses the terminal of an empty
   // turn, retries the IDENTICAL request once, and surfaces a stated error when the retry is
-  // empty or fails. Kill switch: OCX_EMPTY_COMPLETION_RETRY=0. Compaction turns and combo
-  // attempts keep their own machinery (the combo preflight already handles empty streams).
+  // empty or fails. This is a top-level config opt-in; OCX_EMPTY_COMPLETION_RETRY=0 is a
+  // disable-only emergency override. Compaction turns and combo attempts keep their own
+  // machinery (the combo preflight already handles empty streams).
   const emptyCompletionGuardEnabled =
-    emptyCompletionRetryEnabled()
+    emptyCompletionRetryEnabled(config)
     && !options.comboAttempt
     && !routedCompaction;
 
@@ -3158,9 +3159,12 @@ async function handleResponsesInner(
     // empty-completion guard re-invokes the IDENTICAL turn (same parsed request,
     // same forwarded headers, same abort signal) through a fresh queue, so the
     // attempt body must not capture the first queue.
-    const runTurnAttempt = async (targetQueue: AdapterEventQueue): Promise<void> => {
+    const runTurnAttempt = async (
+      targetQueue: AdapterEventQueue,
+      recovery?: AttemptRecoveryKind,
+    ): Promise<void> => {
       try {
-        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens);
+        noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery);
         await adapter.runTurn?.(
           parsed,
           { headers: selectedForwardHeaders, abortSignal: runTurnAbort.signal, translatorBudget },
@@ -3188,7 +3192,7 @@ async function handleResponsesInner(
       const retryQueue = createAdapterEventQueue({
         onBacklogExceeded: () => runTurnAbort.abort(),
       });
-      void runTurnAttempt(retryQueue);
+      void runTurnAttempt(retryQueue, "empty-completion");
       return retryQueue.stream();
     };
 
@@ -3719,13 +3723,17 @@ async function handleResponsesInner(
    * back to key/account failover; a failure becomes an in-stream adapter error so the client
    * never sees a second hidden HTTP response or an unbounded retry loop.
    */
-  const fetchTerminalGuardContinuation = async function* (nextParsed: OcxParsedRequest): AsyncGenerator<AdapterEvent> {
+  const fetchTerminalGuardContinuation = async function* (
+    nextParsed: OcxParsedRequest,
+    initialRecoveryKind?: AttemptRecoveryKind,
+  ): AsyncGenerator<AdapterEvent> {
     let response: Response | undefined;
     // One-shot recovery label for the next top-of-loop continuation send after a failover rotation.
-    let nextContinuationRecoveryKind: AttemptRecoveryKind | undefined;
+    let nextContinuationRecoveryKind: AttemptRecoveryKind | undefined = initialRecoveryKind;
     /**
      * Build and fetch one terminal-guard continuation. `recoveryKind` tags same-target and
-     * failover sends (`rate-limit-429`, `key-429`, `anthropic-oauth-429`, `image-413`); the
+     * failover sends (`empty-completion`, `rate-limit-429`, `key-429`,
+     * `anthropic-oauth-429`, `image-413`); the
      * adapter rebuild is deterministic for the same parsed request (tests assert byte-identical
      * replays).
      */
@@ -3969,6 +3977,19 @@ async function handleResponsesInner(
     }
   };
 
+  const fetchGuardedEmptyCompletionRetry = (): AsyncIterable<AdapterEvent> => {
+    const retryEvents = fetchTerminalGuardContinuation(parsed, "empty-completion");
+    return terminalGuardEnabled
+      ? guardTerminalEventStream({
+          parsed,
+          firstEvents: retryEvents,
+          adapterName: activeAdapter.name,
+          maxAutoContinuations: 1,
+          continuation: fetchTerminalGuardContinuation,
+        })
+      : retryEvents;
+  };
+
   if (parsed.stream) {
     const initialEventStream = activeAdapter.parseStream(upstreamResponse, translatorBudget);
     const eventStream = terminalGuardEnabled
@@ -3987,7 +4008,7 @@ async function handleResponsesInner(
     const guardedEventStream = emptyCompletionGuardEnabled
       ? guardEmptyCompletionEventStream({
           firstEvents: eventStream,
-          continuation: () => fetchTerminalGuardContinuation(parsed),
+          continuation: fetchGuardedEmptyCompletionRetry,
         })
       : eventStream;
     const { toolNsMap, declaredToolNames, toolParameterSchemas, freeformToolNames, toolSearchToolNames } = toolBridgeMaps;
@@ -4054,7 +4075,7 @@ async function handleResponsesInner(
         events = [];
         for await (const event of guardEmptyCompletionEventStream({
           firstEvents: (async function* () { yield* guardedEvents; })(),
-          continuation: () => fetchTerminalGuardContinuation(parsed),
+          continuation: fetchGuardedEmptyCompletionRetry,
         })) events.push(event);
       } else {
         events = guardedEvents;

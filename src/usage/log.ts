@@ -27,7 +27,8 @@ export type AttemptRecoveryKind =
   | "key-429"
   | "rate-limit-429"
   | "anthropic-oauth-429"
-  | "image-413";
+  | "image-413"
+  | "empty-completion";
 
 export interface PersistedUsageAttempt {
   ordinal: number;
@@ -208,6 +209,7 @@ const ATTEMPT_RECOVERY_KINDS = new Set<AttemptRecoveryKind>([
   "rate-limit-429",
   "anthropic-oauth-429",
   "image-413",
+  "empty-completion",
 ]);
 const USAGE_STATUSES = new Set<UsageStatus>([
   "reported",
