@@ -1309,8 +1309,9 @@ export interface OcxProviderConfig {
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
-   * Whether this provider's Responses route honours the OpenAI `service_tier`
-   * parameter. Tri-state: `true` lets fast mode inject/remove the field (an unset
+   * Provider fallback for the OpenAI `service_tier` parameter. On Responses routes this
+   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier`.
+   * Tri-state: `true` lets fast mode inject/remove the field (an unset
    * fast mode preserves a caller-supplied value); `false` strips the field and
    * never injects, because an upstream documented as not supporting the parameter
    * must not receive it; absent (`undefined`) leaves the provider unclassified —

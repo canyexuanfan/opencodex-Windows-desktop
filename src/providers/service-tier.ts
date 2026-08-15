@@ -7,7 +7,7 @@ export const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]
 
 type ServiceTierCapabilityProvider = Pick<
   OcxProviderConfig,
-  "adapter" | "supportsServiceTier" | "modelSupportsServiceTier" | "modelAdapters" | "baseUrl" | "authMode"
+  "adapter" | "supportsServiceTier" | "modelSupportsServiceTier" | "modelAdapters" | "baseUrl" | "authMode" | "chatServiceTier"
 >;
 
 /**
@@ -91,5 +91,10 @@ export function serviceTierSupportForModel(
     ? provider.adapter
     : serviceTierAdapterForModel(providerName, provider, modelId, inbound);
   if (!SERVICE_TIER_ADAPTERS.has(adapter)) return false;
+  // The current OpenAI Chat adapter deliberately serializes this extension only for
+  // providers that opted in. Treat that serializer decision as authoritative so catalog
+  // metadata, routing evidence, fast-mode injection, and caller-tier stripping cannot claim
+  // support that the final request builder will silently omit.
+  if (adapter === "openai-chat" && provider.chatServiceTier !== true) return false;
   return supportsServiceTierForModel(provider, modelId);
 }

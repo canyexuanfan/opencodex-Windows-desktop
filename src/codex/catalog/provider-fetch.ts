@@ -32,7 +32,7 @@ import { modelInList } from "../../types";
 import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, modelRecordValue, sanitizeCodexReasoningEfforts } from "../../reasoning-effort";
 import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
-import { canForwardServiceTierForModel, supportsServiceTierForModel } from "../../providers/service-tier";
+import { serviceTierSupportForModel } from "../../providers/service-tier";
 import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
 import { parseAntigravityAvailableModels } from "../../providers/antigravity-models";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
@@ -634,10 +634,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
   const reasoningEfforts = configuredReasoningEfforts(prov, model.id);
   const defaultReasoningEffort = modelRecordValue(prov.modelDefaultReasoningEfforts, model.id) ?? model.defaultReasoningEffort;
   const supportsReasoningSummaries = configuredReasoningSummarySupport(prov, model.id);
-  const supportsServiceTier = supportsServiceTierForModel(prov, model.id);
-  const serviceTierSupported = typeof supportsServiceTier === "boolean"
-    ? canForwardServiceTierForModel(prov, model.id, name)
-    : undefined;
+  const supportsServiceTier = serviceTierSupportForModel(prov, model.id, name);
   const { supportsServiceTier: _staleServiceTier, ...modelWithoutServiceTier } = model;
   const hinted = {
     ...modelWithoutServiceTier,
@@ -659,7 +656,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
       : {}),
     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
-    ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier: serviceTierSupported } : {}),
+    ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier } : {}),
     ...(prov.adapter === "kiro" ? { supportsVerbosity: false } : {}),
     // Default-on for openai-chat providers (explicit false opts out); other adapters
     // advertise only on explicit opt-in.
@@ -1771,6 +1768,9 @@ async function gatherRoutedModelsUncached(
       ? nativeDefaultReasoningEffort(cm.modelId)
       : undefined;
     const supportsReasoningSummaries = configuredReasoningSummarySupport(rawProvider, cm.modelId);
+    const supportsServiceTier = effectiveProvider
+      ? serviceTierSupportForModel(effectiveProvider, cm.modelId, cm.provider)
+      : undefined;
     const base: CatalogModel = {
       id: cm.modelId,
       provider: cm.provider,
@@ -1804,11 +1804,7 @@ async function gatherRoutedModelsUncached(
       // verbatim instead of being replaced by the replaced row's metadata.
       ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
       ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
-      ...(effectiveProvider && typeof supportsServiceTierForModel(effectiveProvider, cm.modelId) === "boolean"
-        ? {
-          supportsServiceTier: canForwardServiceTierForModel(effectiveProvider, cm.modelId, cm.provider),
-        }
-        : {}),
+      ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier } : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,

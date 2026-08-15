@@ -205,7 +205,9 @@ can opt in globally with `supportsServiceTier: true`, or narrowly with
 `modelSupportsServiceTier: { "verified-model": true }`; an exact `false` narrows a provider
 default of `true`, while provider-level `false` remains fail-closed. The same final adapter/model
 decision controls both catalog metadata and runtime injection, so the fast option is never
-advertised where it cannot be honored.
+advertised where it cannot be honored. An `openai-chat` destination must also set
+`chatServiceTier: true`, matching the adapter's existing wire-level opt-in; Responses routes do
+not need that extra flag.
 
 ## Subagent selection
 

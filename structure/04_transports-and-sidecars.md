@@ -44,9 +44,11 @@ OpenAI-compatible service-tier support is resolved only after the final provider
 known. `supportsServiceTier` remains the provider fallback, while the exact
 `modelSupportsServiceTier` map can override it per upstream model, including an explicit `false`.
 The catalog and request path share this decision: a routed row publishes `service_tiers` only when
-the resolved `openai-chat` or `openai-responses` adapter is explicitly capable, and the final-route
-normalizer applies the same gate to `service_tier`. Capability is namespaced by the selected provider
-and model; model-name similarity and adapter type alone never opt a gateway in.
+the resolved adapter is capable, and the final-route normalizer applies the same gate to
+`service_tier`. `openai-responses` uses the resolved provider/model declaration directly;
+`openai-chat` additionally requires its existing `chatServiceTier` serializer opt-in. Capability is
+namespaced by the selected provider and model; model-name similarity and adapter type alone never
+opt a gateway in.
 
 `POST /v1/responses/compact` handles remote compaction v1 before the generic `/v1/responses` branch
 and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through

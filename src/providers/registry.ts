@@ -200,7 +200,7 @@ export interface ProviderRegistryEntry {
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
-   * Registry default for the provider's Responses `service_tier` support; see
+   * Registry default for the provider's `service_tier` support; see
    * `OcxProviderConfig.supportsServiceTier`. Registry-only: backfilled (never
    * overriding) at enrich/route time and deliberately NOT seeded into saved
    * config, so an explicit user value stays distinguishable from the default

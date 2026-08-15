@@ -240,6 +240,8 @@ describe("provider management validation", () => {
     } finally {
       resolvedError.mockRestore();
     }
+  });
+
   test("service-tier validation and public projection stay in the management boundary", () => {
     expect(providerServiceTierConfigError("relay", {
       adapter: "openai-chat",

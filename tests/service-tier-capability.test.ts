@@ -13,6 +13,8 @@ import type { RequestLogContext } from "../src/server/request-log";
 import { applyServiceTierGate, handleResponses } from "../src/server/responses/core";
 import { canForwardServiceTierForModel, supportsServiceTierForModel } from "../src/providers/service-tier";
 import { serviceTierAdapterForModel } from "../src/providers/service-tier";
+import { candidateCapabilityEvidence } from "../src/routing/capability";
+import { resolveProductionBehaviorValues } from "../src/routing/compatibility/behavior";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 describe("registry capability reaches saved configs without overriding them", () => {
@@ -81,6 +83,15 @@ describe("service-tier capability is exact-model and provider-scoped", () => {
       adapter: "anthropic",
       supportsServiceTier: true,
     }, "anthropic-model", "custom-relay")).toBe(false);
+    expect(canForwardServiceTierForModel({
+      ...provider,
+      supportsServiceTier: true,
+    }, "chat-model", "custom-relay")).toBe(false);
+    expect(canForwardServiceTierForModel({
+      ...provider,
+      supportsServiceTier: true,
+      chatServiceTier: true,
+    }, "chat-model", "custom-relay")).toBe(true);
   });
 });
 
@@ -141,6 +152,49 @@ describe("applyServiceTierGate fails closed", () => {
     }, body, options, "anthropic-model", undefined);
     expect(body).not.toHaveProperty("service_tier");
     expect(options.serviceTier).toBeUndefined();
+  });
+});
+
+describe("routing evidence uses the final model adapter", () => {
+  const relay = (overrides: Partial<OcxProviderConfig> = {}): OcxProviderConfig => ({
+    adapter: "openai-chat",
+    baseUrl: "https://relay.example.test/v1",
+    chatServiceTier: true,
+    supportsServiceTier: true,
+    modelSupportsServiceTier: { blocked: false },
+    ...overrides,
+  });
+
+  test("model declarations and wire opt-ins reach routing and compatibility evidence", () => {
+    const config = {
+      port: 10100,
+      defaultProvider: "relay",
+      providers: { relay: relay() },
+    } as OcxConfig;
+    expect(candidateCapabilityEvidence(config, "relay", "verified").serviceTier).toBe("supported");
+    expect(candidateCapabilityEvidence(config, "relay", "blocked").serviceTier).toBe("unsupported");
+    expect(candidateCapabilityEvidence({
+      ...config,
+      providers: { relay: relay({ chatServiceTier: false }) },
+    }, "relay", "verified").serviceTier).toBe("unsupported");
+
+    const mixedProvider = relay({
+      adapter: "openai-responses",
+      chatServiceTier: false,
+      modelAdapters: { chat: "openai-chat" },
+    });
+    const mixedConfig = { ...config, providers: { relay: mixedProvider } };
+    expect(candidateCapabilityEvidence(mixedConfig, "relay", "verified").serviceTier).toBe("supported");
+    expect(candidateCapabilityEvidence(mixedConfig, "relay", "chat").serviceTier).toBe("unsupported");
+
+    const behavior = resolveProductionBehaviorValues(
+      mixedConfig,
+      "relay",
+      "chat",
+      mixedProvider,
+      "service-tier-test-salt",
+    );
+    expect(behavior?.["responses.serviceTier"]?.value).toBe(false);
   });
 });
 
@@ -248,6 +302,7 @@ describe("the gate fires on the live handleResponses path", () => {
       baseUrl: "https://gateway.example.com/v1",
       apiKey: "sk-test",
       supportsServiceTier: true,
+      chatServiceTier: true,
       modelSupportsServiceTier: { "verified-model": true, "blocked-model": false },
     });
     const supported = await drive("custom-chat", custom(), "verified-model", {}, true);
