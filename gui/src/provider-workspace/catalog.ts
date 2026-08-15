@@ -97,6 +97,23 @@ function normalizedBaseUrl(value: string): string | undefined {
   }
 }
 
+const CANONICAL_PROVIDER_PROTOCOL = new URL(CODEX_FORWARD_BASE_URL).protocol;
+function providerEndpoint(host: string, ...path: string[]): string {
+  return `${CANONICAL_PROVIDER_PROTOCOL}//${host}/${path.join("/")}`;
+}
+
+const STATIC_MODEL_CATALOG_TRANSPORTS: Readonly<Record<string, { adapter: string; baseUrl: string }>> = {
+  "cline-pass": { adapter: "openai-chat", baseUrl: providerEndpoint("api.cline.bot", "api", "v1") },
+  "mimo-free": { adapter: "mimo-free", baseUrl: providerEndpoint("api.xiaomimimo.com", "api", "free-ai", "openai", "chat") },
+};
+
+/** Keep the Providers toggle aligned with the backend's canonical static-catalog boundary. */
+export function providerSupportsLiveModelDiscovery(name: string, provider: WorkspaceProvider): boolean {
+  const canonical = STATIC_MODEL_CATALOG_TRANSPORTS[name];
+  if (!canonical || provider.adapter !== canonical.adapter) return true;
+  return normalizedBaseUrl(provider.baseUrl) !== normalizedBaseUrl(canonical.baseUrl);
+}
+
 /** Loopback host check shared with the provider-kind classifier (WP080a). */
 export function hasLoopbackBaseUrl(baseUrl: string): boolean {
   try {
