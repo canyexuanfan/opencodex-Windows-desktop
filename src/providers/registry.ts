@@ -1730,6 +1730,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     apiKeyValidation: "unknown",
     // The public catalog reports ids/context windows only; no trustworthy reasoning contract.
     reasoningEfforts: [],
+    // Official Command Code model-profile reasoning facts (shared with the OAuth
+    // `command-code` entry). Without them the API-key preset never advertises a
+    // reasoning picker, and the router's known-ids decode source misses the native
+    // slash ids — so a Codex-facing slug like `commandcode/deepseek-deepseek-v4-pro`
+    // is sent upstream verbatim and rejected with `unsupported_model`.
+    modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
     modelDiscovery: {
       path: "models",
       maxResponseBytes: 256 * 1024,
