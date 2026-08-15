@@ -175,7 +175,7 @@ export function assertTrustedSystemExecutableForTests(candidate: string, label: 
   return assertTrustedSystemExecutable(candidate, label);
 }
 
-type ElevationExeOverrides = { powershell?: string; schtasks?: string };
+type ElevationExeOverrides = { powershell?: string; schtasks?: string; taskkill?: string };
 let elevationExeOverridesForTests: ElevationExeOverrides | null = null;
 
 /**
@@ -209,6 +209,15 @@ export function resolveTrustedWindowsSchtasksExe(): string {
   }
   const candidate = join(resolveTrustedWindowsSystemDirectory(), "schtasks.exe");
   return assertTrustedSystemExecutable(candidate, "schtasks.exe");
+}
+
+/** Absolute path to System32\\taskkill.exe from a trusted system directory. */
+export function resolveTrustedWindowsTaskkillExe(): string {
+  if (elevationExeOverridesForTests?.taskkill) {
+    return elevationExeOverridesForTests.taskkill;
+  }
+  const candidate = join(resolveTrustedWindowsSystemDirectory(), "taskkill.exe");
+  return assertTrustedSystemExecutable(candidate, "taskkill.exe");
 }
 
 /** Stable machine-readable marker for a denied `schtasks /create`. Crosses the CLI→proxy boundary. */

@@ -384,6 +384,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .stop-toggle { color: var(--red); }
 .stop-toggle:hover { background: var(--red-soft); color: var(--red); }
 .stop-toggle:disabled { opacity: 0.5; cursor: default; }
+/* Proxy lifecycle actions: two circular satellites (stop, restart Codex) sharing the
+   row with a quiet label. The stop control used to be a full-width button; pairing it
+   with restart as icons keeps the foot from growing a fifth stacked row and puts the
+   destructive action next to the recovery action it is most often confused with. */
+.sidebar-action-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 8px 10px; }
+.sidebar-action-label { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: var(--text-control); }
+.sidebar-action-orbs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.sidebar-orb--danger { color: var(--red); }
+.sidebar-orb--danger:hover:not(:disabled) { background: var(--red-soft); color: var(--red); border-color: var(--red); }
+.sidebar-orb:disabled { opacity: 0.5; cursor: default; }
 
 .main { min-width: 0; }
 .main-inner { max-width: 980px; margin: 0 auto; padding: 32px 36px 64px; container-type: inline-size; }
@@ -426,6 +436,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 */
 .main-inner.main-inner--combos > .page-head,
 .main-inner.main-inner--combos > .page-tabs,
+.main-inner.main-inner--combos > .codex-stale-banner,
 .main-inner.main-inner--combos > .page-sub {
   flex-shrink: 0;
   padding-inline: 36px;
@@ -435,6 +446,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* ---- page header ---- */
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
 .page-head h2 { font-size: var(--text-title); }
+/* Staleness banner: shown only when the proxy reports a running app-server older
+   than the catalog. It sits above the tab strip so it is visible on every models
+   sub-tab, not only the catalog one. */
+.page-head-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.codex-stale-banner { display: flex; align-items: center; gap: 10px; margin: 8px 0 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--raised); color: var(--text); }
+.codex-stale-banner-text { flex: 1 1 auto; min-width: 0; font-size: var(--text-control); }
 .page-sub { color: var(--muted); font-size: var(--text-body); margin: 4px 0 22px; max-width: var(--prose-measure); }
 
 /* Page-level underline tabs (Logs & Debug / Dashboard). Distinct from pill .segmented filters. */
@@ -2113,6 +2130,11 @@ button.prov-account-row.active { cursor: default; }
   }
   .mobile-topbar .brand { flex: 1 1 auto; min-width: 0; padding: 4px; }
   .mobile-topbar .stop-toggle { width: auto; min-width: 44px; min-height: 44px; justify-content: center; padding: 8px; }
+  /* Both orbs keep the 44x44 touch target the single stop button had; a bare 28px
+     .sidebar-orb would be a regression on the surface where it matters most. */
+  .mobile-topbar-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .mobile-topbar-actions .sidebar-orb { width: 44px; height: 44px; flex: 0 0 44px; min-width: 44px; min-height: 44px; }
+  .mobile-topbar-actions .sidebar-orb svg { width: 18px; height: 18px; }
   .menu-toggle { display: inline-flex; }
   /* drawer: the desktop sidebar kept intact (nav groups + foot + GitHub link), off-canvas */
   .sidebar {
