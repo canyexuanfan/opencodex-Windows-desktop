@@ -634,6 +634,29 @@ Spend arrives in `meteringEvent` as **credits, not tokens**. No captured respons
 `tokenUsage` on any event, which is why Kiro usage stays estimated; `meteringEvent` is currently
 ignored because a credit is not a token count.
 
+## Chat Completions inbound native path
+
+`POST /v1/chat/completions` sends eligible `openai-chat` routes directly to the provider's Chat
+Completions endpoint. Route selection reads the raw Chat body and the native request keeps that body
+as its wire source; a Responses projection is constructed only after the native route is declined
+and is never converted back into Chat. Request construction remains owned by `src/adapters/openai-chat.ts`, including model
+normalization, credential and provider headers, capability-specific fields, and the canonical
+`openaiChatCompletionsUrl()` path. The passthrough builder uses an explicit Chat-field whitelist so
+messages (including `name` and separate `system`/`developer` entries), Chat token controls,
+sampling/logprob fields, caller identity/metadata, and caller stream options retain their wire
+shape. For streams, caller `stream_options` are merged with mandatory `include_usage: true`.
+`service_tier` remains gated by `chatServiceTier: true`; `parallel_tool_calls` is emitted only for
+providers opted into parallel tools (or pinned false by the existing provider opt-out contract).
+Combo/policy routes and requests that need Responses-only hosted tools, continuation, background,
+or storage semantics retain the existing Chat -> Responses -> Chat bridge.
+
+The direct SSE relay accepts CRLF and arbitrary transport chunk boundaries while retaining at most
+one bounded event. EOF with an unterminated event and an event above the translator limit are typed
+upstream failures, never successful partial completions. Provider-controlled structured error
+messages are redacted before either JSON or SSE reaches the client. The native path uses the same
+request-attempt logging, reset retry, same-key 429 replay, key rotation, usage extraction, and
+request-signal cancellation contracts as routed Responses transport.
+
 ## Parallel tool calls (default-on for chat providers)
 
 The openai-chat adapter buffers ALL streamed `tool_calls` deltas (keyed by `index`, falling back to
