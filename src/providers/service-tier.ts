@@ -1,9 +1,13 @@
 import type { OcxProviderConfig } from "../types";
 import { MODEL_ADAPTER_OVERRIDE_ALLOWED } from "../types";
-import { providerModelWireDefault, type InboundWire } from "./registry";
+import { getProviderRegistryEntry, providerModelWireDefault, type InboundWire } from "./registry";
 
 /** OpenAI-compatible adapters that can carry the standard `service_tier` field. */
 export const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]);
+
+export type CapturedServiceTierAdapterAuthority = Readonly<Record<string, string>>;
+
+const capturedAdapterAuthority = new WeakMap<object, CapturedServiceTierAdapterAuthority>();
 
 type ServiceTierCapabilityProvider = Pick<
   OcxProviderConfig,
@@ -56,6 +60,32 @@ export function canSerializeServiceTierForChatModel(
   return provider.chatServiceTier === true || exact === true;
 }
 
+/** Capture registry-owned model wire defaults before an asynchronous catalog flight begins. */
+export function captureServiceTierAdapterAuthority(
+  providerName: string,
+  provider: Pick<OcxProviderConfig, "adapter" | "baseUrl" | "authMode">,
+  registryTransportMatch: boolean,
+  inbound: InboundWire = "responses",
+): CapturedServiceTierAdapterAuthority {
+  const authority: Record<string, string> = {};
+  const defaults = registryTransportMatch
+    ? getProviderRegistryEntry(providerName)?.modelWireDefaults
+    : undefined;
+  for (const modelId of Object.keys(defaults ?? {})) {
+    const adapter = providerModelWireDefault(
+      providerName,
+      provider,
+      modelId,
+      MODEL_ADAPTER_OVERRIDE_ALLOWED,
+      inbound,
+    );
+    if (adapter !== undefined) authority[modelId.trim().toLowerCase()] = adapter;
+  }
+  const frozen = Object.freeze(authority);
+  capturedAdapterAuthority.set(provider, frozen);
+  return frozen;
+}
+
 /** Resolve an explicit model wire override for catalog-time capability projection. */
 export function serviceTierAdapterForModel(
   providerName: string,
@@ -67,6 +97,10 @@ export function serviceTierAdapterForModel(
   // entries are exact-case keys, while registry defaults intentionally normalize ids there.
   const configured = provider.modelAdapters?.[modelId];
   if (configured !== undefined && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(configured)) return configured;
+  const captured = capturedAdapterAuthority.get(provider);
+  if (captured !== undefined) {
+    return captured[modelId.trim().toLowerCase()] ?? provider.adapter;
+  }
   return providerModelWireDefault(
     providerName,
     provider,
