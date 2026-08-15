@@ -12,6 +12,7 @@ import type { OcxConfig } from "../src/types";
 import { ManagementRequest } from "./helpers/management-auth";
 
 const HOMES: string[] = [];
+const originalOpenCodexHome = process.env.OPENCODEX_HOME;
 
 function tempHome(): string {
   const dir = join(tmpdir(), `ocx-lab-passive-surfaces-${process.pid}-${Math.random().toString(16).slice(2)}`);
@@ -24,7 +25,8 @@ afterEach(() => {
   for (const dir of HOMES.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
-  delete process.env.OPENCODEX_HOME;
+  if (originalOpenCodexHome === undefined) delete process.env.OPENCODEX_HOME;
+  else process.env.OPENCODEX_HOME = originalOpenCodexHome;
 });
 
 function config(): OcxConfig {
