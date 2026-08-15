@@ -550,14 +550,12 @@ export function spawnGuiUpdateWorker(
   channel: Channel,
   restart: boolean,
 ): UpdateWorkerProcess {
-  const script = process.argv[1];
-  const args = [
-    script,
+  const args = selfLaunchArgv([
     "__gui-update-worker",
     jobId,
     channel,
     restart ? "restart" : "no-restart",
-  ];
+  ]);
   if (process.platform !== "win32") {
     return spawn(process.execPath, args, {
       detached: true,
