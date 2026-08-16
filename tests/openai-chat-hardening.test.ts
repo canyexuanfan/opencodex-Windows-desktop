@@ -244,18 +244,20 @@ describe("openai-chat non-stream response hardening", () => {
 
   test("rejects malformed nested tool calls without throwing", async () => {
     const adapter = createOpenAIChatAdapter(provider());
-    for (const toolCalls of [
-      { unexpected: true },
-      [null],
-      [{ id: "call_missing_function" }],
-    ]) {
+    for (const [toolCalls, message] of [
+      [{ unexpected: true }, "upstream response contained invalid tool calls (tool_calls_not_array; valueType=object)"],
+      [[null], "upstream response contained invalid tool calls (tool_call_not_object; callIndex=0; valueType=null)"],
+      [[{ id: "call_missing_function" }], "upstream response contained invalid tool calls (tool_call_function_not_object; callIndex=0; valueType=undefined)"],
+    ] as const) {
       const events = await adapter.parseResponse!(new Response(JSON.stringify({
         choices: [{ message: { role: "assistant", tool_calls: toolCalls } }],
         usage: { prompt_tokens: 7, completion_tokens: 2 },
       })));
       expect(events).toEqual([{
         type: "error",
-        message: "upstream response contained invalid tool calls",
+        status: 502,
+        errorType: "upstream_error",
+        message,
         usage: { inputTokens: 7, outputTokens: 2 },
       }]);
     }
@@ -272,7 +274,12 @@ describe("openai-chat non-stream response hardening", () => {
       }] } }],
     })));
 
-    expect(events).toEqual([{ type: "error", message: "upstream response contained invalid tool calls" }]);
+    expect(events).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_function_arguments_invalid; callIndex=0; valueType=object)",
+    }]);
     const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
     expect(lines).toContain("[ocx:openai-chat:invalid-tool-calls]");
     expect(lines).toContain('"mode":"response"');
@@ -393,7 +400,10 @@ describe("openai-chat stream response hardening", () => {
 
   test("malformed nested streaming tool calls are terminal errors", async () => {
     const adapter = createOpenAIChatAdapter(provider());
-    for (const toolCalls of [{ unexpected: true }, [null]]) {
+    for (const [toolCalls, message] of [
+      [{ unexpected: true }, "upstream response contained invalid tool calls (tool_calls_not_array; valueType=object)"],
+      [[null], "upstream response contained invalid tool calls (tool_call_not_object; callIndex=0; valueType=null)"],
+    ] as const) {
       const response = new Response([
         `data: ${JSON.stringify({
           choices: [{ delta: { tool_calls: toolCalls } }],
@@ -405,7 +415,9 @@ describe("openai-chat stream response hardening", () => {
       const events = await collect(adapter.parseStream(response));
       expect(events).toEqual([{
         type: "error",
-        message: "upstream response contained invalid tool calls",
+        status: 502,
+        errorType: "upstream_error",
+        message,
         usage: { inputTokens: 7, outputTokens: 2 },
       }]);
     }
@@ -424,7 +436,12 @@ describe("openai-chat stream response hardening", () => {
     ].join(""));
 
     const events = await collect(adapter.parseStream(response));
-    expect(events).toEqual([{ type: "error", message: "upstream response contained invalid tool calls" }]);
+    expect(events).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_not_object; callIndex=1; valueType=null)",
+    }]);
     const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
     expect(lines).toContain('"mode":"stream"');
     expect(lines).toContain('"reason":"tool_call_not_object"');
@@ -446,7 +463,12 @@ describe("openai-chat stream response hardening", () => {
     ].join(""));
 
     const events = await collect(adapter.parseStream(response));
-    expect(events).toEqual([{ type: "error", message: "upstream response contained invalid tool calls" }]);
+    expect(events).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_not_object; callIndex=1; valueType=null)",
+    }]);
     const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
     // The null-padded continuation delta at index 0 is accepted by the accumulator, so the
     // diagnostic must point at index 1 rather than claiming the padding was the defect.
