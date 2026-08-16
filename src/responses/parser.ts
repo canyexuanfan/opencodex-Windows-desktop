@@ -165,13 +165,17 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
       }
     }
     else if (t.type === "custom" && typeof t.name === "string") {
-      // Freeform custom tool (e.g. apply_patch). Chat models can't emit a lark grammar, so expose a
-      // function with a single string `input` carrying the raw tool body; the bridge relays the model's
-      // call back as a custom_tool_call (Codex's freeform handler rejects a function_call → fatal abort).
+      // Freeform custom tools are lowered to a single string `input` because chat models cannot
+      // emit Responses grammar payloads directly. Keep tool-specific input guidance scoped to the
+      // tool that owns it: leaking apply_patch syntax into `exec` or another freeform tool teaches
+      // routed models that the nested helper name is itself a callable top-level tool.
+      const inputDescription = t.name === "apply_patch"
+        ? "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope."
+        : "Raw freeform input for this tool.";
       out.push({
         name: t.name,
         description: (t.description as string) ?? "",
-        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope." } }, required: ["input"] },
+        parameters: { type: "object", properties: { input: { type: "string", description: inputDescription } }, required: ["input"] },
         freeform: true,
       });
     }
@@ -497,7 +501,6 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         }
         continue;
       }
-
       if (effectiveType === "function_call") {
         const call = item as { id?: string; call_id: string; name: string; arguments?: string; namespace?: string; extra_content?: unknown };
         // Tolerate empty/non-JSON arguments (e.g. a no-arg tool call serialized as "") instead of
