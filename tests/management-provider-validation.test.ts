@@ -3236,6 +3236,69 @@ describe("provider upstreamHttpVersion management contract (#1668)", () => {
     });
   });
 
+
+  test("POST with upstreamHttpVersion: null persists nothing and survives a reload", async () => {
+    // The management validator accepts null as "clear this", but POST persisted the body as
+    // submitted while the loader schema rejected null. The provider then failed to parse on the
+    // next start and the operator landed in invalid-config recovery for a value the API accepted.
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    saveConfig(liveConfig);
+    await withRequest(liveConfig, async (request) => {
+      const created = await request("/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "null-provider",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            upstreamHttpVersion: null,
+          },
+        }),
+      });
+      expect(created?.status).toBe(200);
+
+      // Absent, not null: live, on disk, and after a full reload.
+      expect(liveConfig.providers["null-provider"]).toBeDefined();
+      expect(Object.hasOwn(liveConfig.providers["null-provider"]!, "upstreamHttpVersion")).toBe(false);
+
+      const onDisk = JSON.parse(readFileSync(join(TEST_DIR, "config.json"), "utf-8")) as any;
+      expect(onDisk.providers["null-provider"].upstreamHttpVersion).toBeUndefined();
+
+      const reloaded = loadConfig();
+      expect(reloaded.providers["null-provider"]).toBeDefined();
+      expect(reloaded.providers["null-provider"]?.upstreamHttpVersion).toBeUndefined();
+      // The other providers survived, i.e. the reload did not fall into recovery.
+      expect(Object.keys(reloaded.providers).length).toBeGreaterThan(1);
+
+      const list = await request("/api/providers");
+      const rows = await list?.json() as any[];
+      const row = rows.find(r => r.name === "null-provider");
+      expect(row).toBeDefined();
+      expect(row.upstreamHttpVersion).toBeUndefined();
+    });
+  });
+
+  test("a config already holding upstreamHttpVersion: null still loads", async () => {
+    // Compatibility for anything the old POST path already wrote to disk.
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    saveConfig(liveConfig);
+    const raw = JSON.parse(readFileSync(join(TEST_DIR, "config.json"), "utf-8")) as any;
+    const firstProvider = Object.keys(raw.providers)[0]!;
+    raw.providers[firstProvider].upstreamHttpVersion = null;
+    writeFileSync(join(TEST_DIR, "config.json"), JSON.stringify(raw, null, 2));
+
+    const reloaded = loadConfig();
+    expect(reloaded.providers[firstProvider]).toBeDefined();
+    expect(reloaded.providers[firstProvider]?.upstreamHttpVersion).toBeUndefined();
+    expect(Object.keys(reloaded.providers).length).toBe(Object.keys(raw.providers).length);
+  });
   test("POST rejects an invalid upstreamHttpVersion at the write boundary without persisting", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });

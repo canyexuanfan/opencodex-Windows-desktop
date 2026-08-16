@@ -481,6 +481,10 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const serviceTierError = providerServiceTierConfigError(name, body.provider);
     if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
     const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider as OcxProviderConfig) : undefined;
+    // PATCH already clears on null; POST persisted the body as submitted, so a `null` here
+    // reached disk and the next loadConfig() refused it. Canonicalize to absent, which is what
+    // "clear" means everywhere else.
+    if (prov && prov.upstreamHttpVersion === null) delete prov.upstreamHttpVersion;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
     }
