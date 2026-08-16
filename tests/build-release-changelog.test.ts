@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildReleaseNotes,
   categoryForTitle,
@@ -176,6 +179,63 @@ describe("release metadata parsers", () => {
       subject,
       body,
     }]);
+  });
+
+  test("parses actual NUL-delimited git-log output without control-byte collisions", () => {
+    const repo = mkdtempSync(join(tmpdir(), "ocx-release-log-"));
+    const gitText = (args: string[]): string => {
+      const result = Bun.spawnSync(["git", "-C", repo, ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.toString().trim() || `git ${args[0]} failed`);
+      }
+      return result.stdout.toString();
+    };
+
+    try {
+      gitText(["init", "--quiet"]);
+      const tree = gitText(["write-tree"]).trim();
+      const firstSubject = "fix: first \x1f";
+      const firstBody = `${firstSubject}\n\nbody \x1e`;
+      const firstMessage = join(repo, "first-message.txt");
+      writeFileSync(firstMessage, `${firstBody}\n`, "utf8");
+      const first = gitText([
+        "-c", "user.name=OpenCodex Test",
+        "-c", "user.email=test@example.test",
+        "commit-tree", tree,
+        "-F", firstMessage,
+      ]).trim();
+
+      const secondMessage = join(repo, "second-message.txt");
+      writeFileSync(secondMessage, "feat: second\n", "utf8");
+      const second = gitText([
+        "-c", "user.name=OpenCodex Test",
+        "-c", "user.email=test@example.test",
+        "commit-tree", tree,
+        "-p", first,
+        "-F", secondMessage,
+      ]).trim();
+
+      const raw = gitText([
+        "log",
+        "--first-parent",
+        "--reverse",
+        "-z",
+        "--format=%H%x00%s%x00%B",
+        second,
+      ]);
+      const fields = raw.split("\0");
+      expect(fields.pop()).toBe("");
+      expect(fields).toHaveLength(6);
+      expect(parseGitLog(raw)).toEqual([
+        { sha: first, subject: firstSubject, body: firstBody },
+        { sha: second, subject: "feat: second", body: "feat: second" },
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test("normalizes associated pull metadata safely", () => {
