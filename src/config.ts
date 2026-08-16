@@ -2476,17 +2476,23 @@ function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
       return validFileConfigDiagnostics(normalizeApiKeyIds(retryResult.data as OcxConfig), parsed);
     }
 
-    // Same salvage as loadConfig. Without it a single invalid routing profile makes
-    // diagnostics report the built-in defaults as the config, and a later config write
-    // persists those defaults over the operator's providers, keys and prices.
+    // #1785: one invalid routing profile must not make diagnostics report the built-in
+    // defaults AS the config, because a later config write persists those defaults over the
+    // operator's providers, keys and prices.
     //
-    // The validated config comes from the merged candidate, but the second argument stays
-    // the RAW document (minus the same dropped entries) so callers can still distinguish an
-    // absent optional setting from one we injected.
-    const salvaged = salvageConfigCandidate(merged, retryResult.error, parsed);
+    // The failure is still reported. `source` stays "fallback" and `error` keeps the real
+    // schema message -- diagnostics is the surface that tells callers the file is invalid,
+    // and every consumer that must refuse an invalid config (provider reload, catalog sync,
+    // cost reconcile, codex admission) gates on exactly those two fields. Only `config`
+    // changes: it carries the salvaged document instead of factory defaults, so a caller
+    // that ignores the error and writes it back preserves what the operator configured.
+    const salvaged = salvageConfigCandidate(merged, retryResult.error);
     if (salvaged) {
-      warnDroppedConfigSections(getConfigPath(), salvaged.dropped, salvaged.issues);
-      return validFileConfigDiagnostics(normalizeApiKeyIds(salvaged.parsed), salvaged.rawCandidate);
+      return {
+        config: normalizeApiKeyIds(salvaged.parsed),
+        source: "fallback",
+        error: schemaDiagnosticsError(result.error),
+      };
     }
 
     return { config: getDefaultConfig(), source: "fallback", error: schemaDiagnosticsError(result.error) };

@@ -1633,10 +1633,14 @@ describe("opencodex config defaults", () => {
     });
 
 
-    test("diagnostics salvage the same way instead of reporting defaults", () => {
-      // The salvage in loadConfig was not enough on its own: readConfigDiagnostics fell
-      // through to getDefaultConfig(), and a config command writing that result back would
-      // have persisted built-in defaults over the operator's providers, keys and prices.
+    test("diagnostics keep the operator's config instead of reporting defaults", () => {
+      // The salvage in loadConfig was not enough on its own. readConfigDiagnostics returned
+      // getDefaultConfig(), and a config command writing that result back would have persisted
+      // built-in defaults over the operator's providers, keys and prices.
+      //
+      // The failure is still REPORTED -- source stays "fallback" and error keeps the schema
+      // message, which is what provider reload, catalog sync, cost reconcile and codex admission
+      // gate on. Only the config payload changes.
       configWith({
         routingProfiles: {
           good: { candidates: [{ provider: "keep1", model: "m" }] },
@@ -1647,12 +1651,15 @@ describe("opencodex config defaults", () => {
       try {
         const diagnostics = readConfigDiagnostics();
 
-        expect(diagnostics.source).toBe("file");
-        expect(diagnostics.error).toBeNull();
+        // Still invalid, and still says why.
+        expect(diagnostics.source).toBe("fallback");
+        expect(diagnostics.error).toContain("is disabled");
+
+        // But the payload is the operator's config, not the factory defaults.
         const config = diagnostics.config as Record<string, any>;
         expect(Object.keys(config.providers)).toEqual(expect.arrayContaining(["TR", "keep1", "keep2"]));
         expect(config.modelCosts).toHaveProperty("keep1/m");
-        expect(Object.keys(config.routingProfiles)).toEqual(["good"]);
+        expect(Object.keys(config.routingProfiles ?? {})).toEqual(["good"]);
       } finally {
         errorSpy.mockRestore();
       }
