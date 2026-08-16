@@ -452,7 +452,7 @@ const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
  *
  * Zen's roster is discovered live while this list is static, so it is a dated
  * exception list, not a capability model. Re-probe before extending it.
- * Evidence: devlog/_plan/260805_bug_fix_stack/002_zen_modality_probe.md
+ * Evidence: devlog/_fin/260805_bug_fix_stack/002_zen_modality_probe.md
  */
 const OPENCODE_ZEN_TEXT_ONLY_MODELS = [
   "big-pickle",
@@ -1513,7 +1513,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // finished (28-46 s of silence on long turns). The registry knob itself remains
     // for providers that need it — re-adding one line here restores the old policy.
     // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
-    // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
+    // devlog/_fin/260807_deepseek_responses_streaming/000_plan.md.
     // Current official streams normally carry a real terminal; retain a narrow grace
     // repair for the historical shape that closes after a complete graph without one.
     modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 }, "deepseek-v4-pro": { graceMs: 5_000 } },

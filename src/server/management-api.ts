@@ -109,7 +109,7 @@ function pathInManagementNamespace(pathname: string, prefix: string): boolean {
  * keeps `management-api.ts` on the same footing as the three protected core files.
  *
  * Cherry-picked from @Wibias's PR #1676, which solved this before the boundary work
- * reached it. See devlog/_plan/260814_lab_core_decoupling/.
+ * reached it. See devlog/_fin/260814_lab_core_decoupling/.
  */
 async function handleRoutingProfileRoutesOnDemand(ctx: ManagementContext): Promise<Response | null> {
   if (!pathInManagementNamespace(ctx.url.pathname, "/api/routing-profiles")) return null;
