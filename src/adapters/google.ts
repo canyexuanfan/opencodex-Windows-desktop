@@ -143,7 +143,10 @@ function geminiToolResultText(content: string | OcxContentPart[]): string {
   return hasContent ? contentPartsToText(content) : GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
 }
 
-function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?: unknown; contents: unknown[] } {
+function messagesToGeminiFormat(
+  parsed: OcxParsedRequest,
+  identityModelId: string,
+): { systemInstruction?: unknown; contents: unknown[] } {
   // Neutralize Codex's GPT-5 identity line (Gemini/Antigravity share this path) so a routed model
   // never misreports as GPT-5/OpenAI, and never leaks the proxy identity upstream.
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(parsed.context.tools, parsed.options.toolChoice);
@@ -151,7 +154,7 @@ function messagesToGeminiFormat(parsed: OcxParsedRequest): { systemInstruction?:
     ...(parsed.context.systemPrompt ?? []),
     ...(toolCatalogNudge ? [toolCatalogNudge] : []),
     GOOGLE_BREVITY_INSTRUCTION,
-  ].join("\n\n"), parsed.modelId);
+  ].join("\n\n"), identityModelId);
   const systemInstruction = { parts: [{ text: systemText }] };
 
   const contents: unknown[] = [];
@@ -394,9 +397,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         : provider.googleMode === "vertex"
           ? parsed.modelId
           : resolveDirectGeminiWireModelId(parsed.modelId, provider.directGeminiWireRenames !== false);
-      // System identity names the public model id (parsed.modelId) so the model never
-      // self-reports as its -tiered wire spelling; routedModelId is only the wire id in the URL.
-      const { systemInstruction, contents } = messagesToGeminiFormat(parsed);
+      // AI Studio's `-tiered` spelling is wire-only; CCA aliases may migrate to another generation.
+      const identityModelId = provider.googleMode === "cloud-code-assist" ? routedModelId : parsed.modelId;
+      const { systemInstruction, contents } = messagesToGeminiFormat(parsed, identityModelId);
       const tools = toolsToGeminiFormat(parsed);
 
       const body: Record<string, unknown> = { contents };

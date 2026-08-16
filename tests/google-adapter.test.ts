@@ -352,6 +352,25 @@ describe("google adapter — direct -tiered wire renames", () => {
     }
   });
 
+  test("Cloud Code Assist identity follows a migrated wire model", async () => {
+    const ccaProvider = {
+      ...provider,
+      googleMode: "cloud-code-assist",
+      baseUrl: "https://daily-cloudcode-pa.googleapis.com",
+      project: "proj-123",
+    } as const;
+    const request = await createGoogleAdapter(ccaProvider).buildRequest(identityParsed("gemini-3.6-flash"));
+    const envelope = JSON.parse(request.body) as {
+      model: string;
+      request: { systemInstruction?: { parts?: Array<{ text?: string }> } };
+    };
+    const systemText = envelope.request.systemInstruction?.parts?.[0]?.text ?? "";
+
+    expect(envelope.model).toBe("gemini-3.7-flash-tiered");
+    expect(systemText).toContain("powered by the gemini-3.7-flash-tiered");
+    expect(systemText).not.toContain("powered by the gemini-3.6-flash.");
+  });
+
   test("directGeminiWireRenames does not affect Vertex requests", async () => {
     const vertexProvider = { ...provider, googleMode: "vertex" as const };
     for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
