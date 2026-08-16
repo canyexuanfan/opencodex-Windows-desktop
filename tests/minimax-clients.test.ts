@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import {
   ClientPathError,
@@ -90,6 +91,45 @@ describe("MiniMax Code client config", () => {
 });
 
 describe("MiniMax CLI wrapper", () => {
+  test("keeps the bridge's upstream hop direct when the parent has a proxy", async () => {
+    const reservation = createServer();
+    const proxyPort = await new Promise<number>((resolve, reject) => {
+      reservation.once("error", reject);
+      reservation.listen(0, "127.0.0.1", () => {
+        const address = reservation.address();
+        if (!address || typeof address === "string") reject(new Error("proxy port reservation failed"));
+        else resolve(address.port);
+      });
+    });
+    await new Promise<void>((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures/minimax-bridge-direct.ts")], {
+      env: {
+        ...process.env,
+        HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+        HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+        ALL_PROXY: `http://127.0.0.1:${proxyPort}`,
+        NO_PROXY: "",
+        no_proxy: "",
+        TEST_PROXY_PORT: String(proxyPort),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout.trim())).toEqual({
+      responseStatus: 200,
+      responseText: JSON.stringify({ source: "upstream" }),
+      proxyRequests: 0,
+      upstreamBody: JSON.stringify({ prompt: "private bridge payload" }),
+    });
+  });
+
   test("passes through only standalone help and officially supported version invocations", () => {
     expect(isStandaloneInformationalInvocation(["--help"], "mmx")).toBeTrue();
     expect(isStandaloneInformationalInvocation(["--version"], "mmx")).toBeTrue();
