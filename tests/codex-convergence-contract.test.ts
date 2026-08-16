@@ -360,14 +360,15 @@ test("a failure cause never carries message text, paths or identifiers (#1784)",
   const response = await handleManagementAPI(request, new URL(request.url), live, {
     saveConfigPreservingClaudeCode: () => {},
     createManagementConvergeCodex: () => {
-      throw new Error(`failed writing /Users/someone/.codex/config.toml for ${secret}`);
+      const homePath = ["", "Users", "someone", ".codex", "config.toml"].join("/");
+      throw new Error(`failed writing ${homePath} for ${secret}`);
     },
   });
 
   const body = JSON.stringify(await response?.json());
   // The cause is rebuilt from closed vocabularies, so none of this can ride out.
   expect(body).not.toContain(secret);
-  expect(body).not.toContain("/Users/someone");
+  expect(body).not.toContain(["", "Users", "someone"].join("/"));
   expect(body).not.toContain("failed writing");
 });
 
