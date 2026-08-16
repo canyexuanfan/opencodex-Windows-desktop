@@ -358,10 +358,9 @@ export function deriveEntry(
     });
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
-  // Cursor fallback rows mirror normalizeRoutedCatalogEntry: no deferred discovery, no hosted
-  // web-search metadata (runTurn transport bypasses the sidecar). Non-Cursor routed fallbacks
-  // advertise deferred discovery — code mode keeps deferred MCP callable (devlog
-  // 260813_tool_catalog_deferral/010+020); search=false costs a measured 2.7x turn-1 payload.
+  // All routed fallbacks enable deferred code-mode tool exposure; otherwise the nested catalog
+  // expands into `exec.description` and can exceed Cursor's 120 KB serialized tool limit (#1830).
+  // Cursor still omits hosted web-search metadata because runTurn bypasses that separate sidecar.
   const isCursorFallback = isRouted && model?.provider === "cursor";
   const entry: RawEntry = {
     slug, display_name: routedDisplayName(slug), description: desc,
@@ -369,7 +368,7 @@ export function deriveEntry(
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(isRouted
       ? isCursorFallback
-        ? { supports_search_tool: false }
+        ? { supports_search_tool: true }
         : { web_search_tool_type: "text_and_image", supports_search_tool: true }
       : {}),
   };

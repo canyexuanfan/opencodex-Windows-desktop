@@ -209,24 +209,26 @@ Full derivation with per-line citations: `devlog/_plan/260816_codexrs_multiagent
 
 ## Routed tool discovery and hosted search
 
-Non-Cursor routed catalog rows advertise `supports_search_tool: true` together with
+All routed catalog rows advertise `supports_search_tool: true` together with
 `tool_mode: "code_mode_only"` — the pair is load-bearing. The field selects Codex's deferred
 tool-discovery surface; it does not describe the hosted web-search sidecar. Under code mode,
 deferred MCP tools remain callable through exec's `tools` global / `ALL_TOOLS` without a
 `tool_search` round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
 kimi/k3 executed `tools.mcp__node_repl__js`, devlog `260813_tool_catalog_deferral/010+020`).
 Stamping `false` instead forces every MCP declaration into `exec.description` — a measured 2.7x
-turn-1 payload regression (96,699 → 258,929 chars). Non-Cursor routed rows independently keep
-`web_search_tool_type: "text_and_image"` for the OpenCodex search sidecar; Cursor advertises
-neither flag because its runTurn transport bypasses that sidecar and has no proven deferred path.
+turn-1 payload regression (96,699 → 258,929 chars). For Cursor this can also make the unified
+`exec` exceed the 120,000-byte serialized `McpTools` ceiling; the budget then drops `exec` and
+its companion `wait` (#1830). Hosted search remains independent: non-Cursor routes keep
+`web_search_tool_type: "text_and_image"`, while Cursor omits it because runTurn bypasses the
+search sidecar.
 
 [Decision Log]
-- 목적과 의도: keep routed plugin/MCP tools reachable without paying the full-catalog turn-1 payload tax.
-- 기존 구현 및 제약 조건: #1529 stamped `supports_search_tool: false` on all routed rows to fix #1522-era plugin invisibility; routed rows already carry `tool_mode: code_mode_only` (f60dd981d), and codex-rs keeps Deferred-exposure tools callable inside the exec isolate.
-- 검토한 주요 대안: keep the blanket false (2.7x payload regression), per-provider opt-in flags, or hybrid `direct_only_tool_namespaces` allowlists.
-- 선택한 방식: non-Cursor routed rows advertise deferred discovery again, paired with code-mode-only; Cursor stays opted out; a dual-seam regression test pins the pair on both the template and the template-less fallback paths.
-- 다른 대안 대신 이 방식을 선택한 이유: WP2 measurement (devlog `260813_tool_catalog_deferral/010`) showed the search=true code-mode profile is the cheapest shape (~97K vs ~259K chars turn-1), and the live canary showed reachability rides the code-mode isolate, not the tool_search round-trip — so the fail-closed flag paid the tax without buying the safety.
-- 장점, 단점 및 영향: turn-1 payload stays at the measured minimum and deferred tools stay reachable; residual risk is model compliance (a weak routed model may not use `exec` well) — the mechanism itself is client-side and model-independent. #1522's exact DeepSeek-compatible pairing remains unverified on this machine and is documented in the PR.
+- 목적과 의도: keep routed plugin/MCP tools reachable without paying the full-catalog turn-1 payload tax or starving Cursor's unified execution bridge.
+- 기존 구현 및 제약 조건: #1596 restored deferred discovery only for non-Cursor rows because Cursor bypasses the hosted-search sidecar; codex-rs treats deferred exposure and hosted search as separate capabilities, and Cursor independently enforces a 120,000-byte serialized tool-catalog limit.
+- 검토한 주요 대안: keep Cursor opted out, raise/disable Cursor's transport ceiling, synthesize another execution bridge, or enable Cursor-native local exec only when the bridge disappears.
+- 선택한 방식: enable Codex deferred exposure for Cursor code-mode rows too, while continuing to omit Cursor's hosted `web_search_tool_type`.
+- 다른 대안 대신 이 방식을 선택한 이유: it removes the known exec-description inflation before Cursor budgeting without weakening the measured transport limit, inventing caller tools, or turning bridge absence into local-execution authority.
+- 장점, 단점 및 영향: Cursor keeps a compact Responses-owned `exec` path under rich tool catalogs and hosted-search behavior remains unchanged; the existing Cursor budget and native-local-exec fail-closed policy remain authoritative.
 
 ## Ultra reasoning level
 
