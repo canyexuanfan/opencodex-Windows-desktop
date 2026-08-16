@@ -4,6 +4,7 @@ import {
   installApiAuthFetch,
   resetApiAuthFetchForTests,
   setRebootstrapTimeoutForTests,
+  setResolutionWatchdogForTests,
 } from "../src/api";
 
 const globals = ["document", "window", "navigator", "sessionStorage", "fetch"] as const;
@@ -31,6 +32,7 @@ beforeEach(() => {
 afterEach(() => {
   resetApiAuthFetchForTests();
   setRebootstrapTimeoutForTests(10_000);
+  setResolutionWatchdogForTests(15_000);
   testWindow.close();
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
@@ -189,4 +191,36 @@ test("the retried request carries the caller signal", async () => {
   // First attempt + retry, both carrying the caller's signal.
   expect(seenSignals.length).toBe(2);
   expect(seenSignals[1]).toBe(controller.signal);
+});
+test("a signal-dropping hung bootstrap is bounded by the whole-resolution watchdog", async () => {
+  // The bootstrap bound alone relies on fetch honoring the abort; a fetch that
+  // ignores it would otherwise pin the shared resolution (and every /api waiter)
+  // for the page lifetime. The watchdog must unwrap the wave and let the next one
+  // start a FRESH resolution.
+  setRebootstrapTimeoutForTests(50);
+  setResolutionWatchdogForTests(300);
+  let bootstrapCalls = 0;
+  let bootstrapZombie = true;
+  const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (pathnameOf(input) === "/opencodex-session") {
+      bootstrapCalls += 1;
+      // Zombie: never settles AND ignores the abort signal.
+      if (bootstrapZombie) return new Promise<Response>(() => {});
+      return MINTED();
+    }
+    const key = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("X-OpenCodex-API-Key");
+    if (key === "ocx_session_fresh") return new Response("{}", { status: 200 });
+    return new Response("unauthorized", { status: 401 });
+  }) as typeof fetch;
+  await installMockAuthFetch(mockFetch);
+
+  const first = await fetch("/api/config");
+  expect(first.status).toBe(401);
+  expect(bootstrapCalls).toBe(1);
+  expect(promptCalls).toBe(0);
+
+  bootstrapZombie = false;
+  const second = await fetch("/api/config");
+  expect(second.status).toBe(200);
+  expect(bootstrapCalls).toBe(2);
 });

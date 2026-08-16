@@ -33,6 +33,16 @@ const ADMIN_TOKEN_VALIDATION_PATH = "/api/settings";
 const SESSION_REBOOTSTRAP_TIMEOUT_MS = 10_000;
 let rebootstrapTimeoutMs = SESSION_REBOOTSTRAP_TIMEOUT_MS;
 
+/**
+ * Whole-resolution watchdog. The bootstrap bound covers a well-behaved fetch; this
+ * covers everything else — a fetch that never honors the abort, a prompt path that
+ * pends without settling, any surprise inside the shared body. Without it one stuck
+ * resolution pins every /api/* waiter for the page lifetime, which is the exact
+ * failure this module exists to kill.
+ */
+const RESOLUTION_WATCHDOG_MS = 15_000;
+let resolutionWatchdogMs = RESOLUTION_WATCHDOG_MS;
+
 function needsApiAuth(input: RequestInfo | URL): boolean {
   try {
     const raw = input instanceof Request ? input.url : String(input);
@@ -193,7 +203,7 @@ async function resolveTokenAfter401(failedToken: string | null, callerSignal?: A
   if (promptCancelled) return null;
   if (callerSignal?.aborted) return null;
   if (!resolutionInFlight) {
-    resolutionInFlight = (async () => {
+    const body = (async () => {
       if (promptCancelled) return null;
       const current = readToken();
       if (current && current !== failedToken) return current;
@@ -211,9 +221,25 @@ async function resolveTokenAfter401(failedToken: string | null, callerSignal?: A
       }
       promptCancelled = true;
       return null;
-    })().finally(() => {
-      resolutionInFlight = null;
+    })();
+    // The watchdog loses the race to a healthy resolution by seconds; when it wins,
+    // waiters unwrap as a failed wave and the conditional clear lets the NEXT 401
+    // start a fresh resolution instead of joining the zombie.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const watched = Promise.race([
+      body,
+      new Promise<null>((resolve) => {
+        watchdog = setTimeout(() => resolve(null), resolutionWatchdogMs);
+      }),
+    ]);
+    const tracked = watched.finally(() => {
+      clearTimeout(watchdog);
+      // Only clear if nobody replaced us — a zombie body settle late must not
+      // wipe a newer in-flight resolution. (Async callback: tracked is assigned
+      // long before this can run.)
+      if (resolutionInFlight === tracked) resolutionInFlight = null;
     });
+    resolutionInFlight = tracked;
   }
 
   if (!callerSignal) return resolutionInFlight;
@@ -278,9 +304,16 @@ export function resetApiAuthFetchForTests(adminTokenPrompt: AdminTokenPrompt = p
   rawFetch = null;
   promptCancelled = false;
   requestAdminToken = adminTokenPrompt;
+  rebootstrapTimeoutMs = SESSION_REBOOTSTRAP_TIMEOUT_MS;
+  resolutionWatchdogMs = RESOLUTION_WATCHDOG_MS;
 }
 
 /** Test-only: shrink the re-bootstrap deadline so timeout paths run in milliseconds. */
 export function setRebootstrapTimeoutForTests(ms: number): void {
   rebootstrapTimeoutMs = ms;
+}
+
+/** Test-only: shrink the whole-resolution watchdog so zombie paths run in milliseconds. */
+export function setResolutionWatchdogForTests(ms: number): void {
+  resolutionWatchdogMs = ms;
 }
