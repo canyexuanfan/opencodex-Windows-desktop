@@ -108,3 +108,45 @@ test("provider debug fingerprints invalid arrays by length without retaining ele
   expect(lines).toContain('"fieldShape":{"kind":"array","length":2}');
   expect(lines).not.toContain(privateElement);
 });
+
+test("provider debug fingerprints buffered invalid fields with the same privacy boundary", async () => {
+  process.env.OCX_DEBUG = "1";
+  const privateNestedValue = "must-not-reach-buffered-provider-debug";
+  const privateUnknownKey = "must-not-reach-buffered-provider-debug-as-key";
+  const privateUnknownValue = "must-not-reach-buffered-provider-debug-as-value";
+  const privateArguments = "must-not-reach-buffered-provider-debug-arguments";
+  const adapter = createOpenAIChatAdapter(provider);
+
+  const events = await adapter.parseResponse!(new Response(JSON.stringify({
+    choices: [{
+      message: {
+        role: "assistant",
+        tool_calls: [{
+          id: "call_buffered_private",
+          type: "function",
+          function: {
+            name: {
+              name: privateNestedValue,
+              [privateUnknownKey]: privateUnknownValue,
+            },
+            arguments: JSON.stringify({ privateArguments }),
+          },
+        }],
+      },
+    }],
+  })));
+
+  expect(events[0]?.message).not.toContain("fieldShape");
+  const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+  expect(lines).toContain('"mode":"response"');
+  expect(lines).toContain('"reason":"tool_call_function_name_invalid"');
+  expect(lines).toContain('"fieldShape":{"kind":"object"');
+  expect(lines).toContain('"knownKeys":["name"]');
+  expect(lines).toContain('"knownFieldTypes":{"name":"string"}');
+  expect(lines).toContain('"hasUnknownKeys":true');
+  expect(lines).not.toContain(privateNestedValue);
+  expect(lines).not.toContain(privateUnknownKey);
+  expect(lines).not.toContain(privateUnknownValue);
+  expect(lines).not.toContain(privateArguments);
+  expect(lines).not.toContain("call_buffered_private");
+});
