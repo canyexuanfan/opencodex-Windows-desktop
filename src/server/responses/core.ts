@@ -1969,9 +1969,14 @@ async function handleResponsesInner(
   if (parsed._compactionRequest !== true) {
     const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId);
     if (!inputAdmission.admitted) {
+      // #1524: this is a LOCAL preflight refusal, not an upstream verdict. A policy or combo
+      // fallback must be able to skip this candidate and try one whose context window fits,
+      // instead of treating the first incompatible candidate as the end of the chain. The
+      // distinct code is what lets the fallback layer tell the two apart -- an upstream
+      // `context_length_exceeded` still stops, because retrying it elsewhere is guesswork.
       return formatErrorResponse(
         413,
-        "request_too_large",
+        "input_admission_refused",
         `Estimated input (~${inputAdmission.estimatedTokens} tokens) is far past the context window `
           + `of ${parsed.modelId} (${inputAdmission.ceiling} tokens). Start a new session or choose a `
           + `model with a larger context window.`,
