@@ -159,6 +159,7 @@ describe("release metadata parsers", () => {
   });
 
   test("fails closed on malformed git-log records", () => {
+    expect(parseGitLog("")).toEqual([]);
     expect(() => parseGitLog(`\0fix(core): missing sha\0body\0`)).toThrow(
       "malformed release commit record",
     );
@@ -168,6 +169,26 @@ describe("release metadata parsers", () => {
     expect(() => parseGitLog(`${sha("a")}\0fix(core): missing body\0`)).toThrow(
       "malformed release commit record",
     );
+    expect(() => parseGitLog(`${sha("a")}\0fix(core): truncated\0body`)).toThrow(
+      "malformed release commit record",
+    );
+    expect(() => parseGitLog(`not-a-sha\0fix(core): invalid sha\0body\0`)).toThrow(
+      "malformed release commit record",
+    );
+    expect(() => parseGitLog(`${sha("a")} \0fix(core): padded sha\0body\0`)).toThrow(
+      "malformed release commit record",
+    );
+  });
+
+  test("accepts full SHA-1 and SHA-256 object ids", () => {
+    const sha256 = "b".repeat(64);
+    const raw = [
+      sha("a"), "fix(core): sha-1", "sha-1 body",
+      sha256, "fix(core): sha-256", "sha-256 body",
+      "",
+    ].join("\0");
+
+    expect(parseGitLog(raw).map(item => item.sha)).toEqual([sha("a"), sha256]);
   });
 
   test("preserves control bytes in commit subjects and bodies", () => {
