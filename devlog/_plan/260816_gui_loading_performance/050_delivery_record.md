@@ -75,5 +75,34 @@ project owner's admin merge (pre-authorized by the user for this campaign) is
 the path used.
 
 - #1854 merged at 2026-08-16T17:15:18Z as `e2ef24ad6`.
-- Remaining layers merge in order once their own checks are green, retargeting
-  each child to `dev` after its parent lands.
+- #1855 merged at 2026-08-16T17:39:13Z as `14c643bcd`.
+- #1856 merged at 2026-08-16T17:47:45Z as `cc9087c64`.
+- #1857 merged at 2026-08-16T17:52:02Z as `9c5eb1e38`.
+
+Each child was retargeted to `dev` after its parent landed, and `dev` moved twice
+more mid-flight (#1861, #1862, #1863), which cost two further cascades of the
+remaining layers.
+
+## Delivery verification (binding round r8, PASS)
+
+An independent reviewer confirmed against `origin/dev`:
+
+- all four merge commits are ancestors of `dev`, in stack order, each with final
+  base `dev` and state MERGED;
+- every layer's substance survived both rebases — the deadline race
+  (`RESOURCE_TIMEOUT`, `timedOut`, `DEFAULT_REQUEST_DEADLINE_MS`), the bucket
+  scheduler (`pollBuckets`, `syncBucketTimer`, `bucketShouldRun`), the freshness
+  fields, the tri-state re-bootstrap with its watchdog, `visibility-poll.ts`, the
+  cache envelope, and all six new test files;
+- no commit landing after the stack tip touches any of the four GUI files;
+- `dev` GUI suite 924 pass / 0 fail, `tsc --noEmit` exit 0, `privacy:scan` green,
+  and all eight plan docs present with their D addenda.
+
+One wording note from the review: `api.ts` holds no direct `AbortController` — the
+bounded-fetch helper owns that composition and `api.ts` calls it. Refactor, not a
+lost change.
+
+## Terminal outcome
+
+DONE. The infinite-loading wedge is fixed at both of its causes, hidden tabs cost
+nothing, and a tab revisit inside the freshness window issues no requests at all.
