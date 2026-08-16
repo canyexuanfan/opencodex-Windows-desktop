@@ -222,6 +222,96 @@ test("first subscribe while hidden arms no timer and still makes up on visible",
   await setVisibility("visible");
 });
 
+// The opt-out subscriber is what keeps a hidden store ticking. When it leaves while
+// hidden, the remaining paused subscribers must not inherit a timer that wakes every
+// interval with nothing eligible to run.
+test("opt-out leaving while hidden suspends the timer for the paused remainder", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const KEY = `poll-optout-churn-${Date.now()}`;
+  let fetches = 0;
+
+  function Page({ optOut }: { optOut: boolean }) {
+    useClientResource(KEY, async () => { fetches += 1; return `v${fetches}`; }, { pollMs: 20 });
+    return optOut ? <OptOut /> : null;
+  }
+  function OptOut() {
+    useClientResource(KEY, async () => { fetches += 1; return "o"; }, { pollMs: 20, pauseWhenHidden: false });
+    return null;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page optOut={true} />);
+  });
+  await waitFor(() => fetches >= 1);
+
+  await setVisibility("hidden");
+  // The opt-out keeps the store polling while hidden.
+  expect(hasPollTimerForTests(KEY)).toBe(true);
+  const atHide = fetches;
+  await waitFor(() => fetches > atHide);
+
+  // It leaves; the interval is unchanged, so only an explicit re-check can suspend.
+  await act(async () => {
+    root.render(<Page optOut={false} />);
+  });
+  expect(hasPollTimerForTests(KEY)).toBe(false);
+  const atSuspend = fetches;
+  await act(async () => {
+    await new Promise<void>((resolve) => testWindow.setTimeout(resolve, 80));
+  });
+  expect(fetches).toBe(atSuspend);
+
+  await setVisibility("visible");
+  await waitFor(() => hasPollTimerForTests(KEY));
+  await act(async () => { root.unmount(); });
+  container.remove();
+  await setVisibility("visible");
+});
+
+// The mirror case: an opt-out joining an already-suspended store must arm it, since
+// noticing an off-screen event is the only reason that subscriber exists.
+test("opt-out joining a suspended store arms it while still hidden", async () => {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const KEY = `poll-optout-join-${Date.now()}`;
+  let fetches = 0;
+
+  function Page({ optOut }: { optOut: boolean }) {
+    useClientResource(KEY, async () => { fetches += 1; return `v${fetches}`; }, { pollMs: 20 });
+    return optOut ? <OptOut /> : null;
+  }
+  function OptOut() {
+    useClientResource(KEY, async () => { fetches += 1; return "o"; }, { pollMs: 20, pauseWhenHidden: false });
+    return null;
+  }
+
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<Page optOut={false} />);
+  });
+  await waitFor(() => fetches >= 1);
+
+  await setVisibility("hidden");
+  expect(hasPollTimerForTests(KEY)).toBe(false);
+
+  await act(async () => {
+    root.render(<Page optOut={true} />);
+  });
+  expect(hasPollTimerForTests(KEY)).toBe(true);
+  const atJoin = fetches;
+  await waitFor(() => fetches > atJoin);
+
+  await act(async () => { root.unmount(); });
+  container.remove();
+  await setVisibility("visible");
+});
+
 // The last polling subscriber leaving WHILE hidden must not strand the store: the flag
 // resets with the teardown, so a later poller resumes cleanly on the next visible.
 test("last poller leaves while hidden, then a new poller resumes on visible", async () => {

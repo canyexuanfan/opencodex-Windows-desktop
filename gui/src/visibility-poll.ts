@@ -37,9 +37,19 @@ export function startVisibilityPoll(
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
 
+  // A synchronously throwing callback must not kill the poll: without the guard a
+  // make-up tick that throws would skip arm() and never tick again.
+  const tick = () => {
+    try {
+      callback();
+    } catch (error) {
+      console.error("[visibility-poll]", error);
+    }
+  };
+
   const arm = () => {
     if (timer !== null || stopped) return;
-    timer = setInterval(callback, intervalMs);
+    timer = setInterval(tick, intervalMs);
   };
   const disarm = () => {
     if (timer === null) return;
@@ -54,7 +64,7 @@ export function startVisibilityPoll(
       return;
     }
     // Make-up tick: the user comes back to fresh data immediately, then cadence.
-    callback();
+    tick();
     arm();
   };
 
@@ -67,7 +77,7 @@ export function startVisibilityPoll(
   if (pauseWhenHidden && typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibility);
   }
-  if (options?.immediate) callback();
+  if (options?.immediate) tick();
 
   return () => {
     stopped = true;

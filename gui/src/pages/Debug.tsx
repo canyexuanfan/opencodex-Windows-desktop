@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { setClientResourceData, useKeyedClientResource } from "../client-resource";
 import { useI18n } from "../i18n/shared";
@@ -152,22 +152,23 @@ export default function Debug({ apiBase, embedded, active = true }: { apiBase: s
 
   const pollInFlightRef = useRef(false);
 
+  // useEffectEvent keeps every tick on the LATEST fetchLogs (stream/apiBase identity)
+  // without re-arming the interval — dropping it would tail the old stream after a switch.
+  const pollTick = useEffectEvent(() => {
+    if (pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
+    const bounded = createBoundedFetch(10_000);
+    void fetchLogs(false, bounded.signal).finally(() => {
+      bounded.clear();
+      pollInFlightRef.current = false;
+    });
+  });
+
   useEffect(() => {
     if (!active || !follow || !streamEnabled) return;
     // 1s tail poll: paused entirely while the tab is hidden; each tick is guarded
     // and bounded so a hung request never stacks or pins the refreshing indicator.
-    return startVisibilityPoll(() => {
-      if (pollInFlightRef.current) return;
-      pollInFlightRef.current = true;
-      const bounded = createBoundedFetch(10_000);
-      void fetchLogs(false, bounded.signal).finally(() => {
-        bounded.clear();
-        pollInFlightRef.current = false;
-      });
-    }, 1000);
-    // Intentionally omit fetchLogs — same identity gate as the initial load above.
-    // oxlint-disable-next-line react/react-compiler -- existing exhaustive-deps exception is intentional
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stream identity only
+    return startVisibilityPoll(() => pollTick(), 1000);
   }, [active, follow, streamEnabled]);
 
   useEffect(() => {

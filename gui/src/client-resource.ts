@@ -209,12 +209,18 @@ function recomputePoll<T>(store: Store<T>) {
   }
   // Keep the existing countdown when the effective interval is unchanged.
   if (pollMs === store.pollIntervalMs && store.pollTimer !== null) {
+    // Opt-out churn with an unchanged interval: the last opt-out left while hidden —
+    // the timer would keep waking every interval with zero eligible entries.
+    if (documentIsHidden() && !anyOptOut(store)) suspendPollTimer(store);
     return;
   }
   if (store.pollSuspended) {
-    // Hidden: update bookkeeping only. Arming is the visibility handler's job.
     store.pollIntervalMs = pollMs;
-    return;
+    // Hidden with no opt-out: bookkeeping only — arming is the visibility handler's
+    // job. An opt-out subscriber joining a suspended store arms below even while
+    // hidden: noticing the off-screen event is its documented purpose.
+    if (documentIsHidden() && !anyOptOut(store)) return;
+    store.pollSuspended = false;
   }
   clearPollTimer(store);
   store.pollIntervalMs = pollMs;

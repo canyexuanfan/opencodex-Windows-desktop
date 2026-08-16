@@ -286,13 +286,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   }, [models, shadowCall?.model, shadowModelOptions]);
 
   const loadShadowCall = useCallback(async () => {
+    const bounded = createBoundedFetch(15_000);
     try {
-      const bounded = createBoundedFetch(15_000);
       const r = await fetch(`${apiBase}/api/shadow-call-settings`, { signal: bounded.signal });
       const data = await readJsonIfOk<ShadowCallData>(r);
-      bounded.clear();
       if (data) setShadowCall(data);
     } catch { /* old server / network: keep the section disabled */ }
+    finally { bounded.clear(); }
   }, [apiBase]);
 
   const loadV2 = useCallback(async () => {
