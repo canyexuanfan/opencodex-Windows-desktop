@@ -455,6 +455,73 @@ describe("Cursor request builder", () => {
     expect(budget.tools.length).toBeLessThanOrEqual(CURSOR_TOOL_COUNT_LIMIT);
   });
 
+
+  test("a deferred Cursor catalog stays inside the wire budget while a nested one does not (#1830)", () => {
+    // Why #1832 flips supports_search_tool for Cursor: with deferred discovery OFF, Codex
+    // inlines the whole MCP catalog into `exec.description` instead of leaving it callable
+    // through tool_search. This asserts the consequence in bytes, on the real serializer,
+    // rather than trusting the flag alone.
+    const nestedCatalogText = Array.from({ length: 120 }, (_, index) =>
+      `mcp__server_${index}__tool: ${"d".repeat(1_200)}`).join("\n");
+
+    const execDeferred = {
+      name: "exec",
+      namespace: "opencodex-responses",
+      description: "Run JavaScript. Discover tools with tool_search.",
+      parameters: { type: "object", properties: { input: { type: "string" } } },
+      freeform: true,
+    };
+    const execInlined = { ...execDeferred, description: `${execDeferred.description}\n${nestedCatalogText}` };
+    const wait = {
+      name: "wait",
+      namespace: "opencodex-responses",
+      description: "Resume a running call",
+      parameters: { type: "object", properties: { id: { type: "string" } } },
+    };
+
+    // Deferred: the advertised catalog serializes well inside the cap and keeps both tools.
+    expect(cursorMcpToolsEncodedSize([execDeferred, wait], "auto")).toBeLessThanOrEqual(CURSOR_TOOL_BYTES_LIMIT);
+    const deferred = applyCursorToolBudget([execDeferred, wait], "auto");
+    expect(deferred.tools).toContain(execDeferred);
+    expect(deferred.tools).toContain(wait);
+    expect(deferred.omitted).toHaveLength(0);
+
+    // Inlined: the same two tools blow the cap purely because the catalog moved into exec.
+    expect(cursorMcpToolsEncodedSize([execInlined, wait], "auto")).toBeGreaterThan(CURSOR_TOOL_BYTES_LIMIT);
+  });
+
+  test("the Responses execution bridge survives the budget even when it must be trimmed (#1830)", () => {
+    // #1830's symptom is a child whose advertised catalog has no Responses execution tool at
+    // all. Whatever else the budget drops, exec and wait have to be what is left.
+    const filler = Array.from({ length: 60 }, (_, index) => ({
+      name: `mcp_tool_${index}`,
+      namespace: `mcp__server_${index}`,
+      description: "z".repeat(4_000),
+      parameters: { type: "object", properties: {} },
+    }));
+    const exec = {
+      name: "exec",
+      namespace: "opencodex-responses",
+      description: "Run JavaScript",
+      parameters: { type: "object", properties: { input: { type: "string" } } },
+      freeform: true,
+    };
+    const wait = {
+      name: "wait",
+      namespace: "opencodex-responses",
+      description: "Resume",
+      parameters: { type: "object", properties: { id: { type: "string" } } },
+    };
+
+    const catalog = [...filler, exec, wait];
+    expect(cursorMcpToolsEncodedSize(catalog, "auto")).toBeGreaterThan(CURSOR_TOOL_BYTES_LIMIT);
+
+    const budget = applyCursorToolBudget(catalog, "auto");
+    expect(budget.tools).toContain(exec);
+    expect(budget.tools).toContain(wait);
+    expect(cursorMcpToolsEncodedSize(budget.tools, "auto")).toBeLessThanOrEqual(CURSOR_TOOL_BYTES_LIMIT);
+    expect(budget.omitted.length).toBeGreaterThan(0);
+  });
   test("pins namespaced opencodex-responses exec ahead of filler", () => {
     const filler = Array.from({ length: 80 }, (_, index) => ({
       name: `filler_${index}`,

@@ -462,16 +462,15 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   // tool_search round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
   // kimi/k3 called tools.mcp__node_repl__js → isError:false). Stamping false here instead forces
   // every MCP declaration into exec.description — a measured 2.7x turn-1 payload regression
-  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So non-Cursor routed
-  // rows advertise deferred discovery; the #1522 reachability concern is covered by the code-mode
-  // path, not by paying the full-catalog tax. Cursor stays false: its runTurn transport bypasses
-  // the web-search sidecar and has no proven deferred path.
+  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So every routed
+  // code-mode row advertises deferred discovery. Cursor still omits hosted web-search metadata below,
+  // but disabling this separate exposure bit can inflate `exec` past Cursor's 120 KB wire cap (#1830).
   if (isCursorEntry) {
     delete entry.web_search_tool_type;
   } else {
     entry.web_search_tool_type = "text_and_image";
   }
-  entry.supports_search_tool = !isCursorEntry;
+  entry.supports_search_tool = true;
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
   // Opt-in providers (OcxProviderConfig.parallelToolCalls, e.g. xAI) advertise it too: the
