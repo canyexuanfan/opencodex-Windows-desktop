@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 import { IconChevron, IconHardDrive } from "../../icons";
 import { useT, type TFn, type TKey, type Locale } from "../../i18n/shared";
 import { logGuardLabel } from "../../i18n/log-guard-labels";
+import { logGuardOperationLabel } from "../../i18n/log-guard-operation-labels";
 import {
   logGuardProtectionModeLabel,
   logGuardProtectionStateLabel,
@@ -87,7 +88,8 @@ export interface StorageReport {
 export type CodexLogGuardAction =
   | { action: "protect"; mode: "compat" | "quiet" }
   | { action: "unprotect" }
-  | { action: "repair" };
+  | { action: "repair" }
+  | { action: "compact" };
 
 // Known scanner bucket keys -> localized labels; unknown future keys fall back to the API label.
 const BUCKET_TKEYS: Record<string, TKey> = {
@@ -117,15 +119,22 @@ function rowsDisplay(bucket: StorageBucket, locale: Locale, t: TFn): string {
 
 function mutationErrorLabel(locale: Locale, code: unknown): string {
   switch (code) {
-    case "codex_running": return logGuardLabel(locale, "error.codex_running");
-    case "process_enumeration_failed": return logGuardLabel(locale, "error.process_enumeration_failed");
-    case "busy": return logGuardLabel(locale, "error.busy");
-    case "unsupported_schema": return logGuardLabel(locale, "error.unsupported_schema");
+    case "codex_running": return logGuardOperationLabel(locale, "error.codex_running");
+    case "process_enumeration_failed": return logGuardOperationLabel(locale, "error.process_enumeration_failed");
+    case "busy": return logGuardOperationLabel(locale, "error.busy");
+    case "unsupported_schema": return logGuardOperationLabel(locale, "error.unsupported_schema");
     case "trigger_collision": return logGuardLabel(locale, "error.trigger_collision");
-    case "unsafe_path": return logGuardLabel(locale, "error.unsafe_path");
-    case "database_error": return logGuardLabel(locale, "error.database_error");
+    case "unsafe_path": return logGuardOperationLabel(locale, "error.unsafe_path");
+    case "database_error": return logGuardOperationLabel(locale, "error.database_error");
+    // Two distinct situations that previously collapsed into the generic
+    // message: an unsupported auto-vacuum configuration (nothing can be
+    // reclaimed without a full rebuild) versus a failed integrity check
+    // (the database itself is suspect). A user cannot act on "something
+    // went wrong".
+    case "auto_vacuum_not_incremental": return logGuardOperationLabel(locale, "error.auto_vacuum_not_incremental");
+    case "integrity_check_failed": return logGuardOperationLabel(locale, "error.integrity_check_failed");
     case "config_write_failed": return logGuardLabel(locale, "error.config_write_failed");
-    default: return logGuardLabel(locale, "error.generic");
+    default: return logGuardOperationLabel(locale, "error.generic");
   }
 }
 
@@ -135,6 +144,7 @@ function CodexLogGuardPanel({
   t,
   busy,
   error,
+  compaction,
   onAction,
 }: {
   report: CodexLogGuardReport;
@@ -142,6 +152,8 @@ function CodexLogGuardPanel({
   t: TFn;
   busy: boolean;
   error: string | null;
+  /** Outcome of the last compaction POST, retained independently of the status refresh. */
+  compaction: string | null;
   onAction: (action: CodexLogGuardAction) => void;
 }) {
   const metrics = report.metrics;
@@ -149,6 +161,10 @@ function CodexLogGuardPanel({
     || report.capabilities.reclaim.state === "unsupported";
   const protection = report.protection;
   const mutationDisabled = busy || report.capabilities.protection.state !== "supported";
+  const reclaimAvailable = protection !== undefined
+    && report.capabilities.reclaim.state === "supported"
+    && (metrics?.reclaimableBytes ?? 0) > 0;
+  const [confirmCompact, setConfirmCompact] = useState(false);
 
   return (
     <div className="stw-section" data-testid="codex-log-guard">
@@ -248,9 +264,61 @@ function CodexLogGuardPanel({
                 {logGuardLabel(locale, "repair")}
               </button>
             )}
-            {busy && <span className="muted" role="status">{logGuardLabel(locale, "applying")}</span>}
+            {busy && <span className="muted" role="status">{logGuardOperationLabel(locale, "applying")}</span>}
           </div>
           {error && <p className="err" role="alert">{error}</p>}
+        </div>
+      )}
+
+      {reclaimAvailable && (
+        <div className="stw-section" data-testid="log-guard-reclaim">
+          <div className="storage-policy-actions">
+            {!confirmCompact ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                data-testid="log-guard-compact"
+                disabled={busy}
+                onClick={() => setConfirmCompact(true)}
+              >
+                {logGuardLabel(locale, "compact")}
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  data-testid="log-guard-compact-confirm"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirmCompact(false);
+                    onAction({ action: "compact" });
+                  }}
+                >
+                  {logGuardLabel(locale, "confirmCompact")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={busy}
+                  onClick={() => setConfirmCompact(false)}
+                >
+                  {logGuardLabel(locale, "cancel")}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {compaction && (
+        // Rendered OUTSIDE `reclaimAvailable` on purpose. A fully successful
+        // compaction drives reclaimableBytes to 0, which retires the reclaim
+        // section — so nesting the result inside it hid the outcome in exactly
+        // the best case. The POST's own result is also shown when the follow-up
+        // status refresh fails, since the mutation had already succeeded.
+        <div className="stw-section">
+          <p className="stw-kv-mono" role="status" data-testid="log-guard-compact-result">{compaction}</p>
         </div>
       )}
 
@@ -296,6 +364,17 @@ type GenerationScopedError = {
   message: string;
 };
 
+/**
+ * The compaction POST's own report. Kept separately from the periodic status
+ * refresh: the mutation already succeeded, so its outcome must survive even if
+ * the follow-up GET fails. Without this, a successful compact whose refresh
+ * failed showed the user nothing and invited them to run it again.
+ */
+type GenerationScopedCompaction = {
+  generation: number;
+  summary: string;
+};
+
 export default function StorageWorkspace({
   report,
   locale,
@@ -307,6 +386,7 @@ export default function StorageWorkspace({
   const [logGuardOverride, setLogGuardOverride] = useState<GenerationScopedLogGuardReport | null>(null);
   const [internalLogGuardBusy, setInternalLogGuardBusy] = useState(false);
   const [logGuardError, setLogGuardError] = useState<GenerationScopedError | null>(null);
+  const [logGuardCompaction, setLogGuardCompaction] = useState<GenerationScopedCompaction | null>(null);
 
   const sortedBuckets = useMemo(
     () => report.buckets.toSorted((a, b) => b.bytes - a.bytes),
@@ -318,6 +398,9 @@ export default function StorageWorkspace({
     : report.codexLogs ?? null;
   const displayedLogGuardError = logGuardError?.generation === report.generatedAt
     ? logGuardError.message
+    : null;
+  const displayedCompaction = logGuardCompaction?.generation === report.generatedAt
+    ? logGuardCompaction.summary
     : null;
   const effectiveLogGuardBusy = logGuardBusy || internalLogGuardBusy;
 
@@ -344,6 +427,10 @@ export default function StorageWorkspace({
     void (async () => {
       setInternalLogGuardBusy(true);
       setLogGuardError(null);
+      // A new attempt invalidates the previous receipt. Leaving it up meant a
+      // failed retry could render a stale success alongside the current error,
+      // so the section misreported the latest attempt.
+      if (action.action === "compact") setLogGuardCompaction(null);
       try {
         const suffix = action.action === "protect" ? "protect" : action.action;
         const init: RequestInit = {
@@ -359,10 +446,64 @@ export default function StorageWorkspace({
           setLogGuardError({ generation, message: mutationErrorLabel(locale, errorPayload.error) });
           return;
         }
+        if (action.action === "compact") {
+          // Read the POST's own report FIRST. It is the authoritative record of
+          // what this mutation reclaimed; discarding it meant a successful
+          // compaction whose refresh then failed showed the user nothing at all,
+          // hiding pagesReclaimed/complete/stopReason and inviting them to
+          // repeat a mutation that already worked.
+          const posted = await response.json().catch(() => null) as {
+            report?: {
+              pagesReclaimed?: number;
+              logicalBytesReclaimed?: number;
+              physicalDatabaseBytesReclaimed?: number;
+              complete?: boolean;
+              stopReason?: string;
+            };
+          } | null;
+          const postedReport = posted?.report;
+          if (postedReport) {
+            // Both figures are shown because they answer different questions: an
+            // incremental vacuum can return pages to the free list without the
+            // file shrinking, so "logical > 0, physical 0" is normal progress
+            // rather than a failed run.
+            const logical = formatBytes(postedReport.logicalBytesReclaimed ?? 0, locale);
+            const physical = formatBytes(postedReport.physicalDatabaseBytesReclaimed ?? 0, locale);
+            const state = postedReport.complete
+              ? logGuardLabel(locale, "compactComplete")
+              : logGuardLabel(locale, "compactPartial");
+            // stopReason is what distinguishes page_budget from no_progress from
+            // busy, and pagesReclaimed is the unit the budget is actually spent
+            // in. Reporting only bytes left a partial run indistinguishable from
+            // any other partial run.
+            const pages = postedReport.pagesReclaimed ?? 0;
+            const reason = !postedReport.complete && postedReport.stopReason
+              ? ` (${postedReport.stopReason})`
+              : "";
+            setLogGuardCompaction({
+              generation,
+              summary: [
+                `${state}${reason}`,
+                `${pages.toLocaleString(locale)} ${logGuardLabel(locale, "pagesUnit")}`,
+                `${logical} / ${physical}`,
+              ].join(" — "),
+            });
+          }
+          // The mutation has already succeeded. Refresh is deliberately best effort so
+          // a transient GET/JSON failure cannot be presented as a failed compaction.
+          try {
+            const refreshed = await fetch(`${API_BASE}/api/storage/codex-logs`);
+            if (refreshed.ok) {
+              const payload = await refreshed.json() as CodexLogGuardReport;
+              setLogGuardOverride({ generation, report: payload });
+            }
+          } catch { /* keep the existing report after successful compaction */ }
+          return;
+        }
         const payload = await response.json() as CodexLogGuardReport;
         setLogGuardOverride({ generation, report: payload });
       } catch {
-        setLogGuardError({ generation, message: logGuardLabel(locale, "error.generic") });
+        setLogGuardError({ generation, message: logGuardOperationLabel(locale, "error.generic") });
       } finally {
         setInternalLogGuardBusy(false);
       }
@@ -472,6 +613,7 @@ export default function StorageWorkspace({
                 t={t}
                 busy={effectiveLogGuardBusy}
                 error={displayedLogGuardError}
+                compaction={displayedCompaction}
                 onAction={runLogGuardAction}
               />
             ) : report.codexLogsError === "inspect_failed" ? (

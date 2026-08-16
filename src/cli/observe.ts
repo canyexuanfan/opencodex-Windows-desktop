@@ -18,7 +18,7 @@ const USAGE = `Usage:
   ocx logs rebuild-index
   ocx logs index-status
   ocx observe usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]
-  ocx observe storage [codex-logs [status|protect|unprotect|repair] [--mode <compat|quiet>]] [--json]
+  ocx observe storage [codex-logs [status|protect|unprotect|repair|compact] [--mode <compat|quiet>]] [--json]
   ocx observe memory [--json]
   ocx observe debug [--json]
   ocx observe claude-inbound [--limit <n>] [--json]
@@ -173,7 +173,7 @@ async function storage(argv: string[], deps: RuntimeApiDeps): Promise<void> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ mode: requestedMode }),
     }, deps);
-  } else if (action === "unprotect" || action === "repair") {
+  } else if (action === "unprotect" || action === "repair" || action === "compact") {
     if (mode !== undefined) throw new CliUsageError("--mode is only valid with codex-logs protect", USAGE);
     result = await runtimeRequest(`/api/storage/codex-logs/${action}`, { method: "POST" }, deps);
   } else {

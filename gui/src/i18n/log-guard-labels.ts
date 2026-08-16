@@ -9,6 +9,12 @@ export type LogGuardLabelKey =
   | "quiet"
   | "disable"
   | "repair"
+  | "compact"
+  | "pagesUnit"
+  | "compactComplete"
+  | "compactPartial"
+  | "confirmCompact"
+  | "cancel"
   | "applying"
   | "error.generic"
   | "error.codex_running"
@@ -22,6 +28,12 @@ export type LogGuardLabelKey =
 
 const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
   en: {
+    compact: 'Compact',
+    compactComplete: "Compaction complete (logical / on-disk reclaimed)",
+    pagesUnit: "pages",
+    compactPartial: "Compaction partial (logical / on-disk reclaimed)",
+    confirmCompact: 'Confirm compaction',
+    cancel: 'Cancel',
     inspectionOnly: 'Inspection only',
     externalSqliteHome: 'External SQLite storage',
     inspectionUnavailable: "Diagnostic log inspection is unavailable.",
@@ -42,6 +54,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "The database changed, but OpenCodex could not save the protection setting. Fix config storage, then run Repair.",
   },
   de: {
+    compact: 'Komprimieren',
+    compactComplete: "Komprimierung abgeschlossen (logisch / auf Datentraeger freigegeben)",
+    pagesUnit: "Seiten",
+    compactPartial: "Komprimierung teilweise (logisch / auf Datentraeger freigegeben)",
+    confirmCompact: 'Komprimierung bestätigen',
+    cancel: 'Abbrechen',
     inspectionOnly: 'Nur Inspektion',
     externalSqliteHome: 'Externer SQLite-Speicher',
     inspectionUnavailable: "Die Diagnoseprotokoll-Inspektion ist nicht verfügbar.",
@@ -62,6 +80,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "Die Datenbank wurde geändert, aber OpenCodex konnte die Schutzeinstellung nicht speichern. Repariere den Konfigurationsspeicher und führe danach Reparieren aus.",
   },
   fr: {
+    compact: "Compacter",
+    compactComplete: "Compactage termine (logique / recupere sur disque)",
+    pagesUnit: "pages",
+    compactPartial: "Compactage partiel (logique / recupere sur disque)",
+    confirmCompact: "Confirmer le compactage",
+    cancel: "Annuler",
     inspectionOnly: "Inspection uniquement",
     externalSqliteHome: "Stockage SQLite externe",
     inspectionUnavailable: "L’inspection des journaux de diagnostic est indisponible.",
@@ -82,6 +106,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "La base de données a été modifiée, mais OpenCodex n’a pas pu enregistrer le paramètre de protection. Corrigez le stockage de configuration, puis lancez Réparer.",
   },
   ko: {
+    compact: '압축',
+    compactComplete: "압축 완료 (논리 / 디스크 회수량)",
+    pagesUnit: "페이지",
+    compactPartial: "압축 부분 완료 (논리 / 디스크 회수량)",
+    confirmCompact: '압축 확인',
+    cancel: '취소',
     inspectionOnly: '검사 전용',
     externalSqliteHome: '외부 SQLite 저장소',
     inspectionUnavailable: "진단 로그 검사를 사용할 수 없습니다.",
@@ -102,6 +132,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "데이터베이스는 변경되었지만 OpenCodex가 보호 설정을 저장하지 못했습니다. 구성 저장소를 수정한 뒤 복구를 실행하세요.",
   },
   zh: {
+    compact: '压缩',
+    compactComplete: "压缩完成（逻辑 / 磁盘回收）",
+    pagesUnit: "页",
+    compactPartial: "压缩部分完成（逻辑 / 磁盘回收）",
+    confirmCompact: '确认压缩',
+    cancel: '取消',
     inspectionOnly: '仅检查',
     externalSqliteHome: '外部 SQLite 存储',
     inspectionUnavailable: "诊断日志检查当前不可用。",
@@ -112,7 +148,7 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     repair: "修复保护",
     applying: "正在应用保护…",
     "error.generic": "无法更改 Codex 日志保护。",
-    "error.codex_running": "更改日志保护前请先退出 Codex。",
+    "error.codex_running": "更改 Codex 日志保护前请先退出 Codex。",
     "error.process_enumeration_failed": "无法确认 Codex 已停止，因此未更改保护设置。",
     "error.busy": "Codex 日志数据库正忙。请退出 Codex 后重试。",
     "error.unsupported_schema": "此 Codex 日志数据库结构不支持保护功能。",
@@ -122,6 +158,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "数据库已更改，但 OpenCodex 无法保存保护设置。请先修复配置存储，然后运行“修复保护”。",
   },
   "zh-TW": {
+    compact: '壓縮',
+    compactComplete: "压缩完成（逻辑 / 磁盘回收）",
+    pagesUnit: "頁",
+    compactPartial: "压缩部分完成（逻辑 / 磁盘回收）",
+    confirmCompact: '確認壓縮',
+    cancel: '取消',
     inspectionOnly: '僅檢查',
     externalSqliteHome: '外部 SQLite 儲存空間',
     inspectionUnavailable: "診斷記錄檢查目前無法使用。",
@@ -132,7 +174,7 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     repair: "修復保護",
     applying: "正在套用保護…",
     "error.generic": "無法變更 Codex 日誌保護。",
-    "error.codex_running": "變更日誌保護前請先退出 Codex。",
+    "error.codex_running": "變更 Codex 日誌保護前請先退出 Codex。",
     "error.process_enumeration_failed": "無法確認 Codex 已停止，因此未變更保護設定。",
     "error.busy": "Codex 日誌資料庫忙碌中。請退出 Codex 後重試。",
     "error.unsupported_schema": "此 Codex 日誌資料庫結構不支援保護功能。",
@@ -142,6 +184,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "資料庫已變更，但 OpenCodex 無法儲存保護設定。請先修復設定儲存空間，再執行「修復保護」。",
   },
   ru: {
+    compact: 'Сжать',
+    compactComplete: "Сжатие завершено (логически / освобождено на диске)",
+    pagesUnit: "страниц",
+    compactPartial: "Сжатие частичное (логически / освобождено на диске)",
+    confirmCompact: 'Подтвердить сжатие',
+    cancel: 'Отмена',
     inspectionOnly: 'Только проверка',
     externalSqliteHome: 'Внешнее хранилище SQLite',
     inspectionUnavailable: "Проверка диагностических журналов недоступна.",
@@ -162,6 +210,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "База была изменена, но OpenCodex не смог сохранить настройку защиты. Исправьте хранилище конфигурации и затем запустите восстановление.",
   },
   ja: {
+    compact: '圧縮',
+    compactComplete: "圧縮完了（論理 / ディスク解放）",
+    pagesUnit: "ページ",
+    compactPartial: "圧縮は部分的に完了（論理 / ディスク解放）",
+    confirmCompact: '圧縮を確認',
+    cancel: 'キャンセル',
     inspectionOnly: '検査のみ',
     externalSqliteHome: '外部 SQLite ストレージ',
     inspectionUnavailable: "診断ログの検査を利用できません。",
@@ -182,6 +236,12 @@ const LABELS: Record<Locale, Record<LogGuardLabelKey, string>> = {
     "error.config_write_failed": "データベースは変更されましたが、OpenCodex は保護設定を保存できませんでした。設定ストレージを修正してから保護を修復してください。",
   },
   tr: {
+    compact: 'Sıkıştır',
+    compactComplete: "Sikistirma tamamlandi (mantiksal / diskte geri kazanilan)",
+    pagesUnit: "sayfa",
+    compactPartial: "Sikistirma kismi (mantiksal / diskte geri kazanilan)",
+    confirmCompact: 'Sıkıştırmayı onayla',
+    cancel: 'İptal',
     inspectionOnly: 'Yalnızca inceleme',
     externalSqliteHome: 'Harici SQLite depolaması',
     inspectionUnavailable: "Tanılama günlüğü incelemesi kullanılamıyor.",
