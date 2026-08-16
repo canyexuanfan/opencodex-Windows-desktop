@@ -426,6 +426,35 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("credential-next", config)).toBe("b");
   });
 
+
+  test("a workspace-denied 403 is not a credential failure (#1789)", () => {
+    // A K12 account whose credential validates and whose WHAM usage returns 200 still gets
+    // 403 codex_workspace_access_denied on a routed prompt. Quarantining it for reauth tells
+    // the user to re-login a credential that is already valid, and the loop repeats forever.
+    expect(classifyCodexUpstreamOutcome(403, "workspace")).toBe("workspace");
+    expect(classifyCodexUpstreamOutcome(403, "entitlement")).toBe("workspace");
+    // Without denial evidence the historical mapping stands, so the change fails safe.
+    expect(classifyCodexUpstreamOutcome(403)).toBe("credential");
+    expect(classifyCodexUpstreamOutcome(401, "workspace")).toBe("credential");
+  });
+
+  test("a workspace denial keeps the credential and does not sweep affinity (#1789)", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    // Bind a thread to the account so we can prove its affinity is NOT swept.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 403, { denial: "workspace" });
+
+    // The credential is valid: no reauth prompt.
+    expect(isAccountNeedsReauth("a")).toBe(false);
+    // The failure is still recorded so routing can prefer a healthier account.
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 403 });
+    // Credential quarantine sweeps thread affinity because reauth is account-wide;
+    // a workspace denial is not account-wide, so the existing binding survives.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+  });
   test("403 credential outcome quarantines the account under the conservative policy", () => {
     const config = makeConfig();
     updateAccountQuota("a", 10);
