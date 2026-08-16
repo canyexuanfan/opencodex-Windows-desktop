@@ -174,13 +174,20 @@ export async function handleManagementAPI(
         throw new TypeError("Catalog convergence returned an invalid outcome.");
       }
       return catalogRefresh;
-    } catch {
+    } catch (error) {
+      // #1784: this used to manufacture `reason: "disk"` for every escaping error, so a
+      // programming fault and a full filesystem were indistinguishable and both reported
+      // non-retryable. Classify honestly and keep the cause allowlisted.
+      const invalidRequest = error instanceof TypeError
+        || error instanceof RangeError
+        || error instanceof SyntaxError;
       return {
         status: "failed",
-        reason: "disk",
+        reason: invalidRequest ? "request-invalid" : "internal",
         phase: convergenceInvoked ? "commit" : "gather",
         retryable: false,
         partialWrite: convergenceInvoked,
+        cause: { kind: invalidRequest ? "invalid-request" : "unknown" },
       };
     }
   }
