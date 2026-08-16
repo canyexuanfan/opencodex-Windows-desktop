@@ -501,6 +501,7 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         }
         continue;
       }
+
       if (effectiveType === "function_call") {
         const call = item as { id?: string; call_id: string; name: string; arguments?: string; namespace?: string; extra_content?: unknown };
         // Tolerate empty/non-JSON arguments (e.g. a no-arg tool call serialized as "") instead of
