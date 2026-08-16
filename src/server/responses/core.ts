@@ -2280,10 +2280,13 @@ async function handleResponsesInner(
     // call it cannot execute, and the turn showed a bare `aborted` with the file untouched.
     // Forward auth is the canonical ChatGPT backend speaking Codex's own protocol rather than a
     // routed provider, so it keeps passing through unguarded, as it does for the rewrites above.
-    // What decides whether the catalog can be trusted is whether the body was READABLE, not how
-    // many tools it holds: a request that declares none authorizes none, so every client-executed
-    // call it gets back is undeclared. Only a body this proxy could not parse leaves the guard
-    // with nothing to compare against.
+    // The guard needs a catalog to compare against, so it stands down when the request carries
+    // none. That is not the same claim as "no tools means no tool may be called": a passthrough
+    // request can legitimately omit `tools` entirely and still receive a tool call the client
+    // understands — `tests/github-copilot-stream-contract.test.ts` sends `{model, input, stream}`
+    // with no tools and Copilot answers with a `custom_tool_call` for `apply_patch`. Policing an
+    // empty catalog truncates that turn. An unreadable body lands here too, since it yields no
+    // names either.
     const outboundRequestBody = (() => {
       try {
         const body = JSON.parse(request.body) as unknown;
@@ -2299,7 +2302,7 @@ async function handleResponsesInner(
     // the client's name back. Widening only ever makes the guard fire less; a name declared in
     // neither place — #1700's `apply_patch` — is still refused.
     for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
-    const undeclaredToolGuardActive = outboundRequestBody !== undefined
+    const undeclaredToolGuardActive = declaredWireToolNames.size > 0
       && route.provider.authMode !== "forward";
     // A refused turn must not seed `previous_response_id` replay. The inspection branch reads the
     // untouched upstream stream, so it can still observe a `response.completed` the client never

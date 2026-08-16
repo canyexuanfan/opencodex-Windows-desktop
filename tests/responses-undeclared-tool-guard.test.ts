@@ -117,21 +117,6 @@ describe("collectDeclaredWireToolNames", () => {
   });
 });
 
-describe("an empty catalog still authorizes nothing", () => {
-  test("every client-executed call is undeclared when no tool was declared", () => {
-    const empty = new Set<string>();
-    const response = { output: [{ type: "function_call", name: "apply_patch" }] };
-
-    expect(undeclaredToolCallNameInResponse(response, empty)).toBe("apply_patch");
-  });
-
-  test("hosted calls are still exempt under an empty catalog", () => {
-    const empty = new Set<string>();
-    const response = { output: [{ type: "web_search_call", id: "ws_1" }] };
-
-    expect(undeclaredToolCallNameInResponse(response, empty)).toBeUndefined();
-  });
-});
 
 describe("undeclared tool call guard", () => {
   const declared = ["exec", "wait", "request_user_input"];
@@ -431,7 +416,7 @@ describe("a refused turn does not become continuation state", () => {
   });
 });
 
-describe("a readable request that declares no tools authorizes none", () => {
+describe("a request that declares no tools has no catalog to police", () => {
   const config = {
     port: 0,
     defaultProvider: "fixture",
@@ -487,21 +472,25 @@ describe("a readable request that declares no tools authorizes none", () => {
     { headers: { "content-type": "text/event-stream" } },
   );
 
+  // A passthrough request may omit `tools` entirely and still receive a tool call the client
+  // understands — the Copilot contract in tests/github-copilot-stream-contract.test.ts does
+  // exactly that with `apply_patch`. Refusing on an empty catalog truncates those turns, so the
+  // guard needs at least one declared name before it has an opinion.
   for (const [label, tools] of [["no tools field", undefined], ["tools: []", []]] as const) {
-    test(`non-streaming, ${label}`, async () => {
+    test(`non-streaming, ${label} — relayed, not refused`, async () => {
       const response = await post(false, tools, jsonUpstream);
 
-      expect(response.status).toBe(502);
-      const body = await response.json() as { error: { message: string } };
-      expect(body.error.message).toContain('undeclared client tool "apply_patch"');
+      expect(response.status).toBe(200);
+      const body = await response.json() as { output: Array<Record<string, unknown>> };
+      expect(body.output[0]).toMatchObject({ name: "apply_patch" });
     });
 
-    test(`streaming, ${label}`, async () => {
+    test(`streaming, ${label} — relayed, not refused`, async () => {
       const response = await post(true, tools, sseUpstream);
       const body = await response.text();
 
-      expect(body).toContain(`"code":"${UNDECLARED_TOOL_CALL_ERROR_CODE}"`);
-      expect(body).not.toContain("response.completed");
+      expect(body).not.toContain(UNDECLARED_TOOL_CALL_ERROR_CODE);
+      expect(body).toContain("response.completed");
     });
   }
 });
