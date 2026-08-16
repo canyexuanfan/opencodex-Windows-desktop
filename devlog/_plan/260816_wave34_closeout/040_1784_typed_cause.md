@@ -7,7 +7,7 @@ There is no exception type to propagate — failures are DATA. `CatalogDispositi
 The cause is discarded twice:
 
 1. `createManagementConvergeCodex` catches, inspects two message substrings for busy/database admission, and otherwise returns hard-coded `failed/disk` without storing the caught error (`src/codex/management-convergence.ts:52`, `:62`, `:107`).
-2. `src/server/management-api.ts:177` uses a bare `catch {}` and again manufactures `reason: "disk"`, choosing gather-vs-commit purely from whether invocation had begun.
+2. `src/server/management-api.ts:177` catches without binding the error at all, and again manufactures `reason: "disk"`, choosing gather-vs-commit purely from whether invocation had begun.
 
 Tests pin both collapses (`tests/codex-management-convergence.test.ts:67`, `tests/codex-convergence-contract.test.ts:303`).
 
