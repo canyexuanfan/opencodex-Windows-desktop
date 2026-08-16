@@ -1,6 +1,13 @@
 # Phase 1 — catalog multi-agent capability contract
 
-Closes G1, G2, G9, G12, G13. One PABCD cycle. Independent of every other phase.
+Closes G1, G2, G9, G12, G13 — **but NOT all in one cycle.** See `011_c1_investigation_and_scope.md`
+(3판): the first implementation cycle (C1) is a **roster + daybreak-catalog** cycle covering only
+the roster predicate (`sync.ts:105-108`) and the global-allowlist addition. G1's default-mode
+blanket stamp, G2's creation path, and G12's fallback capability class remain **OPEN** and are
+scheduled as separate cycles, because `8a0de6c44` redefined the explicit-v2 branch and the
+encrypted-NEW_TASK constraint (#92) entangles the fallback work.
+
+One PABCD cycle per listed change-group. Independent of every other phase.
 
 Audit history: `006_audit_round1.md`, `007_audit_round2.md`. This document is canonical —
 all audit corrections are integrated below, not appended.

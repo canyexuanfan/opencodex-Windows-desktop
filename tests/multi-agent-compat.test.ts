@@ -241,15 +241,19 @@ describe("multiAgentGuidanceText", () => {
     const configured = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna"];
 
     const effective = effectiveSubagentRoster(configured, "v2");
+    // Upstream 6d4d9442c: a "v1" pin means eligible LEAF worker, not "ineligible".
+    // gpt-5.6-luna carries upstream's own "v1" pin, so it belongs in the roster.
     expect(effective.candidates.map(model => model.model)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.5",
       "gpt-5.6-terra",
+      "gpt-5.6-luna",
     ]);
     expect(effective.advertised.map(model => model.model)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.5",
       "gpt-5.6-terra",
+      "gpt-5.6-luna",
     ]);
 
     const text = await multiAgentGuidanceText(
@@ -257,11 +261,11 @@ describe("multiAgentGuidanceText", () => {
       { subagentModels: configured },
     );
     expect(text).toContain('"gpt-5.6-sol"');
-    // Option B: an unpinned (null) model is a routed/unpinned-native model and is
-    // now advertised; only a genuine "v1" pin stays excluded.
+    // Since upstream 6d4d9442c only an explicit "disabled" pin excludes a model.
+    // Unpinned (null) rows and "v1"-pinned rows are both eligible leaf workers.
     expect(text).toContain('"gpt-5.5"');
     expect(text).toContain('"gpt-5.6-terra"');
-    expect(text).not.toContain('"gpt-5.6-luna"');
+    expect(text).toContain('"gpt-5.6-luna"');
     for (const advertised of effective.advertised) {
       expect(effective.candidates.map(model => model.model)).toContain(advertised.model);
     }
@@ -455,15 +459,17 @@ describe("multiAgentGuidanceText", () => {
       { slug: "eligible-a", efforts: ["high"], priority: 1 },
       { slug: "eligible-b", efforts: ["high"], priority: 1 },
       { slug: "hidden-model", efforts: ["high"], visibility: "hide", priority: 2 },
-      { slug: "v1-model", efforts: ["high"], priority: 3, multiAgentVersion: "v1" },
-      { slug: "filler-a", efforts: ["high"], priority: 4 },
-      { slug: "filler-b", efforts: ["high"], priority: 5 },
+      // "v1" is an eligible LEAF worker since upstream 6d4d9442c; only "disabled"
+      // is a capability-based exclusion, so the disabled row carries that role now.
+      { slug: "disabled-model", efforts: ["high"], priority: 3, multiAgentVersion: "disabled" },
+      { slug: "v1-model", efforts: ["high"], priority: 4, multiAgentVersion: "v1" },
+      { slug: "filler-a", efforts: ["high"], priority: 5 },
       { slug: "displaced-model", efforts: ["high"], priority: 6 },
     ]);
     const configured = [
       "provider/vendor/model",
       "hidden-model",
-      "v1-model",
+      "disabled-model",
       "missing-model",
       "displaced-model",
     ];
@@ -473,13 +479,13 @@ describe("multiAgentGuidanceText", () => {
       "provider/vendor-model",
       "eligible-a",
       "eligible-b",
+      "v1-model",
       "filler-a",
-      "filler-b",
     ]);
     expect(effective.advertised.map(model => model.model)).toEqual(["provider/vendor-model"]);
     expect(effective.excluded).toEqual([
       { configured: "hidden-model", catalogModel: "hidden-model", reason: "picker_hidden" },
-      { configured: "v1-model", catalogModel: "v1-model", reason: "surface_incompatible" },
+      { configured: "disabled-model", catalogModel: "disabled-model", reason: "surface_incompatible" },
       { configured: "missing-model", reason: "missing_catalog_entry" },
       { configured: "displaced-model", catalogModel: "displaced-model", reason: "outside_display_limit" },
     ]);
@@ -499,7 +505,7 @@ describe("multiAgentGuidanceText", () => {
     );
     const lines = getInjectionDebugLogEntries().map(entry => entry.line).join("\n");
     expect(lines).toContain("hidden-model:picker_hidden");
-    expect(lines).toContain("v1-model:surface_incompatible");
+    expect(lines).toContain("disabled-model:surface_incompatible");
     expect(lines).toContain("missing-model:missing_catalog_entry");
     expect(lines).toContain("displaced-model:outside_display_limit");
   });
@@ -670,11 +676,12 @@ describe("multiAgentGuidanceText", () => {
       },
     );
 
+    // gpt-5.6-luna carries upstream's "v1" pin, which is now an eligible LEAF worker
+    // (codex-rs 6d4d9442c), so it joins the substituted roster.
     expect(text).toBe(
       '<multi_agent_mode>CUSTOM model=raw/preferred-model effort=max'
-        + ' Available models (reasoning_effort high/max): "gpt-5.6-terra".</multi_agent_mode>',
+        + ' Available models (reasoning_effort high/max): "gpt-5.6-terra", "gpt-5.6-luna".</multi_agent_mode>',
     );
-    expect(text).not.toContain("gpt-5.6-luna");
   });
 
   test("injectionPrompt substitutes fallback guidance via {{fallback}}", async () => {
