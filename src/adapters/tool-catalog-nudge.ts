@@ -58,7 +58,8 @@ export function buildNonOpenAIToolCatalogNudgeFromNames(
 
   return [
     "Tool contract: use the current tool catalog as ground truth.",
-    `Valid top-level tool names for this turn are exactly ${quoteNames(names)}.`,
+    `Valid tool names for this turn are exactly ${quoteNames(names)}.`,
+    "These listed names are the complete top-level tool-call surface for this turn.",
     "Call only listed names with their listed argument keys; do not invent, translate, or rename tools.",
     "Names mentioned only in instructions, tool descriptions, argument descriptions, or nested helper APIs are not additional top-level tools.",
     "If a listed tool exposes nested helpers such as a tools.* API, call the listed parent tool and use those helpers only inside that tool's input.",
