@@ -152,6 +152,61 @@ The `multi_agent_v2` feature flag and the logical maximum thread count are separ
 `multiAgentMode` (`src/codex/features.ts`): the mode decides which surface Codex advertises, while
 the flag and thread count decide what the native runtime allows.
 
+### What the five-model `spawn_agent` window is, and how V1 differs from V2
+
+`MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5` (mirrored in `src/codex/catalog/sync.ts`) is **not** a
+subagent concurrency limit and **not** an eligibility limit. Upstream uses it in exactly two
+places: the model list rendered into the `spawn_agent` tool description
+(`multi_agents_spec.rs:789`) and the "Available models:" suggestions in an unknown-model error
+(`multi_agents_common.rs:448`, inside the `ok_or_else` closure that runs only *after* the lookup
+already failed). The success path `find_spawn_agent_model_name` (`:431-442`) scans the whole
+catalog with neither the cap nor a `show_in_picker` filter, so a model outside the advertised
+five is still accepted when named exactly.
+
+Three different numbers, often conflated:
+
+| Quantity | Value | Source |
+| --- | --- | --- |
+| Models **advertised** as overrides | `min(5, picker-visible eligible rows)` | `multi_agents_spec.rs:785-790` |
+| Models **eligible** as targets | no numeric cap (only `"disabled"` is excluded, and only on V2) | `multi_agents_common.rs:36-42` |
+| **Concurrent** subagents | V1 6 children (root excluded); V2 total 4 including root → 3 children | `config/mod.rs:211-212`, `:1497-1506` |
+
+**The cap is the same 5 on both surfaces, but the window's contents are not.** The eligibility
+filter runs *before* `.take(5)`, and it behaves differently per surface: on a V1 call
+`model_supports_multi_agent_backend` short-circuits true for every row (including `disabled`
+ones), while a V2 call drops `Some(Disabled)` first — which lets a later row move into the five.
+Same catalog, different advertised list:
+
+| # | Model | pin | V1 advertises | V2 advertises |
+| ---: | --- | --- | :---: | :---: |
+| 1 | `v2-a` | `v2` | ✅ | ✅ |
+| 2 | `disabled-a` | `disabled` | ✅ | — |
+| 3 | `v1-a` | `v1` | ✅ | ✅ |
+| 4 | `null-a` | absent | ✅ | ✅ |
+| 5 | `v2-b` | `v2` | ✅ | ✅ |
+| 6 | `disabled-b` | `disabled` | — | — |
+| 7 | `null-b` | absent | — | ✅ |
+
+opencodex already matches this: `effectiveSubagentRoster` filters with
+`surface !== "v2" || isEligibleV2SubagentEntry(entry)`, so the V1 path skips the eligibility
+filter exactly as upstream does. opencodex also injects no roster on V1
+(`src/server/responses/collaboration.ts` emits only proactive text at the top effort tier), so
+the upstream tool description remains the authority there.
+
+Two further V1/V2 differences worth knowing: the list gate is
+`hide_agent_type_model_reasoning` on V1 (hard-coded `false` at registration, so V1 always
+advertises) but `expose_spawn_agent_model_overrides` on V2 (default `true`; when false the list
+is omitted *and* the `model`/`reasoning_effort` schema fields are removed). And V2's
+`hide_spawn_agent_metadata` defaults true, which removes `service_tier`.
+
+`modelPickerOrder` (#1649) deliberately does **not** feed this window: it rewrites only the
+Codex-visible `priority` while `SPAWN_PRIORITY_FIELD` preserves the natural priority the roster
+sorts by, so a display reorder can never change candidate membership. That divergence from
+upstream's own ordering is the feature's purpose, not a defect —
+`tests/codex-catalog-model-picker-order.test.ts` pins it.
+
+Full derivation with per-line citations: `devlog/_plan/260816_codexrs_multiagent_v2_and_history_perf/013_five_cap_v1_vs_v2.md`.
+
 ## Routed tool discovery and hosted search
 
 Non-Cursor routed catalog rows advertise `supports_search_tool: true` together with
