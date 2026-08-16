@@ -218,8 +218,16 @@ export async function pumpResponsesSseToWebSocket(
     terminalReported = true;
     options.onTerminal?.(status);
   };
+  // Chain the previous cancel: a superseding response.create installs its own
+  // cancel after aborting the old turn. Without this chain the old turn's
+  // listener is dropped unreleased, keeping its reader/closures reachable.
+  const upstreamCancel = ws.data.cancel;
+  let cancelCalled = false;
   const cancel = () => {
+    if (cancelCalled) return;
+    cancelCalled = true;
     clientCancelled = true;
+    try { upstreamCancel?.(); } catch { /* cancellation must continue */ }
     void reader.cancel().catch(() => {});
   };
   ws.data.cancel = cancel;
